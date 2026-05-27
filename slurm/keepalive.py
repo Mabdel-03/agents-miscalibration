@@ -98,8 +98,12 @@ def _reregister_running(run_root: str, model_size: str) -> int:
     For each running serve node, probe the replica ports and re-register any live endpoint
     not already in the registry.
     """
-    from agents_scaling.serving.launch_server import _port_for
+    import dataclasses as _dc
+    import json as _json
+
     from agents_scaling.models import get_model
+    from agents_scaling.serving.launch_server import _port_for
+    from agents_scaling.serving.registry import ServerEntry, _size_dir
 
     known = {(e.host, e.port) for e in registry.list_servers(run_root, model_size)}
     restored = 0
@@ -108,10 +112,10 @@ def _reregister_running(run_root: str, model_size: str) -> int:
             port = _port_for(model_size, r)
             if (node, port) in known:
                 continue
-            if _robust_alive(node, port, attempts=3, timeout=10.0):
-                registry.register_server  # ensure imported
-                from agents_scaling.serving.registry import ServerEntry, _size_dir
-                import json as _json, dataclasses as _dc
+            # FAST single probe (3s, no retries) so a tick can't stall on flaky/saturated
+            # ports — a miss just retries next tick (eventually consistent). Registration
+            # is additive and safe; we never remove here.
+            if healthcheck.is_alive(node, port, timeout=3.0):
                 e = ServerEntry(model_size=model_size, hf_id=get_model(model_size).hf_id,
                                 host=node, port=port)
                 (_size_dir(run_root, model_size) / f"{node}_{port}.json").write_text(
