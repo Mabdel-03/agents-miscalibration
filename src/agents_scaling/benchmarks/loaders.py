@@ -66,7 +66,9 @@ def load_mmlu_pro(n: int | None = None, seed: int = 0) -> list[Question]:
 
 def load_truthfulqa(n: int | None = None, seed: int = 0) -> list[Question]:
     """TruthfulQA MC1: exactly one correct target among several. Calibration-native."""
-    ds = _load_hf("truthful_qa", "multiple_choice")["validation"]
+    # Use the namespaced repo id; the bare "truthful_qa" alias is rejected by newer
+    # huggingface_hub (requires 'namespace/name').
+    ds = _load_hf("truthfulqa/truthful_qa", "multiple_choice")["validation"]
     out: list[Question] = []
     for i, row in enumerate(ds):
         rng = random.Random(f"{seed}-{i}")
