@@ -58,6 +58,26 @@ def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = 
     results_path = cdir / "results.jsonl"
     meta_path = cdir / "meta.json"
 
+    # Resume: a cell with meta.json is fully done -> skip (idempotent re-submission of the
+    # SLURM array after time-limit kills won't redo or duplicate work).
+    if meta_path.exists():
+        print(f"[run_cell] {cell.cell_id} already complete (meta.json present); skipping")
+        return str(results_path)
+
+    # Partial cell: collect qids already answered so we only run the remainder.
+    done_qids: set[str] = set()
+    if results_path.exists():
+        import json as _json
+
+        for line in results_path.read_text().splitlines():
+            if line.strip():
+                try:
+                    done_qids.add(_json.loads(line)["qid"])
+                except (ValueError, KeyError):
+                    pass
+        if done_qids:
+            print(f"[run_cell] {cell.cell_id} resuming: {len(done_qids)} questions already done")
+
     # --- meta (axis-3 measured attributes recorded here) ---
     system_prompt = get_prompt(cell.prompt_complexity_level)
     judge = LogprobClient(base_url=base_url, model=served_model) if score_prompt_with_judge else None
@@ -79,6 +99,8 @@ def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = 
     reasoning_token_totals: list[int] = []  # per-question reasoning tokens -> meta mean
 
     for q in questions:
+        if q.qid in done_qids:
+            continue  # resume: already answered in a prior (killed) run
         t0 = time.time()
         topo = build_topology(
             cell.topology, agents, cell.context_share_level, cell.rounds,

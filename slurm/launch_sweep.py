@@ -51,10 +51,12 @@ def main() -> None:
     ap.add_argument("--models", nargs="*", help="restrict served model sizes (default: all in sweep)")
     ap.add_argument("--serve-partition", default="pi_tpoggio")
     ap.add_argument("--serve-gpu-type", default="a100")
-    ap.add_argument("--serve-time", default="2-00:00:00")
-    ap.add_argument("--cell-partition", default="mit_normal_gpu")  # cells are CPU clients
-    ap.add_argument("--cell-time", default="6:00:00")
-    ap.add_argument("--throttle", type=int, default=32, help="max concurrent array tasks")
+    ap.add_argument("--serve-time", default="7-00:00:00")  # servers must outlive the run
+    # Cells are CPU-only HTTP clients -> a long-limit non-GPU partition. Preemption is safe
+    # because the runner resumes (skips completed cells / answered qids on re-submit).
+    ap.add_argument("--cell-partition", default="mit_preemptable")
+    ap.add_argument("--cell-time", default="2-00:00:00")
+    ap.add_argument("--throttle", type=int, default=16, help="max concurrent array tasks")
     args = ap.parse_args()
 
     cells = load_sweep(args.config)
