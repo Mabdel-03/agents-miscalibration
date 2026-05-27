@@ -74,6 +74,12 @@ Track with the commands in [OPERATIONS.md](OPERATIONS.md#monitoring); re-run
 `aggregate_results.py --run-id full_sweep_v1` any time for partial results. The driver and
 runner are resumable, so kills/preemption are safe to recover from by re-running.
 
+**Two background loops sustain the run** (both under nohup): the **chunk driver**
+(`launch_chunked.py`, throttle 36) dispatches cells under the QOS submit cap, and the
+**keepalive** (`keepalive.py`, 10-min passes) relaunches any vLLM server that hits its
+walltime limit so cells never block on a dead endpoint. Together with the resumable runner,
+the months-long run survives server churn and cell preemption without manual intervention.
+
 ## How to read the eventual results
 
 - **Performance vs each axis** — accuracy curves, faceted by topology.

@@ -134,22 +134,31 @@ The runner is **idempotent**:
 So to resume, just **re-submit** the chunked arrays (same command as step 3) — completed
 work is not redone. Preemption on `mit_preemptable` is therefore safe.
 
-## Server keepalive (long runs)
+## Server keepalive (long runs) — automated
 
-Servers have walltime limits (pi_tpoggio 7-day, ou_bcs 1-day). For a multi-week run they
-will be killed and must be relaunched, or cells will block on `wait_for_server`. Re-run the
-step-1 launch commands for any size whose endpoint is gone:
+Servers have walltime limits (pi_tpoggio 7-day, ou_bcs 1-day). Over a multi-week run they
+get killed; without relaunching, cells block on `wait_for_server`. **`slurm/keepalive.py`**
+handles this automatically — run it under nohup for the duration of the sweep:
+
 ```bash
-# which sizes currently have NO live endpoint?
-PYTHONPATH=src $PY - <<'EOF'
-from agents_scaling.serving import registry as R; import os
-run=os.path.join(os.environ["ASYS_RESULTS_ROOT"],"full_sweep_v1")
-print([s for s in ["0.6B","1.7B","4B","8B","14B","32B"] if not R.list_servers(run,s)])
-EOF
+nohup env PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN \
+  --pi-sizes 0.6B,1.7B,14B --ou-sizes 4B,8B,32B \
+  --pi-partition pi_tpoggio --ou-partition ou_bcs_normal --interval 600 \
+  > $ASYS_RESULTS_ROOT/$RUN/keepalive.log 2>&1 &
 ```
-(Stale registry files from a dead server are harmless — `wait_for_server` will get a
-connection error and the cell retries via `backoff`; relaunching republishes a fresh
-endpoint. Consider a cron/loop that relaunches missing sizes.)
+
+Each pass: probe a real HTTP `/health` on every endpoint (registry presence ≠ liveness);
+prune stale registry files for dead endpoints (so cells stop round-robining onto them);
+and resubmit a server for any size that has no live endpoint and no serve job already PD/R,
+on that size's partition. It is stateless/idempotent — kill and restart it freely. Check
+which sizes are currently live any time:
+```bash
+PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN --once   # one pass, then exit
+```
+
+> A dead endpoint with a stale registry file is also tolerated at the cell level
+> (`backoff` retries the connection error), but keepalive removes the stale file and
+> restores a live server so cells don't waste retries / eventually fail.
 
 ## Cost / wall-clock projection
 
