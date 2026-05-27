@@ -141,6 +141,13 @@ Throughput is GPU-bound: with 1 server/size (6 GPUs) the sweep runs ~15 cells/hr
 already multi-endpoint). Replicas use distinct ports (`_port_for(size, replica)` offsets by
 replica index) so they don't collide even co-located.
 
+> **Interleave cells when scaling concurrency.** Cells are sorted by `cell_id` (clustered by
+> model size), so a chunk is single-size unless interleaved — at high throttle that sends all
+> running cells to one size's server while the rest idle (observed: 240 cells stuck on one
+> 0.6B server, 0 rows). `launch_chunked.py` interleaves `cells.json` by default; pass
+> `--reshuffle` to regenerate it (only when no array is mid-flight against the old ordering —
+> resume is by `cell_id` so completed work is safe regardless).
+
 Bring the fleet up to a target with the one-shot, idempotent **`scale_up.py`** (tops up to
 the desired count; re-runnable):
 ```bash

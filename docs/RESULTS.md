@@ -80,14 +80,23 @@ runner are resumable, so kills/preemption are safe to recover from by re-running
 block on a dead endpoint. Together with the resumable runner, the months-long run survives
 server churn and cell preemption without manual intervention.
 
-**Fleet scaled 6 → ~21 GPUs (2026-05-27).** At 6 servers (1/size) the run did ~15 cells/hr
-(~32 days). Added replicas weighted to the slow models — 32B×6, 14B×5, 8B×4, 4B×3, 1.7B×2,
-0.6B×1 = ~21 A100 endpoints, the extras on `ou_bcs_low` (32-GPU QOS cap). Cells round-robin
-across replicas via the multi-endpoint registry; cell throttle raised 36 → 240 (~11/endpoint;
-the 600s client timeout absorbs the higher concurrency). `scale_up.py` does the one-shot
-burst; `keepalive.py` (new `--spec` format) maintains the count as ou_bcs's 1-day servers
-churn. Expected throughput improvement roughly proportional to GPUs, weighted toward clearing
-the 32B long pole soonest.
+**Fleet scaled 6 → ~21 GPUs (2026-05-27) — verified ~15× throughput.** At 6 servers (1/size)
+the run did ~840 rows/hr. Added replicas weighted to the slow models — 32B×6, 14B×5, 8B×4,
+4B×3, 1.7B×2, 0.6B×1 = ~21 A100 endpoints, extras on `ou_bcs_low` (32-GPU QOS cap). Cells
+round-robin across replicas via the multi-endpoint registry; cell throttle raised 36 → 240
+(~11/endpoint). `scale_up.py` does the one-shot burst; `keepalive.py` (new `--spec`) maintains
+the count as ou_bcs's 1-day servers churn. **Measured after the fix below: ~12,700 rows/hr
+(~15×), all 6 sizes' servers busy, 0 timeouts at 240 concurrency.**
+
+> **Ordering bug the scale-up exposed (fixed).** Cells are generated sorted by `cell_id`,
+> which clusters them by model size — so the first chunk was *all 0.6B*. After scaling, 240
+> concurrent cells all hammered the single 0.6B server while the other 19 endpoints sat idle;
+> the lone server was so oversubscribed that **no cell completed a question (0 rows for ~20
+> min despite 240 "running")**. At the old throttle-36 this stayed hidden (one server kept up);
+> scaling concurrency exposed it. Fix: `launch_chunked.py` now **deterministically interleaves**
+> `cells.json` so every chunk spans all sizes (chunk0 ≈ 62–72 of each). Resume is by `cell_id`,
+> so reordering loses no completed work. Lesson: verify **rows**, not just concurrency/endpoint
+> count, when judging a throughput change.
 
 ## How to read the eventual results
 
