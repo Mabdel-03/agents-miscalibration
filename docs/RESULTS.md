@@ -65,10 +65,14 @@ of the full sweep.
 - **Projected scale:** ~tens of thousands of A100-hours / weeks–months (32B + unlimited
   thinking dominate). Deliberately large; survivable via resume + chunking.
 
-**Status:** servers launched; 5/6 endpoints registered (32B loading) at last update; chunked
-cell arrays submitted once all 6 are healthy. Track with the commands in
-[OPERATIONS.md](OPERATIONS.md#monitoring). Re-run `aggregate_results.py --run-id
-full_sweep_v1` any time for partial results.
+**Status (launched):** all 6 servers healthy — `0.6B/1.7B/14B` on `pi_tpoggio`,
+`4B/8B/32B` on `ou_bcs_normal` (the multi-endpoint registry round-robins cells across
+them). The 29 cell chunks (400 each) are dispatched by the **drive loop**
+(`launch_chunked.py --drive`, running under nohup) which submits one chunk at a time under
+the `mit_preemptable` QOS submit cap (448). Chunk 0 (`14571830`, tasks 0–399) is queued.
+Track with the commands in [OPERATIONS.md](OPERATIONS.md#monitoring); re-run
+`aggregate_results.py --run-id full_sweep_v1` any time for partial results. The driver and
+runner are resumable, so kills/preemption are safe to recover from by re-running.
 
 ## How to read the eventual results
 

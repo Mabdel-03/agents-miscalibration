@@ -77,17 +77,26 @@ for s in ["0.6B","1.7B","4B","8B","14B","32B"]:
     print(s, [e.base_url for e in R.list_servers(run,s)] or "PENDING")
 EOF
 
-# 3. submit the cell list as chained chunks of <=480 (under MaxSubmitJobs=500)
-PYTHONPATH=src $PY slurm/launch_chunked.py --config configs/full_sweep.yaml --run-id $RUN \
-  --chunk-size 480 --throttle 480 --cell-partition mit_preemptable --cell-time 2-00:00:00
+# 3. dispatch the cell list as chunks via the DRIVE loop (run under nohup; it's long-lived)
+nohup env PYTHONPATH=src $PY slurm/launch_chunked.py --config configs/full_sweep.yaml \
+  --run-id $RUN --chunk-size 400 --throttle 400 --submit-cap 440 \
+  --cell-partition mit_preemptable --cell-time 2-00:00:00 > $ASYS_RESULTS_ROOT/$RUN/driver.log 2>&1 &
 ```
 
-`launch_chunked.py` writes `<run>/chunk_jobs.json` and submits ~24 array jobs, each gated
-on the previous (`--dependency=afterany`) so only one chunk (≤480 tasks) is ever live.
+`launch_chunked.py` renders 29 chunk sbatches (400 cells each) and **drives** them: submit
+one chunk, wait until the submitted-job count leaves headroom under `--submit-cap`, submit
+the next. It writes `<run>/chunk_jobs.json` and skips chunks whose cells already have
+`meta.json` (resumable — a killed driver just re-runs the same command).
 
-> **Why chunks, not one big array?** A single `0-11519%N` array counts all 11,520 elements
-> against `MaxSubmitJobs=500` and is rejected. Chained chunks of ≤480 keep live jobs under
-> the cap while still covering the whole grid.
+> **Why a driver, not one big array or dependency chain?**
+> - A single `0-11519%N` array counts all 11,520 elements against the **association**
+>   `MaxSubmitJobs=500` → rejected.
+> - Dependency-chaining many chunks still fails: `mit_preemptable`'s **QOS**
+>   `QOSMaxSubmitJobPerUserLimit=448` counts *every submitted array task* (PD or R), so
+>   chunk1's 400 tasks + chunk0's 400 = 800 > 448 → the 2nd chunk's `sbatch` is rejected
+>   even with a dependency.
+> - So chunks are serialized by the drive loop, keeping submitted tasks ≤ `--submit-cap`.
+>   `_my_submitted_count()` uses `squeue -r` (array tasks expanded) to measure it.
 
 ## Monitoring
 
