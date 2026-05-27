@@ -9,7 +9,7 @@
 
 set -euo pipefail
 source "{REPO}/slurm/common.sh"
-mamba activate asys_env
+mamba activate "$ASYS_HARNESS_ENV"
 
 # Cell jobs are HTTP clients to the vLLM servers (no GPU needed here).
 python -m agents_scaling.experiment.run_one \

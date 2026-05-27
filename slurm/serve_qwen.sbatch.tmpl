@@ -9,7 +9,7 @@
 
 set -euo pipefail
 source "{REPO}/slurm/common.sh"
-mamba activate serve_env
+mamba activate "$ASYS_SERVE_ENV"
 
 PORT={PORT}
 echo "[serve] model={HF_ID} tp={TP_SIZE} port=$PORT node=$(hostname) job=$SLURM_JOB_ID"
@@ -21,12 +21,14 @@ vllm serve "{HF_ID}" \
   --gpu-memory-utilization 0.90 \
   --max-model-len {MAX_MODEL_LEN} \
   --max-logprobs 20 \
-  --port "$PORT" \
-  --disable-log-requests &
+  --port "$PORT" &
 VLLM_PID=$!
+# Note: vLLM>=0.21 logs requests OFF by default (use --enable-log-requests to turn on);
+# the old --disable-log-requests flag was removed.
 
 # Wait for readiness, then publish the endpoint to the registry so cell jobs can find it.
-python -m agents_scaling.serving.launch_server --register \
+# The harness package lives in asys_env (not serve_env), so use its python for register.
+"$ASYS_HARNESS_ENV/bin/python" -m agents_scaling.serving.launch_server --register \
   --run-root "{RUN_ROOT}" \
   --model-size "{MODEL_SIZE}" \
   --hf-id "{HF_ID}" \
