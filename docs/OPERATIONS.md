@@ -79,8 +79,9 @@ EOF
 
 # 3. dispatch the cell list as chunks via the DRIVE loop (run under nohup; it's long-lived)
 nohup env PYTHONPATH=src $PY slurm/launch_chunked.py --config configs/full_sweep.yaml \
-  --run-id $RUN --chunk-size 400 --throttle 400 --submit-cap 440 \
+  --run-id $RUN --chunk-size 400 --throttle 36 --submit-cap 440 \
   --cell-partition mit_preemptable --cell-time 2-00:00:00 > $ASYS_RESULTS_ROOT/$RUN/driver.log 2>&1 &
+# NOTE: --throttle 36 (~6 cells/server x 6 servers), NOT 400 — see the throttle note below.
 ```
 
 `launch_chunked.py` renders 29 chunk sbatches (400 cells each) and **drives** them: submit
@@ -88,6 +89,18 @@ one chunk, wait until the submitted-job count leaves headroom under `--submit-ca
 the next. It writes `<run>/chunk_jobs.json` and skips chunks whose cells already have
 `meta.json` (resumable — a killed driver just re-runs the same command).
 
+> **Throttle must match server capacity, NOT the submit cap.** `--throttle` is how many
+> cell tasks run concurrently against the (few) vLLM servers — each cell fans out to
+> `n_agents` agents plus a forced-answer probe, so throttle 400 against 6 servers means
+> ~1000+ concurrent requests. That swamps the servers: requests queue behind
+> unlimited-thinking generations and blow the client timeout, producing an
+> `APITimeoutError`/`ReadTimeout` storm (observed: ~197 cells failed with 0 rows). Budget
+> roughly **~6 concurrent cells per server endpoint** → **throttle ≈ 36 for 6 servers**.
+> vLLM continuous batching keeps them busy at that level; the client also tolerates bursts
+> (600s timeout, 8 retries). Raise throttle only if you add server endpoints. (The
+> resumable runner meant the storm cost nothing permanent — relaunching at throttle 36
+> resumed the partial cells.)
+>
 > **Why a driver, not one big array or dependency chain?**
 > - A single `0-11519%N` array counts all 11,520 elements against the **association**
 >   `MaxSubmitJobs=500` → rejected.

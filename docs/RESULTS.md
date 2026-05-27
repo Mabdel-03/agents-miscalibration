@@ -88,6 +88,13 @@ runner are resumable, so kills/preemption are safe to recover from by re-running
 
 ## Operational notes / incidents
 
+- **Timeout storm at throttle 400 (fixed).** The first full-sweep launch ran the cell
+  driver at `--throttle 400`, ~1000+ concurrent requests against 6 servers. Requests queued
+  behind unlimited-thinking generations and exceeded the 120s client timeout →
+  `APITimeoutError`/`ReadTimeout` on ~197 cells (0 rows written). Fix: client timeout
+  120→600s + 8 retries, and **throttle 400→36** (~6 cells/server). The resumable runner
+  meant nothing was permanently lost — relaunching at throttle 36 resumed the partial cells
+  and rows accumulate cleanly with zero timeouts. See OPERATIONS throttle note.
 - **Qwen3-32B KV-cache OOM (fixed).** At `max_model_len=32768`, 32B weights (~61 GiB bf16)
   leave too little KV-cache room on a single A100-80GB (vLLM needs 8.0 GiB KV vs ~7.8 free)
   and the server fails at engine init. Fixed by setting 32B `max_model_len=16384` in
