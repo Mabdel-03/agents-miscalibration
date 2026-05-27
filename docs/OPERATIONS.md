@@ -134,6 +134,36 @@ The runner is **idempotent**:
 So to resume, just **re-submit** the chunked arrays (same command as step 3) — completed
 work is not redone. Preemption on `mit_preemptable` is therefore safe.
 
+## Scaling the server fleet (more GPUs = faster)
+
+Throughput is GPU-bound: with 1 server/size (6 GPUs) the sweep runs ~15 cells/hr. Add
+**replicas** per size so cells round-robin across more endpoints (registry/client/runner are
+already multi-endpoint). Replicas use distinct ports (`_port_for(size, replica)` offsets by
+replica index) so they don't collide even co-located.
+
+Bring the fleet up to a target with the one-shot, idempotent **`scale_up.py`** (tops up to
+the desired count; re-runnable):
+```bash
+SPEC="0.6B:1:pi_tpoggio:7-00:00:00,1.7B:2:ou_bcs_low:1-00:00:00,4B:3:ou_bcs_low:1-00:00:00,\
+8B:4:ou_bcs_low:1-00:00:00,14B:5:ou_bcs_low:1-00:00:00,32B:6:ou_bcs_low:1-00:00:00"
+PYTHONPATH=src $PY slurm/scale_up.py --run-id $RUN --spec "$SPEC" --dry-run   # preview
+PYTHONPATH=src $PY slurm/scale_up.py --run-id $RUN --spec "$SPEC"             # launch the missing replicas
+```
+Spec = `size:count:partition:time` per size (count = TOTAL desired endpoints for that size).
+Then **restart keepalive with the SAME spec** so it maintains the larger fleet, and **raise
+the cell throttle** to ~12×endpoints (see below).
+
+> **Weight replicas to the SLOW models.** Work is dominated by big models (32B ≈ 40%, 14B+32B
+> ≈ 62% of total), so to minimize wall-clock give 32B/14B the most replicas (e.g. 6/5) and the
+> small models 1–2. Small cells clear fast but are not the long pole.
+>
+> **Respect per-user GPU QOS caps:** `ou_bcs_low` = 32 A100/H100 (biggest), `ou_bcs_normal` =
+> 8+8, `pi_tpoggio` ≈ 3–4, `mit_preemptable` = 4, `mit_normal_gpu` = 2. Concentrate replicas
+> on `ou_bcs_low`. Over-cap just leaves jobs PD (harmless). Note some nodes (e.g. node3904)
+> are shared across `ou_bcs_low`/`mit_preemptable`/`pi_manoli` partitions — submitting to
+> `ou_bcs_low` is correct even if the node also appears under pi_manoli; `squeue %P` shows the
+> partition the job actually runs under.
+
 ## Server keepalive (long runs) — automated
 
 Servers have walltime limits (pi_tpoggio 7-day, ou_bcs 1-day). Over a multi-week run they
@@ -141,19 +171,18 @@ get killed; without relaunching, cells block on `wait_for_server`. **`slurm/keep
 handles this automatically — run it under nohup for the duration of the sweep:
 
 ```bash
-nohup env PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN \
-  --pi-sizes 0.6B,1.7B,14B --ou-sizes 4B,8B,32B \
-  --pi-partition pi_tpoggio --ou-partition ou_bcs_normal --interval 600 \
-  > $ASYS_RESULTS_ROOT/$RUN/keepalive.log 2>&1 &
+# Use the SAME spec as scale_up (size:count:partition:time per size).
+nohup env PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN --interval 600 \
+  --spec "$SPEC" > $ASYS_RESULTS_ROOT/$RUN/keepalive.log 2>&1 &
 ```
 
 Each pass: probe a real HTTP `/health` on every endpoint (registry presence ≠ liveness);
-prune stale registry files for dead endpoints (so cells stop round-robining onto them);
-and resubmit a server for any size that has no live endpoint and no serve job already PD/R,
-on that size's partition. It is stateless/idempotent — kill and restart it freely. Check
-which sizes are currently live any time:
+prune stale registry files for dead endpoints; and for each size, if the serve-job count
+(R/PD/CF — authoritative, since live endpoints are a subset of running jobs) is below the
+target, relaunch enough replicas on free replica-ids to reach the desired count. Stateless/
+idempotent — kill and restart freely. Check current state any time:
 ```bash
-PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN --once   # one pass, then exit
+PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN --spec "$SPEC" --once   # one pass, then exit
 ```
 
 > A dead endpoint with a stale registry file is also tolerated at the cell level

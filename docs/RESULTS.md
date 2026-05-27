@@ -75,10 +75,19 @@ Track with the commands in [OPERATIONS.md](OPERATIONS.md#monitoring); re-run
 runner are resumable, so kills/preemption are safe to recover from by re-running.
 
 **Two background loops sustain the run** (both under nohup): the **chunk driver**
-(`launch_chunked.py`, throttle 36) dispatches cells under the QOS submit cap, and the
-**keepalive** (`keepalive.py`, 10-min passes) relaunches any vLLM server that hits its
-walltime limit so cells never block on a dead endpoint. Together with the resumable runner,
-the months-long run survives server churn and cell preemption without manual intervention.
+(`launch_chunked.py`) dispatches cells under the QOS submit cap, and the **keepalive**
+(`keepalive.py`, 10-min passes) maintains the desired server replica count so cells never
+block on a dead endpoint. Together with the resumable runner, the months-long run survives
+server churn and cell preemption without manual intervention.
+
+**Fleet scaled 6 → ~21 GPUs (2026-05-27).** At 6 servers (1/size) the run did ~15 cells/hr
+(~32 days). Added replicas weighted to the slow models — 32B×6, 14B×5, 8B×4, 4B×3, 1.7B×2,
+0.6B×1 = ~21 A100 endpoints, the extras on `ou_bcs_low` (32-GPU QOS cap). Cells round-robin
+across replicas via the multi-endpoint registry; cell throttle raised 36 → 240 (~11/endpoint;
+the 600s client timeout absorbs the higher concurrency). `scale_up.py` does the one-shot
+burst; `keepalive.py` (new `--spec` format) maintains the count as ou_bcs's 1-day servers
+churn. Expected throughput improvement roughly proportional to GPUs, weighted toward clearing
+the 32B long pole soonest.
 
 ## How to read the eventual results
 
