@@ -29,7 +29,8 @@ from keepalive import Target, _serve_jobs_in_flight, parse_spec  # type: ignore
 
 
 def _live_endpoints(run_root: str, size: str) -> list:
-    return [e for e in registry.list_servers(run_root, size) if healthcheck.is_alive(e.host, e.port)]
+    # Use a tolerant probe (saturated servers are slow to answer /health).
+    return [e for e in registry.list_servers(run_root, size) if healthcheck.is_alive(e.host, e.port, timeout=15.0)]
 
 
 def _used_replica_ids(live: list, size: str) -> set[int]:

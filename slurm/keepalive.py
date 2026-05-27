@@ -75,10 +75,26 @@ def _serve_jobs_in_flight(model_size: str) -> int:
     return n
 
 
+def _robust_alive(host: str, port: int, attempts: int = 3, timeout: float = 15.0) -> bool:
+    """True if /health responds 200 on ANY of several attempts.
+
+    A SATURATED but healthy vLLM server can be slow to answer /health; a single short
+    probe gives false negatives, and treating those as dead -> pruning a live endpoint
+    (the recurring bug). Require multiple consecutive failures, with a generous timeout,
+    before concluding an endpoint is actually dead.
+    """
+    for i in range(attempts):
+        if healthcheck.is_alive(host, port, timeout=timeout):
+            return True
+        if i < attempts - 1:
+            time.sleep(2.0)
+    return False
+
+
 def _live_dead(run_root: str, model_size: str) -> tuple[list, list]:
     live, dead = [], []
     for e in registry.list_servers(run_root, model_size):
-        (live if healthcheck.is_alive(e.host, e.port) else dead).append(e)
+        (live if _robust_alive(e.host, e.port) else dead).append(e)
     return live, dead
 
 
