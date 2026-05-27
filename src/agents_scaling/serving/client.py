@@ -67,15 +67,17 @@ class LogprobClient:
         base_url: str,
         model: str,
         api_key: str = "EMPTY",
-        request_timeout: float = 120.0,
+        request_timeout: float = 600.0,
         top_logprobs: int = 20,
     ):
+        # 600s: unlimited-thinking generations plus server-side queueing under load can take
+        # several minutes; 120s caused ReadTimeout storms when many cells shared a server.
         self.model = model
         self.top_logprobs = top_logprobs
         self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=request_timeout)
 
     # ------------------------------------------------------------------ chat
-    @backoff.on_exception(backoff.expo, _RETRYABLE, max_tries=5, jitter=backoff.full_jitter)
+    @backoff.on_exception(backoff.expo, _RETRYABLE, max_tries=8, max_time=1800, jitter=backoff.full_jitter)
     def chat(
         self,
         system: str,
@@ -153,7 +155,7 @@ class LogprobClient:
         )
 
     # --------------------------------------------------------- option scoring
-    @backoff.on_exception(backoff.expo, _RETRYABLE, max_tries=5, jitter=backoff.full_jitter)
+    @backoff.on_exception(backoff.expo, _RETRYABLE, max_tries=8, max_time=1800, jitter=backoff.full_jitter)
     def score_options(self, prompt: str, option_letters: list[str]) -> OptionScores:
         """Read the first-token distribution after ``prompt`` (which should end in
         something like ``"Answer: "``) and renormalize over ``option_letters``.
