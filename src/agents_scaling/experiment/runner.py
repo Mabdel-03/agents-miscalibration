@@ -46,11 +46,17 @@ def _build_agents(cell: ExperimentCell, base_url: str, served_model: str) -> lis
     return agents
 
 
-def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = False) -> str:
-    """Execute one cell end-to-end; returns the path to its results.jsonl."""
+def run_cell(
+    cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = False, shard: int = 0
+) -> str:
+    """Execute one cell end-to-end; returns the path to its results.jsonl.
+
+    ``shard`` (typically the SLURM array task id) round-robins this cell across all
+    registered server endpoints for its model size, spreading load across clusters.
+    """
     spec = get_model(cell.model_size)
     run_root = io.run_dir(run_id)
-    entry = wait_for_server(run_root, cell.model_size)
+    entry = wait_for_server(run_root, cell.model_size, shard=shard)
     base_url = entry.base_url
     served_model = cell.model_size  # vLLM --served-model-name
 

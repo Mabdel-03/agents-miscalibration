@@ -22,7 +22,8 @@ def main() -> None:
     if not 0 <= args.index < len(cells):
         raise IndexError(f"index {args.index} out of range for {len(cells)} cells")
     cell = ExperimentCell.from_dict(cells[args.index])
-    path = run_cell(cell, args.run_id, score_prompt_with_judge=args.judge_prompts)
+    # Use the global cell index as the shard so cells fan out across server endpoints.
+    path = run_cell(cell, args.run_id, score_prompt_with_judge=args.judge_prompts, shard=args.index)
     print(f"[run_one] cell {cell.cell_id} -> {path}")
 
 

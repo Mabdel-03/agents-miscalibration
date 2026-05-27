@@ -1,11 +1,14 @@
-"""Server registry: a file-based directory of which vLLM server serves which model.
+"""Server registry: a file-based directory of which vLLM servers serve which model.
 
 A serving SLURM job, once its vLLM server is up, writes a small JSON file recording its
-``node:port`` and the model it serves. Cell jobs (the HTTP clients) discover their
-server by reading the registry — no service discovery infrastructure needed, just a
-shared filesystem (scratch), which is exactly what we have.
+``node:port`` and the model it serves. Cell jobs (the HTTP clients) discover a server by
+reading the registry — no service discovery infrastructure needed, just a shared
+filesystem (scratch), which is exactly what we have.
 
-Layout: ``<run_root>/servers/<model_size>.json``
+**Multi-endpoint:** a single model size may be served by MORE THAN ONE server (e.g. one
+on pi_tpoggio + one on ou_bcs) to spread cell load. Each server writes its OWN file under
+``<run_root>/servers/<model_size>/<host>_<port>.json`` (so concurrent registrations never
+race), and ``lookup_server`` round-robins across whatever endpoints are present.
 """
 
 from __future__ import annotations
@@ -38,42 +41,78 @@ def servers_dir(run_root: str | os.PathLike) -> Path:
     return d
 
 
-def _entry_path(run_root: str | os.PathLike, model_size: str) -> Path:
-    return servers_dir(run_root) / f"{model_size}.json"
+def _size_dir(run_root: str | os.PathLike, model_size: str) -> Path:
+    d = servers_dir(run_root) / model_size
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def register_server(run_root: str | os.PathLike, model_size: str, hf_id: str, port: int) -> ServerEntry:
-    """Called by the serving job after vLLM is healthy. Records the current node + port."""
+    """Called by a serving job after its vLLM server is healthy.
+
+    Writes a per-server file under ``servers/<size>/<host>_<port>.json``. Multiple
+    servers for the same size coexist (one file each); re-registration of the same
+    host:port just overwrites its own file.
+    """
+    host = socket.gethostname()
     entry = ServerEntry(
         model_size=model_size,
         hf_id=hf_id,
-        host=socket.gethostname(),
+        host=host,
         port=port,
         slurm_job_id=os.environ.get("SLURM_JOB_ID"),
         started_at=time.time(),
     )
-    path = _entry_path(run_root, model_size)
-    # Atomic write so a reader never sees a half-written file.
+    path = _size_dir(run_root, model_size) / f"{host}_{port}.json"
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(asdict(entry), indent=2))
     tmp.replace(path)
     return entry
 
 
-def lookup_server(run_root: str | os.PathLike, model_size: str) -> ServerEntry | None:
-    path = _entry_path(run_root, model_size)
-    if not path.exists():
+def list_servers(run_root: str | os.PathLike, model_size: str) -> list[ServerEntry]:
+    """All registered endpoints for a model size (across clusters)."""
+    out: list[ServerEntry] = []
+    # New layout: servers/<size>/*.json
+    sd = servers_dir(run_root) / model_size
+    if sd.is_dir():
+        for f in sorted(sd.glob("*.json")):
+            try:
+                out.append(ServerEntry(**json.loads(f.read_text())))
+            except (ValueError, TypeError):
+                continue
+    # Back-compat: legacy single file servers/<size>.json
+    legacy = servers_dir(run_root) / f"{model_size}.json"
+    if legacy.is_file():
+        try:
+            out.append(ServerEntry(**json.loads(legacy.read_text())))
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def lookup_server(
+    run_root: str | os.PathLike, model_size: str, shard: int = 0
+) -> ServerEntry | None:
+    """Pick one endpoint for ``model_size``, round-robined by ``shard`` (e.g. the SLURM
+    array task id) so cells spread across all available servers for that size."""
+    servers = list_servers(run_root, model_size)
+    if not servers:
         return None
-    return ServerEntry(**json.loads(path.read_text()))
+    return servers[shard % len(servers)]
 
 
 def wait_for_server(
-    run_root: str | os.PathLike, model_size: str, timeout_s: float = 1800.0, poll_s: float = 5.0
+    run_root: str | os.PathLike,
+    model_size: str,
+    shard: int = 0,
+    timeout_s: float = 3600.0,
+    poll_s: float = 5.0,
 ) -> ServerEntry:
-    """Block until the serving job has registered its endpoint (cell jobs call this)."""
+    """Block until at least one server has registered for ``model_size`` (cells call this)."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        entry = lookup_server(run_root, model_size)
+        entry = lookup_server(run_root, model_size, shard=shard)
         if entry is not None:
             return entry
         time.sleep(poll_s)
