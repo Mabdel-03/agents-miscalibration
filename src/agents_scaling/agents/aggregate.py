@@ -33,13 +33,28 @@ def majority_vote(outputs: list[AgentOutput]) -> str | None:
     return tied[0]
 
 
-def system_confidences(outputs: list[AgentOutput], final_answer: str | None) -> dict[str, float]:
+def system_confidences(
+    outputs: list[AgentOutput],
+    final_answer: str | None,
+    producers: list[AgentOutput] | None = None,
+) -> dict[str, float]:
     """Multiple system-confidence definitions for the aggregated ``final_answer``.
 
+    Aggregate (pooled) definitions over the relevant agent set:
     * vote_fraction        — fraction of agents that chose the final answer.
     * mean_agreeing_logprob — mean option-logprob confidence among agreeing agents.
     * mean_agreeing_verbal  — mean verbalized confidence among agreeing agents.
     * mean_all_logprob      — mean option-logprob mass on the final answer over all agents.
+
+    FINAL-PRODUCER definitions — the calibration of the model output(s) that actually
+    DETERMINED the system answer (uniform across topologies; see ``producers``):
+    * final_producer_logprob — option-logprob confidence of the single decisive producer
+                               (the agreeing producer most confident in ``final_answer``).
+    * final_producer_verbal  — that producer's verbalized confidence.
+    * mean_producer_logprob  — mean option-logprob confidence over all producers.
+    This is the "calibration of the model that produced the final output" measure: for
+    centralized it is the orchestrator; for vote/debate it is the winning-side agent(s);
+    for single-agent it is the sole agent.
     """
     if not outputs or final_answer is None:
         return {}
@@ -54,9 +69,25 @@ def system_confidences(outputs: list[AgentOutput], final_answer: str | None) -> 
     mean_agreeing_verbal = _mean([o.verbalized_conf for o in agreeing if o.verbalized_conf is not None])
     mean_all_logprob = _mean([o.option_logprobs.get(final_answer, 0.0) for o in outputs])
 
-    return {
+    conf = {
         "vote_fraction": vote_fraction,
         "mean_agreeing_logprob": mean_agreeing_logprob,
         "mean_agreeing_verbal": mean_agreeing_verbal,
         "mean_all_logprob": mean_all_logprob,
     }
+
+    # Final-producer confidence. Default producers = the agreeing agents (the winning side
+    # of a vote); a topology with a distinct decider (e.g. centralized orchestrator) passes
+    # it explicitly. Restrict to producers that actually emitted the final answer.
+    prod = producers if producers is not None else agreeing
+    prod_for_final = [o for o in prod if o.answer_choice == final_answer] or prod
+    if prod_for_final:
+        # The single decisive producer = the one most confident in the final answer.
+        decisive = max(prod_for_final, key=lambda o: o.option_logprobs.get(final_answer, 0.0))
+        conf["final_producer_logprob"] = decisive.option_logprobs.get(final_answer, 0.0)
+        if decisive.verbalized_conf is not None:
+            conf["final_producer_verbal"] = decisive.verbalized_conf
+        conf["mean_producer_logprob"] = _mean(
+            [o.option_logprobs.get(final_answer, 0.0) for o in prod_for_final]
+        )
+    return conf

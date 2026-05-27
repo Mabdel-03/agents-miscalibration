@@ -54,12 +54,19 @@ partial `results.jsonl` by `qid`.
   ],
   // --- system-level confidence under MULTIPLE definitions (each gets its own ECE) ---
   "system_conf": {
+    // pooled/aggregate views
     "vote_fraction": 0.67,
     "mean_agreeing_logprob": 0.55,
     "mean_agreeing_verbal": 0.72,
     "mean_all_logprob": 0.40,
-    "orchestrator_logprob": 0.55,   // centralized only
-    "orchestrator_verbal": 0.70     // centralized only
+    // FINAL-PRODUCER views — calibration of the model output that DETERMINED the system
+    // answer, uniform across topologies (orchestrator for centralized; winning-side agent
+    // for vote/debate; sole agent for single-agent):
+    "final_producer_logprob": 0.55,   // decisive producer's option-logprob in the final answer
+    "final_producer_verbal": 0.70,    // decisive producer's verbalized confidence
+    "mean_producer_logprob": 0.52,    // mean over all producers (winning side)
+    "orchestrator_logprob": 0.55,     // centralized only (coincides with final_producer_*)
+    "orchestrator_verbal": 0.70       // centralized only
   },
   // --- self-consistency / semantic entropy (single_agent cells with n_samples>1) ---
   "self_consistency": {"samples": ["B","B","C"], "majority": "B",
@@ -112,7 +119,29 @@ JSON strings by `scripts/aggregate_results.py` for a flat parquet.
 | `calibration.per_agent` | ECE/MCE/Brier over individual agent answers (option-logprob confidence) |
 | `calibration.system.<conf_def>` | ECE/MCE/Brier per system-confidence definition |
 
-**Headline quantity:** `system ECE − mean per-agent ECE` per axis (computed downstream from
-the `calibration` columns). Efficiency is keyed to the matched
-`(model_size, benchmark, seed, reasoning_level)` single-agent baseline; aggregation fails
-loudly if a baseline is missing.
+### System-confidence definitions (each yields its own ECE)
+
+"Confidence of an aggregated answer" is genuinely ambiguous, so it is logged under several
+definitions and ECE is computed for each (`calibration.system.<def>`):
+
+- **Pooled views** — `vote_fraction`, `mean_agreeing_logprob`, `mean_agreeing_verbal`,
+  `mean_all_logprob`: aggregate the agent population.
+- **Final-producer views** — `final_producer_logprob`, `final_producer_verbal`,
+  `mean_producer_logprob`: the calibration of the **model output that actually produced the
+  system answer**, defined uniformly across topologies:
+  - `single_agent` → the sole agent;
+  - `independent` / `decentralized` → the winning-side agent(s) (decisive = the agreeing
+    agent most confident in the final answer; `mean_producer_*` averages the winning side);
+  - `centralized` → the orchestrator (also exposed as `orchestrator_*` for continuity).
+
+This answers "is the model that emits the final answer well-calibrated?" — distinct from
+the pooled vote confidence.
+
+**Headline quantities** (computed downstream from the `calibration` columns):
+- `system ECE − mean per-agent ECE` per axis — does coordination amplify/correct
+  miscalibration overall;
+- `final_producer ECE − per-agent ECE` — does the *decision-making* model become better/
+  worse calibrated than a lone agent as you scale each axis.
+
+Efficiency is keyed to the matched `(model_size, benchmark, seed, reasoning_level)`
+single-agent baseline; aggregation fails loudly if a baseline is missing.

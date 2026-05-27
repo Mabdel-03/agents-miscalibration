@@ -34,7 +34,10 @@ QWEN3_LADDER: dict[str, ModelSpec] = {
     "4B":   ModelSpec("4B",   "Qwen/Qwen3-4B",   4.0, 1, 32768),
     "8B":   ModelSpec("8B",   "Qwen/Qwen3-8B",   8.2, 1, 32768),
     "14B":  ModelSpec("14B",  "Qwen/Qwen3-14B", 14.8, 1, 32768),
-    "32B":  ModelSpec("32B",  "Qwen/Qwen3-32B", 32.8, 1, 32768),
+    # 32B weights (~61 GiB bf16) leave too little KV-cache room on one A100-80GB for the
+    # full 32K context (vLLM OOMs needing 8.0 GiB KV vs 7.8 free). 16K is ample for our
+    # short QA prompts + the largest 8192 thinking budget; keeps it on a single card.
+    "32B":  ModelSpec("32B",  "Qwen/Qwen3-32B", 32.8, 1, 16384),
 }
 
 # Optional cheap-inference MoE comparison point (not needed to fill a dense gap).

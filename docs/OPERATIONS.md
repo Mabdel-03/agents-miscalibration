@@ -144,3 +144,4 @@ config (fewer seeds / prompt levels / benchmarks).
 | MATH `FileNotFoundError … hendrycks/competition_math` | HF disabled dataset scripts | use `HuggingFaceH4/MATH-500` (parquet) |
 | thinking on but `reasoning_content` empty | vLLM 0.21 qwen3 parser names it `reasoning` | client checks `reasoning`/`reasoning_content`/`model_dump()` |
 | cell array `sbatch` returns non-zero | 11,520-task array exceeds `MaxSubmitJobs=500` | `launch_chunked.py` (chained ≤480-task chunks) |
+| 32B server fails at engine init: "KV cache … larger than available" | 32B weights leave <8 GiB KV on one A100-80GB at 32K ctx | 32B `max_model_len=16384` in `models.py` (or raise `--gpu-memory-utilization` / use tp=2) |

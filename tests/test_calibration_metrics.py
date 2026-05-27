@@ -1,6 +1,41 @@
-"""ECE/MCE/Brier on synthetic data with known calibration properties."""
+"""ECE/MCE/Brier on synthetic data with known calibration properties; plus the
+final-producer system-confidence signal."""
 
+from agents_scaling.agents.base_agent import AgentOutput
+from agents_scaling.agents.aggregate import system_confidences
 from agents_scaling.calibration.metrics import compute_calibration
+
+
+def _out(aid, ans, lp_conf, verbal):
+    """An AgentOutput with a given confidence in answer `ans`."""
+    return AgentOutput(
+        agent_id=aid, round=0, answer_choice=ans, raw_text="", cot_text="",
+        intermediate_results="",
+        option_logprobs={ans: lp_conf, "X": 1 - lp_conf},
+        verbalized_conf=verbal,
+    )
+
+
+def test_final_producer_is_decisive_agreeing_agent():
+    # 3 agents pick B with differing confidence; final answer B.
+    outs = [_out("a0", "B", 0.5, 0.5), _out("a1", "B", 0.8, 0.7), _out("a2", "C", 0.9, 0.9)]
+    sc = system_confidences(outs, "B")
+    # decisive producer = most confident agent that chose B (a1, 0.8); not a2 (chose C).
+    assert sc["final_producer_logprob"] == 0.8
+    assert sc["final_producer_verbal"] == 0.7
+    # mean over the winning side (a0,a1) = 0.65
+    assert abs(sc["mean_producer_logprob"] - 0.65) < 1e-9
+
+
+def test_final_producer_override_for_orchestrator():
+    subs = [_out("s0", "B", 0.9, 0.9), _out("s1", "B", 0.8, 0.8)]
+    orch = _out("orch", "B", 0.4, 0.45)
+    sc = system_confidences(subs, "B", producers=[orch])
+    # producer is the orchestrator, not the confident sub-agents.
+    assert sc["final_producer_logprob"] == 0.4
+    assert sc["final_producer_verbal"] == 0.45
+    # but the pooled vote view still reflects the sub-agents.
+    assert sc["vote_fraction"] == 1.0
 
 
 def test_perfect_calibration_zero_ece():

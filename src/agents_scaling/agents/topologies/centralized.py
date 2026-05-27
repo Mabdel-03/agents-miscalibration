@@ -68,9 +68,15 @@ class Centralized(Topology):
             n_rounds=self.rounds,
             n_agents=len(self.agents),
         )
-        # System confidence: orchestrator-centric, plus the sub-agent vote view.
-        conf = system_confidences(last_sub_outputs, final)
+        # System confidence: vote view from the sub-agents; the FINAL PRODUCER is the
+        # orchestrator (the model that actually emits the system answer).
+        conf = system_confidences(
+            last_sub_outputs, final,
+            producers=[last_synthesis] if last_synthesis else None,
+        )
         if last_synthesis and final is not None:
+            # Keep explicit orchestrator_* keys for continuity; they coincide with
+            # final_producer_* here (the orchestrator is the sole producer).
             conf["orchestrator_logprob"] = last_synthesis.option_logprobs.get(final, 0.0)
             if last_synthesis.verbalized_conf is not None:
                 conf["orchestrator_verbal"] = last_synthesis.verbalized_conf

@@ -74,7 +74,18 @@ full_sweep_v1` any time for partial results.
 
 - **Performance vs each axis** — accuracy curves, faceted by topology.
 - **Efficiency vs each axis** — `Ec/Ae/O%/c/R` vs the matched single-agent baseline.
-- **Headline (calibration)** — `system ECE − mean per-agent ECE` vs each axis: does
-  coordination amplify (>0) or correct (<0) miscalibration, and how does that change with
-  capacity, context-sharing, prompt complexity, and reasoning depth?
+- **Headline (calibration)** — two complementary ΔECE measures vs each axis:
+  - `system ECE − mean per-agent ECE` — does coordination amplify (>0) or correct (<0)
+    miscalibration overall;
+  - `final_producer ECE − per-agent ECE` — is the *model that emits the final answer*
+    (orchestrator / vote-winner / sole agent) better- or worse-calibrated than a lone
+    agent, as you scale capacity, context-sharing, prompt complexity, and reasoning depth.
 - Scaling-law fits and the Kim-style regression are in `analysis/fitting.py`.
+
+## Operational notes / incidents
+
+- **Qwen3-32B KV-cache OOM (fixed).** At `max_model_len=32768`, 32B weights (~61 GiB bf16)
+  leave too little KV-cache room on a single A100-80GB (vLLM needs 8.0 GiB KV vs ~7.8 free)
+  and the server fails at engine init. Fixed by setting 32B `max_model_len=16384` in
+  `models.py` (ample for short QA prompts + the 8192 thinking budget). Other sizes are
+  unaffected. Relaunched successfully.
