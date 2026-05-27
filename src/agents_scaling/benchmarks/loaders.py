@@ -82,13 +82,19 @@ def load_truthfulqa(n: int | None = None, seed: int = 0) -> list[Question]:
 
 
 def load_math(n: int | None = None, seed: int = 0) -> list[Question]:
-    """MATH (Hendrycks): free-form numeric, graded by boxed-answer match."""
+    """MATH-500: free-form numeric, graded by final-answer match.
+
+    Uses HuggingFaceH4/MATH-500 (parquet, no dataset script — the legacy
+    hendrycks/competition_math script repo is no longer loadable). It has a clean
+    ``answer`` column (the gold final answer); we fall back to the boxed value in
+    ``solution`` if ``answer`` is missing.
+    """
     from agents_scaling.benchmarks.grading import extract_boxed
 
-    ds = _load_hf("hendrycks/competition_math")["test"]
+    ds = _load_hf("HuggingFaceH4/MATH-500")["test"]
     out: list[Question] = []
     for i, row in enumerate(ds):
-        gold = extract_boxed(row["solution"]) or row["solution"]
+        gold = row.get("answer") or extract_boxed(row.get("solution", "")) or ""
         out.append(
             Question(
                 qid=f"math-{i}",
