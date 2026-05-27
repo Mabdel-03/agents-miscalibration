@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agents_scaling"
+version = "0.1.0"
+description = "Scaling multi-agent systems: performance, efficiency, and miscalibration with open-weight models"
+readme = "README.md"
+requires-python = ">=3.10"
+# Runtime deps for the HARNESS/ANALYSIS env only (not the vLLM serve env).
+# The vLLM serving env is installed separately (see env/SETUP.md) so it can
+# pull its own torch/CUDA without clashing with this lighter env.
+dependencies = [
+    "openai>=1.30",
+    "datasets>=2.18",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "pyyaml>=6.0",
+    "backoff>=2.2",
+    "pyarrow>=14.0",
+]
+
+[project.optional-dependencies]
+embeddings = ["sentence-transformers>=2.6"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

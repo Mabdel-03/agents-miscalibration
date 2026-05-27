@@ -1,0 +1,17 @@
+# Full sweep (run after the pilot validates the pipeline).
+# 7 sizes x 4 topologies x 3 context-share x 4 prompt levels x 4 benchmarks x seeds.
+# Validity collapsing + SAS-baseline enforcement happens in sweep.generate_cells.
+axes:
+  model_size: ["0.5B", "1.5B", "3B", "7B", "14B", "32B", "72B"]
+  topology: ["single_agent", "independent", "decentralized", "centralized"]
+  context_share_level: ["artifact_only", "plus_intermediate", "plus_cot"]
+  prompt_complexity_level: [0, 1, 2, 3]
+  benchmark: ["gpqa", "mmlu_pro", "math", "truthfulqa"]
+  seed: [0, 1, 2]
+
+fixed:
+  n_agents: 3
+  rounds: 2
+  n_samples: 5
+  temperature: 0.7
+  n_questions: 200

@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=asys-serve-{MODEL_SIZE}
+#SBATCH --partition={PARTITION}
+#SBATCH --gres=gpu:{GPU_TYPE}:{TP_SIZE}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/serve_{MODEL_SIZE}_%j.out
+
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate serve_env
+
+PORT={PORT}
+echo "[serve] model={HF_ID} tp={TP_SIZE} port=$PORT node=$(hostname) job=$SLURM_JOB_ID"
+
+# Start vLLM in the background, then register + healthcheck, then wait on it.
+vllm serve "{HF_ID}" \
+  --served-model-name "{MODEL_SIZE}" \
+  --tensor-parallel-size {TP_SIZE} \
+  --gpu-memory-utilization 0.90 \
+  --max-model-len {MAX_MODEL_LEN} \
+  --max-logprobs 20 \
+  --port "$PORT" \
+  --disable-log-requests &
+VLLM_PID=$!
+
+# Wait for readiness, then publish the endpoint to the registry so cell jobs can find it.
+python -m agents_scaling.serving.launch_server --register \
+  --run-root "{RUN_ROOT}" \
+  --model-size "{MODEL_SIZE}" \
+  --hf-id "{HF_ID}" \
+  --port "$PORT"
+
+echo "[serve] registered and healthy; serving until job time limit or cancellation"
+wait "$VLLM_PID"

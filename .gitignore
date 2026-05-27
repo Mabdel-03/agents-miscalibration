@@ -1,0 +1,24 @@
+# Experiment outputs (mirrored to scratch; never commit weights or large logs)
+results/
+*.jsonl
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Env / local
+.env
+*.local.json
+.DS_Store
+
+# SLURM logs
+slurm-*.out
+*.slurm.log
+logs/

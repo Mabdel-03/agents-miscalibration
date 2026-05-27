@@ -1,0 +1,5 @@
+# vLLM serving env. Let vLLM resolve its own torch/CUDA wheels — do NOT pin torch here.
+# Install with: pip install -r env/serve_env.txt
+vllm>=0.6.3
+# vLLM pulls transformers/tokenizers/accelerate transitively at compatible versions.
+huggingface-hub>=0.24

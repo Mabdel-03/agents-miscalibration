@@ -1,0 +1,17 @@
+# Pilot sweep: validate the full pipeline end-to-end before the big grid.
+# 2 sizes x {single_agent, decentralized} x {artifact_only, plus_cot} x {L1} x truthfulqa.
+# Single-agent collapses context-share -> after dedup this is ~6 effective cells.
+axes:
+  model_size: ["1.5B", "7B"]
+  topology: ["single_agent", "decentralized"]
+  context_share_level: ["artifact_only", "plus_cot"]  # the two extremes of Axis 2
+  prompt_complexity_level: [1]
+  benchmark: ["truthfulqa"]   # MC1: exact option mass -> validates calibration path
+  seed: [0]
+
+fixed:
+  n_agents: 3
+  rounds: 2
+  n_samples: 5
+  temperature: 0.7
+  n_questions: 100
