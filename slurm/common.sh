@@ -10,6 +10,11 @@ module load cuda/12.9.1 2>/dev/null || true
 export ASYS_SERVE_ENV="${ASYS_SERVE_ENV:-/home/mabdel03/conda_envs/serve_env}"
 export ASYS_HARNESS_ENV="${ASYS_HARNESS_ENV:-/home/mabdel03/conda_envs/asys_env}"
 
+# The system libstdc++ (GLIBCXX up to 3.4.25) is too old for flashinfer's compiled
+# kernels (need GLIBCXX_3.4.26+). Prepend the serve_env's newer libstdc++ so vLLM/
+# flashinfer load it instead of /lib64/libstdc++.so.6.
+export LD_LIBRARY_PATH="$ASYS_SERVE_ENV/lib:${LD_LIBRARY_PATH:-}"
+
 # Weights + results on scratch (project dir has little free space).
 export HF_HOME="${HF_HOME:-/orcd/scratch/orcd/012/mabdel03/.cache/huggingface}"
 export ASYS_RESULTS_ROOT="${ASYS_RESULTS_ROOT:-/orcd/scratch/orcd/012/mabdel03/agents_scaling_results}"
