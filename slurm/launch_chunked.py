@@ -70,6 +70,10 @@ def main() -> None:
                     help="max submitted jobs to keep under (QOS QOSMaxSubmitJobPerUserLimit)")
     ap.add_argument("--no-drive", action="store_true",
                     help="don't drive; just render chunk sbatches (use --dry-run to inspect)")
+    ap.add_argument("--reshuffle", action="store_true",
+                    help="regenerate cells.json with a fresh interleave (ONLY when no array is "
+                         "mid-flight against the old ordering — resume is by cell_id so completed "
+                         "work is safe, but in-flight array indices would point at different cells)")
     ap.add_argument("--poll-s", type=float, default=120.0, help="drive poll interval (s)")
     args = ap.parse_args()
 
@@ -79,8 +83,26 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Persist the canonical cell list the arrays index into (single source of truth).
+    # IMPORTANT: cells are generated sorted by cell_id, which CLUSTERS them by model size
+    # (e.g. the first chunk would be all 0.6B). With per-chunk concurrency that sends every
+    # running cell to one size's server(s) while the rest sit idle. So we INTERLEAVE the
+    # cell list deterministically (seeded shuffle) so each chunk spans all sizes and load
+    # spreads across the whole fleet. Deterministic => array-index -> cell is stable across
+    # re-runs; and the runner resumes by cell_id, so reordering never loses completed work.
     cells_file = run_root / "cells.json"
-    cells_file.write_text(json.dumps([c.to_dict() for c in cells], indent=2))
+    if cells_file.exists() and not args.reshuffle:
+        # Reuse the existing ordering so a running array's index->cell mapping is preserved.
+        print(f"[chunked] reusing existing {cells_file} (pass --reshuffle to regenerate)")
+    else:
+        import random
+
+        order = list(range(len(cells)))
+        random.Random(1234).shuffle(order)  # fixed seed -> reproducible interleaving
+        cells = [cells[i] for i in order]
+        cells_file.write_text(json.dumps([c.to_dict() for c in cells], indent=2))
+        print(f"[chunked] wrote interleaved {cells_file}")
+    # Re-load from the file so the in-memory list matches exactly what array tasks index.
+    cells = [ExperimentCell.from_dict(c) for c in json.loads(cells_file.read_text())]
     n = len(cells)
     print(f"[chunked] run_id={args.run_id}  cells={n}  chunk_size={args.chunk_size}  -> {cells_file}")
 
