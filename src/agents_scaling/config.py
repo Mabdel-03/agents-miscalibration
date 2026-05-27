@@ -31,6 +31,36 @@ class ContextShareLevel(str, Enum):
         return {"artifact_only": 0, "plus_intermediate": 1, "plus_cot": 2}[self.value]
 
 
+class ReasoningLevel(str, Enum):
+    """Axis 4: per-agent reasoning effort, from none to maximum.
+
+    Ordered smallest -> largest. Implemented for Qwen3 unified models via the
+    ``enable_thinking`` chat-template kwarg plus a ``thinking_token_budget`` cap:
+      OFF       -> enable_thinking=False (plain instruct, no <think> block)
+      B512/2048/8192 -> enable_thinking=True with that thinking-token budget
+      UNLIMITED -> enable_thinking=True, no budget (bounded only by max_tokens)
+    """
+
+    OFF = "off"
+    B512 = "b512"
+    B2048 = "b2048"
+    B8192 = "b8192"
+    UNLIMITED = "unlimited"
+
+    @property
+    def rank(self) -> int:
+        return {"off": 0, "b512": 1, "b2048": 2, "b8192": 3, "unlimited": 4}[self.value]
+
+    @property
+    def enable_thinking(self) -> bool:
+        return self is not ReasoningLevel.OFF
+
+    @property
+    def thinking_budget(self) -> int | None:
+        """Thinking-token cap, or None for OFF (no thinking) and UNLIMITED (no cap)."""
+        return {"b512": 512, "b2048": 2048, "b8192": 8192}.get(self.value)
+
+
 class Topology(str, Enum):
     SINGLE_AGENT = "single_agent"    # baseline: defines P_SA, T_SAS, E_SAS
     INDEPENDENT = "independent"      # n agents, no peer context, majority vote
@@ -55,10 +85,11 @@ class Topology(str, Enum):
 class ExperimentCell:
     """One cell of the sweep. Frozen so it is hashable and cannot drift mid-run."""
 
-    # --- the three scaling axes ---
-    model_size: str                      # key into the model registry, e.g. "7B"
+    # --- the four scaling axes ---
+    model_size: str                      # key into the model registry, e.g. "8B"
     context_share_level: ContextShareLevel
     prompt_complexity_level: int         # 0..3, index into the prompt ladder
+    reasoning_level: ReasoningLevel      # none -> max thinking effort
 
     # --- experimental setup ---
     topology: Topology
@@ -78,13 +109,19 @@ class ExperimentCell:
             object.__setattr__(
                 self, "context_share_level", ContextShareLevel(self.context_share_level)
             )
+        if not isinstance(self.reasoning_level, ReasoningLevel):
+            object.__setattr__(self, "reasoning_level", ReasoningLevel(self.reasoning_level))
         if not isinstance(self.topology, Topology):
             object.__setattr__(self, "topology", Topology(self.topology))
 
     @property
     def cell_id(self) -> str:
         """Stable short id; same config -> same id (good for resume / dedup)."""
-        return f"{self.model_size}_{self.topology.value}_{self.context_share_level.value}_p{self.prompt_complexity_level}_{self.benchmark}_s{self.seed}"
+        return (
+            f"{self.model_size}_{self.topology.value}_{self.context_share_level.value}"
+            f"_p{self.prompt_complexity_level}_r{self.reasoning_level.value}"
+            f"_{self.benchmark}_s{self.seed}"
+        )
 
     def config_hash(self) -> str:
         payload = json.dumps(self.to_dict(), sort_keys=True).encode()
@@ -93,6 +130,7 @@ class ExperimentCell:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["context_share_level"] = self.context_share_level.value
+        d["reasoning_level"] = self.reasoning_level.value
         d["topology"] = self.topology.value
         return d
 

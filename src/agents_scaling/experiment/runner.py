@@ -34,7 +34,15 @@ def _build_agents(cell: ExperimentCell, base_url: str, served_model: str) -> lis
     agents = []
     for i in range(n):
         client = LogprobClient(base_url=base_url, model=served_model)
-        agents.append(Agent(f"agent{i}", client, system_prompt, temperature=cell.temperature))
+        agents.append(
+            Agent(
+                f"agent{i}",
+                client,
+                system_prompt,
+                temperature=cell.temperature,
+                reasoning_level=cell.reasoning_level,  # Axis 4
+            )
+        )
     return agents
 
 
@@ -68,6 +76,7 @@ def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = 
 
     questions = load_benchmark(cell.benchmark, n=cell.n_questions, seed=cell.seed)
     agents = _build_agents(cell, base_url, served_model)
+    reasoning_token_totals: list[int] = []  # per-question reasoning tokens -> meta mean
 
     for q in questions:
         t0 = time.time()
@@ -95,6 +104,7 @@ def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = 
             }
 
         correct = grade(q, tr.final_answer or "") if tr.final_answer is not None else False
+        total_reasoning_tokens = sum(o.reasoning_tokens for o in tr.per_agent)
         rec = QuestionResult(
             cell_id=cell.cell_id,
             qid=q.qid,
@@ -103,6 +113,7 @@ def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = 
             topology=cell.topology.value,
             context_share_level=cell.context_share_level.value,
             prompt_complexity_level=cell.prompt_complexity_level,
+            reasoning_level=cell.reasoning_level.value,
             final_answer=tr.final_answer,
             answer_key=q.answer_key,
             correct=correct,
@@ -116,13 +127,18 @@ def run_cell(cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = 
                 "n_agents": tr.n_agents,
                 "total_prompt_tokens": tr.total_prompt_tokens,
                 "total_completion_tokens": tr.total_completion_tokens,
+                "total_reasoning_tokens": total_reasoning_tokens,
                 "wall_ms": wall_ms,
             },
             timestamp=time.time(),
         )
         io.append_jsonl(results_path, rec.to_dict())
+        reasoning_token_totals.append(total_reasoning_tokens)
 
     meta.n_questions = len(questions)
+    meta.mean_reasoning_tokens = (
+        sum(reasoning_token_totals) / len(reasoning_token_totals) if reasoning_token_totals else 0.0
+    )
     meta.finished_at = time.time()
     io.write_json(meta_path, meta.to_dict())
     return str(results_path)

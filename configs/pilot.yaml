@@ -1,11 +1,13 @@
-# Pilot sweep: validate the full pipeline end-to-end before the big grid.
-# 2 sizes x {single_agent, decentralized} x {artifact_only, plus_cot} x {L1} x truthfulqa.
-# Single-agent collapses context-share -> after dedup this is ~6 effective cells.
+# Pilot sweep: validate the calibration/topology pipeline (3-axis, reasoning OFF).
+# 2 Qwen3 sizes x {single_agent, decentralized} x {artifact_only, plus_cot} x {L1}
+#   x truthfulqa, reasoning off. Single-agent collapses context-share -> ~6 cells.
+# (For the reasoning axis specifically, use configs/pilot_reasoning.yaml.)
 axes:
-  model_size: ["1.5B", "7B"]
+  model_size: ["1.7B", "8B"]
   topology: ["single_agent", "decentralized"]
   context_share_level: ["artifact_only", "plus_cot"]  # the two extremes of Axis 2
   prompt_complexity_level: [1]
+  reasoning_level: ["off"]
   benchmark: ["truthfulqa"]   # MC1: exact option mass -> validates calibration path
   seed: [0]
 

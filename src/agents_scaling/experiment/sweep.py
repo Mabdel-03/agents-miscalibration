@@ -6,8 +6,12 @@ Validity collapsing:
   * INDEPENDENT agents never see peers -> context-share is a no-op -> collapse to a single
     canonical context level.
 Baseline coupling (plan Risk 6):
-  * Every (model_size, benchmark) present in the sweep MUST get a SINGLE_AGENT cell (at a
-    canonical prompt level) so efficiency ratios have their T_SAS / E_SAS baseline.
+  * Every (model_size, benchmark, seed, reasoning_level) present in the sweep MUST get a
+    SINGLE_AGENT cell (at a canonical prompt level) so efficiency ratios have their
+    T_SAS / E_SAS baseline. Efficiency is reasoning-conditioned, so the baseline is too.
+
+Reasoning axis (Axis 4) is per-agent and is NOT collapsed by topology (every topology can
+think); only context-share collapses for SAS/Independent.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from agents_scaling.config import ContextShareLevel, ExperimentCell, Topology
+from agents_scaling.config import ContextShareLevel, ExperimentCell, ReasoningLevel, Topology
 
 _CANONICAL_CONTEXT = ContextShareLevel.ARTIFACT_ONLY
 _CANONICAL_PROMPT = 1  # the "standard" prompt level used for baseline SAS cells
@@ -35,6 +39,7 @@ def _canonicalize(cell: ExperimentCell) -> ExperimentCell:
         model_size=cell.model_size,
         context_share_level=ctx,
         prompt_complexity_level=cell.prompt_complexity_level,
+        reasoning_level=cell.reasoning_level,
         topology=cell.topology,
         benchmark=cell.benchmark,
         n_agents=cell.n_agents,
@@ -51,22 +56,28 @@ def generate_cells(spec: dict) -> list[ExperimentCell]:
     axes = spec["axes"]
     fixed = spec.get("fixed", {})
 
+    # reasoning_level defaults to ["off"] if the axis is absent (back-compat with 3-axis configs).
+    reasoning_levels = axes.get("reasoning_level", ["off"])
+    seeds = axes.get("seed", [fixed.get("seed", 0)])
+
     raw_cells: list[ExperimentCell] = []
     combos = itertools.product(
         axes["model_size"],
         axes["topology"],
         axes["context_share_level"],
         axes["prompt_complexity_level"],
+        reasoning_levels,
         axes["benchmark"],
-        axes.get("seed", [fixed.get("seed", 0)]),
+        seeds,
     )
-    for model_size, topo, ctx, prompt_lvl, bench, seed in combos:
+    for model_size, topo, ctx, prompt_lvl, reasoning, bench, seed in combos:
         raw_cells.append(
             ExperimentCell(
                 model_size=model_size,
                 topology=Topology(topo),
                 context_share_level=ContextShareLevel(ctx),
                 prompt_complexity_level=int(prompt_lvl),
+                reasoning_level=ReasoningLevel(reasoning),
                 benchmark=bench,
                 n_agents=fixed.get("n_agents", 3),
                 rounds=fixed.get("rounds", 2),
@@ -77,15 +88,18 @@ def generate_cells(spec: dict) -> list[ExperimentCell]:
             )
         )
 
-    # Enforce a SAS baseline per (model_size, benchmark, seed).
-    seeds = axes.get("seed", [fixed.get("seed", 0)])
-    for model_size, bench, seed in itertools.product(axes["model_size"], axes["benchmark"], seeds):
+    # Enforce a SAS baseline per (model_size, benchmark, seed, reasoning_level) — efficiency
+    # ratios are reasoning-conditioned, so each reasoning level needs its own baseline.
+    for model_size, bench, seed, reasoning in itertools.product(
+        axes["model_size"], axes["benchmark"], seeds, reasoning_levels
+    ):
         raw_cells.append(
             ExperimentCell(
                 model_size=model_size,
                 topology=Topology.SINGLE_AGENT,
                 context_share_level=_CANONICAL_CONTEXT,
                 prompt_complexity_level=_CANONICAL_PROMPT,
+                reasoning_level=ReasoningLevel(reasoning),
                 benchmark=bench,
                 n_agents=1,
                 rounds=1,

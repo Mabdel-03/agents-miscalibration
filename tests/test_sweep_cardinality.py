@@ -6,7 +6,7 @@ from agents_scaling.experiment.sweep import generate_cells
 def _spec(**over):
     spec = {
         "axes": {
-            "model_size": ["1.5B", "7B"],
+            "model_size": ["1.7B", "8B"],
             "topology": ["single_agent", "decentralized"],
             "context_share_level": ["artifact_only", "plus_cot"],
             "prompt_complexity_level": [1],
@@ -25,7 +25,7 @@ def test_single_agent_collapses_context_levels():
     sa = [c for c in cells if c.topology.value == "single_agent"]
     sizes = {(c.model_size, c.context_share_level.value) for c in sa}
     # each model_size has exactly one single-agent cell (canonical context).
-    assert len(sa) == 2  # 1.5B, 7B
+    assert len(sa) == 2  # 1.7B, 8B
     assert all(ctx == "artifact_only" for _, ctx in sizes)
 
 
@@ -44,7 +44,7 @@ def test_sas_baseline_present_for_every_model_benchmark():
         sas_pairs | {(c.model_size, c.benchmark) for c in cells}
     )
     # explicitly: each (size, benchmark) has a SAS cell
-    for size in ["1.5B", "7B"]:
+    for size in ["1.7B", "8B"]:
         assert (size, "truthfulqa") in sas_pairs
 
 
@@ -60,3 +60,41 @@ def test_independent_collapses_context():
     # independent never shares context -> one cell per (size), canonical context.
     assert all(c.context_share_level.value == "artifact_only" for c in ind)
     assert len(ind) == 2
+
+
+# --- Axis 4: reasoning ---
+
+def test_reasoning_axis_not_collapsed():
+    """Reasoning is per-agent; every rung survives for all topologies (unlike context)."""
+    cells = generate_cells(_spec(reasoning_level=["off", "b2048", "unlimited"]))
+    # decentralized cells exist at each reasoning level (x 2 context levels).
+    dec = [c for c in cells if c.topology.value == "decentralized"]
+    rlevels = {c.reasoning_level.value for c in dec}
+    assert rlevels == {"off", "b2048", "unlimited"}
+    # single-agent (context collapsed) still keeps all 3 reasoning levels.
+    sa = [c for c in cells if c.topology.value == "single_agent"]
+    assert {c.reasoning_level.value for c in sa} == {"off", "b2048", "unlimited"}
+
+
+def test_sas_baseline_per_reasoning_level():
+    """Every (size, benchmark, seed, reasoning_level) must have its SAS baseline."""
+    cells = generate_cells(_spec(reasoning_level=["off", "b2048", "unlimited"]))
+    needed = {(c.model_size, c.benchmark, c.seed, c.reasoning_level.value) for c in cells}
+    sas = {
+        (c.model_size, c.benchmark, c.seed, c.reasoning_level.value)
+        for c in cells
+        if c.topology.value == "single_agent"
+    }
+    assert needed == sas  # every reasoning-conditioned cell has a matching SAS baseline
+
+
+def test_reasoning_axis_absent_defaults_off():
+    """3-axis configs (no reasoning_level key) still work, defaulting to off."""
+    cells = generate_cells(_spec())  # _spec has no reasoning_level
+    assert all(c.reasoning_level.value == "off" for c in cells)
+
+
+def test_no_duplicate_cell_ids_with_reasoning():
+    cells = generate_cells(_spec(reasoning_level=["off", "b512", "b2048", "b8192", "unlimited"]))
+    ids = [c.cell_id for c in cells]
+    assert len(ids) == len(set(ids))

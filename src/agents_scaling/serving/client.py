@@ -31,6 +31,10 @@ class ChatResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     finish_reason: str | None = None
+    # Axis 4: reasoning ("thinking") content emitted before the answer, split out by the
+    # vLLM reasoning parser. Empty when thinking is off / model has no thinking mode.
+    reasoning_text: str = ""
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -76,15 +80,38 @@ class LogprobClient:
         self,
         system: str,
         user: str,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int = 1024,
         seed: int | None = None,
         capture_logprobs: bool = True,
+        enable_thinking: bool = False,
+        thinking_budget: int | None = None,
     ) -> ChatResult:
+        """One chat turn.
+
+        Axis 4 (reasoning): ``enable_thinking`` toggles Qwen3's thinking mode via
+        ``chat_template_kwargs``; ``thinking_budget`` caps thinking-phase tokens
+        (per-request ``thinking_token_budget``; None = no cap). When thinking is on we
+        adopt Qwen3's recommended sampling (T=0.6/top_p=0.95/top_k=20) unless an explicit
+        temperature is given; thinking generation must NOT be greedy. ``reasoning_content``
+        is captured separately from the answer ``content``.
+        """
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": user})
+
+        # Qwen3-recommended sampling differs for thinking vs non-thinking.
+        if temperature is None:
+            temperature = 0.6 if enable_thinking else 0.7
+        extra_body: dict[str, Any] = {
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
+            "top_k": 20,
+            "top_p": 0.95 if enable_thinking else 0.8,
+        }
+        if enable_thinking and thinking_budget is not None:
+            extra_body["thinking_token_budget"] = thinking_budget
+
         resp = self._client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -93,6 +120,7 @@ class LogprobClient:
             seed=seed,
             logprobs=capture_logprobs,
             top_logprobs=self.top_logprobs if capture_logprobs else None,
+            extra_body=extra_body,
         )
         choice = resp.choices[0]
         top: list[list[dict[str, Any]]] = []
@@ -102,12 +130,17 @@ class LogprobClient:
                     [{"token": t.token, "logprob": t.logprob} for t in (tok.top_logprobs or [])]
                 )
         usage = resp.usage
+        # reasoning_content is a vLLM/Qwen3 extension; not typed on the OpenAI client.
+        reasoning_text = getattr(choice.message, "reasoning_content", None) or ""
+        reasoning_tokens = len(reasoning_text.split()) if reasoning_text else 0
         return ChatResult(
             text=choice.message.content or "",
             top_logprobs=top,
             prompt_tokens=getattr(usage, "prompt_tokens", 0),
             completion_tokens=getattr(usage, "completion_tokens", 0),
             finish_reason=choice.finish_reason,
+            reasoning_text=reasoning_text,
+            reasoning_tokens=reasoning_tokens,
         )
 
     # --------------------------------------------------------- option scoring

@@ -1,11 +1,15 @@
-# Full sweep (run after the pilot validates the pipeline).
-# 7 sizes x 4 topologies x 3 context-share x 4 prompt levels x 4 benchmarks x seeds.
-# Validity collapsing + SAS-baseline enforcement happens in sweep.generate_cells.
+# Full 4-axis sweep (run after the reasoning pilot validates the pipeline).
+# Axes: capacity (Qwen3 sizes) x topology x context-share x prompt x REASONING x benchmark.
+# Validity collapsing + per-(size,benchmark,seed,reasoning) SAS-baseline enforcement
+# happens in sweep.generate_cells. NOTE: the 5-rung reasoning axis multiplies the grid ~5x
+# and the two-call ECE roughly doubles per-question calls on the thinking rungs -- trim
+# (seeds/prompt levels/benchmarks) before launching; see the plan's sweep-size note.
 axes:
-  model_size: ["0.5B", "1.5B", "3B", "7B", "14B", "32B", "72B"]
+  model_size: ["0.6B", "1.7B", "4B", "8B", "14B", "32B"]
   topology: ["single_agent", "independent", "decentralized", "centralized"]
   context_share_level: ["artifact_only", "plus_intermediate", "plus_cot"]
   prompt_complexity_level: [0, 1, 2, 3]
+  reasoning_level: ["off", "b512", "b2048", "b8192", "unlimited"]
   benchmark: ["gpqa", "mmlu_pro", "math", "truthfulqa"]
   seed: [0, 1, 2]
 

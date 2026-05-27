@@ -1,0 +1,21 @@
+# Reasoning-axis pilot: validate the 4th axis end-to-end before the big grid.
+# 2 Qwen3 sizes x {single_agent, decentralized} x {artifact_only} x {L1}
+#   x reasoning {off, b2048, unlimited} x GPQA (reasoning-sensitive).
+# Validates: --reasoning-parser qwen3 serving; per-request enable_thinking + thinking
+# budget; reasoning_content/reasoning_tokens capture; the two-call ECE protocol;
+# monotonic reasoning tokens off->2048->unlimited; accuracy/ECE move with reasoning.
+axes:
+  model_size: ["1.7B", "8B"]
+  topology: ["single_agent", "decentralized"]
+  context_share_level: ["artifact_only"]
+  prompt_complexity_level: [1]
+  reasoning_level: ["off", "b2048", "unlimited"]
+  benchmark: ["gpqa"]
+  seed: [0]
+
+fixed:
+  n_agents: 3
+  rounds: 2
+  n_samples: 3
+  temperature: 0.7
+  n_questions: 50

@@ -20,6 +20,7 @@ class QuestionResult:
     topology: str
     context_share_level: str
     prompt_complexity_level: int
+    reasoning_level: str
 
     final_answer: str | None
     answer_key: str
@@ -46,6 +47,7 @@ class CellMeta:
     prompt_quality: dict[str, Any]    # heuristic + llm_judge + features
     git_commit: str | None = None
     n_questions: int = 0
+    mean_reasoning_tokens: float = 0.0  # Axis 4 measured attribute (mean thinking tokens/q)
     started_at: float = 0.0
     finished_at: float = 0.0
 

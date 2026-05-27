@@ -77,6 +77,9 @@ def aggregate_run(run_id: str) -> list[dict[str, Any]]:
             sum(r["efficiency_raw"]["total_prompt_tokens"] + r["efficiency_raw"]["total_completion_tokens"] for r in rows) / n
             if n else 0.0
         )
+        mean_reasoning_tokens = (
+            sum(r["efficiency_raw"].get("total_reasoning_tokens", 0) for r in rows) / n if n else 0.0
+        )
         # calibration: per-agent + system-level under each confidence definition.
         cal: dict[str, Any] = {"per_agent": _per_agent_calibration(rows)}
         conf_keys = set()
@@ -91,8 +94,10 @@ def aggregate_run(run_id: str) -> list[dict[str, Any]]:
             "topology": cfg["topology"],
             "context_share_level": cfg["context_share_level"],
             "prompt_complexity_level": cfg["prompt_complexity_level"],
+            "reasoning_level": cfg.get("reasoning_level", "off"),
             "prompt_token_count": meta["prompt_token_count"],
             "prompt_quality": meta["prompt_quality"],
+            "mean_reasoning_tokens": mean_reasoning_tokens,
             "benchmark": cfg["benchmark"],
             "seed": cfg["seed"],
             "n_questions": n,
@@ -104,15 +109,19 @@ def aggregate_run(run_id: str) -> list[dict[str, Any]]:
             "calibration": cal,
         }
 
-    # Baseline lookup: SAS accuracy/turns per (model_size, benchmark, seed).
+    # Baseline lookup: SAS per (model_size, benchmark, seed, reasoning_level). Efficiency
+    # is reasoning-conditioned, so each reasoning level has its own single-agent baseline.
+    def _base_key(rec: dict) -> tuple:
+        return (rec["model_size"], rec["benchmark"], rec["seed"], rec["reasoning_level"])
+
     sas: dict[tuple, dict] = {}
     for rec in cell_records.values():
         if rec["topology"] == "single_agent":
-            sas[(rec["model_size"], rec["benchmark"], rec["seed"])] = rec
+            sas[_base_key(rec)] = rec
 
     # Second pass: efficiency vs the matched baseline.
     for rec in cell_records.values():
-        base = sas.get((rec["model_size"], rec["benchmark"], rec["seed"]))
+        base = sas.get(_base_key(rec))
         if base is None:
             rec["efficiency"] = None  # missing baseline -> flagged by aggregate script
             continue

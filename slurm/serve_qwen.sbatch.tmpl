@@ -21,6 +21,7 @@ vllm serve "{HF_ID}" \
   --gpu-memory-utilization 0.90 \
   --max-model-len {MAX_MODEL_LEN} \
   --max-logprobs 20 \
+  --reasoning-parser qwen3 \
   --port "$PORT" &
 VLLM_PID=$!
 # Note: vLLM>=0.21 logs requests OFF by default (use --enable-log-requests to turn on);

@@ -1,9 +1,12 @@
 """Model registry for the capacity axis (Axis 1).
 
-One family (Qwen2.5-Instruct) so that parameter count is the *only* thing varying.
-Tensor-parallel sizes are chosen to fit bf16 weights + KV cache on A100-80GB GPUs
-(``pi_tpoggio`` has 8). The ``param_count`` field (in billions) is the regressor used
-in the scaling-law fit; ``hf_id`` is what vLLM loads.
+One family (Qwen3 unified / hybrid-thinking) so that parameter count is the *only* thing
+varying — and, crucially, so the SAME weights support the reasoning axis (Axis 4) via the
+``enable_thinking`` toggle. Qwen2.5 has no thinking mode, so it was superseded by Qwen3.
+
+Tensor-parallel sizes fit bf16 weights + KV cache on A100-80GB GPUs (``pi_tpoggio`` has
+8). bf16 ~= 2 bytes/param, so even 32B (~66 GB) fits on a single 80 GB card. The
+``param_count`` field (billions) is the capacity regressor; ``hf_id`` is what vLLM loads.
 """
 
 from __future__ import annotations
@@ -13,32 +16,33 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
-    size: str          # registry key, e.g. "7B"
-    hf_id: str         # HuggingFace repo id passed to `vllm serve`
-    param_count: float # billions of parameters (the capacity regressor)
-    tp_size: int       # tensor-parallel GPUs needed (1 GPU = 1 A100-80GB)
-    max_model_len: int # context cap; smaller for big models to keep KV cache in memory
+    size: str               # registry key, e.g. "8B"
+    hf_id: str              # HuggingFace repo id passed to `vllm serve`
+    param_count: float      # billions of parameters (the capacity regressor)
+    tp_size: int            # tensor-parallel GPUs needed (1 GPU = 1 A100-80GB)
+    max_model_len: int      # context cap; keep KV cache in memory
+    supports_reasoning: bool = True  # exposes enable_thinking toggle (all Qwen3 do)
 
 
-# Qwen2.5-Instruct ladder. tp sizing: bf16 ~= 2 bytes/param; a 72B model is ~145 GB of
-# weights, so 4x A100-80GB (320 GB) leaves room for KV cache. 32B (~64 GB) needs 2x.
-QWEN25_LADDER: dict[str, ModelSpec] = {
-    "0.5B": ModelSpec("0.5B", "Qwen/Qwen2.5-0.5B-Instruct", 0.5, 1, 32768),
-    "1.5B": ModelSpec("1.5B", "Qwen/Qwen2.5-1.5B-Instruct", 1.5, 1, 32768),
-    "3B":   ModelSpec("3B",   "Qwen/Qwen2.5-3B-Instruct",   3.0, 1, 32768),
-    "7B":   ModelSpec("7B",   "Qwen/Qwen2.5-7B-Instruct",   7.0, 1, 32768),
-    "14B":  ModelSpec("14B",  "Qwen/Qwen2.5-14B-Instruct", 14.0, 1, 32768),
-    "32B":  ModelSpec("32B",  "Qwen/Qwen2.5-32B-Instruct", 32.0, 2, 16384),
-    "72B":  ModelSpec("72B",  "Qwen/Qwen2.5-72B-Instruct", 72.0, 4, 16384),
+# Qwen3 unified dense ladder. All Apache-2.0, ungated, hybrid-thinking (enable_thinking
+# toggle + thinking_token_budget). 32K native context. bf16 fits on 1x A100-80GB through
+# 32B (use tp=2 only for long-context / high concurrency). Served with --reasoning-parser
+# qwen3 (needs vLLM >= 0.9.0).
+QWEN3_LADDER: dict[str, ModelSpec] = {
+    "0.6B": ModelSpec("0.6B", "Qwen/Qwen3-0.6B", 0.6, 1, 32768),
+    "1.7B": ModelSpec("1.7B", "Qwen/Qwen3-1.7B", 1.7, 1, 32768),
+    "4B":   ModelSpec("4B",   "Qwen/Qwen3-4B",   4.0, 1, 32768),
+    "8B":   ModelSpec("8B",   "Qwen/Qwen3-8B",   8.2, 1, 32768),
+    "14B":  ModelSpec("14B",  "Qwen/Qwen3-14B", 14.8, 1, 32768),
+    "32B":  ModelSpec("32B",  "Qwen/Qwen3-32B", 32.8, 1, 32768),
 }
 
-# Optional cross-family robustness check (replicate a couple of points on Llama-3.1).
-LLAMA31_CHECK: dict[str, ModelSpec] = {
-    "L8B":  ModelSpec("L8B",  "meta-llama/Llama-3.1-8B-Instruct",   8.0, 1, 32768),
-    "L70B": ModelSpec("L70B", "meta-llama/Llama-3.1-70B-Instruct", 70.0, 4, 16384),
+# Optional cheap-inference MoE comparison point (not needed to fill a dense gap).
+QWEN3_MOE: dict[str, ModelSpec] = {
+    "30B-A3B": ModelSpec("30B-A3B", "Qwen/Qwen3-30B-A3B", 30.5, 1, 32768),
 }
 
-REGISTRY: dict[str, ModelSpec] = {**QWEN25_LADDER, **LLAMA31_CHECK}
+REGISTRY: dict[str, ModelSpec] = {**QWEN3_LADDER, **QWEN3_MOE}
 
 
 def get_model(size: str) -> ModelSpec:
