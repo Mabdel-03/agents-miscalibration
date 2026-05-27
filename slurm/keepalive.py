@@ -75,19 +75,68 @@ def _serve_jobs_in_flight(model_size: str) -> int:
     return n
 
 
-def _robust_alive(host: str, port: int, attempts: int = 3, timeout: float = 15.0) -> bool:
+def _running_serve_nodes(model_size: str) -> list[str]:
+    """Nodes of currently-RUNNING serve jobs for this size."""
+    out = subprocess.run(
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-t", "R", "-o", "%j %N"],
+        capture_output=True, text=True,
+    ).stdout
+    name = f"asys-serve-{model_size}"
+    nodes = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == name:
+            nodes.append(parts[1])
+    return nodes
+
+
+def _reregister_running(run_root: str, model_size: str) -> int:
+    """Self-heal: re-register live endpoints whose registry file was lost.
+
+    A running serve job whose registry entry got pruned (e.g. a transient false-dead) would
+    otherwise be stranded forever — job count >= target so no relaunch, yet not discoverable.
+    For each running serve node, probe the replica ports and re-register any live endpoint
+    not already in the registry.
+    """
+    from agents_scaling.serving.launch_server import _port_for
+    from agents_scaling.models import get_model
+
+    known = {(e.host, e.port) for e in registry.list_servers(run_root, model_size)}
+    restored = 0
+    for node in _running_serve_nodes(model_size):
+        for r in range(8):
+            port = _port_for(model_size, r)
+            if (node, port) in known:
+                continue
+            if _robust_alive(node, port, attempts=3, timeout=10.0):
+                registry.register_server  # ensure imported
+                from agents_scaling.serving.registry import ServerEntry, _size_dir
+                import json as _json, dataclasses as _dc
+                e = ServerEntry(model_size=model_size, hf_id=get_model(model_size).hf_id,
+                                host=node, port=port)
+                (_size_dir(run_root, model_size) / f"{node}_{port}.json").write_text(
+                    _json.dumps(_dc.asdict(e)))
+                known.add((node, port))
+                restored += 1
+                print(f"[keepalive] re-registered live {model_size} @ {node}:{port}")
+    return restored
+
+
+def _robust_alive(host: str, port: int, attempts: int = 5, timeout: float = 10.0) -> bool:
     """True if /health responds 200 on ANY of several attempts.
 
-    A SATURATED but healthy vLLM server can be slow to answer /health; a single short
-    probe gives false negatives, and treating those as dead -> pruning a live endpoint
-    (the recurring bug). Require multiple consecutive failures, with a generous timeout,
-    before concluding an endpoint is actually dead.
+    Two failure modes make a single probe unreliable: (1) a SATURATED but healthy vLLM is
+    slow to answer /health; (2) the login node <-> server-node path is intermittently flaky
+    (observed: 5 consecutive 15s timeouts, then 0.1s success). So we retry several times
+    with backoff before declaring dead. Even so, a sustained blip can false-prune — the
+    self-heal re-registration (_reregister_running) recovers a still-running server on the
+    next tick, so a false prune is transient, not permanent.
     """
     for i in range(attempts):
         if healthcheck.is_alive(host, port, timeout=timeout):
             return True
         if i < attempts - 1:
-            time.sleep(2.0)
+            time.sleep(3.0)
     return False
 
 
@@ -112,18 +161,27 @@ def _used_replica_ids(live: list) -> set[int]:
 
 
 def tick(run_root: str, targets: list[Target]) -> None:
-    """One keepalive pass: prune dead endpoints, top up each size to its desired count."""
+    """One keepalive pass.
+
+    Policy: trust the SLURM JOB as the liveness signal, NOT /health probes. A saturated
+    healthy vLLM intermittently fails /health (and the login<->node path is flaky), so
+    probe-based pruning caused thrashing/false prunes. Instead:
+      * a RUNNING serve job => presumed healthy; ensure it's registered (self-heal) but
+        never prune/cancel it on a probe failure alone;
+      * only relaunch when the serve-JOB count is below target (a job truly ended).
+    This is robust to flaky probes; the cost is we don't auto-recover a true in-job vLLM
+    hang (rare; surfaces as that size's cells slowing — handle manually if it occurs).
+    """
     for t in targets:
-        live, dead = _live_dead(run_root, t.size)
-        for e in dead:
-            registry.prune_entry(run_root, e)
-            print(f"[keepalive] pruned dead {t.size} @ {e.host}:{e.port}")
-        # Job count is authoritative (live endpoints are a subset of running jobs).
+        # Self-heal: re-register any running server whose registry file was lost, so cells
+        # can discover it. (Best-effort; uses a probe but only to ADD, never to remove.)
+        _reregister_running(run_root, t.size)
+        # Relaunch only when the JOB count is below target (a server actually ended).
         have = _serve_jobs_in_flight(t.size)
         if have >= t.count:
             continue
         need = t.count - have
-        used = _used_replica_ids(live)
+        used = _used_replica_ids(_live_dead(run_root, t.size)[0])
         # Pick the lowest free replica indices for the new servers (distinct ports).
         rid = 0
         for _ in range(need):
