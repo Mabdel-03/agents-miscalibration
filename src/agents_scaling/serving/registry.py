@@ -91,6 +91,21 @@ def list_servers(run_root: str | os.PathLike, model_size: str) -> list[ServerEnt
     return out
 
 
+def prune_entry(run_root: str | os.PathLike, entry: ServerEntry) -> None:
+    """Delete the registry file(s) for one endpoint (used when it is found dead) so cells
+    stop round-robining to it. Handles both the per-server and legacy single-file layouts."""
+    candidates = [
+        servers_dir(run_root) / entry.model_size / f"{entry.host}_{entry.port}.json",
+        servers_dir(run_root) / f"{entry.model_size}.json",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+
+
 def lookup_server(
     run_root: str | os.PathLike, model_size: str, shard: int = 0
 ) -> ServerEntry | None:

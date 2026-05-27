@@ -22,6 +22,16 @@ def _get(url: str, timeout: float) -> tuple[int, bytes]:
         return 0, b""
 
 
+def is_alive(host: str, port: int, timeout: float = 5.0) -> bool:
+    """One-shot liveness probe: True iff ``/health`` returns 200 right now.
+
+    Used by the keepalive to tell a *registered-but-dead* endpoint (stale registry file
+    from a killed job) apart from a live one — registry presence alone is not liveness.
+    """
+    status, _ = _get(f"http://{host}:{port}/health", timeout=timeout)
+    return status == 200
+
+
 def wait_until_ready(host: str, port: int, timeout_s: float = 1800.0, poll_s: float = 5.0) -> None:
     """Block until ``/health`` is 200 AND ``/v1/models`` lists a model. Raises on timeout."""
     base = f"http://{host}:{port}"
