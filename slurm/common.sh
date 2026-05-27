@@ -20,6 +20,17 @@ export HF_HOME="${HF_HOME:-/orcd/scratch/orcd/012/mabdel03/.cache/huggingface}"
 export ASYS_RESULTS_ROOT="${ASYS_RESULTS_ROOT:-/orcd/scratch/orcd/012/mabdel03/agents_scaling_results}"
 mkdir -p "$HF_HOME" "$ASYS_RESULTS_ROOT"
 
+# HF auth for gated repos (GPQA, Llama). Token is read from a private, untracked file
+# (~/.config/agents_scaling/hf_token) so it never lands in git. Create it with:
+#   mkdir -p ~/.config/agents_scaling && chmod 700 ~/.config/agents_scaling
+#   printf 'hf_xxxxx' > ~/.config/agents_scaling/hf_token && chmod 600 ~/.config/agents_scaling/hf_token
+_ASYS_HF_TOKEN_FILE="${ASYS_HF_TOKEN_FILE:-$HOME/.config/agents_scaling/hf_token}"
+if [ -z "${HF_TOKEN:-}" ] && [ -f "$_ASYS_HF_TOKEN_FILE" ]; then
+  export HF_TOKEN="$(tr -d '[:space:]' < "$_ASYS_HF_TOKEN_FILE")"
+fi
+# huggingface_hub also reads HUGGING_FACE_HUB_TOKEN; keep both in sync.
+[ -n "${HF_TOKEN:-}" ] && export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+
 # vLLM: avoid usage stats phone-home; sensible defaults.
 export VLLM_NO_USAGE_STATS=1
 export DO_NOT_TRACK=1
