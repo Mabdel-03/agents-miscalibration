@@ -27,9 +27,15 @@ _PARTITION_DEFAULT = "pi_tpoggio"
 _GPU_TYPE_DEFAULT = "a100"
 
 
-def _port_for(model_size: str) -> int:
-    """Deterministic port in [8000, 8999] from the model size string."""
-    return 8000 + (zlib.crc32(model_size.encode()) % 1000)
+def _port_for(model_size: str, replica: int = 0) -> int:
+    """Deterministic port from the model size + replica index.
+
+    Base port in [8000, 8999] from the size; ``+ replica`` offsets each replica so two
+    replicas of the SAME size landing on the SAME node don't bind the same port. The
+    registry keys by ``host_port`` so distinct ports give distinct registry entries even
+    co-located. (Replicas of different sizes already differ via crc32.)
+    """
+    return 8000 + (zlib.crc32(model_size.encode()) % 1000) + replica
 
 
 def render_sbatch(
@@ -39,9 +45,10 @@ def render_sbatch(
     gpu_type: str,
     time_limit: str,
     log_dir: str,
+    replica: int = 0,
 ) -> str:
     spec = get_model(model_size)
-    port = _port_for(model_size)
+    port = _port_for(model_size, replica)
     cpus = max(8, spec.tp_size * 8)
     mem = f"{spec.tp_size * 120}G"
     text = TEMPLATE.read_text()
@@ -65,11 +72,22 @@ def render_sbatch(
     return text
 
 
-def submit(model_size: str, run_root: str, partition: str, gpu_type: str, time_limit: str) -> str:
+def submit(
+    model_size: str,
+    run_root: str,
+    partition: str,
+    gpu_type: str,
+    time_limit: str,
+    replica: int = 0,
+) -> str:
     log_dir = Path(run_root) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    sbatch_text = render_sbatch(model_size, run_root, partition, gpu_type, time_limit, str(log_dir))
-    sbatch_path = Path(run_root) / "servers" / f"serve_{model_size}.sbatch"
+    sbatch_text = render_sbatch(
+        model_size, run_root, partition, gpu_type, time_limit, str(log_dir), replica=replica
+    )
+    # Distinct filename per replica so concurrent replicas don't overwrite each other.
+    suffix = f"_r{replica}" if replica else ""
+    sbatch_path = Path(run_root) / "servers" / f"serve_{model_size}{suffix}.sbatch"
     sbatch_path.parent.mkdir(parents=True, exist_ok=True)
     sbatch_path.write_text(sbatch_text)
     out = subprocess.run(
@@ -77,7 +95,7 @@ def submit(model_size: str, run_root: str, partition: str, gpu_type: str, time_l
     ).stdout.strip()
     # "Submitted batch job 12345"
     job_id = out.split()[-1]
-    print(f"[launch] model_size={model_size} -> job {job_id} (sbatch: {sbatch_path})")
+    print(f"[launch] {model_size} r{replica} {partition} -> job {job_id} (sbatch: {sbatch_path})")
     return job_id
 
 
@@ -98,6 +116,7 @@ def main() -> None:
     ap.add_argument("--partition", default=_PARTITION_DEFAULT)
     ap.add_argument("--gpu-type", default=_GPU_TYPE_DEFAULT)
     ap.add_argument("--time", dest="time_limit", default="2-00:00:00")
+    ap.add_argument("--replica", type=int, default=0, help="replica index (port offset)")
     args = ap.parse_args()
 
     if args.register:
@@ -105,7 +124,10 @@ def main() -> None:
             ap.error("--register requires --hf-id and --port")
         _register_role(args.run_root, args.model_size, args.hf_id, args.port)
     else:
-        submit(args.model_size, args.run_root, args.partition, args.gpu_type, args.time_limit)
+        submit(
+            args.model_size, args.run_root, args.partition, args.gpu_type,
+            args.time_limit, replica=args.replica,
+        )
 
 
 if __name__ == "__main__":
