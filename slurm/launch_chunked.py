@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
+from agents_scaling.config import ExperimentCell
 from agents_scaling.experiment import io
 from agents_scaling.experiment.sweep import load_sweep
 
@@ -54,16 +56,22 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Submit a sweep as chained array chunks.")
     ap.add_argument("--config", required=True)
     ap.add_argument("--run-id", required=True)
-    ap.add_argument("--chunk-size", type=int, default=480, help="cells per array chunk (<=500)")
-    ap.add_argument("--throttle", type=int, default=480, help="max concurrent tasks per chunk")
+    ap.add_argument("--chunk-size", type=int, default=400, help="cells per array chunk")
+    ap.add_argument("--throttle", type=int, default=400, help="max concurrent tasks per chunk")
     ap.add_argument("--cell-partition", default="mit_preemptable")
     ap.add_argument("--cell-time", default="2-00:00:00")
     ap.add_argument("--max-chunks", type=int, default=None, help="cap chunks (debug)")
     ap.add_argument("--dry-run", action="store_true", help="render sbatches, don't submit")
+    # Drive mode (default): submit one chunk at a time, waiting for the submitted-job count
+    # to drop below the QOS submit cap before submitting the next. This works around
+    # QOSMaxSubmitJobPerUserLimit (a whole array counts as N submitted jobs), which forbids
+    # pre-queuing many chunks. The runner is resumable, so a killed driver can just re-run.
+    ap.add_argument("--submit-cap", type=int, default=440,
+                    help="max submitted jobs to keep under (QOS QOSMaxSubmitJobPerUserLimit)")
+    ap.add_argument("--no-drive", action="store_true",
+                    help="don't drive; just render chunk sbatches (use --dry-run to inspect)")
+    ap.add_argument("--poll-s", type=float, default=120.0, help="drive poll interval (s)")
     args = ap.parse_args()
-
-    if args.chunk_size > 500:
-        ap.error("--chunk-size must be <= 500 (MaxSubmitJobs association limit)")
 
     cells = load_sweep(args.config)
     run_root = io.run_dir(args.run_id)
@@ -81,32 +89,69 @@ def main() -> None:
         chunks = chunks[: args.max_chunks]
     print(f"[chunked] {len(chunks)} chunks, throttle {args.throttle}, partition {args.cell_partition}")
 
-    prev_job: str | None = None
-    submitted: list[str] = []
+    # Render all chunk sbatches up front (cheap; also the audit trail).
+    chunk_paths = []
     for ci, (lo, hi) in enumerate(chunks):
-        text = _render(
-            args.run_id, str(cells_file), lo, hi, args.throttle,
-            args.cell_partition, args.cell_time, str(log_dir),
-        )
-        sbatch_path = run_root / f"chunk_{ci:03d}_{lo}-{hi}.sbatch"
-        sbatch_path.write_text(text)
+        text = _render(args.run_id, str(cells_file), lo, hi, args.throttle,
+                       args.cell_partition, args.cell_time, str(log_dir))
+        p = run_root / f"chunk_{ci:03d}_{lo}-{hi}.sbatch"
+        p.write_text(text)
+        chunk_paths.append((ci, lo, hi, p))
         if args.dry_run:
-            print(f"  [dry-run] chunk {ci}: indices {lo}-{hi} -> {sbatch_path}")
-            continue
-        cmd = ["sbatch", "--parsable"]
-        if prev_job:
-            cmd.append(f"--dependency=afterany:{prev_job}")
-        cmd.append(str(sbatch_path))
-        out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
-        job_id = out.split(";")[0]  # --parsable: "jobid[;cluster]"
-        submitted.append(job_id)
-        dep = f" (after {prev_job})" if prev_job else ""
-        print(f"  chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}{dep}")
-        prev_job = job_id
+            print(f"  [dry-run] chunk {ci}: indices {lo}-{hi} -> {p}")
+    if args.dry_run or args.no_drive:
+        return
 
-    if not args.dry_run:
-        (run_root / "chunk_jobs.json").write_text(json.dumps(submitted, indent=2))
-        print(f"[chunked] submitted {len(submitted)} chunk jobs; ids -> {run_root/'chunk_jobs.json'}")
+    _drive(run_root, chunk_paths, args.submit_cap, args.poll_s)
+
+
+def _my_submitted_count() -> int:
+    """Number of my jobs+array-tasks currently submitted (PD/R), which is what the QOS
+    QOSMaxSubmitJobPerUserLimit counts. `squeue -r` expands array tasks to one line each."""
+    out = subprocess.run(
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-r", "-o", "%i"],
+        capture_output=True, text=True,
+    ).stdout
+    return sum(1 for line in out.splitlines() if line.strip())
+
+
+def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
+    """A chunk is done when every cell index in [lo,hi] has a meta.json (resumable)."""
+    cdir = run_root / "cells"
+    for idx in range(lo, hi + 1):
+        cid = ExperimentCell.from_dict(cells[idx]).cell_id
+        if not (cdir / cid / "meta.json").exists():
+            return False
+    return True
+
+
+def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float) -> None:
+    """Submit chunks one at a time, keeping total submitted jobs under ``submit_cap``."""
+    import time
+
+    cells = json.loads((run_root / "cells.json").read_text())
+    submitted_log: list[dict] = []
+    for ci, lo, hi, path in chunk_paths:
+        if _chunk_complete(run_root, lo, hi, cells):
+            print(f"[drive] chunk {ci} ({lo}-{hi}) already complete; skipping")
+            continue
+        # Wait until there's headroom for this chunk's array tasks under the QOS cap.
+        need = hi - lo + 1
+        while True:
+            cur = _my_submitted_count()
+            if cur + need <= submit_cap:
+                break
+            print(f"[drive] waiting: {cur} submitted + {need} chunk > cap {submit_cap}; sleep {poll_s:.0f}s")
+            time.sleep(poll_s)
+        out = subprocess.run(["sbatch", "--parsable", str(path)],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        job_id = out.split(";")[0]
+        submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id})
+        (run_root / "chunk_jobs.json").write_text(json.dumps(submitted_log, indent=2))
+        print(f"[drive] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (submitted now: {_my_submitted_count()})")
+        # brief settle so squeue reflects the new tasks before the next headroom check
+        time.sleep(10)
+    print(f"[drive] all {len(chunk_paths)} chunks dispatched; results under {run_root}/cells/")
 
 
 if __name__ == "__main__":
