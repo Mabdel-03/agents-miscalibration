@@ -130,8 +130,17 @@ class LogprobClient:
                     [{"token": t.token, "logprob": t.logprob} for t in (tok.top_logprobs or [])]
                 )
         usage = resp.usage
-        # reasoning_content is a vLLM/Qwen3 extension; not typed on the OpenAI client.
-        reasoning_text = getattr(choice.message, "reasoning_content", None) or ""
+        # The thinking trace is a vLLM/Qwen3 extension not typed on the OpenAI client.
+        # vLLM 0.21's qwen3 parser names it "reasoning"; other versions use
+        # "reasoning_content". Check both (typed attr first, then the raw dict).
+        reasoning_text = (
+            getattr(choice.message, "reasoning_content", None)
+            or getattr(choice.message, "reasoning", None)
+            or ""
+        )
+        if not reasoning_text:
+            _md = choice.message.model_dump()
+            reasoning_text = _md.get("reasoning_content") or _md.get("reasoning") or ""
         reasoning_tokens = len(reasoning_text.split()) if reasoning_text else 0
         return ChatResult(
             text=choice.message.content or "",
