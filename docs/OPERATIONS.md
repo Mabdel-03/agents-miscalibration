@@ -8,8 +8,13 @@ gotchas already hit and fixed (so they aren't re-hit).
 - **Scheduler:** SLURM. `MaxArraySize=25000`, **`MaxSubmitJobs=500`** (per association —
   this is why the sweep is submitted in chunks, see below).
 - **GPU partitions used:** `pi_tpoggio` (8× A100-80GB, 1 node `node3807`, 7-day) for
-  servers; `ou_bcs_normal`/`ou_bcs_low` (A100/H100, 1-day) for a 2nd server set;
+  servers; `ou_bcs_normal`/`ou_bcs_low` (A100/H100, 1-day) for additional servers;
   `mit_preemptable` (CPU-OK, 2-day, preemptible) for cell workers. **Never `pi_manoli`.**
+- **`pi_tpoggio` GPU QOS cap.** Despite 8 physical A100s, a group QOS limits how many GPUs
+  you can hold there at once; extra server jobs sit `PD` with reason **`QOSGrpGRES`**.
+  Practically this caps the primary server set at ~3–4 sizes on pi_tpoggio — **put the rest
+  on `ou_bcs_normal`** (where 4B/8B/32B run fine). Spreading sizes across clusters is the
+  intended design (the registry is multi-endpoint), not just a speedup.
 - **Storage:** weights + results on scratch (`/orcd/scratch/orcd/012/mabdel03`, 254 TB
   free). The project dir (`/orcd/data/tpoggio/001`) has little space — code only.
 
