@@ -178,9 +178,22 @@ get killed; without relaunching, cells block on `wait_for_server`. **`slurm/keep
 handles this automatically — run it under nohup for the duration of the sweep:
 
 ```bash
-# Use the SAME spec as scale_up (size:count:partition:time per size).
-nohup env PYTHONPATH=src $PY slurm/keepalive.py --run-id $RUN --interval 600 \
-  --spec "$SPEC" > $ASYS_RESULTS_ROOT/$RUN/keepalive.log 2>&1 &
+# Use the SAME spec as scale_up. CRITICAL: use setsid+disown, NOT just nohup &.
+# On this cluster, login-node sessions get reaped (and login nodes also change between
+# logins) — plain `nohup &` processes die with the session. `setsid` makes the process
+# its own session leader (PPID=1, init), so it survives. Confirm with `ps -o pid,sid` —
+# the process SID should differ from your shell's.
+setsid nohup env PYTHONPATH=src $PY -u slurm/keepalive.py --run-id $RUN --interval 600 \
+  --spec "$SPEC" > $ASYS_RESULTS_ROOT/$RUN/keepalive.log 2>&1 < /dev/null &
+disown $!
+# Same pattern for the chunk driver:
+setsid nohup env PYTHONPATH=src $PY -u slurm/launch_chunked.py --config configs/full_sweep.yaml \
+  --run-id $RUN --chunk-size 400 --throttle 240 --submit-cap 440 \
+  --cell-partition mit_preemptable --cell-time 2-00:00:00 \
+  > $ASYS_RESULTS_ROOT/$RUN/driver.log 2>&1 < /dev/null &
+disown $!
+# Find the real PIDs (setsid's $! is the wrapper, not the python):
+ps -eo pid,sid,ppid,cmd | grep -E "launch_chunked|keepalive" | grep -v grep
 ```
 
 Each pass: probe a real HTTP `/health` on every endpoint (registry presence ≠ liveness);
