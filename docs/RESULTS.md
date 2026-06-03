@@ -112,6 +112,14 @@ the count as ou_bcs's 1-day servers churn. **Measured after the fix below: ~12,7
 
 ## Operational notes / incidents
 
+- **Login-node nohup processes get reaped — driver/keepalive must be SLURM jobs (fixed).**
+  Twice during long runs the chunk driver and keepalive (running as login-node
+  `nohup &`) were killed when the login session ended, losing ~280 and ~100 cells of
+  progress before each catch. `setsid+disown` (PPID=1) wasn't enough either —
+  the cluster cleans up user processes aggressively. Fix: `slurm/launch_loops.py`
+  submits both loops as `--requeue` SLURM jobs on `mit_preemptable`; they run on
+  compute nodes, durable across login sessions, auto-restarted by SLURM on preemption
+  (the loops are resumable, so restarts are safe). Documented in OPERATIONS.
 - **Timeout storm at throttle 400 (fixed).** The first full-sweep launch ran the cell
   driver at `--throttle 400`, ~1000+ concurrent requests against 6 servers. Requests queued
   behind unlimited-thinking generations and exceeded the 120s client timeout →
