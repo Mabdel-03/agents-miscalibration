@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --job-name=asys-loop-driver
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/loop_driver_%j.out
+
+# The chunk-driver runs as a SLURM job (NOT a login-node nohup) so it survives session
+# changes and login-node cleanup that have repeatedly killed our background processes.
+# CPU-only, tiny resources; just needs to keep poking sbatch on a timer.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+cd "{REPO}"
+exec python -u slurm/launch_chunked.py \
+  --config configs/full_sweep.yaml \
+  --run-id "{RUN_ID}" \
+  --chunk-size 400 --throttle 240 --submit-cap 440 \
+  --cell-partition mit_preemptable --cell-time 2-00:00:00

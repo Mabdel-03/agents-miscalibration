@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --job-name=asys-loop-keepalive
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=2G
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/loop_keepalive_%j.out
+
+# Keepalive runs as a SLURM job so it survives login-node session changes/cleanup that
+# kill nohup processes. CPU-only, minimal resources; just probes + sbatch as needed.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+cd "{REPO}"
+exec python -u slurm/keepalive.py \
+  --run-id "{RUN_ID}" \
+  --spec "{SPEC}" \
+  --interval 600
