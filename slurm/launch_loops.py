@@ -22,14 +22,16 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _render_submit(tmpl_name: str, repl: dict[str, str]) -> str:
-    """Render an sbatch template into a written file in <run>/, return the job id."""
+    """Render an sbatch template into a STABLE-NAMED file under slurm/ (so the script's
+    self-resubmit can reference itself), then submit it. Returns the job id."""
     text = (REPO / "slurm" / tmpl_name).read_text()
     for k, v in repl.items():
         text = text.replace("{" + k + "}", v)
-    run_root = Path(repl["LOG_DIR"]).parent
-    sbatch_path = run_root / tmpl_name.replace(".tmpl", "")
+    # Stable name keyed by run-id so the self-resubmit always finds itself.
+    sbatch_path = REPO / "slurm" / f"{tmpl_name.replace('.tmpl', '')}.{repl['RUN_ID']}"
     sbatch_path.write_text(text)
-    # Use --requeue so SLURM relaunches the loop on preemption/timeout (resumable code).
+    # Use --requeue too (handles preemption); walltime expiry is handled by the
+    # script's own dependency-based self-resubmit (see loop_*.sbatch.tmpl).
     out = subprocess.run(
         ["sbatch", "--requeue", "--parsable", str(sbatch_path)],
         capture_output=True, text=True, check=True,

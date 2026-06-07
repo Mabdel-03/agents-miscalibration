@@ -12,6 +12,13 @@ set -euo pipefail
 source "{REPO}/slurm/common.sh"
 mamba activate "$ASYS_HARNESS_ENV"
 
+# SELF-RESUBMIT before running so walltime expiry is just a baton pass; see loop_driver.
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{REPO}/slurm/loop_keepalive.sbatch.{RUN_ID}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
 cd "{REPO}"
 exec python -u slurm/keepalive.py \
   --run-id "{RUN_ID}" \

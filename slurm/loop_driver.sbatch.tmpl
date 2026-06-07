@@ -13,6 +13,16 @@ set -euo pipefail
 source "{REPO}/slurm/common.sh"
 mamba activate "$ASYS_HARNESS_ENV"
 
+# SELF-RESUBMIT: queue our successor BEFORE running, so walltime expiry is just a baton
+# pass. --dependency=afterany means the next instance waits for me to end (success/fail/
+# timeout/cancel — all "any") then runs. The runner is resumable so re-running is safe.
+# Skip resubmission if we were re-invoked with NO_RESUBMIT=1 (manual override).
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{REPO}/slurm/loop_driver.sbatch.{RUN_ID}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
 cd "{REPO}"
 exec python -u slurm/launch_chunked.py \
   --config configs/full_sweep.yaml \
