@@ -65,7 +65,11 @@ def aggregate_run(run_id: str) -> list[dict[str, Any]]:
     cell_records: dict[str, dict] = {}
     # First pass: per-cell raw aggregates.
     for cell_path in sorted(cells_root.glob("*")):
+        # Need BOTH files: results.jsonl alone (no meta) means a cell is partially run
+        # (resume in progress) and shouldn't be aggregated as if complete.
         if not (cell_path / "results.jsonl").exists():
+            continue
+        if not (cell_path / "meta.json").exists():
             continue
         meta, rows = _read_cell(cell_path)
         cfg = meta["config"]
