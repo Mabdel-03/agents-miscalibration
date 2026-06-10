@@ -1,14 +1,21 @@
-# Full 4-axis sweep (run after the reasoning pilot validates the pipeline).
+# Full 4-axis sweep (TRIMMED 2026-06-10 to ~38% of original).
 # Axes: capacity (Qwen3 sizes) x topology x context-share x prompt x REASONING x benchmark.
 # Validity collapsing + per-(size,benchmark,seed,reasoning) SAS-baseline enforcement
-# happens in sweep.generate_cells. NOTE: the 5-rung reasoning axis multiplies the grid ~5x
-# and the two-call ECE roughly doubles per-question calls on the thinking rungs -- trim
-# (seeds/prompt levels/benchmarks) before launching; see the plan's sweep-size note.
+# happens in sweep.generate_cells.
+#
+# TRIM RATIONALE (after 1,406 of 11,520 cells completed in original grid):
+#   - prompt_complexity_level: 4 -> 2 (kept L0, L3 endpoints). Showed weakest signal in the
+#     partial-progress data (accuracy spread 0.035 across 4 levels); endpoints preserve any
+#     real effect while halving this dimension.
+#   - context_share_level: 3 -> 2 (kept artifact_only, plus_cot extremes). plus_intermediate
+#     was barely distinguishable from plus_cot at n=1406 (spread 0.046 total).
+# Capacity (0.6B->32B), reasoning (off->unlimited), topology (4), and benchmarks stay full.
+# Grid: 4320 cells (was 11520). See plan addendum for the trim audit.
 axes:
   model_size: ["0.6B", "1.7B", "4B", "8B", "14B", "32B"]
   topology: ["single_agent", "independent", "decentralized", "centralized"]
-  context_share_level: ["artifact_only", "plus_intermediate", "plus_cot"]
-  prompt_complexity_level: [0, 1, 2, 3]
+  context_share_level: ["artifact_only", "plus_cot"]
+  prompt_complexity_level: [0, 3]
   reasoning_level: ["off", "b512", "b2048", "b8192", "unlimited"]
   benchmark: ["gpqa", "mmlu_pro", "math", "truthfulqa"]
   seed: [0, 1, 2]
