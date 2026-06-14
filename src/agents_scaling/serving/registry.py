@@ -106,12 +106,50 @@ def prune_entry(run_root: str | os.PathLike, entry: ServerEntry) -> None:
             pass
 
 
+def list_live_servers(
+    run_root: str | os.PathLike,
+    model_size: str,
+    *,
+    probe_timeout: float = 3.0,
+) -> list[ServerEntry]:
+    """Return only endpoints whose ``/health`` responds. Dead entries are pruned on the spot.
+
+    This is the read-time garbage collector. The keepalive intentionally never prunes
+    based on probe results (trust-the-job policy avoids false-prune thrash); without this,
+    the registry monotonically bloats with dead entries from every server that ever lived.
+    Cells call this so they never round-robin onto a stale entry, and the side effect
+    cleans the registry passively as cells take work.
+    """
+    # Local import: keepalive uses healthcheck too, but the registry layer otherwise has
+    # no dependency on it, so we keep the import inside the function to avoid a cycle.
+    from agents_scaling.serving import healthcheck
+
+    live: list[ServerEntry] = []
+    for e in list_servers(run_root, model_size):
+        if healthcheck.is_alive(e.host, e.port, timeout=probe_timeout):
+            live.append(e)
+        else:
+            prune_entry(run_root, e)
+    return live
+
+
 def lookup_server(
-    run_root: str | os.PathLike, model_size: str, shard: int = 0
+    run_root: str | os.PathLike,
+    model_size: str,
+    shard: int = 0,
+    *,
+    live_only: bool = False,
+    probe_timeout: float = 3.0,
 ) -> ServerEntry | None:
     """Pick one endpoint for ``model_size``, round-robined by ``shard`` (e.g. the SLURM
-    array task id) so cells spread across all available servers for that size."""
-    servers = list_servers(run_root, model_size)
+    array task id) so cells spread across all available servers for that size.
+
+    With ``live_only=True``, dead entries are filtered (and pruned) via ``list_live_servers``
+    before round-robin. The keepalive self-heal path keeps the default (raw filesystem
+    read) so it can intentionally see and reason about stale entries.
+    """
+    servers = list_live_servers(run_root, model_size, probe_timeout=probe_timeout) \
+        if live_only else list_servers(run_root, model_size)
     if not servers:
         return None
     return servers[shard % len(servers)]

@@ -25,7 +25,12 @@ from agents_scaling.models import get_model
 from agents_scaling.prompts.prompt_quality import score_prompt_quality
 from agents_scaling.prompts.system_prompts import get_prompt, token_count
 from agents_scaling.serving.client import LogprobClient
-from agents_scaling.serving.registry import wait_for_server
+from agents_scaling.serving.registry import (
+    ServerEntry,
+    list_live_servers,
+    prune_entry,
+    wait_for_server,
+)
 
 
 def _build_agents(cell: ExperimentCell, base_url: str, served_model: str) -> list[Agent]:
@@ -46,6 +51,29 @@ def _build_agents(cell: ExperimentCell, base_url: str, served_model: str) -> lis
     return agents
 
 
+# Exception classes the runner treats as "this endpoint is unusable, try another".
+# Imported lazily because ``openai`` is only available when the harness env is installed.
+def _connection_errors() -> tuple[type, ...]:
+    from openai import APIConnectionError, APITimeoutError
+    return (APIConnectionError, APITimeoutError)
+
+
+def _pick_endpoint(
+    run_root, model_size: str, shard: int, exclude: set[tuple[str, int]],
+) -> ServerEntry | None:
+    """Return a live endpoint for ``model_size`` not in ``exclude``, shard-aware.
+
+    Calls ``list_live_servers`` (which prunes dead entries as a side effect — see
+    registry.py / Change A), filters out endpoints we've already tried, and round-robins
+    by ``shard`` so cells still spread across the fleet.
+    """
+    candidates = [e for e in list_live_servers(run_root, model_size)
+                  if (e.host, e.port) not in exclude]
+    if not candidates:
+        return None
+    return candidates[shard % len(candidates)]
+
+
 def run_cell(
     cell: ExperimentCell, run_id: str, score_prompt_with_judge: bool = False, shard: int = 0
 ) -> str:
@@ -56,7 +84,15 @@ def run_cell(
     """
     spec = get_model(cell.model_size)
     run_root = io.run_dir(run_id)
-    entry = wait_for_server(run_root, cell.model_size, shard=shard)
+
+    # Initial endpoint selection: prefer a live endpoint; fall back to wait_for_server
+    # (which blocks until at least one server is registered, regardless of liveness) so
+    # cold-start during a fleet outage still eventually proceeds. The per-question loop
+    # below adds true fallback across live endpoints once any are available.
+    initial = _pick_endpoint(run_root, cell.model_size, shard, exclude=set())
+    if initial is None:
+        initial = wait_for_server(run_root, cell.model_size, shard=shard)
+    entry: ServerEntry = initial
     base_url = entry.base_url
     served_model = cell.model_size  # vLLM --served-model-name
 
@@ -103,33 +139,60 @@ def run_cell(
     questions = load_benchmark(cell.benchmark, n=cell.n_questions, seed=cell.seed)
     agents = _build_agents(cell, base_url, served_model)
     reasoning_token_totals: list[int] = []  # per-question reasoning tokens -> meta mean
+    conn_errors = _connection_errors()
+    MAX_ENDPOINT_FAILS_PER_Q = 4  # cap so a fleet-wide outage doesn't loop forever
 
     for q in questions:
         if q.qid in done_qids:
             continue  # resume: already answered in a prior (killed) run
-        t0 = time.time()
-        topo = build_topology(
-            cell.topology, agents, cell.context_share_level, cell.rounds,
-            max_tokens=1024, seed=cell.seed,
-        )
-        tr = topo.run(q)
-        wall_ms = (time.time() - t0) * 1000.0
-
-        # Self-consistency / semantic-entropy from the first agent's samples
-        # (cheap extra signal; only for the canonical single-agent view to bound cost).
+        # Per-question endpoint-fallback loop (Change B): a dead endpoint discovered during
+        # this question is pruned; we rebuild agents against the next live endpoint and
+        # retry. Already-completed questions stay safe because they're written before
+        # the next iteration starts.
+        tried: set[tuple[str, int]] = set()
+        tr = None
         sc: dict = {}
-        if cell.topology.value == "single_agent" and cell.n_samples > 1:
-            samples = agents[0].sample(q, n=cell.n_samples, base_seed=cell.seed + 1000)
-            sampled_answers = [s.answer_choice for s in samples]
-            maj = majority_answer(sampled_answers)
-            conf, ent = semantic_entropy_conf([s.answer_choice or "" for s in samples])
-            sc = {
-                "samples": sampled_answers,
-                "majority": maj,
-                "self_consistency_conf": self_consistency_conf(sampled_answers, tr.final_answer or ""),
-                "semantic_entropy_conf": conf,
-                "semantic_entropy": ent,
-            }
+        wall_ms = 0.0
+        fails = 0
+        while True:
+            t0 = time.time()
+            topo = build_topology(
+                cell.topology, agents, cell.context_share_level, cell.rounds,
+                max_tokens=1024, seed=cell.seed,
+            )
+            try:
+                tr = topo.run(q)
+                wall_ms = (time.time() - t0) * 1000.0
+                # Self-consistency / semantic-entropy from the first agent's samples
+                # (cheap extra signal; only for the canonical single-agent view to bound cost).
+                if cell.topology.value == "single_agent" and cell.n_samples > 1:
+                    samples = agents[0].sample(q, n=cell.n_samples, base_seed=cell.seed + 1000)
+                    sampled_answers = [s.answer_choice for s in samples]
+                    maj = majority_answer(sampled_answers)
+                    conf, ent = semantic_entropy_conf([s.answer_choice or "" for s in samples])
+                    sc = {
+                        "samples": sampled_answers,
+                        "majority": maj,
+                        "self_consistency_conf": self_consistency_conf(sampled_answers, tr.final_answer or ""),
+                        "semantic_entropy_conf": conf,
+                        "semantic_entropy": ent,
+                    }
+                break  # success
+            except conn_errors as e:
+                fails += 1
+                tried.add((entry.host, entry.port))
+                print(f"[run_cell] {cell.cell_id} q={q.qid}: endpoint "
+                      f"{entry.host}:{entry.port} failed ({type(e).__name__}); "
+                      f"pruning and trying next live endpoint")
+                prune_entry(run_root, entry)
+                nxt = _pick_endpoint(run_root, cell.model_size, shard, exclude=tried)
+                if nxt is None or fails >= MAX_ENDPOINT_FAILS_PER_Q:
+                    # No live alternative (or hit the per-question cap). Re-raise so the
+                    # SLURM job exits non-zero and the chunk driver/keepalive can react.
+                    raise
+                entry = nxt
+                base_url = entry.base_url
+                agents = _build_agents(cell, base_url, served_model)
 
         correct = grade(q, tr.final_answer or "") if tr.final_answer is not None else False
         total_reasoning_tokens = sum(o.reasoning_tokens for o in tr.per_agent)

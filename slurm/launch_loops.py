@@ -51,10 +51,13 @@ def main() -> None:
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--spec", required=True,
                     help="replica spec for keepalive (size:count:partition:time,...)")
-    ap.add_argument("--partition", default="mit_preemptable",
-                    help="partition for the loop jobs (CPU-only, long limit)")
-    ap.add_argument("--time", default="2-00:00:00",
-                    help="walltime per loop job (in-script afterany successor handles expiry)")
+    ap.add_argument("--partition", default="mit_preemptable,mit_normal,mit_normal_gpu",
+                    help="partition list for the loop jobs (CPU-only, long limit). "
+                         "Comma-separated for SLURM partition fallback so a single-partition "
+                         "outage (maintenance, QOS hold) doesn't paralyze the control plane.")
+    ap.add_argument("--time", default="12:00:00",
+                    help="walltime per loop job. 12h is the cap on mit_normal; the in-script "
+                         "afterany successor makes the cycle count immaterial.")
     args = ap.parse_args()
 
     results_root = os.environ.get("ASYS_RESULTS_ROOT", DEFAULT_RESULTS_ROOT)
