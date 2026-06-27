@@ -42,35 +42,56 @@ class Target:
 
 
 def parse_spec(spec: str, default_gpu: str) -> list[Target]:
-    """Parse 'size:count:partition:time[,...]' into Targets. Time may contain colons
-    (e.g. 7-00:00:00), so split into at most 4 fields from the left."""
+    """Parse 'size:count:partition:time[:gpu_type][,...]' into Targets.
+
+    Time contains colons (e.g. 7-00:00:00), so we FIRST peel an optional trailing
+    ``:gpu_type`` — recognizable because a time field is digit-led ('7-00:...') while a GPU
+    label is alpha-led ('h100','a100'). Then split the rest into exactly 4 fields from the
+    left. This lets entries on different partitions request different GPUs (h100 on
+    ou_bcs_high, a100 on pi_tpoggio); a 4-field entry stays backward compatible via
+    ``default_gpu``."""
     targets: list[Target] = []
     for item in [x for x in spec.split(",") if x.strip()]:
+        gpu = default_gpu
+        head, _, last = item.rpartition(":")
+        if head and last[:1].isalpha():  # trailing alpha token => gpu_type, not a time field
+            gpu = last
+            item = head
         parts = item.split(":", 3)
         if len(parts) != 4:
-            raise ValueError(f"bad spec entry {item!r}; expected size:count:partition:time")
+            raise ValueError(
+                f"bad spec entry {item!r}; expected size:count:partition:time[:gpu_type]"
+            )
         size, count, partition, time_limit = parts
-        targets.append(Target(size, int(count), partition, time_limit, default_gpu))
+        targets.append(Target(size, int(count), partition, time_limit, gpu))
     return targets
 
 
-def _serve_jobs_in_flight(model_size: str) -> int:
-    """Count serve JOBS for this size currently R/PD/CF.
+def _serve_jobs_in_flight(model_size: str, partition: str | None = None) -> int:
+    """Count serve JOBS for this size currently R/PD/CF, optionally scoped to ``partition``.
 
     This is the authoritative "current + coming" server count: every server — running &
     registered, running but still loading, or pending — has exactly one squeue job. The
     live-endpoint set is a SUBSET of the running jobs, so we must NOT add live + jobs
     (that double-counts a registered running server). We launch ``count - this``.
+
+    ``partition`` scoping lets the SAME size be served from multiple partitions with
+    independent target counts (e.g. 1 replica on pi_tpoggio + 2 bonus on ou_bcs_high): each
+    target maintains only its own partition's jobs instead of the two targets fighting over
+    one size-global count.
     """
     out = subprocess.run(
-        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j %t"],
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j|%t|%P"],
         capture_output=True, text=True,
     ).stdout
     name = f"asys-serve-{model_size}"
     n = 0
     for line in out.splitlines():
-        parts = line.split()
-        if parts and parts[0] == name and parts[-1] in ("R", "PD", "CF"):
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        jname, state, jpart = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if jname == name and state in ("R", "PD", "CF") and (partition is None or jpart == partition):
             n += 1
     return n
 
@@ -176,26 +197,34 @@ def tick(run_root: str, targets: list[Target]) -> None:
     This is robust to flaky probes; the cost is we don't auto-recover a true in-job vLLM
     hang (rare; surfaces as that size's cells slowing — handle manually if it occurs).
     """
+    # Replica IDs are per-SIZE (ports = base + replica), but a size may now be served from
+    # several partitions. Track IDs handed out this tick per size so two same-size targets
+    # (e.g. pi_tpoggio + ou_bcs_high) never collide on a replica index / port.
+    assigned_rids: dict[str, set[int]] = {}
     for t in targets:
         # Self-heal: re-register any running server whose registry file was lost, so cells
         # can discover it. (Best-effort; uses a probe but only to ADD, never to remove.)
         _reregister_running(run_root, t.size)
-        # Relaunch only when the JOB count is below target (a server actually ended).
-        have = _serve_jobs_in_flight(t.size)
+        # Relaunch only when the JOB count is below target FOR THIS PARTITION (a server
+        # actually ended). Partition-scoped so multi-partition specs for one size don't
+        # fight over a single size-global count.
+        have = _serve_jobs_in_flight(t.size, t.partition)
         if have >= t.count:
             continue
         need = t.count - have
-        used = _used_replica_ids(_live_dead(run_root, t.size)[0])
-        # Pick the lowest free replica indices for the new servers (distinct ports).
+        # Avoid collisions with live replicas AND any IDs already handed out this tick for
+        # this size (covers pending servers on other partitions not yet in the registry).
+        used = _used_replica_ids(_live_dead(run_root, t.size)[0]) | assigned_rids.get(t.size, set())
         rid = 0
         for _ in range(need):
             while rid in used:
                 rid += 1
             used.add(rid)
+            assigned_rids.setdefault(t.size, set()).add(rid)
             try:
                 job = submit_server(t.size, run_root, t.partition, t.gpu_type, t.time_limit, replica=rid)
-                print(f"[keepalive] RELAUNCH {t.size} r{rid} on {t.partition} -> job {job} "
-                      f"(have {have}/{t.count})")
+                print(f"[keepalive] RELAUNCH {t.size} r{rid} on {t.partition} ({t.gpu_type}) -> job {job} "
+                      f"(have {have}/{t.count} on {t.partition})")
             except Exception as exc:  # noqa: BLE001 — never die on one failure
                 print(f"[keepalive] FAILED {t.size} r{rid} on {t.partition}: {exc!r}")
             rid += 1

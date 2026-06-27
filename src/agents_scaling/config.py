@@ -140,6 +140,8 @@ class ExperimentCell:
         return cls(**{k: v for k, v in d.items() if k in known})
 
 
-# Where weights and outputs live (scratch, NOT the project dir which has little space).
+# Weights stay on scratch (large, regenerable cache). Results moved to the tpoggio DATA
+# filesystem (8T+ free) after the per-user SCRATCH quota repeatedly hit EDQUOT and halted
+# the run — data has a group quota with ample headroom, so writes never block there.
 DEFAULT_HF_HOME = "/orcd/scratch/orcd/012/mabdel03/.cache/huggingface"
-DEFAULT_RESULTS_ROOT = "/orcd/scratch/orcd/012/mabdel03/agents_scaling_results"
+DEFAULT_RESULTS_ROOT = "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results"

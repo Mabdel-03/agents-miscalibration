@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --job-name=asys-loop-keepalive
+#SBATCH --partition=mit_preemptable,mit_normal,mit_normal_gpu
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=2G
+#SBATCH --time=12:00:00
+#SBATCH --output=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/full_sweep_v1/logs/loop_keepalive_%j.out
+
+# Keepalive runs as a SLURM job so it survives login-node session changes/cleanup that
+# kill nohup processes. CPU-only, minimal resources; just probes + sbatch as needed.
+set -euo pipefail
+source "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+# SELF-RESUBMIT before running so walltime expiry is just a baton pass; see loop_driver.
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/loop_keepalive.sbatch.full_sweep_v1" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
+exec python -u slurm/keepalive.py \
+  --run-id "full_sweep_v1" \
+  --spec "0.6B:1:pi_tpoggio:7-00:00:00,1.7B:1:pi_tpoggio:7-00:00:00,4B:1:pi_tpoggio:7-00:00:00,8B:1:pi_tpoggio:7-00:00:00,14B:1:pi_tpoggio:7-00:00:00,32B:1:pi_tpoggio:7-00:00:00,14B:1:ou_bcs_high:04:00:00:h100,32B:1:ou_bcs_high:04:00:00:h100,4B:2:mit_preemptable:1-00:00:00,8B:2:mit_preemptable:1-00:00:00,14B:2:mit_preemptable:1-00:00:00,32B:2:mit_preemptable:1-00:00:00" \
+  --interval 600

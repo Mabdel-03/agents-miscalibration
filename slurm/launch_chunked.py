@@ -66,8 +66,11 @@ def main() -> None:
     # to drop below the QOS submit cap before submitting the next. This works around
     # QOSMaxSubmitJobPerUserLimit (a whole array counts as N submitted jobs), which forbids
     # pre-queuing many chunks. The runner is resumable, so a killed driver can just re-run.
-    ap.add_argument("--submit-cap", type=int, default=440,
-                    help="max submitted jobs to keep under (QOS QOSMaxSubmitJobPerUserLimit)")
+    ap.add_argument("--submit-cap", type=int, default=400,
+                    help="max CELL tasks to keep queued (counts asys-cells only). Keep this "
+                         "below the true QOS QOSMaxSubmitJobPerUserLimit (448) MINUS the ~26 "
+                         "long-lived serve+loop jobs, so a top-up submission never pushes the "
+                         "all-jobs total over the QOS limit. 400 leaves ~48 for overhead.")
     ap.add_argument("--no-drive", action="store_true",
                     help="don't drive; just render chunk sbatches (use --dry-run to inspect)")
     ap.add_argument("--reshuffle", action="store_true",
@@ -128,13 +131,19 @@ def main() -> None:
 
 
 def _my_submitted_count() -> int:
-    """Number of my jobs+array-tasks currently submitted (PD/R), which is what the QOS
-    QOSMaxSubmitJobPerUserLimit counts. `squeue -r` expands array tasks to one line each."""
+    """Number of my CELL array-tasks currently submitted (PD/R). `squeue -r` expands array
+    tasks to one line each.
+
+    Count ONLY asys-cells tasks, NOT my serve/loop jobs. The QOS cap is shared across all my
+    jobs, but the ~21 serve replicas + 4 loop jobs are long-lived fixed overhead; counting
+    them against the cap shrinks cell headroom (and, with a full-chunk gate, deadlocks the
+    driver entirely once serve+loop+tail exceeds cap-chunk_size). We reserve that fixed
+    overhead implicitly by using a cap below the true QOS limit (448)."""
     out = subprocess.run(
-        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-r", "-o", "%i"],
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-r", "-o", "%j"],
         capture_output=True, text=True,
     ).stdout
-    return sum(1 for line in out.splitlines() if line.strip())
+    return sum(1 for line in out.splitlines() if line.strip() == "asys-cells")
 
 
 def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
@@ -147,8 +156,17 @@ def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
     return True
 
 
-def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float) -> None:
-    """Submit chunks one at a time, keeping total submitted jobs under ``submit_cap``."""
+def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int = 80) -> None:
+    """Submit chunks to keep the cell-task queue TOPPED UP near ``submit_cap``.
+
+    Chunks have no inter-chunk dependency (the array template carries none) and ``run_one``
+    skips cells that already have meta.json, so overlapping chunks are safe — extra tasks on
+    already-done cells are cheap no-ops, and SLURM's per-chunk ``%throttle`` plus the QOS cap
+    bound real concurrency. So instead of waiting for a *full chunk* of headroom (which
+    deadlocks: the slow tail of one chunk — 32B/unlimited-thinking — drains for hours while
+    the whole fleet starves on those few cells), we submit the next pending chunk whenever
+    there is at least ``topup_min`` free slots under the cap. That keeps ~submit_cap cell
+    tasks queued continuously and the fleet saturated across chunk boundaries."""
     import time
 
     cells = json.loads((run_root / "cells.json").read_text())
@@ -157,20 +175,32 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float) -> None:
         if _chunk_complete(run_root, lo, hi, cells):
             print(f"[drive] chunk {ci} ({lo}-{hi}) already complete; skipping")
             continue
-        # Wait until there's headroom for this chunk's array tasks under the QOS cap.
-        need = hi - lo + 1
+        # Submit this chunk once there is headroom, RETRYING on the same chunk until it
+        # actually lands. Two failure modes both retry instead of crashing the driver:
+        #   1. headroom < topup_min  -> queue near cap, wait and re-poll.
+        #   2. sbatch rejected (rc!=0) -> usually QOSMaxSubmitJobPerUserLimit: our cell-only
+        #      count has headroom but total (cells + ~26 serve/loop) momentarily exceeds the
+        #      true QOS limit (448). MUST NOT crash (check=True would kill the whole loop and
+        #      break the self-resubmit chain). Log and re-poll; the queue drains and it lands.
         while True:
             cur = _my_submitted_count()
-            if cur + need <= submit_cap:
-                break
-            print(f"[drive] waiting: {cur} submitted + {need} chunk > cap {submit_cap}; sleep {poll_s:.0f}s")
-            time.sleep(poll_s)
-        out = subprocess.run(["sbatch", "--parsable", str(path)],
-                             capture_output=True, text=True, check=True).stdout.strip()
-        job_id = out.split(";")[0]
+            headroom = submit_cap - cur
+            if headroom < topup_min:
+                print(f"[drive] topped up: {cur} cell-tasks queued, headroom {headroom} < {topup_min}; sleep {poll_s:.0f}s")
+                time.sleep(poll_s)
+                continue
+            proc = subprocess.run(["sbatch", "--parsable", str(path)],
+                                  capture_output=True, text=True)
+            if proc.returncode != 0:
+                print(f"[drive] sbatch rejected chunk {ci} (rc={proc.returncode}): "
+                      f"{proc.stderr.strip()[:200]}; sleep {poll_s:.0f}s and retry")
+                time.sleep(poll_s)
+                continue
+            job_id = proc.stdout.strip().split(";")[0]
+            break
         submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id})
         (run_root / "chunk_jobs.json").write_text(json.dumps(submitted_log, indent=2))
-        print(f"[drive] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (submitted now: {_my_submitted_count()})")
+        print(f"[drive] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (cell-tasks now: {_my_submitted_count()})")
         # brief settle so squeue reflects the new tasks before the next headroom check
         time.sleep(10)
     print(f"[drive] all {len(chunk_paths)} chunks dispatched; results under {run_root}/cells/")

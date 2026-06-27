@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name=asys-loop-driver
+#SBATCH --partition=mit_preemptable,mit_normal,mit_normal_gpu
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time=12:00:00
+#SBATCH --output=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/full_sweep_v1/logs/loop_driver_%j.out
+
+# The chunk-driver runs as a SLURM job (NOT a login-node nohup) so it survives session
+# changes and login-node cleanup that have repeatedly killed our background processes.
+# CPU-only, tiny resources; just needs to keep poking sbatch on a timer.
+set -euo pipefail
+source "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+# SELF-RESUBMIT: queue our successor BEFORE running, so walltime expiry is just a baton
+# pass. --dependency=afterany means the next instance waits for me to end (success/fail/
+# timeout/cancel — all "any") then runs. The runner is resumable so re-running is safe.
+# Skip resubmission if we were re-invoked with NO_RESUBMIT=1 (manual override).
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/loop_driver.sbatch.full_sweep_v1" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
+exec python -u slurm/launch_chunked.py \
+  --config configs/full_sweep.yaml \
+  --run-id "full_sweep_v1" \
+  --chunk-size 400 --throttle 240 --submit-cap 400 \
+  --cell-partition mit_preemptable --cell-time 2-00:00:00

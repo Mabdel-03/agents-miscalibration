@@ -159,10 +159,18 @@ def wait_for_server(
     run_root: str | os.PathLike,
     model_size: str,
     shard: int = 0,
-    timeout_s: float = 3600.0,
+    timeout_s: float = 300.0,
     poll_s: float = 5.0,
 ) -> ServerEntry:
-    """Block until at least one server has registered for ``model_size`` (cells call this)."""
+    """Block until at least one server has registered for ``model_size`` (cells call this).
+
+    Timeout is 300s (not 3600s): if a size's server is absent (e.g. its GPU jobs are stuck
+    pending during a cluster GPU crunch), a cell that waits a full hour burns a whole CPU
+    node producing nothing. 300s lets a serverless cell fail fast so the resumable runner
+    recycles the chunk quickly instead — yet stays comfortably above a real vLLM server's
+    boot+load+health lag (~1-3 min) so we don't false-timeout a server about to register.
+    The cell is resumable by cell_id, so a fast failure here costs nothing but is retried
+    cheaply once the server returns."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         entry = lookup_server(run_root, model_size, shard=shard)
