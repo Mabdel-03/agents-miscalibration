@@ -67,10 +67,13 @@ def main() -> None:
     # QOSMaxSubmitJobPerUserLimit (a whole array counts as N submitted jobs), which forbids
     # pre-queuing many chunks. The runner is resumable, so a killed driver can just re-run.
     ap.add_argument("--submit-cap", type=int, default=400,
-                    help="max CELL tasks to keep queued (counts asys-cells only). Keep this "
-                         "below the true QOS QOSMaxSubmitJobPerUserLimit (448) MINUS the ~26 "
-                         "long-lived serve+loop jobs, so a top-up submission never pushes the "
-                         "all-jobs total over the QOS limit. 400 leaves ~48 for overhead.")
+                    help="target number of CELL tasks to keep queued (counts asys-cells only). "
+                         "The driver ALSO enforces --qos-limit on ALL jobs, so this can stay high.")
+    ap.add_argument("--qos-limit", type=int, default=448,
+                    help="absolute QOSMaxSubmitJobPerUserLimit across ALL my jobs (serve + "
+                         "loops + cells). The driver waits until a whole chunk fits under this "
+                         "alongside everything else, so growing the serve fleet never starves "
+                         "cell dispatch. Set to the real per-user submit cap of the cell QOS.")
     ap.add_argument("--no-drive", action="store_true",
                     help="don't drive; just render chunk sbatches (use --dry-run to inspect)")
     ap.add_argument("--reshuffle", action="store_true",
@@ -127,7 +130,8 @@ def main() -> None:
     if args.dry_run or args.no_drive:
         return
 
-    _drive(run_root, chunk_paths, args.submit_cap, args.poll_s)
+    _drive(run_root, chunk_paths, args.submit_cap, args.poll_s,
+           qos_limit=args.qos_limit, chunk_size=args.chunk_size)
 
 
 def _my_submitted_count() -> int:
@@ -146,6 +150,16 @@ def _my_submitted_count() -> int:
     return sum(1 for line in out.splitlines() if line.strip() == "asys-cells")
 
 
+def _my_total_count() -> int:
+    """ALL my submitted jobs/array-tasks (PD/R), which is what the absolute QOS
+    QOSMaxSubmitJobPerUserLimit actually counts — serve + loops + cells + anything else."""
+    out = subprocess.run(
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-r", "-o", "%i"],
+        capture_output=True, text=True,
+    ).stdout
+    return sum(1 for line in out.splitlines() if line.strip())
+
+
 def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
     """A chunk is done when every cell index in [lo,hi] has a meta.json (resumable)."""
     cdir = run_root / "cells"
@@ -156,7 +170,8 @@ def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
     return True
 
 
-def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int = 80) -> None:
+def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int = 80,
+           qos_limit: int = 448, chunk_size: int = 400) -> None:
     """Submit chunks to keep the cell-task queue TOPPED UP near ``submit_cap``.
 
     Chunks have no inter-chunk dependency (the array template carries none) and ``run_one``
@@ -165,8 +180,16 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
     bound real concurrency. So instead of waiting for a *full chunk* of headroom (which
     deadlocks: the slow tail of one chunk — 32B/unlimited-thinking — drains for hours while
     the whole fleet starves on those few cells), we submit the next pending chunk whenever
-    there is at least ``topup_min`` free slots under the cap. That keeps ~submit_cap cell
-    tasks queued continuously and the fleet saturated across chunk boundaries."""
+    there is at least ``topup_min`` free slots under the cap.
+
+    TWO gates, both required, because a chunk is one whole array of ``chunk_size`` tasks:
+      * cell gate: keep CELL tasks near ``submit_cap`` (cell-only headroom >= topup_min);
+      * ABSOLUTE gate: the next chunk's ``chunk_size`` tasks must fit under the real
+        ``qos_limit`` ALONGSIDE every other job I have (serve + loops + existing cells).
+        Without this, growing the serve fleet (e.g. 6 -> 18 servers) silently pushes the
+        baseline up until ``existing_total + chunk_size`` exceeds the QOS limit and EVERY
+        submission is rejected — the cell array can no longer refill and throughput collapses
+        even though cell-only headroom looks fine. We wait for genuine absolute room."""
     import time
 
     cells = json.loads((run_root / "cells.json").read_text())
@@ -176,17 +199,22 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
             print(f"[drive] chunk {ci} ({lo}-{hi}) already complete; skipping")
             continue
         # Submit this chunk once there is headroom, RETRYING on the same chunk until it
-        # actually lands. Two failure modes both retry instead of crashing the driver:
-        #   1. headroom < topup_min  -> queue near cap, wait and re-poll.
-        #   2. sbatch rejected (rc!=0) -> usually QOSMaxSubmitJobPerUserLimit: our cell-only
-        #      count has headroom but total (cells + ~26 serve/loop) momentarily exceeds the
-        #      true QOS limit (448). MUST NOT crash (check=True would kill the whole loop and
-        #      break the self-resubmit chain). Log and re-poll; the queue drains and it lands.
+        # actually lands. Three wait conditions all re-poll (never crash — that would break
+        # the self-resubmit chain):
         while True:
             cur = _my_submitted_count()
+            total = _my_total_count()
             headroom = submit_cap - cur
+            abs_room = qos_limit - total
             if headroom < topup_min:
                 print(f"[drive] topped up: {cur} cell-tasks queued, headroom {headroom} < {topup_min}; sleep {poll_s:.0f}s")
+                time.sleep(poll_s)
+                continue
+            if abs_room < chunk_size:
+                # The whole chunk won't fit under the absolute QOS limit alongside my serve/
+                # loop/cell jobs. Wait for cells to drain rather than spam sbatch rejections.
+                print(f"[drive] abs cap: {total}/{qos_limit} jobs, room {abs_room} < chunk {chunk_size} "
+                      f"(serve fleet grew?); sleep {poll_s:.0f}s")
                 time.sleep(poll_s)
                 continue
             proc = subprocess.run(["sbatch", "--parsable", str(path)],
