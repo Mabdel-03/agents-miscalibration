@@ -15,10 +15,12 @@ export ASYS_HARNESS_ENV="${ASYS_HARNESS_ENV:-/home/mabdel03/conda_envs/asys_env}
 # flashinfer load it instead of /lib64/libstdc++.so.6.
 export LD_LIBRARY_PATH="$ASYS_SERVE_ENV/lib:${LD_LIBRARY_PATH:-}"
 
-# Weights stay on scratch (large regenerable cache). Results live on the tpoggio DATA
-# filesystem (8T+ free): the per-user SCRATCH quota hit EDQUOT and halted the run, so
-# outputs moved to data where the group quota has ample headroom and writes never block.
-export HF_HOME="${HF_HOME:-/orcd/scratch/orcd/012/mabdel03/.cache/huggingface}"
+# BOTH the HF cache (weights + datasets) AND results live on the tpoggio DATA filesystem
+# (8T+ free, group quota). The per-user SCRATCH quota repeatedly hit EDQUOT: first it blocked
+# results writes (moved to data 06-23), then it RECURRED and blocked cells writing HF dataset
+# .lock files because HF_HOME was still on scratch (moved to data 06-28). Keeping everything
+# on data means no run component depends on the contended scratch quota.
+export HF_HOME="${HF_HOME:-/orcd/data/tpoggio/001/mabdel03/.cache/huggingface}"
 export ASYS_RESULTS_ROOT="${ASYS_RESULTS_ROOT:-/orcd/data/tpoggio/001/mabdel03/agents_scaling_results}"
 mkdir -p "$HF_HOME" "$ASYS_RESULTS_ROOT"
 

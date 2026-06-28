@@ -140,8 +140,9 @@ class ExperimentCell:
         return cls(**{k: v for k, v in d.items() if k in known})
 
 
-# Weights stay on scratch (large, regenerable cache). Results moved to the tpoggio DATA
-# filesystem (8T+ free) after the per-user SCRATCH quota repeatedly hit EDQUOT and halted
-# the run — data has a group quota with ample headroom, so writes never block there.
-DEFAULT_HF_HOME = "/orcd/scratch/orcd/012/mabdel03/.cache/huggingface"
+# BOTH the HF cache and results live on the tpoggio DATA filesystem (8T+ free, group quota).
+# The per-user SCRATCH quota repeatedly hit EDQUOT: it blocked results writes (moved to data
+# 06-23), then recurred and blocked cells writing HF dataset .lock files (HF_HOME moved to
+# data 06-28). Nothing the run needs depends on the contended scratch quota anymore.
+DEFAULT_HF_HOME = "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface"
 DEFAULT_RESULTS_ROOT = "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results"
