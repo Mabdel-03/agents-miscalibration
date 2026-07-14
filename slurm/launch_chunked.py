@@ -31,11 +31,15 @@ REPO = Path(__file__).resolve().parent.parent
 ARRAY_TMPL = REPO / "slurm" / "run_cell_array.sbatch.tmpl"
 
 
-def _render(run_id, cells_file, lo, hi, throttle, partition, time_limit, log_dir) -> str:
+def _render(run_id, cells_file, lo, hi, throttle, partition, time_limit, log_dir,
+            mem: str = "16G") -> str:
     """Render one chunk array covering global indices [lo, hi] (inclusive)."""
     text = ARRAY_TMPL.read_text()
     # The template uses array 0-LAST%THROTTLE; for a chunk we want lo-hi%throttle.
     text = text.replace("--array=0-{LAST_INDEX}%{THROTTLE}", "--array={LO}-{HI}%{THROTTLE}")
+    # Run-scope the job name so concurrent sweeps don't count each other's cells (see
+    # _my_submitted_count). The template ships a bare `asys-cells` name.
+    text = text.replace("--job-name=asys-cells", f"--job-name=asys-cells-{run_id}")
     repl = {
         "RUN_ID": run_id,
         "CELLS_FILE": cells_file,
@@ -43,6 +47,7 @@ def _render(run_id, cells_file, lo, hi, throttle, partition, time_limit, log_dir
         "HI": str(hi),
         "THROTTLE": str(throttle),
         "PARTITION": partition,
+        "MEM": mem,
         "TIME": time_limit,
         "LOG_DIR": log_dir,
         "REPO": str(REPO),
@@ -60,6 +65,7 @@ def main() -> None:
     ap.add_argument("--throttle", type=int, default=400, help="max concurrent tasks per chunk")
     ap.add_argument("--cell-partition", default="mit_preemptable")
     ap.add_argument("--cell-time", default="2-00:00:00")
+    ap.add_argument("--cell-mem", default="16G")
     ap.add_argument("--max-chunks", type=int, default=None, help="cap chunks (debug)")
     ap.add_argument("--dry-run", action="store_true", help="render sbatches, don't submit")
     # Drive mode (default): submit one chunk at a time, waiting for the submitted-job count
@@ -121,7 +127,7 @@ def main() -> None:
     chunk_paths = []
     for ci, (lo, hi) in enumerate(chunks):
         text = _render(args.run_id, str(cells_file), lo, hi, args.throttle,
-                       args.cell_partition, args.cell_time, str(log_dir))
+                       args.cell_partition, args.cell_time, str(log_dir), mem=args.cell_mem)
         p = run_root / f"chunk_{ci:03d}_{lo}-{hi}.sbatch"
         p.write_text(text)
         chunk_paths.append((ci, lo, hi, p))
@@ -131,23 +137,24 @@ def main() -> None:
         return
 
     _drive(run_root, chunk_paths, args.submit_cap, args.poll_s,
-           qos_limit=args.qos_limit, chunk_size=args.chunk_size)
+           qos_limit=args.qos_limit, chunk_size=args.chunk_size, run_id=args.run_id)
 
 
-def _my_submitted_count() -> int:
-    """Number of my CELL array-tasks currently submitted (PD/R). `squeue -r` expands array
-    tasks to one line each.
+def _my_submitted_count(run_id: str) -> int:
+    """Number of THIS RUN's cell array-tasks currently submitted (PD/R). `squeue -r` expands
+    array tasks to one line each.
 
-    Count ONLY asys-cells tasks, NOT my serve/loop jobs. The QOS cap is shared across all my
-    jobs, but the ~21 serve replicas + 4 loop jobs are long-lived fixed overhead; counting
-    them against the cap shrinks cell headroom (and, with a full-chunk gate, deadlocks the
-    driver entirely once serve+loop+tail exceeds cap-chunk_size). We reserve that fixed
-    overhead implicitly by using a cap below the true QOS limit (448)."""
+    Scoped to ``asys-cells-<run_id>``, NOT a bare ``asys-cells`` match: when two sweeps run
+    concurrently (e.g. full_sweep_v1 + full_sweep_agent_counts_v1) a name-only count makes
+    each driver see the OTHER run's cells as its own, conclude it is at capacity, and never
+    dispatch — starving one run indefinitely. Serve/loop jobs are excluded for the same
+    reason as before (long-lived fixed overhead); the absolute --qos-limit gate in _drive()
+    is what actually protects the shared per-user QOS cap."""
     out = subprocess.run(
         ["squeue", "-u", os.environ.get("USER", ""), "-h", "-r", "-o", "%j"],
         capture_output=True, text=True,
     ).stdout
-    return sum(1 for line in out.splitlines() if line.strip() == "asys-cells")
+    return sum(1 for line in out.splitlines() if line.strip() == f"asys-cells-{run_id}")
 
 
 def _my_total_count() -> int:
@@ -171,7 +178,7 @@ def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
 
 
 def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int = 80,
-           qos_limit: int = 448, chunk_size: int = 400) -> None:
+           qos_limit: int = 448, chunk_size: int = 400, run_id: str = "") -> None:
     """Submit chunks to keep the cell-task queue TOPPED UP near ``submit_cap``.
 
     Chunks have no inter-chunk dependency (the array template carries none) and ``run_one``
@@ -202,7 +209,7 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
         # actually lands. Three wait conditions all re-poll (never crash — that would break
         # the self-resubmit chain):
         while True:
-            cur = _my_submitted_count()
+            cur = _my_submitted_count(run_id)
             total = _my_total_count()
             headroom = submit_cap - cur
             abs_room = qos_limit - total
@@ -228,7 +235,7 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
             break
         submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id})
         (run_root / "chunk_jobs.json").write_text(json.dumps(submitted_log, indent=2))
-        print(f"[drive] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (cell-tasks now: {_my_submitted_count()})")
+        print(f"[drive] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (cell-tasks now: {_my_submitted_count(run_id)})")
         # brief settle so squeue reflects the new tasks before the next headroom check
         time.sleep(10)
     print(f"[drive] all {len(chunk_paths)} chunks dispatched; results under {run_root}/cells/")

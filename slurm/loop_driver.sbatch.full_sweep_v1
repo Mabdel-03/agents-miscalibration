@@ -27,5 +27,5 @@ cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
 exec python -u slurm/launch_chunked.py \
   --config configs/full_sweep.yaml \
   --run-id "full_sweep_v1" \
-  --chunk-size 200 --throttle 240 --submit-cap 400 --qos-limit 448 \
+  --chunk-size 50 --throttle 240 --submit-cap 400 --qos-limit 448 \
   --cell-partition mit_preemptable --cell-time 2-00:00:00
