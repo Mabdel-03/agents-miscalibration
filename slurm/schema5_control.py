@@ -7556,6 +7556,12 @@ def submit_controller_intent(
                     f"controller job {current_target['job_id']} for {role} is inside "
                     "scheduler visibility grace"
                 )
+            if current_target is not None:
+                raise SchedulerAmbiguity(
+                    f"accepted controller job {current_target['job_id']} for {role} "
+                    "disappeared from complete squeue+sacct truth; refusing to "
+                    "submit a potentially duplicate replacement"
+                )
         intent = role_state.get("submission_intent")
         if isinstance(intent, dict) and intent.get("state") == "submitting":
             if bool(intent.get("hold", False)) != bool(hold):
@@ -8286,7 +8292,10 @@ def _submit_drill_intent_inside_boundary(
                     raise SchedulerVisibilityPending(
                         "recorded drill job is inside scheduler visibility grace"
                     )
-                row[target] = None
+                raise SchedulerAmbiguity(
+                    f"accepted drill job {current['job_id']} disappeared from complete "
+                    "squeue+sacct truth; refusing a duplicate replacement"
+                )
         intent = row.get("submission_intent")
         if isinstance(intent, dict):
             matches = _drill_token_jobs(scheduler, str(intent["job_token"]))

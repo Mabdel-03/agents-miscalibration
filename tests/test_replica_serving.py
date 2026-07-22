@@ -1,5 +1,6 @@
 """Replica-aware serving: distinct ports per replica + keepalive spec parsing."""
 
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -1259,6 +1260,43 @@ def test_production_fleet_empty_scheduler_launches_exact_contract(tmp_path, monk
         attempt["scheduler_comment"].startswith("asys-s5-fleet:")
         for _replica, attempt in calls
     )
+
+
+def test_accepted_fleet_id_absence_never_retries_duplicate(tmp_path, monkeypatch):
+    import keepalive
+    from agents_scaling.serving.fleet_contract import load_fleet_contract
+    from agents_scaling.serving.model_contracts import load_model_contracts
+
+    contracts = load_model_contracts()
+    fleet = _one_replica_fleet(
+        load_fleet_contract(None, model_contracts=contracts)
+    )
+    root = tmp_path / "server_pools" / "schema5-v1"
+    root.mkdir(parents=True)
+    launch_options = _frozen_environment_render_kwargs(tmp_path)
+    launch_options["model_contract_sha256"] = contracts.sha256
+    monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: ())
+
+    keepalive.tick_fleet(
+        str(root),
+        fleet,
+        launch_options=launch_options,
+        now=10.0,
+        submission_runner=lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, "321\n", ""
+        ),
+    )
+
+    with pytest.raises(keepalive.FleetContractError, match="duplicate replacement"):
+        keepalive.tick_fleet(
+            str(root),
+            fleet,
+            launch_options=launch_options,
+            now=400.0,
+            submission_runner=lambda *_args, **_kwargs: pytest.fail(
+                "accepted fleet job must never be resubmitted while ambiguous"
+            ),
+        )
 
 
 def test_production_fleet_adopts_only_exact_rendered_runtime_and_scheduler_comment(

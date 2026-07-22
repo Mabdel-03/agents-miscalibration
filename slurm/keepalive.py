@@ -1298,7 +1298,19 @@ def tick_fleet(
                                 "unsubmitted intent superseded by a newer rollout generation"
                             )
                             changed = True
-                        elif state in {"submitting", "submitted"} and age >= grace:
+                        elif state == "submitted" and age >= grace:
+                            # A numeric job ID returned by sbatch is positive acceptance
+                            # evidence.  If that exact ID is absent from both complete
+                            # scheduler views, replacing it would turn accounting lag or
+                            # scheduler ambiguity into a duplicate GPU allocation.  Keep
+                            # the accepted intent fenced and require operator/scheduler
+                            # reconciliation instead of converting it into a retry.
+                            raise FleetContractError(
+                                f"accepted fleet job {attempt.get('job_id')} for "
+                                f"{replica.replica_id} disappeared from complete "
+                                "squeue+sacct truth; refusing a duplicate replacement"
+                            )
+                        elif state == "submitting" and age >= grace:
                             # Old-generation scripts are never resubmitted after a
                             # pause/resume.  Current generation retries the same token and
                             # path after complete joined-scheduler absence.
@@ -1364,12 +1376,15 @@ def tick_fleet(
                     retry = failed[-1]
                     retry_basis = retry["submit_started_at"] or retry["created_at"]
                     if timestamp - float(retry_basis) >= grace:
+                        submission_timestamp = (
+                            timestamp if now is not None else time.time()
+                        )
                         job_id = fleet_tx.submit_attempt(
                             directory,
                             ledger,
                             replica_id=replica.replica_id,
                             attempt=retry,
-                            now=timestamp,
+                            now=submission_timestamp,
                             runner=submission_runner,
                         )
                         print(
@@ -1389,12 +1404,15 @@ def tick_fleet(
                         sbatch_text=current_script,
                         now=timestamp,
                     )
+                    submission_timestamp = (
+                        timestamp if now is not None else time.time()
+                    )
                     job_id = fleet_tx.submit_attempt(
                         directory,
                         ledger,
                         replica_id=replica.replica_id,
                         attempt=attempt,
-                        now=timestamp,
+                        now=submission_timestamp,
                         runner=submission_runner,
                     )
                     print(
@@ -1402,12 +1420,15 @@ def tick_fleet(
                         f"{replica.partition} -> job {job_id}"
                     )
                 elif current[0]["state"] == "prepared":
+                    submission_timestamp = (
+                        timestamp if now is not None else time.time()
+                    )
                     job_id = fleet_tx.submit_attempt(
                         directory,
                         ledger,
                         replica_id=replica.replica_id,
                         attempt=current[0],
-                        now=timestamp,
+                        now=submission_timestamp,
                         runner=submission_runner,
                     )
                     print(

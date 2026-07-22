@@ -2438,6 +2438,34 @@ def test_submission_persists_intent_and_commits_exact_job_id_once(tmp_path):
     assert same["job_id"] == "321"
 
 
+def test_accepted_controller_id_absence_never_triggers_duplicate_submission(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    submitted = control.submit_controller_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id="700",
+        scheduler=control.SchedulerSnapshot((), 51.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "321\n", ""),
+        now=51.0,
+    )
+
+    with pytest.raises(control.SchedulerAmbiguity, match="duplicate replacement"):
+        control.submit_controller_intent(
+            state_dir,
+            role="dispatcher",
+            target="successor",
+            dependency_job_id="700",
+            scheduler=control.SchedulerSnapshot((), 400.0),
+            submit_runner=lambda _argv: pytest.fail("must not resubmit accepted job"),
+            now=400.0,
+        )
+    persisted = control.load_control(state_dir)["controllers"]["dispatcher"]
+    assert persisted["successor"]["job_id"] == submitted["job_id"] == "321"
+
+
 def test_running_successor_does_not_expire_historical_fleet_launch_gate(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
@@ -2560,7 +2588,18 @@ def test_role_singleton_lock_is_cross_process_visible(tmp_path):
 def test_repair_chain_is_idempotent_for_two_roles(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
-    resume_ready(state_dir, now=50.0)
+    _, initial_jobs = resume_ready(state_dir, now=50.0)
+    terminal_jobs = tuple(
+        control.SchedulerJob(
+            job.job_id,
+            job.job_name,
+            "COMPLETED",
+            job.comment,
+            job.command,
+            source="sacct",
+        )
+        for job in initial_jobs
+    )
     ids = iter(("800", "801"))
     first_calls = []
 
@@ -2570,7 +2609,7 @@ def test_repair_chain_is_idempotent_for_two_roles(tmp_path):
 
     result = control.repair_chains(
         state_dir,
-        snapshot=control.SchedulerSnapshot((), 240.0),
+        snapshot=control.SchedulerSnapshot(terminal_jobs, 240.0),
         submit_runner=submit,
         now=240.0,
     )
