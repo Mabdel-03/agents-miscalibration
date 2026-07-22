@@ -1366,6 +1366,7 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
     ledger["intents"][batch_id] = {
         "state": "submitting",
         "created_at": 10.0,
+        "submit_started_at": 11.0,
         "batch_manifest": str(manifest),
         "batch_manifest_sha256": manifest_sha256,
         "sbatch_path": str(sbatch),
@@ -1424,6 +1425,7 @@ def test_intent_reconciliation_allows_blank_sacct_comment_only_with_exact_path(
     ledger["intents"][batch_id] = {
         "state": "submitting",
         "created_at": 10.0,
+        "submit_started_at": 11.0,
         "batch_manifest": str(manifest),
         "batch_manifest_sha256": manifest_sha256,
         "sbatch_path": str(sbatch),
@@ -1468,6 +1470,89 @@ def test_intent_reconciliation_allows_blank_sacct_comment_only_with_exact_path(
         second, scheduler_snapshot=SimpleNamespace(jobs=(wrong_path,)), now=20.0
     )
     assert errors and "provenance drift" in errors[0]
+
+
+def test_intent_visibility_grace_starts_at_durable_sbatch_boundary(tmp_path):
+    batch_id = "20260721T000000-grace"
+    manifest = tmp_path / f"batch-{batch_id}.json"
+    sbatch = tmp_path / f"batch-{batch_id}.sbatch"
+    manifest.write_text("{}\n", encoding="utf-8")
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    ledger = ds._empty_ledger()
+    ledger["intents"][batch_id] = {
+        "state": "submitting",
+        "created_at": 1.0,
+        "submit_started_at": 990.0,
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": ds._seal_dispatch_artifact(manifest),
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": ds._seal_dispatch_artifact(sbatch),
+        "tasks": [],
+        "fairness_after": {"cursor": 0, "deficits": {}},
+        "fairness_committed": False,
+    }
+
+    warnings, errors = ds._reconcile_schema5_intents(
+        ledger, scheduler_snapshot=SimpleNamespace(jobs=()), now=1_000.0
+    )
+    assert not warnings and not errors
+    assert ledger["intents"][batch_id]["state"] == "submitting"
+
+    warnings, errors = ds._reconcile_schema5_intents(
+        ledger, scheduler_snapshot=SimpleNamespace(jobs=()), now=1_301.0
+    )
+    assert not errors and warnings
+    assert ledger["intents"][batch_id]["state"] == "not_accepted"
+
+
+def test_known_accepted_intent_cannot_silently_disappear(tmp_path):
+    batch_id = "20260721T000000-known"
+    manifest = tmp_path / f"batch-{batch_id}.json"
+    sbatch = tmp_path / f"batch-{batch_id}.sbatch"
+    manifest.write_text("{}\n", encoding="utf-8")
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    task = {"run_id": "run", "cell_id": "cell"}
+    ledger = ds._empty_ledger()
+    ledger["intents"][batch_id] = {
+        "state": "submitted",
+        "created_at": 1.0,
+        "submit_started_at": 990.0,
+        "submitted_at": 991.0,
+        "job_id": "321",
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": ds._seal_dispatch_artifact(manifest),
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": ds._seal_dispatch_artifact(sbatch),
+        "tasks": [task],
+        "fairness_after": {"cursor": 0, "deficits": {}},
+        "fairness_committed": True,
+    }
+    ledger["jobs"]["321"] = {
+        "job_id": "321",
+        "batch_id": batch_id,
+        "state": "submitted",
+        "tasks": [task],
+        "batch_manifest_sha256": ledger["intents"][batch_id][
+            "batch_manifest_sha256"
+        ],
+        "sbatch_sha256": ledger["intents"][batch_id]["sbatch_sha256"],
+    }
+
+    warnings, errors = ds._reconcile_schema5_intents(
+        ledger, scheduler_snapshot=SimpleNamespace(jobs=()), now=1_000.0
+    )
+    assert not warnings and not errors
+
+    _warnings, errors = ds._reconcile_schema5_intents(
+        ledger, scheduler_snapshot=SimpleNamespace(jobs=()), now=1_301.0
+    )
+    assert errors and "accepted intent" in errors[0]
+
+    ledger["jobs"]["321"]["state"] = "terminal"
+    _warnings, errors = ds._reconcile_schema5_intents(
+        ledger, scheduler_snapshot=SimpleNamespace(jobs=()), now=1_301.0
+    )
+    assert not errors
 
 
 def test_schema5_task_runtime_environment_rejects_missing_or_untrusted_keys():

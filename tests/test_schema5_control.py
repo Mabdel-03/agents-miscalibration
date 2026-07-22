@@ -3173,7 +3173,10 @@ def test_pause_fails_closed_while_accepted_cell_is_inside_visibility_grace(tmp_p
                 "intents": {
                     "batch1": {
                         "state": "submitted",
-                        "created_at": 55.0,
+                        # A long validation/planning poll may predate the actual
+                        # scheduler boundary by far more than the visibility grace.
+                        "created_at": 1.0,
+                        "submit_started_at": 55.0,
                         "job_id": "900",
                         "sbatch_path": str(sbatch_path),
                     }
@@ -3208,7 +3211,8 @@ def test_pause_can_cancel_visible_idless_ambiguous_submit_by_exact_intent(tmp_pa
                 "intents": {
                     "batch1": {
                         "state": "submitting",
-                        "created_at": 55.0,
+                        "created_at": 1.0,
+                        "submit_started_at": 55.0,
                         "job_id": None,
                         "sbatch_path": str(sbatch_path),
                     }

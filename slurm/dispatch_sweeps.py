@@ -896,7 +896,7 @@ def _intent_visibility_started_at(intent: Mapping[str, Any]) -> float | None:
 
     field = (
         "submit_started_at"
-        if intent.get("state") == "submitting"
+        if intent.get("state") in {"submitting", "submitted", "reconciled"}
         else "created_at"
     )
     value = intent.get(field)
@@ -921,7 +921,13 @@ def _reconcile_schema5_intents(
     warnings: list[str] = []
     errors: list[str] = []
     for batch_id, intent in ledger.get("intents", {}).items():
-        if intent.get("state") not in {"prepared", "submitting"}:
+        intent_state = intent.get("state")
+        if intent_state not in {
+            "prepared",
+            "submitting",
+            "submitted",
+            "reconciled",
+        }:
             continue
         visibility_started_at = _intent_visibility_started_at(intent)
         if visibility_started_at is None:
@@ -991,6 +997,24 @@ def _reconcile_schema5_intents(
             continue
         if not matching_by_base:
             age = max(0.0, now - visibility_started_at)
+            recorded_job_id = intent.get("job_id")
+            recorded_job = (
+                ledger.get("jobs", {}).get(str(recorded_job_id))
+                if recorded_job_id is not None
+                else None
+            )
+            if intent_state in {"submitted", "reconciled"}:
+                if (
+                    isinstance(recorded_job, dict)
+                    and recorded_job.get("state") in {"terminal", "inactive"}
+                ):
+                    continue
+                if age >= visibility_grace_s:
+                    errors.append(
+                        f"accepted intent {batch_id} job {recorded_job_id} disappeared "
+                        "from complete squeue+sacct truth"
+                    )
+                continue
             if age >= visibility_grace_s:
                 intent.update(
                     {
@@ -1002,6 +1026,13 @@ def _reconcile_schema5_intents(
                 warnings.append(f"intent {batch_id} was not accepted by Slurm")
             continue
         job_id, matching = next(iter(matching_by_base.items()))
+        recorded_job_id = intent.get("job_id")
+        if recorded_job_id is not None and str(recorded_job_id) != job_id:
+            errors.append(
+                f"intent {batch_id} records job {recorded_job_id} but scheduler "
+                f"provenance maps job {job_id}"
+            )
+            continue
         tasks = intent.get("tasks")
         if not isinstance(tasks, list):
             errors.append(f"intent {batch_id} has invalid task payload")
@@ -2508,6 +2539,7 @@ def _dispatch_poll(
                 # scheduler visibility instead of declaring an empty cut.
                 _atomic_write_json(args.ledger_path, work)
             else:
+                accepted_at = time.time()
                 _record_submission(
                     work,
                     job_id=job_id,
@@ -2515,7 +2547,7 @@ def _dispatch_poll(
                     manifest_path=manifest_path,
                     sbatch_path=sbatch_path,
                     batch=batch,
-                    now=now,
+                    now=accepted_at,
                 )
                 submission = {
                     "job_id": job_id,
