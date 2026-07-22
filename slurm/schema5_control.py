@@ -5909,58 +5909,136 @@ def record_admission_ramp_observation(
         return control
 
 
-def _submit_line_comment(command: str, *, source: str) -> str | None:
-    """Recover one scheduler token from an accounting SubmitLine.
+def _submit_line_option(
+    command: str, *, source: str, option: str
+) -> str | None:
+    """Recover one exact long option from an accounting SubmitLine.
 
     ``AccountingStoreFlags=(null)`` on the production cluster means sacct's Comment
-    field is empty.  Controller/fleet submissions also place the exact token on the
-    sbatch CLI, whose SubmitLine *is* retained.  Duplicate or malformed options are an
-    ambiguity rather than permission to guess.
+    field is empty, and this Slurm build cannot expose Dependency through ``sacct``.
+    Both values are nevertheless retained on the immutable sbatch SubmitLine. Duplicate,
+    empty, or malformed options are an ambiguity rather than permission to guess.
     """
 
+    flag = "--" + option
+    if flag not in command:
+        return None
     try:
         tokens = shlex.split(command)
     except ValueError as exc:
         raise SchedulerAmbiguity(f"invalid {source} SubmitLine quoting: {exc}") from exc
     values: list[str] = []
     for index, token in enumerate(tokens):
-        if token.startswith("--comment="):
-            values.append(token.split("=", 1)[1])
-        elif token == "--comment":
-            if index + 1 >= len(tokens):
+        if token.startswith(flag + "="):
+            value = token.split("=", 1)[1]
+            if not value:
                 raise SchedulerAmbiguity(
-                    f"{source} SubmitLine contains a valueless --comment"
+                    f"{source} SubmitLine contains a valueless {flag}"
+                )
+            values.append(value)
+        elif token == flag:
+            if index + 1 >= len(tokens) or tokens[index + 1].startswith("--"):
+                raise SchedulerAmbiguity(
+                    f"{source} SubmitLine contains a valueless {flag}"
                 )
             values.append(tokens[index + 1])
     if len(values) > 1:
         raise SchedulerAmbiguity(
-            f"{source} SubmitLine contains duplicate --comment options"
+            f"{source} SubmitLine contains duplicate {flag} options"
         )
     return values[0] if values else None
+
+
+def _submit_line_comment(command: str, *, source: str) -> str | None:
+    return _submit_line_option(command, source=source, option="comment")
+
+
+def _submit_line_dependency(command: str, *, source: str) -> str | None:
+    return _submit_line_option(command, source=source, option="dependency")
+
+
+_SACCT_JOB_ID_RAW_RE = re.compile(
+    r"[0-9]+(?:[_+][0-9]+)?(?:\.[A-Za-z0-9_-]+)?"
+)
+
+
+def _scheduler_physical_records(
+    text: str, *, source: str
+) -> list[tuple[int, str]]:
+    """Reassemble sacct records whose final SubmitLine contains literal newlines.
+
+    ``sacct -P`` does not escape newlines in its last field. Historical ``srun`` and
+    ``sbatch --wrap`` commands can therefore occupy several physical output lines.
+    JobIDRaw is scheduler-owned and gives an unambiguous start marker; continuation
+    text is retained byte-for-byte (apart from ``splitlines`` newline normalization).
+    Live squeue rows use a final Dependency field and are one physical line on this
+    cluster, so they remain strict one-line records.
+    """
+
+    if source != "sacct":
+        return list(enumerate(text.splitlines(), start=1))
+    records: list[tuple[int, str]] = []
+    for line_number, physical_line in enumerate(text.splitlines(), start=1):
+        candidate = physical_line.split("|", 4)
+        starts_record = (
+            len(candidate) == 5
+            and _SACCT_JOB_ID_RAW_RE.fullmatch(candidate[0].strip()) is not None
+            and bool(candidate[1].strip())
+            and bool(candidate[2].strip())
+        )
+        if starts_record:
+            records.append((line_number, physical_line))
+        elif records:
+            start, existing = records[-1]
+            records[-1] = (start, existing + "\n" + physical_line)
+        elif physical_line.strip():
+            raise SchedulerAmbiguity(
+                f"malformed sacct scheduler row {line_number}: {physical_line!r}"
+            )
+    return records
 
 
 def parse_scheduler_rows(text: str, *, source: str) -> list[SchedulerJob]:
     """Parse the common scheduler row, including scheduler-owned dependency state."""
     rows: list[SchedulerJob] = []
-    for line_number, raw in enumerate(text.splitlines(), start=1):
+    for line_number, raw in _scheduler_physical_records(text, source=source):
         if not raw.strip():
             continue
-        fields = raw.rstrip("\n").split("|", 5)
-        if len(fields) != 6:
+        if source == "sacct":
+            fields = raw.rstrip("\n").split("|", 4)
+            expected_fields = 5
+        elif source == "squeue":
+            fields = raw.rstrip("\n").split("|", 5)
+            expected_fields = 6
+        else:
+            raise SchedulerAmbiguity(f"unsupported scheduler row source {source!r}")
+        if len(fields) != expected_fields:
             raise SchedulerAmbiguity(
                 f"malformed {source} scheduler row {line_number}: {raw!r}"
             )
-        job_id, name, state, comment, command, dependency = (
-            field.strip() for field in fields
-        )
         if source == "sacct":
-            derived = _submit_line_comment(command, source=source)
+            job_id, name, state, comment, command = (
+                field.strip() for field in fields
+            )
             stored = "" if comment.lower() in {"", "(null)", "null", "none"} else comment
-            if stored and derived and stored != derived:
-                raise SchedulerAmbiguity(
-                    f"sacct Comment/SubmitLine conflict for job {job_id}"
-                )
-            comment = stored or derived or ""
+            if "." in job_id:
+                # Accounting steps are discarded by ``query_scheduler`` and can carry
+                # arbitrary multiline shell fragments rather than an sbatch command.
+                # Do not ask shlex to reinterpret those unrelated payloads.
+                comment = stored
+                dependency = ""
+            else:
+                derived = _submit_line_comment(command, source=source)
+                dependency = _submit_line_dependency(command, source=source) or ""
+                if stored and derived and stored != derived:
+                    raise SchedulerAmbiguity(
+                        f"sacct Comment/SubmitLine conflict for job {job_id}"
+                    )
+                comment = stored or derived or ""
+        else:
+            job_id, name, state, comment, command, dependency = (
+                field.strip() for field in fields
+            )
         if not job_id or not name or not state:
             raise SchedulerAmbiguity(
                 f"incomplete {source} scheduler row {line_number}: {raw!r}"
@@ -5987,6 +6065,15 @@ def _run_subprocess(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         check=False,
         timeout=15.0,
     )
+
+
+def _normalized_scheduler_dependency(value: str) -> str:
+    """Normalize only squeue's display annotations for cross-source comparison."""
+
+    stripped = value.strip()
+    if stripped.lower() in {"", "(null)", "null", "none"}:
+        return ""
+    return re.sub(r"\([^()]*\)", "", stripped)
 
 
 def query_scheduler(
@@ -6025,7 +6112,7 @@ def query_scheduler(
                 "-P",
                 "-S",
                 time.strftime("%Y-%m-%d", time.localtime(timestamp - 7 * 86_400)),
-                "--format=JobIDRaw,JobName,State,Comment,SubmitLine,Dependency",
+                "--format=JobIDRaw,JobName,State,Comment,SubmitLine",
             ],
         ),
     )
@@ -6066,12 +6153,27 @@ def query_scheduler(
                 raise SchedulerAmbiguity(
                     f"squeue/sacct identity conflict for scheduler job {row.job_id}"
                 )
+            live_dependency = _normalized_scheduler_dependency(row.dependency)
+            accounting_dependency = (
+                _normalized_scheduler_dependency(prior.dependency)
+                if prior is not None
+                else ""
+            )
             if (
                 source == "squeue"
                 and prior is not None
-                and row.dependency.strip().lower() in {"", "(null)", "null", "none"}
-                and prior.dependency.strip().lower()
-                not in {"", "(null)", "null", "none"}
+                and live_dependency
+                and accounting_dependency
+                and live_dependency != accounting_dependency
+            ):
+                raise SchedulerAmbiguity(
+                    f"squeue/sacct dependency conflict for scheduler job {row.job_id}"
+                )
+            if (
+                source == "squeue"
+                and prior is not None
+                and not live_dependency
+                and bool(accounting_dependency)
             ):
                 # A satisfied dependency may disappear from live ``squeue %E`` while
                 # accounting retains the immutable submission edge.  Keep live state

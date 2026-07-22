@@ -43,11 +43,13 @@ worktree is revalidated clean immediately after installation.
 ## Materialize
 
 First finish and test the source, create the exact tag
-`sweep-recovery-schema5-v1.1`, and make a fresh detached checkout containing only that
-tag's tracked files. The materializer rejects a source checkout whose `HEAD`, status,
-or source-tree hash differs from the tag. Do not use the development checkout, whose
-supplementary analysis artifacts are intentionally retained. Then choose empty
-destination paths.
+`sweep-recovery-schema5-v1.1-r1`, and make the fresh detached
+`release_source_checkout_v1_1_r1` checkout containing only that tag's tracked files.
+The operational retry tag is distinct from the unchanged production artifact ID
+`sweep-recovery-schema5-v1.1`. The materializer rejects a source checkout whose `HEAD`,
+status, or source-tree hash differs from the tag. Do not reuse the cancelled v1.1
+checkout or use the development checkout, whose supplementary analysis artifacts are
+intentionally retained. Then choose empty destination paths.
 The following is a dry run because it omits `--apply`:
 
 ```bash
@@ -56,7 +58,7 @@ schema5_conda=/orcd/data/lhtsai/001/om2/mabdel03/miniforge3/bin/conda
 
 python scripts/materialize_schema5_release.py materialize \
   --output-root "$schema5_release_base" \
-  --source-repository /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/recovery/schema5-v1/release_source_checkout_v1_1 \
+  --source-repository /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/recovery/schema5-v1/release_source_checkout_v1_1_r1 \
   --release-worktree "$schema5_release_base/worktree" \
   --source-harness-prefix /orcd/home/002/mabdel03/conda_envs/asys_env \
   --source-serving-prefix /orcd/home/002/mabdel03/conda_envs/serve_env \

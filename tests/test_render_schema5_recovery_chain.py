@@ -1,4 +1,4 @@
-"""Safety and crash-boundary tests for the schema-5 v1.1 recovery DAG."""
+"""Safety and crash-boundary tests for the schema-5 v1.1-r1 recovery DAG."""
 
 from __future__ import annotations
 
@@ -191,6 +191,59 @@ def test_render_dry_run_is_read_only_and_reports_fences(
     assert before == after
 
 
+def test_r1_render_uses_fresh_operational_paths_and_preserves_failed_v11(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _make_paths(tmp_path)
+    recovery = paths.recovery_root
+    old_files = [
+        recovery / "RECOVERY_CHAIN_SCHEMA5_V1_1.json",
+        recovery / ".RECOVERY_CHAIN_SCHEMA5_V1_1.submission.json",
+        recovery / "RECOVERY_CHAIN_SCHEMA5_V1_1_SUBMISSION.json",
+        recovery / ".RECOVERY_CHAIN_SCHEMA5_V1_1.render.lock",
+        recovery / ".RECOVERY_CHAIN_SCHEMA5_V1_1.submit.lock",
+        recovery / "release_source_checkout_v1_1" / "old-checkout.txt",
+        recovery / "jobs" / "schema5-v1.1" / "old-job.sbatch",
+        recovery / "logs" / "schema5-v1.1" / "old-job.out",
+        recovery / "recovery_chain_repairs" / "old-repair.json",
+    ]
+    for index, path in enumerate(old_files):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"cancelled-v1.1-evidence-{index}\n", encoding="utf-8")
+    before = {
+        path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mode)
+        for path in old_files
+    }
+    monkeypatch.setattr(
+        chain,
+        "verify_release_tag",
+        lambda repository: {"release_tag": chain.RELEASE_TAG, "git_commit": COMMIT},
+    )
+
+    report = chain.render_chain(paths, slurm_user="tester", apply=True)
+
+    assert report["status"] == "complete"
+    assert chain.RELEASE_ID == "sweep-recovery-schema5-v1.1"
+    assert chain.RELEASE_TAG == "sweep-recovery-schema5-v1.1-r1"
+    assert paths.source_checkout == recovery / "release_source_checkout_v1_1_r1"
+    assert paths.jobs_root == recovery / "jobs" / "schema5-v1.1-r1"
+    assert paths.logs_root == recovery / "logs" / "schema5-v1.1-r1"
+    assert paths.chain_manifest == recovery / "RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
+    assert chain.SUBMISSION_JOURNAL_NAME == (
+        ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submission.json"
+    )
+    assert chain.SUBMISSION_RECEIPT_NAME == (
+        "RECOVERY_CHAIN_SCHEMA5_V1_1_R1_SUBMISSION.json"
+    )
+    assert chain.RENDER_LOCK_NAME == ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.render.lock"
+    assert chain.SUBMISSION_LOCK_NAME == ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submit.lock"
+    assert chain.REPAIR_ROOT_NAME == "recovery_chain_repairs_v1_1_r1"
+    assert {
+        path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mode)
+        for path in old_files
+    } == before
+
+
 def test_render_verify_and_idempotent_reentry(
     rendered: chain.RecoveryPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -345,7 +398,7 @@ def test_dag_validator_rejects_missing_gate(rendered: chain.RecoveryPaths) -> No
         resume.cpus,
         resume.body,
     )
-    with pytest.raises(chain.ChainError, match="fixed v1.1 job contract"):
+    with pytest.raises(chain.ChainError, match="fixed v1.1-r1 job contract"):
         chain._validate_dag(specs)
 
 
@@ -423,7 +476,7 @@ def test_crash_after_scheduler_acceptance_reconciles_without_duplicate(
     report = chain.submit_chain(rendered.chain_manifest, apply=True, runner=slurm, now=101.0)
     assert report["status"] == "submitted"
     assert len(slurm.jobs) == 20
-    assert sum(job["job_name"] == "asys-s5v11-checkout" for job in slurm.jobs) == 1
+    assert sum(job["job_name"] == "asys-s5v11r1-checkout" for job in slurm.jobs) == 1
 
 
 def test_terminal_job_with_blank_sacct_comment_reconciles_from_submit_line(
@@ -447,7 +500,7 @@ def test_terminal_job_with_blank_sacct_comment_reconciles_from_submit_line(
     )
     assert report["status"] == "submitted"
     assert len(slurm.jobs) == len(chain.EXPECTED_JOB_ORDER)
-    assert sum(job["job_name"] == "asys-s5v11-checkout" for job in slurm.jobs) == 1
+    assert sum(job["job_name"] == "asys-s5v11r1-checkout" for job in slurm.jobs) == 1
 
 
 def test_sacct_comment_submit_line_conflict_fails_closed(
@@ -460,7 +513,7 @@ def test_sacct_comment_submit_line_conflict_fails_closed(
     slurm.jobs[0]["state"] = "COMPLETED"
     slurm.jobs[0]["submit_line"] = slurm.jobs[0]["submit_line"].replace(
         slurm.jobs[0]["comment"],
-        "asys:s5-recovery-v1.1:conflict:g0000:source_checkout",
+        "asys:s5-recovery-v1.1-r1:conflict:g0000:source_checkout",
     )
     with pytest.raises(chain.ChainError, match="comment/SubmitLine conflict"):
         chain.submit_chain(
@@ -599,7 +652,7 @@ def test_repair_dry_run_and_apply_resubmit_only_failed_suffix(
     slurm = FakeSlurm()
     chain.submit_chain(rendered.chain_manifest, apply=True, runner=slurm, now=900.0)
     slurm.complete_all()
-    slurm.set_latest_state("asys-s5v11-resume", "FAILED")
+    slurm.set_latest_state("asys-s5v11r1-resume", "FAILED")
 
     before = len(slurm.sbatch_calls)
     dry_run = chain.repair_chain(
@@ -638,7 +691,7 @@ def test_repair_dry_run_and_apply_resubmit_only_failed_suffix(
 
     live = chain.repair_chain(rendered.chain_manifest, runner=slurm, now=903.0)
     assert live["status"] == "in_progress"
-    slurm.set_latest_state("asys-s5v11-resume", "COMPLETED")
+    slurm.set_latest_state("asys-s5v11r1-resume", "COMPLETED")
     done = chain.repair_chain(rendered.chain_manifest, runner=slurm, now=904.0)
     assert done["status"] == "complete"
     assert done["receipt"] == str(repair_receipt)
@@ -650,7 +703,7 @@ def test_repair_reads_blank_sacct_comment_from_submit_line(
     slurm = FakeSlurm()
     chain.submit_chain(rendered.chain_manifest, apply=True, runner=slurm, now=950.0)
     slurm.complete_all()
-    slurm.set_latest_state("asys-s5v11-resume", "FAILED")
+    slurm.set_latest_state("asys-s5v11r1-resume", "FAILED")
     slurm.blank_sacct_comments = True
 
     report = chain.repair_chain(rendered.chain_manifest, runner=slurm, now=951.0)
@@ -664,7 +717,7 @@ def test_repair_crash_after_acceptance_observes_visibility_grace(
     slurm = FakeSlurm()
     chain.submit_chain(rendered.chain_manifest, apply=True, runner=slurm, now=1000.0)
     slurm.complete_all()
-    slurm.set_latest_state("asys-s5v11-resume", "FAILED")
+    slurm.set_latest_state("asys-s5v11r1-resume", "FAILED")
     slurm.crash_after_accept_once = True
     with pytest.raises(RuntimeError, match="scheduler acceptance"):
         chain.repair_chain(
@@ -722,7 +775,7 @@ def test_pending_repair_journal_tamper_fails_closed(
     slurm = FakeSlurm()
     chain.submit_chain(rendered.chain_manifest, apply=True, runner=slurm, now=1200.0)
     slurm.complete_all()
-    slurm.set_latest_state("asys-s5v11-resume", "FAILED")
+    slurm.set_latest_state("asys-s5v11r1-resume", "FAILED")
     slurm.crash_after_accept_once = True
     with pytest.raises(RuntimeError):
         chain.repair_chain(
@@ -763,7 +816,7 @@ def test_quarantine_rejects_tampered_empty_pending_repair_journal(
     started = 1251.0
     journal = {
         "schema_version": chain.SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.1-recovery-chain-repair-journal",
+        "protocol": "schema5-v1.1-r1-recovery-chain-repair-journal",
         "chain_id": "tampered-chain-id",
         "repair_generation": 1,
         "base_receipt": str(receipt_path),
@@ -793,7 +846,7 @@ def test_repair_receipt_cannot_rebind_reused_parent_job(
     slurm = FakeSlurm()
     chain.submit_chain(rendered.chain_manifest, apply=True, runner=slurm, now=1300.0)
     slurm.complete_all()
-    slurm.set_latest_state("asys-s5v11-resume", "FAILED")
+    slurm.set_latest_state("asys-s5v11r1-resume", "FAILED")
     chain.repair_chain(rendered.chain_manifest, apply=True, runner=slurm, now=1301.0)
     receipt_path = (
         rendered.recovery_root

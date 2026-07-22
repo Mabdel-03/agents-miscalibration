@@ -4,7 +4,8 @@
 This tool deliberately does not create a Git worktree, install an environment, or
 submit scheduler jobs.  It seals identities that an operator has already materialized:
 
-* a clean worktree at the exact ``sweep-recovery-schema5-v1.1`` tag;
+* a clean worktree at the exact operational retry tag
+  ``sweep-recovery-schema5-v1.1-r1``;
 * harness and serving Conda prefixes, including reproducible Conda/pip locks;
 * the frozen Qwen model/tokenizer contract; and
 * the canonical 22-replica/24-GPU fleet contract.
@@ -69,7 +70,7 @@ RELEASE_SCHEMA_VERSION = 1
 ENVIRONMENT_SCHEMA_VERSION = 1
 FLEET_SCHEMA_VERSION = 1
 RELEASE_ID = "sweep-recovery-schema5-v1.1"
-REQUIRED_GIT_TAG = RELEASE_ID
+REQUIRED_GIT_TAG = "sweep-recovery-schema5-v1.1-r1"
 FLEET_ID = "schema5-v1"
 HARNESS_MANIFEST_FILENAME = "harness_environment.schema5-v1.json"
 SERVING_MANIFEST_FILENAME = "serving_environment.schema5-v1.json"

@@ -35,7 +35,7 @@ def _tagged_repository(root: Path) -> Path:
         "-a",
         chain.RELEASE_TAG,
         "-m",
-        "immutable schema5 v1.1",
+        "immutable schema5 v1.1-r1 operational retry",
         cwd=root,
     )
     return root
@@ -157,11 +157,14 @@ def _terminal_scheduler_runner(
 def test_rendered_chain_is_fresh_immutable_and_fail_closed(tmp_path: Path):
     paths, manifest = _rendered(tmp_path)
 
-    assert paths.jobs_root == paths.recovery_root / "jobs" / "schema5-v1.1"
-    assert paths.chain_manifest.name == "RECOVERY_CHAIN_SCHEMA5_V1_1.json"
+    assert paths.jobs_root == paths.recovery_root / "jobs" / "schema5-v1.1-r1"
+    assert paths.logs_root == paths.recovery_root / "logs" / "schema5-v1.1-r1"
+    assert paths.chain_manifest.name == "RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
     assert manifest["release_id"] == "sweep-recovery-schema5-v1.1"
+    assert manifest["release_tag"] == "sweep-recovery-schema5-v1.1-r1"
+    assert manifest["namespace"] == "schema5-v1.1-r1"
     assert manifest["partition"] == "mit_normal"
-    assert manifest["source_checkout"].endswith("release_source_checkout_v1_1")
+    assert manifest["source_checkout"].endswith("release_source_checkout_v1_1_r1")
     assert len(manifest["jobs"]) == 20
     assert stat.S_IMODE(paths.chain_manifest.stat().st_mode) == 0o444
 
@@ -293,19 +296,19 @@ def test_context_temporary_expands_exact_slurm_job_id(tmp_path: Path):
 
 
 def test_submission_argv_uses_exact_afterok_and_no_requeue():
-    row = {"script": "/recovery/jobs/schema5-v1.1/job.sbatch"}
+    row = {"script": "/recovery/jobs/schema5-v1.1-r1/job.sbatch"}
     argv = chain.submission_argv(
         row,
         dependency_job_ids=["101", "202"],
-        comment="asys:s5-recovery-v1.1:abc:job",
+        comment="asys:s5-recovery-v1.1-r1:abc:job",
     )
     assert argv == [
         "sbatch",
         "--parsable",
         "--no-requeue",
-        "--comment=asys:s5-recovery-v1.1:abc:job",
+        "--comment=asys:s5-recovery-v1.1-r1:abc:job",
         "--dependency=afterok:101:202",
-        "/recovery/jobs/schema5-v1.1/job.sbatch",
+        "/recovery/jobs/schema5-v1.1-r1/job.sbatch",
     ]
 
 

@@ -1,9 +1,13 @@
-# Schema-5 v1.1 recovery chain
+# Schema-5 v1.1-r1 recovery chain
 
 The production recovery is rendered only after the repository-wide test suite passes,
-the tree is clean, and the annotated tag `sweep-recovery-schema5-v1.1` resolves to
-`HEAD`. The renderer refuses a lightweight tag, dirty checkout, existing schema-5 run
-root, existing control state, prior v1.1 release, or reused job namespace.
+the tree is clean, and the annotated tag `sweep-recovery-schema5-v1.1-r1` resolves to
+`HEAD`. The production artifact ID remains `sweep-recovery-schema5-v1.1`; the distinct
+operational retry tag is `sweep-recovery-schema5-v1.1-r1`. The renderer refuses a
+lightweight tag, dirty checkout, existing schema-5 run root, existing control state,
+existing production release root, or reused r1 job namespace. The cancelled v1.1
+source checkout, job/log namespaces, manifests, transaction records, locks, and repair
+generations are preserved and never adopted.
 
 Rendering is dry-run by default:
 
@@ -25,12 +29,13 @@ dev_python=/orcd/home/002/mabdel03/conda_envs/asys_env/bin/python
 ```
 
 Repeat the exact command with `--apply`. Success publishes read-only sbatch files under
-`$recovery/jobs/schema5-v1.1/`, a separate generation-specific log directory, and
-`$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json` last. Verify it independently:
+`$recovery/jobs/schema5-v1.1-r1/`, the separate
+`$recovery/logs/schema5-v1.1-r1/` namespace, and
+`$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json` last. Verify it independently:
 
 ```bash
 "$dev_python" "$repo/scripts/render_schema5_recovery_chain.py" verify \
-  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json"
+  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
 ```
 
 The first job makes a fresh `git clone --no-local --no-checkout`, requires an annotated
@@ -68,7 +73,7 @@ Submission is also dry-run by default:
 
 ```bash
 "$dev_python" "$repo/scripts/render_schema5_recovery_chain.py" submit \
-  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json"
+  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
 ```
 
 Inspect the symbolic plan, then repeat with `--apply`. The submitter requires the live
@@ -79,20 +84,21 @@ and `sacct` by a unique generation-scoped comment and adopts exactly one accepte
 Because this cluster does not retain `JobComment` in accounting, reconciliation also
 extracts and cross-checks that exact comment from `sacct`'s immutable `SubmitLine`;
 zero or multiple ambiguous matches fail closed. It publishes
-`RECOVERY_CHAIN_SCHEMA5_V1_1_SUBMISSION.json` only after all 20 jobs are mapped.
+`RECOVERY_CHAIN_SCHEMA5_V1_1_R1_SUBMISSION.json` only after all 20 jobs are mapped.
 
 If a terminal job fails, inspect the exact failed/cancelled suffix before resubmitting:
 
 ```bash
 "$dev_python" "$repo/scripts/render_schema5_recovery_chain.py" repair \
-  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json"
+  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
 ```
 
 The command refuses active, missing, ambiguous, or unclassified scheduler state. Repeat
 with `--apply` to create the next contiguous repair generation. Completed ancestors keep
 their exact job IDs; only terminal failed/cancelled jobs receive generation-scoped
 comments and new `afterok` submissions. Each generation has its own durable intent
-journal and immutable receipt under `$recovery/recovery_chain_repairs/gNNNN/`.
+journal and immutable receipt under
+`$recovery/recovery_chain_repairs_v1_1_r1/gNNNN/`.
 
 If `release_materialize` failed after creating a partial release tree, repair deliberately
 stops. Preserve the complete tree before retrying, first as a dry run and then with
@@ -101,7 +107,7 @@ stops. Preserve the complete tree before retrying, first as a dry run and then w
 ```bash
 "$dev_python" "$repo/scripts/render_schema5_recovery_chain.py" \
   quarantine-materialization \
-  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json"
+  --chain-manifest "$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
 ```
 
 This operation requires the exact materialization job and all chain jobs to be terminal,

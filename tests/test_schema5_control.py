@@ -2076,6 +2076,9 @@ def test_scheduler_reconciliation_rejects_duplicate_or_unmappable_jobs(tmp_path)
 
 
 def test_scheduler_parser_and_join_prefers_live_squeue():
+    submit = (
+        "sbatch --comment=comment --dependency=afterany:99 /state/controller.sbatch"
+    )
     outputs = {
         "squeue": subprocess.CompletedProcess(
             [], 0, "123|job|RUNNING|comment|cmd|(null)\n", ""
@@ -2083,8 +2086,8 @@ def test_scheduler_parser_and_join_prefers_live_squeue():
         "sacct": subprocess.CompletedProcess(
             [],
             0,
-            "123|job|FAILED|comment|submit|afterany:99\n"
-            "123.batch|batch|COMPLETED|||\n",
+            f"123|job|FAILED|comment|{submit}\n"
+            "123.batch|batch|COMPLETED||\n",
             "",
         ),
     }
@@ -2109,7 +2112,7 @@ def test_scheduler_join_recovers_cluster_blank_sacct_comment_from_submit_line():
         # The production cluster has AccountingStoreFlags=(null), so Comment is blank
         # even while the scheduler-owned SubmitLine retains the exact CLI token.
         "sacct": subprocess.CompletedProcess(
-            [], 0, f"123|controller|RUNNING||{submit}|\n", ""
+            [], 0, f"123|controller|RUNNING||{submit}\n", ""
         ),
     }
 
@@ -2150,6 +2153,99 @@ def test_recorded_controller_scheduler_contract_is_supported():
     }
 
 
+def test_cluster_sacct_contract_derives_separate_dependency_from_submitline():
+    token = control.job_token("dispatcher", 1, "intent1")
+    dependency = "afterany:99"
+    submit = (
+        f"sbatch --parsable --comment {token} --dependency {dependency} "
+        "/state/dispatch.sbatch"
+    )
+    commands = {}
+
+    def runner(argv):
+        commands[argv[0]] = list(argv)
+        if argv[0] == "sacct":
+            return subprocess.CompletedProcess(
+                argv, 0, f"123|controller|PENDING||{submit}\n", ""
+            )
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            (
+                f"123|controller|PENDING|{token}|{submit}|"
+                f"{dependency}(unfulfilled)\n"
+            ),
+            "",
+        )
+
+    snapshot = control.query_scheduler(runner=runner, user="u", now=100.0)
+    assert commands["sacct"][-1] == (
+        "--format=JobIDRaw,JobName,State,Comment,SubmitLine"
+    )
+    assert snapshot.jobs[0].comment == token
+    assert snapshot.jobs[0].dependency == dependency + "(unfulfilled)"
+    assert control._dependency_binds_exact_afterany(
+        snapshot.jobs[0].dependency, "99"
+    )
+
+
+def test_sacct_reassembles_multiline_submitline_before_next_record():
+    token = control.job_token("dispatcher", 1, "intent1")
+    rows = control.parse_scheduler_rows(
+        "123.0|bash|COMPLETED||srun bash -lc set -euo pipefail\n"
+        "source /state/common.sh\n"
+        "for index in 1 2; do echo $index; done\n"
+        f"124|controller|PENDING||sbatch --comment={token} "
+        "--dependency=afterany:99 /state/dispatch.sbatch\n",
+        source="sacct",
+    )
+    assert len(rows) == 2
+    assert rows[0].job_id == "123.0"
+    assert "\nsource /state/common.sh\n" in rows[0].command
+    assert rows[1].job_id == "124"
+    assert rows[1].comment == token
+    assert rows[1].dependency == "afterany:99"
+
+
+@pytest.mark.parametrize(
+    "submitline",
+    [
+        "sbatch --dependency",
+        "sbatch --dependency --parsable /state/dispatch.sbatch",
+        (
+            "sbatch --dependency=afterany:1 --dependency afterany:2 "
+            "/state/dispatch.sbatch"
+        ),
+    ],
+)
+def test_sacct_submitline_rejects_ambiguous_dependency(submitline):
+    with pytest.raises(
+        control.SchedulerAmbiguity, match="(valueless|duplicate) --dependency"
+    ):
+        control.parse_scheduler_rows(
+            f"123|controller|PENDING||{submitline}\n", source="sacct"
+        )
+
+
+def test_scheduler_rejects_squeue_sacct_dependency_disagreement():
+    token = control.job_token("dispatcher", 1, "intent1")
+    submit = (
+        f"sbatch --comment={token} --dependency=afterany:99 /state/dispatch.sbatch"
+    )
+    outputs = {
+        "sacct": subprocess.CompletedProcess(
+            [], 0, f"123|controller|PENDING||{submit}\n", ""
+        ),
+        "squeue": subprocess.CompletedProcess(
+            [], 0, f"123|controller|PENDING|{token}|{submit}|afterany:100\n", ""
+        ),
+    }
+    with pytest.raises(control.SchedulerAmbiguity, match="dependency conflict"):
+        control.query_scheduler(
+            runner=lambda argv: outputs[argv[0]], user="u", now=100.0
+        )
+
+
 def test_scheduler_rejects_sacct_comment_submit_line_disagreement():
     token = control.job_token("dispatcher", 1, "intent1")
     wrong = control.job_token("dispatcher", 1, "other")
@@ -2158,7 +2254,7 @@ def test_scheduler_rejects_sacct_comment_submit_line_disagreement():
         "sacct": subprocess.CompletedProcess(
             [],
             0,
-            f"123|controller|FAILED|{wrong}|sbatch --comment={token} /x.sbatch|\n",
+            f"123|controller|FAILED|{wrong}|sbatch --comment={token} /x.sbatch\n",
             "",
         ),
     }

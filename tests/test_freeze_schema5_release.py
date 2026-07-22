@@ -24,6 +24,14 @@ _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE = (
 )
 
 
+def test_operational_retry_tag_is_distinct_from_stable_release_id() -> None:
+    assert freeze.RELEASE_ID == "sweep-recovery-schema5-v1.1"
+    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.1-r1"
+    assert materialize.RELEASE_ID == freeze.RELEASE_ID
+    assert materialize.REQUIRED_TAG == freeze.REQUIRED_GIT_TAG
+    assert freeze.REQUIRED_GIT_TAG != freeze.RELEASE_ID
+
+
 @pytest.fixture(autouse=True)
 def _stub_materialization_binding(monkeypatch):
     def binding(*, output_root, release_worktree, harness_prefix, serving_prefix):

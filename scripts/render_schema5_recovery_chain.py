@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render, verify, and transactionally submit the schema-5 v1.1 recovery DAG.
+"""Render, verify, and transactionally submit the schema-5 v1.1-r1 recovery DAG.
 
 The recovery jobs are deliberately generated outside the Git checkout.  A successful
 ``render --apply`` publishes immutable generation-specific sbatch files first and the
@@ -38,16 +38,16 @@ import uuid
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.1"
-RELEASE_TAG = RELEASE_ID
-CHAIN_NAMESPACE = "schema5-v1.1"
-CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_1.json"
-SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1.submission.json"
-SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_1_SUBMISSION.json"
-REPAIR_ROOT_NAME = "recovery_chain_repairs"
+RELEASE_TAG = "sweep-recovery-schema5-v1.1-r1"
+CHAIN_NAMESPACE = "schema5-v1.1-r1"
+CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
+SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submission.json"
+SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_1_R1_SUBMISSION.json"
+REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_1_r1"
 QUARANTINE_ROOT_NAME = "quarantine"
 QUARANTINE_EVIDENCE_ROOT_NAME = "materialization_quarantines"
-RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1.render.lock"
-SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1.submit.lock"
+RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.render.lock"
+SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submit.lock"
 CHAIN_SCHEMA_VERSION = 2
 SUBMISSION_SCHEMA_VERSION = 1
 VISIBILITY_GRACE_SECONDS = 300.0
@@ -155,7 +155,7 @@ Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 def _job_comment(chain_id: str, name: str, generation: int) -> str:
     if generation < 0:
         raise ChainError("recovery-chain submission generation cannot be negative")
-    return f"asys:s5-recovery-v1.1:{chain_id}:g{generation:04d}:{name}"
+    return f"asys:s5-recovery-v1.1-r1:{chain_id}:g{generation:04d}:{name}"
 
 
 def _utc_now() -> str:
@@ -376,7 +376,7 @@ def recovery_paths(
         repository=repository,
         results_root=results_root,
         recovery_root=recovery_root,
-        source_checkout=recovery_root / "release_source_checkout_v1_1",
+        source_checkout=recovery_root / "release_source_checkout_v1_1_r1",
         release_root=release,
         worktree=release / "worktree",
         identity=release / "identity",
@@ -1067,7 +1067,7 @@ def _job_name(name: str) -> str:
         "pre_repair_snapshot": "snapshot",
         "legacy_retire": "retire",
     }[name]
-    return f"asys-s5v11-{shortened}"
+    return f"asys-s5v11r1-{shortened}"
 
 
 def render_sbatch(spec: JobSpec, paths: RecoveryPaths, *, partition: str) -> bytes:
@@ -1153,7 +1153,7 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
         for spec in ordered
     )
     if observed_contract != EXPECTED_JOB_CONTRACT:
-        raise ChainError("recovery DAG differs from the fixed v1.1 job contract")
+        raise ChainError("recovery DAG differs from the fixed v1.1-r1 job contract")
     by_name = {spec.name: spec for spec in ordered}
     for earlier, later in zip(HEAVY_SERIAL_ORDER, HEAVY_SERIAL_ORDER[1:]):
         if earlier not in _ancestors(later, by_name):
@@ -1183,8 +1183,8 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
 
 def _preflight_fresh_destinations(paths: RecoveryPaths) -> None:
     for description, path in (
-        ("v1.1 source checkout", paths.source_checkout),
-        ("v1.1 release root", paths.release_root),
+        ("v1.1-r1 source checkout", paths.source_checkout),
+        ("v1.1 production release root", paths.release_root),
         ("schema-5 control state", paths.state),
     ):
         if path.exists() or path.is_symlink():
@@ -1270,7 +1270,7 @@ def _manifest_payload(
         )
     identity = {
         "schema_version": CHAIN_SCHEMA_VERSION,
-        "protocol": "schema5-v1.1-recovery-chain",
+        "protocol": "schema5-v1.1-r1-recovery-chain",
         "namespace": CHAIN_NAMESPACE,
         "release_id": RELEASE_ID,
         "release_tag": git_identity["release_tag"],
@@ -1341,9 +1341,9 @@ def render_chain(
     if not apply:
         _preflight_fresh_destinations(paths)
         for description, path in (
-            ("v1.1 job namespace", paths.jobs_root),
-            ("v1.1 log namespace", paths.logs_root),
-            ("v1.1 chain manifest", paths.chain_manifest),
+            ("v1.1-r1 job namespace", paths.jobs_root),
+            ("v1.1-r1 log namespace", paths.logs_root),
+            ("v1.1-r1 chain manifest", paths.chain_manifest),
         ):
             if path.exists() or path.is_symlink():
                 raise ChainError(f"{description} must be fresh and absent: {path}")
@@ -1478,7 +1478,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
     chain_id = identity.pop("chain_id")
     if (
         manifest["schema_version"] != CHAIN_SCHEMA_VERSION
-        or manifest["protocol"] != "schema5-v1.1-recovery-chain"
+        or manifest["protocol"] != "schema5-v1.1-r1-recovery-chain"
         or manifest["namespace"] != CHAIN_NAMESPACE
         or manifest["release_id"] != RELEASE_ID
         or manifest["release_tag"] != RELEASE_TAG
@@ -1516,7 +1516,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
     recovery_root = paths_by_name["recovery_root"]
     expected_paths = {
         "recovery_root": results_root / "recovery" / "schema5-v1",
-        "source_checkout": recovery_root / "release_source_checkout_v1_1",
+        "source_checkout": recovery_root / "release_source_checkout_v1_1_r1",
         "release_root": recovery_root / "releases" / RELEASE_ID,
         "state_root": results_root / ".dispatcher-schema5-v1",
         "server_pool_root": results_root / "server_pools" / "schema5-v1",
@@ -1962,7 +1962,7 @@ def _validate_submission_journal(
     started_timestamp = journal["started_timestamp"]
     if (
         journal["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or journal["protocol"] != "schema5-v1.1-recovery-chain-submission"
+        or journal["protocol"] != "schema5-v1.1-r1-recovery-chain-submission"
         or journal["chain_id"] != manifest["chain_id"]
         or journal["manifest"] != str(manifest_path)
         or journal["slurm_user"] != manifest["slurm_user"]
@@ -2118,7 +2118,7 @@ def _validate_submission_receipt(
     receipt_id = identity.pop("receipt_id")
     if (
         receipt["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or receipt["protocol"] != "schema5-v1.1-recovery-chain-submission"
+        or receipt["protocol"] != "schema5-v1.1-r1-recovery-chain-submission"
         or receipt["passed"] is not True
         or receipt["chain_id"] != manifest["chain_id"]
         or receipt["manifest"] != str(manifest_path)
@@ -2243,7 +2243,7 @@ def submit_chain(
         else:
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.1-recovery-chain-submission",
+                "protocol": "schema5-v1.1-r1-recovery-chain-submission",
                 "chain_id": manifest["chain_id"],
                 "manifest": str(manifest_path),
                 "started_at": _utc_now(),
@@ -2379,7 +2379,7 @@ def submit_chain(
         _fsync_directory(journal_path.parent)
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.1-recovery-chain-submission",
+            "protocol": "schema5-v1.1-r1-recovery-chain-submission",
             "passed": True,
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
@@ -2460,7 +2460,7 @@ def _validate_repair_receipt(
     if (
         set(receipt) != expected_fields
         or receipt.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or receipt.get("protocol") != "schema5-v1.1-recovery-chain-repair"
+        or receipt.get("protocol") != "schema5-v1.1-r1-recovery-chain-repair"
         or receipt.get("passed") is not True
         or receipt.get("chain_id") != manifest["chain_id"]
         or receipt.get("manifest") != str(manifest_path)
@@ -2611,7 +2611,7 @@ def _validate_repair_journal(
     if (
         set(journal) != expected_fields
         or journal.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or journal.get("protocol") != "schema5-v1.1-recovery-chain-repair-journal"
+        or journal.get("protocol") != "schema5-v1.1-r1-recovery-chain-repair-journal"
         or journal.get("chain_id") != manifest["chain_id"]
         or journal.get("repair_generation") != generation
         or journal.get("base_receipt") != str(base_path)
@@ -2822,7 +2822,7 @@ def repair_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.1-recovery-chain-repair-journal",
+                "protocol": "schema5-v1.1-r1-recovery-chain-repair-journal",
                 "chain_id": manifest["chain_id"], "repair_generation": generation,
                 "base_receipt": str(base_path), "base_receipt_sha256": _sha256(base_path),
                 "repair_jobs": repair_names, "started_at": _utc_now(),
@@ -2987,7 +2987,7 @@ def repair_chain(
             })
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.1-recovery-chain-repair", "passed": True,
+            "protocol": "schema5-v1.1-r1-recovery-chain-repair", "passed": True,
             "chain_id": manifest["chain_id"], "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
             "submission_journal": str(journal_path),
@@ -3132,7 +3132,7 @@ def quarantine_partial_materialization(
 
         expected_intent = {
             "schema_version": 1,
-            "protocol": "schema5-v1.1-partial-materialization-quarantine-intent",
+            "protocol": "schema5-v1.1-r1-partial-materialization-quarantine-intent",
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
@@ -3184,7 +3184,7 @@ def quarantine_partial_materialization(
             completion_id = completion_identity.pop("completion_id", None)
             expected_completion = {
                 "schema_version": 1,
-                "protocol": "schema5-v1.1-partial-materialization-quarantine",
+                "protocol": "schema5-v1.1-r1-partial-materialization-quarantine",
                 "passed": True,
                 "release_id": RELEASE_ID,
                 "materialize_job_id": materialize_job_id,
@@ -3287,7 +3287,7 @@ def quarantine_partial_materialization(
             raise ChainError("materialization quarantine rename did not preserve identity")
         completion = {
             "schema_version": 1,
-            "protocol": "schema5-v1.1-partial-materialization-quarantine",
+            "protocol": "schema5-v1.1-r1-partial-materialization-quarantine",
             "passed": True,
             "release_id": RELEASE_ID,
             "materialize_job_id": materialize_job_id,
@@ -3311,7 +3311,7 @@ def quarantine_partial_materialization(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    render = subparsers.add_parser("render", help="dry-run or publish the v1.1 chain")
+    render = subparsers.add_parser("render", help="dry-run or publish the v1.1-r1 chain")
     render.add_argument("--repository", required=True, type=Path)
     render.add_argument("--results-root", required=True, type=Path)
     render.add_argument("--recovery-root", required=True, type=Path)

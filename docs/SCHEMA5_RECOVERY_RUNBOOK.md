@@ -5,12 +5,16 @@ to preserve the legacy evidence before mutation and to keep production fail-clos
 every readiness gate is backed by a checksummed artifact. Do not substitute the retired
 `.dispatcher-v3`, chunk drivers, editable environments, or old run IDs.
 
-Patch release `sweep-recovery-schema5-v1.1` supersedes the failed-closed v1 release
-attempt. The v1 environment clone reached package verification but never published
-`MATERIALIZATION_COMPLETE.json` or `RELEASE_COMPLETE.json`; it is forensic evidence,
-not a production input. v1.1 adds canonical distribution-metadata discovery, a
-source-prefix symlink audit for cloned environments, and a paused no-admission
-controller recovery drill. Never adopt or resume the v1 output directory.
+Production release/artifact ID `sweep-recovery-schema5-v1.1` supersedes the failed-closed
+v1 release attempt. Operational retry tag `sweep-recovery-schema5-v1.1-r1` supersedes
+the safely cancelled v1.1 recovery wrapper; the production release ID, run IDs, and
+scientific configuration remain unchanged. The v1 environment clone reached package
+verification but never published `MATERIALIZATION_COMPLETE.json` or
+`RELEASE_COMPLETE.json`; it is forensic evidence, not a production input. The cancelled
+v1.1 chain paths are also immutable operational evidence: do not reuse, rename, or
+remove its source checkout, jobs, logs, manifest, journal, receipt, locks, or repair
+directory. The v1.1-r1 wrapper uses fresh identities while retaining the v1.1 artifact
+ID. Never adopt or resume the v1 output directory.
 
 ## Fixed identities and invariants
 
@@ -19,7 +23,7 @@ repo=/orcd/data/tpoggio/001/mabdel03/agents_scaling
 results=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results
 recovery="$results/recovery/schema5-v1"
 release="$recovery/releases/sweep-recovery-schema5-v1.1"
-source_checkout="$recovery/release_source_checkout_v1_1"
+source_checkout="$recovery/release_source_checkout_v1_1_r1"
 worktree="$release/worktree"
 identity="$release/identity"
 harness="$release/environments/harness"
@@ -29,7 +33,19 @@ pool="$results/server_pools/schema5-v1"
 hf_home=/orcd/data/tpoggio/001/mabdel03/.cache/huggingface
 dev_python=/orcd/home/002/mabdel03/conda_envs/asys_env/bin/python
 conda_exe=/orcd/data/lhtsai/001/om2/mabdel03/miniforge3/bin/conda
+jobs="$recovery/jobs/schema5-v1.1-r1"
+logs="$recovery/logs/schema5-v1.1-r1"
+chain_manifest="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
+submission_journal="$recovery/.RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submission.json"
+submission_receipt="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1_R1_SUBMISSION.json"
+render_lock="$recovery/.RECOVERY_CHAIN_SCHEMA5_V1_1_R1.render.lock"
+submission_lock="$recovery/.RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submit.lock"
+repair_root="$recovery/recovery_chain_repairs_v1_1_r1"
 ```
+
+The Slurm comment namespace is `asys:s5-recovery-v1.1-r1:<chain-id>:gNNNN:<job>`
+and generated job names begin `asys-s5v11r1-`. None of these paths or scheduler
+identities may alias the cancelled v1.1 chain.
 
 The three authoritative run IDs and no others are:
 
@@ -54,14 +70,13 @@ At all times before `resume`, require all of the following:
 ## Transactional recovery-DAG execution
 
 The preferred execution path for Sections 1–6 is the immutable 20-job recovery DAG.
-Render it only after the annotated v1.1 tag points at a clean `HEAD`; the commands in
+Render it only after the annotated v1.1-r1 tag points at a clean `HEAD`; the commands in
 the numbered sections below describe the gates implemented by those jobs and remain the
 manual audit reference. First inspect the render without publishing anything, then
 repeat the exact invocation with `--apply`:
 
 ```bash
 renderer="$repo/scripts/render_schema5_recovery_chain.py"
-chain_manifest="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json"
 
 "$dev_python" -I "$renderer" render \
   --repository "$repo" --results-root "$results" --recovery-root "$recovery" \
@@ -171,10 +186,13 @@ git diff --check
 ```
 
 Review the intended source/configuration/documentation/test set, commit it, and create the
-annotated tag `sweep-recovery-schema5-v1.1`. The tag must resolve to `HEAD`, and the checkout
-must have no tracked or untracked release inputs. Do not move or recreate the tag after an
-environment has been materialized. Create a fresh detached `source_checkout` from that
-tag; do not materialize from the development checkout or the failed v1 checkout.
+annotated operational retry tag `sweep-recovery-schema5-v1.1-r1`. The tag must resolve
+to `HEAD`, and the checkout must have no tracked or untracked release inputs. Do not
+move or recreate the tag after an environment has been materialized. Create the fresh
+detached `release_source_checkout_v1_1_r1` checkout from that tag; do not reuse the
+cancelled `release_source_checkout_v1_1` path or materialize from the development or
+failed v1 checkout. The materialized artifact continues to declare release ID
+`sweep-recovery-schema5-v1.1`.
 
 Run materialization first without `--apply`, then repeat the exact command with `--apply`
 inside a durable, non-requeued CPU job:
