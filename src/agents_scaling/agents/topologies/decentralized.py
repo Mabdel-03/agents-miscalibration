@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agents_scaling.agents.aggregate import majority_vote, system_confidences
 from agents_scaling.agents.base_agent import AgentOutput
-from agents_scaling.agents.message_builder import build_peer_context
 from agents_scaling.agents.topologies.base import Topology, TopologyResult
 from agents_scaling.benchmarks.schema import Question
 
@@ -27,12 +26,12 @@ class Decentralized(Topology):
                 i, agent = i_agent
                 # All-to-all: agent i sees every OTHER agent's previous-round output.
                 peers = [o for o in _prev if o.agent_id != agent.agent_id]
-                ctx = build_peer_context(peers, self.context_level) if _r > 0 else ""
-                return agent.answer(
+                rendered = self.render_peer_context(peers if _r > 0 else [])
+                return self.answer_with_peer_context(
+                    agent,
                     q,
                     round_idx=_r,
-                    peer_context=ctx,
-                    max_tokens=self.max_tokens,
+                    rendered=rendered,
                     seed=self.seed + _r * 100 + i,
                 )
 

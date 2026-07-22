@@ -1,0 +1,20 @@
+# Tiny smoke test for the agent-count axis before launching the full follow-up.
+# Covers even-agent voting, the largest requested team size, all MAS topologies,
+# both context-sharing extremes, and reasoning off/on with only five questions.
+include_sas_baselines: false
+
+axes:
+  model_size: ["0.6B"]
+  topology: ["independent", "decentralized", "centralized"]
+  n_agents: [2, 6]
+  context_share_level: ["artifact_only", "plus_cot"]
+  prompt_complexity_level: [0]
+  reasoning_level: ["off", "b512"]
+  benchmark: ["truthfulqa"]
+  seed: [0]
+
+fixed:
+  rounds: 2
+  n_samples: 2
+  temperature: 0.7
+  n_questions: 5

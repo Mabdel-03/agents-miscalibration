@@ -1,4 +1,12 @@
-# Operations runbook
+# Legacy and development operations
+
+> **Not the schema-5 production procedure.** The chunk arrays, editable environments,
+> scratch defaults, `meta.json` completion shortcut, and legacy keepalive commands below
+> describe the retired v1 system or local development. Do not use them to start or resume
+> an authoritative sweep. Use
+> [SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md) for the homogeneous schema-5
+> run, whose control state is `.dispatcher-schema5-v1` and whose only accepted code and
+> environments come from the sealed release bundle.
 
 Everything needed to run the harness on the MIT Engaging / ORCD SLURM cluster, plus the
 gotchas already hit and fixed (so they aren't re-hit).
@@ -45,7 +53,7 @@ read -rs HFTOK && printf '%s' "$HFTOK" > ~/.config/agents_scaling/hf_token \
 `slurm/common.sh` loads it into `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` for every job. Also
 click "Agree and access" on the gated dataset page once for your HF account.
 
-## Running the full sweep (the real thing)
+## Retired v1 full-sweep procedure (forensics only)
 
 The full grid is `configs/full_sweep.yaml` (~11,520 cells). It runs as: **one vLLM server
 per model size** (long-lived) + **chunked cell arrays** (resumable). The cell list lives in

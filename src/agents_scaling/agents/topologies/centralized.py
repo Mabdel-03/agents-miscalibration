@@ -16,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agents_scaling.agents.aggregate import system_confidences
 from agents_scaling.agents.base_agent import AgentOutput
-from agents_scaling.agents.message_builder import build_peer_context
 from agents_scaling.agents.topologies.base import Topology, TopologyResult
 from agents_scaling.benchmarks.schema import Question
 
@@ -36,10 +35,13 @@ class Centralized(Topology):
             def _one(i_agent, _r=r, _syn=last_synthesis):
                 i, agent = i_agent
                 peers = [_syn] if (_r > 0 and _syn is not None) else []
-                ctx = build_peer_context(peers, self.context_level)
-                return agent.answer(
-                    q, round_idx=_r, peer_context=ctx,
-                    max_tokens=self.max_tokens, seed=self.seed + _r * 100 + i,
+                rendered = self.render_peer_context(peers)
+                return self.answer_with_peer_context(
+                    agent,
+                    q,
+                    round_idx=_r,
+                    rendered=rendered,
+                    seed=self.seed + _r * 100 + i,
                 )
 
             with ThreadPoolExecutor(max_workers=len(sub_agents)) as ex:
@@ -49,10 +51,13 @@ class Centralized(Topology):
                 n_messages += len(sub_agents)  # orchestrator -> each sub-agent
 
             # Orchestrator synthesizes, seeing sub-agent outputs at the chosen context level.
-            ctx = build_peer_context(sub_outputs, self.context_level)
-            synthesis = orchestrator.answer(
-                q, round_idx=r, peer_context=ctx,
-                max_tokens=self.max_tokens, seed=self.seed + r * 100 + 999,
+            rendered = self.render_peer_context(sub_outputs)
+            synthesis = self.answer_with_peer_context(
+                orchestrator,
+                q,
+                round_idx=r,
+                rendered=rendered,
+                seed=self.seed + r * 100 + 999,
             )
             all_outputs.append(synthesis)
             n_messages += len(sub_outputs)  # each sub-agent -> orchestrator

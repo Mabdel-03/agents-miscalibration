@@ -14,9 +14,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
-from agents_scaling.experiment.runner import run_cell
-from agents_scaling.experiment.sweep import load_sweep
+REPO = Path(__file__).resolve().parent.parent
+SOURCE_ROOT = REPO / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from agents_scaling.experiment.runner import run_cell  # noqa: E402
+from agents_scaling.experiment.sweep import load_sweep  # noqa: E402
 
 
 def main() -> None:

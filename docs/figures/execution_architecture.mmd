@@ -1,0 +1,27 @@
+flowchart TB
+  C["configs/*.yaml"] --> G["sweep.generate_cells"]
+  G --> CJ["cells.json"]
+
+  subgraph SLURM["SLURM"]
+    subgraph GPU["GPU serving jobs"]
+      V0["vLLM server: Qwen3 size k"]
+      V1["optional extra endpoint"]
+    end
+    subgraph CPU["CPU cell arrays"]
+      W0["run_one.py task i"]
+      W1["run_one.py task j"]
+    end
+  end
+
+  V0 --> R["filesystem registry: servers/<size>/<host>_<port>.json"]
+  V1 --> R
+  CJ --> W0
+  CJ --> W1
+  R --> W0
+  R --> W1
+  W0 --> API["OpenAI-compatible /v1 API"]
+  W1 --> API
+  API --> V0
+  API --> V1
+  W0 --> OUT["cells/<cell_id>/results.jsonl + meta.json"]
+  W1 --> OUT

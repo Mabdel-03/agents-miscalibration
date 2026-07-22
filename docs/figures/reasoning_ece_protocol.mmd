@@ -1,0 +1,13 @@
+flowchart TB
+  Q["Rendered question"] --> R{"reasoning_level"}
+  R -->|off| C1["Chat call with thinking disabled"]
+  C1 --> S1["Answer text + chat logprobs"]
+  S1 --> P1["Forced option scoring for MCQ"]
+
+  R -->|b512/b2048/b8192/unlimited| T1["Thinking chat call"]
+  T1 --> RT["Reasoning trace + answer text + reasoning tokens"]
+  RT --> P2["Forced-answer probe: completions endpoint, max_tokens=1"]
+
+  P1 --> OP["Normalized option probabilities"]
+  P2 --> OP
+  OP --> ECE["ECE/MCE/Brier from p(chosen) vs correctness"]

@@ -1,0 +1,20 @@
+# Six estimand-excluded schema-5 canaries: one standard-profile, reasoning-off,
+# single-agent cell for every frozen Qwen model size.  This suite validates the
+# ordinary serving path independently of the two coordinated long-context suites.
+include_sas_baselines: false
+
+axes:
+  model_size: ["0.6B", "1.7B", "4B", "8B", "14B", "32B"]
+  topology: ["single_agent"]
+  n_agents: [1]
+  context_share_level: ["artifact_only"]
+  prompt_complexity_level: [0]
+  reasoning_level: ["off"]
+  benchmark: ["gpqa"]
+  seed: [2]
+
+fixed:
+  rounds: 2
+  n_samples: 1
+  temperature: 0.7
+  n_questions: 1

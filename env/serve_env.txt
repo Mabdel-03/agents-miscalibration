@@ -1,5 +1,7 @@
 # vLLM serving env. Let vLLM resolve its own torch/CUDA wheels — do NOT pin torch here.
+# Pin 0.21.0: the reasoning-axis contract relies on its native, token-level
+# `thinking_token_budget` implementation and `return_token_ids` provenance.
 # Install with: pip install -r env/serve_env.txt
-vllm>=0.6.3
+vllm==0.21.0
 # vLLM pulls transformers/tokenizers/accelerate transitively at compatible versions.
 huggingface-hub>=0.24

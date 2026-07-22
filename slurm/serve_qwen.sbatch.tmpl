@@ -1,22 +1,105 @@
 #!/bin/bash
-#SBATCH --job-name=asys-serve-{MODEL_SIZE}
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --comment=asys-schema5-pool:{SERVER_POOL_ID};profile={PROFILE_NAME};replica={REPLICA_ID}
 #SBATCH --partition={PARTITION}
 #SBATCH --gres=gpu:{GPU_TYPE}:{TP_SIZE}
 #SBATCH --cpus-per-task={CPUS}
 #SBATCH --mem={MEM}
 #SBATCH --time={TIME}
-#SBATCH --output={LOG_DIR}/serve_{MODEL_SIZE}_%j.out
+#SBATCH --output={LOG_DIR}/serve_{PROFILE_NAME}_%j.out
+#SBATCH --no-requeue
 
 set -euo pipefail
-source "{REPO}/slurm/common.sh"
-mamba activate "$ASYS_SERVE_ENV"
+umask 027
+unset PYTHONHOME VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV LD_LIBRARY_PATH LD_PRELOAD
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export PYTHONPATH=
+export ASYS_RELEASE_ID="{RELEASE_ID}"
+export ASYS_RELEASE_WORKTREE="{RELEASE_WORKTREE}"
+export ASYS_MODEL_CONTRACT="{MODEL_CONTRACT_PATH}"
+export ASYS_MODEL_CONTRACT_SHA256="{MODEL_CONTRACT_SHA256}"
+export ASYS_FLEET_CONTRACT_SHA256="{FLEET_CONTRACT_SHA256}"
+export ASYS_HARNESS_ENVIRONMENT_SHA256="{HARNESS_ENVIRONMENT_HASH}"
+export ASYS_SERVING_ENVIRONMENT_SHA256="{ENVIRONMENT_HASH}"
+export HF_HOME="{HF_HOME}"
+export VLLM_NO_USAGE_STATS=1
+export DO_NOT_TRACK=1
+export TOKENIZERS_PARALLELISM=false
+
+# Run both probes with the exact immutable interpreters.  In schema-5 production the
+# expected versions come directly from the checksummed environment manifests; no shell
+# activation, user site, or ambient PYTHONPATH participates in either runtime.
+LD_LIBRARY_PATH="{SERVING_PREFIX}/lib" "{SERVING_PYTHON}" -I - \
+  "{SERVING_PREFIX}" \
+  "{SERVING_PYTHON_VERSION}" \
+  "{SERVING_VLLM_VERSION}" \
+  "{SERVING_TRANSFORMERS_VERSION}" \
+  "{SERVING_TOKENIZERS_VERSION}" \
+  "{SERVING_TORCH_VERSION}" \
+  "{SERVING_CUDA_VERSION}" \
+  "{PRODUCTION_RUNTIME}" <<'PY'
+import importlib.metadata
+import os
+import platform
+from pathlib import Path
+import sys
+
+prefix, python_v, vllm_v, transformers_v, tokenizers_v, torch_v, cuda_v, production = sys.argv[1:]
+assert Path(sys.prefix).resolve() == Path(prefix).resolve(), (sys.prefix, prefix)
+assert os.environ.get("PYTHONPATH", "") == ""
+assert os.environ.get("LD_LIBRARY_PATH") == str(Path(prefix) / "lib")
+assert importlib.metadata.version("vllm") == "0.21.0"
+if production == "1":
+    assert platform.python_version() == python_v
+    assert importlib.metadata.version("vllm") == vllm_v
+    assert importlib.metadata.version("transformers") == transformers_v
+    assert importlib.metadata.version("tokenizers") == tokenizers_v
+    assert importlib.metadata.version("torch") == torch_v
+    import torch
+    assert str(torch.version.cuda) == cuda_v
+PY
+
+LD_LIBRARY_PATH="{HARNESS_PREFIX}/lib" "{HARNESS_PYTHON}" -I - \
+  "{HARNESS_PREFIX}" \
+  "{HARNESS_PYTHON_VERSION}" \
+  "{HARNESS_TRANSFORMERS_VERSION}" \
+  "{HARNESS_TOKENIZERS_VERSION}" \
+  "{PRODUCTION_RUNTIME}" <<'PY'
+import importlib.metadata
+import os
+import platform
+from pathlib import Path
+import sys
+
+prefix, python_v, transformers_v, tokenizers_v, production = sys.argv[1:]
+resolved_prefix = Path(prefix).resolve()
+assert Path(sys.prefix).resolve() == resolved_prefix, (sys.prefix, prefix)
+assert os.environ.get("PYTHONPATH", "") == ""
+assert os.environ.get("LD_LIBRARY_PATH") == str(resolved_prefix / "lib")
+if production == "1":
+    assert platform.python_version() == python_v
+    assert importlib.metadata.version("transformers") == transformers_v
+    assert importlib.metadata.version("tokenizers") == tokenizers_v
+    import agents_scaling
+    Path(agents_scaling.__file__).resolve().relative_to(resolved_prefix)
+PY
+
+test "$(head -n 1 "{VLLM_EXECUTABLE}")" = "#!{SERVING_PYTHON}"
 
 PORT={PORT}
-echo "[serve] model={HF_ID} tp={TP_SIZE} port=$PORT node=$(hostname) job=$SLURM_JOB_ID"
+echo "[serve] profile={PROFILE_NAME} model={HF_ID} tp={TP_SIZE} context={MAX_MODEL_LEN} port=$PORT node=$(hostname) job=$SLURM_JOB_ID"
 
 # Start vLLM in the background, then register + healthcheck, then wait on it.
-vllm serve "{HF_ID}" \
-  --served-model-name "{MODEL_SIZE}" \
+LD_LIBRARY_PATH="{SERVING_PREFIX}/lib" \
+"{VLLM_EXECUTABLE}" serve "{HF_ID}" \
+  --revision "{MODEL_REVISION}" \
+  --tokenizer "{TOKENIZER_ID}" \
+  --tokenizer-revision "{TOKENIZER_REVISION}" \
+  --served-model-name "{SERVED_MODEL_NAME}" \
   --tensor-parallel-size {TP_SIZE} \
   --gpu-memory-utilization 0.90 \
   --max-model-len {MAX_MODEL_LEN} \
@@ -28,11 +111,29 @@ VLLM_PID=$!
 # the old --disable-log-requests flag was removed.
 
 # Wait for readiness, then publish the endpoint to the registry so cell jobs can find it.
-# The harness package lives in asys_env (not serve_env), so use its python for register.
-"$ASYS_HARNESS_ENV/bin/python" -m agents_scaling.serving.launch_server --register \
+# Registration uses the separately frozen harness interpreter.
+LD_LIBRARY_PATH="{HARNESS_PREFIX}/lib" \
+"{HARNESS_PYTHON}" -I -m agents_scaling.serving.launch_server --register \
   --run-root "{RUN_ROOT}" \
+  --server-pool-id "{SERVER_POOL_ID}" \
+  --replica-id "{REPLICA_ID}" \
+  --replica-index {REPLICA_INDEX} \
   --model-size "{MODEL_SIZE}" \
+  --profile "{PROFILE_NAME}" \
   --hf-id "{HF_ID}" \
+  --model-revision "{MODEL_REVISION}" \
+  --tokenizer-id "{TOKENIZER_ID}" \
+  --tokenizer-revision "{TOKENIZER_REVISION}" \
+  --release-worktree "{RELEASE_WORKTREE}" \
+  --model-contract "{MODEL_CONTRACT_PATH}" \
+  --model-contract-sha256 "{MODEL_CONTRACT_SHA256}" \
+  --fleet-contract "{FLEET_CONTRACT_PATH}" \
+  --fleet-contract-sha256 "{FLEET_CONTRACT_SHA256}" \
+  --release-id "{RELEASE_ID}" \
+  --environment-hash "{ENVIRONMENT_HASH}" \
+  --served-model-name "{SERVED_MODEL_NAME}" \
+  --max-model-len {MAX_MODEL_LEN} \
+  --tp-size {TP_SIZE} \
   --port "$PORT"
 
 echo "[serve] registered and healthy; serving until job time limit or cancellation"

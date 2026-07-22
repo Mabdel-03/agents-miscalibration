@@ -22,6 +22,8 @@ dependencies = [
     "pyyaml>=6.0",
     "backoff>=2.2",
     "pyarrow>=14.0",
+    # Exact pre-submit context checks render the same Qwen chat template as vLLM.
+    "transformers>=4.51",
 ]
 
 [project.optional-dependencies]
@@ -33,4 +35,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]

@@ -6,6 +6,7 @@ results/
 # Python
 __pycache__/
 *.py[cod]
+hs_err_pid*.log
 *.egg-info/
 .eggs/
 build/
@@ -22,3 +23,23 @@ dist/
 slurm-*.out
 *.slurm.log
 logs/
+
+# Live recovery interlocks belong to the external results state, never a release tag.
+/recovery/schema5-v1/MAINTENANCE_INTERLOCK.json
+
+# Rendered retired-controller instances are live-state evidence, not release source.
+slurm/loop_driver.sbatch.full_sweep_agent_counts_v1
+slurm/loop_keepalive.sbatch.full_sweep_agent_counts_v1
+
+# Analysis caches and rendered figures (regenerate with analysis/refresh.sh)
+analysis/cache/
+analysis/figures/
+
+# Preserved legacy/partial analysis products. Their source data and stored outputs are
+# sealed in recovery snapshots; they are not primary schema-5 release inputs.
+analysis/notebooks/
+analysis/tables/
+analysis/context_capacity_audit_2026-07-18.md
+analysis/full_sweep_v1_axis_relationships.md
+analysis/full_sweep_v1_eda_report.md
+analysis/scaling_equivalence_report.md

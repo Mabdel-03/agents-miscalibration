@@ -1,4 +1,4 @@
-"""Submit a large sweep as dependency-chained SLURM array CHUNKS.
+"""Legacy per-run chunk admission (disabled by default).
 
 A single array of all cells exceeds the cluster's MaxSubmitJobs association limit (500),
 so we split the cell list into chunks of <= CHUNK_SIZE and submit one array job per chunk,
@@ -21,18 +21,24 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+SOURCE_ROOT = REPO / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from agents_scaling.config import ExperimentCell
 from agents_scaling.experiment import io
+from agents_scaling.experiment.manifest import freeze_manifest, load_manifest
 from agents_scaling.experiment.sweep import load_sweep
 
-REPO = Path(__file__).resolve().parent.parent
 ARRAY_TMPL = REPO / "slurm" / "run_cell_array.sbatch.tmpl"
 
 
 def _render(run_id, cells_file, lo, hi, throttle, partition, time_limit, log_dir,
-            mem: str = "16G") -> str:
+            mem: str = "2G") -> str:
     """Render one chunk array covering global indices [lo, hi] (inclusive)."""
     text = ARRAY_TMPL.read_text()
     # The template uses array 0-LAST%THROTTLE; for a chunk we want lo-hi%throttle.
@@ -58,14 +64,16 @@ def _render(run_id, cells_file, lo, hi, throttle, partition, time_limit, log_dir
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Submit a sweep as chained array chunks.")
+    ap = argparse.ArgumentParser(
+        description="LEGACY per-run chunk admission; use dispatch_sweeps.py for production"
+    )
     ap.add_argument("--config", required=True)
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--chunk-size", type=int, default=400, help="cells per array chunk")
     ap.add_argument("--throttle", type=int, default=400, help="max concurrent tasks per chunk")
     ap.add_argument("--cell-partition", default="mit_preemptable")
     ap.add_argument("--cell-time", default="2-00:00:00")
-    ap.add_argument("--cell-mem", default="16G")
+    ap.add_argument("--cell-mem", default="2G")
     ap.add_argument("--max-chunks", type=int, default=None, help="cap chunks (debug)")
     ap.add_argument("--dry-run", action="store_true", help="render sbatches, don't submit")
     # Drive mode (default): submit one chunk at a time, waiting for the submitted-job count
@@ -87,7 +95,18 @@ def main() -> None:
                          "mid-flight against the old ordering — resume is by cell_id so completed "
                          "work is safe, but in-flight array indices would point at different cells)")
     ap.add_argument("--poll-s", type=float, default=120.0, help="drive poll interval (s)")
+    ap.add_argument(
+        "--allow-legacy-admission",
+        action="store_true",
+        help="explicit emergency-only override; independent drivers can recreate split-brain admission",
+    )
     args = ap.parse_args()
+
+    if not args.dry_run and not args.no_drive and not args.allow_legacy_admission:
+        ap.error(
+            "legacy per-run admission is disabled: use slurm/dispatch_sweeps.py; "
+            "pass --allow-legacy-admission only for an audited emergency rollback"
+        )
 
     cells = load_sweep(args.config)
     run_root = io.run_dir(args.run_id)
@@ -104,17 +123,23 @@ def main() -> None:
     cells_file = run_root / "cells.json"
     if cells_file.exists() and not args.reshuffle:
         # Reuse the existing ordering so a running array's index->cell mapping is preserved.
+        load_manifest(run_root)  # verifies cells.sha256 when the run is frozen
         print(f"[chunked] reusing existing {cells_file} (pass --reshuffle to regenerate)")
     else:
+        if cells_file.exists() and (run_root / "cells.sha256").exists():
+            raise RuntimeError(
+                f"refusing to reshuffle frozen manifest {cells_file}; create a new run id"
+            )
         import random
 
         order = list(range(len(cells)))
         random.Random(1234).shuffle(order)  # fixed seed -> reproducible interleaving
         cells = [cells[i] for i in order]
-        cells_file.write_text(json.dumps([c.to_dict() for c in cells], indent=2))
+        io.atomic_write_text(cells_file, json.dumps([c.to_dict() for c in cells], indent=2) + "\n")
+        freeze_manifest(run_root, overwrite=args.reshuffle)
         print(f"[chunked] wrote interleaved {cells_file}")
     # Re-load from the file so the in-memory list matches exactly what array tasks index.
-    cells = [ExperimentCell.from_dict(c) for c in json.loads(cells_file.read_text())]
+    cells = list(load_manifest(run_root).cells)
     n = len(cells)
     print(f"[chunked] run_id={args.run_id}  cells={n}  chunk_size={args.chunk_size}  -> {cells_file}")
 

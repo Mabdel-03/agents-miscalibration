@@ -15,7 +15,10 @@ import json
 import re
 from dataclasses import dataclass
 
-from agents_scaling.serving.client import LogprobClient
+from agents_scaling.serving.client import (
+    ANSWER_GENERATION_TOKEN_ALLOWANCE,
+    LogprobClient,
+)
 
 
 @dataclass
@@ -83,7 +86,10 @@ def llm_judge_quality(text: str, judge: LogprobClient) -> float | None:
         system=_JUDGE_SYSTEM,
         user=f"System prompt to evaluate:\n\n```\n{text}\n```",
         temperature=0.0,
-        max_tokens=200,
+        # Keep auxiliary judging on the same exact, token-audited chat path.  The model
+        # normally stops after its tiny JSON response; this is an allowance, not a target.
+        max_tokens=ANSWER_GENERATION_TOKEN_ALLOWANCE,
+        seed=0,
         capture_logprobs=False,
     )
     m = re.search(r"\{.*\}", res.text, re.DOTALL)

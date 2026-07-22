@@ -24,10 +24,12 @@ class ModelSpec:
     supports_reasoning: bool = True  # exposes enable_thinking toggle (all Qwen3 do)
 
 
-# Qwen3 unified dense ladder. All Apache-2.0, ungated, hybrid-thinking (enable_thinking
-# toggle + thinking_token_budget). 32K native context. bf16 fits on 1x A100-80GB through
-# 32B (use tp=2 only for long-context / high concurrency). Served with --reasoning-parser
-# qwen3 (needs vLLM >= 0.9.0).
+# Qwen3 unified dense ladder. All Apache-2.0, ungated, hybrid-thinking. Thinking is
+# toggled through the chat template; finite budgets use vLLM 0.21's native
+# thinking_token_budget on a single chat request. Cached configs for every dense size
+# expose max_position_embeddings=40,960. Standard 0.6B--14B profiles remain at 32K for
+# throughput, with selective one-GPU 40K profiles for context-heavy cells; 32B uses tp=2
+# for its 40K long route. Servers are pinned to vLLM 0.21.0 with the Qwen3 parser enabled.
 QWEN3_LADDER: dict[str, ModelSpec] = {
     "0.6B": ModelSpec("0.6B", "Qwen/Qwen3-0.6B", 0.6, 1, 32768),
     "1.7B": ModelSpec("1.7B", "Qwen/Qwen3-1.7B", 1.7, 1, 32768),

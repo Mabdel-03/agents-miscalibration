@@ -1,0 +1,14 @@
+flowchart LR
+  R1["results.jsonl per cell"] --> AGG["analyze.aggregate_run"]
+  M1["meta.json per cell"] --> AGG
+  AGG --> PQ["Prompt quality + reasoning-token attributes"]
+  AGG --> PERF["Accuracy/error rate"]
+  AGG --> EFF["Kim efficiency metrics vs matched SAS"]
+  AGG --> CAL["Per-agent and system calibration"]
+  PQ --> TIDY["analysis/<run>.parquet"]
+  PERF --> TIDY
+  EFF --> TIDY
+  CAL --> TIDY
+  TIDY --> FIT["scaling fits and regressions"]
+  TIDY --> REL["reliability diagrams"]
+  TIDY --> DELTA["Delta ECE by axis/topology"]

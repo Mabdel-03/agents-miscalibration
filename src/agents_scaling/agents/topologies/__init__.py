@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from agents_scaling.agents.base_agent import Agent
 from agents_scaling.agents.topologies.base import Topology as TopologyBase
 from agents_scaling.agents.topologies.base import TopologyResult
@@ -11,6 +13,7 @@ from agents_scaling.agents.topologies.independent import Independent
 from agents_scaling.agents.topologies.single_agent import SingleAgent
 from agents_scaling.config import ContextShareLevel
 from agents_scaling.config import Topology as TopologyEnum
+from agents_scaling.serving.client import ANSWER_GENERATION_TOKEN_ALLOWANCE
 
 _REGISTRY = {
     TopologyEnum.SINGLE_AGENT: SingleAgent,
@@ -25,8 +28,9 @@ def build_topology(
     agents: list[Agent],
     context_level: ContextShareLevel,
     rounds: int,
-    max_tokens: int = 1024,
+    max_tokens: int = ANSWER_GENERATION_TOKEN_ALLOWANCE,
     seed: int = 0,
+    context_tokenizer: Any | None = None,
 ) -> TopologyBase:
     cls = _REGISTRY[topology]
     return cls(
@@ -35,6 +39,7 @@ def build_topology(
         rounds=rounds,
         max_tokens=max_tokens,
         seed=seed,
+        context_tokenizer=context_tokenizer,
     )
 
 

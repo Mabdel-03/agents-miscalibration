@@ -10,6 +10,10 @@
 # changes and login-node cleanup that have repeatedly killed our background processes.
 # CPU-only, tiny resources; just needs to keep poking sbatch on a timer.
 set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] legacy per-run driver requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
 source "{REPO}/slurm/common.sh"
 mamba activate "$ASYS_HARNESS_ENV"
 
@@ -25,7 +29,9 @@ fi
 
 cd "{REPO}"
 exec python -u slurm/launch_chunked.py \
-  --config configs/full_sweep.yaml \
+  --allow-legacy-admission \
+  --config "{CONFIG}" \
   --run-id "{RUN_ID}" \
-  --chunk-size 400 --throttle 240 --submit-cap 440 \
-  --cell-partition mit_preemptable --cell-time 2-00:00:00
+  --chunk-size {CHUNK_SIZE} --throttle {THROTTLE} --submit-cap {SUBMIT_CAP} \
+  --qos-limit {QOS_LIMIT} \
+  --cell-partition "{CELL_PARTITION}" --cell-time "{CELL_TIME}" --cell-mem "{CELL_MEM}"

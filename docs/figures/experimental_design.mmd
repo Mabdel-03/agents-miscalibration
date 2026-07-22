@@ -1,0 +1,16 @@
+flowchart TB
+  OBJ["Question: does coordination amplify or correct miscalibration?"]
+  OBJ --> AX["Four axes"]
+  AX --> CAP["Capacity: 6 Qwen3 sizes"]
+  AX --> CTX["Context: artifact/intermediate/CoT"]
+  AX --> PR["Prompt: L0-L3"]
+  AX --> RS["Reasoning: off to unlimited"]
+  CAP --> GRID["ExperimentCell grid"]
+  CTX --> GRID
+  PR --> GRID
+  RS --> GRID
+  GRID --> TOP["4 implemented topologies"]
+  GRID --> BENCH["4 static QA benchmarks"]
+  TOP --> MEAS["Accuracy + efficiency + calibration"]
+  BENCH --> MEAS
+  MEAS --> DE["Delta ECE = system ECE - mean per-agent ECE"]

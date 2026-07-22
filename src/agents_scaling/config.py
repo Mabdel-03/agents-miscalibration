@@ -35,9 +35,10 @@ class ReasoningLevel(str, Enum):
     """Axis 4: per-agent reasoning effort, from none to maximum.
 
     Ordered smallest -> largest. Implemented for Qwen3 unified models via the
-    ``enable_thinking`` chat-template kwarg plus a ``thinking_token_budget`` cap:
+    ``enable_thinking`` chat-template kwarg and vLLM 0.21's native token-level
+    ``thinking_token_budget`` on one audited chat generation:
       OFF       -> enable_thinking=False (plain instruct, no <think> block)
-      B512/2048/8192 -> enable_thinking=True with that thinking-token budget
+      B512/2048/8192 -> native thinking capped at that many generated tokens
       UNLIMITED -> enable_thinking=True, no budget (bounded only by max_tokens)
     """
 
@@ -117,8 +118,12 @@ class ExperimentCell:
     @property
     def cell_id(self) -> str:
         """Stable short id; same config -> same id (good for resume / dedup)."""
+        agent_suffix = ""
+        if self.topology != Topology.SINGLE_AGENT and self.n_agents != 3:
+            agent_suffix = f"_n{self.n_agents}"
         return (
-            f"{self.model_size}_{self.topology.value}_{self.context_share_level.value}"
+            f"{self.model_size}_{self.topology.value}{agent_suffix}"
+            f"_{self.context_share_level.value}"
             f"_p{self.prompt_complexity_level}_r{self.reasoning_level.value}"
             f"_{self.benchmark}_s{self.seed}"
         )
@@ -146,3 +151,4 @@ class ExperimentCell:
 # data 06-28). Nothing the run needs depends on the contended scratch quota anymore.
 DEFAULT_HF_HOME = "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface"
 DEFAULT_RESULTS_ROOT = "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results"
+DEFAULT_DISPATCHER_STATE_DIRNAME = ".dispatcher-v3"

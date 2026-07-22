@@ -60,15 +60,25 @@ single experiment cell, from config to result to analysis.
 ### Model registry — `models.py`
 - `ModelSpec(size, hf_id, param_count, tp_size, max_model_len, supports_reasoning)`.
 - `QWEN3_LADDER`: `0.6B / 1.7B / 4B / 8B / 14B / 32B` (Apache-2.0, ungated, unified
-  hybrid-thinking, 32K ctx; all fit on 1× A100-80GB). Optional `QWEN3_MOE` (30B-A3B).
+  hybrid-thinking). The dense profiles through 14B use one-GPU 32,768-token standard
+  profiles plus selective one-GPU 40,960-token long profiles; 32B uses a one-GPU
+  16,384-token standard profile plus a TP=2, 40,960-token long profile.
+  Optional `QWEN3_MOE` (30B-A3B).
 - `param_count` (billions) is the capacity regressor in the scaling-law fit.
 
 ### Serving — `serving/`
 - `client.py` — **`LogprobClient`**, the calibration linchpin.
-  - `chat()` always requests `logprobs`+`top_logprobs`; for the reasoning axis it sets
-    `extra_body={"chat_template_kwargs": {"enable_thinking": …}, "thinking_token_budget": …}`
-    and Qwen3-recommended sampling. Captures the thinking trace from the `reasoning`
-    field (vLLM 0.21 naming) and counts reasoning tokens.
+  - `chat()` uses one native vLLM 0.21 chat generation for every reasoning rung and
+    normally requests `logprobs`+`top_logprobs`. Finite rungs pass
+    `thinking_token_budget`; OFF and UNLIMITED omit it. The request asks vLLM for exact
+    prompt/completion token IDs, checks them against the locally rendered chat template,
+    requires one generated Qwen think-start at completion index zero and uses the first
+    generated think-end as the parser boundary. Later think-end IDs are retained as
+    literal answer content; exact first-span/parser-local-decode agreement is required.
+    A thinking prompt is rejected locally only if it ends in unmatched think-start state.
+    The client accepts only `finish_reason=stop` with terminal `<|im_end|>`. Protocol version/hash,
+    seed, profile/context limit, exact token counts, delimiter indexes, and token-ID
+    hashes are persisted with every new agent result.
   - `score_options()` — the **forced-answer probe**: completions endpoint, prompt ending
     `"Answer: "`, `max_tokens=1`, reads the option-letter logprob distribution and
     renormalizes over the options. This is the clean confidence signal for ECE.
@@ -82,12 +92,16 @@ single experiment cell, from config to result to analysis.
 ### Agents & topologies — `agents/`
 - `base_agent.py` — `Agent` (client + system prompt + reasoning level) and `AgentOutput`
   (answer, raw text, CoT, intermediate results, option logprobs, verbalized conf, token
-  counts, reasoning text/tokens). `answer()` implements the **two-call reasoning
-  protocol**: a thinking call (captures trace + answer) then the `score_options` probe for
-  the ECE distribution — so calibration is decoupled from non-greedy thinking sampling.
-- `message_builder.py` — **`build_peer_context(peers, level)`**, the Axis-2 linchpin: the
-  only place that decides which `AgentOutput` fields a peer sees (artifact → +intermediate
-  → +cot), enforcing nesting/monotonicity.
+  counts, reasoning text/tokens). `answer()` obtains one complete native chat generation
+  for every rung, then runs the independent `score_options` probe for the ECE
+  distribution. Calibration is therefore decoupled from non-greedy thinking sampling.
+  Coordinated outputs also carry an exact hash,
+  token count, per-peer block counts, and explicit truncation-marker count for the peer
+  context they consumed.
+- `message_builder.py` — the Axis-2 linchpin and protocol-v2 peer renderer. Eligible
+  fields follow the context
+  level; each CoT field is capped at 4,000 characters and each complete peer block is
+  capped at 4,000 exact serving-profile tokens with a hash-covered truncation marker.
 - `topologies/` — `single_agent`, `independent`, `decentralized` (all-to-all debate over
   rounds), `centralized` (orchestrator + sub-agents). All multi-agent topologies route
   inter-agent messages through `build_peer_context`. `build_topology(...)` is the factory.

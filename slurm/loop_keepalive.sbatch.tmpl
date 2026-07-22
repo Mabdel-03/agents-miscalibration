@@ -9,6 +9,10 @@
 # Keepalive runs as a SLURM job so it survives login-node session changes/cleanup that
 # kill nohup processes. CPU-only, minimal resources; just probes + sbatch as needed.
 set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] legacy keepalive requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
 source "{REPO}/slurm/common.sh"
 mamba activate "$ASYS_HARNESS_ENV"
 
@@ -21,6 +25,7 @@ fi
 
 cd "{REPO}"
 exec python -u slurm/keepalive.py \
+  --allow-legacy-fleet \
   --run-id "{RUN_ID}" \
   --spec "{SPEC}" \
   --interval 600

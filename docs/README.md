@@ -1,19 +1,29 @@
-# Documentation index
+# Documentation Index
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — module-by-module map, the execution model
-  (servers + chunked cell workers + filesystem registry), and the end-to-end data flow of
-  one experiment cell.
-- **[AXES.md](AXES.md)** — design of all four scaling axes (capacity, context-sharing,
-  prompt complexity, reasoning), the knob-vs-measured-attribute split, and how they combine
-  in the sweep. Includes the two-call ECE protocol for the reasoning axis.
-- **[OPERATIONS.md](OPERATIONS.md)** — the runbook: cluster facts, env setup, HF auth,
-  launching servers + the chunked full sweep, monitoring, resuming, server keepalive,
-  cost projection, and the gotchas already fixed.
-- **[DATA_SCHEMA.md](DATA_SCHEMA.md)** — exact `results.jsonl` / `meta.json` fields and the
-  tidy analysis-table columns.
-- **[RESULTS.md](RESULTS.md)** — validation milestones, pilot numbers, and live full-sweep
-  status. (Living document.)
+- **[EXPERIMENT.md](EXPERIMENT.md)**: research-facing dossier. Objectives, research
+  questions, experimental grid, model/agent/benchmark methods, diagrams, and how to read
+  the results.
+- **[AXES.md](AXES.md)**: detailed design of the four scaling axes, including the
+  knob-vs-measured-attribute split and the two-call ECE protocol for reasoning.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: module map, execution model, server/cell
+  orchestration, and end-to-end data flow for one cell.
+- **[DATA_SCHEMA.md](DATA_SCHEMA.md)**: exact `results.jsonl`, `meta.json`, and tidy
+  analysis-table fields.
+- **[SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md)**: authoritative recovery,
+  immutable-release, readiness, relaunch, staged-ramp, and incident-control procedure.
+- **[OPERATIONS.md](OPERATIONS.md)**: development and retired chunk-driver procedures,
+  retained for legacy-run forensics rather than schema-5 production.
+- **[SCHEMA5_RELEASE.md](SCHEMA5_RELEASE.md)**: exact-tag worktree, independent Conda
+  copy, package-provenance, and immutable release-freezing runbook.
+- **[RESULTS.md](RESULTS.md)**: validation milestones, pilot numbers, and live full-sweep
+  status.
+- **[figures/](figures/)**: editable Mermaid diagram sources and exported SVG assets used
+  by the experiment dossier.
 
-Top-level: [README.md](../README.md) (overview + quickstart),
-[CONTRIBUTING.md](../CONTRIBUTING.md) (dev workflow, invariants, how to add an axis),
-[env/SETUP.md](../env/SETUP.md) (conda envs).
+Top-level references:
+
+- [../README.md](../README.md): concise project overview and quickstart.
+- [../analysis/README.md](../analysis/README.md): aggregation workflow and runnable
+  analysis examples.
+- [../CONTRIBUTING.md](../CONTRIBUTING.md): development workflow and extension invariants.
+- [../env/SETUP.md](../env/SETUP.md): conda environment setup.

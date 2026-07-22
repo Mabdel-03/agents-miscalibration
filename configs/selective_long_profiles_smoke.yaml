@@ -1,0 +1,20 @@
+# Operational acceptance smoke for the selective TP=1 40K profiles added after the
+# dense-peer all-profile audit.  This run is immutable and explicitly excluded from the
+# 22,680-cell scientific design.
+include_sas_baselines: false
+
+axes:
+  model_size: ["0.6B", "1.7B", "4B", "8B", "14B"]
+  topology: ["decentralized"]
+  n_agents: [6, 7]
+  context_share_level: ["plus_cot"]
+  prompt_complexity_level: [3]
+  reasoning_level: ["b2048", "unlimited"]
+  benchmark: ["gpqa"]
+  seed: [2]
+
+fixed:
+  rounds: 2
+  n_samples: 1
+  temperature: 0.7
+  n_questions: 1

@@ -30,9 +30,10 @@ _CANONICAL_PROMPT = 1  # the "standard" prompt level used for baseline SAS cells
 def _canonicalize(cell: ExperimentCell) -> ExperimentCell:
     """Collapse axis values that a topology ignores, so dedup works."""
     ctx = cell.context_share_level
+    n_agents = cell.n_agents
     rounds = cell.rounds
     if cell.topology == Topology.SINGLE_AGENT:
-        ctx, rounds = _CANONICAL_CONTEXT, 1
+        ctx, n_agents, rounds = _CANONICAL_CONTEXT, 1, 1
     elif cell.topology == Topology.INDEPENDENT:
         ctx = _CANONICAL_CONTEXT  # never shares context
     return ExperimentCell(
@@ -42,7 +43,7 @@ def _canonicalize(cell: ExperimentCell) -> ExperimentCell:
         reasoning_level=cell.reasoning_level,
         topology=cell.topology,
         benchmark=cell.benchmark,
-        n_agents=cell.n_agents,
+        n_agents=n_agents,
         rounds=rounds,
         n_samples=cell.n_samples,
         temperature=cell.temperature,
@@ -59,6 +60,8 @@ def generate_cells(spec: dict) -> list[ExperimentCell]:
     # reasoning_level defaults to ["off"] if the axis is absent (back-compat with 3-axis configs).
     reasoning_levels = axes.get("reasoning_level", ["off"])
     seeds = axes.get("seed", [fixed.get("seed", 0)])
+    agent_counts = axes.get("n_agents", [fixed.get("n_agents", 3)])
+    include_sas_baselines = spec.get("include_sas_baselines", True)
 
     raw_cells: list[ExperimentCell] = []
     combos = itertools.product(
@@ -69,17 +72,19 @@ def generate_cells(spec: dict) -> list[ExperimentCell]:
         reasoning_levels,
         axes["benchmark"],
         seeds,
+        agent_counts,
     )
-    for model_size, topo, ctx, prompt_lvl, reasoning, bench, seed in combos:
+    for model_size, topo, ctx, prompt_lvl, reasoning, bench, seed, n_agents in combos:
+        topology = Topology(topo)
         raw_cells.append(
             ExperimentCell(
                 model_size=model_size,
-                topology=Topology(topo),
+                topology=topology,
                 context_share_level=ContextShareLevel(ctx),
                 prompt_complexity_level=int(prompt_lvl),
                 reasoning_level=ReasoningLevel(reasoning),
                 benchmark=bench,
-                n_agents=fixed.get("n_agents", 3),
+                n_agents=1 if topology == Topology.SINGLE_AGENT else int(n_agents),
                 rounds=fixed.get("rounds", 2),
                 n_samples=fixed.get("n_samples", 5),
                 temperature=fixed.get("temperature", 0.7),
@@ -90,25 +95,26 @@ def generate_cells(spec: dict) -> list[ExperimentCell]:
 
     # Enforce a SAS baseline per (model_size, benchmark, seed, reasoning_level) — efficiency
     # ratios are reasoning-conditioned, so each reasoning level needs its own baseline.
-    for model_size, bench, seed, reasoning in itertools.product(
-        axes["model_size"], axes["benchmark"], seeds, reasoning_levels
-    ):
-        raw_cells.append(
-            ExperimentCell(
-                model_size=model_size,
-                topology=Topology.SINGLE_AGENT,
-                context_share_level=_CANONICAL_CONTEXT,
-                prompt_complexity_level=_CANONICAL_PROMPT,
-                reasoning_level=ReasoningLevel(reasoning),
-                benchmark=bench,
-                n_agents=1,
-                rounds=1,
-                n_samples=fixed.get("n_samples", 5),
-                temperature=fixed.get("temperature", 0.7),
-                n_questions=fixed.get("n_questions"),
-                seed=seed,
+    if include_sas_baselines:
+        for model_size, bench, seed, reasoning in itertools.product(
+            axes["model_size"], axes["benchmark"], seeds, reasoning_levels
+        ):
+            raw_cells.append(
+                ExperimentCell(
+                    model_size=model_size,
+                    topology=Topology.SINGLE_AGENT,
+                    context_share_level=_CANONICAL_CONTEXT,
+                    prompt_complexity_level=_CANONICAL_PROMPT,
+                    reasoning_level=ReasoningLevel(reasoning),
+                    benchmark=bench,
+                    n_agents=1,
+                    rounds=1,
+                    n_samples=fixed.get("n_samples", 5),
+                    temperature=fixed.get("temperature", 0.7),
+                    n_questions=fixed.get("n_questions"),
+                    seed=seed,
+                )
             )
-        )
 
     # Canonicalize + dedup by cell_id.
     seen: dict[str, ExperimentCell] = {}

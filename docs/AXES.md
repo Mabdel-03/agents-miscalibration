@@ -27,19 +27,22 @@ checkpoints support the reasoning toggle (Axis 4) on the *same weights*.
 | 14B  | Qwen/Qwen3-14B  | 14.8 | 1 |
 | 32B  | Qwen/Qwen3-32B  | 32.8 | 1 |
 
-Defined in [`models.py`](../src/agents_scaling/models.py). All Apache-2.0, ungated, 32K
-context, bf16 fits on a single A100-80GB.
+Defined in [`models.py`](../src/agents_scaling/models.py). All are Apache-2.0 and ungated.
+The 0.6B–14B standard profiles use 32,768 tokens on one A100-80GB; selective one-GPU
+`-long` profiles use the native 40,960-token limit for dense, high-agent peer contexts.
+The standard 32B profile uses 16,384 tokens on one GPU; coordinated 32B cells sharing
+intermediate results or CoT use the TP=2 `32B-long` profile at 40,960 tokens.
 
 ---
 
 ## Axis 2 — Context sharing between agents
 
 **Knob:** `context_share_level` ∈ `{ARTIFACT_ONLY, PLUS_INTERMEDIATE, PLUS_COT}` (ranks
-0/1/2). **Measured:** shared-token counts (monotone in level by construction).
+0/1/2). **Measured:** exact shared-context tokens and per-block truncation markers.
 
 This is the axis the open-weight choice most enables: closed APIs often hide intermediate
-work and chain-of-thought. The levels are **strictly nested** — each higher level exposes
-everything the lower one does, plus more:
+work and chain-of-thought. The eligible fields are nested — each higher level makes the
+lower-level fields plus one additional field available before the registered safety cap:
 
 - `ARTIFACT_ONLY` — a peer's final answer (and stated confidence) only.
 - `PLUS_INTERMEDIATE` — + the peer's intermediate result / scratchpad / sub-conclusions.
@@ -48,11 +51,17 @@ everything the lower one does, plus more:
 The **single** place this is applied is
 [`message_builder.build_peer_context(peers, level)`](../src/agents_scaling/agents/message_builder.py).
 Every topology that passes inter-agent messages routes through it, so the axis is applied
-uniformly and is unit-tested (`tests/test_message_builder.py`) including the monotonicity
-property. `single_agent` and `independent` never share peer context, so the sweep collapses
+uniformly and is unit-tested (`tests/test_message_builder.py`). `single_agent` and
+`independent` never share peer context, so the sweep collapses
 this axis to a canonical value for them (no duplicate cells).
 
-PLUS_COT context is truncated (`_COT_TRUNCATE_CHARS`) to guard against runaway context.
+The protocol retains a 4,000-character cap on each CoT field and imposes a second,
+tokenizer-aware cap of 4,000 tokens on each fully rendered peer block. The latter covers
+the answer, confidence, intermediate result, CoT, and templates together. When it binds,
+the builder appends an explicit marker containing the original block's hash and token
+count; the consuming `AgentOutput` records exact context/block token counts, hash, and
+marker count. Consequently, fields are nested by eligibility, but a cap-bound higher
+level need not be a literal text superset of the lower rendered block.
 
 ---
 
@@ -87,28 +96,37 @@ performance/ECE track tokens, quality, or both.
 The open-weight analog of the closed-API `reasoning_effort` knob Kim et al. could not study
 mechanistically. Implemented on Qwen3's unified hybrid-thinking models:
 
-| rung | `enable_thinking` | `thinking_token_budget` |
-|------|-------------------|-------------------------|
+| rung | `enable_thinking` | native thinking budget |
+|------|-------------------|------------------------|
 | OFF | false | — (plain instruct, no `<think>`) |
-| B512 | true | 512 |
-| B2048 | true | 2048 |
-| B8192 | true | 8192 |
-| UNLIMITED | true | none (bounded only by `max_tokens`) |
+| B512 | true | 512 generated tokens |
+| B2048 | true | 2048 generated tokens |
+| B8192 | true | 8192 generated tokens |
+| UNLIMITED | true | — (no native budget; 8192-token reasoning allowance) |
 
 Set via [`config.ReasoningLevel`](../src/agents_scaling/config.py) →
-[`LogprobClient.chat()`](../src/agents_scaling/serving/client.py), which passes
-`extra_body={"chat_template_kwargs": {"enable_thinking": …}, "thinking_token_budget": …}`
-and Qwen3's recommended sampling (thinking: T=0.6/top_p=0.95/top_k=20; non-thinking:
-T=0.7/top_p=0.8/top_k=20). Served with `vllm serve … --reasoning-parser qwen3` (vLLM
-≥0.9; our env has 0.21).
+[`LogprobClient.chat()`](../src/agents_scaling/serving/client.py). Every rung uses one
+native vLLM 0.21 chat request. B512/B2048/B8192 pass the native
+`thinking_token_budget`; OFF and UNLIMITED omit it. The request uses a deterministic
+topology-derived seed, asks vLLM to return exact token IDs, and is preflighted against the
+served context. A valid thinking result has exactly one generated `<think>` token at
+output index zero and exactly one later `</think>` token; locally decoded reasoning and
+answer text must equal vLLM's Qwen3 parser fields. The overall output allowance is 4096
+answer tokens plus the finite budget, or 4096+8192 for UNLIMITED. Only a stopped response
+with terminal `<|im_end|>` is accepted. The protocol specification and token-ID hashes
+are stored with every result. Sampling remains Qwen3's recommendation (thinking:
+T=0.6/top_p=0.95/top_k=20; non-thinking: T=0.7/top_p=0.8/top_k=20). Servers are pinned to
+vLLM 0.21.0 with the Qwen3 reasoning parser enabled.
 
-### Two-call ECE protocol (important)
+### Generation + ECE probe protocol (important)
 
 Qwen3 thinking mode is documented **not** to use greedy decoding, which would contaminate
 a logprob-based calibration measurement. So when thinking is on,
-[`Agent.answer()`](../src/agents_scaling/agents/base_agent.py) makes **two calls**:
+[`Agent.answer()`](../src/agents_scaling/agents/base_agent.py) separates generation from
+confidence measurement:
 
-1. a free **thinking call** — captures the reasoning trace + the answer text, and
+1. a free **answer generation** — one native, token-audited chat request for every rung —
+   captures the reasoning trace + answer, and
 2. a **forced-answer probe** (`score_options`, completions endpoint, no thinking) — yields
    the clean option-letter logprob distribution used for ECE.
 

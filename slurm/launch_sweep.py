@@ -15,18 +15,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+SOURCE_ROOT = REPO / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
 from agents_scaling.experiment import io
+from agents_scaling.experiment.manifest import freeze_manifest, load_manifest
 from agents_scaling.experiment.sweep import load_sweep, models_in_sweep
 from agents_scaling.serving.launch_server import submit as submit_server
 
-REPO = Path(__file__).resolve().parent.parent
 ARRAY_TMPL = REPO / "slurm" / "run_cell_array.sbatch.tmpl"
 
 
-def _render_array(run_id: str, cells_file: str, n_cells: int, partition: str, time_limit: str, throttle: int, log_dir: str) -> str:
+def _render_array(
+    run_id: str,
+    cells_file: str,
+    n_cells: int,
+    partition: str,
+    time_limit: str,
+    throttle: int,
+    log_dir: str,
+    mem: str,
+) -> str:
     text = ARRAY_TMPL.read_text()
     repl = {
         "RUN_ID": run_id,
@@ -34,6 +49,7 @@ def _render_array(run_id: str, cells_file: str, n_cells: int, partition: str, ti
         "LAST_INDEX": str(n_cells - 1),
         "THROTTLE": str(throttle),
         "PARTITION": partition,
+        "MEM": mem,
         "TIME": time_limit,
         "LOG_DIR": log_dir,
         "REPO": str(REPO),
@@ -56,8 +72,20 @@ def main() -> None:
     # because the runner resumes (skips completed cells / answered qids on re-submit).
     ap.add_argument("--cell-partition", default="mit_preemptable")
     ap.add_argument("--cell-time", default="2-00:00:00")
+    ap.add_argument("--cell-mem", default="2G")
     ap.add_argument("--throttle", type=int, default=16, help="max concurrent array tasks")
+    ap.add_argument(
+        "--allow-legacy-array",
+        action="store_true",
+        help="explicit emergency-only override; production cells use the global dispatcher",
+    )
     args = ap.parse_args()
+
+    if not args.serve_only and not args.allow_legacy_array:
+        ap.error(
+            "direct sweep arrays are retired: initialize/freeze the manifest and use "
+            "slurm/launch_dispatcher.py; --serve-only remains supported"
+        )
 
     cells = load_sweep(args.config)
     run_root = io.run_dir(args.run_id)
@@ -65,7 +93,14 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     cells_file = run_root / "cells.json"
-    cells_file.write_text(json.dumps([c.to_dict() for c in cells], indent=2))
+    if cells_file.exists():
+        snapshot = load_manifest(run_root)
+        cells = list(snapshot.cells)
+    else:
+        io.atomic_write_text(
+            cells_file, json.dumps([c.to_dict() for c in cells], indent=2) + "\n"
+        )
+        freeze_manifest(run_root)
     print(f"[sweep] run_id={args.run_id}  cells={len(cells)}  -> {cells_file}")
 
     sizes = args.models or models_in_sweep(cells)
@@ -79,10 +114,10 @@ def main() -> None:
 
     array_text = _render_array(
         args.run_id, str(cells_file), len(cells), args.cell_partition, args.cell_time,
-        args.throttle, str(log_dir),
+        args.throttle, str(log_dir), args.cell_mem,
     )
     array_path = run_root / "run_cells.sbatch"
-    array_path.write_text(array_text)
+    io.atomic_write_text(array_path, array_text)
     import subprocess
 
     out = subprocess.run(["sbatch", str(array_path)], capture_output=True, text=True, check=True).stdout.strip()

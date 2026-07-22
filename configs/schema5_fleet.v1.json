@@ -1,0 +1,346 @@
+{
+  "allocated_gpu_count": 24,
+  "fleet_id": "schema5-v1",
+  "logical_replica_count": 22,
+  "model_contract_sha256": "f0503e3803a50a53379ed64d4cc2a12a00de27ad3137fea831672a54e3f89f6b",
+  "offline_environment": {
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1"
+  },
+  "profiles": [
+    {
+      "effective_context_limit": 32768,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-0.6B",
+      "model_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "model_size": "0.6B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--0p6b--standard--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-0p6b-s-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--0p6b--standard--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-0p6b-s-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "0.6B",
+      "serving_profile": "0.6B",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-0.6B",
+      "tokenizer_revision": "c1899de289a04d12100db370d81485cdf75e47ca"
+    },
+    {
+      "effective_context_limit": 32768,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-1.7B",
+      "model_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "model_size": "1.7B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--1p7b--standard--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-1p7b-s-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--1p7b--standard--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-1p7b-s-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "1.7B",
+      "serving_profile": "1.7B",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-1.7B",
+      "tokenizer_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+    },
+    {
+      "effective_context_limit": 32768,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-4B",
+      "model_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "model_size": "4B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--4b--standard--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-4b-s-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--4b--standard--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-4b-s-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "4B",
+      "serving_profile": "4B",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-4B",
+      "tokenizer_revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+    },
+    {
+      "effective_context_limit": 32768,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-8B",
+      "model_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "model_size": "8B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--8b--standard--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-8b-s-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--8b--standard--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-8b-s-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--8b--standard--r02",
+          "replica_index": 2,
+          "scheduler_job_name": "asys-s5-serve-8b-s-r02",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "8B",
+      "serving_profile": "8B",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-8B",
+      "tokenizer_revision": "b968826d9c46dd6066d109eabc6255188de91218"
+    },
+    {
+      "effective_context_limit": 32768,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-14B",
+      "model_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+      "model_size": "14B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--14b--standard--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-14b-s-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--14b--standard--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-14b-s-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "14B",
+      "serving_profile": "14B",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-14B",
+      "tokenizer_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18"
+    },
+    {
+      "effective_context_limit": 16384,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-32B",
+      "model_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+      "model_size": "32B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--32b--standard--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-32b-s-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--32b--standard--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-32b-s-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--32b--standard--r02",
+          "replica_index": 2,
+          "scheduler_job_name": "asys-s5-serve-32b-s-r02",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--32b--standard--r03",
+          "replica_index": 3,
+          "scheduler_job_name": "asys-s5-serve-32b-s-r03",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "32B",
+      "serving_profile": "32B",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-32B",
+      "tokenizer_revision": "9216db5781bf21249d130ec9da846c4624c16137"
+    },
+    {
+      "effective_context_limit": 40960,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-0.6B",
+      "model_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "model_size": "0.6B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--0p6b--long--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-0p6b-l-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "0.6B",
+      "serving_profile": "0.6B-long",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-0.6B",
+      "tokenizer_revision": "c1899de289a04d12100db370d81485cdf75e47ca"
+    },
+    {
+      "effective_context_limit": 40960,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-1.7B",
+      "model_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "model_size": "1.7B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--1p7b--long--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-1p7b-l-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "1.7B",
+      "serving_profile": "1.7B-long",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-1.7B",
+      "tokenizer_revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+    },
+    {
+      "effective_context_limit": 40960,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-4B",
+      "model_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "model_size": "4B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--4b--long--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-4b-l-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "4B",
+      "serving_profile": "4B-long",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-4B",
+      "tokenizer_revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+    },
+    {
+      "effective_context_limit": 40960,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-8B",
+      "model_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "model_size": "8B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--8b--long--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-8b-l-r00",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "8B",
+      "serving_profile": "8B-long",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-8B",
+      "tokenizer_revision": "b968826d9c46dd6066d109eabc6255188de91218"
+    },
+    {
+      "effective_context_limit": 40960,
+      "gpus_per_replica": 1,
+      "hf_id": "Qwen/Qwen3-14B",
+      "model_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
+      "model_size": "14B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--14b--long--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-14b-l-r00",
+          "partition": "ou_bcs_normal", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 8, "memory": "120G"
+        }
+      ],
+      "served_model_name": "14B",
+      "serving_profile": "14B-long",
+      "tensor_parallel_size": 1,
+      "tokenizer_id": "Qwen/Qwen3-14B",
+      "tokenizer_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18"
+    },
+    {
+      "effective_context_limit": 40960,
+      "gpus_per_replica": 2,
+      "hf_id": "Qwen/Qwen3-32B",
+      "model_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+      "model_size": "32B",
+      "replicas": [
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--32b--long--r00",
+          "replica_index": 0,
+          "scheduler_job_name": "asys-s5-serve-32b-l-r00",
+          "partition": "ou_bcs_normal", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 16, "memory": "240G"
+        },
+        {
+          "pool_id": "schema5-v1",
+          "replica_id": "schema5-v1--32b--long--r01",
+          "replica_index": 1,
+          "scheduler_job_name": "asys-s5-serve-32b-l-r01",
+          "partition": "ou_bcs_low", "gpu_type": "a100", "time_limit": "1-00:00:00", "cpus_per_task": 16, "memory": "240G"
+        }
+      ],
+      "served_model_name": "32B",
+      "serving_profile": "32B-long",
+      "tensor_parallel_size": 2,
+      "tokenizer_id": "Qwen/Qwen3-32B",
+      "tokenizer_revision": "9216db5781bf21249d130ec9da846c4624c16137"
+    }
+  ],
+  "release_id": "sweep-recovery-schema5-v1",
+  "schema_version": 1,
+  "server_pool": {
+    "adoption_requires_spooled_run_root_match": true,
+    "no_requeue": true,
+    "pool_id": "schema5-v1",
+    "registration_scope": "exact_pool_root",
+    "root_suffix": "server_pools/schema5-v1",
+    "run_root_argument_required": true,
+    "scheduler_job_name_prefix": "asys-s5-serve-"
+  }
+}

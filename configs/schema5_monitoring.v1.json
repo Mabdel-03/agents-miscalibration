@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "protocol": "durable-schema5-monitoring-v1",
+  "runs": [
+    {
+      "run_id": "full_sweep_schema5_v1",
+      "expected_cells": 4680,
+      "expected_qids": 933660
+    },
+    {
+      "run_id": "full_sweep_agent_counts_schema5_v1",
+      "expected_cells": 14400,
+      "expected_qids": 2872800
+    },
+    {
+      "run_id": "full_sweep_agent_count_7_schema5_v1",
+      "expected_cells": 3600,
+      "expected_qids": 718200
+    }
+  ],
+  "expected_total_cells": 22680,
+  "expected_total_qids": 4524660,
+  "cadence_seconds": {
+    "health": 300,
+    "semantic": 21600,
+    "daily": 86400
+  },
+  "throughput": {
+    "minimum_observation_hours": 48,
+    "window_hours": 48,
+    "target_completion_days": 28,
+    "minimum_qids_per_day": 161595,
+    "stratum_dimensions": [
+      "model_size",
+      "reasoning_level",
+      "topology",
+      "agent_count"
+    ],
+    "rotation_dimensions": [
+      "model_size",
+      "reasoning_level",
+      "topology",
+      "agent_count",
+      "benchmark",
+      "context_share_level",
+      "prompt_complexity_level",
+      "seed"
+    ]
+  },
+  "fleet_replicas": {
+    "0.6B": 2,
+    "1.7B": 2,
+    "4B": 2,
+    "8B": 3,
+    "14B": 2,
+    "32B": 4,
+    "0.6B-long": 1,
+    "1.7B-long": 1,
+    "4B-long": 1,
+    "8B-long": 1,
+    "14B-long": 1,
+    "32B-long": 2
+  },
+  "alerts": {
+    "email": "mabdel03@mit.edu",
+    "heartbeat_stale_seconds": 600,
+    "minimum_disk_free_bytes": 536870912000,
+    "minimum_disk_free_fraction": 0.1,
+    "starvation_polls": 2
+  }
+}

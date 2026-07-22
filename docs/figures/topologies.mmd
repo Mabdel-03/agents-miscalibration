@@ -1,0 +1,38 @@
+flowchart LR
+  subgraph SAS["single_agent"]
+    Q1["Question"] --> A1["Agent 0"]
+    A1 --> F1["Final answer"]
+  end
+
+  subgraph IND["independent"]
+    Q2["Question"] --> I0["Agent 0"]
+    Q2 --> I1["Agent 1"]
+    Q2 --> I2["Agent 2"]
+    I0 --> V["Majority vote"]
+    I1 --> V
+    I2 --> V
+    V --> F2["Final answer"]
+  end
+
+  subgraph DEC["decentralized"]
+    Q3["Question"] --> D0["Agent 0"]
+    Q3 --> D1["Agent 1"]
+    Q3 --> D2["Agent 2"]
+    D0 <--> D1
+    D1 <--> D2
+    D0 <--> D2
+    D0 --> VD["Final-round vote"]
+    D1 --> VD
+    D2 --> VD
+    VD --> F3["Final answer"]
+  end
+
+  subgraph CEN["centralized"]
+    Q4["Question"] --> S0["Sub-agent 1"]
+    Q4 --> S1["Sub-agent 2"]
+    S0 --> O["Orchestrator"]
+    S1 --> O
+    O -. next round synthesis .-> S0
+    O -. next round synthesis .-> S1
+    O --> F4["Final answer"]
+  end

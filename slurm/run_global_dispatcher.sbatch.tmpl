@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --job-name=asys-global-dispatcher
+#SBATCH --partition={CONTROL_PARTITION}
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --time={CONTROL_TIME}
+#SBATCH --output={LOG_DIR}/global_dispatcher_%j.out
+
+set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] legacy global dispatcher requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+# Once this process owns the filesystem singleton, it queues exactly one `afterany`
+# successor using this same immutable script.  The dependency prevents overlap; the
+# filesystem lock is a second line of defense against accidental duplicate launchers.
+exec python -u "{REPO}/slurm/dispatch_sweeps.py" {DISPATCH_ARGS} \
+  --successor-sbatch "{CONTROL_SBATCH}"

@@ -13,14 +13,18 @@ Agents are thin HTTP clients to the vLLM server, so the harness env needs **no G
 
 ## 0. Shared: where weights and results live
 
-Always point HuggingFace at scratch (the project dir has little free space):
+Use the group data filesystem for Hugging Face state and results. The per-user scratch
+quota repeatedly returned `EDQUOT`, including on cache lock files, so production must not
+silently fall back to scratch:
 
 ```bash
-export HF_HOME=/orcd/scratch/orcd/012/mabdel03/.cache/huggingface
-mkdir -p "$HF_HOME"
+export HF_HOME=/orcd/data/tpoggio/001/mabdel03/.cache/huggingface
+export ASYS_RESULTS_ROOT=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results
+mkdir -p "$HF_HOME" "$ASYS_RESULTS_ROOT"
 ```
 
-`env/common.sh` (sourced by the sbatch templates) exports this for every job.
+The legacy `slurm/common.sh` has the same development defaults. Schema-5 production does
+not source it: the immutable control pins export both paths explicitly.
 
 ## 1. serve_env (vLLM)
 
@@ -31,8 +35,8 @@ mamba create -y -n serve_env python=3.11
 mamba activate serve_env
 # Let vLLM pull its own matched torch/CUDA wheels:
 pip install -r env/serve_env.txt
-# sanity
-python -c "import vllm; print('vllm', vllm.__version__)"
+# sanity: the native reasoning-budget contract is version-pinned
+python -c "import vllm; assert vllm.__version__ == '0.21.0', vllm.__version__; print('vllm', vllm.__version__)"
 ```
 
 ## 2. asys_env (harness + analysis)
@@ -52,7 +56,30 @@ pytest -q                               # unit tests should pass without a GPU
 > for current vLLM. Do not reuse it for `serve_env`. It *could* host `asys_env`'s deps,
 > but a clean env avoids surprises.
 
-## 3. Gated weights (Llama only)
+## 3. asys_analysis (notebooks + statistics)
+
+A third env for the post-sweep analysis notebooks (`analysis/notebooks/`). Kept separate
+from `asys_env` so the notebook stack (jupyterlab, statsmodels, seaborn) never collides
+with the harness pins. Prefix install under `/orcd/home/002/mabdel03/conda_envs/`:
+
+```bash
+module load miniforge/25.11.0-0
+mamba create -y -p /orcd/home/002/mabdel03/conda_envs/asys_analysis python=3.11
+mamba activate /orcd/home/002/mabdel03/conda_envs/asys_analysis
+cd /orcd/data/tpoggio/001/mabdel03/agents_scaling
+pip install -e ".[dev]"                  # agents_scaling editable + core deps (no embeddings/torch)
+pip install -r env/analysis_nb_env.txt   # jupyterlab, ipykernel, statsmodels, seaborn, ...
+python -m ipykernel install --user --name asys_analysis \
+  --display-name "asys_analysis (py3.11, agents_scaling)"
+# sanity
+python -c "import agents_scaling, statsmodels, seaborn, jupyterlab; print('asys_analysis ok')"
+```
+
+The kernel then appears in any Jupyter front-end as `asys_analysis (py3.11, agents_scaling)`.
+All analysis caches and figures go under `analysis/` on the **data** filesystem — never
+`/orcd/scratch` (recurring EDQUOT quota failures killed jobs writing there).
+
+## 4. Gated weights (Llama only)
 
 The Qwen2.5 ladder is ungated. If you run the optional Llama-3.1 robustness check:
 

@@ -10,6 +10,8 @@
 # changes and login-node cleanup that have repeatedly killed our background processes.
 # CPU-only, tiny resources; just needs to keep poking sbatch on a timer.
 set -euo pipefail
+echo "[retired] per-run admission is disabled; use the singleton global dispatcher" >&2
+exit 2
 source "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/common.sh"
 mamba activate "$ASYS_HARNESS_ENV"
 

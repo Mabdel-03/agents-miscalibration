@@ -1,4 +1,4 @@
-"""Server keepalive: maintain a DESIRED REPLICA COUNT per model size for a long sweep.
+"""Server keepalive: maintain a DESIRED REPLICA COUNT per serving profile for a long sweep.
 
 Servers have walltime limits (pi_tpoggio 7-day, ou_bcs 1-day), so over a multi-week run
 they get killed and cells then block/round-robin onto dead endpoints. This loop, each pass:
@@ -7,7 +7,7 @@ they get killed and cells then block/round-robin onto dead endpoints. This loop,
   3. for each managed size, if (live endpoints) + (serve jobs already PD/R) < desired count,
      relaunches enough replicas on that size's designated partition to reach the target.
 
-The target is a **replica spec**: ``size:count:partition:time`` entries, e.g.
+The target is a **replica spec**: ``profile:count:partition:time`` entries, e.g.
 ``0.6B:1:pi_tpoggio:7-00:00:00,32B:6:ou_bcs_low:1-00:00:00``. Replica indices are assigned
 to keep ports distinct (see launch_server._port_for(size, replica)).
 
@@ -22,14 +22,28 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from agents_scaling.config import DEFAULT_RESULTS_ROOT
-from agents_scaling.models import REGISTRY
+from agents_scaling.experiment import io
 from agents_scaling.serving import healthcheck, registry
-from agents_scaling.serving.launch_server import submit as submit_server
+from agents_scaling.serving.fleet_contract import (
+    FleetContractError,
+    FrozenFleetContract,
+    load_fleet_contract,
+)
+from agents_scaling.serving.launch_server import (
+    _production_release_resources,
+    render_sbatch,
+    submit as submit_server,
+)
+from agents_scaling.serving.model_contracts import ModelContractError, load_model_contracts
+from agents_scaling.serving.profiles import SERVING_PROFILES, get_serving_profile
 
 
 @dataclass
@@ -39,6 +53,34 @@ class Target:
     partition: str      # where to launch (re)replicas
     time_limit: str
     gpu_type: str = "a100"
+
+
+@dataclass(frozen=True)
+class FleetQueueRow:
+    job_id: str
+    job_name: str
+    state: str
+    partition: str
+    node: str
+    command: str
+    comment: str
+
+
+@dataclass(frozen=True)
+class SpooledServingProvenance:
+    """Launch facts recovered from Slurm's immutable copy of one batch script."""
+
+    run_root: str
+    server_pool_id: str
+    replica_id: str | int
+    replica_index: int
+    release_id: str | None
+    environment_hash: str | None
+    model_revision: str
+    tokenizer_id: str
+    tokenizer_revision: str
+    model_contract_sha256: str
+    fleet_contract_sha256: str | None
 
 
 def parse_spec(spec: str, default_gpu: str) -> list[Target]:
@@ -67,13 +109,26 @@ def parse_spec(spec: str, default_gpu: str) -> list[Target]:
     return targets
 
 
-def _serve_jobs_in_flight(model_size: str, partition: str | None = None) -> int:
-    """Count serve JOBS for this size currently R/PD/CF, optionally scoped to ``partition``.
+def _pool_job_name(run_root: str | None, profile_name: str) -> str:
+    return (
+        registry.serving_job_name(run_root, profile_name)
+        if run_root is not None
+        else f"asys-serve-{profile_name}"
+    )
+
+
+def _serve_jobs_in_flight(
+    model_size: str, partition: str | None = None, *, run_root: str | None = None
+) -> int:
+    """Count active serve jobs for this size, optionally scoped to ``partition``.
 
     This is the authoritative "current + coming" server count: every server — running &
-    registered, running but still loading, or pending — has exactly one squeue job. The
-    live-endpoint set is a SUBSET of the running jobs, so we must NOT add live + jobs
-    (that double-counts a registered running server). We launch ``count - this``.
+    registered, running but still loading, pending, suspended, completing, or in Slurm's
+    transient requeue states — has exactly one ``squeue`` row.  Count every matching row
+    instead of whitelisting state codes: a preempted ``--requeue`` job briefly reports a
+    requeue state, and treating that as absent launches duplicate replicas and consumes
+    GPU quota.  Terminal jobs are absent from ``squeue`` already.  The live-endpoint set
+    is a subset of these jobs, so we must not add live endpoints to this count.
 
     ``partition`` scoping lets the SAME size be served from multiple partitions with
     independent target counts (e.g. 1 replica on pi_tpoggio + 2 bonus on ou_bcs_high): each
@@ -84,14 +139,14 @@ def _serve_jobs_in_flight(model_size: str, partition: str | None = None) -> int:
         ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j|%t|%P"],
         capture_output=True, text=True,
     ).stdout
-    name = f"asys-serve-{model_size}"
+    name = _pool_job_name(run_root, model_size)
     n = 0
     for line in out.splitlines():
         parts = line.split("|")
         if len(parts) < 3:
             continue
-        jname, state, jpart = parts[0].strip(), parts[1].strip(), parts[2].strip()
-        if jname == name and state in ("R", "PD", "CF") and (partition is None or jpart == partition):
+        jname, _state, jpart = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if jname == name and (partition is None or jpart == partition):
             n += 1
     return n
 
@@ -111,39 +166,552 @@ def _running_serve_nodes(model_size: str) -> list[str]:
     return nodes
 
 
-def _reregister_running(run_root: str, model_size: str) -> int:
+def _running_serve_endpoints(
+    model_size: str, *, run_root: str | None = None
+) -> dict[tuple[str, int], str]:
+    """Map each running profile endpoint to its authoritative Slurm job id.
+
+    Re-registration used to restore only host/port, losing the job identity needed to
+    distinguish a live allocation from a stale registry file.  The rendered sbatch
+    command contains the replica id, so the endpoint can be reconstructed without an
+    HTTP or filesystem guess.
+    """
+    from agents_scaling.serving.launch_server import _port_for
+
+    out = subprocess.run(
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-t", "R", "-o", "%i|%j|%N|%o"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    job_name = _pool_job_name(run_root, model_size)
+    filename = re.compile(
+        rf"(?:^|/)serve_{re.escape(model_size)}(?:_r(?P<rid>\d+))?"
+        rf"(?:\.g\d+\.[0-9a-f]+)?\.sbatch(?:\s|$)"
+    )
+    endpoints: dict[tuple[str, int], str] = {}
+    for line in out.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        job_id, name, node, command = (part.strip() for part in parts)
+        if name != job_name or not node or node in {"(null)", "N/A"}:
+            continue
+        match = filename.search(command)
+        if match is None:
+            continue
+        replica = int(match.group("rid") or 0)
+        endpoints[(node, _port_for(model_size, replica))] = job_id
+    return endpoints
+
+
+def _flag_value(tokens: list[str], flag: str) -> str | None:
+    """Return one shell-tokenized flag value, rejecting absence and duplicates."""
+
+    positions = [index for index, token in enumerate(tokens) if token == flag]
+    if len(positions) != 1:
+        return None
+    index = positions[0]
+    if index + 1 >= len(tokens):
+        return None
+    return tokens[index + 1]
+
+
+def _strip_exact_library_environment(tokens: list[str]) -> list[str] | None:
+    """Validate and remove one immutable-prefix LD_LIBRARY_PATH assignment."""
+
+    if len(tokens) < 2 or not tokens[0].startswith("LD_LIBRARY_PATH="):
+        return None
+    executable = Path(tokens[1])
+    if not executable.is_absolute():
+        return None
+    expected = f"LD_LIBRARY_PATH={executable.parent.parent / 'lib'}"
+    if tokens[0] != expected:
+        return None
+    return tokens[1:]
+
+
+def _spooled_job_provenance(
+    slurm_job_id: str,
+    profile_name: str,
+    *,
+    run_root: str | None = None,
+    expected_script: str | None = None,
+) -> SpooledServingProvenance | None:
+    """Recover and validate complete launch provenance from Slurm's batch-script copy.
+
+    A registry record is replaceable control state; the batch script spooled for an
+    allocation is immutable.  Self-healing therefore trusts only facts recovered from
+    that exact copy.  When ``run_root`` is supplied, job name, comment, canonical root,
+    pool identity, replica id, and deterministic port must all agree.  Partial schema-5
+    provenance is rejected.  A fully unpinned release/environment pair remains readable
+    for legacy runs, but production workers will reject it through their frozen policy.
+    """
+
+    try:
+        profile = get_serving_profile(profile_name)
+        proc = subprocess.run(
+            ["scontrol", "write", "batch_script", str(slurm_job_id), "-"],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+        )
+    except (KeyError, OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    script = proc.stdout
+    # Production reconciliation can reconstruct the complete launch script from the
+    # frozen fleet, model, environment, and release contracts.  Exact-byte equality is
+    # stronger than independently recognizing selected flags: it also binds both
+    # interpreters, runtime-version probes, offline environment, resources, logging path,
+    # and every vLLM option to the immutable release that owns this supervisor turn.
+    if expected_script is not None and script != expected_script:
+        return None
+
+    # Collapse shell continuations so each rendered invocation becomes one line.  shlex
+    # then gives exact argument boundaries without accepting substring lookalikes.
+    normalized = re.sub(r"\\[ \t]*\r?\n", " ", script)
+    serve_line = next(
+        (
+            line.strip()
+            for line in normalized.splitlines()
+            if " serve " in line and line.rstrip().endswith("&")
+        ),
+        None,
+    )
+    register_line = next(
+        (
+            line.strip()
+            for line in normalized.splitlines()
+            if " -m agents_scaling.serving.launch_server --register " in line
+        ),
+        None,
+    )
+    if serve_line is None or register_line is None:
+        return None
+    if not serve_line.endswith("&"):
+        return None
+    try:
+        serve_tokens = shlex.split(serve_line[:-1].rstrip(), posix=True)
+        register_tokens = shlex.split(register_line, posix=True)
+    except ValueError:
+        return None
+    serve_tokens = _strip_exact_library_environment(serve_tokens)
+    register_tokens = _strip_exact_library_environment(register_tokens)
+    if serve_tokens is None or register_tokens is None:
+        return None
+    if (
+        len(serve_tokens) < 3
+        or Path(serve_tokens[0]).name != "vllm"
+        or not Path(serve_tokens[0]).is_absolute()
+        or serve_tokens[1:3] != ["serve", profile.hf_id]
+    ):
+        return None
+    try:
+        module_index = register_tokens.index("-m")
+    except ValueError:
+        return None
+    if module_index < 1 or register_tokens[module_index - 1] != "-I":
+        return None
+    if register_tokens[module_index : module_index + 3] != [
+        "-m",
+        "agents_scaling.serving.launch_server",
+        "--register",
+    ]:
+        return None
+    if (
+        not register_tokens
+        or Path(register_tokens[0]).name != "python"
+        or not Path(register_tokens[0]).is_absolute()
+    ):
+        return None
+
+    serve_expected = {
+        "--served-model-name": profile.served_model_name,
+        "--tensor-parallel-size": str(profile.tp_size),
+        "--max-model-len": str(profile.max_model_len),
+        "--max-logprobs": "20",
+        "--reasoning-parser": "qwen3",
+        "--port": "$PORT",
+    }
+    register_expected = {
+        "--model-size": profile.model_size,
+        "--profile": profile.name,
+        "--hf-id": profile.hf_id,
+        "--served-model-name": profile.served_model_name,
+        "--max-model-len": str(profile.max_model_len),
+        "--tp-size": str(profile.tp_size),
+        "--port": "$PORT",
+    }
+    if any(_flag_value(serve_tokens, flag) != value for flag, value in serve_expected.items()):
+        return None
+    if any(
+        _flag_value(register_tokens, flag) != value
+        for flag, value in register_expected.items()
+    ):
+        return None
+
+    observed_root = _flag_value(register_tokens, "--run-root")
+    observed_pool_id = _flag_value(register_tokens, "--server-pool-id")
+    replica_id = _flag_value(register_tokens, "--replica-id")
+    replica_index_text = _flag_value(register_tokens, "--replica-index")
+    if (
+        observed_root is None
+        or observed_pool_id is None
+        or replica_id is None
+        or replica_index_text is None
+    ):
+        return None
+    try:
+        replica_index = int(replica_index_text)
+    except ValueError:
+        return None
+    if replica_index < 0:
+        return None
+
+    canonical_observed_root = str(Path(observed_root).expanduser().resolve())
+    computed_pool_id = registry.server_pool_id(canonical_observed_root)
+    if observed_pool_id != computed_pool_id:
+        return None
+    if run_root is not None:
+        canonical_expected_root = str(Path(run_root).expanduser().resolve())
+        if canonical_observed_root != canonical_expected_root:
+            return None
+        if observed_pool_id != registry.server_pool_id(canonical_expected_root):
+            return None
+        expected_comment = (
+            f"asys-schema5-pool:{observed_pool_id};profile={profile.name};"
+            f"replica={replica_id}"
+        )
+        if not re.search(
+            rf"(?m)^#SBATCH\s+--comment={re.escape(expected_comment)}\s*$",
+            script,
+        ):
+            return None
+
+    from agents_scaling.serving.launch_server import _port_for
+
+    port_match = re.search(r"(?m)^PORT=(?P<port>\d+)\s*$", script)
+    if (
+        port_match is None
+        or int(port_match.group("port")) != _port_for(profile.name, replica_index)
+        or "#SBATCH --no-requeue" not in script
+        or "importlib.metadata.version(\"vllm\") == \"0.21.0\"" not in script
+        or "export PYTHONDONTWRITEBYTECODE=1" not in script
+        or "export PYTHONPATH=" not in script
+        or (
+            "unset PYTHONHOME VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV "
+            "LD_LIBRARY_PATH LD_PRELOAD"
+        )
+        not in script
+        or "${LD_LIBRARY_PATH" in script
+        or re.search(r"(?m)^\s*(?:source\s+|mamba\s+activate\s+)", script)
+    ):
+        return None
+
+    model_revision = _flag_value(register_tokens, "--model-revision")
+    tokenizer_id = _flag_value(register_tokens, "--tokenizer-id")
+    tokenizer_revision = _flag_value(register_tokens, "--tokenizer-revision")
+    model_contract_sha256 = _flag_value(
+        register_tokens, "--model-contract-sha256"
+    )
+    fleet_contract_sha256 = _flag_value(
+        register_tokens, "--fleet-contract-sha256"
+    )
+    fleet_contract_path = _flag_value(register_tokens, "--fleet-contract")
+    release_worktree = _flag_value(register_tokens, "--release-worktree")
+    model_contract_path = _flag_value(register_tokens, "--model-contract")
+    release_id = _flag_value(register_tokens, "--release-id")
+    environment_hash = _flag_value(register_tokens, "--environment-hash")
+    identity_values = (
+        model_revision,
+        tokenizer_id,
+        tokenizer_revision,
+        model_contract_sha256,
+    )
+    if any(not value for value in identity_values):
+        return None
+    if (
+        _flag_value(serve_tokens, "--revision") != model_revision
+        or _flag_value(serve_tokens, "--tokenizer") != tokenizer_id
+        or _flag_value(serve_tokens, "--tokenizer-revision") != tokenizer_revision
+    ):
+        return None
+    resolved_model_contract: Path | None = None
+    resolved_fleet_contract: Path | None = None
+    if release_id:
+        try:
+            (
+                resolved_release_worktree,
+                resolved_model_contract,
+                resolved_fleet_contract,
+                _template_path,
+            ) = _production_release_resources(
+                release_worktree=release_worktree,
+                model_contract_path=model_contract_path,
+                fleet_contract_path=fleet_contract_path,
+            )
+        except ValueError:
+            return None
+        if (
+            f'export ASYS_RELEASE_WORKTREE="{resolved_release_worktree}"' not in script
+            or f'export ASYS_MODEL_CONTRACT="{resolved_model_contract}"' not in script
+        ):
+            return None
+    elif model_contract_path:
+        resolved_model_contract = Path(model_contract_path).expanduser().resolve()
+    try:
+        contracts = load_model_contracts(
+            resolved_model_contract,
+            expected_sha256=str(model_contract_sha256),
+        )
+        contracts.verify_identity(
+            size=profile.model_size,
+            hf_id=profile.hf_id,
+            model_revision=str(model_revision),
+            tokenizer_id=str(tokenizer_id),
+            tokenizer_revision=str(tokenizer_revision),
+        )
+    except ModelContractError:
+        return None
+
+    if bool(release_id) != bool(environment_hash):
+        return None
+    if environment_hash and re.fullmatch(r"[0-9a-f]{64}", environment_hash) is None:
+        return None
+    if release_id and not all(
+        marker in script
+        for marker in (
+            "export HF_HUB_OFFLINE=1",
+            "export TRANSFORMERS_OFFLINE=1",
+            "export HF_DATASETS_OFFLINE=1",
+        )
+    ):
+        return None
+    if release_id:
+        if (
+            observed_pool_id != "schema5-v1"
+            or not replica_id.startswith("schema5-v1--")
+            or fleet_contract_sha256 is None
+            or re.fullmatch(r"[0-9a-f]{64}", fleet_contract_sha256) is None
+            or not fleet_contract_path
+        ):
+            return None
+        try:
+            fleet = load_fleet_contract(
+                resolved_fleet_contract,
+                model_contracts=contracts,
+                expected_sha256=fleet_contract_sha256,
+            )
+            fleet.verify_pool_root(canonical_observed_root)
+            replica_contract = fleet.for_replica(profile.name, replica_index)
+        except FleetContractError:
+            return None
+        expected_directives = {
+            "job-name": replica_contract.scheduler_job_name,
+            "partition": replica_contract.partition,
+            "gres": f"gpu:{replica_contract.gpu_type}:{replica_contract.gpus_per_replica}",
+            "cpus-per-task": str(replica_contract.cpus_per_task),
+            "mem": replica_contract.memory,
+            "time": replica_contract.time_limit,
+        }
+        if (
+            replica_id != replica_contract.replica_id
+            or observed_pool_id != replica_contract.pool_id
+            or any(
+                re.search(
+                    rf"(?m)^#SBATCH\s+--{re.escape(flag)}={re.escape(value)}\s*$",
+                    script,
+                )
+                is None
+                for flag, value in expected_directives.items()
+            )
+        ):
+            return None
+    else:
+        try:
+            legacy_replica_id: str | int = int(replica_id)
+        except ValueError:
+            legacy_replica_id = replica_id
+        replica_id = legacy_replica_id
+
+    return SpooledServingProvenance(
+        run_root=canonical_observed_root,
+        server_pool_id=observed_pool_id,
+        replica_id=replica_id,
+        replica_index=replica_index,
+        release_id=release_id or None,
+        environment_hash=environment_hash or None,
+        model_revision=str(model_revision),
+        tokenizer_id=str(tokenizer_id),
+        tokenizer_revision=str(tokenizer_revision),
+        model_contract_sha256=str(model_contract_sha256),
+        fleet_contract_sha256=fleet_contract_sha256 or None,
+    )
+
+
+def _spooled_job_matches_profile(
+    slurm_job_id: str, profile_name: str, *, run_root: str | None = None
+) -> bool:
+    """Compatibility predicate around complete spooled-provenance recovery."""
+
+    return _spooled_job_provenance(
+        slurm_job_id, profile_name, run_root=run_root
+    ) is not None
+
+
+def _replica_ids_in_flight(
+    model_size: str, *, run_root: str | None = None
+) -> set[int]:
+    """Replica ids represented by any nonterminal serve job in ``squeue``.
+
+    Registry entries exist only after vLLM is healthy.  Without also inspecting pending
+    and transient requeue states, a second keepalive invocation can reuse replica 0 while
+    the first replica-0 job is still active, producing a duplicate allocation or same-node
+    port collision later. ``launch_server`` encodes the id in its stable sbatch filename,
+    which is visible as ``squeue``'s command.
+    """
+    out = subprocess.run(
+        ["squeue", "-u", os.environ.get("USER", ""), "-h", "-o", "%j|%t|%o"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    job_name = _pool_job_name(run_root, model_size)
+    filename = re.compile(
+        rf"(?:^|/)serve_{re.escape(model_size)}(?:_r(?P<rid>\d+))?"
+        rf"(?:\.g\d+\.[0-9a-f]+)?\.sbatch(?:\s|$)"
+    )
+    used: set[int] = set()
+    for line in out.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3 or parts[0].strip() != job_name:
+            continue
+        match = filename.search(parts[2].strip())
+        if match:
+            used.add(int(match.group("rid") or 0))
+    return used
+
+
+def _reregister_running(
+    run_root: str,
+    model_size: str,
+    *,
+    running_override: dict[tuple[str, int], str] | None = None,
+) -> int:
     """Self-heal: re-register live endpoints whose registry file was lost.
 
     A running serve job whose registry entry got pruned (e.g. a transient false-dead) would
     otherwise be stranded forever — job count >= target so no relaunch, yet not discoverable.
-    For each running serve node, probe the replica ports and re-register any live endpoint
-    not already in the registry.
+    For each running serve node, verify the immutable Slurm-spooled launch layout, probe
+    the exact replica port, and atomically register a missing endpoint or upgrade a legacy
+    or incomplete record at that address.
     """
     import dataclasses as _dc
     import json as _json
 
-    from agents_scaling.models import get_model
-    from agents_scaling.serving.launch_server import _port_for
     from agents_scaling.serving.registry import ServerEntry, _size_dir
 
-    known = {(e.host, e.port) for e in registry.list_servers(run_root, model_size)}
+    profile = get_serving_profile(model_size)
+    known = {
+        (entry.host, entry.port): entry
+        for entry in registry.list_servers(run_root, model_size)
+    }
     restored = 0
-    for node in _running_serve_nodes(model_size):
-        for r in range(8):
-            port = _port_for(model_size, r)
-            if (node, port) in known:
-                continue
-            # FAST single probe (3s, no retries) so a tick can't stall on flaky/saturated
-            # ports — a miss just retries next tick (eventually consistent). Registration
-            # is additive and safe; we never remove here.
-            if healthcheck.is_alive(node, port, timeout=3.0):
-                e = ServerEntry(model_size=model_size, hf_id=get_model(model_size).hf_id,
-                                host=node, port=port)
-                (_size_dir(run_root, model_size) / f"{node}_{port}.json").write_text(
-                    _json.dumps(_dc.asdict(e)))
-                known.add((node, port))
-                restored += 1
-                print(f"[keepalive] re-registered live {model_size} @ {node}:{port}")
+    running = (
+        _running_serve_endpoints(model_size, run_root=run_root)
+        if running_override is None
+        else running_override
+    )
+    for (node, port), slurm_job_id in running.items():
+        existing = known.get((node, port))
+        # Job name/path discovery establishes the live allocation and address; Slurm's
+        # immutable spooled script establishes the exact model/runtime layout.  Require
+        # both for every profile, including standards whose historical registry records
+        # were previously accepted with inferred fields.
+        provenance = _spooled_job_provenance(
+            slurm_job_id, model_size, run_root=run_root
+        )
+        if provenance is None:
+            print(
+                f"[keepalive] refusing unverifiable serving profile "
+                f"{model_size} @ {node}:{port}"
+            )
+            continue
+        expected_fields = {
+            "model_size": profile.model_size,
+            "hf_id": profile.hf_id,
+            "slurm_job_id": str(slurm_job_id),
+            "serving_profile": profile.name,
+            "served_model_name": profile.served_model_name,
+            "max_model_len": profile.max_model_len,
+            "tp_size": profile.tp_size,
+            "release_id": provenance.release_id,
+            "environment_hash": provenance.environment_hash,
+            "model_revision": provenance.model_revision,
+            "tokenizer_id": provenance.tokenizer_id,
+            "tokenizer_revision": provenance.tokenizer_revision,
+            "model_contract_sha256": provenance.model_contract_sha256,
+            "fleet_contract_sha256": provenance.fleet_contract_sha256,
+            "server_pool_id": provenance.server_pool_id,
+            "replica_id": provenance.replica_id,
+            "replica_index": provenance.replica_index,
+        }
+        if existing is not None and all(
+            getattr(existing, field) == value
+            for field, value in expected_fields.items()
+        ) and registry.entry_has_current_provenance(existing, profile.name):
+            continue
+        # FAST single probe (3s, no retries) so a tick can't stall on flaky/saturated
+        # ports — a miss just retries next tick (eventually consistent). Registration
+        # is additive and safe; we never remove here.
+        if healthcheck.is_alive(node, port, timeout=3.0):
+            # Preserve the original process registration instant when repairing fields
+            # for the same allocation.  This keeps endpoint_generation stable across a
+            # registry-file loss; a different allocation receives a fresh timestamp.
+            try:
+                existing_started_at = (
+                    float(existing.started_at) if existing is not None else 0.0
+                )
+            except (TypeError, ValueError):
+                existing_started_at = 0.0
+            started_at = (
+                existing_started_at
+                if existing is not None
+                and str(existing.slurm_job_id or "") == str(slurm_job_id)
+                and existing_started_at > 0.0
+                else time.time()
+            )
+            e = ServerEntry(
+                model_size=profile.model_size,
+                hf_id=profile.hf_id,
+                host=node,
+                port=port,
+                slurm_job_id=slurm_job_id,
+                started_at=started_at,
+                serving_profile=profile.name,
+                served_model_name=profile.served_model_name,
+                max_model_len=profile.max_model_len,
+                tp_size=profile.tp_size,
+                release_id=provenance.release_id,
+                environment_hash=provenance.environment_hash,
+                model_revision=provenance.model_revision,
+                tokenizer_id=provenance.tokenizer_id,
+                tokenizer_revision=provenance.tokenizer_revision,
+                model_contract_sha256=provenance.model_contract_sha256,
+                fleet_contract_sha256=provenance.fleet_contract_sha256,
+                server_pool_id=provenance.server_pool_id,
+                replica_id=provenance.replica_id,
+                replica_index=provenance.replica_index,
+            )
+            destination = _size_dir(run_root, profile.registry_key) / f"{node}_{port}.json"
+            io.atomic_write_text(
+                destination,
+                _json.dumps(_dc.asdict(e), indent=2, sort_keys=True) + "\n",
+            )
+            known[(node, port)] = e
+            restored += 1
+            action = "upgraded" if existing is not None else "re-registered"
+            print(f"[keepalive] {action} live {model_size} @ {node}:{port}")
     return restored
 
 
@@ -178,11 +746,164 @@ def _used_replica_ids(live: list) -> set[int]:
     for e in live:
         from agents_scaling.serving.launch_server import _port_for
 
-        base = _port_for(e.model_size, 0)
+        base = _port_for(e.registry_key, 0)
         off = e.port - base
         if 0 <= off < 64:  # plausible replica offset
             used.add(off)
     return used
+
+
+def _query_fleet_queue() -> tuple[FleetQueueRow, ...]:
+    """Return scheduler truth for the production fleet or fail closed."""
+
+    try:
+        proc = subprocess.run(
+            [
+                "squeue",
+                "-u",
+                os.environ.get("USER", ""),
+                "-h",
+                "-o",
+                "%i|%j|%T|%P|%N|%o|%k",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FleetContractError(f"cannot query Slurm fleet state: {exc}") from exc
+    if proc.returncode != 0:
+        raise FleetContractError(
+            f"Slurm fleet query failed rc={proc.returncode}: {proc.stderr.strip()}"
+        )
+    rows: list[FleetQueueRow] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("|", 6)
+        if len(fields) != 7:
+            raise FleetContractError(f"malformed Slurm fleet row: {line!r}")
+        rows.append(FleetQueueRow(*(field.strip() for field in fields)))
+    return tuple(rows)
+
+
+def tick_fleet(
+    run_root: str,
+    fleet: FrozenFleetContract,
+    *,
+    launch_options: dict[str, str | None],
+) -> None:
+    """Reconcile every exact frozen replica identity once.
+
+    Presence is accepted only after the allocation's immutable spooled script validates
+    against the same fleet hash.  Unknown/duplicate production job names, scheduler
+    query failures, and provenance drift terminate the supervisor turn instead of being
+    silently counted as capacity.
+    """
+
+    fleet.verify_pool_root(run_root)
+    rows = _query_fleet_queue()
+    expected_by_name = {
+        replica.scheduler_job_name: replica for replica in fleet.replicas
+    }
+    production_rows = [
+        row for row in rows if row.job_name.startswith("asys-s5-serve-")
+    ]
+    unknown = sorted(
+        {row.job_name for row in production_rows} - set(expected_by_name)
+    )
+    if unknown:
+        raise FleetContractError(f"unmappable schema-5 serving jobs: {unknown}")
+    by_name: dict[str, list[FleetQueueRow]] = {}
+    for row in production_rows:
+        by_name.setdefault(row.job_name, []).append(row)
+
+    for replica in fleet.replicas:
+        matches = by_name.get(replica.scheduler_job_name, [])
+        if len(matches) > 1:
+            raise FleetContractError(
+                f"ambiguous duplicate jobs for {replica.replica_id}: "
+                f"{[row.job_id for row in matches]}"
+            )
+        if matches:
+            row = matches[0]
+            if row.partition != replica.partition:
+                raise FleetContractError(
+                    f"partition drift for job {row.job_id}: expected "
+                    f"{replica.partition}, observed {row.partition}"
+                )
+            expected_comment = (
+                f"asys-schema5-pool:{replica.pool_id};"
+                f"profile={replica.serving_profile};replica={replica.replica_id}"
+            )
+            if row.comment != expected_comment:
+                raise FleetContractError(
+                    f"scheduler comment drift for job {row.job_id}: expected "
+                    f"{expected_comment!r}, observed {row.comment!r}"
+                )
+            expected_script = render_sbatch(
+                replica.model_size,
+                run_root,
+                replica.partition,
+                replica.gpu_type,
+                replica.time_limit,
+                str(Path(run_root) / "logs"),
+                replica=replica.replica_index,
+                serving_profile=replica.serving_profile,
+                **launch_options,
+            )
+            provenance = _spooled_job_provenance(
+                row.job_id,
+                replica.serving_profile,
+                run_root=run_root,
+                expected_script=expected_script,
+            )
+            if (
+                provenance is None
+                or provenance.replica_id != replica.replica_id
+                or provenance.replica_index != replica.replica_index
+                or provenance.fleet_contract_sha256 != fleet.sha256
+            ):
+                raise FleetContractError(
+                    f"job {row.job_id} failed immutable fleet provenance validation"
+                )
+            if row.state.upper() in {"RUNNING", "COMPLETING", "CONFIGURING"}:
+                if not row.node or row.node in {"(null)", "N/A"}:
+                    if row.state.upper() == "RUNNING":
+                        raise FleetContractError(
+                            f"running fleet job {row.job_id} has no scheduler node"
+                        )
+                    continue
+                from agents_scaling.serving.launch_server import _port_for
+
+                _reregister_running(
+                    run_root,
+                    replica.serving_profile,
+                    running_override={
+                        (
+                            row.node,
+                            _port_for(
+                                replica.serving_profile, replica.replica_index
+                            ),
+                        ): row.job_id
+                    },
+                )
+            continue
+
+        job_id = submit_server(
+            replica.model_size,
+            run_root,
+            replica.partition,
+            replica.gpu_type,
+            replica.time_limit,
+            replica=replica.replica_index,
+            serving_profile=replica.serving_profile,
+            **launch_options,
+        )
+        print(
+            f"[keepalive] LAUNCH {replica.replica_id} on {replica.partition} "
+            f"-> job {job_id}"
+        )
 
 
 def tick(run_root: str, targets: list[Target]) -> None:
@@ -208,13 +929,17 @@ def tick(run_root: str, targets: list[Target]) -> None:
         # Relaunch only when the JOB count is below target FOR THIS PARTITION (a server
         # actually ended). Partition-scoped so multi-partition specs for one size don't
         # fight over a single size-global count.
-        have = _serve_jobs_in_flight(t.size, t.partition)
+        have = _serve_jobs_in_flight(t.size, t.partition, run_root=run_root)
         if have >= t.count:
             continue
         need = t.count - have
         # Avoid collisions with live replicas AND any IDs already handed out this tick for
         # this size (covers pending servers on other partitions not yet in the registry).
-        used = _used_replica_ids(_live_dead(run_root, t.size)[0]) | assigned_rids.get(t.size, set())
+        used = (
+            _used_replica_ids(_live_dead(run_root, t.size)[0])
+            | _replica_ids_in_flight(t.size, run_root=run_root)
+            | assigned_rids.get(t.size, set())
+        )
         rid = 0
         for _ in range(need):
             while rid in used:
@@ -235,21 +960,160 @@ def main() -> None:
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--run-root", default=None, help="defaults to $ASYS_RESULTS_ROOT/<run-id>")
     ap.add_argument(
-        "--spec", required=True,
-        help="comma-list of size:count:partition:time, e.g. 0.6B:1:pi_tpoggio:7-00:00:00,32B:6:ou_bcs_low:1-00:00:00",
+        "--spec",
+        help="comma-list of profile:count:partition:time, e.g. "
+        "0.6B:1:pi_tpoggio:7-00:00:00,32B-long:2:pi_tpoggio:7-00:00:00",
+    )
+    ap.add_argument(
+        "--repair-profile",
+        action="append",
+        default=[],
+        help=(
+            "atomically register/upgrade verified live endpoints for this profile and "
+            "exit without submitting servers; repeat for multiple profiles"
+        ),
     )
     ap.add_argument("--gpu-type", default="a100")
+    ap.add_argument("--release-id", default=os.environ.get("ASYS_RELEASE_ID"))
+    ap.add_argument(
+        "--release-worktree", default=os.environ.get("ASYS_RELEASE_WORKTREE")
+    )
+    ap.add_argument("--model-contract", default=None)
+    ap.add_argument(
+        "--model-contract-sha256",
+        default=os.environ.get("ASYS_MODEL_CONTRACT_SHA256"),
+    )
+    ap.add_argument(
+        "--fleet-contract", default=os.environ.get("ASYS_FLEET_CONTRACT")
+    )
+    ap.add_argument(
+        "--fleet-contract-sha256",
+        default=os.environ.get("ASYS_FLEET_CONTRACT_SHA256"),
+    )
+    ap.add_argument(
+        "--harness-environment-prefix",
+        default=os.environ.get("ASYS_HARNESS_ENVIRONMENT_PREFIX"),
+    )
+    ap.add_argument(
+        "--serving-environment-prefix",
+        default=os.environ.get("ASYS_SERVING_ENVIRONMENT_PREFIX"),
+    )
+    ap.add_argument(
+        "--harness-environment-manifest",
+        default=os.environ.get("ASYS_HARNESS_ENVIRONMENT_MANIFEST"),
+    )
+    ap.add_argument(
+        "--serving-environment-manifest",
+        default=os.environ.get("ASYS_SERVING_ENVIRONMENT_MANIFEST"),
+    )
+    ap.add_argument(
+        "--harness-environment-sha256",
+        default=os.environ.get("ASYS_HARNESS_ENVIRONMENT_SHA256"),
+    )
+    ap.add_argument(
+        "--serving-environment-sha256",
+        default=os.environ.get("ASYS_SERVING_ENVIRONMENT_SHA256"),
+    )
+    ap.add_argument("--hf-home", default=os.environ.get("HF_HOME"))
     ap.add_argument("--interval", type=float, default=600.0, help="seconds between passes")
     ap.add_argument("--once", action="store_true", help="single pass then exit (for testing)")
+    ap.add_argument(
+        "--allow-legacy-fleet",
+        action="store_true",
+        help=(
+            "explicit forensic/emergency override for --spec and --repair-profile; "
+            "schema-5 production must use the immutable --fleet-contract path"
+        ),
+    )
     args = ap.parse_args()
 
     run_root = args.run_root or os.path.join(
         os.environ.get("ASYS_RESULTS_ROOT", DEFAULT_RESULTS_ROOT), args.run_id
     )
+    if args.fleet_contract is None and not args.allow_legacy_fleet:
+        ap.error(
+            "legacy keepalive/registry repair is retired: schema-5 production requires "
+            "the immutable --fleet-contract command; pass --allow-legacy-fleet only "
+            "for an audited forensic or emergency action"
+        )
+    if args.repair_profile:
+        if args.spec is not None or args.fleet_contract is not None:
+            ap.error("--repair-profile cannot be combined with --spec/--fleet-contract")
+        unknown = sorted(set(args.repair_profile) - set(SERVING_PROFILES))
+        if unknown:
+            ap.error(
+                f"unknown serving profiles: {unknown} (known: {sorted(SERVING_PROFILES)})"
+            )
+        repaired = 0
+        for profile_name in dict.fromkeys(args.repair_profile):
+            count = _reregister_running(run_root, profile_name)
+            repaired += count
+            print(f"[keepalive] repair-only {profile_name}: {count} registry records updated")
+        print(f"[keepalive] repair-only complete: {repaired} registry records updated")
+        return
+    if args.fleet_contract is not None:
+        if args.spec is not None:
+            ap.error("production --fleet-contract cannot be combined with legacy --spec")
+        required = {
+            "release_worktree": args.release_worktree,
+            "release_id": args.release_id,
+            "model_contract": args.model_contract,
+            "model_contract_sha256": args.model_contract_sha256,
+            "fleet_contract_sha256": args.fleet_contract_sha256,
+            "harness_environment_prefix": args.harness_environment_prefix,
+            "serving_environment_prefix": args.serving_environment_prefix,
+            "harness_environment_manifest": args.harness_environment_manifest,
+            "serving_environment_manifest": args.serving_environment_manifest,
+            "harness_environment_sha256": args.harness_environment_sha256,
+            "serving_environment_sha256": args.serving_environment_sha256,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            ap.error("production fleet is missing immutable pins: " + ", ".join(missing))
+        model_contracts = load_model_contracts(
+            args.model_contract,
+            expected_sha256=args.model_contract_sha256,
+        )
+        fleet = load_fleet_contract(
+            args.fleet_contract,
+            model_contracts=model_contracts,
+            expected_sha256=args.fleet_contract_sha256,
+        )
+        fleet.verify_pool_root(run_root)
+        launch_options = {
+            "release_worktree": args.release_worktree,
+            "release_id": args.release_id,
+            "environment_hash": args.serving_environment_sha256,
+            "model_contract_path": args.model_contract,
+            "model_contract_sha256": args.model_contract_sha256,
+            "harness_environment_prefix": args.harness_environment_prefix,
+            "serving_environment_prefix": args.serving_environment_prefix,
+            "harness_environment_manifest_path": args.harness_environment_manifest,
+            "serving_environment_manifest_path": args.serving_environment_manifest,
+            "harness_environment_hash": args.harness_environment_sha256,
+            "fleet_contract_path": args.fleet_contract,
+            "fleet_contract_sha256": args.fleet_contract_sha256,
+            "hf_home": args.hf_home,
+        }
+        print(
+            f"[keepalive] canonical fleet={fleet.sha256} root={Path(run_root).resolve()}"
+        )
+        while True:
+            # Production is intentionally fail-closed.  The outer, cross-supervising
+            # controller chain records/restarts a failed turn; this process never hides
+            # scheduler ambiguity or immutable-provenance drift in an endless loop.
+            tick_fleet(run_root, fleet, launch_options=launch_options)
+            if args.once:
+                return
+            time.sleep(args.interval)
+    if args.spec is None:
+        ap.error("--spec is required unless --repair-profile is used")
     targets = parse_spec(args.spec, args.gpu_type)
-    unknown = [t.size for t in targets if t.size not in REGISTRY]
+    unknown = [t.size for t in targets if t.size not in SERVING_PROFILES]
     if unknown:
-        ap.error(f"unknown model sizes: {unknown} (known: {sorted(REGISTRY)})")
+        ap.error(
+            f"unknown serving profiles: {unknown} (known: {sorted(SERVING_PROFILES)})"
+        )
 
     print(f"[keepalive] run_root={run_root}")
     for t in targets:

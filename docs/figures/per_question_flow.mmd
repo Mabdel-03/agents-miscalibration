@@ -1,0 +1,14 @@
+flowchart LR
+  Q["Question"] --> T["Build topology"]
+  T --> P["Render system prompt + user prompt"]
+  P --> A["Agent answer calls"]
+  A --> C["Peer context builder when topology shares context"]
+  C --> A
+  A --> AG["Aggregate final answer"]
+  AG --> GR["Grade against answer key"]
+  AG --> CONF["Compute system confidence definitions"]
+  A --> PA["Store per-agent outputs"]
+  GR --> ROW["QuestionResult JSONL row"]
+  CONF --> ROW
+  PA --> ROW
+  ROW --> META["CellMeta after all questions"]

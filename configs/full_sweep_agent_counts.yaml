@@ -1,0 +1,21 @@
+# Follow-up sweep: extend the completed 3-agent MAS grid to 2/4/5/6 agents.
+# This is intended to run under a separate run id, e.g. full_sweep_agent_counts_v1,
+# then merge with full_sweep_v1 in analysis. Existing single-agent baselines and
+# 3-agent MAS cells are reused, so this config schedules ONLY new MAS cells.
+include_sas_baselines: false
+
+axes:
+  model_size: ["0.6B", "1.7B", "4B", "8B", "14B", "32B"]
+  topology: ["independent", "decentralized", "centralized"]
+  n_agents: [2, 4, 5, 6]
+  context_share_level: ["artifact_only", "plus_cot"]
+  prompt_complexity_level: [0, 3]
+  reasoning_level: ["off", "b512", "b2048", "b8192", "unlimited"]
+  benchmark: ["gpqa", "mmlu_pro", "math", "truthfulqa"]
+  seed: [0, 1, 2]
+
+fixed:
+  rounds: 2
+  n_samples: 5
+  temperature: 0.7
+  n_questions: 200
