@@ -51,7 +51,7 @@ def _policy_root(tmp_path: Path):
     root = tmp_path / "full_sweep_schema5_v1"
     root.mkdir()
     pins = clone.ReleasePins(
-        release_id="sweep-recovery-schema5-v1",
+        release_id="sweep-recovery-schema5-v1.1",
         git_commit="a" * 40,
         source_tree_sha256="b" * 64,
         harness_sha256="c" * 64,
@@ -77,6 +77,9 @@ def _policy_root(tmp_path: Path):
 
 
 def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
+    import time
+    from agents_scaling import runtime_integrity
+
     records = {}
     for role in ("harness", "serving"):
         prefix = tmp_path / f"{role}-env"
@@ -88,9 +91,13 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
             )
             (prefix / "bin" / "vllm").chmod(0o555)
         (prefix / "bin" / "python").chmod(0o555)
+        (prefix / "bin").chmod(0o555)
+        prefix.chmod(0o555)
+        inventory = runtime_integrity.directory_inventory(prefix)
+        locks = {"conda_explicit": [], "pip_freeze_all": []}
         payload = {
             "schema_version": 1,
-            "release_id": "sweep-recovery-schema5-v1",
+            "release_id": "sweep-recovery-schema5-v1.1",
             "role": role,
             "prefix": str(prefix.resolve()),
             "sealed_read_only": True,
@@ -110,17 +117,64 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
                     "tokenizers": "0.22.2",
                 },
             },
+            "locks": locks,
+            "release_package": None,
+            "directory_inventory": inventory,
         }
+        payload["environment_content_sha256"] = hashlib.sha256(
+            runtime_integrity.canonical_bytes(
+                {
+                    "runtime": payload["runtime"],
+                    "locks": locks,
+                    "release_package": None,
+                    "inventory_sha256": inventory["inventory_sha256"],
+                }
+            )
+        ).hexdigest()
         manifest = tmp_path / f"{role}-environment.json"
         raw = (json.dumps(payload, sort_keys=True) + "\n").encode()
         manifest.write_bytes(raw)
         records[role] = (prefix, manifest, hashlib.sha256(raw).hexdigest())
-        (prefix / "bin").chmod(0o555)
-        prefix.chmod(0o555)
     harness, serving = records["harness"], records["serving"]
     release_worktree = Path(__file__).resolve().parents[1]
     model_contract_path = release_worktree / "configs" / "model_contracts.v1.json"
     fleet_path = release_worktree / "configs" / "schema5_fleet.v1.json"
+    environment_pins = {
+        role: {
+            "prefix": str(records[role][0]),
+            "manifest_path": str(records[role][1]),
+            "manifest_sha256": records[role][2],
+        }
+        for role in ("harness", "serving")
+    }
+    immutable_sha = "9" * 64
+    state_dir = tmp_path / "runtime-state"
+    state_dir.mkdir()
+    attestation = runtime_integrity.ensure_generation_attestation(
+        state_dir=state_dir,
+        generation=1,
+        release_id="sweep-recovery-schema5-v1.1",
+        release_bundle_id="8" * 64,
+        immutable_pins_sha256=immutable_sha,
+        environment_pins=environment_pins,
+    )
+    lease = runtime_integrity.refresh_generation_lease(
+        state_dir=state_dir,
+        attestation_path=Path(attestation["path"]),
+        attestation_sha256=attestation["sha256"],
+        generation=1,
+        release_id="sweep-recovery-schema5-v1.1",
+        immutable_pins_sha256=immutable_sha,
+        expected_environment_hashes={
+            role: environment_pins[role]["manifest_sha256"]
+            for role in ("harness", "serving")
+        },
+        expected_prefixes={
+            role: environment_pins[role]["prefix"]
+            for role in ("harness", "serving")
+        },
+        now=time.time(),
+    )
     return {
         "release_worktree": str(release_worktree),
         "model_contract_path": str(model_contract_path),
@@ -132,6 +186,11 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
         "environment_hash": serving[2],
         "fleet_contract_path": str(fleet_path),
         "fleet_contract_sha256": hashlib.sha256(fleet_path.read_bytes()).hexdigest(),
+        "runtime_attestation": attestation["path"],
+        "runtime_attestation_sha256": attestation["sha256"],
+        "runtime_integrity_lease": lease["path"],
+        "immutable_pins_sha256": immutable_sha,
+        "rollout_generation": 1,
     }
 
 
@@ -283,7 +342,7 @@ def test_schema5_runner_rejects_an_exact_endpoint_from_another_pool(tmp_path):
         ).read_bytes()
     ).hexdigest()
     runtime = SimpleNamespace(
-        release_id="sweep-recovery-schema5-v1",
+        release_id="sweep-recovery-schema5-v1.1",
         serving_environment_hash="d" * 64,
         model_revision=identity.model_revision,
         tokenizer_revision=identity.tokenizer_revision,
@@ -356,7 +415,7 @@ def test_server_launch_inherits_frozen_production_pins(tmp_path, monkeypatch):
         "agents_scaling.serving.launch_server.TEMPLATE",
         tmp_path / "installed-package-without-slurm-template",
     )
-    monkeypatch.setenv("ASYS_RELEASE_ID", "sweep-recovery-schema5-v1")
+    monkeypatch.setenv("ASYS_RELEASE_ID", "sweep-recovery-schema5-v1.1")
     monkeypatch.setenv(
         "ASYS_SERVING_ENVIRONMENT_SHA256", environments["environment_hash"]
     )
@@ -372,7 +431,7 @@ def test_server_launch_inherits_frozen_production_pins(tmp_path, monkeypatch):
         **environments,
     )
 
-    assert '--release-id "sweep-recovery-schema5-v1"' in text
+    assert '--release-id "sweep-recovery-schema5-v1.1"' in text
     assert f'--environment-hash "{environments["environment_hash"]}"' in text
     assert (
         f'export ASYS_HARNESS_ENVIRONMENT_SHA256="'
@@ -425,6 +484,22 @@ def test_usr1_controller_closes_admission_without_failure_semantics():
     assert controller.requested.is_set()
     with pytest.raises(CoordinateAdmissionClosed, match="graceful drain"):
         controller.admit_coordinate()
+
+
+def test_usr1_during_runtime_guard_closes_admission_before_coordinate_start():
+    controller: WorkerDrainController | None = None
+
+    def guard() -> None:
+        assert controller is not None
+        controller.handle_signal(runner.signal.SIGUSR1, None)
+
+    controller = WorkerDrainController(admission_guard=guard)
+    with pytest.raises(
+        CoordinateAdmissionClosed,
+        match="graceful drain requested by USR1",
+    ):
+        controller.admit_coordinate()
+    assert controller.requested.is_set()
 
 
 def test_runner_drain_handoff_never_creates_failure_ledger(tmp_path, monkeypatch):

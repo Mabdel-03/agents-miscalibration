@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -31,9 +32,10 @@ import subprocess
 import sys
 import time
 import uuid
+import stat
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -79,6 +81,7 @@ from agents_scaling.serving.fleet_contract import (
 from agents_scaling.serving.launch_server import _port_for
 from agents_scaling.serving.model_contracts import ModelContractError, load_model_contracts
 from agents_scaling.serving.profiles import serving_profile_for_cell
+from agents_scaling import runtime_integrity
 
 
 ARRAY_TEMPLATE = REPO / "slurm" / "run_dispatch_batch.sbatch.tmpl"
@@ -107,6 +110,9 @@ PRODUCTION_ENVIRONMENT_KEYS = frozenset(
         "ASYS_SERVING_ENVIRONMENT_SHA256",
         "ASYS_ROLLOUT_GENERATION",
         "ASYS_IMMUTABLE_PINS_SHA256",
+        "ASYS_RUNTIME_ATTESTATION",
+        "ASYS_RUNTIME_ATTESTATION_SHA256",
+        "ASYS_RUNTIME_INTEGRITY_LEASE",
         "ASYS_ARTIFACT_POLICY_SHA256",
         "HF_HUB_OFFLINE",
         "TRANSFORMERS_OFFLINE",
@@ -180,6 +186,7 @@ class QueueRow:
     job_name: str
     state: str
     command: str = ""
+    comment: str = ""
 
 
 @dataclass(frozen=True)
@@ -632,6 +639,29 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
+def _sealed_artifact_sha256(path: Path) -> str:
+    """Hash one regular, non-symlink, read-only dispatcher transaction artifact."""
+
+    if path.is_symlink() or not path.is_file():
+        raise DispatcherError(f"dispatcher transaction artifact is unsafe: {path}")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o222:
+        raise DispatcherError(f"dispatcher transaction artifact is writable: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _seal_dispatch_artifact(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise DispatcherError(f"cannot seal dispatcher transaction artifact: {path}")
+    path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return _sealed_artifact_sha256(path)
+
+
 @contextmanager
 def _exclusive_lock(lock_path: Path, *, scope: str) -> Iterator[None]:
     """Hold one non-blocking filesystem lock for the caller's full lifetime."""
@@ -835,9 +865,48 @@ def _queue_rows_from_scheduler_snapshot(snapshot: Any) -> list[QueueRow]:
                 job_name=str(job.job_name),
                 state=str(job.state),
                 command=str(job.command),
+                comment=str(job.comment),
             )
         )
     return rows
+
+
+def _command_binds_exact_sbatch(command: str, expected_path: str) -> bool:
+    try:
+        expected = str(Path(expected_path).expanduser().resolve())
+        return any(
+            Path(token).is_absolute()
+            and str(Path(token).expanduser().resolve()) == expected
+            for token in shlex.split(command)
+            if token.endswith(".sbatch")
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _intent_visibility_started_at(intent: Mapping[str, Any]) -> float | None:
+    """Return the timestamp at which an intent could first have reached Slurm.
+
+    A dispatcher poll can spend minutes validating a large manifest before admission.
+    Using the poll/intent creation time would consume the entire scheduler-visibility
+    grace before ``sbatch`` is invoked and could misclassify a newly accepted job as
+    absent.  Prepared intents have not crossed that boundary; submitting intents must
+    carry the separately fsynced boundary timestamp.
+    """
+
+    field = (
+        "submit_started_at"
+        if intent.get("state") == "submitting"
+        else "created_at"
+    )
+    value = intent.get(field)
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+    ):
+        return None
+    return float(value)
 
 
 def _reconcile_schema5_intents(
@@ -854,12 +923,63 @@ def _reconcile_schema5_intents(
     for batch_id, intent in ledger.get("intents", {}).items():
         if intent.get("state") not in {"prepared", "submitting"}:
             continue
+        visibility_started_at = _intent_visibility_started_at(intent)
+        if visibility_started_at is None:
+            errors.append(
+                f"intent {batch_id} lacks a valid scheduler-boundary timestamp"
+            )
+            continue
         expected_comment = f"asys-schema5-intent:{batch_id}"
         expected_path = str(Path(str(intent.get("sbatch_path", ""))).resolve())
+        expected_name = f"asys-dispatch-{batch_id[-10:]}"
+        artifacts = (
+            ("batch_manifest", "batch_manifest_sha256"),
+            ("sbatch_path", "sbatch_sha256"),
+        )
+        artifact_error: str | None = None
+        for path_field, hash_field in artifacts:
+            expected_hash = intent.get(hash_field)
+            try:
+                observed_hash = _sealed_artifact_sha256(
+                    Path(str(intent.get(path_field, ""))).expanduser().resolve()
+                )
+            except (DispatcherError, OSError) as exc:
+                artifact_error = str(exc)
+                break
+            if (
+                not isinstance(expected_hash, str)
+                or len(expected_hash) != 64
+                or any(character not in "0123456789abcdef" for character in expected_hash)
+                or observed_hash != expected_hash
+            ):
+                artifact_error = f"{path_field} bytes differ from durable intent"
+                break
+        if artifact_error is not None:
+            errors.append(f"intent {batch_id} artifact drift: {artifact_error}")
+            continue
         matching_by_base: dict[str, list[Any]] = defaultdict(list)
         for job in scheduler_snapshot.jobs:
-            command = str(job.command)
-            if str(job.comment) != expected_comment and expected_path not in command:
+            comment = str(job.comment)
+            path_matches = _command_binds_exact_sbatch(
+                str(job.command), expected_path
+            )
+            namespace_match = (
+                comment == expected_comment
+                or path_matches
+                or str(job.job_name) == expected_name
+            )
+            if not namespace_match:
+                continue
+            if (
+                str(job.job_name) != expected_name
+                or not path_matches
+                or (comment and comment != expected_comment)
+                or (str(job.source) == "squeue" and comment != expected_comment)
+            ):
+                errors.append(
+                    f"intent {batch_id} scheduler provenance drift for job "
+                    f"{job.job_id}: name={job.job_name!r} comment={comment!r}"
+                )
                 continue
             base, _ = _array_identity(str(job.job_id))
             matching_by_base[base].append(job)
@@ -870,7 +990,7 @@ def _reconcile_schema5_intents(
             )
             continue
         if not matching_by_base:
-            age = now - float(intent.get("created_at", 0.0))
+            age = max(0.0, now - visibility_started_at)
             if age >= visibility_grace_s:
                 intent.update(
                     {
@@ -893,7 +1013,9 @@ def _reconcile_schema5_intents(
             "job_id": job_id,
             "batch_id": batch_id,
             "batch_manifest": str(intent.get("batch_manifest")),
+            "batch_manifest_sha256": str(intent.get("batch_manifest_sha256")),
             "sbatch_path": str(intent.get("sbatch_path")),
+            "sbatch_sha256": str(intent.get("sbatch_sha256")),
             "submitted_at": float(intent.get("created_at", now)),
             "last_seen_at": now,
             "reconciled_at": now,
@@ -903,7 +1025,11 @@ def _reconcile_schema5_intents(
             "tasks": tasks,
         }
         if record is not None and (
-            record.get("batch_id") != batch_id or record.get("tasks") != tasks
+            record.get("batch_id") != batch_id
+            or record.get("tasks") != tasks
+            or record.get("batch_manifest_sha256")
+            != intent.get("batch_manifest_sha256")
+            or record.get("sbatch_sha256") != intent.get("sbatch_sha256")
         ):
             errors.append(f"job {job_id} conflicts with intent {batch_id}")
             continue
@@ -1006,6 +1132,7 @@ def _active_cells(
     *,
     now: float,
     visibility_grace_s: float = 300.0,
+    schema5_strict: bool = False,
 ) -> tuple[
     dict[tuple[str, str], Candidate],
     dict[ProfileKey, int],
@@ -1018,6 +1145,7 @@ def _active_cells(
     active_load: dict[ProfileKey, int] = defaultdict(int)
     warnings: list[str] = []
     unmappable: list[str] = []
+    verified_job_artifacts: dict[str, str | None] = {}
 
     # One immutable sbatch/intent may map to exactly one Slurm array allocation.  Array
     # task rows legitimately repeat the same base id; two distinct base ids for the same
@@ -1093,6 +1221,15 @@ def _active_cells(
                 continue
         job_record = ledger["jobs"].get(row.array_job_id)
         if job_record is None and row.job_name.startswith("asys-dispatch-"):
+            if schema5_strict:
+                # A schema-5 intent is fsynced before sbatch.  Therefore an active
+                # production array without a reconciled ledger record is foreign or
+                # ambiguous; reading an attacker-chosen adjacent JSON file is never a
+                # valid crash-recovery path.
+                unmappable.append(
+                    f"{row.job_id} ({row.job_name}): no durable schema-5 intent record"
+                )
+                continue
             # Recovery for the narrow crash window after sbatch accepts a microbatch but
             # before its job id reaches the ledger.  Slurm retains the submitted sbatch
             # path in %o; our .json batch manifest has the same basename.
@@ -1131,6 +1268,47 @@ def _active_cells(
                 unmappable.append(f"{row.job_id} ({row.job_name}): {exc}")
                 continue
         if job_record is not None:
+            if schema5_strict and is_cell_job_name(row.job_name):
+                batch_id = str(job_record.get("batch_id", ""))
+                expected_name = f"asys-dispatch-{batch_id[-10:]}"
+                expected_comment = f"asys-schema5-intent:{batch_id}"
+                artifact_error = verified_job_artifacts.get(row.array_job_id)
+                if row.array_job_id not in verified_job_artifacts:
+                    artifact_error = None
+                    for path_field, hash_field in (
+                        ("batch_manifest", "batch_manifest_sha256"),
+                        ("sbatch_path", "sbatch_sha256"),
+                    ):
+                        expected_hash = job_record.get(hash_field)
+                        try:
+                            observed_hash = _sealed_artifact_sha256(
+                                Path(str(job_record.get(path_field, "")))
+                                .expanduser()
+                                .resolve()
+                            )
+                        except (DispatcherError, OSError) as exc:
+                            artifact_error = str(exc)
+                            break
+                        if observed_hash != expected_hash:
+                            artifact_error = (
+                                f"{path_field} differs from its durable hash"
+                            )
+                            break
+                    verified_job_artifacts[row.array_job_id] = artifact_error
+                if (
+                    not batch_id
+                    or row.job_name != expected_name
+                    or row.comment != expected_comment
+                    or artifact_error is not None
+                    or not _command_binds_exact_sbatch(
+                        row.command, str(job_record.get("sbatch_path", ""))
+                    )
+                ):
+                    unmappable.append(
+                        f"{row.job_id} ({row.job_name}): live scheduler provenance "
+                        "differs from durable schema-5 intent"
+                    )
+                    continue
             tasks = job_record.get("tasks", [])
             indices = range(len(tasks)) if row.array_task_id is None else (row.array_task_id,)
             mapped = False
@@ -1207,7 +1385,11 @@ def _active_cells(
     for intent_id, intent in ledger.get("intents", {}).items():
         if intent.get("state") not in {"prepared", "submitting"}:
             continue
-        if now - float(intent.get("created_at", 0.0)) < visibility_grace_s:
+        visibility_started_at = _intent_visibility_started_at(intent)
+        if (
+            visibility_started_at is not None
+            and now - visibility_started_at < visibility_grace_s
+        ):
             reserve_tasks(intent.get("tasks"), f"intent {intent_id}")
     return (
         active,
@@ -1749,6 +1931,7 @@ def _render_batch_sbatch(
     log_dir: Path,
     batch_tag: str,
     batch_id: str | None = None,
+    batch_manifest_sha256: str = "0" * 64,
     control_state_dir: Path | None = None,
 ) -> str:
     if not 1 <= n_tasks <= MAX_BATCH_DEFAULT:
@@ -1818,6 +2001,7 @@ def _render_batch_sbatch(
         "LOG_DIR": str(log_dir),
         "REPO": str(REPO),
         "BATCH_MANIFEST": str(batch_manifest),
+        "BATCH_MANIFEST_SHA256": batch_manifest_sha256,
         "RUNTIME_SETUP": runtime_setup,
         "PYTHON": python_command,
         "DISPATCH_SCRIPT": dispatch_script,
@@ -1860,6 +2044,7 @@ def _write_batch(
         "tasks": [_task_from_candidate(candidate) for candidate in selected],
     }
     _atomic_write_json(manifest_path, batch)
+    manifest_sha256 = _seal_dispatch_artifact(manifest_path)
     sbatch_text = _render_batch_sbatch(
         manifest_path,
         n_tasks=len(selected),
@@ -1869,23 +2054,41 @@ def _write_batch(
         log_dir=log_dir,
         batch_tag=batch_id[-10:],
         batch_id=batch_id,
+        batch_manifest_sha256=manifest_sha256,
         control_state_dir=control_state_dir,
     )
     io.atomic_write_text(sbatch_path, sbatch_text)
+    # These generation/intent-addressed files are the recovery authority on both sides
+    # of sbatch.  Seal them before their hashes enter the durable ledger; subsequent
+    # reconciliation refuses mode or byte drift.
+    _seal_dispatch_artifact(sbatch_path)
     return batch_id, manifest_path, sbatch_path, batch
 
 
 def _submit_sbatch(path: Path) -> str:
+    if not path.name.startswith("batch-") or path.suffix != ".sbatch":
+        raise DispatcherError(f"dispatcher sbatch path lacks an intent identity: {path}")
+    batch_id = path.name[len("batch-") : -len(".sbatch")]
+    if not batch_id or any(character in batch_id for character in "|;\n\r"):
+        raise DispatcherError(f"unsafe dispatcher batch intent {batch_id!r}")
     proc = subprocess.run(
-        ["sbatch", "--parsable", str(path)], capture_output=True, text=True
+        [
+            "sbatch",
+            "--parsable",
+            f"--comment=asys-schema5-intent:{batch_id}",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60.0,
     )
     if proc.returncode != 0:
         raise DispatcherError(
             f"sbatch rejected {path.name} (rc={proc.returncode}): {proc.stderr.strip()[:500]}"
         )
     job_id = proc.stdout.strip().split(";", 1)[0]
-    if not job_id:
-        raise DispatcherError(f"sbatch returned no job id for {path}")
+    if not job_id.isdigit():
+        raise DispatcherError(f"sbatch returned invalid job id {job_id!r} for {path}")
     return job_id
 
 
@@ -1925,11 +2128,16 @@ def _record_submission(
     now: float,
 ) -> None:
     tasks = list(batch["tasks"])
+    intent = ledger.get("intents", {}).get(batch_id)
+    if not isinstance(intent, dict):
+        raise DispatcherError(f"submission {batch_id} lacks its durable intent")
     ledger["jobs"][job_id] = {
         "job_id": job_id,
         "batch_id": batch_id,
         "batch_manifest": str(manifest_path),
+        "batch_manifest_sha256": str(intent.get("batch_manifest_sha256")),
         "sbatch_path": str(sbatch_path),
+        "sbatch_sha256": str(intent.get("sbatch_sha256")),
         "submitted_at": now,
         "last_seen_at": now,
         "state": "submitted",
@@ -2122,7 +2330,11 @@ def _dispatch_poll(
         else args.assume_cell_jobs
     )
     active, active_task_load, join_warnings, unmappable_jobs = _active_cells(
-        rows, work, specs, now=now
+        rows,
+        work,
+        specs,
+        now=now,
+        schema5_strict=production_contract is not None,
     )
     join_warnings = scheduler_reconcile_warnings + join_warnings
     unmappable_jobs = scheduler_reconcile_errors + unmappable_jobs
@@ -2134,7 +2346,9 @@ def _dispatch_poll(
         len(intent.get("tasks", []))
         for intent in work.get("intents", {}).values()
         if intent.get("state") in {"prepared", "submitting"}
-        and now - float(intent.get("created_at", 0.0)) < 300.0
+        and (visibility_started_at := _intent_visibility_started_at(intent))
+        is not None
+        and now - visibility_started_at < 300.0
     )
     total_jobs += invisible_reservations
     active_cell_jobs += invisible_reservations
@@ -2218,57 +2432,101 @@ def _dispatch_poll(
     submission_error: str | None = None
     submitted = False
     if selected and not dry_run:
-        batch_id, manifest_path, sbatch_path, batch = _write_batch(
-            args.state_dir,
-            selected,
-            partition=args.cell_partition,
-            time_limit=args.cell_time,
-            memory=args.cell_mem,
-            now=now,
-            control_state_dir=control_state_dir,
-        )
-        work["intents"][batch_id] = {
-            "state": "prepared",
-            "created_at": now,
-            "batch_manifest": str(manifest_path),
-            "sbatch_path": str(sbatch_path),
-            "tasks": list(batch["tasks"]),
-            "fairness_after": {
-                "cursor": admission.cursor,
-                "deficits": admission.deficits,
-            },
-            "fairness_committed": False,
-        }
-        # Persist the exact task reservation before crossing the external sbatch boundary.
-        # If the process dies after acceptance, the next coordinator either joins the
-        # array via squeue %o or holds this intent through the visibility grace period.
-        _atomic_write_json(args.ledger_path, work)
-        work["intents"][batch_id]["state"] = "submitting"
-        # The external side effect happens only after the durable state says
-        # ``submitting``.  A crash at any later instruction is reconcilable through the
-        # immutable batch path and intent token in Slurm job metadata.
-        _atomic_write_json(args.ledger_path, work)
-        try:
-            job_id = _submit_sbatch(sbatch_path)
-        except (DispatcherError, OSError) as exc:
-            # QOS races and transient scheduler outages are expected operational events;
-            # preserve the rendered audit artifact and retry a fresh plan next poll.
-            submission_error = str(exc)
-            work["intents"][batch_id].update(
-                {"state": "rejected", "error": submission_error, "failed_at": time.time()}
-            )
-        else:
-            _record_submission(
-                work,
-                job_id=job_id,
-                batch_id=batch_id,
-                manifest_path=manifest_path,
-                sbatch_path=sbatch_path,
-                batch=batch,
+        # The production pause path owns this same cross-node lock before taking its
+        # scheduler snapshot.  Re-read the fail-closed contract while holding it, then
+        # retain ownership through the durable intent and external sbatch boundary.
+        # Thus pause can neither miss a just-admitted array nor race a stale plan.
+        guard = nullcontext()
+        if control_state_dir is not None:
+            from slurm.schema5_control import admission_boundary_lock
+
+            guard = admission_boundary_lock(control_state_dir)
+        with guard:
+            if production_contract is not None:
+                from slurm.schema5_control import admission_contract_from_state
+
+                fresh_contract = admission_contract_from_state(control_state_dir)
+                if fresh_contract != production_contract:
+                    raise DispatcherError(
+                        "schema-5 admission contract changed after planning; "
+                        "discarding the stale plan before rendering or sbatch"
+                    )
+                if active_cell_jobs + len(selected) > int(
+                    fresh_contract["current_ceiling"]
+                ):
+                    raise DispatcherError(
+                        "schema-5 selected tasks exceed the freshly fenced cell ceiling"
+                    )
+
+            batch_id, manifest_path, sbatch_path, batch = _write_batch(
+                args.state_dir,
+                selected,
+                partition=args.cell_partition,
+                time_limit=args.cell_time,
+                memory=args.cell_mem,
                 now=now,
+                control_state_dir=control_state_dir,
             )
-            submission = {"job_id": job_id, "batch_id": batch_id, "tasks": len(selected)}
-            submitted = True
+            work["intents"][batch_id] = {
+                "state": "prepared",
+                "created_at": now,
+                "batch_manifest": str(manifest_path),
+                "batch_manifest_sha256": _sealed_artifact_sha256(manifest_path),
+                "sbatch_path": str(sbatch_path),
+                "sbatch_sha256": _sealed_artifact_sha256(sbatch_path),
+                "tasks": list(batch["tasks"]),
+                "fairness_after": {
+                    "cursor": admission.cursor,
+                    "deficits": admission.deficits,
+                },
+                "fairness_committed": False,
+            }
+            # Persist the exact task reservation before crossing the external sbatch
+            # boundary.  If the process dies after acceptance, the next coordinator
+            # joins the array through the intent token and exact immutable sbatch path.
+            _atomic_write_json(args.ledger_path, work)
+            work["intents"][batch_id]["state"] = "submitting"
+            work["intents"][batch_id]["submit_started_at"] = time.time()
+            _atomic_write_json(args.ledger_path, work)
+            try:
+                job_id = _submit_sbatch(sbatch_path)
+            except (DispatcherError, OSError, subprocess.TimeoutExpired) as exc:
+                # Any error after invoking sbatch is an ambiguous external boundary:
+                # Slurm may have accepted the array before the client lost/failed to
+                # parse its reply.  Preserve ``submitting`` until complete squeue+sacct
+                # truth proves absence after the visibility grace.
+                submission_error = str(exc)
+                work["intents"][batch_id].update(
+                    {
+                        "state": "submitting",
+                        "error": submission_error,
+                        "last_submit_error_at": time.time(),
+                    }
+                )
+                # Publish the ambiguous outcome before releasing the pause boundary.
+                # A concurrent drain must see this reservation and wait for joined
+                # scheduler visibility instead of declaring an empty cut.
+                _atomic_write_json(args.ledger_path, work)
+            else:
+                _record_submission(
+                    work,
+                    job_id=job_id,
+                    batch_id=batch_id,
+                    manifest_path=manifest_path,
+                    sbatch_path=sbatch_path,
+                    batch=batch,
+                    now=now,
+                )
+                submission = {
+                    "job_id": job_id,
+                    "batch_id": batch_id,
+                    "tasks": len(selected),
+                }
+                submitted = True
+                # Bind the accepted numeric job ID durably while admission is still
+                # fenced.  Pause may now cancel or wait for this exact allocation even
+                # if squeue has not exposed it yet.
+                _atomic_write_json(args.ledger_path, work)
 
     if dry_run:
         # Dry-run reports the exact next fairness state without persisting it.
@@ -2434,8 +2692,27 @@ def _run_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_batch_task(batch_manifest: Path, index: int) -> Mapping[str, Any]:
-    value = json.loads(batch_manifest.read_text(encoding="utf-8"))
+def _load_batch_task(
+    batch_manifest: Path, index: int, *, expected_sha256: str
+) -> Mapping[str, Any]:
+    if (
+        len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+        or batch_manifest.is_symlink()
+        or not batch_manifest.is_file()
+        or stat.S_IMODE(batch_manifest.stat().st_mode) & 0o222
+    ):
+        raise DispatcherError(f"unsafe or unpinned batch manifest: {batch_manifest}")
+    raw = batch_manifest.read_bytes()
+    observed_sha256 = hashlib.sha256(raw).hexdigest()
+    if observed_sha256 != expected_sha256:
+        raise DispatcherError(
+            f"batch manifest drifted: expected {expected_sha256}, got {observed_sha256}"
+        )
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise DispatcherError(f"invalid batch manifest JSON: {batch_manifest}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise DispatcherError(f"invalid batch manifest schema: {batch_manifest}")
     tasks = value.get("tasks")
@@ -2600,8 +2877,36 @@ def _verify_pinned_cell_runtime(
         )
 
 
+def _verify_runtime_environment_attestation(
+    runtime_environment: Mapping[str, str],
+) -> None:
+    """Reject a cell before execution if either frozen prefix changed."""
+
+    try:
+        runtime_integrity.verify_generation_lease(
+            lease_path=Path(runtime_environment["ASYS_RUNTIME_INTEGRITY_LEASE"]),
+            attestation_path=Path(runtime_environment["ASYS_RUNTIME_ATTESTATION"]),
+            attestation_sha256=runtime_environment["ASYS_RUNTIME_ATTESTATION_SHA256"],
+            generation=int(runtime_environment["ASYS_ROLLOUT_GENERATION"]),
+            release_id=runtime_environment["ASYS_RELEASE_ID"],
+            immutable_pins_sha256=runtime_environment["ASYS_IMMUTABLE_PINS_SHA256"],
+            expected_environment_hashes={
+                "harness": runtime_environment["ASYS_HARNESS_ENVIRONMENT_SHA256"],
+                "serving": runtime_environment["ASYS_SERVING_ENVIRONMENT_SHA256"],
+            },
+        )
+    except (KeyError, ValueError, runtime_integrity.RuntimeIntegrityError) as exc:
+        raise DispatcherError(
+            f"schema-5 runtime environment integrity failed: {exc}"
+        ) from exc
+
+
 def _run_task(args: argparse.Namespace) -> int:
-    task = _load_batch_task(Path(args.batch_manifest), args.index)
+    task = _load_batch_task(
+        Path(args.batch_manifest),
+        args.index,
+        expected_sha256=args.batch_manifest_sha256,
+    )
     runtime_environment = _runtime_environment(task)
     expected_release_root = getattr(args, "expected_release_root", None)
     expected_harness_prefix = getattr(args, "expected_harness_prefix", None)
@@ -2629,6 +2934,7 @@ def _run_task(args: argparse.Namespace) -> int:
         os.environ["ASYS_RELEASE_WORKTREE"] = str(
             Path(str(expected_release_root)).expanduser().resolve()
         )
+        _verify_runtime_environment_attestation(runtime_environment)
     command = build_run_one_command(
         task,
         release_worktree=(
@@ -2751,6 +3057,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     task = sub.add_parser("run-task", help=argparse.SUPPRESS)
     task.add_argument("--batch-manifest", required=True)
+    task.add_argument("--batch-manifest-sha256", required=True)
     task.add_argument("--index", required=True, type=int)
     task.add_argument("--expected-release-root", help=argparse.SUPPRESS)
     task.add_argument("--expected-harness-prefix", help=argparse.SUPPRESS)

@@ -19,7 +19,7 @@ def test_smoke_policy_payload_is_accepted_by_schema5_loader(tmp_path):
         manifest_sha256="a" * 64,
         benchmark_sha256="b" * 64,
         model_contract_sha256="c" * 64,
-        release_id="sweep-recovery-schema5-v1",
+        release_id="sweep-recovery-schema5-v1.1",
         git_commit="d" * 40,
         source_tree_sha256="e" * 64,
         harness_environment_sha256="f" * 64,
@@ -35,7 +35,7 @@ def test_smoke_policy_payload_is_accepted_by_schema5_loader(tmp_path):
 
     assert policy is not None
     assert policy.required_artifact_schema_version == 5
-    assert policy.release.release_id == "sweep-recovery-schema5-v1"
+    assert policy.release.release_id == "sweep-recovery-schema5-v1.1"
     assert policy.environment.harness_sha256 == "f" * 64
 
 
@@ -45,7 +45,7 @@ def test_smoke_dry_run_is_exactly_15_20_6_and_estimand_excluded(tmp_path):
         results_root=tmp_path / "results",
         release_worktree=repo,
         model_contract_path=repo / "configs/model_contracts.v1.json",
-        release_id="sweep-recovery-schema5-v1",
+        release_id="sweep-recovery-schema5-v1.1",
         git_commit="a" * 40,
         source_tree_sha256="b" * 64,
         harness_environment_sha256="c" * 64,

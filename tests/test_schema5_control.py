@@ -3,15 +3,22 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
+import threading
+import time
 import uuid
 from pathlib import Path
 
 import pytest
 
 from slurm import schema5_control as control
+from agents_scaling import runtime_integrity, snapshot_integrity
+
+
+CLUSTER_FIXTURES = Path(__file__).parent / "fixtures" / "slurm_schema5_cluster"
 
 
 def _sha(path: Path) -> str:
@@ -28,9 +35,7 @@ def _checksummed(path: Path, payload: bytes) -> tuple[str, str]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     digest = _sha(path)
-    path.with_suffix(".sha256").write_text(
-        f"{digest}  {path.name}\n", encoding="utf-8"
-    )
+    path.with_suffix(".sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
     return str(path.resolve()), digest
 
 
@@ -131,7 +136,7 @@ def make_pins(tmp_path: Path) -> dict:
         )
     fleet_payload = {
         "schema_version": 1,
-        "release_id": "sweep-recovery-schema5-v1",
+        "release_id": "sweep-recovery-schema5-v1.1",
         "fleet_id": "schema5-v1",
         "logical_replica_count": 22,
         "allocated_gpu_count": 24,
@@ -189,39 +194,54 @@ def make_pins(tmp_path: Path) -> dict:
     release_bundle.mkdir()
     harness_manifest_path = release_bundle / control.HARNESS_ENVIRONMENT_FILENAME
     serving_manifest_path = release_bundle / control.SERVING_ENVIRONMENT_FILENAME
-    harness_manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "release_id": "sweep-recovery-schema5-v1",
-                "role": "harness",
-                "prefix": str(harness),
-                "sealed_read_only": True,
+    for prefix in (harness, serving):
+        for path in sorted(prefix.rglob("*"), reverse=True):
+            path.chmod(0o555 if path.is_dir() else 0o444)
+        prefix.chmod(0o555)
+    (harness / "bin" / "python").chmod(0o555)
+    environment_inventories = {}
+    for role, prefix, manifest_path in (
+        ("harness", harness, harness_manifest_path),
+        ("serving", serving, serving_manifest_path),
+    ):
+        inventory = runtime_integrity.directory_inventory(prefix)
+        environment_inventories[role] = inventory
+        runtime = {"fixture": True}
+        locks = {"conda_explicit": [], "pip_freeze_all": []}
+        payload = {
+            "schema_version": 1,
+            "release_id": "sweep-recovery-schema5-v1.1",
+            "role": role,
+            "prefix": str(prefix),
+            "sealed_read_only": True,
+            "offline_environment": {
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+                "HF_DATASETS_OFFLINE": "1",
             },
-            sort_keys=True,
+            "runtime": runtime,
+            "locks": locks,
+            "release_package": None,
+            "directory_inventory": inventory,
+        }
+        payload["environment_content_sha256"] = hashlib.sha256(
+            runtime_integrity.canonical_bytes(
+                {
+                    "runtime": runtime,
+                    "locks": locks,
+                    "release_package": None,
+                    "inventory_sha256": inventory["inventory_sha256"],
+                }
+            )
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    serving_manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "release_id": "sweep-recovery-schema5-v1",
-                "role": "serving",
-                "prefix": str(serving),
-                "sealed_read_only": True,
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     harness_hash = _sha(harness_manifest_path)
     serving_hash = _sha(serving_manifest_path)
     source_tree_sha256 = control.sha256_tree(release)
     pins = {
-        "release_id": "sweep-recovery-schema5-v1",
+        "release_id": "sweep-recovery-schema5-v1.1",
         "release_bundle_root": str(release_bundle),
         "release_bundle_id": "pending",
         "release_worktree": str(release),
@@ -246,6 +266,100 @@ def make_pins(tmp_path: Path) -> dict:
     }
     pins["dispatcher_command"] = control.expected_dispatcher_command(pins)
     pins["fleet_supervisor_command"] = control.expected_fleet_supervisor_command(pins)
+    materialization_paths = {
+        "source_repository": str(release),
+        "release_worktree": str(release),
+        "source_harness_prefix": str(harness) + ".source",
+        "source_serving_prefix": str(serving) + ".source",
+        "harness_prefix": str(harness),
+        "serving_prefix": str(serving),
+    }
+    materialization_stage_records = {}
+    for role, filename in control.MATERIALIZATION_STAGE_FILENAMES.items():
+        stage_payload = {
+            "schema_version": 2,
+            "release_id": pins["release_id"],
+            "stage": role,
+        }
+        stage_payload["record_sha256"] = hashlib.sha256(
+            (
+                json.dumps(
+                    stage_payload,
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                )
+                + "\n"
+            ).encode("utf-8")
+        ).hexdigest()
+        stage_path = release_bundle.parent / filename
+        stage_path.write_text(
+            json.dumps(
+                stage_payload,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stage_path.chmod(0o444)
+        materialization_stage_records[role] = {
+            "filename": filename,
+            "sha256": _sha(stage_path),
+            "record_sha256": stage_payload["record_sha256"],
+        }
+    materialization_marker = {
+        "schema_version": 2,
+        "release_id": pins["release_id"],
+        "git_tag": pins["release_id"],
+        "tag_commit": pins["git_commit"],
+        "source_tree_sha256": pins["source_tree_sha256"],
+        "paths": materialization_paths,
+        "complete": True,
+        "stage_records": materialization_stage_records,
+    }
+    materialization_marker["materialization_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                materialization_marker,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    materialization_marker_path = (
+        release_bundle.parent / control.MATERIALIZATION_COMPLETE_FILENAME
+    )
+    materialization_marker_path.write_text(
+        json.dumps(
+            materialization_marker,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    materialization_marker_path.chmod(0o444)
+    materialization_binding = {
+        "schema_version": 2,
+        "release_id": pins["release_id"],
+        "root": str(release_bundle.parent),
+        "marker_path": str(materialization_marker_path),
+        "marker_sha256": _sha(materialization_marker_path),
+        "materialization_id": materialization_marker["materialization_id"],
+        "tag_commit": pins["git_commit"],
+        "source_tree_sha256": pins["source_tree_sha256"],
+        "paths": materialization_paths,
+        "stage_records": materialization_stage_records,
+    }
     fragment_fields = {
         "release_id",
         "release_worktree",
@@ -275,6 +389,7 @@ def make_pins(tmp_path: Path) -> dict:
                 },
                 "release_worktree": pins["release_worktree"],
                 "worktree_sealed_read_only": True,
+                "materialization": materialization_binding,
                 "offline_environment": {
                     "HF_HUB_OFFLINE": "1",
                     "TRANSFORMERS_OFFLINE": "1",
@@ -293,13 +408,17 @@ def make_pins(tmp_path: Path) -> dict:
                         "prefix": str(harness),
                         "manifest_path": str(harness_manifest_path),
                         "manifest_sha256": harness_hash,
-                        "directory_inventory_sha256": "b" * 64,
+                        "directory_inventory_sha256": environment_inventories[
+                            "harness"
+                        ]["inventory_sha256"],
                     },
                     "serving": {
                         "prefix": str(serving),
                         "manifest_path": str(serving_manifest_path),
                         "manifest_sha256": serving_hash,
-                        "directory_inventory_sha256": "c" * 64,
+                        "directory_inventory_sha256": environment_inventories[
+                            "serving"
+                        ]["inventory_sha256"],
                     },
                 },
                 "publication": {
@@ -376,9 +495,7 @@ def make_preparable_pins(tmp_path: Path) -> dict:
             "authoritative": True,
             "required_artifact_schema_version": 5,
             "accepted_manifest_sha256": run["manifest_sha256"],
-            "accepted_benchmark_contracts_sha256": run[
-                "benchmark_contract_sha256"
-            ],
+            "accepted_benchmark_contracts_sha256": run["benchmark_contract_sha256"],
             "accepted_model_contract_sha256": pins["model_contract_sha256"],
             "release": {
                 "release_id": pins["release_id"],
@@ -531,8 +648,12 @@ def _gate_metrics(control_state: dict, gate: str) -> dict:
             "stale_registrations": 0,
             "max_heartbeat_age_seconds": 0,
             "captured_timestamp": 23.0,
-            "model_contract_sha256": control_state["immutable"]["model_contract_sha256"],
-            "fleet_contract_sha256": control_state["immutable"]["fleet_contract_sha256"],
+            "model_contract_sha256": control_state["immutable"][
+                "model_contract_sha256"
+            ],
+            "fleet_contract_sha256": control_state["immutable"][
+                "fleet_contract_sha256"
+            ],
         }
     if gate == "context_audit":
         return {
@@ -697,7 +818,9 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                                         "server_pool_id": "schema5-v1",
                                         "replica_id": replica_id,
                                         "replica_index": replica["replica_index"],
-                                        "release_id": current["immutable"]["release_id"],
+                                        "release_id": current["immutable"][
+                                            "release_id"
+                                        ],
                                         "environment_hash": current["immutable"][
                                             "serving_environment_sha256"
                                         ],
@@ -889,7 +1012,9 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                             "fleet_contract_sha256": current["immutable"][
                                 "fleet_contract_sha256"
                             ],
-                            "server_pool_root": current["immutable"]["server_pool_root"],
+                            "server_pool_root": current["immutable"][
+                                "server_pool_root"
+                            ],
                             "rollout_generation": 1,
                         },
                         "suite_identity": {
@@ -965,7 +1090,9 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
             + "\n",
             encoding="utf-8",
         )
-        control.attest_gate(state_dir, gate=gate, evidence_path=evidence, now=20 + index)
+        control.attest_gate(
+            state_dir, gate=gate, evidence_path=evidence, now=20 + index
+        )
 
 
 def reconcile_clean(state_dir: Path, *, now: float = 40.0) -> dict:
@@ -983,7 +1110,162 @@ def make_ready(state_dir: Path) -> None:
     assert reconcile_clean(state_dir)["passed"] is True
 
 
+def complete_drill_marker(state_dir: Path, *, now: float = 45.0) -> dict:
+    """Install a fully bound synthetic drill proof for tests unrelated to live drilling."""
+
+    current = control.load_control(state_dir)
+    reconciliation_path, reconciliation_sha = control._publish_drill_reconciliation(
+        state_dir, "test-drill"
+    )
+    state = {
+        "schema_version": 1,
+        "protocol": "schema5-controller-drill-v1",
+        "drill_id": "test-drill",
+        "shared_fencing_primitive": control.SHARED_CONTROLLER_FENCING_PRIMITIVE,
+        "shared_controller_primitives": control.shared_controller_primitive_contract(),
+        "phase": "running",
+        "immutable_sha256": current["immutable_sha256"],
+        "created_at": control.utc_timestamp(now - 2),
+        "created_timestamp": now - 2,
+        "updated_at": control.utc_timestamp(now),
+        "updated_timestamp": now,
+        "baseline": control.controller_drill_baseline(state_dir, current),
+        "roles": {},
+        "transition_history": [],
+        "final_reconciliation_path": None,
+        "final_reconciliation_sha256": None,
+        "completed_at": control.utc_timestamp(now),
+        "completed_timestamp": now,
+    }
+    for index, role in enumerate(control.ROLE_NAMES):
+        successor_generation = 2
+        successor_intent = f"synthetic-successor-{role}"
+        successor_token = control.drill_job_token(
+            state["drill_id"], role, successor_generation, successor_intent
+        )
+        successor_sbatch = f"/synthetic/{role}-successor.sbatch"
+        recovery = {
+            "passed": True,
+            "killed_job_id": str(600 + 2 * index),
+            "successor_job_id": str(601 + 2 * index),
+            "successor_job_token": successor_token,
+            "successor_sbatch_path": successor_sbatch,
+            "successor_dependency_job_id": str(600 + 2 * index),
+            "successor_generation": successor_generation,
+            "successor_intent_token": successor_intent,
+            "recovered_at": control.utc_timestamp(now - 1),
+            "recovered_timestamp": now - 1,
+            "recovery_seconds": 1.0,
+            "maximum_seconds": 900.0,
+            "fencing_primitive": control.SHARED_CONTROLLER_FENCING_PRIMITIVE,
+            "controller_primitives": control.shared_controller_primitive_contract(),
+        }
+        state["roles"][role] = {
+            "next_generation": 3,
+            "active": None,
+            "successor": None,
+            "submission_intent": None,
+            "heartbeat": None,
+            "last_exit": None,
+            "kill": {
+                "state": "cancelled",
+                "job_id": recovery["killed_job_id"],
+                "job_token": f"synthetic-kill-{role}",
+                "sbatch_path": f"/synthetic/{role}.sbatch",
+                "fencing_primitive": control.SHARED_CONTROLLER_FENCING_PRIMITIVE,
+                "controller_primitives": control.shared_controller_primitive_contract(),
+                "successor_job_id": recovery["successor_job_id"],
+                "successor_job_token": successor_token,
+                "successor_sbatch_path": successor_sbatch,
+                "successor_dependency_job_id": recovery[
+                    "successor_dependency_job_id"
+                ],
+                "started_at": control.utc_timestamp(now - 1.5),
+                "started_timestamp": now - 1.5,
+                "returncode": 0,
+            },
+            "recovery": recovery,
+        }
+    control._append_drill_event(
+        state_dir,
+        state,
+        event="started_paused",
+        details={"desired_state": "paused"},
+        now=now - 3,
+    )
+    for index, role in enumerate(control.ROLE_NAMES):
+        recovery = state["roles"][role]["recovery"]
+        killed_job_id = recovery["killed_job_id"]
+        control._append_drill_event(
+            state_dir,
+            state,
+            event="exact_kill_intent",
+            details={"role": role, "job_id": killed_job_id},
+            now=now - 2.5 + index * 0.2,
+        )
+        control._append_drill_event(
+            state_dir,
+            state,
+            event="exact_kill_result",
+            details={"role": role, "job_id": killed_job_id, "returncode": 0},
+            now=now - 2.4 + index * 0.2,
+        )
+        control._append_drill_event(
+            state_dir,
+            state,
+            event="recovery_verified",
+            details={"role": role, **recovery},
+            now=now - 2.3 + index * 0.2,
+        )
+    state["phase"] = "stopping"
+    control._append_drill_event(
+        state_dir,
+        state,
+        event="stopping",
+        details={"reason": "both_recoveries_passed"},
+        now=now - 1,
+    )
+    state["phase"] = "completed"
+    state["final_reconciliation_path"] = str(reconciliation_path)
+    state["final_reconciliation_sha256"] = reconciliation_sha
+    control._append_drill_event(
+        state_dir,
+        state,
+        event="completed",
+        details={
+            "final_reconciliation_path": str(reconciliation_path),
+            "final_reconciliation_sha256": reconciliation_sha,
+        },
+        now=now,
+    )
+    control._save_drill_state(state_dir, state, now=now)
+    marker = {
+        "schema_version": 1,
+        "protocol": "schema5-controller-kill-drill-v1",
+        "passed": True,
+        "drill_id": state["drill_id"],
+        "shared_fencing_primitive": state["shared_fencing_primitive"],
+        "shared_controller_primitives": state["shared_controller_primitives"],
+        "immutable_sha256": state["immutable_sha256"],
+        "completed_at": state["completed_at"],
+        "completed_timestamp": state["completed_timestamp"],
+        "baseline": state["baseline"],
+        "roles": {
+            role: copy.deepcopy(state["roles"][role]["recovery"])
+            for role in control.ROLE_NAMES
+        },
+        "final_reconciliation_path": str(reconciliation_path),
+        "final_reconciliation_sha256": reconciliation_sha,
+        "drill_state_path": str((state_dir / control.DRILL_STATE_FILENAME).resolve()),
+        "drill_state_sha256": _sha(state_dir / control.DRILL_STATE_FILENAME),
+    }
+    control._atomic_write_json(state_dir / control.DRILL_COMPLETE_FILENAME, marker)
+    return marker
+
+
 def resume_ready(state_dir: Path, *, now: float = 50.0) -> tuple[dict, tuple]:
+    if not (state_dir / control.DRILL_COMPLETE_FILENAME).exists():
+        complete_drill_marker(state_dir, now=now - 1)
     jobs = []
     identifiers = iter(("700", "701", "702", "703", "704", "705"))
 
@@ -992,7 +1274,9 @@ def resume_ready(state_dir: Path, *, now: float = 50.0) -> tuple[dict, tuple]:
 
     def submit(argv):
         job_id = next(identifiers)
-        token = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment="))
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
         jobs.append(control.SchedulerJob(job_id, "controller", "PENDING", token))
         return subprocess.CompletedProcess(argv, 0, job_id + "\n", "")
 
@@ -1003,6 +1287,147 @@ def resume_ready(state_dir: Path, *, now: float = 50.0) -> tuple[dict, tuple]:
         now=now,
     )
     return resumed, tuple(jobs)
+
+
+def start_live_drill(state_dir: Path, *, now: float = 50.0):
+    jobs = []
+    identifiers = iter(str(value) for value in range(800, 900))
+
+    def snapshot(at: float = now):
+        return control.SchedulerSnapshot(tuple(jobs), at)
+
+    def submit(argv):
+        job_id = next(identifiers)
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
+        sbatch = argv[-1]
+        dependency = next(
+            (
+                arg.split("=", 1)[1]
+                for arg in argv
+                if arg.startswith("--dependency=")
+            ),
+            "",
+        )
+        jobs.append(
+            control.SchedulerJob(
+                job_id,
+                "drill",
+                "PENDING",
+                token,
+                f"sbatch {sbatch}",
+                dependency=dependency,
+            )
+        )
+        return subprocess.CompletedProcess(argv, 0, job_id + "\n", "")
+
+    state = control.start_controller_drill(
+        state_dir,
+        scheduler=snapshot(),
+        submit_runner=submit,
+        now=now,
+    )
+    for index, role in enumerate(control.ROLE_NAMES):
+        active = state["roles"][role]["active"]
+        control.claim_drill_controller(
+            state_dir,
+            drill_id=state["drill_id"],
+            role=role,
+            generation=active["generation"],
+            intent_token=active["intent_token"],
+            job_id=active["job_id"],
+            active_scheduler_job_ids=snapshot().active_job_ids,
+            now=now + 1 + index,
+        )
+        control.submit_drill_intent(
+            state_dir,
+            role=role,
+            target="successor",
+            dependency_job_id=active["job_id"],
+            scheduler=snapshot(),
+            submit_runner=submit,
+            now=now + 1 + index,
+        )
+        control.heartbeat_drill_controller(
+            state_dir,
+            drill_id=state["drill_id"],
+            role=role,
+            generation=active["generation"],
+            intent_token=active["intent_token"],
+            job_id=active["job_id"],
+            now=now + 2 + index,
+        )
+        state = control.load_drill_state(state_dir)
+    return jobs, snapshot, submit
+
+
+def recover_drill_role(
+    state_dir: Path,
+    jobs: list,
+    snapshot,
+    submit,
+    *,
+    role: str,
+    now: float,
+):
+    cancelled = []
+    killed = control.kill_drill_controller(
+        state_dir,
+        role=role,
+        snapshot=snapshot(now),
+        cancel_runner=lambda argv: (
+            cancelled.append(list(argv)) or subprocess.CompletedProcess(argv, 0, "", "")
+        ),
+        now=now,
+    )
+    old = control.load_drill_state(state_dir)["roles"][role]["active"]
+    jobs[:] = [job for job in jobs if job.job_id != killed["job_id"]]
+    control._record_drill_exit(
+        state_dir,
+        drill_id=control.load_drill_state(state_dir)["drill_id"],
+        role=role,
+        generation=old["generation"],
+        intent_token=old["intent_token"],
+        job_id=old["job_id"],
+        reason="signal",
+        now=now + 0.5,
+    )
+    successor = control.load_drill_state(state_dir)["roles"][role]["successor"]
+    drill_id = control.load_drill_state(state_dir)["drill_id"]
+    control.claim_drill_controller(
+        state_dir,
+        drill_id=drill_id,
+        role=role,
+        generation=successor["generation"],
+        intent_token=successor["intent_token"],
+        job_id=successor["job_id"],
+        active_scheduler_job_ids=snapshot(now + 1).active_job_ids,
+        now=now + 1,
+    )
+    control.submit_drill_intent(
+        state_dir,
+        role=role,
+        target="successor",
+        dependency_job_id=successor["job_id"],
+        scheduler=snapshot(now + 1),
+        submit_runner=submit,
+        now=now + 1,
+    )
+    control.heartbeat_drill_controller(
+        state_dir,
+        drill_id=drill_id,
+        role=role,
+        generation=successor["generation"],
+        intent_token=successor["intent_token"],
+        job_id=successor["job_id"],
+        now=now + 2,
+    )
+    recovery = control.record_drill_recovery(
+        state_dir, role=role, snapshot=snapshot(now + 2), now=now + 2
+    )
+    assert cancelled == [["scancel", killed["job_id"]]]
+    return recovery
 
 
 def test_init_is_paused_idempotent_and_freezes_pins(tmp_path):
@@ -1072,6 +1497,7 @@ def test_resume_waits_for_both_scheduler_visible_jobs_without_duplicate_submissi
 ):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
+    complete_drill_marker(state_dir)
     visible_jobs = []
     submitted = []
     identifiers = iter(("810", "811"))
@@ -1081,7 +1507,9 @@ def test_resume_waits_for_both_scheduler_visible_jobs_without_duplicate_submissi
 
     def submit(argv):
         job_id = next(identifiers)
-        token = next(arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment="))
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
         submitted.append((job_id, token, list(argv)))
         return subprocess.CompletedProcess(argv, 0, job_id + "\n", "")
 
@@ -1103,6 +1531,26 @@ def test_resume_waits_for_both_scheduler_visible_jobs_without_duplicate_submissi
     with pytest.raises(control.ControlError, match="disabled by desired state"):
         control.production_environment_from_state(state_dir)
 
+    # Visibility can lag beyond both seven-minute metadata leases.  Expiry is not
+    # corruption: preserve the authenticated generation bindings but make both leases
+    # historically expired, then require the retry to rescan and advance each sequence.
+    lease_sequences = {}
+    for name, module in (
+        (control.RUNTIME_ATTESTATION_STATE_KEY, runtime_integrity),
+        (control.SNAPSHOT_ATTESTATION_STATE_KEY, snapshot_integrity),
+    ):
+        lease_path = Path(resuming[name]["lease_path"])
+        lease = json.loads(lease_path.read_text(encoding="utf-8"))
+        lease_sequences[name] = int(lease["sequence"])
+        lease["verified_timestamp"] = 1.0
+        lease["expires_timestamp"] = 421.0
+        candidate = dict(lease)
+        candidate.pop("lease_id")
+        lease["lease_id"] = module.sha256_bytes(module.canonical_bytes(candidate))
+        lease_path.chmod(0o644)
+        lease_path.write_text(json.dumps(lease) + "\n", encoding="utf-8")
+        lease_path.chmod(0o444)
+
     with pytest.raises(control.SchedulerVisibilityPending):
         control.resume_control(
             state_dir,
@@ -1118,11 +1566,14 @@ def test_resume_waits_for_both_scheduler_visible_jobs_without_duplicate_submissi
         control.SchedulerJob(job_id, "controller", "PENDING", token)
         for job_id, token, _ in submitted
     )
+    # A durable resume transaction may outlive the fleet evidence's 10-minute launch
+    # freshness window while Slurm visibility converges.  The paused->resuming write
+    # already proved freshness, so this restart validates the sealed historical gate.
     running = control.resume_control(
         state_dir,
         scheduler_reader=scheduler,
         submit_runner=lambda _argv: pytest.fail("visible jobs must be adopted"),
-        now=52.0,
+        now=1_000.0,
     )
     assert running["desired_state"] == "running"
     assert running["resume_intent"]["state"] == "complete"
@@ -1130,14 +1581,25 @@ def test_resume_waits_for_both_scheduler_visible_jobs_without_duplicate_submissi
         "dispatcher": "810",
         "fleet_supervisor": "811",
     }
-    assert [
-        transition["event"] for transition in running["transition_history"]
-    ].count("resumed") == 1
+    refreshed = control.load_control(state_dir)
+    for name in (
+        control.RUNTIME_ATTESTATION_STATE_KEY,
+        control.SNAPSHOT_ATTESTATION_STATE_KEY,
+    ):
+        lease = json.loads(
+            Path(refreshed[name]["lease_path"]).read_text(encoding="utf-8")
+        )
+        assert lease["sequence"] == lease_sequences[name] + 1
+        assert lease["expires_timestamp"] > time.time()
+    assert [transition["event"] for transition in running["transition_history"]].count(
+        "resumed"
+    ) == 1
 
 
 def test_resume_rejects_incomplete_scheduler_truth_before_any_submission(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
+    complete_drill_marker(state_dir)
     calls = []
     incomplete = control.SchedulerSnapshot(
         (),
@@ -1155,10 +1617,11 @@ def test_resume_rejects_incomplete_scheduler_truth_before_any_submission(tmp_pat
         )
     assert calls == []
     current = control.load_control(state_dir)
-    assert current["desired_state"] == "resuming"
+    assert current["desired_state"] == "paused"
+    assert current["rollout_generation"] == 0
+    assert current["resume_intent"] is None
     assert all(
-        current["controllers"][role]["active"] is None
-        for role in control.ROLE_NAMES
+        current["controllers"][role]["active"] is None for role in control.ROLE_NAMES
     )
 
 
@@ -1194,7 +1657,9 @@ def test_typed_artifact_metrics_cannot_disagree_with_outer_envelope(tmp_path):
     wrapper_path.write_text(json.dumps(wrapper) + "\n", encoding="utf-8")
     artifact_row["sha256"] = _sha(wrapper_path)
     evidence_path.write_text(json.dumps(evidence) + "\n", encoding="utf-8")
-    with pytest.raises(control.ReadinessError, match="does not match its typed wrapper"):
+    with pytest.raises(
+        control.ReadinessError, match="does not match its typed wrapper"
+    ):
         control.attest_gate(
             state_dir,
             gate="migrations",
@@ -1217,7 +1682,9 @@ def test_recursive_artifact_hash_drift_invalidates_attested_gate(tmp_path):
     source_path.write_text(json.dumps(source) + "\n", encoding="utf-8")
     current = control.load_control(state_dir)
     with pytest.raises(control.ReadinessError, match="artifact drifted"):
-        control.validate_readiness(current, verify_files=True, now=30.0)
+        control.validate_readiness(
+            current, state_dir=state_dir, verify_files=True, now=30.0
+        )
 
 
 def test_recursive_artifact_rejects_symlink_before_path_resolution(tmp_path):
@@ -1234,6 +1701,181 @@ def test_recursive_artifact_rejects_symlink_before_path_resolution(tmp_path):
         )
 
 
+@pytest.mark.parametrize("target_kind", ("payload", "control"))
+def test_controller_snapshot_validation_rejects_hardlinked_regular_files(
+    tmp_path, target_kind
+):
+    envelope = _snapshot_envelope(tmp_path, f"hardlink-{target_kind}")
+    payload = json.loads(envelope.read_text())
+    root = Path(payload["snapshot_root"])
+    target = (
+        root / "payload.bin"
+        if target_kind == "payload"
+        else root / "SNAPSHOT_INVENTORY.sha256"
+    )
+    os.link(target, tmp_path / f"outside-{target_kind}")
+
+    with pytest.raises(control.ReadinessError, match="hardlinked"):
+        control._validate_snapshot_external_attestation(
+            envelope,
+            payload,
+            snapshot_context=control._SnapshotValidationContext(full=True),
+        )
+
+
+def test_snapshot_lease_path_is_bound_to_exact_control_state_generation(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    current = control.load_control(state_dir)
+    drifted = copy.deepcopy(current)
+    drifted[control.SNAPSHOT_ATTESTATION_STATE_KEY]["lease_path"] = str(
+        (state_dir / "other" / "lease.g000001.json").resolve()
+    )
+    with pytest.raises(control.ReadinessError, match="escapes its state generation"):
+        control.validate_snapshot_integrity_attestation(
+            drifted, state_dir=state_dir, verify_lease=False
+        )
+
+
+def test_full_snapshot_validation_uses_fd_bound_hash_metadata_for_files(
+    tmp_path, monkeypatch
+):
+    envelope = _snapshot_envelope(tmp_path, "fd-bound")
+    payload = json.loads(envelope.read_text(encoding="utf-8"))
+    root = Path(payload["snapshot_root"])
+    calls = []
+    original_hash = snapshot_integrity.sha256_file_with_metadata
+    original_metadata = snapshot_integrity.metadata_entry
+
+    def counted(path, *, description="sealed snapshot file"):
+        calls.append(Path(path))
+        return original_hash(path, description=description)
+
+    def directories_only(path):
+        candidate = Path(path)
+        if candidate.is_file():
+            pytest.fail(
+                f"full validation recaptured file metadata after hashing: {candidate}"
+            )
+        return original_metadata(candidate)
+
+    monkeypatch.setattr(snapshot_integrity, "sha256_file_with_metadata", counted)
+    monkeypatch.setattr(snapshot_integrity, "metadata_entry", directories_only)
+    control._validate_snapshot_external_attestation(
+        envelope,
+        payload,
+        snapshot_context=control._SnapshotValidationContext(full=True),
+    )
+
+    assert root / "payload.bin" in calls
+    assert {
+        root / filename for filename in control.SNAPSHOT_CONTROL_FILENAMES
+    }.issubset(set(calls))
+
+
+def test_snapshot_payload_hashing_is_absent_from_every_running_hot_path(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    _running, jobs = resume_ready(state_dir, now=50.0)
+
+    current = control.load_control(state_dir)
+    seal = control.validate_snapshot_integrity_attestation(
+        current, state_dir=state_dir, verify_lease=True
+    )
+    roots = [Path(row["snapshot_root"]) for row in seal["snapshots"]]
+    internal_reads: list[Path] = []
+
+    def record_if_internal(path) -> None:
+        candidate = Path(path).absolute()
+        if any(candidate == root or root in candidate.parents for root in roots):
+            internal_reads.append(candidate)
+
+    original_hash = control._snapshot_regular_sha256
+    original_read_regular = snapshot_integrity.read_regular_bytes
+    original_read_bytes = Path.read_bytes
+    original_read_text = Path.read_text
+
+    def counted(path, *, context):
+        record_if_internal(path)
+        return original_hash(path, context=context)
+
+    def counted_regular(path, *, description):
+        record_if_internal(path)
+        return original_read_regular(path, description=description)
+
+    def counted_bytes(path):
+        record_if_internal(path)
+        return original_read_bytes(path)
+
+    def counted_text(path, *args, **kwargs):
+        record_if_internal(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(control, "_snapshot_regular_sha256", counted)
+    monkeypatch.setattr(snapshot_integrity, "read_regular_bytes", counted_regular)
+    monkeypatch.setattr(Path, "read_bytes", counted_bytes)
+    monkeypatch.setattr(Path, "read_text", counted_text)
+    control.validate_readiness(current, state_dir=state_dir, verify_files=True)
+    control.production_environment_from_state(state_dir)
+    control.production_cell_execution_from_state(state_dir)
+    contract = control.admission_contract_from_state(state_dir)
+    assert contract["rollout_generation"] == 1
+    control.submit_controller_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id="700",
+        scheduler=control.SchedulerSnapshot(jobs, time.time()),
+        submit_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "799\n", ""),
+    )
+
+    assert internal_reads == []
+
+
+def test_snapshot_metadata_drift_prevents_lease_renewal_and_expiry_fails_closed(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    current = control.load_control(state_dir)
+    record = current[control.SNAPSHOT_ATTESTATION_STATE_KEY]
+    lease = json.loads(Path(record["lease_path"]).read_text())
+    seal = control.validate_snapshot_integrity_attestation(
+        current, state_dir=state_dir, verify_lease=True
+    )
+
+    payload = Path(seal["snapshots"][0]["snapshot_root"]) / "payload.bin"
+    payload.chmod(0o644)
+    payload.write_bytes(payload.read_bytes() + b"drift")
+    payload.chmod(0o444)
+    with pytest.raises(
+        snapshot_integrity.SnapshotIntegrityError, match="metadata drifted"
+    ):
+        snapshot_integrity.refresh_generation_lease(
+            state_dir=state_dir,
+            seal_path=Path(record["path"]),
+            seal_sha256=record["sha256"],
+            generation=1,
+            immutable_pins_sha256=current["immutable_sha256"],
+            now=float(lease["verified_timestamp"]) + 301.0,
+            force=True,
+        )
+    with pytest.raises(
+        snapshot_integrity.SnapshotIntegrityError, match="lease expired"
+    ):
+        snapshot_integrity.verify_generation_lease(
+            lease_path=Path(record["lease_path"]),
+            seal_path=Path(record["path"]),
+            seal_sha256=record["sha256"],
+            generation=1,
+            immutable_pins_sha256=current["immutable_sha256"],
+            now=float(lease["expires_timestamp"]),
+        )
+
+
 def test_immutable_topology_is_closed_and_commands_have_no_override_surface(tmp_path):
     pins = make_pins(tmp_path)
     control.validate_immutable_pins(pins, verify_files=True)
@@ -1245,9 +1887,9 @@ def test_immutable_topology_is_closed_and_commands_have_no_override_surface(tmp_
     assert sum(control.REQUIRED_RUNS.values()) == 22_680
     assert sum(control.REQUIRED_RUN_QIDS.values()) == 4_524_660
     assert pins["dispatcher_command"] == control.expected_dispatcher_command(pins)
-    assert pins["fleet_supervisor_command"] == control.expected_fleet_supervisor_command(
-        pins
-    )
+    assert pins[
+        "fleet_supervisor_command"
+    ] == control.expected_fleet_supervisor_command(pins)
     fleet_command = pins["fleet_supervisor_command"]
     release_argument = fleet_command.index("--release-worktree")
     assert fleet_command[release_argument + 1] == pins["release_worktree"]
@@ -1282,19 +1924,22 @@ def test_prepare_pins_derives_exact_authority_and_initializes_idempotently(
     canonical_pool = Path(expected["server_pool_root"])
     canonical_pool.rmdir()
 
-    assert control.main(
-        [
-            "--state-dir",
-            str(state_dir),
-            "prepare-pins",
-            "--release-bundle-root",
-            expected["release_bundle_root"],
-            "--hf-home",
-            expected["hf_home"],
-            "--output",
-            str(output),
-        ]
-    ) == 0
+    assert (
+        control.main(
+            [
+                "--state-dir",
+                str(state_dir),
+                "prepare-pins",
+                "--release-bundle-root",
+                expected["release_bundle_root"],
+                "--hf-home",
+                expected["hf_home"],
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
     assert canonical_pool.is_dir()
     prepared = json.loads(output.read_text(encoding="utf-8"))
     assert prepared == expected
@@ -1304,28 +1949,34 @@ def test_prepare_pins_derives_exact_authority_and_initializes_idempotently(
     assert checksum.stat().st_mode & 0o222 == 0
 
     # Re-running the producer proves the exact same bytes instead of replacing authority.
-    assert control.main(
-        [
-            "--state-dir",
-            str(state_dir),
-            "prepare-pins",
-            "--release-bundle-root",
-            expected["release_bundle_root"],
-            "--hf-home",
-            expected["hf_home"],
-            "--output",
-            str(output),
-        ]
-    ) == 0
-    assert control.main(
-        [
-            "--state-dir",
-            str(state_dir),
-            "init",
-            "--pins-json",
-            str(output),
-        ]
-    ) == 0
+    assert (
+        control.main(
+            [
+                "--state-dir",
+                str(state_dir),
+                "prepare-pins",
+                "--release-bundle-root",
+                expected["release_bundle_root"],
+                "--hf-home",
+                expected["hf_home"],
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert (
+        control.main(
+            [
+                "--state-dir",
+                str(state_dir),
+                "init",
+                "--pins-json",
+                str(output),
+            ]
+        )
+        == 0
+    )
     initialized = control.load_control(state_dir, verify_files=True)
     assert initialized["immutable"] == prepared
     assert initialized["immutable_sha256"] == control.sha256_value(prepared)
@@ -1369,6 +2020,43 @@ def test_release_bundle_requires_live_read_only_environment_seals(tmp_path):
         control.validate_immutable_pins(pins, verify_files=True)
 
 
+def test_runtime_release_validation_is_git_admin_independent_but_byte_exact(tmp_path):
+    pins = make_pins(tmp_path)
+    release = Path(pins["release_worktree"])
+    release.chmod(0o755)
+    (release / ".git").write_text(
+        "gitdir: /source/checkout/that/was/intentionally/removed/.git/worktrees/release\n",
+        encoding="utf-8",
+    )
+    (release / ".git").chmod(0o444)
+    release.chmod(0o555)
+
+    # Publication-time exact-tag validation is already sealed into the release bundle;
+    # production does not dereference the disposable Git administrative pointer.
+    control.validate_immutable_pins(pins, verify_files=True)
+
+    nested = release / "slurm" / "common.sh"
+    nested.chmod(0o644)
+    nested.write_text("# drift after source checkout removal\n", encoding="utf-8")
+    nested.chmod(0o444)
+    with pytest.raises(control.ImmutablePinError, match="source tree drifted"):
+        control.validate_immutable_pins(pins, verify_files=True)
+
+
+def test_release_bundle_rejects_bound_materialization_stage_drift(tmp_path):
+    pins = make_pins(tmp_path)
+    stage_path = (
+        Path(pins["release_bundle_root"]).parent
+        / control.MATERIALIZATION_STAGE_FILENAMES["serving_clone"]
+    )
+    stage_path.chmod(0o644)
+    stage_path.write_text("{}\n", encoding="utf-8")
+    stage_path.chmod(0o444)
+
+    with pytest.raises(control.ImmutablePinError, match="stage artifact drifted"):
+        control.validate_immutable_pins(pins, verify_files=True)
+
+
 def test_scheduler_reconciliation_rejects_duplicate_or_unmappable_jobs(tmp_path):
     state_dir, initialized = initialize(tmp_path)
     token = control.job_token("dispatcher", 1, "intent1")
@@ -1390,10 +2078,14 @@ def test_scheduler_reconciliation_rejects_duplicate_or_unmappable_jobs(tmp_path)
 def test_scheduler_parser_and_join_prefers_live_squeue():
     outputs = {
         "squeue": subprocess.CompletedProcess(
-            [], 0, "123|job|RUNNING|comment|cmd\n", ""
+            [], 0, "123|job|RUNNING|comment|cmd|(null)\n", ""
         ),
         "sacct": subprocess.CompletedProcess(
-            [], 0, "123|job|FAILED|comment|submit\n123.batch|batch|COMPLETED||\n", ""
+            [],
+            0,
+            "123|job|FAILED|comment|submit|afterany:99\n"
+            "123.batch|batch|COMPLETED|||\n",
+            "",
         ),
     }
 
@@ -1403,7 +2095,94 @@ def test_scheduler_parser_and_join_prefers_live_squeue():
     snapshot = control.query_scheduler(runner=runner, user="u", now=100.0)
     assert len(snapshot.jobs) == 1
     assert snapshot.jobs[0].state == "RUNNING"
+    assert snapshot.jobs[0].dependency == "afterany:99"
     assert snapshot.active_job_ids == {"123"}
+
+
+def test_scheduler_join_recovers_cluster_blank_sacct_comment_from_submit_line():
+    token = control.job_token("dispatcher", 1, "intent1")
+    submit = f"sbatch --parsable --comment={token} /state/dispatch.sbatch"
+    outputs = {
+        "squeue": subprocess.CompletedProcess(
+            [], 0, f"123|controller|RUNNING|{token}|{submit}|(null)\n", ""
+        ),
+        # The production cluster has AccountingStoreFlags=(null), so Comment is blank
+        # even while the scheduler-owned SubmitLine retains the exact CLI token.
+        "sacct": subprocess.CompletedProcess(
+            [], 0, f"123|controller|RUNNING||{submit}|\n", ""
+        ),
+    }
+
+    snapshot = control.query_scheduler(
+        runner=lambda argv: outputs[argv[0]], user="u", now=100.0
+    )
+    assert snapshot.jobs[0].comment == token
+    assert snapshot.jobs[0].source == "squeue"
+
+
+def test_recorded_controller_scheduler_contract_is_supported():
+    outputs = {
+        "squeue": subprocess.CompletedProcess(
+            [],
+            0,
+            (CLUSTER_FIXTURES / "controller_squeue_comment.txt").read_text(
+                encoding="utf-8"
+            ),
+            "",
+        ),
+        "sacct": subprocess.CompletedProcess(
+            [],
+            0,
+            (CLUSTER_FIXTURES / "controller_sacct_blank_comment.txt").read_text(
+                encoding="utf-8"
+            ),
+            "",
+        ),
+    }
+    snapshot = control.query_scheduler(
+        runner=lambda argv: outputs[argv[0]], user="u", now=100.0
+    )
+    assert len(snapshot.jobs) == 1
+    assert control.parse_job_token(snapshot.jobs[0].comment) == {
+        "role": "dispatcher",
+        "generation": "1",
+        "intent": "intent1",
+    }
+
+
+def test_scheduler_rejects_sacct_comment_submit_line_disagreement():
+    token = control.job_token("dispatcher", 1, "intent1")
+    wrong = control.job_token("dispatcher", 1, "other")
+    outputs = {
+        "squeue": subprocess.CompletedProcess([], 0, "", ""),
+        "sacct": subprocess.CompletedProcess(
+            [],
+            0,
+            f"123|controller|FAILED|{wrong}|sbatch --comment={token} /x.sbatch|\n",
+            "",
+        ),
+    }
+    with pytest.raises(control.SchedulerAmbiguity, match="Comment/SubmitLine conflict"):
+        control.query_scheduler(
+            runner=lambda argv: outputs[argv[0]], user="u", now=100.0
+        )
+
+
+def test_scheduler_query_timeout_fails_closed_and_can_be_reported():
+    def runner(argv):
+        if argv[0] == "squeue":
+            raise subprocess.TimeoutExpired(argv, timeout=15.0)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(control.ControlError, match="squeue failed"):
+        control.query_scheduler(runner=runner, user="u", now=100.0)
+
+    snapshot = control.query_scheduler(
+        runner=runner, user="u", now=100.0, tolerate_errors=True
+    )
+    assert snapshot.squeue_ok is False
+    assert snapshot.sacct_ok is True
+    assert snapshot.errors and "squeue failed" in snapshot.errors[0]
 
 
 def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
@@ -1419,8 +2198,8 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
     assert path.name == "dispatch.g000007.abc123.sbatch"
     assert "#SBATCH --no-requeue" in text
     assert "generation=7;intent=abc123" in text
-    assert "--generation 7 --intent-token \"abc123\"" in text
-    assert 'export ASYS_RELEASE_ID="sweep-recovery-schema5-v1"' in text
+    assert '--generation 7 --intent-token "abc123"' in text
+    assert 'export ASYS_RELEASE_ID="sweep-recovery-schema5-v1.1"' in text
     assert (
         'export ASYS_RELEASE_WORKTREE="'
         + initialized["immutable"]["release_worktree"]
@@ -1435,17 +2214,14 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
     assert "source " not in text
     assert "mamba activate" not in text
     assert (
-        "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV"
-        in text
+        "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV" in text
     )
     assert "export PYTHONDONTWRITEBYTECODE=1" in text
     assert "export PYTHONNOUSERSITE=1" in text
     assert "export PYTHONSAFEPATH=1" in text
     assert 'export HF_HOME="' + initialized["immutable"]["hf_home"] + '"' in text
     assert (
-        'export ASYS_RESULTS_ROOT="'
-        + initialized["immutable"]["results_root"]
-        + '"'
+        'export ASYS_RESULTS_ROOT="' + initialized["immutable"]["results_root"] + '"'
         in text
     )
     assert "export HF_HUB_OFFLINE=1" in text
@@ -1461,13 +2237,16 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
             intent_token="abc123",
         )
     assert path.stat().st_mode & 0o222 == 0
-    assert control.render_generation_sbatch(
-        state_dir,
-        initialized,
-        role="dispatcher",
-        generation=7,
-        intent_token="abc123",
-    ) == path
+    assert (
+        control.render_generation_sbatch(
+            state_dir,
+            initialized,
+            role="dispatcher",
+            generation=7,
+            intent_token="abc123",
+        )
+        == path
+    )
 
     fleet_path = control.render_generation_sbatch(
         state_dir,
@@ -1487,9 +2266,7 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
         in fleet_text
     )
     assert (
-        'export ASYS_RESULTS_ROOT="'
-        + initialized["immutable"]["results_root"]
-        + '"'
+        'export ASYS_RESULTS_ROOT="' + initialized["immutable"]["results_root"] + '"'
         in fleet_text
     )
     with pytest.raises(control.ControlError, match="ambient environment activation"):
@@ -1517,13 +2294,9 @@ def test_batch_provenance_environment_is_run_scoped_and_fail_closed(tmp_path):
     resume_ready(state_dir, now=50.0)
     environment = control.production_environment_from_state(state_dir, run_id=run_id)
     assert environment == {
-        "ASYS_RELEASE_ID": "sweep-recovery-schema5-v1",
-        "ASYS_MODEL_CONTRACT_SHA256": initialized["immutable"][
-            "model_contract_sha256"
-        ],
-        "ASYS_FLEET_CONTRACT_SHA256": initialized["immutable"][
-            "fleet_contract_sha256"
-        ],
+        "ASYS_RELEASE_ID": "sweep-recovery-schema5-v1.1",
+        "ASYS_MODEL_CONTRACT_SHA256": initialized["immutable"]["model_contract_sha256"],
+        "ASYS_FLEET_CONTRACT_SHA256": initialized["immutable"]["fleet_contract_sha256"],
         "ASYS_HARNESS_ENVIRONMENT_SHA256": initialized["immutable"][
             "harness_environment_sha256"
         ],
@@ -1532,6 +2305,15 @@ def test_batch_provenance_environment_is_run_scoped_and_fail_closed(tmp_path):
         ],
         "ASYS_ROLLOUT_GENERATION": "1",
         "ASYS_IMMUTABLE_PINS_SHA256": initialized["immutable_sha256"],
+        "ASYS_RUNTIME_ATTESTATION": control.load_control(state_dir)[
+            control.RUNTIME_ATTESTATION_STATE_KEY
+        ]["path"],
+        "ASYS_RUNTIME_ATTESTATION_SHA256": control.load_control(state_dir)[
+            control.RUNTIME_ATTESTATION_STATE_KEY
+        ]["sha256"],
+        "ASYS_RUNTIME_INTEGRITY_LEASE": control.load_control(state_dir)[
+            control.RUNTIME_ATTESTATION_STATE_KEY
+        ]["lease_path"],
         "ASYS_ARTIFACT_POLICY_SHA256": expected_policy,
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
@@ -1542,6 +2324,7 @@ def test_batch_provenance_environment_is_run_scoped_and_fail_closed(tmp_path):
 def test_production_batch_validator_hard_enforces_slurm_contract(tmp_path):
     _, initialized = initialize(tmp_path)
     execution = control.production_cell_execution(initialized)
+    manifest_digest = "a" * 64
     payload = f"""#!/bin/bash
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
@@ -1558,13 +2341,23 @@ export ASYS_RELEASE_WORKTREE="{execution["release_worktree"]}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
-exec {shlex.quote(execution["python"])} -u {shlex.quote(execution["dispatcher_script"])} run-task \
-  --expected-release-root {shlex.quote(execution["release_worktree"])} \
+exec {shlex.quote(execution["python"])} -u {shlex.quote(execution["dispatcher_script"])} run-task \\
+  --batch-manifest-sha256 "{manifest_digest}" \\
+  --expected-release-root {shlex.quote(execution["release_worktree"])} \\
   --expected-harness-prefix {shlex.quote(execution["harness_prefix"])}
 """
+    assert f'--batch-manifest-sha256 "{manifest_digest}" \\' in payload
     control.validate_production_batch_sbatch(
         initialized, payload=payload, task_count=24
     )
+    with pytest.raises(control.ControlError, match="manifest digest"):
+        control.validate_production_batch_sbatch(
+            initialized,
+            payload=payload.replace(
+                f'  --batch-manifest-sha256 "{manifest_digest}" \\\n', ""
+            ),
+            task_count=24,
+        )
     with pytest.raises(control.ControlError, match="missing.*no-requeue"):
         control.validate_production_batch_sbatch(
             initialized,
@@ -1645,6 +2438,46 @@ def test_submission_persists_intent_and_commits_exact_job_id_once(tmp_path):
     assert same["job_id"] == "321"
 
 
+def test_running_successor_does_not_expire_historical_fleet_launch_gate(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+
+    # Fleet readiness is intentionally recent at resume, but controller generations
+    # are 12 hours long.  A successor submission must keep verifying the sealed gate
+    # bytes without treating their captured timestamp as a renewable controller lease.
+    much_later = 50.0 + 2 * 86_400.0
+    record = control.submit_controller_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id="700",
+        scheduler=control.SchedulerSnapshot((), much_later),
+        submit_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "321\n", ""),
+        now=much_later,
+    )
+
+    assert record["job_id"] == "321"
+    assert record["dependency_job_id"] == "700"
+
+
+def test_initial_resume_still_requires_recent_fleet_launch_gate(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir, now=999.0)
+
+    with pytest.raises(control.ReadinessError, match="fleet readiness evidence is not recent"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 1_000.0),
+            now=1_000.0,
+        )
+
+    current = control.load_control(state_dir)
+    assert current["desired_state"] == "paused"
+    assert current["rollout_generation"] == 0
+
+
 def test_crash_window_intent_is_adopted_from_scheduler_without_sbatch(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
@@ -1668,11 +2501,7 @@ def test_crash_window_intent_is_adopted_from_scheduler_without_sbatch(tmp_path):
     ]
     assert intent["state"] == "submitting"
     accepted = control.SchedulerSnapshot(
-        (
-            control.SchedulerJob(
-                "444", "asys-s5-fleet", "PENDING", intent["job_token"]
-            ),
-        ),
+        (control.SchedulerJob("444", "asys-s5-fleet", "PENDING", intent["job_token"]),),
         52.0,
     )
     adopted = control.submit_controller_intent(
@@ -1703,6 +2532,11 @@ def test_exact_id_claim_fences_duplicate_controller(tmp_path):
         now=52.0,
     )
     assert claimed["state"] == "running"
+    assert claimed["fencing_primitive"] == control.SHARED_CONTROLLER_FENCING_PRIMITIVE
+    assert (
+        claimed["controller_primitives"]
+        == control.shared_controller_primitive_contract()
+    )
     with pytest.raises(control.ControllerFenced, match="exact IDs"):
         control.claim_controller(
             state_dir,
@@ -1743,9 +2577,7 @@ def test_repair_chain_is_idempotent_for_two_roles(tmp_path):
     assert {item["role"] for item in result["submitted"]} == set(control.ROLE_NAMES)
     persisted = control.load_control(state_dir)
     live_jobs = tuple(
-        control.SchedulerJob(
-            record["job_id"], role, "PENDING", record["job_token"]
-        )
+        control.SchedulerJob(record["job_id"], role, "PENDING", record["job_token"])
         for role in control.ROLE_NAMES
         for record in (persisted["controllers"][role]["active"],)
     )
@@ -1788,9 +2620,7 @@ def test_monitor_cadences_and_frozen_command_are_pinned(tmp_path):
     } == control.MONITOR_CADENCE_SECONDS
     assert control.monitor_due_cadences(initialized, now=10.0) == ()
 
-    command = control.schema5_monitor_command(
-        state_dir, initialized, cadence="health"
-    )
+    command = control.schema5_monitor_command(state_dir, initialized, cadence="health")
     immutable = initialized["immutable"]
     assert command[:3] == [
         str(Path(immutable["harness_environment_prefix"]) / "bin" / "python"),
@@ -1800,9 +2630,7 @@ def test_monitor_cadences_and_frozen_command_are_pinned(tmp_path):
     assert command[command.index("--results-root") + 1] == immutable["results_root"]
     assert command[command.index("--state-dir") + 1] == str(state_dir.resolve())
     assert command[command.index("--config") + 1] == str(
-        Path(immutable["release_worktree"])
-        / "configs"
-        / "schema5_monitoring.v1.json"
+        Path(immutable["release_worktree"]) / "configs" / "schema5_monitoring.v1.json"
     )
     assert "--persist" in command
     assert "--send-email" in command
@@ -1864,9 +2692,7 @@ def test_monitor_timestamps_survive_successor_and_exit_two_is_success(tmp_path):
         controller_job_id="701",
         now=320.0,
     )
-    assert [row["attempt_id"] for row in recovered] == [
-        successor_attempt["attempt_id"]
-    ]
+    assert [row["attempt_id"] for row in recovered] == [successor_attempt["attempt_id"]]
     restarted = control.load_control(state_dir)["monitoring"]["cadences"]["health"]
     assert restarted["active_attempt"] is None
     assert restarted["next_due_timestamp"] == 320.0
@@ -1975,6 +2801,292 @@ def test_throughput_epochs_survive_successors_and_close_on_pause(tmp_path):
         )
 
 
+def _ramp_evidence(
+    state_dir: Path,
+    *,
+    committed_at: float,
+    cadence: str,
+    fleet_generation: str,
+    qids: dict[str, int] | None = None,
+    health_clean: bool = True,
+    semantic_clean: bool = True,
+    critical_keys: tuple[str, ...] = (),
+    blocking_keys: tuple[str, ...] = (),
+) -> tuple[Path, str]:
+    state = control.load_control(state_dir)
+    captured_at = committed_at - 1.0
+    observation = {
+        "schema_version": 1,
+        "protocol": control.ADMISSION_RAMP_EVIDENCE_PROTOCOL,
+        "captured_timestamp": captured_at,
+        "committed_timestamp": committed_at,
+        "cadence": cadence,
+        "control_immutable_sha256": state["immutable_sha256"],
+        "rollout_generation": state["rollout_generation"],
+        "admission_ceiling": state["admission"]["current_ceiling"],
+        "fleet_generation": fleet_generation,
+        "production_health_clean": health_clean,
+        "semantic_integrity_clean": semantic_clean if cadence != "health" else None,
+        "critical_finding_keys": sorted(critical_keys),
+        "promotion_blocking_finding_keys": sorted(
+            set(critical_keys) | set(blocking_keys)
+        ),
+        "run_validated_qids": copy.deepcopy(qids) if cadence != "health" else None,
+    }
+    report = {
+        "schema_version": 1,
+        "cadence": cadence,
+        "captured_timestamp": captured_at,
+        "health": {
+            "fleet_generation": fleet_generation,
+            "control": {
+                "rollout_generation": state["rollout_generation"],
+                "admission": {
+                    "current_ceiling": state["admission"]["current_ceiling"]
+                },
+            },
+        },
+        "ramp_observation": observation,
+    }
+    if cadence != "health":
+        assert qids is not None
+        report["semantic"] = {
+            "outcomes": {"validated_qids": sum(qids.values())},
+            "runs": {
+                run_id: {"outcomes": {"validated_qids": qids[run_id]}}
+                for run_id in control.REQUIRED_RUNS
+            },
+        }
+    path = (
+        state_dir
+        / "monitoring"
+        / cadence
+        / f"ramp-{int(committed_at * 1_000_000):020d}.json"
+    )
+    control._atomic_write_json(path, report)
+    path.chmod(0o444)
+    return path, _sha(path)
+
+
+def _commit_ramp_evidence(
+    state_dir: Path, *, committed_at: float, cadence: str, **kwargs
+) -> dict:
+    path, digest = _ramp_evidence(
+        state_dir, committed_at=committed_at, cadence=cadence, **kwargs
+    )
+    return control.record_admission_ramp_observation(
+        state_dir,
+        evidence_path=path,
+        evidence_sha256=digest,
+        now=committed_at,
+    )
+
+
+def test_admission_ramp_automatically_promotes_only_from_complete_clean_windows(
+    tmp_path,
+):
+    assert control.ADMISSION_RAMP_REQUIREMENTS == {
+        24: {"next_ceiling": 96, "clean_seconds": 3_600.0},
+        96: {"next_ceiling": 192, "clean_seconds": 21_600.0},
+        192: {"next_ceiling": 384, "clean_seconds": 43_200.0},
+    }
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    finished_run = "full_sweep_schema5_v1"
+    qids = {
+        run_id: (
+            control.REQUIRED_RUN_QIDS[run_id] - 1
+            if run_id == finished_run
+            else 10
+        )
+        for run_id in control.REQUIRED_RUNS
+    }
+    control.record_successful_poll(
+        state_dir,
+        validated_qids=sum(qids.values()),
+        fleet_generation="fleet-a",
+        now=90.0,
+    )
+    started = _commit_ramp_evidence(
+        state_dir,
+        committed_at=100.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=qids,
+    )
+    assert started["admission_ramp"]["last_action"]["action"] == "window_started"
+
+    # Every stage is continuously covered by observations no more than 10 minutes
+    # apart; promotion itself is always a semantic observation.  All-run progress is
+    # required only for the first stage, so the run completed there can remain fixed.
+    stage_boundaries = (
+        (100.0, 3_600.0, 96),
+        (3_700.0, 21_600.0, 192),
+        (25_300.0, 43_200.0, 384),
+    )
+    for start, duration, target in stage_boundaries:
+        final = start + duration
+        timestamp = start + 600.0
+        while timestamp < final:
+            _commit_ramp_evidence(
+                state_dir,
+                committed_at=timestamp,
+                cadence="health",
+                fleet_generation="fleet-a",
+            )
+            timestamp += 600.0
+        qids = {
+            run_id: (
+                value
+                if value == control.REQUIRED_RUN_QIDS[run_id]
+                else value + 1
+            )
+            for run_id, value in qids.items()
+        }
+        control.record_successful_poll(
+            state_dir,
+            validated_qids=sum(qids.values()),
+            fleet_generation="fleet-a",
+            now=final - 0.5,
+        )
+        promoted = _commit_ramp_evidence(
+            state_dir,
+            committed_at=final,
+            cadence="semantic",
+            fleet_generation="fleet-a",
+            qids=qids,
+        )
+        assert promoted["admission"]["current_ceiling"] == target
+        assert promoted["admission_ramp"]["last_action"]["action"] == "promoted"
+
+    final = control.load_control(state_dir)
+    assert [row["to_ceiling"] for row in final["admission_ramp"]["promotions"]] == [
+        96,
+        192,
+        384,
+    ]
+    assert all(
+        set(row["final_run_validated_qids"]) == set(control.REQUIRED_RUNS)
+        and row["observations"]
+        for row in final["admission_ramp"]["promotions"]
+    )
+    assert final["admission_ramp"]["promotions"][0]["all_runs_progressed"] is True
+    assert all(
+        row["all_runs_progressed"] is False
+        and row["all_run_progress_required"] is False
+        for row in final["admission_ramp"]["promotions"][1:]
+    )
+
+    # A new material fleet identity closes the throughput epoch and immediately
+    # returns admission to the initial safety stage.
+    changed = control.record_successful_poll(
+        state_dir,
+        validated_qids=sum(qids.values()),
+        fleet_generation="fleet-b",
+        now=68_600.0,
+    )
+    assert changed["admission"]["current_ceiling"] == 24
+    assert changed["admission_ramp"]["window"] is None
+    assert changed["throughput_epochs"][-2]["close_reason"] == "material_fleet_change"
+
+
+def test_admission_ramp_resets_on_blocking_alert_gap_pause_and_rejects_manual_raise(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    qids = {run_id: 10 for run_id in control.REQUIRED_RUNS}
+    control.record_successful_poll(
+        state_dir,
+        validated_qids=sum(qids.values()),
+        fleet_generation="fleet-a",
+        now=90.0,
+    )
+    _commit_ramp_evidence(
+        state_dir,
+        committed_at=100.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=qids,
+    )
+    # Exercise rollback from an already elevated stage without spending another full
+    # staged timeline in this independent failure-path test.
+    elevated = control.load_control(state_dir)
+    elevated["admission"]["current_ceiling"] = 192
+    elevated["admission_ramp"]["current_ceiling"] = 192
+    elevated["admission_ramp"]["window"] = None
+    control._save_control(state_dir, elevated, now=399.0)
+    qos_blocked = _commit_ramp_evidence(
+        state_dir,
+        committed_at=400.0,
+        cadence="health",
+        fleet_generation="fleet-a",
+        blocking_keys=("monitor:qos-memory",),
+    )
+    assert qos_blocked["admission_ramp"]["window"] is None
+    assert qos_blocked["admission"]["current_ceiling"] == 24
+    assert (
+        qos_blocked["admission_ramp"]["last_action"]["reason"]
+        == "promotion_blocking_alert"
+    )
+
+    _commit_ramp_evidence(
+        state_dir,
+        committed_at=500.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=qids,
+    )
+    starved = _commit_ramp_evidence(
+        state_dir,
+        committed_at=800.0,
+        cadence="health",
+        fleet_generation="fleet-a",
+        blocking_keys=("monitor:starvation",),
+    )
+    assert starved["admission_ramp"]["window"] is None
+    _commit_ramp_evidence(
+        state_dir,
+        committed_at=900.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=qids,
+    )
+    gap = _commit_ramp_evidence(
+        state_dir,
+        committed_at=1_600.0,
+        cadence="health",
+        fleet_generation="fleet-a",
+    )
+    assert gap["admission_ramp"]["window"] is None
+    assert gap["admission_ramp"]["resets"][-1]["reason"] == "health_observation_gap"
+
+    with pytest.raises(control.ControlError, match="monitor-controlled"):
+        control.set_admission_ceiling(state_dir, ceiling=96, now=1_700.0)
+    paused = control.pause_control(state_dir, drain=True, now=1_800.0)
+    assert paused["admission"]["current_ceiling"] == 24
+    assert paused["admission_ramp"]["window"] is None
+    assert paused["admission_ramp"]["last_action"]["reason"] == "pause"
+
+    evidence, digest = _ramp_evidence(
+        state_dir,
+        committed_at=1_900.0,
+        cadence="health",
+        fleet_generation="fleet-a",
+    )
+    alias = evidence.with_name("hardlink-alias.json")
+    os.link(evidence, alias)
+    with pytest.raises(control.ControlError, match="hardlink aliases"):
+        control.record_admission_ramp_observation(
+            state_dir,
+            evidence_path=evidence,
+            evidence_sha256=digest,
+            now=1_900.0,
+        )
+
+
 def test_pause_cancels_only_token_verified_recorded_successor(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
@@ -2007,6 +3119,132 @@ def test_pause_cancels_only_token_verified_recorded_successor(tmp_path):
     assert calls == [["scancel", "701"]]
 
 
+def test_pause_takes_scheduler_snapshot_only_after_admission_boundary(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    holder = control.admission_boundary_lock(state_dir)
+    holder.__enter__()
+    started = threading.Event()
+    snapshot_taken = threading.Event()
+    failures = []
+
+    def pause():
+        started.set()
+        try:
+            control.pause_control(
+                state_dir,
+                drain=True,
+                scheduler_reader=lambda: (
+                    snapshot_taken.set()
+                    or control.SchedulerSnapshot((), 52.0)
+                ),
+                now=52.0,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            failures.append(exc)
+
+    worker = threading.Thread(target=pause)
+    worker.start()
+    assert started.wait(timeout=2.0)
+    assert not snapshot_taken.wait(timeout=0.1)
+    holder.__exit__(None, None, None)
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert not failures
+    assert snapshot_taken.is_set()
+
+
+def test_pause_fails_closed_while_accepted_cell_is_inside_visibility_grace(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    sbatch_path = (state_dir / "batches" / "batch-batch1.sbatch").resolve()
+    sbatch_path.parent.mkdir()
+    sbatch_path.write_text("#!/bin/bash\n", encoding="utf-8")
+    (state_dir / "ledger.json").write_text(
+        json.dumps(
+            {
+                "jobs": {
+                    "900": {
+                        "job_id": "900",
+                        "batch_id": "batch1",
+                        "sbatch_path": str(sbatch_path),
+                        "state": "submitted",
+                    }
+                },
+                "intents": {
+                    "batch1": {
+                        "state": "submitted",
+                        "created_at": 55.0,
+                        "job_id": "900",
+                        "sbatch_path": str(sbatch_path),
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(control.SchedulerVisibilityPending, match="not yet visible"):
+        control.pause_control(
+            state_dir,
+            drain=True,
+            scheduler=control.SchedulerSnapshot((), 60.0),
+            now=60.0,
+        )
+    persisted = control.load_control(state_dir)
+    assert persisted["desired_state"] == "paused"
+    assert persisted["drain_requested"] is True
+
+
+def test_pause_can_cancel_visible_idless_ambiguous_submit_by_exact_intent(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    sbatch_path = (state_dir / "batches" / "batch-batch1.sbatch").resolve()
+    sbatch_path.parent.mkdir()
+    sbatch_path.write_text("#!/bin/bash\n", encoding="utf-8")
+    (state_dir / "ledger.json").write_text(
+        json.dumps(
+            {
+                "jobs": {},
+                "intents": {
+                    "batch1": {
+                        "state": "submitting",
+                        "created_at": 55.0,
+                        "job_id": None,
+                        "sbatch_path": str(sbatch_path),
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    snapshot = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                "900_4",
+                "asys-dispatch-batch1",
+                "PENDING",
+                "asys-schema5-intent:batch1",
+                f"sbatch {sbatch_path}",
+                "squeue",
+            ),
+        ),
+        60.0,
+    )
+    calls = []
+    paused = control.pause_control(
+        state_dir,
+        drain=True,
+        scheduler=snapshot,
+        cancel_runner=lambda argv: (
+            calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0, "", "")
+        ),
+        now=60.0,
+    )
+    assert calls == [["scancel", "900_4"]]
+    assert paused["drain_intent"]["state"] == "complete"
+
+
 def test_pause_usr1_signals_only_exact_ledger_bound_running_cell_tasks(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
@@ -2024,7 +3262,13 @@ def test_pause_usr1_signals_only_exact_ledger_bound_running_cell_tasks(tmp_path)
                         "sbatch_path": str(sbatch_path),
                     }
                 },
-                "intents": {"batch1": {"job_id": "900"}},
+                "intents": {
+                    "batch1": {
+                        "job_id": "900",
+                        "state": "submitted",
+                        "sbatch_path": str(sbatch_path),
+                    }
+                },
             }
         )
         + "\n",
@@ -2036,6 +3280,14 @@ def test_pause_usr1_signals_only_exact_ledger_bound_running_cell_tasks(tmp_path)
                 "900_3",
                 "asys-dispatch-batch1",
                 "RUNNING",
+                "asys-schema5-intent:batch1",
+                f"sbatch {sbatch_path}",
+                "squeue",
+            ),
+            control.SchedulerJob(
+                "900_4",
+                "asys-dispatch-batch1",
+                "PENDING",
                 "asys-schema5-intent:batch1",
                 f"sbatch {sbatch_path}",
                 "squeue",
@@ -2057,15 +3309,22 @@ def test_pause_usr1_signals_only_exact_ledger_bound_running_cell_tasks(tmp_path)
         drain=True,
         scheduler=snapshot,
         cancel_runner=lambda argv: (
-            calls.append(list(argv))
-            or subprocess.CompletedProcess(argv, 0, "", "")
+            calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0, "", "")
         ),
         now=60.0,
     )
-    assert calls == [["scancel", "--signal=USR1", "900_3"]]
+    assert calls == [
+        ["scancel", "--batch", "--signal=USR1", "900_3"],
+        ["scancel", "900_4"],
+    ]
     assert paused["drain_intent"]["state"] == "complete"
     assert paused["drain_intent"]["cell_task_ids"] == ["900_3"]
+    assert paused["drain_intent"]["pending_cell_task_ids"] == ["900_4"]
     assert paused["drain_intent"]["results"]["cell_usr1:900_3"]["returncode"] == 0
+    assert (
+        paused["drain_intent"]["results"]["pending_cell_cancel:900_4"]["returncode"]
+        == 0
+    )
 
 
 def test_pause_refuses_all_signals_when_any_cell_mapping_is_ambiguous(tmp_path):
@@ -2085,7 +3344,13 @@ def test_pause_refuses_all_signals_when_any_cell_mapping_is_ambiguous(tmp_path):
                         "sbatch_path": str(sbatch_path),
                     }
                 },
-                "intents": {"batch1": {"job_id": "900"}},
+                    "intents": {
+                        "batch1": {
+                            "state": "submitted",
+                            "job_id": "900",
+                            "sbatch_path": str(sbatch_path),
+                        }
+                    },
             }
         )
         + "\n",
@@ -2153,8 +3418,7 @@ def test_stale_heartbeat_fences_exact_id_and_releases_recorded_successor(tmp_pat
         role="dispatcher",
         snapshot=snapshot,
         cancel_runner=lambda argv: (
-            calls.append(list(argv))
-            or subprocess.CompletedProcess(argv, 0, "", "")
+            calls.append(list(argv)) or subprocess.CompletedProcess(argv, 0, "", "")
         ),
         submit_runner=lambda _argv: pytest.fail("recorded successor must be reused"),
         now=700.0,
@@ -2189,3 +3453,1426 @@ def test_alerts_are_persistent_and_deduplicated(tmp_path):
     )
     assert resolved["alerts"][0]["resolved_at"] is not None
     assert len((state_dir / control.ALERT_JOURNAL).read_text().splitlines()) == 3
+
+
+def test_drill_tokens_are_distinct_and_render_no_production_managed_plane(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, _ = start_live_drill(state_dir)
+    state = control.load_drill_state(state_dir)
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+    assert (
+        control.build_reconciliation_report(
+            control.load_control(state_dir), snapshot(), all_jobs=True, no_admit=True
+        )["scheduler"]["schema5_job_count"]
+        == 0
+    )
+    for role in control.ROLE_NAMES:
+        active = state["roles"][role]["active"]
+        assert (
+            active["fencing_primitive"] == control.SHARED_CONTROLLER_FENCING_PRIMITIVE
+        )
+        assert (
+            active["controller_primitives"]
+            == control.shared_controller_primitive_contract()
+        )
+        assert active["job_token"].startswith(control.DRILL_TOKEN_PREFIX + ";")
+        assert control.parse_job_token(active["job_token"]) is None
+        text = Path(active["sbatch_path"]).read_text()
+        assert "#SBATCH --no-requeue" in text
+        assert "#SBATCH --time=01:00:00" in text
+        assert "supervise-drill" in text
+        assert " dispatch --results-root " not in text
+        assert "keepalive.py" not in text
+        assert Path(active["sbatch_path"]).stat().st_mode & 0o222 == 0
+    assert len(jobs) == 4
+
+
+def test_drill_start_requires_readiness_and_paused_empty_production_state(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    with pytest.raises(control.ReadinessError, match="snapshot"):
+        control.start_controller_drill(
+            state_dir, scheduler=control.SchedulerSnapshot((), 20.0), now=20.0
+        )
+    make_ready(state_dir)
+    current = control.load_control(state_dir)
+    current["desired_state"] = "resuming"
+    current["resume_intent"] = {
+        "state": "submitting_controllers",
+        "rollout_generation": 1,
+    }
+    # This synthetic state tests the drill's desired-state fence, not the separate
+    # generation-zero preseal invariant.
+    current[control.SNAPSHOT_ATTESTATION_STATE_KEY] = None
+    control._save_control(state_dir, current, now=30.0)
+    with pytest.raises(control.ControlError, match="paused"):
+        control.start_controller_drill(
+            state_dir, scheduler=control.SchedulerSnapshot((), 31.0), now=31.0
+        )
+
+
+def test_exact_drill_kill_rejects_token_or_command_mismatch_without_scancel(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, _ = start_live_drill(state_dir)
+    state = control.load_drill_state(state_dir)
+    active = state["roles"]["dispatcher"]["active"]
+    jobs[:] = [
+        (
+            control.SchedulerJob(
+                job.job_id,
+                job.job_name,
+                job.state,
+                job.comment,
+                "/wrong/spooled-command",
+                dependency=job.dependency,
+            )
+            if job.job_id == active["job_id"]
+            else job
+        )
+        for job in jobs
+    ]
+    calls = []
+    with pytest.raises(control.SchedulerAmbiguity, match="recorded sbatch"):
+        control.kill_drill_controller(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(60.0),
+            cancel_runner=lambda argv: calls.append(list(argv)),
+            now=60.0,
+        )
+    assert calls == []
+    assert control.load_drill_state(state_dir)["roles"]["dispatcher"]["kill"] is None
+
+
+def test_exact_drill_kill_rejects_duplicate_token_before_scancel(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, _ = start_live_drill(state_dir)
+    active = control.load_drill_state(state_dir)["roles"]["dispatcher"]["active"]
+    jobs.append(
+        control.SchedulerJob(
+            "999",
+            "duplicate",
+            "PENDING",
+            active["job_token"],
+            f"sbatch {active['sbatch_path']}",
+        )
+    )
+    calls = []
+
+    with pytest.raises(control.SchedulerAmbiguity, match="duplicate drill token"):
+        control.kill_drill_controller(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(60.0),
+            cancel_runner=lambda argv: calls.append(list(argv)),
+            now=60.0,
+        )
+
+    assert calls == []
+
+
+def test_exact_drill_kill_rejects_successor_with_wrong_scheduler_dependency(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, _ = start_live_drill(state_dir)
+    successor = control.load_drill_state(state_dir)["roles"]["dispatcher"][
+        "successor"
+    ]
+    jobs[:] = [
+        (
+            control.SchedulerJob(
+                job.job_id,
+                job.job_name,
+                job.state,
+                job.comment,
+                job.command,
+                source=job.source,
+                dependency="afterany:999999",
+            )
+            if job.job_id == successor["job_id"]
+            else job
+        )
+        for job in jobs
+    ]
+    calls = []
+
+    with pytest.raises(control.SchedulerAmbiguity, match="dependency"):
+        control.kill_drill_controller(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(60.0),
+            cancel_runner=lambda argv: calls.append(list(argv)),
+            now=60.0,
+        )
+
+    assert calls == []
+    assert control.load_drill_state(state_dir)["roles"]["dispatcher"]["kill"] is None
+
+
+def test_exact_drill_kill_recovers_crash_after_scancel_from_sacct(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    old = control.load_drill_state(state_dir)["roles"]["dispatcher"]["active"]
+
+    def crash_after_cancel(_argv):
+        jobs[:] = [
+            control.SchedulerJob(
+                job.job_id,
+                job.job_name,
+                "CANCELLED" if job.job_id == old["job_id"] else job.state,
+                job.comment,
+                job.command,
+                source="sacct" if job.job_id == old["job_id"] else job.source,
+                dependency=job.dependency,
+            )
+            for job in jobs
+        ]
+        raise RuntimeError("caller died after scancel acceptance")
+
+    with pytest.raises(RuntimeError, match="after scancel acceptance"):
+        control.kill_drill_controller(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(60.0),
+            cancel_runner=crash_after_cancel,
+            now=60.0,
+        )
+    assert (
+        control.load_drill_state(state_dir)["roles"]["dispatcher"]["kill"]["state"]
+        == "cancelling"
+    )
+
+    reconciled = control.kill_drill_controller(
+        state_dir,
+        role="dispatcher",
+        snapshot=snapshot(61.0),
+        cancel_runner=lambda _argv: pytest.fail("terminal exact kill must be adopted"),
+        now=61.0,
+    )
+    assert reconciled["returncode"] == 0
+    assert reconciled["state"] == "cancelled_reconciled_terminal"
+    assert reconciled["scheduler_terminal_state"] == "CANCELLED"
+
+    control._record_drill_exit(
+        state_dir,
+        drill_id=control.load_drill_state(state_dir)["drill_id"],
+        role="dispatcher",
+        generation=old["generation"],
+        intent_token=old["intent_token"],
+        job_id=old["job_id"],
+        reason="scheduler_terminal",
+        now=61.5,
+    )
+    successor = control.load_drill_state(state_dir)["roles"]["dispatcher"]["successor"]
+    control.claim_drill_controller(
+        state_dir,
+        drill_id=control.load_drill_state(state_dir)["drill_id"],
+        role="dispatcher",
+        generation=successor["generation"],
+        intent_token=successor["intent_token"],
+        job_id=successor["job_id"],
+        active_scheduler_job_ids=snapshot(62.0).active_job_ids,
+        now=62.0,
+    )
+    control.submit_drill_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id=successor["job_id"],
+        scheduler=snapshot(62.0),
+        submit_runner=submit,
+        now=62.0,
+    )
+    control.heartbeat_drill_controller(
+        state_dir,
+        drill_id=control.load_drill_state(state_dir)["drill_id"],
+        role="dispatcher",
+        generation=successor["generation"],
+        intent_token=successor["intent_token"],
+        job_id=successor["job_id"],
+        now=63.0,
+    )
+    recovery = control.record_drill_recovery(
+        state_dir,
+        role="dispatcher",
+        snapshot=snapshot(63.0),
+        now=63.0,
+    )
+    assert recovery["killed_job_id"] == old["job_id"]
+
+
+def test_exact_drill_kill_does_not_adopt_unrelated_terminal_state(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, _ = start_live_drill(state_dir)
+    old = control.load_drill_state(state_dir)["roles"]["dispatcher"]["active"]
+
+    def crash_then_fail(_argv):
+        jobs[:] = [
+            control.SchedulerJob(
+                job.job_id,
+                job.job_name,
+                "FAILED" if job.job_id == old["job_id"] else job.state,
+                job.comment,
+                job.command,
+                source="sacct" if job.job_id == old["job_id"] else job.source,
+                dependency=job.dependency,
+            )
+            for job in jobs
+        ]
+        raise RuntimeError("caller died")
+
+    with pytest.raises(RuntimeError, match="caller died"):
+        control.kill_drill_controller(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(60.0),
+            cancel_runner=crash_then_fail,
+            now=60.0,
+        )
+
+    with pytest.raises(control.SchedulerAmbiguity, match="does not prove scancel"):
+        control.kill_drill_controller(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(61.0),
+            cancel_runner=lambda _argv: pytest.fail("FAILED must not be adopted"),
+            now=61.0,
+        )
+
+
+def test_both_exact_kills_recover_by_unique_successors_within_fifteen_minutes(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    dispatcher = recover_drill_role(
+        state_dir,
+        jobs,
+        snapshot,
+        submit,
+        role="dispatcher",
+        now=60.0,
+    )
+    fleet = recover_drill_role(
+        state_dir,
+        jobs,
+        snapshot,
+        submit,
+        role="fleet_supervisor",
+        now=70.0,
+    )
+    assert dispatcher["successor_job_id"] != dispatcher["killed_job_id"]
+    assert fleet["successor_job_id"] != fleet["killed_job_id"]
+    assert dispatcher["recovery_seconds"] == 2.0
+    assert fleet["recovery_seconds"] == 2.0
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+    assert all(
+        control.load_control(state_dir)["controllers"][role]["active"] is None
+        for role in control.ROLE_NAMES
+    )
+
+
+def test_drill_recovery_rejects_a_later_replacement_of_the_frozen_successor(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0
+    )
+    state = control.load_drill_state(state_dir)
+    drill_id = state["drill_id"]
+    first_successor = state["roles"]["dispatcher"]["active"]
+    later_successor = state["roles"]["dispatcher"]["successor"]
+    jobs[:] = [job for job in jobs if job.job_id != first_successor["job_id"]]
+    control._record_drill_exit(
+        state_dir,
+        drill_id=drill_id,
+        role="dispatcher",
+        generation=first_successor["generation"],
+        intent_token=first_successor["intent_token"],
+        job_id=first_successor["job_id"],
+        reason="second_failure",
+        now=63.0,
+    )
+    control.claim_drill_controller(
+        state_dir,
+        drill_id=drill_id,
+        role="dispatcher",
+        generation=later_successor["generation"],
+        intent_token=later_successor["intent_token"],
+        job_id=later_successor["job_id"],
+        active_scheduler_job_ids=snapshot(64.0).active_job_ids,
+        now=64.0,
+    )
+    control.submit_drill_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id=later_successor["job_id"],
+        scheduler=snapshot(64.0),
+        submit_runner=submit,
+        now=64.0,
+    )
+    control.heartbeat_drill_controller(
+        state_dir,
+        drill_id=drill_id,
+        role="dispatcher",
+        generation=later_successor["generation"],
+        intent_token=later_successor["intent_token"],
+        job_id=later_successor["job_id"],
+        now=65.0,
+    )
+    with control.drill_lock(state_dir):
+        state = control.load_drill_state(state_dir)
+        state["roles"]["dispatcher"]["recovery"] = None
+        control._save_drill_state(state_dir, state, now=65.0)
+
+    with pytest.raises(control.ControllerFenced, match="exact successor frozen"):
+        control.record_drill_recovery(
+            state_dir,
+            role="dispatcher",
+            snapshot=snapshot(65.0),
+            now=65.0,
+        )
+
+
+def test_drill_finish_is_marker_last_and_completed_live_status_succeeds(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    with pytest.raises(control.ReadinessError, match="drill marker is missing"):
+        control.resume_control(state_dir, now=50.0)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+    cancelled = []
+
+    def cancel(argv):
+        cancelled.append(list(argv))
+        jobs[:] = [job for job in jobs if job.job_id != argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    marker = control.finish_controller_drill(
+        state_dir,
+        scheduler_reader=lambda: snapshot(80.0),
+        cancel_runner=cancel,
+        timeout_seconds=1.0,
+        poll_seconds=0.0,
+        now=80.0,
+    )
+    assert marker["passed"] is True
+    recovered_state = control.load_drill_state(state_dir)
+    completed_events = [
+        event
+        for event in recovered_state["transition_history"]
+        if event["event"] == "completed"
+    ]
+    assert len(completed_events) == 1
+    assert completed_events[0]["timestamp"] == recovered_state["completed_timestamp"]
+    assert marker["roles"].keys() == set(control.ROLE_NAMES)
+    assert (state_dir / control.DRILL_COMPLETE_FILENAME).is_file()
+    assert control.load_drill_state(state_dir)["phase"] == "completed"
+    assert cancelled
+    validated = control.validate_controller_drill_marker(
+        state_dir, control.load_control(state_dir)
+    )
+    assert validated == marker
+    final_snapshot = snapshot(81.0)
+    status = control.controller_drill_status(
+        state_dir, snapshot=final_snapshot, now=81.0
+    )
+    assert status["healthy"] is True
+    assert status["completed"] is True
+    assert status["ready_for_kill"] is False
+    monkeypatch.setattr(control, "_scheduler_for_cli", lambda **_kwargs: final_snapshot)
+    assert (
+        control.main(["--state-dir", str(state_dir), "drill", "status", "--live"]) == 0
+    )
+
+
+def test_resume_and_completed_start_reject_live_drill_namespace_before_mutation(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    marker = complete_drill_marker(state_dir)
+    token = control.drill_job_token(marker["drill_id"], "dispatcher", 9, "orphan")
+    orphan = control.SchedulerJob(
+        "998", "orphan", "RUNNING", token, "sbatch /orphan.sbatch"
+    )
+    snapshot = control.SchedulerSnapshot((orphan,), 50.0)
+
+    with pytest.raises(control.SchedulerAmbiguity, match="still has live jobs"):
+        control.start_controller_drill(state_dir, scheduler=snapshot, now=50.0)
+    with pytest.raises(control.SchedulerAmbiguity, match="live controller-drill jobs"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: snapshot,
+            now=50.0,
+        )
+
+    current = control.load_control(state_dir)
+    assert current["desired_state"] == "paused"
+    assert current["rollout_generation"] == 0
+
+
+@pytest.mark.parametrize(
+    "comment",
+    (
+        control.job_token("dispatcher", 9, "orphan"),
+        control.TOKEN_PREFIX + ";malformed",
+    ),
+)
+def test_resume_rejects_live_production_namespace_before_state_change(
+    tmp_path, comment
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    orphan = control.SchedulerJob(
+        "997", "orphan-production", "RUNNING", comment, "sbatch /orphan.sbatch"
+    )
+    submissions = []
+
+    with pytest.raises(control.SchedulerAmbiguity, match="unclean live production join"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((orphan,), 50.0),
+            submit_runner=lambda argv: submissions.append(list(argv)),
+            now=50.0,
+        )
+
+    current = control.load_control(state_dir)
+    assert current["desired_state"] == "paused"
+    assert current["rollout_generation"] == 0
+    assert submissions == []
+
+
+def test_malformed_live_drill_namespace_fences_start_resume_and_status(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    malformed = control.SchedulerJob(
+        "996",
+        "malformed-drill",
+        "RUNNING",
+        control.DRILL_TOKEN_PREFIX + ";broken",
+        "sbatch /malformed.sbatch",
+    )
+    snapshot = control.SchedulerSnapshot((malformed,), 50.0)
+
+    with pytest.raises(control.SchedulerAmbiguity, match="malformed live"):
+        control.start_controller_drill(state_dir, scheduler=snapshot, now=50.0)
+    with pytest.raises(control.SchedulerAmbiguity, match="live controller-drill jobs"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: snapshot,
+            now=50.0,
+        )
+    status = control.controller_drill_status(state_dir, snapshot=snapshot, now=50.0)
+    assert status["healthy"] is False
+    assert any("malformed live" in error for error in status["errors"])
+
+
+def test_final_resume_commit_rejoins_and_rejects_late_malformed_drill_job(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    jobs = []
+    reads = 0
+    identifiers = iter(("920", "921"))
+
+    def scheduler():
+        nonlocal reads
+        reads += 1
+        visible = list(jobs)
+        if reads >= 4:
+            visible.append(
+                control.SchedulerJob(
+                    "999",
+                    "late-malformed-drill",
+                    "RUNNING",
+                    control.DRILL_TOKEN_PREFIX + ";broken",
+                    "sbatch /late.sbatch",
+                )
+            )
+        return control.SchedulerSnapshot(tuple(visible), 50.0)
+
+    def submit(argv):
+        job_id = next(identifiers)
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
+        jobs.append(control.SchedulerJob(job_id, "controller", "PENDING", token))
+        return subprocess.CompletedProcess(argv, 0, job_id + "\n", "")
+
+    with pytest.raises(control.SchedulerAmbiguity, match="live controller-drill jobs"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=scheduler,
+            submit_runner=submit,
+            now=50.0,
+        )
+
+    current = control.load_control(state_dir)
+    assert reads >= 4
+    assert current["desired_state"] == "resuming"
+    assert current["resume_intent"]["state"] == "submitting_controllers"
+
+
+def test_resuming_retry_rejoins_namespace_before_another_submission(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+
+    with pytest.raises(control.ControlError, match="sbatch rejected"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 50.0),
+            submit_runner=lambda argv: subprocess.CompletedProcess(
+                argv, 1, "", "temporary rejection"
+            ),
+            now=50.0,
+        )
+    assert control.load_control(state_dir)["desired_state"] == "resuming"
+
+    malformed = control.SchedulerJob(
+        "998",
+        "retry-malformed-drill",
+        "RUNNING",
+        control.DRILL_TOKEN_PREFIX + ";broken",
+        "sbatch /retry.sbatch",
+    )
+    submissions = []
+    with pytest.raises(control.SchedulerAmbiguity, match="live controller-drill jobs"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((malformed,), 51.0),
+            submit_runner=lambda argv: submissions.append(list(argv)),
+            now=51.0,
+        )
+    assert submissions == []
+
+
+def test_resume_rejects_live_cell_namespace_until_worker_exit(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    live_cell = control.SchedulerJob(
+        "930_7",
+        "asys-dispatch-schema5-batch",
+        "COMPLETING",
+        control.CELL_INTENT_PREFIX + "batch-seven",
+        "sbatch /cells.sbatch",
+    )
+    submissions = []
+
+    with pytest.raises(control.SchedulerAmbiguity, match="cell jobs have not drained"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((live_cell,), 50.0),
+            submit_runner=lambda argv: submissions.append(list(argv)),
+            now=50.0,
+        )
+
+    assert submissions == []
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+
+
+def test_later_pause_resume_revalidates_static_drill_proof_without_live_baseline(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    running, _jobs = resume_ready(state_dir, now=50.0)
+    first_proof = running["resume_intent"]["controller_drill_marker_sha256"]
+    paused = control.pause_control(
+        state_dir,
+        drain=True,
+        scheduler=control.SchedulerSnapshot((), 60.0),
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        now=60.0,
+    )
+    assert paused["drain_requested"] is True
+    assert paused["drain_intent"]["state"] == "complete"
+    current = control.load_control(state_dir)
+    for role_state in current["controllers"].values():
+        role_state["active"] = None
+        role_state["successor"] = None
+        role_state["submission_intent"] = None
+        role_state["heartbeat"] = None
+    control._save_control(state_dir, current, now=60.0)
+    jobs = []
+    identifiers = iter(("910", "911"))
+
+    def scheduler():
+        return control.SchedulerSnapshot(tuple(jobs), 61.0)
+
+    def submit(argv):
+        job_id = next(identifiers)
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
+        jobs.append(control.SchedulerJob(job_id, "controller", "PENDING", token))
+        return subprocess.CompletedProcess(argv, 0, job_id + "\n", "")
+
+    resumed = control.resume_control(
+        state_dir,
+        scheduler_reader=scheduler,
+        submit_runner=submit,
+        now=61.0,
+    )
+
+    assert resumed["desired_state"] == "running"
+    assert resumed["rollout_generation"] == 2
+    assert resumed["resume_intent"]["controller_drill_marker_sha256"] == first_proof
+
+
+def test_later_pause_resume_rejects_deleted_historical_drill_marker(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    running, _jobs = resume_ready(state_dir, now=50.0)
+    current = control.load_control(state_dir)
+    current["desired_state"] = "paused"
+    current["drain_requested"] = False
+    current["drain_intent"] = None
+    for role_state in current["controllers"].values():
+        role_state["active"] = None
+        role_state["successor"] = None
+        role_state["submission_intent"] = None
+        role_state["heartbeat"] = None
+    control._save_control(state_dir, current, now=60.0)
+    (state_dir / control.DRILL_COMPLETE_FILENAME).unlink()
+
+    with pytest.raises(control.ReadinessError, match="marker is missing"):
+        control.resume_control(state_dir, now=61.0)
+
+    assert running["resume_intent"]["controller_drill_marker_sha256"]
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+
+
+def test_later_pause_resume_rejects_incomplete_drain(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    current = control.load_control(state_dir)
+    current["desired_state"] = "paused"
+    current["drain_requested"] = True
+    current["drain_intent"] = {"state": "signaling"}
+    for role_state in current["controllers"].values():
+        role_state["active"] = None
+        role_state["successor"] = None
+        role_state["submission_intent"] = None
+        role_state["heartbeat"] = None
+    control._save_control(state_dir, current, now=60.0)
+
+    with pytest.raises(control.ReadinessError, match="incomplete pause drain"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 61.0),
+            now=61.0,
+        )
+
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+
+
+def test_crashed_later_resume_rechecks_historical_marker_hash(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    running, _jobs = resume_ready(state_dir, now=50.0)
+    marker_sha = running["resume_intent"]["controller_drill_marker_sha256"]
+    current = control.load_control(state_dir)
+    generation_two_attestation = control.ensure_runtime_integrity_attestation(
+        state_dir, current, generation=2, force_full=True
+    )
+    generation_two_snapshot = control.ensure_snapshot_integrity_attestation(
+        state_dir,
+        current,
+        generation=2,
+        validation_context=control.validate_readiness(
+            current,
+            state_dir=state_dir,
+            verify_files=True,
+            snapshot_full=True,
+        ),
+    )
+    current["desired_state"] = "resuming"
+    current["rollout_generation"] = 2
+    current[control.RUNTIME_ATTESTATION_STATE_KEY] = generation_two_attestation
+    current[control.SNAPSHOT_ATTESTATION_STATE_KEY] = generation_two_snapshot
+    current["drain_requested"] = False
+    current["drain_intent"] = None
+    control._reset_admission_ramp(
+        state_dir,
+        current,
+        reason="synthetic_crashed_resume",
+        now=60.0,
+        ceiling=24,
+        rollout_generation=2,
+        clear_last_observation=True,
+    )
+    current["resume_intent"] = {
+        "resume_id": "crashed-second-resume",
+        "state": "submitting_controllers",
+        "rollout_generation": 2,
+        "created_at": control.utc_timestamp(60.0),
+        "created_timestamp": 60.0,
+        "controller_job_ids": {},
+        "controller_drill_marker_sha256": marker_sha,
+    }
+    for role_state in current["controllers"].values():
+        role_state["active"] = None
+        role_state["successor"] = None
+        role_state["submission_intent"] = None
+        role_state["heartbeat"] = None
+    control._save_control(state_dir, current, now=60.0)
+    (state_dir / control.DRILL_COMPLETE_FILENAME).unlink()
+
+    with pytest.raises(control.ReadinessError, match="marker is missing"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 61.0),
+            now=61.0,
+        )
+
+    assert control.load_control(state_dir)["desired_state"] == "resuming"
+
+
+def test_final_resume_commit_rechecks_marker_hash_under_lock(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    jobs = []
+    identifiers = iter(("940", "941"))
+    submissions = 0
+
+    def scheduler():
+        return control.SchedulerSnapshot(tuple(jobs), 50.0)
+
+    def submit(argv):
+        nonlocal submissions
+        submissions += 1
+        job_id = next(identifiers)
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
+        jobs.append(control.SchedulerJob(job_id, "controller", "PENDING", token))
+        if submissions == 2:
+            marker_path = state_dir / control.DRILL_COMPLETE_FILENAME
+            marker_path.write_text(
+                marker_path.read_text(encoding="utf-8") + " ", encoding="utf-8"
+            )
+        return subprocess.CompletedProcess(argv, 0, job_id + "\n", "")
+
+    with pytest.raises(control.ReadinessError, match="marker drifted"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=scheduler,
+            submit_runner=submit,
+            now=50.0,
+        )
+
+    assert submissions == 2
+    assert control.load_control(state_dir)["desired_state"] == "resuming"
+
+
+def test_resuming_retry_revalidates_marker_bound_drill_state(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    with pytest.raises(control.ControlError, match="sbatch rejected"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 50.0),
+            submit_runner=lambda argv: subprocess.CompletedProcess(
+                argv, 1, "", "temporary rejection"
+            ),
+            now=50.0,
+        )
+
+    drill_path = state_dir / control.DRILL_STATE_FILENAME
+    drill = json.loads(drill_path.read_text(encoding="utf-8"))
+    drill["roles"]["dispatcher"]["recovery"]["recovery_seconds"] += 0.25
+    control._atomic_write_json(drill_path, drill)
+    submissions = []
+
+    with pytest.raises(control.ReadinessError, match="state drifted"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 51.0),
+            submit_runner=lambda argv: submissions.append(list(argv)),
+            now=51.0,
+        )
+    assert submissions == []
+
+
+def test_drill_finish_reconciles_and_cancels_late_afterany_successor(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+    state = control.load_drill_state(state_dir)
+    late_id = state["roles"]["fleet_supervisor"]["successor"]["job_id"]
+    reads = 0
+    cancelled = []
+
+    def scheduler():
+        nonlocal reads
+        reads += 1
+        visible = [job for job in jobs if not (reads == 1 and job.job_id == late_id)]
+        return control.SchedulerSnapshot(tuple(visible), 80.0)
+
+    def cancel(argv):
+        cancelled.append(list(argv))
+        jobs[:] = [job for job in jobs if job.job_id != argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    marker = control.finish_controller_drill(
+        state_dir,
+        scheduler_reader=scheduler,
+        cancel_runner=cancel,
+        timeout_seconds=1.0,
+        poll_seconds=0.0,
+        now=80.0,
+    )
+
+    assert marker["passed"] is True
+    assert ["scancel", late_id] in cancelled
+    assert late_id in control.load_drill_state(state_dir)["cleanup_job_ids"]
+
+
+def test_drill_finish_recovers_sealed_reconciliation_before_completed_state(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+
+    def cancel(argv):
+        jobs[:] = [job for job in jobs if job.job_id != argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    real_save = control._save_drill_state
+    crashed = False
+
+    def crash_before_completed_state(path, state, *, now):
+        nonlocal crashed
+        if state.get("phase") == "completed" and not crashed:
+            crashed = True
+            raise RuntimeError("simulated death after reconciliation seal")
+        return real_save(path, state, now=now)
+
+    monkeypatch.setattr(control, "_save_drill_state", crash_before_completed_state)
+    with pytest.raises(RuntimeError, match="after reconciliation seal"):
+        control.finish_controller_drill(
+            state_dir,
+            scheduler_reader=lambda: snapshot(80.0),
+            cancel_runner=cancel,
+            timeout_seconds=1.0,
+            poll_seconds=0.0,
+            now=80.0,
+        )
+    sealed = control._drill_reconciliation_path(
+        state_dir, control.load_drill_state(state_dir)["drill_id"]
+    )
+    assert sealed.is_file()
+    assert control.load_drill_state(state_dir)["phase"] == "stopping"
+    monkeypatch.setattr(control, "_save_drill_state", real_save)
+
+    marker = control.finish_controller_drill(
+        state_dir,
+        scheduler_reader=lambda: snapshot(81.0),
+        cancel_runner=cancel,
+        timeout_seconds=1.0,
+        poll_seconds=0.0,
+        now=81.0,
+    )
+    assert marker["passed"] is True
+    recovered = control.load_drill_state(state_dir)
+    completed = [
+        event for event in recovered["transition_history"] if event["event"] == "completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0]["timestamp"] == recovered["completed_timestamp"]
+
+
+def test_drill_finish_recovers_completed_state_before_marker(tmp_path, monkeypatch):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+
+    def cancel(argv):
+        jobs[:] = [job for job in jobs if job.job_id != argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    real_write = control._atomic_write_json
+    crashed = False
+
+    def crash_before_marker(path, payload):
+        nonlocal crashed
+        if Path(path).name == control.DRILL_COMPLETE_FILENAME and not crashed:
+            crashed = True
+            raise RuntimeError("simulated death before marker")
+        return real_write(path, payload)
+
+    monkeypatch.setattr(control, "_atomic_write_json", crash_before_marker)
+    with pytest.raises(RuntimeError, match="before marker"):
+        control.finish_controller_drill(
+            state_dir,
+            scheduler_reader=lambda: snapshot(80.0),
+            cancel_runner=cancel,
+            timeout_seconds=1.0,
+            poll_seconds=0.0,
+            now=80.0,
+        )
+    assert control.load_drill_state(state_dir)["phase"] == "completed"
+    assert not (state_dir / control.DRILL_COMPLETE_FILENAME).exists()
+    monkeypatch.setattr(control, "_atomic_write_json", real_write)
+
+    marker = control.finish_controller_drill(
+        state_dir,
+        scheduler_reader=lambda: snapshot(81.0),
+        cancel_runner=cancel,
+        timeout_seconds=1.0,
+        poll_seconds=0.0,
+        now=81.0,
+    )
+    assert marker["passed"] is True
+
+
+def test_drill_finish_waits_for_inflight_sbatch_before_stopping_and_sealing(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+    with control.drill_lock(state_dir):
+        state = control.load_drill_state(state_dir)
+        superseded = state["roles"]["dispatcher"]["successor"]
+        jobs[:] = [job for job in jobs if job.job_id != superseded["job_id"]]
+        state["roles"]["dispatcher"]["successor"] = None
+        control._save_drill_state(state_dir, state, now=75.0)
+
+    sbatch_entered = threading.Event()
+    release_sbatch = threading.Event()
+    submit_errors = []
+    finish_errors = []
+    finish_result = []
+
+    def blocked_submit(argv):
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
+        sbatch_entered.set()
+        assert release_sbatch.wait(timeout=5.0)
+        jobs.append(
+            control.SchedulerJob(
+                "990",
+                "drill",
+                "PENDING",
+                token,
+                f"sbatch {argv[-1]}",
+                dependency=next(
+                    arg.split("=", 1)[1]
+                    for arg in argv
+                    if arg.startswith("--dependency=")
+                ),
+            )
+        )
+        return subprocess.CompletedProcess(argv, 0, "990\n", "")
+
+    def run_submit():
+        try:
+            active = control.load_drill_state(state_dir)["roles"]["dispatcher"][
+                "active"
+            ]
+            control.submit_drill_intent(
+                state_dir,
+                role="dispatcher",
+                target="successor",
+                dependency_job_id=active["job_id"],
+                scheduler=snapshot(76.0),
+                submit_runner=blocked_submit,
+                now=76.0,
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            submit_errors.append(exc)
+
+    def cancel(argv):
+        jobs[:] = [job for job in jobs if job.job_id != argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def run_finish():
+        try:
+            finish_result.append(
+                control.finish_controller_drill(
+                    state_dir,
+                    scheduler_reader=lambda: snapshot(80.0),
+                    cancel_runner=cancel,
+                    timeout_seconds=2.0,
+                    poll_seconds=0.0,
+                    now=80.0,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            finish_errors.append(exc)
+
+    submitting = threading.Thread(target=run_submit)
+    finishing = threading.Thread(target=run_finish)
+    submitting.start()
+    assert sbatch_entered.wait(timeout=5.0)
+    finishing.start()
+    time.sleep(0.05)
+    assert control.load_drill_state(state_dir)["phase"] == "running"
+    assert not (state_dir / control.DRILL_COMPLETE_FILENAME).exists()
+    release_sbatch.set()
+    submitting.join(timeout=5.0)
+    finishing.join(timeout=5.0)
+
+    assert not submitting.is_alive()
+    assert not finishing.is_alive()
+    assert submit_errors == []
+    assert finish_errors == []
+    assert finish_result[0]["passed"] is True
+    assert "990" in control.load_drill_state(state_dir)["cleanup_job_ids"]
+
+
+def test_drill_finish_rejects_foreign_live_drill_namespace(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+    foreign_token = control.drill_job_token(
+        "foreign-drill", "dispatcher", 1, "foreign-intent"
+    )
+    jobs.append(
+        control.SchedulerJob(
+            "991", "foreign", "PENDING", foreign_token, "sbatch /foreign.sbatch"
+        )
+    )
+
+    with pytest.raises(control.SchedulerAmbiguity, match="foreign controller-drill"):
+        control.finish_controller_drill(
+            state_dir,
+            scheduler_reader=lambda: snapshot(80.0),
+            cancel_runner=lambda _argv: subprocess.CompletedProcess([], 0, "", ""),
+            timeout_seconds=1.0,
+            poll_seconds=0.0,
+            now=80.0,
+        )
+    assert not (state_dir / control.DRILL_COMPLETE_FILENAME).exists()
+
+
+def test_completed_drill_marker_rejects_journal_suffix_not_in_state(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    with (state_dir / control.DRILL_JOURNAL_FILENAME).open(
+        "a", encoding="utf-8"
+    ) as handle:
+        handle.write(json.dumps({"unexpected": "suffix"}) + "\n")
+
+    with pytest.raises(control.ReadinessError, match="exactly match its journal"):
+        control.validate_controller_drill_marker(
+            state_dir,
+            control.load_control(state_dir),
+        )
+
+
+def test_completed_drill_marker_exactly_binds_state_recoveries(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    marker_path = state_dir / control.DRILL_COMPLETE_FILENAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["roles"]["dispatcher"]["successor_job_id"] = "999"
+    control._atomic_write_json(marker_path, marker)
+
+    with pytest.raises(control.ReadinessError, match="does not exactly match state"):
+        control.validate_controller_drill_marker(
+            state_dir,
+            control.load_control(state_dir),
+        )
+
+
+def test_drill_marker_keeps_sealed_reconciliation_across_new_clean_reconcile(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    marker = complete_drill_marker(state_dir)
+    sealed_path = Path(marker["final_reconciliation_path"])
+    sealed_bytes = sealed_path.read_bytes()
+
+    assert reconcile_clean(state_dir, now=55.0)["passed"] is True
+    assert (
+        _sha(state_dir / control.RECONCILIATION_FILENAME)
+        != marker["final_reconciliation_sha256"]
+    )
+    assert sealed_path.read_bytes() == sealed_bytes
+    assert sealed_path.stat().st_mode & 0o222 == 0
+    assert (
+        control.validate_controller_drill_marker(
+            state_dir,
+            control.load_control(state_dir),
+        )
+        == marker
+    )
+
+
+def test_async_snapshot_refresh_heartbeats_while_cross_node_scan_blocks(
+    tmp_path, monkeypatch
+):
+    started = threading.Event()
+    release = threading.Event()
+    refresh_calls = []
+    heartbeats = []
+
+    def slow_refresh(state_dir, current, *, now=None):
+        refresh_calls.append((state_dir, current, now))
+        started.set()
+        assert release.wait(timeout=2.0)
+        return {"cached": False, "record": {"sequence": 2}}
+
+    monkeypatch.setattr(control, "refresh_snapshot_integrity_lease", slow_refresh)
+    monkeypatch.setattr(
+        control,
+        "heartbeat_controller",
+        lambda state_dir, **kwargs: heartbeats.append((state_dir, kwargs)) or kwargs,
+    )
+    task = control._start_snapshot_lease_refresh(
+        tmp_path, {"rollout_generation": 7}
+    )
+    assert started.wait(timeout=1.0)
+    timer = threading.Timer(0.05, release.set)
+    timer.start()
+    try:
+        result = control._await_snapshot_lease_refresh_with_heartbeats(
+            task,
+            state_dir=tmp_path,
+            role="dispatcher",
+            generation=7,
+            intent_token="intent",
+            job_id="700",
+            heartbeat_interval=0.01,
+        )
+    finally:
+        release.set()
+        timer.cancel()
+        timer.join(timeout=1.0)
+        task.thread.join(timeout=1.0)
+
+    assert result == {"cached": False, "record": {"sequence": 2}}
+    assert len(refresh_calls) == 1
+    assert refresh_calls[0][2] is None
+    assert len(heartbeats) >= 3
+    assert all(item[1]["job_id"] == "700" for item in heartbeats)
+
+
+def test_async_snapshot_refresh_surfaces_worker_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def failed_refresh(*_args, **_kwargs):
+        calls.append("refresh")
+        raise control.ReadinessError("metadata scan failed")
+
+    monkeypatch.setattr(control, "refresh_snapshot_integrity_lease", failed_refresh)
+    monkeypatch.setattr(
+        control,
+        "heartbeat_controller",
+        lambda *_args, **_kwargs: calls.append("heartbeat"),
+    )
+    task = control._start_snapshot_lease_refresh(
+        tmp_path, {"rollout_generation": 8}
+    )
+    with pytest.raises(control.ReadinessError, match="metadata scan failed"):
+        control._await_snapshot_lease_refresh_with_heartbeats(
+            task,
+            state_dir=tmp_path,
+            role="fleet_supervisor",
+            generation=8,
+            intent_token="intent",
+            job_id="701",
+            heartbeat_interval=0.01,
+        )
+    task.thread.join(timeout=1.0)
+    assert calls.count("refresh") == 1
+    assert calls.count("heartbeat") >= 1
+
+
+def test_async_runtime_refresh_heartbeats_while_metadata_scan_blocks(
+    tmp_path, monkeypatch
+):
+    started = threading.Event()
+    release = threading.Event()
+    refresh_calls = []
+    heartbeats = []
+
+    def slow_refresh(state_dir, current, *, now=None):
+        refresh_calls.append((state_dir, current, now))
+        started.set()
+        assert release.wait(timeout=2.0)
+        return {"cached": False, "record": {"sequence": 3}}
+
+    monkeypatch.setattr(control, "refresh_runtime_integrity_lease", slow_refresh)
+    monkeypatch.setattr(
+        control,
+        "heartbeat_controller",
+        lambda state_dir, **kwargs: heartbeats.append((state_dir, kwargs)) or kwargs,
+    )
+    task = control._start_runtime_lease_refresh(
+        tmp_path, {"rollout_generation": 9}
+    )
+    assert started.wait(timeout=1.0)
+    timer = threading.Timer(0.05, release.set)
+    timer.start()
+    try:
+        result = control._await_runtime_lease_refresh_with_heartbeats(
+            task,
+            state_dir=tmp_path,
+            role="dispatcher",
+            generation=9,
+            intent_token="intent",
+            job_id="702",
+            heartbeat_interval=0.01,
+        )
+    finally:
+        release.set()
+        timer.cancel()
+        timer.join(timeout=1.0)
+        task.thread.join(timeout=1.0)
+
+    assert result == {"cached": False, "record": {"sequence": 3}}
+    # Many heartbeat timeouts must never create a second local renewal.
+    assert len(refresh_calls) == 1
+    assert refresh_calls[0][2] is None
+    assert len(heartbeats) >= 3
+    assert all(item[1]["job_id"] == "702" for item in heartbeats)
+
+
+def test_async_runtime_refresh_surfaces_worker_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def failed_refresh(*_args, **_kwargs):
+        calls.append("refresh")
+        raise control.ImmutablePinError("runtime metadata scan failed")
+
+    monkeypatch.setattr(control, "refresh_runtime_integrity_lease", failed_refresh)
+    monkeypatch.setattr(
+        control,
+        "heartbeat_controller",
+        lambda *_args, **_kwargs: calls.append("heartbeat"),
+    )
+    task = control._start_runtime_lease_refresh(
+        tmp_path, {"rollout_generation": 10}
+    )
+    with pytest.raises(control.ImmutablePinError, match="runtime metadata scan failed"):
+        control._await_runtime_lease_refresh_with_heartbeats(
+            task,
+            state_dir=tmp_path,
+            role="fleet_supervisor",
+            generation=10,
+            intent_token="intent",
+            job_id="703",
+            heartbeat_interval=0.01,
+        )
+    task.thread.join(timeout=1.0)
+    assert calls.count("refresh") == 1
+    assert calls.count("heartbeat") >= 1
+
+
+def test_drill_finish_rejects_any_production_run_mutation_before_marker(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir)
+    recover_drill_role(state_dir, jobs, snapshot, submit, role="dispatcher", now=60.0)
+    recover_drill_role(
+        state_dir, jobs, snapshot, submit, role="fleet_supervisor", now=70.0
+    )
+    run_root = Path(control.load_control(state_dir)["immutable"]["runs"][0]["run_root"])
+    (run_root / "unexpected-result.jsonl").write_text("{}\n", encoding="utf-8")
+
+    def cancel(argv):
+        jobs[:] = [job for job in jobs if job.job_id != argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(control.ControlError, match="changed production"):
+        control.finish_controller_drill(
+            state_dir,
+            scheduler_reader=lambda: snapshot(80.0),
+            cancel_runner=cancel,
+            timeout_seconds=1.0,
+            poll_seconds=0.0,
+            now=80.0,
+        )
+    assert not (state_dir / control.DRILL_COMPLETE_FILENAME).exists()
+
+
+def test_drill_submission_crash_adopts_unique_scheduler_token(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs = []
+
+    def crash_after_accept(argv):
+        token = next(
+            arg.split("=", 1)[1] for arg in argv if arg.startswith("--comment=")
+        )
+        jobs.append(
+            control.SchedulerJob("880", "drill", "PENDING", token, f"sbatch {argv[-1]}")
+        )
+        raise RuntimeError("simulated caller death after scheduler acceptance")
+
+    with pytest.raises(RuntimeError, match="caller death"):
+        control.start_controller_drill(
+            state_dir,
+            scheduler=control.SchedulerSnapshot((), 50.0),
+            submit_runner=crash_after_accept,
+            now=50.0,
+        )
+    adopted = control.submit_drill_intent(
+        state_dir,
+        role="dispatcher",
+        target="active",
+        dependency_job_id=None,
+        scheduler=control.SchedulerSnapshot(tuple(jobs), 51.0),
+        submit_runner=lambda _argv: pytest.fail(
+            "unique accepted intent must be adopted"
+        ),
+        now=51.0,
+    )
+    assert adopted["job_id"] == "880"
+    assert adopted["adopted_from_scheduler"] is True
+
+
+def test_resume_rejects_drill_marker_or_state_drift(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    marker_path = state_dir / control.DRILL_COMPLETE_FILENAME
+    marker = json.loads(marker_path.read_text())
+    marker["roles"]["dispatcher"]["recovery_seconds"] = 901.0
+    marker_path.write_text(json.dumps(marker) + "\n", encoding="utf-8")
+    with pytest.raises(control.ReadinessError, match="recovery is invalid"):
+        control.resume_control(state_dir, now=50.0)

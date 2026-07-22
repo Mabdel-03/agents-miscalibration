@@ -57,6 +57,31 @@ COMPLETE_MARKER_FILENAME = COMPLETE_FILENAME
 SNAPSHOT_MANIFEST_FILENAME = CATALOG_FILENAME
 COPY_INVENTORY_FILENAME = SNAPSHOT_INVENTORY_FILENAME
 ATTESTATION_SCHEMA_VERSION = 1
+_COMPLETION_MARKER_KEYS = frozenset(
+    {
+        "schema_version",
+        "snapshot_id",
+        "completed_at",
+        "file_count",
+        "total_bytes",
+        "snapshot_inventory_sha256",
+        "verified",
+        "read_only",
+    }
+)
+_ATTESTATION_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "passed",
+        "snapshot_root",
+        "snapshot_id",
+        "file_count",
+        "total_bytes",
+        "control_artifacts",
+        "attested_at",
+    }
+)
 
 
 class SnapshotError(RuntimeError):
@@ -80,7 +105,24 @@ SourceSpec = Source
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # Readiness validation deliberately accepts one canonical representation.  Avoid
+    # fractional seconds and ``+00:00`` aliases so sealed evidence is byte-stable and
+    # interoperable with the rest of the schema-5 control plane.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc_timestamp(value: object, *, context: str) -> datetime:
+    if not isinstance(value, str):
+        raise SnapshotError(f"{context} must be a UTC timestamp string")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError as exc:
+        raise SnapshotError(
+            f"{context} must use canonical YYYY-MM-DDTHH:MM:SSZ form"
+        ) from exc
+    return parsed
 
 
 def _sha256(path: Path) -> str:
@@ -574,24 +616,80 @@ def _validate_destination_shape(
 
 
 def _load_inventory(path: Path) -> tuple[FileRecord, ...]:
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SnapshotError(f"cannot read inventory {path}: {exc}") from exc
     records: list[FileRecord] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    for line_number, line in enumerate(text.splitlines(), 1):
         digest, separator, logical = line.partition("  ")
         if not separator or not re.fullmatch(r"[0-9a-f]{64}", digest) or not logical:
             raise SnapshotError(f"invalid inventory line {path}:{line_number}")
-        candidate = path.parent / logical
+        relative = Path(logical)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != logical
+            or logical in _CONTROL_FILENAMES
+        ):
+            raise SnapshotError(
+                f"unsafe or non-canonical inventory path {path}:{line_number}"
+            )
+        candidate = path.parent / relative
         if candidate.is_symlink() or not candidate.is_file():
             raise SnapshotError(f"inventory file is missing or unsafe: {candidate}")
-        records.append(FileRecord(logical, digest, candidate.stat().st_size))
-    return tuple(records)
+        info = candidate.stat()
+        if info.st_nlink != 1:
+            raise SnapshotError(f"inventory file is hardlinked: {candidate}")
+        records.append(FileRecord(logical, digest, info.st_size))
+    result = tuple(records)
+    logical_paths = tuple(record.logical_path for record in result)
+    if result != tuple(sorted(result)) or len(set(logical_paths)) != len(result):
+        raise SnapshotError("snapshot inventory is unsorted or contains duplicates")
+    # This also rejects missing/final extra newlines, alternate separators, and other
+    # non-canonical row encodings.  The source and snapshot inventories are evidence,
+    # not a permissive interchange format.
+    if raw != _inventory_bytes(result):
+        raise SnapshotError("snapshot inventory rows are not canonically encoded")
+    return result
 
 
-def verify_snapshot(snapshot_root: Path) -> dict[str, object]:
+def _require_read_only_regular(path: Path, *, context: str) -> None:
+    try:
+        info = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SnapshotError(f"{context} is missing or unreadable: {path}") from exc
+    if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+        raise SnapshotError(f"{context} is missing or unsafe: {path}")
+    if info.st_nlink != 1:
+        raise SnapshotError(f"{context} is hardlinked: {path}")
+    if stat.S_IMODE(info.st_mode) & 0o222:
+        raise SnapshotError(f"{context} is writable: {path}")
+
+
+def _load_json_object(path: Path, *, context: str) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SnapshotError(f"cannot parse {context}: {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise SnapshotError(f"{context} must be a JSON object: {path}")
+    return value
+
+
+def _verify_snapshot(
+    snapshot_root: Path, *, _allow_writable_root: bool = False
+) -> dict[str, object]:
+    if snapshot_root.is_symlink() or not snapshot_root.is_dir():
+        raise SnapshotError(f"snapshot root is missing or unsafe: {snapshot_root}")
     complete_path = snapshot_root / COMPLETE_FILENAME
     if complete_path.is_symlink() or not complete_path.is_file():
         raise SnapshotError(f"snapshot is not sealed: {snapshot_root}")
+    for filename in sorted(_CONTROL_FILENAMES):
+        _require_read_only_regular(
+            snapshot_root / filename, context="sealed snapshot control artifact"
+        )
     source_inventory = snapshot_root / SOURCE_INVENTORY_FILENAME
     copy_inventory = snapshot_root / SNAPSHOT_INVENTORY_FILENAME
     if source_inventory.read_bytes() != copy_inventory.read_bytes():
@@ -599,20 +697,27 @@ def verify_snapshot(snapshot_root: Path) -> dict[str, object]:
     records = _load_inventory(copy_inventory)
     directory_path = snapshot_root / DIRECTORY_INVENTORY_FILENAME
     try:
-        directories = tuple(
-            line
-            for line in directory_path.read_text(encoding="utf-8").splitlines()
-            if line
-        )
+        directory_raw = directory_path.read_bytes()
+        directories = tuple(directory_raw.decode("utf-8").splitlines())
     except (OSError, UnicodeError) as exc:
         raise SnapshotError(f"cannot read directory inventory: {exc}") from exc
-    if tuple(sorted(directories)) != directories or len(set(directories)) != len(
-        directories
+    if (
+        tuple(sorted(directories)) != directories
+        or len(set(directories)) != len(directories)
+        or directory_raw != _directory_bytes(directories)
     ):
         raise SnapshotError("directory inventory is unsorted or contains duplicates")
     for logical in directories:
-        path = snapshot_root / logical
-        if path.is_symlink() or not path.is_dir():
+        relative = Path(logical)
+        path = snapshot_root / relative
+        if (
+            not logical
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != logical
+            or path.is_symlink()
+            or not path.is_dir()
+        ):
             raise SnapshotError(f"inventory directory is missing or unsafe: {logical}")
     _validate_destination_shape(snapshot_root, records, directories)
     for index, record in enumerate(records, 1):
@@ -623,31 +728,88 @@ def verify_snapshot(snapshot_root: Path) -> dict[str, object]:
             raise SnapshotError(f"sealed file is writable: {record.logical_path}")
         if index % 5000 == 0:
             print(f"verified {index:,}/{len(records):,} files", flush=True)
-    catalog = json.loads((snapshot_root / CATALOG_FILENAME).read_text(encoding="utf-8"))
-    if catalog.get("file_count") != len(records):
+    catalog = _load_json_object(
+        snapshot_root / CATALOG_FILENAME, context="snapshot catalog"
+    )
+    if (
+        not isinstance(catalog.get("file_count"), int)
+        or isinstance(catalog.get("file_count"), bool)
+        or catalog.get("file_count") != len(records)
+    ):
         raise SnapshotError("catalog file count disagrees with inventory")
-    if catalog.get("total_bytes") != sum(record.size for record in records):
+    total_bytes = sum(record.size for record in records)
+    if (
+        not isinstance(catalog.get("total_bytes"), int)
+        or isinstance(catalog.get("total_bytes"), bool)
+        or catalog.get("total_bytes") != total_bytes
+    ):
         raise SnapshotError("catalog byte count disagrees with inventory")
-    marker = json.loads(complete_path.read_text(encoding="utf-8"))
+    marker = _load_json_object(complete_path, context="snapshot completion marker")
+    if set(marker) != _COMPLETION_MARKER_KEYS:
+        raise SnapshotError(
+            "completion marker schema mismatch: "
+            f"expected={sorted(_COMPLETION_MARKER_KEYS)}, observed={sorted(marker)}"
+        )
+    if (
+        not isinstance(marker.get("schema_version"), int)
+        or isinstance(marker.get("schema_version"), bool)
+        or marker.get("schema_version") != 1
+    ):
+        raise SnapshotError("completion marker schema version is unsupported")
+    snapshot_id = marker.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        raise SnapshotError("completion marker snapshot id is invalid")
+    _parse_utc_timestamp(marker.get("completed_at"), context="completed_at")
     if marker.get("snapshot_id") != catalog.get("snapshot_id"):
         raise SnapshotError("completion marker snapshot id disagrees with catalog")
     expected = hashlib.sha256(copy_inventory.read_bytes()).hexdigest()
-    if marker.get("snapshot_inventory_sha256") != expected:
+    if (
+        not isinstance(marker.get("file_count"), int)
+        or isinstance(marker.get("file_count"), bool)
+        or marker.get("file_count") != len(records)
+    ):
+        raise SnapshotError("completion marker file count disagrees with inventory")
+    if (
+        not isinstance(marker.get("total_bytes"), int)
+        or isinstance(marker.get("total_bytes"), bool)
+        or marker.get("total_bytes") != total_bytes
+    ):
+        raise SnapshotError("completion marker byte count disagrees with inventory")
+    if (
+        not isinstance(marker.get("snapshot_inventory_sha256"), str)
+        or not re.fullmatch(
+            r"[0-9a-f]{64}", str(marker.get("snapshot_inventory_sha256"))
+        )
+        or marker.get("snapshot_inventory_sha256") != expected
+    ):
         raise SnapshotError("completion marker inventory hash mismatch")
+    if marker.get("verified") is not True:
+        raise SnapshotError("completion marker does not assert verified=true")
+    if marker.get("read_only") is not True:
+        raise SnapshotError("completion marker does not assert read_only=true")
     for logical in directories:
         if stat.S_IMODE((snapshot_root / logical).stat().st_mode) & 0o222:
             raise SnapshotError(f"sealed directory is writable: {logical}")
-    if stat.S_IMODE(snapshot_root.stat().st_mode) & 0o222:
+    if (
+        stat.S_IMODE(snapshot_root.stat().st_mode) & 0o222
+        and not _allow_writable_root
+    ):
         raise SnapshotError("sealed snapshot root is writable")
     return {
         "status": "already_complete",
         "snapshot_root": str(snapshot_root),
-        "snapshot_id": marker.get("snapshot_id"),
+        "snapshot_id": snapshot_id,
         "file_count": len(records),
-        "total_bytes": sum(record.size for record in records),
+        "total_bytes": total_bytes,
         "snapshot_inventory_sha256": expected,
         "verified_at": _utc_now(),
     }
+
+
+def verify_snapshot(snapshot_root: Path) -> dict[str, object]:
+    """Strictly verify one fully sealed snapshot."""
+
+    return _verify_snapshot(snapshot_root, _allow_writable_root=False)
 
 
 def write_snapshot_attestation(
@@ -673,7 +835,7 @@ def write_snapshot_attestation(
             "snapshot attestation must be stored outside the sealed snapshot"
         )
     verified = verify_snapshot(snapshot_root)
-    controls = {}
+    controls: dict[str, dict[str, object]] = {}
     for filename in (
         COMPLETE_FILENAME,
         CATALOG_FILENAME,
@@ -683,7 +845,7 @@ def write_snapshot_attestation(
     ):
         path = snapshot_root / filename
         controls[filename] = {"sha256": _sha256(path), "size": path.stat().st_size}
-    payload: dict[str, object] = {
+    fixed_payload: dict[str, object] = {
         "schema_version": ATTESTATION_SCHEMA_VERSION,
         "kind": "recovery_snapshot_external_attestation",
         "passed": True,
@@ -692,9 +854,75 @@ def write_snapshot_attestation(
         "file_count": verified["file_count"],
         "total_bytes": verified["total_bytes"],
         "control_artifacts": controls,
-        "attested_at": _utc_now(),
     }
-    _atomic_json(attestation_path, payload, mode=0o444)
+
+    def validate_existing() -> dict[str, object]:
+        _require_read_only_regular(
+            attestation_path, context="existing snapshot attestation"
+        )
+        try:
+            raw = attestation_path.read_bytes()
+        except OSError as exc:
+            raise SnapshotError(
+                f"cannot read existing snapshot attestation: {attestation_path}"
+            ) from exc
+        payload = _load_json_object(
+            attestation_path, context="existing snapshot attestation"
+        )
+        if set(payload) != _ATTESTATION_KEYS:
+            raise SnapshotError("existing snapshot attestation schema mismatch")
+        attested_at = payload.get("attested_at")
+        attested_timestamp = _parse_utc_timestamp(
+            attested_at, context="attestation attested_at"
+        )
+        marker = _load_json_object(
+            snapshot_root / COMPLETE_FILENAME, context="snapshot completion marker"
+        )
+        completed_timestamp = _parse_utc_timestamp(
+            marker.get("completed_at"), context="completed_at"
+        )
+        if attested_timestamp < completed_timestamp:
+            raise SnapshotError("snapshot attestation predates snapshot completion")
+        expected_payload = fixed_payload | {"attested_at": attested_at}
+        expected_bytes = (
+            json.dumps(expected_payload, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if raw != expected_bytes:
+            raise SnapshotError(
+                "existing snapshot attestation differs from the exact sealed snapshot"
+            )
+        return payload
+
+    if os.path.lexists(attestation_path):
+        payload = validate_existing()
+    else:
+        payload = fixed_payload | {"attested_at": _utc_now()}
+        encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        attestation_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{attestation_path.name}.", dir=attestation_path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o444)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                # Hard-link publication is atomic and, unlike replace, never clobbers
+                # an attestation that another process published concurrently.
+                os.link(temporary, attestation_path)
+                _fsync_directory(attestation_path.parent)
+            except FileExistsError:
+                pass
+        finally:
+            try:
+                temporary.unlink()
+                _fsync_directory(attestation_path.parent)
+            except FileNotFoundError:
+                pass
+        payload = validate_existing()
     return payload | {
         "attestation_path": str(attestation_path),
         "attestation_sha256": _sha256(attestation_path),
@@ -739,7 +967,22 @@ def _create_snapshot_unlocked(
     if snapshot_root.is_symlink():
         raise SnapshotError(f"snapshot root may not be a symlink: {snapshot_root}")
     complete = snapshot_root / COMPLETE_FILENAME
-    if complete.exists():
+    if complete.exists() or complete.is_symlink():
+        # The marker must be published before the root directory can lose its write
+        # bit.  A process can therefore stop in the single crash window between those
+        # operations.  On an applying retry, validate *every* marker/content/directory
+        # invariant while relaxing only the root mode, finish that one pending chmod,
+        # and then run the ordinary strict verifier.  Invalid marker claims or any
+        # other drift still fail before a permission is changed.
+        root_mode = (
+            stat.S_IMODE(snapshot_root.stat().st_mode)
+            if snapshot_root.is_dir() and not snapshot_root.is_symlink()
+            else 0
+        )
+        if apply and root_mode & 0o222:
+            _verify_snapshot(snapshot_root, _allow_writable_root=True)
+            snapshot_root.chmod(root_mode & ~0o222)
+            _fsync_directory(snapshot_root.parent)
         return verify_snapshot(snapshot_root)
     if not apply:
         expected_records, expected_directories = _inventory_sources(sources)

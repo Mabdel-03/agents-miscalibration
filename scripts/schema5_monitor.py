@@ -10,6 +10,8 @@ separate denominators.
 from __future__ import annotations
 
 import argparse
+import copy
+import fcntl
 import hashlib
 import json
 import math
@@ -19,6 +21,7 @@ import sys
 import tempfile
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -46,6 +49,7 @@ from agents_scaling.experiment.result_schema import (  # noqa: E402
     TERMINATION_PROTOCOL_CENSORED,
 )
 from agents_scaling.serving.model_contracts import load_model_contracts  # noqa: E402
+from agents_scaling.serving import fleet_transactions  # noqa: E402
 from slurm import schema5_control as control  # noqa: E402
 from scripts import monitor_run  # noqa: E402
 
@@ -58,6 +62,7 @@ HEALTH_ALERT_KEYS = frozenset(
         "monitor:scheduler",
         "monitor:controllers",
         "monitor:fleet",
+        "monitor:fleet-hung",
         "monitor:qos-memory",
         "monitor:disk",
         "monitor:starvation",
@@ -80,6 +85,21 @@ SEMANTIC_ALERT_KEYS = HEALTH_ALERT_KEYS | frozenset(
 
 class MonitorError(RuntimeError):
     """A report cannot be made truthful from the frozen production state."""
+
+
+@contextmanager
+def _monitor_persist_lock(state_dir: Path):
+    """Serialize independently scheduled health/semantic/daily commit boundaries."""
+
+    root = state_dir / MONITORING_DIRNAME
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / ".persist.lock"
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
@@ -146,6 +166,20 @@ def load_monitor_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
         raise MonitorError("monitoring throughput floor must be 161,595 QIDs/day")
     if throughput.get("target_completion_days") != 28:
         raise MonitorError("monitoring completion target must be 28 days")
+    material_generation = throughput.get("material_capacity_layout_generation")
+    if (
+        not isinstance(material_generation, int)
+        or isinstance(material_generation, bool)
+        or material_generation < 1
+    ):
+        raise MonitorError(
+            "monitoring material capacity/layout generation must be a positive integer"
+        )
+    fleet_replicas = value.get("fleet_replicas")
+    if fleet_replicas != control.EXPECTED_FLEET_PROFILES:
+        raise MonitorError(
+            "monitoring fleet replica layout must exactly match the canonical fleet"
+        )
     return value
 
 
@@ -578,6 +612,102 @@ def _ledger_health(state_dir: Path) -> dict[str, Any]:
     }
 
 
+def _material_fleet_generation(
+    *, fleet_contract_sha256: str, material_capacity_layout_generation: int
+) -> str:
+    """Derive the throughput epoch identity from material, durable fleet policy.
+
+    Endpoint registrations deliberately do not participate.  Their allocation IDs and
+    process timestamps must continue to change whenever a 24-hour server job is
+    replaced, and remain available separately as ``server_pool_generations`` for
+    request/retry provenance.  Only an immutable fleet-contract change or an explicit
+    capacity/layout generation bump changes this identity.
+    """
+
+    if (
+        not isinstance(fleet_contract_sha256, str)
+        or len(fleet_contract_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in fleet_contract_sha256)
+    ):
+        raise MonitorError("immutable fleet-contract SHA-256 is invalid")
+    if (
+        not isinstance(material_capacity_layout_generation, int)
+        or isinstance(material_capacity_layout_generation, bool)
+        or material_capacity_layout_generation < 1
+    ):
+        raise MonitorError("material capacity/layout generation must be a positive integer")
+    identity = {
+        "protocol": "schema5-material-fleet-generation-v1",
+        "fleet_contract_sha256": fleet_contract_sha256,
+        "material_capacity_layout_generation": material_capacity_layout_generation,
+    }
+    return "schema5-material-fleet-v1:" + _sha256_value(identity)
+
+
+def _verified_material_fleet_identity(
+    state: Mapping[str, Any], config: Mapping[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Verify the pinned contract and return its stable material epoch identity."""
+
+    immutable = state.get("immutable")
+    if not isinstance(immutable, Mapping):
+        raise MonitorError("control immutable fleet pins are unavailable")
+    expected_sha256 = immutable.get("fleet_contract_sha256")
+    path_value = immutable.get("fleet_contract_path")
+    if not isinstance(path_value, str) or not path_value:
+        raise MonitorError("control immutable fleet-contract path is invalid")
+    fleet_path = Path(path_value).expanduser().resolve()
+    try:
+        fleet_bytes = fleet_path.read_bytes()
+        observed_sha256 = hashlib.sha256(fleet_bytes).hexdigest()
+        fleet_contract = json.loads(fleet_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MonitorError(f"cannot verify immutable fleet contract {fleet_path}: {exc}") from exc
+    if observed_sha256 != expected_sha256:
+        raise MonitorError(
+            "immutable fleet-contract hash drift: "
+            f"expected {expected_sha256!r}, observed {observed_sha256!r}"
+        )
+    if not isinstance(fleet_contract, dict):
+        raise MonitorError("immutable fleet contract must be a JSON object")
+    profiles = fleet_contract.get("profiles")
+    if not isinstance(profiles, list) or not all(
+        isinstance(row, dict) for row in profiles
+    ):
+        raise MonitorError("immutable fleet contract profiles are invalid")
+    observed_layout: dict[str, int] = {}
+    for profile in profiles:
+        name = profile.get("serving_profile")
+        replicas = profile.get("replicas")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in observed_layout
+            or not isinstance(replicas, list)
+        ):
+            raise MonitorError("immutable fleet contract has an invalid/duplicate profile")
+        observed_layout[name] = len(replicas)
+    expected_layout = config.get("fleet_replicas")
+    if observed_layout != expected_layout:
+        raise MonitorError(
+            "immutable fleet contract and monitoring capacity layout differ: "
+            f"contract={observed_layout}, monitoring={expected_layout}"
+        )
+    material_generation = config.get("throughput", {}).get(
+        "material_capacity_layout_generation"
+    )
+    generation = _material_fleet_generation(
+        fleet_contract_sha256=str(expected_sha256),
+        material_capacity_layout_generation=material_generation,
+    )
+    return generation, {
+        "fleet_contract_path": str(fleet_path),
+        "fleet_contract_sha256": expected_sha256,
+        "material_capacity_layout_generation": material_generation,
+        "profile_replicas": dict(sorted(observed_layout.items())),
+    }
+
+
 def collect_health_state(
     *,
     results_root: Path,
@@ -607,10 +737,39 @@ def collect_health_state(
         if int(endpoints.get(profile, {}).get("live", 0))
         != int(expected_replicas[profile])
     }
-    fleet_generation = "schema5-fleet-v1:" + _sha256_value(generations)
+    http_fleet_mismatches = (
+        {
+            profile: {
+                "expected": int(expected_replicas[profile]),
+                "http_healthy": int(endpoints.get(profile, {}).get("http_healthy", -1)),
+            }
+            for profile in expected_replicas
+            if int(endpoints.get(profile, {}).get("http_healthy", -1))
+            != int(expected_replicas[profile])
+        }
+        if probe_endpoints
+        else None
+    )
+    fleet_generation, material_fleet_identity = _verified_material_fleet_identity(
+        state, config
+    )
     disk = shutil.disk_usage(results_root)
     scheduler = monitor_run._scheduler_stats()
     ledger = _ledger_health(state_dir)
+    try:
+        fleet_transaction_health = fleet_transactions.read_health_summary(server_pool)
+    except fleet_transactions.FleetTransactionError as exc:
+        fleet_transaction_health = {
+            "available": False,
+            "current_generation": None,
+            "active_hung_allocations": [],
+            "historical_alert_count": 0,
+            "alerts_path": str(
+                fleet_transactions.state_directory(server_pool)
+                / fleet_transactions.ALERTS_FILENAME
+            ),
+            "error": str(exc),
+        }
     monitoring_root = state_dir / MONITORING_DIRNAME
     latest_semantic = monitoring_root / "semantic.latest.json"
     semantic_age_seconds: float | None = None
@@ -625,8 +784,15 @@ def collect_health_state(
         "scheduler": scheduler,
         "endpoints": endpoints,
         "fleet_generation": fleet_generation,
+        "material_fleet_identity": material_fleet_identity,
+        # These volatile per-process generations remain visible for response/retry
+        # provenance, but never define a 48-hour throughput epoch.
+        "server_pool_generations": dict(sorted(generations.items())),
         "fleet_mismatches": fleet_mismatches,
+        "http_probes_performed": bool(probe_endpoints),
+        "http_fleet_mismatches": http_fleet_mismatches,
         "ledger": ledger,
+        "fleet_transactions": fleet_transaction_health,
         "disk": {
             "total_bytes": disk.total,
             "used_bytes": disk.used,
@@ -710,8 +876,45 @@ def evaluate_alerts(
         for row in control_live["controllers"].values()
     ):
         findings.append(AlertFinding("monitor:controllers", "controller-health", "critical", "one or more running controllers are absent or stale"))
-    if control_live["desired_state"] == "running" and health["fleet_mismatches"]:
-        findings.append(AlertFinding("monitor:fleet", "fleet-capacity", "critical", f"canonical fleet mismatch: {health['fleet_mismatches']}"))
+    live_mismatches = health.get("fleet_mismatches")
+    http_probes_performed = health.get("http_probes_performed")
+    http_mismatches = health.get("http_fleet_mismatches")
+    missing_health_probe = cadence == "health" and http_probes_performed is not True
+    invalid_http_truth = http_probes_performed is True and not isinstance(
+        http_mismatches, Mapping
+    )
+    if control_live["desired_state"] == "running" and (
+        bool(live_mismatches)
+        or missing_health_probe
+        or invalid_http_truth
+        or (isinstance(http_mismatches, Mapping) and bool(http_mismatches))
+    ):
+        findings.append(
+            AlertFinding(
+                "monitor:fleet",
+                "fleet-capacity",
+                "critical",
+                "canonical fleet health mismatch: "
+                f"scheduler_live={live_mismatches}, "
+                f"http_probes_performed={http_probes_performed!r}, "
+                f"http_healthy={http_mismatches!r}",
+            )
+        )
+    transaction_health = health.get("fleet_transactions")
+    if control_live["desired_state"] == "running" and (
+        not isinstance(transaction_health, Mapping)
+        or transaction_health.get("available") is not True
+        or bool(transaction_health.get("active_hung_allocations"))
+    ):
+        findings.append(
+            AlertFinding(
+                "monitor:fleet-hung",
+                "hung-serving-allocation",
+                "critical",
+                "canonical fleet transaction/hung-allocation state is unhealthy: "
+                f"{transaction_health!r}",
+            )
+        )
     if int(health["scheduler"].get("qos_max_memory_per_user_cell_holds", 0)):
         findings.append(AlertFinding("monitor:qos-memory", "qos-hold", "warning", "cell jobs are held by QOSMaxMemoryPerUser"))
     disk_policy = config["alerts"]
@@ -775,6 +978,44 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
+def _immutable_json(path: Path, value: Mapping[str, Any]) -> None:
+    """Publish a monitor evidence file once without any overwrite window."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o444)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.is_symlink() or path.read_bytes() != temporary.read_bytes():
+                raise MonitorError(
+                    f"immutable monitor evidence already exists with different bytes: {path}"
+                )
+            if path.stat().st_mode & 0o222:
+                raise MonitorError(
+                    f"existing monitor evidence is not sealed read-only: {path}"
+                )
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _production_poll_health_clean(report: Mapping[str, Any]) -> bool:
     """Require live controller, scheduler, and fleet truth before timing throughput.
 
@@ -793,6 +1034,7 @@ def _production_poll_health_clean(report: Mapping[str, Any]) -> bool:
         return False
     live_scheduler = live.get("scheduler")
     controllers = live.get("controllers")
+    http_probes_performed = health.get("http_probes_performed")
     if (
         live.get("desired_state") != "running"
         or scheduler.get("query_ok") is not True
@@ -802,6 +1044,14 @@ def _production_poll_health_clean(report: Mapping[str, Any]) -> bool:
         or not isinstance(controllers, Mapping)
         or set(controllers) != {"dispatcher", "fleet_supervisor"}
         or health.get("fleet_mismatches") != {}
+        or not isinstance(health.get("fleet_transactions"), Mapping)
+        or health["fleet_transactions"].get("available") is not True
+        or health["fleet_transactions"].get("active_hung_allocations") != []
+        or not isinstance(http_probes_performed, bool)
+        or (
+            http_probes_performed
+            and health.get("http_fleet_mismatches") != {}
+        )
     ):
         return False
     return all(
@@ -812,6 +1062,97 @@ def _production_poll_health_clean(report: Mapping[str, Any]) -> bool:
     )
 
 
+def _semantic_integrity_clean(report: Mapping[str, Any]) -> bool:
+    semantic = report.get("semantic")
+    if not isinstance(semantic, Mapping):
+        return False
+    outcomes = Counter(semantic.get("outcomes", {}))
+    return bool(
+        semantic.get("scan_successful") is True
+        and outcomes["contract_errors"] == 0
+        and outcomes["untrusted_valid_rows"] == 0
+        and outcomes["malformed_lines"] == 0
+        and outcomes["duplicate_qids"] == 0
+        and outcomes["unexpected_qids"] == 0
+        and outcomes["invalid_rows"] == 0
+        and outcomes["stale_unmanifested_dirs"] == 0
+    )
+
+
+def _semantic_run_validated_qids(report: Mapping[str, Any]) -> dict[str, int]:
+    semantic = report.get("semantic")
+    runs = semantic.get("runs") if isinstance(semantic, Mapping) else None
+    if not isinstance(runs, Mapping) or set(runs) != set(control.REQUIRED_RUNS):
+        raise MonitorError("semantic report must cover all three production runs")
+    result: dict[str, int] = {}
+    for run_id in control.REQUIRED_RUNS:
+        row = runs[run_id]
+        outcomes = row.get("outcomes") if isinstance(row, Mapping) else None
+        value = outcomes.get("validated_qids", 0) if isinstance(outcomes, Mapping) else None
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value > control.REQUIRED_RUN_QIDS[run_id]
+        ):
+            raise MonitorError(f"semantic validated-QID total is invalid for {run_id}")
+        result[run_id] = value
+    total = semantic.get("outcomes", {}).get("validated_qids", 0)
+    if total != sum(result.values()):
+        raise MonitorError("semantic aggregate QIDs differ from exact per-run totals")
+    return result
+
+
+def _admission_ramp_observation(
+    report: Mapping[str, Any],
+    *,
+    cadence: str,
+    state: Mapping[str, Any],
+    findings: Sequence[AlertFinding],
+    captured_at: float,
+    committed_at: float,
+) -> dict[str, Any]:
+    health = report.get("health")
+    live = health.get("control") if isinstance(health, Mapping) else None
+    if not isinstance(live, Mapping):
+        raise MonitorError("ramp evidence requires scheduler-authoritative control state")
+    admission = live.get("admission")
+    if not isinstance(admission, Mapping):
+        raise MonitorError("ramp evidence requires live admission state")
+    semantic_clean: bool | None = None
+    run_qids: dict[str, int] | None = None
+    if cadence in {"semantic", "daily"}:
+        semantic_clean = _semantic_integrity_clean(report)
+        run_qids = _semantic_run_validated_qids(report)
+    critical = sorted(
+        {finding.dedupe_key for finding in findings if finding.severity == "critical"}
+    )
+    promotion_blocking = sorted(
+        set(critical)
+        | {
+            finding.dedupe_key
+            for finding in findings
+            if finding.dedupe_key in control.ADMISSION_RAMP_BLOCKING_ALERT_KEYS
+        }
+    )
+    return {
+        "schema_version": 1,
+        "protocol": control.ADMISSION_RAMP_EVIDENCE_PROTOCOL,
+        "captured_timestamp": captured_at,
+        "committed_timestamp": committed_at,
+        "cadence": cadence,
+        "control_immutable_sha256": state["immutable_sha256"],
+        "rollout_generation": live.get("rollout_generation"),
+        "admission_ceiling": admission.get("current_ceiling"),
+        "fleet_generation": health.get("fleet_generation"),
+        "production_health_clean": _production_poll_health_clean(report),
+        "semantic_integrity_clean": semantic_clean,
+        "critical_finding_keys": critical,
+        "promotion_blocking_finding_keys": promotion_blocking,
+        "run_validated_qids": run_qids,
+    }
+
+
 def persist_report(
     report: dict[str, Any],
     *,
@@ -820,42 +1161,48 @@ def persist_report(
     findings: Sequence[AlertFinding],
     send_email: bool,
     now: float,
+    committed_at: float | None = None,
+) -> dict[str, Any]:
+    with _monitor_persist_lock(state_dir):
+        timestamp = time.time() if committed_at is None else float(committed_at)
+        return _persist_report_locked(
+            report,
+            cadence=cadence,
+            state_dir=state_dir,
+            findings=findings,
+            send_email=send_email,
+            captured_at=float(now),
+            committed_at=timestamp,
+        )
+
+
+def _persist_report_locked(
+    report: dict[str, Any],
+    *,
+    cadence: str,
+    state_dir: Path,
+    findings: Sequence[AlertFinding],
+    send_email: bool,
+    captured_at: float,
+    committed_at: float,
 ) -> dict[str, Any]:
     state = control.load_control(state_dir)
-    semantic = report.get("semantic", {})
-    semantic_outcomes = Counter(semantic.get("outcomes", {}))
-    integrity_clean = (
-        semantic.get("scan_successful") is True
-        and semantic_outcomes["contract_errors"] == 0
-        and semantic_outcomes["untrusted_valid_rows"] == 0
-        and semantic_outcomes["malformed_lines"] == 0
-        and semantic_outcomes["duplicate_qids"] == 0
-        and semantic_outcomes["unexpected_qids"] == 0
-        and semantic_outcomes["invalid_rows"] == 0
-        and semantic_outcomes["stale_unmanifested_dirs"] == 0
+    report["production_poll_recorded"] = False
+    report["admission_ramp_recorded"] = False
+    report["ramp_observation"] = _admission_ramp_observation(
+        report,
+        cadence=cadence,
+        state=state,
+        findings=findings,
+        captured_at=captured_at,
+        committed_at=committed_at,
     )
-    if (
-        cadence in {"semantic", "daily"}
-        and integrity_clean
-        and state["desired_state"] == "running"
-        and _production_poll_health_clean(report)
-    ):
-        control.record_successful_poll(
-            state_dir,
-            validated_qids=int(report["semantic"]["outcomes"].get("validated_qids", 0)),
-            fleet_generation=report["health"]["fleet_generation"],
-            strata_with_throughput=int(report["throughput"]["acceptance"]["strata_with_observed_throughput"]),
-            now=now,
-        )
-        report["production_poll_recorded"] = True
-    else:
-        report["production_poll_recorded"] = False
 
     root = state_dir / MONITORING_DIRNAME
-    history = root / cadence / f"{int(now)}.json"
+    history = root / cadence / f"{int(committed_at * 1_000_000):020d}.json"
     latest = root / f"{cadence}.latest.json"
-    _atomic_json(history, report)
-    _atomic_json(latest, report)
+    _immutable_json(history, report)
+    evidence_sha256 = _sha256_file(history)
 
     active_before = {
         alert["dedupe_key"]
@@ -871,12 +1218,57 @@ def persist_report(
             message=finding.message,
             dedupe_key=finding.dedupe_key,
             send_email=send_email and finding.dedupe_key not in active_before,
-            now=now,
+            now=committed_at,
         )
     owned_keys = HEALTH_ALERT_KEYS if cadence == "health" else SEMANTIC_ALERT_KEYS
     for dedupe_key in sorted(owned_keys - current):
-        control.resolve_alert(state_dir, dedupe_key=dedupe_key, now=now)
-    return {"history": str(history), "latest": str(latest)}
+        control.resolve_alert(state_dir, dedupe_key=dedupe_key, now=committed_at)
+
+    current_state = control.load_control(state_dir)
+    active_critical = {
+        alert["dedupe_key"]
+        for alert in current_state["alerts"]
+        if alert.get("resolved_at") is None and alert.get("severity") == "critical"
+    }
+    observation = report["ramp_observation"]
+    if (
+        cadence in {"semantic", "daily"}
+        and observation["semantic_integrity_clean"] is True
+        and observation["production_health_clean"] is True
+        and not observation["critical_finding_keys"]
+        and not active_critical
+        and current_state["desired_state"] == "running"
+    ):
+        control.record_successful_poll(
+            state_dir,
+            validated_qids=int(report["semantic"]["outcomes"].get("validated_qids", 0)),
+            fleet_generation=report["health"]["fleet_generation"],
+            strata_with_throughput=int(
+                report["throughput"]["acceptance"][
+                    "strata_with_observed_throughput"
+                ]
+            ),
+            now=committed_at,
+        )
+        report["production_poll_recorded"] = True
+
+    ramp_state = control.record_admission_ramp_observation(
+        state_dir,
+        evidence_path=history,
+        evidence_sha256=evidence_sha256,
+        now=committed_at,
+    )
+    report["admission_ramp_recorded"] = True
+    report["admission_ramp_action"] = copy.deepcopy(
+        ramp_state["admission_ramp"]["last_action"]
+    )
+    report["admission_ceiling"] = ramp_state["admission"]["current_ceiling"]
+    _atomic_json(latest, report)
+    return {
+        "history": str(history),
+        "history_sha256": evidence_sha256,
+        "latest": str(latest),
+    }
 
 
 def build_report(

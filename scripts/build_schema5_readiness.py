@@ -162,6 +162,33 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
             pass
 
 
+def _prepared_snapshot_context(
+    control: Mapping[str, Any], *, state_dir: Path | None
+) -> Any | None:
+    if state_dir is None:
+        return None
+    snapshot_record = control.get(control_plane.SNAPSHOT_ATTESTATION_STATE_KEY)
+    if not isinstance(snapshot_record, dict):
+        return None
+    control_plane.refresh_snapshot_integrity_lease(state_dir, control)
+    seal = control_plane.validate_snapshot_integrity_attestation(
+        control, state_dir=state_dir, verify_lease=True
+    )
+    allowed_members = [
+        member
+        for binding in snapshot_record.get("member_bindings", {}).values()
+        if isinstance(binding, dict)
+        for member in binding.get("members", [])
+        if isinstance(member, dict)
+    ]
+    return control_plane._SnapshotValidationContext(
+        full=False,
+        seal=seal,
+        allow_inventory_lookup=True,
+        allowed_members=allowed_members,
+    )
+
+
 def _publish_outer(
     *,
     control: Mapping[str, Any],
@@ -170,6 +197,7 @@ def _publish_outer(
     artifacts: Sequence[Mapping[str, str]],
     output: Path,
     now: float | None = None,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Validate a temporary candidate, then make the gate envelope visible last."""
 
@@ -195,15 +223,36 @@ def _publish_outer(
             os.fsync(handle.fileno())
         candidate.chmod(0o444)
         digest = _sha256(candidate)
+        validation_control = control
+        snapshot_context = None
+        if state_dir is not None and isinstance(
+            control.get(control_plane.SNAPSHOT_ATTESTATION_STATE_KEY), dict
+        ):
+            validation_control = control_plane.load_control(state_dir)
+            snapshot_context = _prepared_snapshot_context(
+                validation_control, state_dir=state_dir
+            )
+        if snapshot_context is None:
+            snapshot_context = control_plane._SnapshotValidationContext(full=True)
         control_plane._validate_attestation(  # type: ignore[attr-defined]
-            control,
+            validation_control,
             gate,
             candidate,
             digest,
             now=time.time() if now is None else float(now),
+            snapshot_context=snapshot_context,
         )
         os.replace(candidate, output)
         _fsync_directory(output.parent)
+        output_digest = _sha256(output)
+        if gate == "snapshot" and state_dir is not None and snapshot_context.full:
+            control_plane.prepare_snapshot_integrity_preseal(
+                state_dir,
+                evidence_path=output,
+                evidence_sha256=output_digest,
+                validation_context=snapshot_context,
+                now=time.time() if now is None else float(now),
+            )
     finally:
         try:
             candidate.unlink()
@@ -248,7 +297,12 @@ def _require_exact_metrics(
     return dict(observed)
 
 
-def _verify_recursive_reference(reference: Mapping[str, Any], *, context: str) -> None:
+def _verify_recursive_reference(
+    reference: Mapping[str, Any],
+    *,
+    context: str,
+    snapshot_context: Any | None = None,
+) -> None:
     """Use the controller's recursive checksum verifier on one source graph."""
 
     try:
@@ -257,6 +311,7 @@ def _verify_recursive_reference(reference: Mapping[str, Any], *, context: str) -
             context=context,
             verified=set(),
             active=set(),
+            snapshot_context=snapshot_context,
         )
     except control_plane.ReadinessError as exc:
         raise EvidenceError(str(exc)) from exc
@@ -268,6 +323,7 @@ def build_snapshot_gate(
     pre_repair_attestation: Path,
     legacy_consolidated_attestation: Path,
     output: Path,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
     sources = (
         ("pre_repair_external_attestation", pre_repair_attestation),
@@ -299,6 +355,7 @@ def build_snapshot_gate(
         },
         artifacts=artifacts,
         output=output,
+        state_dir=state_dir,
     )
 
 
@@ -307,6 +364,13 @@ LEGACY_ARTIFACTS = {
     "checkpoint_migration_report": "consolidated_checkpoint_report",
     "permanent_ledger_archive_report": "consolidated_permanent_report",
     "legacy_semantic_audit_report": "consolidated_semantic_report",
+}
+
+LEGACY_REPORT_FILENAMES = {
+    "response_incident_archive_report": "response_incident_archive_report.json",
+    "checkpoint_migration_report": "checkpoint_migration_report.json",
+    "permanent_ledger_archive_report": "permanent_ledger_archive_report.json",
+    "legacy_semantic_audit_report": "legacy_semantic_audit_report.json",
 }
 
 MIGRATION_COMPONENT_METRICS = {
@@ -347,12 +411,88 @@ SEMANTIC_METRICS = {
     "repair_count": 0,
 }
 
+EVIDENCE_ACCOUNTING = {
+    "newly_sealed_incidents": 8,
+    "newly_sealed_qids": 1_064,
+    "preexisting_historical_incidents": 14,
+    "preexisting_historical_qids": 355,
+    "all_sealed_incident_qids": 1_419,
+    "frozen_baseline_validated_qids": 889_132,
+}
+
 
 def _load_cleanup_sources(
     cleanup_marker: Path,
-) -> tuple[dict[str, Any], dict[str, tuple[Path, dict[str, Any]]]]:
-    marker_path = cleanup_marker.expanduser().resolve()
-    marker = _read_json(marker_path)
+    *,
+    snapshot_context: Any | None = None,
+) -> tuple[
+    dict[str, Any],
+    dict[str, tuple[Path, dict[str, Any], dict[str, str]]],
+    dict[str, str],
+]:
+    """Load cleanup evidence only through its sealed consolidated snapshot.
+
+    The live cleanup reports remain useful operator conveniences, but their parent is
+    writable.  The authoritative source is the byte-for-byte copy authenticated by
+    ``legacy_consolidated.attestation.json``.  Live and sealed copies must still match
+    so any post-snapshot drift fails closed instead of silently selecting one side.
+    """
+
+    supplied_marker = cleanup_marker.expanduser()
+    if supplied_marker.is_symlink() or not supplied_marker.is_file():
+        raise EvidenceError(
+            f"legacy cleanup marker is missing or a symlink: {supplied_marker}"
+        )
+    marker_path = supplied_marker.resolve()
+    recovery_root = marker_path.parent
+    snapshot_root = recovery_root / "legacy_consolidated"
+    attestation_path = recovery_root / "legacy_consolidated.attestation.json"
+    attestation_reference = _artifact(
+        "legacy_consolidated_external_attestation", attestation_path
+    )
+    _verify_recursive_reference(
+        attestation_reference,
+        context="legacy consolidated snapshot",
+        snapshot_context=snapshot_context,
+    )
+    attestation = _read_json(attestation_path)
+    if Path(str(attestation.get("snapshot_root", ""))).resolve() != snapshot_root:
+        raise EvidenceError("legacy cleanup attestation addresses another snapshot")
+
+    catalog = _read_json(snapshot_root / "SNAPSHOT_CATALOG.json")
+    results_root = recovery_root.parent.parent
+    expected_sources = [
+        {"name": run_id, "path": str((results_root / run_id).resolve())}
+        for run_id in (
+            "full_sweep_v1",
+            "full_sweep_agent_counts_v1",
+            "full_sweep_agent_count_7_v1",
+        )
+    ] + [
+        {
+            "name": "dispatcher_v3",
+            "path": str((results_root / ".dispatcher-v3").resolve()),
+        },
+        {
+            "name": "legacy_cleanup_evidence",
+            "path": str(
+                (recovery_root / "operations" / "legacy_consolidation").resolve()
+            ),
+        },
+        {
+            "name": "legacy_cleanup_complete",
+            "path": str(marker_path),
+        },
+    ]
+    if catalog.get("sources") != expected_sources:
+        raise EvidenceError(
+            "legacy consolidated snapshot does not cover the exact cleanup sources"
+        )
+
+    sealed_marker_path = snapshot_root / "legacy_cleanup_complete"
+    if _sha256(marker_path) != _sha256(sealed_marker_path):
+        raise EvidenceError("live cleanup marker drifted from its sealed snapshot")
+    marker = _read_json(sealed_marker_path)
     if (
         marker.get("schema_version") != 1
         or marker.get("status") != "complete"
@@ -361,6 +501,8 @@ def _load_cleanup_sources(
         or not marker["snapshot_id"]
     ):
         raise EvidenceError("legacy cleanup marker is not a completed schema-1 marker")
+    if marker.get("evidence_accounting") != EVIDENCE_ACCOUNTING:
+        raise EvidenceError("legacy cleanup marker evidence accounting drifted")
     records = marker.get("artifacts")
     if not isinstance(records, list):
         raise EvidenceError("legacy cleanup marker artifacts must be an array")
@@ -369,21 +511,116 @@ def _load_cleanup_sources(
         raise EvidenceError(
             f"legacy cleanup marker must bind exactly {sorted(LEGACY_ARTIFACTS)}"
         )
-    loaded: dict[str, tuple[Path, dict[str, Any]]] = {}
+    live_operations = (recovery_root / "operations" / "legacy_consolidation").resolve()
+    sealed_operations = snapshot_root / "legacy_cleanup_evidence"
+    loaded: dict[str, tuple[Path, dict[str, Any], dict[str, str]]] = {}
+
+    def verify_member_graph(
+        *, live_path: Path, sealed_path: Path, expected_sha256: str, seen: set[Path]
+    ) -> dict[str, Any]:
+        if sealed_path in seen:
+            raise EvidenceError(f"duplicate/cyclic sealed cleanup report: {sealed_path}")
+        seen.add(sealed_path)
+        if (
+            live_path.is_symlink()
+            or not live_path.is_file()
+            or sealed_path.is_symlink()
+            or not sealed_path.is_file()
+            or _sha256(live_path) != expected_sha256
+            or _sha256(sealed_path) != expected_sha256
+        ):
+            raise EvidenceError(
+                f"live/sealed cleanup evidence differs: {live_path}"
+            )
+        payload = _read_json(sealed_path)
+        references = payload.get("referenced_artifacts")
+        if references is None:
+            return payload
+        if not isinstance(references, list):
+            raise EvidenceError(f"cleanup report references are invalid: {sealed_path}")
+        names: set[str] = set()
+        for reference in references:
+            if not isinstance(reference, dict) or set(reference) != {
+                "name",
+                "path",
+                "sha256",
+            }:
+                raise EvidenceError(f"cleanup report reference is invalid: {sealed_path}")
+            name = reference.get("name")
+            if not isinstance(name, str) or not name or name in names:
+                raise EvidenceError(
+                    f"cleanup report reference names are invalid: {sealed_path}"
+                )
+            names.add(name)
+            nested_live = Path(str(reference.get("path", "")))
+            try:
+                relative = nested_live.resolve().relative_to(live_operations)
+            except (OSError, ValueError) as exc:
+                raise EvidenceError(
+                    f"cleanup report reference escapes operation root: {nested_live}"
+                ) from exc
+            verify_member_graph(
+                live_path=nested_live,
+                sealed_path=sealed_operations / relative,
+                expected_sha256=str(reference.get("sha256", "")),
+                seen=seen,
+            )
+        return payload
+
+    seen: set[Path] = set()
     for row in records:
         assert isinstance(row, dict)
         if set(row) != {"name", "path", "sha256"}:
             raise EvidenceError("legacy cleanup artifact reference has wrong fields")
-        _verify_recursive_reference(row, context=f"legacy cleanup {row['name']}")
-        supplied_path = Path(str(row["path"])).expanduser()
-        loaded[str(row["name"])] = (supplied_path.resolve(), _read_json(supplied_path))
-    return marker, loaded
+        name = str(row["name"])
+        live_path = live_operations / LEGACY_REPORT_FILENAMES[name]
+        if row.get("path") != str(live_path):
+            raise EvidenceError(f"legacy cleanup artifact path drifted: {name}")
+        sealed_path = sealed_operations / LEGACY_REPORT_FILENAMES[name]
+        raw = verify_member_graph(
+            live_path=live_path,
+            sealed_path=sealed_path,
+            expected_sha256=str(row.get("sha256", "")),
+            seen=seen,
+        )
+        loaded[name] = (
+            sealed_path,
+            raw,
+            {
+                "snapshot_id": str(attestation["snapshot_id"]),
+                "snapshot_root": str(snapshot_root),
+                "logical_path": sealed_path.relative_to(snapshot_root).as_posix(),
+                "sha256": _sha256(sealed_path),
+            },
+        )
+    return marker, loaded, attestation_reference
+
+
+def _sealed_source_proxy(
+    raw: Mapping[str, Any],
+    *,
+    membership: Mapping[str, str],
+    attestation_reference: Mapping[str, str],
+) -> dict[str, Any]:
+    """Replace mutable nested paths with one recursive sealed-snapshot proof."""
+
+    proxy = dict(raw)
+    proxy["sealed_snapshot_member"] = dict(membership)
+    proxy["referenced_artifacts"] = [dict(attestation_reference)]
+    return proxy
 
 
 def build_migrations_gate(
-    control: Mapping[str, Any], *, cleanup_marker: Path, output: Path
+    control: Mapping[str, Any],
+    *,
+    cleanup_marker: Path,
+    output: Path,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
-    marker, sources = _load_cleanup_sources(cleanup_marker)
+    snapshot_context = _prepared_snapshot_context(control, state_dir=state_dir)
+    marker, sources, snapshot_reference = _load_cleanup_sources(
+        cleanup_marker, snapshot_context=snapshot_context
+    )
     _require_exact_metrics(
         marker.get("migration_metrics"),
         MIGRATION_OUTER_METRICS,
@@ -391,11 +628,22 @@ def build_migrations_gate(
     )
     artifacts: list[dict[str, str]] = []
     for name, expected in MIGRATION_COMPONENT_METRICS.items():
-        raw_path, raw = sources[name]
+        _raw_path, raw, membership = sources[name]
         if raw.get("schema_version") != 1 or raw.get("passed") is not True:
-            raise EvidenceError(f"legacy consolidation source did not pass: {raw_path}")
+            raise EvidenceError(
+                f"legacy consolidation source did not pass: {_raw_path}"
+            )
         observed = {key: raw.get(key) for key in expected}
         _require_exact_metrics(observed, expected, context=name)
+        sealed_source_path = _artifact_path(output, f"{name}.sealed-source")
+        _write_json_atomic(
+            sealed_source_path,
+            _sealed_source_proxy(
+                raw,
+                membership=membership,
+                attestation_reference=snapshot_reference,
+            ),
+        )
         wrapper_path = _artifact_path(output, name)
         _write_json_atomic(
             wrapper_path,
@@ -403,7 +651,9 @@ def build_migrations_gate(
                 name=name,
                 immutable_sha256=str(control["immutable_sha256"]),
                 metrics=expected,
-                references=[_artifact(LEGACY_ARTIFACTS[name], raw_path)],
+                references=[
+                    _artifact(LEGACY_ARTIFACTS[name], sealed_source_path)
+                ],
             ),
         )
         artifacts.append(_artifact(name, wrapper_path))
@@ -413,17 +663,25 @@ def build_migrations_gate(
         metrics=MIGRATION_OUTER_METRICS,
         artifacts=artifacts,
         output=output,
+        state_dir=state_dir,
     )
 
 
 def build_semantic_gate(
-    control: Mapping[str, Any], *, cleanup_marker: Path, output: Path
+    control: Mapping[str, Any],
+    *,
+    cleanup_marker: Path,
+    output: Path,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
-    marker, sources = _load_cleanup_sources(cleanup_marker)
+    snapshot_context = _prepared_snapshot_context(control, state_dir=state_dir)
+    marker, sources, snapshot_reference = _load_cleanup_sources(
+        cleanup_marker, snapshot_context=snapshot_context
+    )
     _require_exact_metrics(
         marker.get("semantic_metrics"), SEMANTIC_METRICS, context="cleanup semantic"
     )
-    raw_path, raw = sources["legacy_semantic_audit_report"]
+    _raw_path, raw, membership = sources["legacy_semantic_audit_report"]
     if (
         raw.get("schema_version") != 1
         or raw.get("kind") != "legacy_semantic_audit"
@@ -434,6 +692,15 @@ def build_semantic_gate(
         raise EvidenceError("legacy semantic source identity/acceptance drifted")
     _require_exact_metrics(raw.get("metrics"), SEMANTIC_METRICS, context="semantic source")
     name = "legacy_semantic_audit_report"
+    sealed_source_path = _artifact_path(output, f"{name}.sealed-source")
+    _write_json_atomic(
+        sealed_source_path,
+        _sealed_source_proxy(
+            raw,
+            membership=membership,
+            attestation_reference=snapshot_reference,
+        ),
+    )
     wrapper_path = _artifact_path(output, name)
     _write_json_atomic(
         wrapper_path,
@@ -441,7 +708,7 @@ def build_semantic_gate(
             name=name,
             immutable_sha256=str(control["immutable_sha256"]),
             metrics=SEMANTIC_METRICS,
-            references=[_artifact(LEGACY_ARTIFACTS[name], raw_path)],
+            references=[_artifact(LEGACY_ARTIFACTS[name], sealed_source_path)],
         ),
     )
     return _publish_outer(
@@ -450,6 +717,7 @@ def build_semantic_gate(
         metrics=SEMANTIC_METRICS,
         artifacts=[_artifact(name, wrapper_path)],
         output=output,
+        state_dir=state_dir,
     )
 
 
@@ -571,7 +839,70 @@ def _http_probe(entry: ServerEntry, expected_model: str, timeout: float) -> dict
     }
 
 
-def _launch_options(pins: Mapping[str, Any]) -> dict[str, str]:
+def _paused_next_generation_runtime_environment(
+    control: Mapping[str, Any], *, state_dir: Path
+) -> dict[str, str]:
+    """Create/verify the exact g+1 runtime proof used by the paused fleet.
+
+    Fleet readiness precedes production ``resume``.  Its servers nevertheless become
+    the generation-one production fleet, so their immutable sbatch bytes must carry the
+    same attestation and lease that resume will later adopt.  This helper mirrors the
+    renderer bootstrap under the controller lock without changing desired state.
+    """
+
+    resolved_state = state_dir.expanduser().resolve()
+    try:
+        with control_plane.control_lock(resolved_state):
+            live = control_plane.load_control(resolved_state, verify_files=True)
+            if live.get("immutable_sha256") != control.get("immutable_sha256"):
+                raise EvidenceError(
+                    "fleet readiness control changed after immutable verification"
+                )
+            if (
+                live.get("desired_state") != "paused"
+                or live.get("drain_requested") is not False
+            ):
+                raise EvidenceError(
+                    "fleet readiness requires paused, non-draining schema-5 control"
+                )
+            generation = live.get("rollout_generation")
+            if (
+                not isinstance(generation, int)
+                or isinstance(generation, bool)
+                or generation < 0
+            ):
+                raise EvidenceError("fleet readiness control generation is invalid")
+            next_generation = generation + 1
+            attestation = control_plane.ensure_runtime_integrity_attestation(
+                resolved_state,
+                live,
+                generation=next_generation,
+                force_full=False,
+            )
+            projected = dict(live)
+            projected["rollout_generation"] = next_generation
+            projected[control_plane.RUNTIME_ATTESTATION_STATE_KEY] = attestation
+            control_plane.validate_runtime_integrity_attestation(
+                projected, verify_metadata=True
+            )
+            environment = control_plane.production_environment(projected)
+    except (control_plane.ControlError, OSError) as exc:
+        raise EvidenceError(f"fleet runtime integrity proof failed: {exc}") from exc
+    required = {
+        "ASYS_RUNTIME_ATTESTATION",
+        "ASYS_RUNTIME_ATTESTATION_SHA256",
+        "ASYS_RUNTIME_INTEGRITY_LEASE",
+        "ASYS_IMMUTABLE_PINS_SHA256",
+        "ASYS_ROLLOUT_GENERATION",
+    }
+    if not required.issubset(environment):
+        raise EvidenceError("fleet runtime integrity environment is incomplete")
+    return {name: str(environment[name]) for name in required}
+
+
+def _launch_options(
+    pins: Mapping[str, Any], *, runtime_environment: Mapping[str, str]
+) -> dict[str, str | int]:
     return {
         "release_worktree": str(pins["release_worktree"]),
         "release_id": str(pins["release_id"]),
@@ -590,6 +921,17 @@ def _launch_options(pins: Mapping[str, Any]) -> dict[str, str]:
         "fleet_contract_path": str(pins["fleet_contract_path"]),
         "fleet_contract_sha256": str(pins["fleet_contract_sha256"]),
         "hf_home": str(pins["hf_home"]),
+        "runtime_attestation": runtime_environment["ASYS_RUNTIME_ATTESTATION"],
+        "runtime_attestation_sha256": runtime_environment[
+            "ASYS_RUNTIME_ATTESTATION_SHA256"
+        ],
+        "runtime_integrity_lease": runtime_environment[
+            "ASYS_RUNTIME_INTEGRITY_LEASE"
+        ],
+        "immutable_pins_sha256": runtime_environment[
+            "ASYS_IMMUTABLE_PINS_SHA256"
+        ],
+        "rollout_generation": int(runtime_environment["ASYS_ROLLOUT_GENERATION"]),
     }
 
 
@@ -598,6 +940,7 @@ def _verify_scheduler_and_spool(
     pool_root: Path,
     fleet: FrozenFleetContract,
     pins: Mapping[str, Any],
+    launch_options: Mapping[str, Any],
     rows: Iterable[keepalive.FleetQueueRow],
 ) -> dict[str, tuple[keepalive.FleetQueueRow, keepalive.SpooledServingProvenance]]:
     expected_by_name = {replica.scheduler_job_name: replica for replica in fleet.replicas}
@@ -611,7 +954,6 @@ def _verify_scheduler_and_spool(
     verified: dict[
         str, tuple[keepalive.FleetQueueRow, keepalive.SpooledServingProvenance]
     ] = {}
-    options = _launch_options(pins)
     for replica in fleet.replicas:
         matches = grouped.get(replica.scheduler_job_name, [])
         if len(matches) != 1:
@@ -641,7 +983,7 @@ def _verify_scheduler_and_spool(
             str(pool_root / "logs"),
             replica=replica.replica_index,
             serving_profile=replica.serving_profile,
-            **options,
+            **launch_options,
         )
         provenance = keepalive._spooled_job_provenance(
             row.job_id,
@@ -734,6 +1076,7 @@ def build_fleet_gate(
     control: Mapping[str, Any],
     *,
     output: Path,
+    state_dir: Path,
     probe_timeout: float = 5.0,
     scheduler_runner: Callable[
         [Sequence[str], float], subprocess.CompletedProcess[str]
@@ -744,7 +1087,13 @@ def build_fleet_gate(
 ) -> dict[str, Any]:
     if not 0 < probe_timeout <= 60:
         raise EvidenceError("probe timeout must be in (0, 60] seconds")
+    runtime_environment = _paused_next_generation_runtime_environment(
+        control, state_dir=state_dir
+    )
     pins = control["immutable"]
+    launch_options = _launch_options(
+        pins, runtime_environment=runtime_environment
+    )
     pool_root = Path(str(pins["server_pool_root"])).expanduser().resolve()
     if server_pool_id(pool_root) != "schema5-v1":
         raise EvidenceError(f"server pool root has the wrong identity: {pool_root}")
@@ -759,7 +1108,11 @@ def build_fleet_gate(
     fleet.verify_pool_root(pool_root)
     rows = _fleet_scheduler_rows(runner=scheduler_runner)
     scheduler = _verify_scheduler_and_spool(
-        pool_root=pool_root, fleet=fleet, pins=pins, rows=rows
+        pool_root=pool_root,
+        fleet=fleet,
+        pins=pins,
+        launch_options=launch_options,
+        rows=rows,
     )
     records = _verify_registry(
         pool_root=pool_root,
@@ -876,6 +1229,7 @@ def build_fleet_gate(
         ],
         output=output,
         now=captured,
+        state_dir=state_dir,
     )
 
 
@@ -1033,6 +1387,7 @@ def build_context_gate(
     dense_peer_audit: Path,
     seven_agent_audit: Path,
     output: Path,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
     inputs = {
         "dense_peer_context_audit": dense_peer_audit,
@@ -1076,6 +1431,7 @@ def build_context_gate(
         metrics=outer_metrics,
         artifacts=artifacts,
         output=output,
+        state_dir=state_dir,
     )
 
 
@@ -1086,6 +1442,7 @@ def build_email_gate(
     apply: bool,
     mail_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now: Callable[[], float] = time.time,
+    state_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not apply:
         raise EvidenceError("email readiness requires --apply; no synthetic receipt is valid")
@@ -1153,6 +1510,7 @@ def build_email_gate(
         metrics=receipt_metrics,
         artifacts=[_artifact(name, wrapper_path)],
         output=output,
+        state_dir=state_dir,
     )
 
 
@@ -1194,18 +1552,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pre_repair_attestation=args.pre_repair_attestation,
                 legacy_consolidated_attestation=args.legacy_consolidated_attestation,
                 output=args.output,
+                state_dir=args.state_dir,
             )
         elif args.gate == "migrations":
             report = build_migrations_gate(
-                current, cleanup_marker=args.cleanup_marker, output=args.output
+                current,
+                cleanup_marker=args.cleanup_marker,
+                output=args.output,
+                state_dir=args.state_dir,
             )
         elif args.gate == "semantic-audit":
             report = build_semantic_gate(
-                current, cleanup_marker=args.cleanup_marker, output=args.output
+                current,
+                cleanup_marker=args.cleanup_marker,
+                output=args.output,
+                state_dir=args.state_dir,
             )
         elif args.gate == "fleet":
             report = build_fleet_gate(
-                current, output=args.output, probe_timeout=args.probe_timeout
+                current,
+                output=args.output,
+                state_dir=args.state_dir,
+                probe_timeout=args.probe_timeout,
             )
         elif args.gate == "context-audit":
             report = build_context_gate(
@@ -1213,9 +1581,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dense_peer_audit=args.dense_peer_audit,
                 seven_agent_audit=args.seven_agent_audit,
                 output=args.output,
+                state_dir=args.state_dir,
             )
         elif args.gate == "email-test":
-            report = build_email_gate(current, output=args.output, apply=args.apply)
+            report = build_email_gate(
+                current,
+                output=args.output,
+                apply=args.apply,
+                state_dir=args.state_dir,
+            )
         else:  # pragma: no cover - argparse closes the command set
             raise AssertionError(args.gate)
     except Exception as exc:

@@ -25,6 +25,7 @@ from typing import Any
 
 from agents_scaling.config import DEFAULT_RESULTS_ROOT
 from agents_scaling.experiment import io
+from agents_scaling import runtime_integrity
 from agents_scaling.serving import healthcheck, registry
 from agents_scaling.serving.fleet_contract import (
     FleetContractError,
@@ -253,6 +254,11 @@ def render_sbatch(
     fleet_contract_path: str | None = None,
     fleet_contract_sha256: str | None = None,
     hf_home: str | None = None,
+    runtime_attestation: str | None = None,
+    runtime_attestation_sha256: str | None = None,
+    runtime_integrity_lease: str | None = None,
+    immutable_pins_sha256: str | None = None,
+    rollout_generation: int | None = None,
 ) -> str:
     profile = _resolve_profile(model_size, serving_profile)
     canonical_run_root = str(Path(run_root).expanduser().resolve())
@@ -302,6 +308,21 @@ def render_sbatch(
     hf_home = hf_home or os.environ.get("HF_HOME") or (
         "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface"
     )
+    runtime_attestation = runtime_attestation or os.environ.get(
+        "ASYS_RUNTIME_ATTESTATION"
+    )
+    runtime_attestation_sha256 = runtime_attestation_sha256 or os.environ.get(
+        "ASYS_RUNTIME_ATTESTATION_SHA256"
+    )
+    runtime_integrity_lease = runtime_integrity_lease or os.environ.get(
+        "ASYS_RUNTIME_INTEGRITY_LEASE"
+    )
+    immutable_pins_sha256 = immutable_pins_sha256 or os.environ.get(
+        "ASYS_IMMUTABLE_PINS_SHA256"
+    )
+    if rollout_generation is None:
+        raw_generation = os.environ.get("ASYS_ROLLOUT_GENERATION")
+        rollout_generation = None if raw_generation is None else int(raw_generation)
     production_fields = {
         "release_worktree": release_worktree,
         "model_contract_path": model_contract_path,
@@ -312,6 +333,11 @@ def render_sbatch(
         "harness_environment_hash": harness_environment_hash,
         "fleet_contract_path": fleet_contract_path,
         "fleet_contract_sha256": fleet_contract_sha256,
+        "runtime_attestation": runtime_attestation,
+        "runtime_attestation_sha256": runtime_attestation_sha256,
+        "runtime_integrity_lease": runtime_integrity_lease,
+        "immutable_pins_sha256": immutable_pins_sha256,
+        "rollout_generation": rollout_generation,
     }
     if release_id:
         missing = [name for name, value in production_fields.items() if not value]
@@ -344,6 +370,31 @@ def render_sbatch(
             expected_manifest_sha256=str(environment_hash),
             release_id=release_id,
         )
+        if (
+            not isinstance(rollout_generation, int)
+            or isinstance(rollout_generation, bool)
+            or rollout_generation < 1
+        ):
+            raise ValueError("schema-5 server rendering requires a positive rollout generation")
+        try:
+            runtime_integrity.verify_generation_lease(
+                lease_path=Path(str(runtime_integrity_lease)),
+                attestation_path=Path(str(runtime_attestation)),
+                attestation_sha256=str(runtime_attestation_sha256),
+                generation=rollout_generation,
+                release_id=release_id,
+                immutable_pins_sha256=str(immutable_pins_sha256),
+                expected_environment_hashes={
+                    "harness": str(harness_environment_hash),
+                    "serving": str(environment_hash),
+                },
+                expected_prefixes={
+                    "harness": str(harness_environment_prefix),
+                    "serving": str(serving_environment_prefix),
+                },
+            )
+        except runtime_integrity.RuntimeIntegrityError as exc:
+            raise ValueError(f"schema-5 runtime integrity failed: {exc}") from exc
     else:
         resolved_release_worktree = None
         resolved_model_contract = (
@@ -382,6 +433,9 @@ def render_sbatch(
         "fleet contract": (
             "" if resolved_fleet_contract is None else str(resolved_fleet_contract)
         ),
+        "runtime attestation": runtime_attestation or "",
+        "runtime integrity lease": runtime_integrity_lease or "",
+        "release ID": release_id or "",
         "run root": canonical_run_root,
         "log directory": log_dir,
     }.items():
@@ -454,6 +508,11 @@ def render_sbatch(
         "ENVIRONMENT_HASH": environment_hash or "",
         "HARNESS_ENVIRONMENT_HASH": harness_environment_hash or "",
         "PRODUCTION_RUNTIME": "1" if release_id else "0",
+        "RUNTIME_ATTESTATION": runtime_attestation or "",
+        "RUNTIME_ATTESTATION_SHA256": runtime_attestation_sha256 or "",
+        "RUNTIME_INTEGRITY_LEASE": runtime_integrity_lease or "",
+        "IMMUTABLE_PINS_SHA256": immutable_pins_sha256 or "",
+        "ROLLOUT_GENERATION": str(rollout_generation or 0),
         "HARNESS_PREFIX": str(harness_runtime.prefix),
         "HARNESS_PYTHON": str(harness_runtime.python),
         "HARNESS_PYTHON_VERSION": harness_runtime.python_version,
@@ -506,10 +565,19 @@ def submit(
     fleet_contract_path: str | None = None,
     fleet_contract_sha256: str | None = None,
     hf_home: str | None = None,
+    runtime_attestation: str | None = None,
+    runtime_attestation_sha256: str | None = None,
+    runtime_integrity_lease: str | None = None,
+    immutable_pins_sha256: str | None = None,
+    rollout_generation: int | None = None,
 ) -> str:
     profile = _resolve_profile(model_size, serving_profile)
     log_dir = Path(run_root) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    effective_generation = rollout_generation
+    if effective_generation is None:
+        raw_generation = os.environ.get("ASYS_ROLLOUT_GENERATION")
+        effective_generation = None if raw_generation is None else int(raw_generation)
     sbatch_text = render_sbatch(
         model_size, run_root, partition, gpu_type, time_limit, str(log_dir), replica=replica,
         serving_profile=serving_profile,
@@ -526,11 +594,16 @@ def submit(
         fleet_contract_path=fleet_contract_path,
         fleet_contract_sha256=fleet_contract_sha256,
         hf_home=hf_home,
+        runtime_attestation=runtime_attestation,
+        runtime_attestation_sha256=runtime_attestation_sha256,
+        runtime_integrity_lease=runtime_integrity_lease,
+        immutable_pins_sha256=immutable_pins_sha256,
+        rollout_generation=effective_generation,
     )
     # Production launch records are immutable and intent-addressed.  A controller crash
     # after sbatch cannot cause a later attempt to overwrite the script Slurm actually
     # spooled, and the command path remains enough to reconstruct the replica index.
-    generation = int(os.environ.get("ASYS_ROLLOUT_GENERATION", "0"))
+    generation = int(effective_generation or 0)
     intent = secrets.token_hex(8)
     production_launch = bool(release_id or os.environ.get("ASYS_RELEASE_ID"))
     if production_launch and generation < 1:

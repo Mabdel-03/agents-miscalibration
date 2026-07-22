@@ -332,7 +332,7 @@
       "tokenizer_revision": "9216db5781bf21249d130ec9da846c4624c16137"
     }
   ],
-  "release_id": "sweep-recovery-schema5-v1",
+  "release_id": "sweep-recovery-schema5-v1.1",
   "schema_version": 1,
   "server_pool": {
     "adoption_requires_spooled_run_root_match": true,

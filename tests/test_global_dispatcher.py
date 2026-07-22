@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -1047,6 +1048,7 @@ def test_microbatch_template_renders_explicit_resources_and_max_24(tmp_path):
     assert "#SBATCH --signal=B:USR1@1200" in text
     assert "#SBATCH --no-requeue" in text
     assert "#SBATCH --array=0-23%24" in text
+    assert '--batch-manifest-sha256 "' + "0" * 64 + '" \\' in text
     assert 'mamba activate "$ASYS_HARNESS_ENV"' in text
     with pytest.raises(ValueError):
         ds._render_batch_sbatch(
@@ -1208,6 +1210,7 @@ def test_run_task_pins_results_root_to_verified_manifest_parent(tmp_path, monkey
     batch_path.write_text(
         json.dumps({"schema_version": 1, "tasks": [ds._task_from_candidate(candidate)]})
     )
+    batch_sha256 = ds._seal_dispatch_artifact(batch_path)
     captured = {}
 
     def fake_exec(_program, _command):
@@ -1219,7 +1222,13 @@ def test_run_task_pins_results_root_to_verified_manifest_parent(tmp_path, monkey
         "load_frozen_benchmark_contracts",
         lambda *_args, **_kwargs: SimpleNamespace(sidecar_sha256=_SIDECAR_SHA256),
     )
-    assert ds._run_task(SimpleNamespace(batch_manifest=str(batch_path), index=0)) == 127
+    assert ds._run_task(
+        SimpleNamespace(
+            batch_manifest=str(batch_path),
+            batch_manifest_sha256=batch_sha256,
+            index=0,
+        )
+    ) == 127
     assert captured["results_root"] == str(tmp_path)
 
 
@@ -1269,7 +1278,42 @@ def test_sbatch_rejection_is_recorded_and_returned_for_next_poll(tmp_path, monke
     outcome = ds._dispatch_poll(args, [run], ds._empty_ledger(), dry_run=False)
     assert "qos race" in outcome["report"]["submission_error"]
     assert outcome["report"]["submission"] is None
-    assert {record["state"] for record in outcome["ledger"]["intents"].values()} == {"rejected"}
+    # Once sbatch has been invoked, even a client-side error is ambiguous: Slurm may
+    # have accepted the job before the reply was lost.  Keep the intent fenced until a
+    # complete squeue+sacct observation proves non-acceptance after the grace period.
+    assert {record["state"] for record in outcome["ledger"]["intents"].values()} == {
+        "submitting"
+    }
+
+
+def test_submit_sbatch_binds_cli_intent_and_requires_numeric_job_id(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "batch-20260721T000000-abc123.sbatch"
+    path.write_text("#!/bin/bash\n", encoding="utf-8")
+    calls = []
+
+    def accepted(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 0, "321;cluster\n", "")
+
+    monkeypatch.setattr(ds.subprocess, "run", accepted)
+    assert ds._submit_sbatch(path) == "321"
+    assert calls[0][0] == [
+        "sbatch",
+        "--parsable",
+        "--comment=asys-schema5-intent:20260721T000000-abc123",
+        str(path),
+    ]
+    assert calls[0][1]["timeout"] == 60.0
+
+    monkeypatch.setattr(
+        ds.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "accepted\n", ""),
+    )
+    with pytest.raises(ds.DispatcherError, match="invalid job id"):
+        ds._submit_sbatch(path)
 
 
 def test_submitting_intent_is_durable_before_sbatch_and_fairness_commits_once(
@@ -1278,8 +1322,12 @@ def test_submitting_intent_is_durable_before_sbatch_and_fairness_commits_once(
     run = _run(tmp_path, "run", [_cell(0)])
     args = _poll_args(tmp_path, run)
     persisted_states = []
+    real_atomic_write = ds._atomic_write_json
 
-    def capture_ledger(_path, value):
+    def capture_ledger(path, value):
+        if Path(path).parent.name == "batches":
+            real_atomic_write(path, value)
+            return
         if "intents" not in value:
             return
         persisted_states.append(
@@ -1308,13 +1356,20 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
 ):
     batch_id = "20260721T000000-abc123"
     sbatch = tmp_path / f"batch-{batch_id}.sbatch"
+    manifest = sbatch.with_suffix(".json")
+    manifest.write_text("{}\n", encoding="utf-8")
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    manifest_sha256 = ds._seal_dispatch_artifact(manifest)
+    sbatch_sha256 = ds._seal_dispatch_artifact(sbatch)
     task = {"run_id": "run", "cell_id": "cell"}
     ledger = ds._empty_ledger()
     ledger["intents"][batch_id] = {
         "state": "submitting",
         "created_at": 10.0,
-        "batch_manifest": str(sbatch.with_suffix(".json")),
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": manifest_sha256,
         "sbatch_path": str(sbatch),
+        "sbatch_sha256": sbatch_sha256,
         "tasks": [task],
         "fairness_after": {"cursor": 3, "deficits": {"run": 1.5}},
         "fairness_committed": False,
@@ -1323,7 +1378,7 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
     def job(job_id):
         return SimpleNamespace(
             job_id=job_id,
-            job_name="asys-dispatch-abc123",
+            job_name=f"asys-dispatch-{batch_id[-10:]}",
             state="RUNNING",
             comment=f"asys-schema5-intent:{batch_id}",
             command=f"sbatch {sbatch}",
@@ -1352,6 +1407,67 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
         now=20.0,
     )
     assert "ambiguously maps" in duplicate_errors[0]
+
+
+def test_intent_reconciliation_allows_blank_sacct_comment_only_with_exact_path(
+    tmp_path,
+):
+    batch_id = "20260721T000000-abc123"
+    sbatch = (tmp_path / f"batch-{batch_id}.sbatch").resolve()
+    manifest = sbatch.with_suffix(".json")
+    manifest.write_text("{}\n", encoding="utf-8")
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    manifest_sha256 = ds._seal_dispatch_artifact(manifest)
+    sbatch_sha256 = ds._seal_dispatch_artifact(sbatch)
+    task = {"run_id": "run", "cell_id": "cell"}
+    ledger = ds._empty_ledger()
+    ledger["intents"][batch_id] = {
+        "state": "submitting",
+        "created_at": 10.0,
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": manifest_sha256,
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": sbatch_sha256,
+        "tasks": [task],
+        "fairness_after": {"cursor": 1, "deficits": {"run": 0.0}},
+        "fairness_committed": False,
+    }
+    accounting = SimpleNamespace(
+        job_id="321",
+        job_name=f"asys-dispatch-{batch_id[-10:]}",
+        state="COMPLETED",
+        comment="",
+        command=(
+            f"sbatch --comment=asys-schema5-intent:{batch_id} {sbatch}"
+        ),
+        source="sacct",
+        active=False,
+    )
+    warnings, errors = ds._reconcile_schema5_intents(
+        ledger, scheduler_snapshot=SimpleNamespace(jobs=(accounting,)), now=20.0
+    )
+    assert not errors
+    assert warnings
+    assert ledger["intents"][batch_id]["job_id"] == "321"
+
+    wrong_path = SimpleNamespace(
+        **{
+            **accounting.__dict__,
+            "job_id": "322",
+            "command": "sbatch /tmp/foreign.sbatch",
+        }
+    )
+    second = ds._empty_ledger()
+    second["intents"][batch_id] = {
+        **ledger["intents"][batch_id],
+        "state": "submitting",
+        "job_id": None,
+        "fairness_committed": False,
+    }
+    _, errors = ds._reconcile_schema5_intents(
+        second, scheduler_snapshot=SimpleNamespace(jobs=(wrong_path,)), now=20.0
+    )
+    assert errors and "provenance drift" in errors[0]
 
 
 def test_schema5_task_runtime_environment_rejects_missing_or_untrusted_keys():
@@ -1395,8 +1511,39 @@ def test_schema5_task_refuses_to_start_without_execution_path_pins(tmp_path):
         ),
         encoding="utf-8",
     )
+    batch_sha256 = ds._seal_dispatch_artifact(batch)
     with pytest.raises(ds.DispatcherError, match="immutable release and harness"):
-        ds._run_task(SimpleNamespace(batch_manifest=str(batch), index=0))
+        ds._run_task(
+            SimpleNamespace(
+                batch_manifest=str(batch),
+                batch_manifest_sha256=batch_sha256,
+                index=0,
+            )
+        )
+
+
+def test_batch_worker_requires_exact_immutable_manifest_digest(tmp_path):
+    manifest = tmp_path / "batch.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 1, "tasks": [{}]}), encoding="utf-8"
+    )
+    expected_sha256 = ds._seal_dispatch_artifact(manifest)
+    assert ds._load_batch_task(
+        manifest, 0, expected_sha256=expected_sha256
+    ) == {}
+
+    manifest.chmod(0o644)
+    with pytest.raises(ds.DispatcherError, match="unsafe or unpinned"):
+        ds._load_batch_task(manifest, 0, expected_sha256=expected_sha256)
+
+    manifest.chmod(0o444)
+    with pytest.raises(ds.DispatcherError, match="drifted"):
+        ds._load_batch_task(manifest, 0, expected_sha256="0" * 64)
+
+    alias = tmp_path / "batch-alias.json"
+    alias.symlink_to(manifest)
+    with pytest.raises(ds.DispatcherError, match="unsafe or unpinned"):
+        ds._load_batch_task(alias, 0, expected_sha256=expected_sha256)
 
 
 def test_runtime_attestation_rejects_interpreter_prefix_or_release_drift(

@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -31,6 +32,7 @@ for value in (REPO, SOURCE_ROOT):
         sys.path.insert(0, str(value))
 
 from agents_scaling.benchmarks.runtime_contracts import VerifiedQuestionCatalog  # noqa: E402
+from agents_scaling import runtime_integrity  # noqa: E402
 from agents_scaling.experiment.analyze import _censor_accounting  # noqa: E402
 from agents_scaling.experiment.artifact_policy import (  # noqa: E402
     ArtifactPolicyError,
@@ -187,7 +189,13 @@ def _runtime_environment(
     immutable_pins_sha256: str,
     fleet_contract_sha256: str,
     rollout_generation: int,
+    runtime_attestation: Mapping[str, Any],
 ) -> dict[str, str]:
+    required_attestation = {"path", "sha256", "lease_path"}
+    if not isinstance(runtime_attestation, Mapping) or not required_attestation.issubset(
+        runtime_attestation
+    ):
+        raise SmokeRunError("smoke runtime attestation is incomplete")
     return {
         "ASYS_RELEASE_ID": policy.release.release_id,
         "ASYS_MODEL_CONTRACT_SHA256": policy.accepted_model_contract_sha256,
@@ -196,6 +204,9 @@ def _runtime_environment(
         "ASYS_SERVING_ENVIRONMENT_SHA256": policy.environment.serving_sha256,
         "ASYS_ROLLOUT_GENERATION": str(rollout_generation),
         "ASYS_IMMUTABLE_PINS_SHA256": immutable_pins_sha256,
+        "ASYS_RUNTIME_ATTESTATION": str(runtime_attestation["path"]),
+        "ASYS_RUNTIME_ATTESTATION_SHA256": str(runtime_attestation["sha256"]),
+        "ASYS_RUNTIME_INTEGRITY_LEASE": str(runtime_attestation["lease_path"]),
         "ASYS_ARTIFACT_POLICY_SHA256": policy.file_sha256,
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
@@ -211,6 +222,7 @@ def _task(
     immutable_pins_sha256: str,
     fleet_contract_sha256: str,
     rollout_generation: int,
+    runtime_attestation: Mapping[str, Any],
 ) -> dict[str, Any]:
     snapshot = load_manifest(run_root, verify_frozen=True)
     catalog = VerifiedQuestionCatalog(run_root, snapshot=snapshot)
@@ -237,6 +249,7 @@ def _task(
             immutable_pins_sha256=immutable_pins_sha256,
             fleet_contract_sha256=fleet_contract_sha256,
             rollout_generation=rollout_generation,
+            runtime_attestation=runtime_attestation,
         ),
     }
 
@@ -321,6 +334,41 @@ def _load_immutable_context(
         if _SHA256.fullmatch(str(immutable.get(field, ""))) is None:
             raise SmokeRunError(f"immutable control {field} is not a lowercase SHA-256")
     return control, immutable
+
+
+def _validate_preproduction_rollout_generation(
+    control: Mapping[str, Any], rollout_generation: int
+) -> None:
+    """Bind smoke provenance to the first generation after a paused control.
+
+    Smoke cells exercise the exact generation that the next successful ``resume`` will
+    publish, while admission and both production controllers are still disabled.  A fresh
+    control therefore records smoke rows at generation one even though its durable current
+    generation is zero.  Refusing every other desired state and generation prevents an
+    operator from blessing rows produced during (or after) a live production rollout.
+    """
+
+    desired_state = control.get("desired_state")
+    if desired_state != "paused":
+        raise SmokeRunError(
+            "schema-5 smoke execution requires desired_state=paused; "
+            f"observed {desired_state!r}"
+        )
+    if control.get("drain_requested") is not False:
+        raise SmokeRunError("schema-5 smoke execution is forbidden while draining")
+    current_generation = control.get("rollout_generation")
+    if (
+        not isinstance(current_generation, int)
+        or isinstance(current_generation, bool)
+        or current_generation < 0
+    ):
+        raise SmokeRunError("verified control has an invalid rollout_generation")
+    expected_generation = current_generation + 1
+    if rollout_generation != expected_generation:
+        raise SmokeRunError(
+            "smoke rollout_generation must equal paused control rollout_generation + 1: "
+            f"expected {expected_generation}, observed {rollout_generation}"
+        )
 
 
 def _read_meta(run_root: Path, cell_id: str) -> Mapping[str, Any] | None:
@@ -449,6 +497,8 @@ def _run_task(
     release_worktree: Path,
     harness_prefix: Path,
     hf_home: Path,
+    runtime_attestation: Mapping[str, Any],
+    immutable: Mapping[str, Any],
 ) -> dict[str, Any]:
     cell_id = str(task["cell_id"])
     batch_path = state_root / "batches" / str(task["run_id"]) / f"{cell_id}.json"
@@ -470,23 +520,72 @@ def _run_task(
         "--expected-harness-prefix",
         str(harness_prefix),
     ]
-    process = subprocess.run(
+    def refresh_lease() -> None:
+        try:
+            runtime_integrity.refresh_generation_lease(
+                state_dir=state_root,
+                attestation_path=Path(str(runtime_attestation["path"])),
+                attestation_sha256=str(runtime_attestation["sha256"]),
+                generation=int(runtime_attestation["generation"]),
+                release_id=str(immutable["release_id"]),
+                immutable_pins_sha256=str(task["runtime_environment"]["ASYS_IMMUTABLE_PINS_SHA256"]),
+                expected_environment_hashes={
+                    role: str(immutable[f"{role}_environment_sha256"])
+                    for role in ("harness", "serving")
+                },
+                expected_prefixes={
+                    role: str(immutable[f"{role}_environment_prefix"])
+                    for role in ("harness", "serving")
+                },
+            )
+        except (KeyError, TypeError, ValueError, runtime_integrity.RuntimeIntegrityError) as exc:
+            raise SmokeRunError(
+                f"smoke runtime integrity lease refresh failed: {exc}"
+            ) from exc
+
+    # Production controllers refresh this lease every heartbeat.  They intentionally
+    # do not exist yet during paused, estimand-excluded smokes, so this parent owns the
+    # identical refresh operation while its one worker is active.  Polling once per
+    # minute leaves ample margin around the five-minute scan / seven-minute TTL.
+    refresh_lease()
+    process = subprocess.Popen(
         command,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
         env=_sanitized_environment(hf_home=hf_home),
     )
+    lease_error: SmokeRunError | None = None
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=60.0)
+            break
+        except subprocess.TimeoutExpired:
+            try:
+                refresh_lease()
+            except SmokeRunError as exc:
+                lease_error = exc
+                # The worker's existing signal handler finishes its current bounded
+                # request and refuses every later coordinate before exiting cleanly.
+                if process.poll() is None:
+                    try:
+                        process.send_signal(signal.SIGUSR1)
+                    except ProcessLookupError:
+                        pass
+                stdout, stderr = process.communicate()
+                break
     report = {
         "cell_id": cell_id,
         "command": command,
         "returncode": process.returncode,
-        "stdout": process.stdout,
-        "stderr": process.stderr,
+        "stdout": stdout,
+        "stderr": stderr,
         "batch_manifest": str(batch_path),
         "batch_manifest_sha256": _sha256(batch_path),
     }
     _atomic_json(log_path, report)
+    if lease_error is not None:
+        raise SmokeRunError(f"{lease_error}; log={log_path}") from lease_error
     if process.returncode != 0:
         raise SmokeRunError(
             f"smoke worker failed for {cell_id} rc={process.returncode}; log={log_path}"
@@ -631,7 +730,11 @@ def run_or_verify(
     state_root = state_root.expanduser().resolve()
     if _SHA256.fullmatch(immutable_pins_sha256) is None:
         raise SmokeRunError("immutable_pins_sha256 is not a lowercase SHA-256")
-    if rollout_generation < 1:
+    if (
+        not isinstance(rollout_generation, int)
+        or isinstance(rollout_generation, bool)
+        or rollout_generation < 1
+    ):
         raise SmokeRunError("rollout_generation must be positive")
     if not server_pool_root.is_dir():
         raise SmokeRunError(f"canonical server pool is missing: {server_pool_root}")
@@ -641,8 +744,11 @@ def run_or_verify(
         raise SmokeRunError(f"immutable dispatcher is missing: {release_worktree}")
     if not (state_root / schema5_control.CONTROL_FILENAME).is_file():
         raise SmokeRunError(f"schema-5 control state is missing: {state_root}")
-    with _exclusive_smoke_lock(state_root):
-        _, immutable = _load_immutable_context(
+    # Hold the same cross-node control lock used by ``resume`` for the complete smoke
+    # pass.  This closes the check/use race in which production could transition to
+    # resuming after the paused-generation validation but before the final smoke draw.
+    with schema5_control.control_lock(state_root), _exclusive_smoke_lock(state_root):
+        control, immutable = _load_immutable_context(
             state_root=state_root,
             results_root=results_root,
             server_pool_root=server_pool_root,
@@ -650,6 +756,20 @@ def run_or_verify(
             harness_prefix=harness_prefix,
             immutable_pins_sha256=immutable_pins_sha256,
         )
+        _validate_preproduction_rollout_generation(control, rollout_generation)
+        try:
+            runtime_attestation = (
+                schema5_control.ensure_runtime_integrity_attestation(
+                    state_root,
+                    control,
+                    generation=rollout_generation,
+                    force_full=True,
+                )
+            )
+        except schema5_control.ControlError as exc:
+            raise SmokeRunError(
+                f"schema-5 smoke runtime integrity failed: {exc}"
+            ) from exc
         if set(_SUITE_ARTIFACT_NAMES) != {suite[0] for suite in SMOKE_SUITES}:
             raise SmokeRunError("smoke suite IDs differ from the closed readiness contract")
 
@@ -696,6 +816,7 @@ def run_or_verify(
                             immutable["fleet_contract_sha256"]
                         ),
                         rollout_generation=rollout_generation,
+                        runtime_attestation=runtime_attestation,
                     )
                     try:
                         _run_task(
@@ -704,6 +825,8 @@ def run_or_verify(
                             release_worktree=release_worktree,
                             harness_prefix=harness_prefix,
                             hf_home=Path(str(immutable["hf_home"])).resolve(),
+                            runtime_attestation=runtime_attestation,
+                            immutable=immutable,
                         )
                     except SmokeRunError as exc:
                         # Stop new draws after the first worker failure, but finish a

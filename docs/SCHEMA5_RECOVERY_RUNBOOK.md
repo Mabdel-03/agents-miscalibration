@@ -5,13 +5,21 @@ to preserve the legacy evidence before mutation and to keep production fail-clos
 every readiness gate is backed by a checksummed artifact. Do not substitute the retired
 `.dispatcher-v3`, chunk drivers, editable environments, or old run IDs.
 
+Patch release `sweep-recovery-schema5-v1.1` supersedes the failed-closed v1 release
+attempt. The v1 environment clone reached package verification but never published
+`MATERIALIZATION_COMPLETE.json` or `RELEASE_COMPLETE.json`; it is forensic evidence,
+not a production input. v1.1 adds canonical distribution-metadata discovery, a
+source-prefix symlink audit for cloned environments, and a paused no-admission
+controller recovery drill. Never adopt or resume the v1 output directory.
+
 ## Fixed identities and invariants
 
 ```bash
 repo=/orcd/data/tpoggio/001/mabdel03/agents_scaling
 results=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results
 recovery="$results/recovery/schema5-v1"
-release="$recovery/releases/sweep-recovery-schema5-v1"
+release="$recovery/releases/sweep-recovery-schema5-v1.1"
+source_checkout="$recovery/release_source_checkout_v1_1"
 worktree="$release/worktree"
 identity="$release/identity"
 harness="$release/environments/harness"
@@ -42,6 +50,80 @@ At all times before `resume`, require all of the following:
 - no manual editing of a pin, readiness envelope, registry record, manifest, result, or
   controller sbatch;
 - exact-ID cancellation only. Never cancel by a broad job-name pattern.
+
+## Transactional recovery-DAG execution
+
+The preferred execution path for Sections 1–6 is the immutable 20-job recovery DAG.
+Render it only after the annotated v1.1 tag points at a clean `HEAD`; the commands in
+the numbered sections below describe the gates implemented by those jobs and remain the
+manual audit reference. First inspect the render without publishing anything, then
+repeat the exact invocation with `--apply`:
+
+```bash
+renderer="$repo/scripts/render_schema5_recovery_chain.py"
+chain_manifest="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_1.json"
+
+"$dev_python" -I "$renderer" render \
+  --repository "$repo" --results-root "$results" --recovery-root "$recovery" \
+  --hf-home "$hf_home" --dev-python "$dev_python" \
+  --source-harness-prefix /orcd/home/002/mabdel03/conda_envs/asys_env \
+  --source-serving-prefix /orcd/home/002/mabdel03/conda_envs/serve_env \
+  --conda-executable "$conda_exe" --partition mit_normal --slurm-user "$USER"
+
+"$dev_python" -I "$renderer" render \
+  --repository "$repo" --results-root "$results" --recovery-root "$recovery" \
+  --hf-home "$hf_home" --dev-python "$dev_python" \
+  --source-harness-prefix /orcd/home/002/mabdel03/conda_envs/asys_env \
+  --source-serving-prefix /orcd/home/002/mabdel03/conda_envs/serve_env \
+  --conda-executable "$conda_exe" --partition mit_normal --slurm-user "$USER" \
+  --apply
+
+"$dev_python" -I "$renderer" verify --chain-manifest "$chain_manifest"
+"$dev_python" -I "$renderer" submit --chain-manifest "$chain_manifest"
+"$dev_python" -I "$renderer" submit --chain-manifest "$chain_manifest" --apply
+```
+
+Publication is marker-last: the read-only job namespace is written before the immutable
+chain manifest. Repeating `render --apply` after a crash adopts only byte-exact scripts
+and an empty canonical log namespace. Submission writes an intent before each `sbatch`,
+reconciles its generation-specific comment through both `squeue` and `sacct`, recovers
+the exact value from accounting `SubmitLine` when the cluster leaves `JobComment` blank,
+and seals the completed journal into the read-only receipt. A missing scheduler observation after
+any attempted `sbatch` remains ambiguous for five minutes; do not delete the journal or
+manually resubmit during that interval.
+
+All recovery wrappers use `mit_normal`, `--no-requeue`, exact `afterok` dependencies,
+and require cluster `kill_invalid_depend`. If a submitted generation has terminal
+failures, inspect and then apply a suffix-only repair:
+
+```bash
+"$dev_python" -I "$renderer" repair --chain-manifest "$chain_manifest"
+"$dev_python" -I "$renderer" repair --chain-manifest "$chain_manifest" --apply
+```
+
+Repair refuses active jobs, creates a new contiguous generation, and reuses only the
+completed parent jobs. If `release_materialize` failed after creating a partial release
+tree, preserve that exact tree first; this is a recoverable same-filesystem rename with
+marker-first intent evidence, never a deletion:
+
+```bash
+"$dev_python" -I "$renderer" quarantine-materialization \
+  --chain-manifest "$chain_manifest"
+"$dev_python" -I "$renderer" quarantine-materialization \
+  --chain-manifest "$chain_manifest" --apply
+"$dev_python" -I "$renderer" repair --chain-manifest "$chain_manifest" --apply
+```
+
+The DAG deliberately orders `supplementary_cache -> fleet_bootstrap -> fleet_readiness
+-> smoke_readiness`: CPU/context work finishes before GPUs launch, and no parallel join
+can strand a short-lived lease. Fleet bootstrap and every fleet-readiness poll hold the
+control lock while creating or validating the paused control's exact next-generation
+runtime attestation and integrity lease; polls are at most five minutes apart. Because
+Slurm may delay the dependent smoke allocation arbitrarily, that allocation re-adopts,
+probes, and re-attests the exact fleet before its first draw. The smoke parent then
+renews the same g+1 lease immediately before every worker and once per minute while it
+runs; a renewal failure sends `USR1` and fails the smoke gate. Production `resume` must
+adopt the same generation and cannot bypass this provenance chain.
 
 ## 1. Establish maintenance and seal the pre-repair snapshot
 
@@ -89,9 +171,10 @@ git diff --check
 ```
 
 Review the intended source/configuration/documentation/test set, commit it, and create the
-annotated tag `sweep-recovery-schema5-v1`. The tag must resolve to `HEAD`, and the checkout
+annotated tag `sweep-recovery-schema5-v1.1`. The tag must resolve to `HEAD`, and the checkout
 must have no tracked or untracked release inputs. Do not move or recreate the tag after an
-environment has been materialized.
+environment has been materialized. Create a fresh detached `source_checkout` from that
+tag; do not materialize from the development checkout or the failed v1 checkout.
 
 Run materialization first without `--apply`, then repeat the exact command with `--apply`
 inside a durable, non-requeued CPU job:
@@ -99,7 +182,7 @@ inside a durable, non-requeued CPU job:
 ```bash
 "$dev_python" scripts/materialize_schema5_release.py materialize \
   --output-root "$release" \
-  --source-repository "$repo" \
+  --source-repository "$source_checkout" \
   --release-worktree "$worktree" \
   --source-harness-prefix /orcd/home/002/mabdel03/conda_envs/asys_env \
   --source-serving-prefix /orcd/home/002/mabdel03/conda_envs/serve_env \
@@ -107,6 +190,11 @@ inside a durable, non-requeued CPU job:
   --serving-prefix "$serving" \
   --conda-executable "$conda_exe"
 ```
+
+The apply invocation is identical except for the final `--apply` flag. The completed
+clone must contain no regular-file inode shared with either source prefix and no symlink
+whose dependency path ever leaves the clone. External, source-owned, broken, and cyclic
+symlinks all fail the release.
 
 Verify `MATERIALIZATION_COMPLETE.json`, including the isolated installed-package probe,
 zero shared source/destination inodes, and exact tagged worktree. Next run the freezer as
@@ -237,6 +325,27 @@ it once with an added `--once`; do not reconstruct the flags in shell. This subm
 Every registered endpoint must match its Slurm-spooled script, release/model/tokenizer/
 environment/fleet identities, replica ID, port, served context, and live HTTP probe.
 
+Fleet admission is transactional under the canonical pool root. The supervisor holds
+`.fleet-transactions-v1/fleet.lock`, publishes an immutable
+`sbatch/gNNNNNN/<replica>.<intent>.sbatch` and a durable intent before `sbatch`, and
+commits a replica only after joining complete `squeue` and `sacct` truth with the exact
+scheduler comment, command path, partition, and Slurm-spooled bytes. Generation ledgers
+live at `ledgers/gNNNNNN.json`; hash-bound `CURRENT.json` advances atomically. A normal
+pause/resume may leave a valid older-generation server running: the next supervisor
+adopts it only after the old ledger, scheduler token, and spooled script all validate,
+while any eventual replacement is rendered under the new generation. Duplicate tokens
+or active jobs fail closed. Do not delete these ledgers or reconstruct a missing intent.
+
+HTTP failure is evidence, not immediate permission to recycle a GPU allocation. For an
+exact scheduler-active job and endpoint, both `/health` and `/v1/models` must fail on at
+least three supervisor polls spanning at least ten minutes. The supervisor then records
+a durable alert and issues only `scancel <exact-job-id>`. Boundary crashes and rejected
+cancellations retry that same fenced ID at bounded exponential backoff (at most five
+attempts); intermittent success or a replacement job resets the evidence. The five-minute
+monitor imports this state as `monitor:fleet-hung`, sends the first deduplicated email,
+and excludes the interval from successful throughput polls until scheduler truth shows
+the old allocation terminal and its replacement is healthy.
+
 Generate gate envelopes with `build_schema5_readiness.py` and attach them with
 `schema5_control.py attest`. The required gates are:
 
@@ -251,19 +360,59 @@ Generate gate envelopes with `build_schema5_readiness.py` and attach them with
    provenance and zero unresolved context, protocol, or truncation incident;
 7. `email_test`: a real test delivered to `mabdel03@mit.edu`.
 
+Snapshot readiness has a generation-scoped cache, not a permanent trust shortcut.
+Attestation and every paused-to-new-generation `resume` fully hash both payload
+inventories, reject writable/symlinked/hardlinked controls and payloads, and prove each
+`sealed_snapshot_member` logical path, hash, snapshot ID, and root against the addressed
+inventory. That pass publishes an immutable compact seal plus a complete lstat metadata
+baseline under `$state/snapshot_integrity/`. Both controllers attempt renewal on their
+60-second heartbeat under one cross-node lock; only one metadata scan can run, scans are
+at most once per 300 seconds, and the lease expires after 420 seconds. Dispatcher polls,
+spec rendering, array admission, controller successors, and live production hooks hash
+only the compact seal, lease, evidence envelopes, selected members, and five snapshot
+controls—not the tens-of-GiB payload. Any chmod, write, inode replacement, hardlink, or
+directory-shape change prevents renewal, so new admission fails closed no later than
+420 seconds after the last clean scan. A later rollout generation performs a new full
+byte verification rather than inheriting the prior generation's seal.
+
 Context audits must run from the frozen release with offline model/tokenizer revisions.
 The dense audit selects seven-agent decentralized, prompt-level 3, plus-CoT cells at
 `b2048`, `b8192`, and `unlimited`; the second selects every seven-agent plus-CoT,
 unlimited cell. Pass `--all-routed-profiles` in both cases. Feed their complete JSON
 artifacts into the typed context-evidence builder rather than transcribing totals.
 
-Run `run_schema5_smokes.py --apply` with the immutable pins SHA-256 and current rollout
-generation. It is resumable, uses the production worker boundary, and contacts one cell
-at a time. Its final schema-2 report is the `smoke_runs` evidence.
+Run `run_schema5_smokes.py --apply` with the immutable pins SHA-256 and the next planned
+rollout generation, exactly `paused_control.rollout_generation + 1` (generation 1 for a
+fresh control). The runner holds the cross-node control lock, rejects running/resuming/
+draining state, and contacts one cell at a time. Its resumable final schema-2 report is
+the `smoke_runs` evidence.
 
-Before production, perform one exact-ID dispatcher-controller kill drill and one exact-ID
-fleet-controller kill drill. Each successor must recover within 15 minutes with unchanged
-fairness state and no duplicate mutation. Re-run scheduler reconciliation afterward.
+Before production, perform the two-controller drill while production remains paused and
+admission-disabled. These commands launch isolated drill controllers only; they never
+launch dispatcher/fleet children or admit a cell:
+
+```bash
+control=("$harness/bin/python" -I "$worktree/slurm/schema5_control.py" --state-dir "$state")
+
+"${control[@]}" reconcile --all --no-admit
+"${control[@]}" drill start
+until "${control[@]}" drill status --live; do sleep 5; done
+
+"${control[@]}" drill kill --role dispatcher
+"${control[@]}" drill wait --role dispatcher --timeout 900
+until "${control[@]}" drill status --live; do sleep 5; done
+
+"${control[@]}" drill kill --role fleet_supervisor
+"${control[@]}" drill wait --role fleet_supervisor --timeout 900
+"${control[@]}" drill finish
+"${control[@]}" drill status --live
+```
+
+Require each exact-ID successor to recover within 15 minutes, two consecutive clean
+scheduler reads after cleanup, unchanged fairness/run state, and exact equality between
+the drill journal and final state history. Inspect and archive
+`$state/CONTROLLER_KILL_DRILL_COMPLETE.json`; `resume` rejects a missing, drifted, or
+stale drill proof.
 
 ## 6. Transactional resume and staged ramp
 
@@ -278,8 +427,8 @@ the scheduler join is unambiguous:
   --state-dir "$state" status --live
 ```
 
-The initial ceiling is 24. Advance only with the explicit `set-ceiling` command and the
-following observed clean windows:
+The initial ceiling is 24. Promotion is automatic and can occur only when the serialized
+monitor commits a read-only, checksummed evidence chain satisfying these windows:
 
 | ceiling | promotion requirement |
 | ---: | --- |
@@ -287,6 +436,31 @@ following observed clean windows:
 | 96 | six additional clean hours |
 | 192 | twelve additional clean hours |
 | 384 | every preceding gate and live-health check remains green |
+
+Each semantic evidence file records exact validated-QID totals for all three production
+runs, immutable-control and rollout identities, material fleet generation, current
+ceiling, integrity result, and critical findings. Five-minute health evidence makes the
+clean interval continuous; a gap longer than 660 seconds or any critical/unclean report
+resets the current stage window. A pause or material fleet-generation change also closes
+the throughput epoch and returns the ceiling to 24. Every promotion revalidates the
+checksummed readiness files and is appended to control history with the complete evidence
+list and digest. `set-ceiling` is retained only for an idempotent hold or manual decrease;
+it refuses every increase.
+
+The exact all-three-run QID-increase test applies to 24-to-96 only. Later promotions
+require non-regressing exact per-run totals plus their six- and twelve-hour clean windows;
+a run that has already completed cannot deadlock the ramp merely because it has no QID
+left to add. `monitor:qos-memory` and `monitor:starvation` remain warning-class alerts for
+operations, but are explicitly ramp-blocking alongside every critical alert: any such
+active finding returns an elevated ceiling to 24 and requires a new clean ramp.
+
+The supervised semantic cadence remains six hours. Its immediate post-resume scan creates
+the exact three-run baseline, and the five-minute health scans prove continuity, but only
+the next semantic scan can prove exact per-run QID gains. Consequently the ordinary
+24-to-96 promotion occurs at the first qualifying semantic poll—up to roughly six clean
+hours after the baseline rather than exactly at one hour—even though its minimum window
+is one hour; cached dispatcher counts are never substituted for semantic QID validation
+merely to promote earlier.
 
 The dispatcher enforces the 448 submitted-job QOS ceiling, reserves 64 jobs, uses arrays
 of at most 24, and requests 1 CPU/4 GB for each HTTP client. A cell receives `USR1` twenty
@@ -307,10 +481,11 @@ self-restart on this cluster, so the alert email and this command are the recove
 ## 7. Continuous acceptance and finalization
 
 The live monitor checks controllers, successors, heartbeats, admissions, endpoints,
-scheduler holds, disk, and new failures every five minutes; semantic/QID progress every
-six hours; and full manifest validation daily. Missing controllers, stale heartbeats,
-starvation, corrupt/permanent states, untrusted responses, QOS holds, and gate failures
-must create a durable alert and email.
+transactional fleet/hung-allocation state, scheduler holds, disk, and new failures every
+five minutes; semantic/QID progress every six hours; and full manifest validation daily.
+Missing controllers, stale heartbeats, starvation, corrupt/permanent states, untrusted
+responses, QOS holds, hung fleet allocations, and gate failures must create a durable
+alert and email.
 
 The first fully healthy production poll starts the throughput epoch. Controller
 successors do not reset it; pauses and material fleet changes close it and append a new

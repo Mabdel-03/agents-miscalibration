@@ -25,10 +25,33 @@ export ASYS_MODEL_CONTRACT_SHA256="{MODEL_CONTRACT_SHA256}"
 export ASYS_FLEET_CONTRACT_SHA256="{FLEET_CONTRACT_SHA256}"
 export ASYS_HARNESS_ENVIRONMENT_SHA256="{HARNESS_ENVIRONMENT_HASH}"
 export ASYS_SERVING_ENVIRONMENT_SHA256="{ENVIRONMENT_HASH}"
+export ASYS_RUNTIME_ATTESTATION="{RUNTIME_ATTESTATION}"
+export ASYS_RUNTIME_ATTESTATION_SHA256="{RUNTIME_ATTESTATION_SHA256}"
+export ASYS_RUNTIME_INTEGRITY_LEASE="{RUNTIME_INTEGRITY_LEASE}"
+export ASYS_IMMUTABLE_PINS_SHA256="{IMMUTABLE_PINS_SHA256}"
+export ASYS_ROLLOUT_GENERATION="{ROLLOUT_GENERATION}"
 export HF_HOME="{HF_HOME}"
 export VLLM_NO_USAGE_STATS=1
 export DO_NOT_TRACK=1
 export TOKENIZERS_PARALLELISM=false
+
+# Revalidate after Slurm starts the allocation.  A server may remain pending long
+# after its launch intent was rendered.  The controller-refreshed, generation-bound
+# lease proves that a complete metadata scan was recent before vLLM executes.
+if [ "{PRODUCTION_RUNTIME}" = "1" ]; then
+  LD_LIBRARY_PATH="{HARNESS_PREFIX}/lib" "{HARNESS_PYTHON}" -I -m \
+    agents_scaling.runtime_integrity \
+    --lease "{RUNTIME_INTEGRITY_LEASE}" \
+    --attestation "{RUNTIME_ATTESTATION}" \
+    --attestation-sha256 "{RUNTIME_ATTESTATION_SHA256}" \
+    --generation {ROLLOUT_GENERATION} \
+    --release-id "{RELEASE_ID}" \
+    --immutable-pins-sha256 "{IMMUTABLE_PINS_SHA256}" \
+    --environment-hash "harness={HARNESS_ENVIRONMENT_HASH}" \
+    --environment-hash "serving={ENVIRONMENT_HASH}" \
+    --environment-prefix "harness={HARNESS_PREFIX}" \
+    --environment-prefix "serving={SERVING_PREFIX}"
+fi
 
 # Run both probes with the exact immutable interpreters.  In schema-5 production the
 # expected versions come directly from the checksummed environment manifests; no shell

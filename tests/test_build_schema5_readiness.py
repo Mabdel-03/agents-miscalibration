@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
 import subprocess
@@ -11,6 +12,7 @@ import subprocess
 import pytest
 
 from scripts import build_schema5_readiness as readiness
+from scripts import create_recovery_snapshot as recovery_snapshot
 from slurm import schema5_control as control
 from slurm import keepalive
 from agents_scaling.serving.fleet_contract import load_fleet_contract
@@ -95,9 +97,14 @@ def _snapshot_attestation(tmp_path: Path, name: str) -> Path:
     )
 
 
-def _legacy_cleanup(tmp_path: Path) -> Path:
+def _legacy_cleanup(
+    tmp_path: Path, *, evidence_accounting: dict[str, int] | None = None
+) -> Path:
+    results = tmp_path / "results"
+    recovery = results / "recovery" / "schema5-v1"
+    operations = recovery / "operations" / "legacy_consolidation"
     response = _write(
-        tmp_path / "response.json",
+        operations / "response_incident_archive_report.json",
         {
             "schema_version": 1,
             "passed": True,
@@ -108,7 +115,7 @@ def _legacy_cleanup(tmp_path: Path) -> Path:
         },
     )
     checkpoint = _write(
-        tmp_path / "checkpoint.json",
+        operations / "checkpoint_migration_report.json",
         {
             "schema_version": 1,
             "passed": True,
@@ -119,7 +126,7 @@ def _legacy_cleanup(tmp_path: Path) -> Path:
         },
     )
     permanent = _write(
-        tmp_path / "permanent.json",
+        operations / "permanent_ledger_archive_report.json",
         {
             "schema_version": 1,
             "passed": True,
@@ -129,7 +136,7 @@ def _legacy_cleanup(tmp_path: Path) -> Path:
         },
     )
     semantic = _write(
-        tmp_path / "semantic.json",
+        operations / "legacy_semantic_audit_report.json",
         {
             "schema_version": 1,
             "kind": "legacy_semantic_audit",
@@ -140,14 +147,19 @@ def _legacy_cleanup(tmp_path: Path) -> Path:
             "referenced_artifacts": [],
         },
     )
-    return _write(
-        tmp_path / "LEGACY_CLEANUP_COMPLETE.json",
+    marker = _write(
+        recovery / "LEGACY_CLEANUP_COMPLETE.json",
         {
             "schema_version": 1,
             "status": "complete",
             "passed": True,
             "snapshot_id": "pre",
             "migration_metrics": readiness.MIGRATION_OUTER_METRICS,
+            "evidence_accounting": (
+                readiness.EVIDENCE_ACCOUNTING
+                if evidence_accounting is None
+                else evidence_accounting
+            ),
             "semantic_metrics": readiness.SEMANTIC_METRICS,
             "artifacts": [
                 _ref("response_incident_archive_report", response),
@@ -157,6 +169,34 @@ def _legacy_cleanup(tmp_path: Path) -> Path:
             ],
         },
     )
+    sources = []
+    for run_id in (
+        "full_sweep_v1",
+        "full_sweep_agent_counts_v1",
+        "full_sweep_agent_count_7_v1",
+    ):
+        root = results / run_id
+        root.mkdir(parents=True)
+        (root / "evidence.txt").write_text(f"{run_id}\n", encoding="utf-8")
+        sources.append(recovery_snapshot.Source(run_id, root.resolve()))
+    dispatcher = results / ".dispatcher-v3"
+    dispatcher.mkdir()
+    (dispatcher / "state.txt").write_text("retired\n", encoding="utf-8")
+    sources.extend(
+        (
+            recovery_snapshot.Source("dispatcher_v3", dispatcher.resolve()),
+            recovery_snapshot.Source(
+                "legacy_cleanup_evidence", operations.resolve()
+            ),
+            recovery_snapshot.Source("legacy_cleanup_complete", marker.resolve()),
+        )
+    )
+    sealed = recovery / "legacy_consolidated"
+    recovery_snapshot.create_snapshot(sealed, sources, apply=True)
+    recovery_snapshot.write_snapshot_attestation(
+        sealed, recovery / "legacy_consolidated.attestation.json"
+    )
+    return marker
 
 
 def test_snapshot_gate_verifies_both_distinct_sealed_snapshots(tmp_path: Path):
@@ -200,6 +240,85 @@ def test_migration_and_semantic_gates_wrap_checksums_not_assertions(tmp_path: Pa
     [source] = wrapper["referenced_artifacts"]
     assert source["name"] == "consolidated_response_report"
     assert source["sha256"] == _sha(Path(source["path"]))
+    proxy = json.loads(Path(source["path"]).read_text(encoding="utf-8"))
+    assert proxy["sealed_snapshot_member"]["logical_path"].startswith(
+        "legacy_cleanup_evidence/"
+    )
+    [snapshot_reference] = proxy["referenced_artifacts"]
+    assert snapshot_reference["name"] == "legacy_consolidated_external_attestation"
+
+
+@pytest.mark.parametrize(
+    ("forgery", "error"),
+    (
+        ("logical_path", "absent from snapshot inventory|topology differs"),
+        ("sha256", "payload hash drifted"),
+        ("snapshot_id", "does not address exactly one"),
+        ("snapshot_root", "does not address exactly one"),
+    ),
+)
+def test_sealed_snapshot_member_is_independently_bound_to_inventory(
+    tmp_path: Path, forgery: str, error: str
+) -> None:
+    marker = _legacy_cleanup(tmp_path)
+    migrations = readiness.build_migrations_gate(
+        {"immutable_sha256": IMMUTABLE_SHA},
+        cleanup_marker=marker,
+        output=tmp_path / "migrations.json",
+    )
+    wrapper = json.loads(
+        Path(migrations["artifacts"][0]["path"]).read_text(encoding="utf-8")
+    )
+    source_reference = wrapper["referenced_artifacts"][0]
+    proxy_path = Path(source_reference["path"])
+    proxy = json.loads(proxy_path.read_text(encoding="utf-8"))
+    member = proxy["sealed_snapshot_member"]
+    true_root = Path(member["snapshot_root"])
+    true_candidate = true_root / member["logical_path"]
+
+    if forgery == "logical_path":
+        true_root.chmod(0o755)
+        unlisted = true_root / "unlisted-member.json"
+        unlisted.write_bytes(true_candidate.read_bytes())
+        unlisted.chmod(0o444)
+        true_root.chmod(0o555)
+        member["logical_path"] = "unlisted-member.json"
+    elif forgery == "sha256":
+        member["sha256"] = "0" * 64
+    elif forgery == "snapshot_id":
+        member["snapshot_id"] = "forged-snapshot-id"
+    else:
+        other_root = tmp_path / "other-sealed-root"
+        other_candidate = other_root / member["logical_path"]
+        other_candidate.parent.mkdir(parents=True)
+        other_candidate.write_bytes(true_candidate.read_bytes())
+        other_candidate.chmod(0o444)
+        for directory in sorted(
+            [other_candidate.parent, *other_candidate.parents],
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            if directory == tmp_path.parent:
+                break
+            if directory == tmp_path:
+                continue
+            if directory == other_root or other_root in directory.parents:
+                directory.chmod(0o555)
+        member["snapshot_root"] = str(other_root.resolve())
+
+    proxy_path.chmod(0o644)
+    proxy_path.write_text(json.dumps(proxy, sort_keys=True) + "\n", encoding="utf-8")
+    proxy_path.chmod(0o444)
+    forged_reference = dict(source_reference)
+    forged_reference["sha256"] = _sha(proxy_path)
+    with pytest.raises(control.ReadinessError, match=error):
+        control._validate_referenced_artifact(
+            forged_reference,
+            context="forged sealed member",
+            verified=set(),
+            active=set(),
+            snapshot_context=control._SnapshotValidationContext(full=True),
+        )
 
 
 def test_migration_gate_rejects_marker_metric_forgery(tmp_path: Path):
@@ -207,12 +326,73 @@ def test_migration_gate_rejects_marker_metric_forgery(tmp_path: Path):
     payload = json.loads(marker.read_text(encoding="utf-8"))
     payload["migration_metrics"]["sealed_incident_qids"] = 1_063
     _write(marker, payload)
-    with pytest.raises(readiness.EvidenceError, match="metrics drifted"):
+    with pytest.raises(readiness.EvidenceError, match="drifted"):
         readiness.build_migrations_gate(
             {"immutable_sha256": IMMUTABLE_SHA},
             cleanup_marker=marker,
             output=tmp_path / "gate.json",
         )
+
+
+def test_migration_gate_rejects_cleanup_evidence_accounting_forgery(
+    tmp_path: Path,
+) -> None:
+    forged = dict(readiness.EVIDENCE_ACCOUNTING)
+    forged["frozen_baseline_validated_qids"] = 889_131
+    marker = _legacy_cleanup(tmp_path, evidence_accounting=forged)
+    with pytest.raises(readiness.EvidenceError, match="evidence accounting drifted"):
+        readiness.build_migrations_gate(
+            {"immutable_sha256": IMMUTABLE_SHA},
+            cleanup_marker=marker,
+            output=tmp_path / "gate.json",
+        )
+
+
+def test_migration_gate_rejects_live_report_drift_from_sealed_snapshot(
+    tmp_path: Path,
+) -> None:
+    marker = _legacy_cleanup(tmp_path)
+    response = (
+        marker.parent
+        / "operations"
+        / "legacy_consolidation"
+        / "response_incident_archive_report.json"
+    )
+    response.write_text('{"passed":false}\n', encoding="utf-8")
+    with pytest.raises(readiness.EvidenceError, match="live/sealed"):
+        readiness.build_migrations_gate(
+            {"immutable_sha256": IMMUTABLE_SHA},
+            cleanup_marker=marker,
+            output=tmp_path / "gate.json",
+        )
+
+
+def test_published_migration_gate_depends_only_on_sealed_snapshot_graph(
+    tmp_path: Path,
+) -> None:
+    current = {"immutable_sha256": IMMUTABLE_SHA}
+    marker = _legacy_cleanup(tmp_path)
+    output = tmp_path / "readiness" / "migrations.json"
+    readiness.build_migrations_gate(
+        current, cleanup_marker=marker, output=output
+    )
+
+    # The builder requires live and sealed evidence to agree.  Once published, the
+    # controller's recursive graph terminates at the sealed snapshot attestation, not
+    # at these mutable convenience copies.
+    live_response = (
+        marker.parent
+        / "operations"
+        / "legacy_consolidation"
+        / "response_incident_archive_report.json"
+    )
+    live_response.write_text('{"passed":false}\n', encoding="utf-8")
+    control._validate_attestation(
+        current,
+        "migrations",
+        output,
+        _sha(output),
+    )
 
 
 def test_outer_marker_is_not_published_until_controller_validation_passes(
@@ -303,6 +483,80 @@ def test_registry_reader_rejects_duplicate_replica_identity(tmp_path: Path):
         readiness._registry_records(tmp_path)
 
 
+def test_fleet_runtime_proof_projects_exact_paused_next_generation(
+    tmp_path: Path, monkeypatch
+):
+    state = tmp_path / "state"
+    state.mkdir()
+    current = {
+        "immutable_sha256": IMMUTABLE_SHA,
+        "desired_state": "paused",
+        "drain_requested": False,
+        "rollout_generation": 3,
+        "immutable": {},
+    }
+    attestation = {
+        "schema_version": 1,
+        "generation": 4,
+        "path": str(state / "runtime.g000004.json"),
+        "sha256": "1" * 64,
+        "attestation_id": "2" * 64,
+        "lease_path": str(state / "lease.g000004.json"),
+    }
+    calls = []
+    monkeypatch.setattr(control, "control_lock", lambda _state: nullcontext())
+    monkeypatch.setattr(control, "load_control", lambda *_args, **_kwargs: current)
+
+    def ensure(_state, observed, *, generation, force_full):
+        calls.append((observed, generation, force_full))
+        return attestation
+
+    monkeypatch.setattr(control, "ensure_runtime_integrity_attestation", ensure)
+
+    def validate(projected, *, verify_metadata):
+        assert projected["rollout_generation"] == 4
+        assert projected[control.RUNTIME_ATTESTATION_STATE_KEY] == attestation
+        assert verify_metadata is True
+
+    monkeypatch.setattr(control, "validate_runtime_integrity_attestation", validate)
+    monkeypatch.setattr(
+        control,
+        "production_environment",
+        lambda projected: {
+            "ASYS_RUNTIME_ATTESTATION": projected["runtime_integrity"]["path"],
+            "ASYS_RUNTIME_ATTESTATION_SHA256": projected["runtime_integrity"][
+                "sha256"
+            ],
+            "ASYS_RUNTIME_INTEGRITY_LEASE": projected["runtime_integrity"][
+                "lease_path"
+            ],
+            "ASYS_IMMUTABLE_PINS_SHA256": IMMUTABLE_SHA,
+            "ASYS_ROLLOUT_GENERATION": str(projected["rollout_generation"]),
+        },
+    )
+
+    observed = readiness._paused_next_generation_runtime_environment(
+        current, state_dir=state
+    )
+    assert observed["ASYS_ROLLOUT_GENERATION"] == "4"
+    assert calls == [(current, 4, False)]
+
+
+def test_fleet_runtime_proof_rejects_running_control(tmp_path: Path, monkeypatch):
+    current = {
+        "immutable_sha256": IMMUTABLE_SHA,
+        "desired_state": "running",
+        "drain_requested": False,
+        "rollout_generation": 1,
+    }
+    monkeypatch.setattr(control, "control_lock", lambda _state: nullcontext())
+    monkeypatch.setattr(control, "load_control", lambda *_args, **_kwargs: current)
+    with pytest.raises(readiness.EvidenceError, match="paused, non-draining"):
+        readiness._paused_next_generation_runtime_environment(
+            current, state_dir=tmp_path
+        )
+
+
 def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
     tmp_path: Path, monkeypatch
 ):
@@ -334,7 +588,7 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
             served_model_name=profile.served_model_name,
             max_model_len=profile.max_model_len,
             tp_size=profile.tp_size,
-            release_id="sweep-recovery-schema5-v1",
+            release_id="sweep-recovery-schema5-v1.1",
             environment_hash=environment_hash,
             model_revision=identity.model_revision,
             tokenizer_id=identity.tokenizer_id,
@@ -370,7 +624,7 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
             server_pool_id="schema5-v1",
             replica_id=replica.replica_id,
             replica_index=replica.replica_index,
-            release_id="sweep-recovery-schema5-v1",
+            release_id="sweep-recovery-schema5-v1.1",
             environment_hash=environment_hash,
             model_revision=identity.model_revision,
             tokenizer_id=identity.tokenizer_id,
@@ -386,6 +640,17 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
         lambda **_kwargs: scheduler,
     )
     monkeypatch.setattr(readiness, "_verify_registry", lambda **_kwargs: records)
+    monkeypatch.setattr(
+        readiness,
+        "_paused_next_generation_runtime_environment",
+        lambda *_args, **_kwargs: {
+            "ASYS_RUNTIME_ATTESTATION": str(tmp_path / "runtime.g000001.json"),
+            "ASYS_RUNTIME_ATTESTATION_SHA256": "1" * 64,
+            "ASYS_RUNTIME_INTEGRITY_LEASE": str(tmp_path / "lease.g000001.json"),
+            "ASYS_IMMUTABLE_PINS_SHA256": IMMUTABLE_SHA,
+            "ASYS_ROLLOUT_GENERATION": "1",
+        },
+    )
 
     def scheduler_runner(_argv, _timeout):
         return subprocess.CompletedProcess([], 0, "", "")
@@ -404,7 +669,8 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
     current = {
         "immutable_sha256": IMMUTABLE_SHA,
         "immutable": {
-            "release_id": "sweep-recovery-schema5-v1",
+            "release_worktree": str(Path.cwd().resolve()),
+            "release_id": "sweep-recovery-schema5-v1.1",
             "model_contract_path": str(model_path),
             "model_contract_sha256": model_hash,
             "fleet_contract_path": str(fleet_path),
@@ -422,6 +688,7 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
     report = readiness.build_fleet_gate(
         current,
         output=tmp_path / "fleet.json",
+        state_dir=tmp_path / "state",
         scheduler_runner=scheduler_runner,
         probe=probe,
         now=lambda: 100.0,

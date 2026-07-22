@@ -26,6 +26,7 @@
     "daily": 86400
   },
   "throughput": {
+    "material_capacity_layout_generation": 1,
     "minimum_observation_hours": 48,
     "window_hours": 48,
     "target_completion_days": 28,

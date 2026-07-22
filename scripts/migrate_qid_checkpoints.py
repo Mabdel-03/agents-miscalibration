@@ -1268,6 +1268,7 @@ def _record_checkpoint_plans(
                 "after_sha256": plan.target_sha256,
                 "before_size": len(plan.source_text.encode("utf-8")),
                 "after_size": len(plan.target_text.encode("utf-8")),
+                "after_schema_version": CHECKPOINT_SCHEMA_VERSION,
                 "evidence_id": plan.evidence["evidence_id"],
                 "complete_preimage_embedded_in_incident": True,
             }
@@ -1383,6 +1384,7 @@ def migrate_run(
     apply: bool = False,
     benchmark_loader: BenchmarkLoader = load_benchmark,
     migration_timestamp: float | None = None,
+    excluded_cell_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Audit or atomically migrate one checksum-frozen run."""
 
@@ -1416,9 +1418,19 @@ def migrate_run(
         migration_timestamp=planned_migration_timestamp,
     )
     cells_root = root / "cells"
+    excluded = set(excluded_cell_ids or ())
+    unknown_exclusions = excluded - set(snapshot.ids)
+    if unknown_exclusions:
+        raise MigrationError(
+            "excluded checkpoint cells are absent from the frozen manifest: "
+            f"{sorted(unknown_exclusions)!r}"
+        )
+    report["explicitly_excluded_cells"] = sorted(excluded)
 
     def process(staging_root: Path) -> None:
         for manifest_index, cell in enumerate(snapshot.cells):
+            if cell.cell_id in excluded:
+                continue
             cell_directory = cells_root / cell.cell_id
             if not cell_directory.exists():
                 continue

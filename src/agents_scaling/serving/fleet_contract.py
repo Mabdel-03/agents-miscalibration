@@ -21,7 +21,7 @@ from agents_scaling.serving.profiles import SERVING_PROFILES
 
 
 FLEET_ID = "schema5-v1"
-RELEASE_ID = "sweep-recovery-schema5-v1"
+RELEASE_ID = "sweep-recovery-schema5-v1.1"
 EXPECTED_COUNTS = {
     "0.6B": 2,
     "1.7B": 2,

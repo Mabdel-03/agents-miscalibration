@@ -118,6 +118,8 @@ def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(tmp_path)
         "command": "conda create --yes --copy --prefix DEST --clone SOURCE",
         "CONDA_ALWAYS_COPY": "true",
         "shared_regular_inode_count": 0,
+        "source_prefix_target_symlink_count": 0,
+        "unresolvable_symlink_count": 0,
     }
     assert report["harness_install_contract"]["editable"] is False
     assert report["harness_install_contract"]["index_access"] is False
@@ -164,6 +166,151 @@ def test_copy_verifier_rejects_shared_regular_inodes(tmp_path):
         materialize.verify_independent_copy(source, linked)
 
 
+def test_safe_destination_rejects_lexical_leaf_symlink(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(materialize.MaterializationError, match="symlinked destination"):
+        materialize._safe_destination(alias, description="destination")
+
+
+def test_clone_symlink_audit_records_internal_link_and_rejects_external(tmp_path):
+    source_harness = _source_prefix(tmp_path, "source-harness")
+    source_serving = _source_prefix(tmp_path, "source-serving")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    (destination / "internal-target").write_text("inside\n", encoding="utf-8")
+    (destination / "internal-link").symlink_to("internal-target")
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "target").write_text("outside\n", encoding="utf-8")
+    report = materialize.verify_clone_symlinks(
+        destination,
+        source_prefixes=(source_serving, source_harness),
+    )
+
+    assert report == {
+        "symlink_audit_source_prefixes": sorted(
+            (str(source_harness.resolve()), str(source_serving.resolve()))
+        ),
+        "destination_symlink_count": 1,
+        "destination_internal_symlink_count": 1,
+        "destination_external_symlink_count": 0,
+        "source_prefix_target_symlink_count": 0,
+        "unresolvable_symlink_count": 0,
+    }
+
+    (destination / "external-relative").symlink_to(
+        os.path.relpath(external / "target", destination)
+    )
+    with pytest.raises(materialize.MaterializationError, match="unpinned external"):
+        materialize.verify_clone_symlinks(
+            destination,
+            source_prefixes=(source_serving, source_harness),
+        )
+
+
+def test_clone_symlink_audit_rejects_transitive_source_prefix_target(tmp_path):
+    source_harness = _source_prefix(tmp_path, "source-harness")
+    source_serving = _source_prefix(tmp_path, "source-serving")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    bridge = tmp_path / "bridge"
+    bridge.symlink_to(source_serving / "bin" / "python")
+    (destination / "python").symlink_to(bridge)
+
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="unpinned external|mutable source prefix",
+    ):
+        materialize.verify_clone_symlinks(
+            destination,
+            source_prefixes=(source_harness, source_serving),
+        )
+
+
+def test_clone_symlink_audit_rejects_external_hop_that_reenters_clone(tmp_path):
+    source = _source_prefix(tmp_path, "source")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    target = destination / "target"
+    target.write_text("inside\n", encoding="utf-8")
+    external_bridge = tmp_path / "external-bridge"
+    external_bridge.symlink_to(target)
+    (destination / "link").symlink_to(external_bridge)
+
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="unpinned external symlink dependency",
+    ):
+        materialize.verify_clone_symlinks(
+            destination,
+            source_prefixes=(source,),
+        )
+
+
+def test_clone_symlink_audit_rejects_source_owned_hop_that_resolves_outward(tmp_path):
+    source = _source_prefix(tmp_path, "source")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    external = tmp_path / "external"
+    external.write_text("outside\n", encoding="utf-8")
+    (source / "bridge").symlink_to(external)
+    (destination / "link").symlink_to(source / "bridge")
+
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="dependency enters a mutable source prefix",
+    ):
+        materialize.verify_clone_symlinks(
+            destination,
+            source_prefixes=(source,),
+        )
+
+
+@pytest.mark.parametrize("target", ("missing-target", "loop"))
+def test_clone_symlink_audit_rejects_unresolvable_link(tmp_path, target):
+    source = _source_prefix(tmp_path, "source")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    (destination / "loop").symlink_to(target)
+
+    with pytest.raises(materialize.MaterializationError, match="unresolvable symlink"):
+        materialize.verify_clone_symlinks(
+            destination,
+            source_prefixes=(source,),
+        )
+
+
+def test_clone_identity_records_symlink_independence_contract(tmp_path, monkeypatch):
+    source_harness = _source_prefix(tmp_path, "source-harness")
+    source_serving = _source_prefix(tmp_path, "source-serving")
+    destination = tmp_path / "destination"
+    (destination / "bin").mkdir(parents=True)
+    (destination / "bin" / "python").write_text("python\n", encoding="utf-8")
+    (destination / "bin" / "python-link").symlink_to("python")
+    monkeypatch.setattr(materialize.freeze, "_conda_lock", lambda *args, **kwargs: [])
+    monkeypatch.setattr(materialize, "_raw_pip_freeze", lambda *args, **kwargs: [])
+
+    report = materialize._clone_identity(
+        source=source_harness,
+        destination=destination,
+        conda_executable=_fake_conda(tmp_path),
+        source_prefixes=(source_serving, source_harness),
+    )
+
+    assert report["symlink_audit_source_prefixes"] == sorted(
+        (str(source_harness.resolve()), str(source_serving.resolve()))
+    )
+    assert report["destination_symlink_count"] == 1
+    assert report["destination_internal_symlink_count"] == 1
+    assert report["destination_external_symlink_count"] == 0
+    assert report["source_prefix_target_symlink_count"] == 0
+    assert report["unresolvable_symlink_count"] == 0
+
+
 def test_clone_stage_uses_copy_flag_and_is_idempotent(tmp_path, monkeypatch):
     source = _source_prefix(tmp_path, "source")
     destination = tmp_path / "destination"
@@ -191,6 +338,12 @@ def test_clone_stage_uses_copy_flag_and_is_idempotent(tmp_path, monkeypatch):
             "source_regular_file_count": 2,
             "destination_regular_file_count": 2,
             "shared_regular_inode_count": 0,
+            "symlink_audit_source_prefixes": [str(source.resolve())],
+            "destination_symlink_count": 0,
+            "destination_internal_symlink_count": 0,
+            "destination_external_symlink_count": 0,
+            "source_prefix_target_symlink_count": 0,
+            "unresolvable_symlink_count": 0,
         },
     )
 
@@ -225,6 +378,46 @@ def test_clone_stage_uses_copy_flag_and_is_idempotent(tmp_path, monkeypatch):
     assert call["env"]["CONDA_ALWAYS_COPY"] == "true"
 
 
+@pytest.mark.parametrize("mutation", ("regular_file", "internal_symlink"))
+def test_clone_stage_resume_rejects_live_identity_drift(tmp_path, monkeypatch, mutation):
+    source = _source_prefix(tmp_path, "source")
+    destination = tmp_path / "destination"
+    shutil.copytree(source, destination)
+    output = tmp_path / "state"
+    output.mkdir()
+    conda = _fake_conda(tmp_path)
+    monkeypatch.setattr(materialize.freeze, "_conda_lock", lambda *args, **kwargs: [])
+    monkeypatch.setattr(materialize, "_raw_pip_freeze", lambda *args, **kwargs: [])
+    identity = materialize._clone_identity(
+        source=source,
+        destination=destination,
+        conda_executable=conda,
+        source_prefixes=(source,),
+    )
+    materialize._write_stage(
+        output,
+        "serving_clone",
+        materialize._stage_payload("serving_clone", identity),
+    )
+    if mutation == "regular_file":
+        (destination / "new-file").write_text("drift\n", encoding="utf-8")
+        message = "clone identity drifted"
+    else:
+        (destination / "target").write_text("target\n", encoding="utf-8")
+        (destination / "link").symlink_to("target")
+        message = "symlink audit drifted"
+
+    with pytest.raises(materialize.MaterializationError, match=message):
+        materialize._materialize_clone(
+            role="serving",
+            source=source,
+            destination=destination,
+            output_root=output,
+            conda_executable=conda,
+            source_prefixes=(source,),
+        )
+
+
 def test_harness_install_is_noneditable_no_deps_no_index_and_stage_bound(
     tmp_path, monkeypatch
 ):
@@ -257,6 +450,16 @@ def test_harness_install_is_noneditable_no_deps_no_index_and_stage_bound(
         "version": "0.1.0",
         "direct_url": {"url": worktree.resolve().as_uri(), "dir_info": {}},
     }
+    build_evidence = {
+        "generated_paths": [],
+        "archive_path": None,
+        "archive_inventory_sha256": None,
+    }
+    build_evidence_marker = {
+        "filename": materialize.BUILD_EVIDENCE_COMPLETE_MARKER,
+        "sha256": "7" * 64,
+        "record_sha256": "8" * 64,
+    }
     calls = []
     monkeypatch.setattr(
         materialize,
@@ -272,29 +475,54 @@ def test_harness_install_is_noneditable_no_deps_no_index_and_stage_bound(
     monkeypatch.setattr(
         materialize,
         "_archive_release_build_evidence",
-        lambda **kwargs: {
-            "generated_paths": [],
-            "archive_path": None,
-            "archive_inventory_sha256": None,
-        },
+        lambda **kwargs: dict(build_evidence),
+    )
+    monkeypatch.setattr(
+        materialize,
+        "_load_completed_build_evidence",
+        lambda **kwargs: (dict(build_evidence), dict(build_evidence_marker)),
     )
     monkeypatch.setattr(
         materialize.freeze,
         "verify_clean_exact_tag",
         lambda path: dict(git_identity),
     )
+    post_install_identity = {
+        "conda_explicit_sha256": "4" * 64,
+        "pip_freeze_sha256": "5" * 64,
+        "content_inventory_sha256": "6" * 64,
+        "content_inventory_entry_count": 3,
+        "content_inventory_file_count": 1,
+        "content_inventory_symlink_count": 0,
+        "symlink_audit_source_prefixes": [str(worktree.resolve())],
+        "destination_symlink_count": 0,
+        "destination_internal_symlink_count": 0,
+        "destination_external_symlink_count": 0,
+        "source_prefix_target_symlink_count": 0,
+        "unresolvable_symlink_count": 0,
+    }
+    monkeypatch.setattr(
+        materialize,
+        "_post_install_identity",
+        lambda **kwargs: (dict(post_install_identity), binding),
+    )
+    conda = _fake_conda(tmp_path)
 
     first = materialize._materialize_harness_package(
         harness_prefix=harness,
         release_worktree=worktree,
         output_root=output,
         git_identity=git_identity,
+        conda_executable=conda,
+        source_prefixes=(worktree,),
     )
     second = materialize._materialize_harness_package(
         harness_prefix=harness,
         release_worktree=worktree,
         output_root=output,
         git_identity=git_identity,
+        conda_executable=conda,
+        source_prefixes=(worktree,),
     )
 
     assert first == second
@@ -380,7 +608,121 @@ def test_setuptools_byproduct_is_atomically_retained_and_worktree_recovers_clean
         archive / "src" / "agents_scaling.egg-info" / "PKG-INFO"
     ).read_text(encoding="utf-8") == "Name: agents_scaling\n"
     materialize._verify_build_evidence(evidence, output_root=output)
+    loaded, marker = materialize._load_completed_build_evidence(
+        release_worktree=worktree,
+        output_root=output,
+    )
+    assert loaded == evidence
+    assert marker["filename"] == materialize.BUILD_EVIDENCE_COMPLETE_MARKER
+    assert len(marker["sha256"]) == 64
     assert (
         materialize.freeze.verify_clean_exact_tag(worktree)["git_tag"]
         == materialize.REQUIRED_TAG
+    )
+
+
+def test_harness_package_retry_adopts_completed_build_evidence_without_reinstall(
+    tmp_path,
+    monkeypatch,
+):
+    worktree, _commit = _tagged_repository(tmp_path)
+    git_identity = materialize.freeze.verify_clean_exact_tag(worktree)
+    generated = worktree / "src" / "agents_scaling.egg-info"
+    generated.mkdir(parents=True)
+    (generated / "PKG-INFO").write_text(
+        "Name: agents_scaling\n", encoding="utf-8"
+    )
+    harness = tmp_path / "harness"
+    (harness / "bin").mkdir(parents=True)
+    (harness / "bin" / "python").write_text("python\n", encoding="utf-8")
+    output = tmp_path / "materialization"
+    output.mkdir()
+    binding = {
+        "name": "agents_scaling",
+        "version": "0.1.0",
+        "editable": False,
+    }
+    post_install_identity = {
+        "conda_explicit_sha256": "1" * 64,
+        "pip_freeze_sha256": "2" * 64,
+    }
+    calls: list[list[str]] = []
+    real_run = materialize._run
+
+    def track_package_commands(argv, **kwargs):
+        if str(argv[0]) == str(harness / "bin" / "python"):
+            calls.append(list(argv))
+            return ""
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(
+        materialize,
+        "_run",
+        track_package_commands,
+    )
+    monkeypatch.setattr(
+        materialize,
+        "_post_install_identity",
+        lambda **kwargs: (dict(post_install_identity), dict(binding)),
+    )
+    monkeypatch.setattr(
+        materialize,
+        "verify_harness_import",
+        lambda *args: {"verified": True},
+    )
+    real_write_stage = materialize._write_stage
+
+    def crash_before_package_stage(output_root, stage, payload):
+        assert stage == "harness_package"
+        raise RuntimeError("simulated crash before package stage")
+
+    monkeypatch.setattr(materialize, "_write_stage", crash_before_package_stage)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        materialize._materialize_harness_package(
+            harness_prefix=harness,
+            release_worktree=worktree,
+            output_root=output,
+            git_identity=git_identity,
+            conda_executable=_fake_conda(tmp_path),
+            source_prefixes=(worktree,),
+        )
+
+    assert len(calls) == 2
+    assert (output / materialize.BUILD_EVIDENCE_COMPLETE_MARKER).is_file()
+    assert not (output / materialize.STAGE_FILENAMES["harness_package"]).exists()
+
+    monkeypatch.setattr(materialize, "_write_stage", real_write_stage)
+    archived_package_info = (
+        output
+        / "build_evidence"
+        / "src"
+        / "agents_scaling.egg-info"
+        / "PKG-INFO"
+    )
+    pristine_evidence = archived_package_info.read_bytes()
+    archived_package_info.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(materialize.MaterializationError, match="archive drifted"):
+        materialize._materialize_harness_package(
+            harness_prefix=harness,
+            release_worktree=worktree,
+            output_root=output,
+            git_identity=git_identity,
+            conda_executable=_fake_conda(tmp_path),
+            source_prefixes=(worktree,),
+        )
+    assert len(calls) == 2
+    archived_package_info.write_bytes(pristine_evidence)
+
+    recovered = materialize._materialize_harness_package(
+        harness_prefix=harness,
+        release_worktree=worktree,
+        output_root=output,
+        git_identity=git_identity,
+        conda_executable=_fake_conda(tmp_path),
+        source_prefixes=(worktree,),
+    )
+
+    assert len(calls) == 2
+    assert recovered["build_evidence_marker"]["filename"] == (
+        materialize.BUILD_EVIDENCE_COMPLETE_MARKER
     )

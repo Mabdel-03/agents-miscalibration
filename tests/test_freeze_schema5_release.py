@@ -13,10 +13,57 @@ import subprocess
 import pytest
 
 from scripts import freeze_schema5_release as freeze
+from scripts import materialize_schema5_release as materialize
 from slurm import schema5_control
 
 
 REPO = Path(__file__).resolve().parent.parent
+_REAL_VERIFIED_MATERIALIZATION_BINDING = freeze._verified_materialization_binding
+_REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE = (
+    freeze._verify_bound_materialization_evidence
+)
+
+
+@pytest.fixture(autouse=True)
+def _stub_materialization_binding(monkeypatch):
+    def binding(*, output_root, release_worktree, harness_prefix, serving_prefix):
+        root = Path(output_root).parent
+        mutable_source_root = Path(release_worktree).with_name(
+            Path(release_worktree).name + ".mutable-source"
+        )
+        return {
+            "schema_version": materialize.SCHEMA_VERSION,
+            "release_id": freeze.RELEASE_ID,
+            "root": str(root),
+            "marker_path": str(root / freeze.MATERIALIZATION_COMPLETE_FILENAME),
+            "marker_sha256": "d" * 64,
+            "materialization_id": "e" * 64,
+            "tag_commit": freeze.verify_clean_exact_tag(release_worktree)["git_commit"],
+            "source_tree_sha256": freeze.verify_clean_exact_tag(release_worktree)[
+                "source_tree_sha256"
+            ],
+            "paths": {
+                "source_repository": str(mutable_source_root),
+                "release_worktree": str(release_worktree),
+                "source_harness_prefix": str(harness_prefix) + ".source",
+                "source_serving_prefix": str(serving_prefix) + ".source",
+                "harness_prefix": str(harness_prefix),
+                "serving_prefix": str(serving_prefix),
+            },
+            "stage_records": {
+                "worktree": {"record_sha256": "1" * 64},
+                "harness_clone": {"record_sha256": "2" * 64},
+                "serving_clone": {"record_sha256": "3" * 64},
+                "harness_package": {"record_sha256": "4" * 64},
+            },
+        }
+
+    monkeypatch.setattr(freeze, "_verified_materialization_binding", binding)
+    monkeypatch.setattr(
+        freeze,
+        "_verify_bound_materialization_evidence",
+        lambda evidence, **kwargs: dict(evidence),
+    )
 
 
 def _run(*argv: str, cwd: Path) -> str:
@@ -113,10 +160,11 @@ def _fake_environment(
         (
             "#!/bin/sh",
             'if [ "$1" = "-I" ] && [ "$2" = "-c" ]; then',
-            f"  printf '%s\\n' '{import_json}'",
-            'elif [ "$1" = "-c" ]; then',
-            f"  printf '%s\\n' '{json.dumps(runtime, sort_keys=True)}'",
-            'elif [ "$1" = "-m" ] && [ "$2" = "pip" ]; then',
+            '  case "$3" in',
+            f"    *SCHEMA5_RELEASE_IMPORT_PROBE*) printf '%s\\n' '{import_json}' ;;",
+            f"    *) printf '%s\\n' '{json.dumps(runtime, sort_keys=True)}' ;;",
+            "  esac",
+            'elif [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then',
             f"  printf '%s\\n' {pip_printf}",
             "else",
             "  exit 9",
@@ -128,6 +176,27 @@ def _fake_environment(
     python.write_text(script, encoding="utf-8")
     python.chmod(0o755)
     (prefix / "conda-meta" / "history").write_text("created\n", encoding="utf-8")
+    conda_records = (
+        {
+            "name": "python",
+            "version": "3.11.13",
+            "url": "https://conda.example.invalid/linux-64/python-3.11.13-h1.conda",
+            "sha256": "0123456789abcdef" * 4,
+        },
+        {
+            "name": "pip",
+            "version": "25.1",
+            "url": "https://conda.example.invalid/noarch/pip-25.1-pyhd8ed1ab_0.conda",
+            "sha256": "abcdef0123456789" * 4,
+        },
+    )
+    for record in conda_records:
+        record_path = (
+            prefix
+            / "conda-meta"
+            / f"{record['name']}-{record['version']}-test.json"
+        )
+        record_path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
     return prefix
 
 
@@ -161,6 +230,85 @@ def _inputs(tmp_path: Path) -> dict:
         "fleet_contract_path": worktree / "configs" / "schema5_fleet.v1.json",
         "conda_executable": _fake_conda(tmp_path),
     }
+
+
+def _install_real_materialization_evidence(
+    tmp_path: Path,
+    output: Path,
+    inputs: dict,
+    monkeypatch,
+) -> tuple[Path, Path, Path]:
+    """Install minimal sealed evidence accepted by the real bound verifier."""
+
+    root = output.parent
+    root.mkdir(parents=True, exist_ok=True)
+    source_repository = tmp_path / "mutable-source-repository"
+    source_harness = tmp_path / "mutable-source-harness"
+    source_serving = tmp_path / "mutable-source-serving"
+    for source in (source_repository, source_harness, source_serving):
+        source.mkdir()
+        (source / "mutable.txt").write_text("not release identity\n", encoding="utf-8")
+    git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
+    paths = {
+        "source_repository": str(source_repository),
+        "release_worktree": str(inputs["release_worktree"]),
+        "source_harness_prefix": str(source_harness),
+        "source_serving_prefix": str(source_serving),
+        "harness_prefix": str(inputs["harness_prefix"]),
+        "serving_prefix": str(inputs["serving_prefix"]),
+    }
+    stage_records = {}
+    for name, filename in materialize.STAGE_FILENAMES.items():
+        stage_payload = {
+            "schema_version": materialize.SCHEMA_VERSION,
+            "release_id": freeze.RELEASE_ID,
+            "stage": name,
+        }
+        stage_payload["record_sha256"] = hashlib.sha256(
+            materialize._json_bytes(stage_payload)
+        ).hexdigest()
+        stage_path = root / filename
+        stage_path.write_bytes(materialize._json_bytes(stage_payload))
+        stage_path.chmod(0o444)
+        stage_records[name] = {
+            "filename": filename,
+            "sha256": hashlib.sha256(stage_path.read_bytes()).hexdigest(),
+            "record_sha256": stage_payload["record_sha256"],
+        }
+    marker = {
+        "schema_version": materialize.SCHEMA_VERSION,
+        "release_id": freeze.RELEASE_ID,
+        "git_tag": freeze.REQUIRED_GIT_TAG,
+        "tag_commit": git_identity["git_commit"],
+        "source_tree_sha256": git_identity["source_tree_sha256"],
+        "paths": paths,
+        "complete": True,
+        "stage_records": stage_records,
+    }
+    marker["materialization_id"] = hashlib.sha256(
+        materialize._json_bytes(marker)
+    ).hexdigest()
+    marker_path = root / freeze.MATERIALIZATION_COMPLETE_FILENAME
+    marker_path.write_bytes(materialize._json_bytes(marker))
+    marker_path.chmod(0o444)
+    report = {
+        "status": "verified",
+        "release_id": freeze.RELEASE_ID,
+        "materialization_id": marker["materialization_id"],
+        "tag_commit": git_identity["git_commit"],
+        "source_tree_sha256": git_identity["source_tree_sha256"],
+        "paths": paths,
+    }
+    monkeypatch.setattr(materialize, "verify_materialization", lambda path: dict(report))
+    monkeypatch.setattr(
+        freeze, "_verified_materialization_binding", _REAL_VERIFIED_MATERIALIZATION_BINDING
+    )
+    monkeypatch.setattr(
+        freeze,
+        "_verify_bound_materialization_evidence",
+        _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE,
+    )
+    return source_repository, source_harness, source_serving
 
 
 def test_checked_in_fleet_is_exactly_22_replicas_and_24_gpus():
@@ -251,6 +399,140 @@ def test_git_identity_uses_control_plane_tree_hash_and_requires_clean_exact_tag(
         freeze.verify_clean_exact_tag(worktree)
 
 
+def test_runtime_probe_is_isolated_and_cannot_write_bytecode(tmp_path, monkeypatch):
+    prefix = tmp_path / "prefix"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "python").write_text("python\n", encoding="utf-8")
+    observed = {}
+    runtime = {
+        "python_version": "3.11.13",
+        "python_implementation": "CPython",
+        "cuda_version": None,
+        "packages": {
+            "torch": None,
+            "vllm": None,
+            "transformers": "4.57.1",
+            "tokenizers": "0.22.1",
+        },
+    }
+
+    def fake_run(argv, *, env=None):
+        observed["argv"] = tuple(argv)
+        observed["env"] = dict(env or {})
+        return json.dumps(runtime)
+
+    monkeypatch.setattr(freeze, "_run", fake_run)
+
+    assert freeze._collect_runtime(prefix, role="harness") == runtime
+    assert observed["argv"][1:3] == ("-I", "-c")
+    assert observed["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert observed["env"]["PYTHONNOUSERSITE"] == "1"
+
+
+def test_release_binding_requires_exact_verified_sibling_materialization(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "release-root" / "identity"
+    root = output.parent
+    root.mkdir()
+    marker_path = root / freeze.MATERIALIZATION_COMPLETE_FILENAME
+    git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
+    paths = {
+        "source_repository": str(inputs["release_worktree"]),
+        "release_worktree": str(inputs["release_worktree"]),
+        "source_harness_prefix": str(tmp_path / "source-harness"),
+        "source_serving_prefix": str(tmp_path / "source-serving"),
+        "harness_prefix": str(inputs["harness_prefix"]),
+        "serving_prefix": str(inputs["serving_prefix"]),
+    }
+    stage_records = {}
+    for name, filename in materialize.STAGE_FILENAMES.items():
+        stage_payload = {
+            "schema_version": materialize.SCHEMA_VERSION,
+            "release_id": freeze.RELEASE_ID,
+            "stage": name,
+        }
+        stage_payload["record_sha256"] = hashlib.sha256(
+            materialize._json_bytes(stage_payload)
+        ).hexdigest()
+        stage_path = root / filename
+        stage_path.write_bytes(materialize._json_bytes(stage_payload))
+        stage_path.chmod(0o444)
+        stage_records[name] = {
+            "filename": filename,
+            "sha256": hashlib.sha256(stage_path.read_bytes()).hexdigest(),
+            "record_sha256": stage_payload["record_sha256"],
+        }
+    marker = {
+        "schema_version": materialize.SCHEMA_VERSION,
+        "release_id": freeze.RELEASE_ID,
+        "git_tag": freeze.REQUIRED_GIT_TAG,
+        "tag_commit": git_identity["git_commit"],
+        "source_tree_sha256": git_identity["source_tree_sha256"],
+        "paths": paths,
+        "complete": True,
+        "stage_records": stage_records,
+    }
+    marker["materialization_id"] = hashlib.sha256(
+        materialize._json_bytes(marker)
+    ).hexdigest()
+    marker_path.write_bytes(materialize._json_bytes(marker))
+    marker_path.chmod(0o444)
+    report = {
+        "status": "verified",
+        "release_id": freeze.RELEASE_ID,
+        "materialization_id": marker["materialization_id"],
+        "tag_commit": git_identity["git_commit"],
+        "source_tree_sha256": git_identity["source_tree_sha256"],
+        "paths": paths,
+    }
+    monkeypatch.setattr(materialize, "verify_materialization", lambda path: dict(report))
+
+    binding = _REAL_VERIFIED_MATERIALIZATION_BINDING(
+        output_root=output,
+        release_worktree=inputs["release_worktree"],
+        harness_prefix=inputs["harness_prefix"],
+        serving_prefix=inputs["serving_prefix"],
+    )
+
+    assert binding["marker_path"] == str(marker_path)
+    assert binding["marker_sha256"] == hashlib.sha256(marker_path.read_bytes()).hexdigest()
+    assert binding["materialization_id"] == marker["materialization_id"]
+    assert binding["stage_records"] == stage_records
+    assert _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE(
+        binding,
+        output_root=output,
+        release_worktree=inputs["release_worktree"],
+        harness_prefix=inputs["harness_prefix"],
+        serving_prefix=inputs["serving_prefix"],
+        git_identity=git_identity,
+    ) == binding
+
+    stage_path = root / materialize.STAGE_FILENAMES["serving_clone"]
+    stage_path.chmod(0o644)
+    with pytest.raises(freeze.ReleaseFreezeError, match="stage artifact drifted"):
+        _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE(
+            binding,
+            output_root=output,
+            release_worktree=inputs["release_worktree"],
+            harness_prefix=inputs["harness_prefix"],
+            serving_prefix=inputs["serving_prefix"],
+            git_identity=git_identity,
+        )
+    stage_path.chmod(0o444)
+
+    marker_path.chmod(0o644)
+    marker_path.unlink()
+    with pytest.raises(freeze.ReleaseFreezeError, match="missing regular sibling"):
+        _REAL_VERIFIED_MATERIALIZATION_BINDING(
+            output_root=output,
+            release_worktree=inputs["release_worktree"],
+            harness_prefix=inputs["harness_prefix"],
+            serving_prefix=inputs["serving_prefix"],
+        )
+
+
 def test_dry_run_is_read_only_then_marker_last_bundle_is_idempotent(tmp_path):
     inputs = _inputs(tmp_path)
     output = tmp_path / "release-root" / "identity"
@@ -325,6 +607,75 @@ def test_dry_run_is_read_only_then_marker_last_bundle_is_idempotent(tmp_path):
     assert again["release_bundle_id"] == created["release_bundle_id"]
 
 
+def test_completed_bundle_recovers_interrupted_output_root_seal(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "release-root" / "identity"
+    real_seal = freeze._seal_output_root_read_only
+
+    def simulate_crash(root):
+        raise OSError("simulated crash after completion marker")
+
+    monkeypatch.setattr(freeze, "_seal_output_root_read_only", simulate_crash)
+    with pytest.raises(OSError, match="simulated crash"):
+        freeze.create_release_bundle(
+            output,
+            apply=True,
+            seal_output_root=True,
+            **inputs,
+        )
+
+    assert (output / freeze.COMPLETE_MARKER_FILENAME).is_file()
+    assert stat.S_IMODE(output.stat().st_mode) & 0o222
+    monkeypatch.setattr(freeze, "_seal_output_root_read_only", real_seal)
+
+    recovered = freeze.create_release_bundle(
+        output,
+        apply=True,
+        seal_output_root=True,
+        **inputs,
+    )
+
+    assert recovered["status"] == "already_complete"
+    assert recovered["output_root_sealed_read_only"] is True
+    assert stat.S_IMODE(output.stat().st_mode) & 0o222 == 0
+    # Leave the temporary tree removable by the test runner.
+    output.chmod(0o755)
+
+
+def test_completed_bundle_rejects_incompatible_retroactive_seals(tmp_path):
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "release-root"
+    freeze.create_release_bundle(output, apply=True, **inputs)
+
+    with pytest.raises(freeze.ReleaseFreezeError, match="unsealed worktree"):
+        freeze.create_release_bundle(
+            output,
+            apply=True,
+            seal_worktree=True,
+            **inputs,
+        )
+    with pytest.raises(freeze.ReleaseFreezeError, match="unsealed environments"):
+        freeze.create_release_bundle(
+            output,
+            apply=True,
+            seal_environments=True,
+            **inputs,
+        )
+
+
+def test_creation_rejects_conda_tool_and_record_lock_disagreement(tmp_path):
+    inputs = _inputs(tmp_path)
+    record_path = inputs["harness_prefix"] / "conda-meta" / "pip-25.1-test.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["sha256"] = "f" * 64
+    record_path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(freeze.ReleaseFreezeError, match="records disagree"):
+        freeze.create_release_bundle(tmp_path / "release-root", **inputs)
+
+
 def test_live_environment_or_source_drift_is_rejected_after_publication(tmp_path):
     inputs = _inputs(tmp_path)
     output = tmp_path / "release-root"
@@ -361,12 +712,132 @@ def test_optional_read_only_seal_captures_final_modes(tmp_path):
     assert freeze.verify_release_bundle(output)["status"] == "verified"
 
 
+def test_sealed_release_verifies_without_mutable_git_repository_metadata(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "release-root" / "identity"
+    freeze.create_release_bundle(
+        output,
+        apply=True,
+        seal_worktree=True,
+        seal_environments=True,
+        **inputs,
+    )
+    monkeypatch.setattr(
+        freeze,
+        "verify_clean_exact_tag",
+        lambda path: (_ for _ in ()).throw(AssertionError("mutable Git lookup")),
+    )
+
+    assert freeze.verify_release_bundle(output)["status"] == "verified"
+
+
+def test_sealed_release_verification_is_self_contained_after_sources_disappear(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "materialized-release" / "identity"
+    mutable_sources = _install_real_materialization_evidence(
+        tmp_path, output, inputs, monkeypatch
+    )
+    freeze.create_release_bundle(
+        output,
+        apply=True,
+        seal_worktree=True,
+        seal_environments=True,
+        **inputs,
+    )
+
+    # The external creation tool, all mutable materialization sources, and Git's
+    # repository metadata are deliberately unavailable during the future audit.
+    conda_tool_sha256 = hashlib.sha256(
+        inputs["conda_executable"].read_bytes()
+    ).hexdigest()
+    for filename in (
+        freeze.HARNESS_MANIFEST_FILENAME,
+        freeze.SERVING_MANIFEST_FILENAME,
+    ):
+        manifest = json.loads((output / filename).read_text(encoding="utf-8"))
+        assert manifest["conda_lock_tool"] == {
+            "path": str(inputs["conda_executable"].resolve()),
+            "sha256": conda_tool_sha256,
+        }
+    inputs["conda_executable"].unlink()
+    for source in mutable_sources:
+        shutil.rmtree(source)
+    worktree = inputs["release_worktree"]
+    git_metadata = worktree / ".git"
+    for directory, _directory_names, _file_names in os.walk(
+        git_metadata, topdown=False
+    ):
+        Path(directory).chmod(0o755)
+    worktree.chmod(0o755)
+    shutil.rmtree(git_metadata)
+    freeze._seal_tree_read_only(worktree)
+    assert not inputs["conda_executable"].exists()
+    assert all(not source.exists() for source in mutable_sources)
+    assert not git_metadata.exists()
+
+    verified = freeze.verify_release_bundle(output)
+
+    assert verified["status"] == "verified"
+
+
+def test_release_package_binding_deduplicates_python_directory_symlink_alias(tmp_path):
+    inputs = _inputs(tmp_path)
+    prefix = inputs["harness_prefix"]
+    (prefix / "lib" / "python3.1").symlink_to("python3.11", target_is_directory=True)
+    git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
+
+    lock, binding = freeze._pip_lock_material(
+        prefix,
+        release_worktree=inputs["release_worktree"],
+        git_identity=git_identity,
+        require_release_package=True,
+    )
+
+    assert any(row.startswith("agents_scaling @ file://") for row in lock)
+    assert binding is not None
+    assert binding["name"] == "agents_scaling"
+    assert binding["version"] == "0.1.0"
+
+
+def test_release_package_binding_rejects_distinct_duplicate_distribution(tmp_path):
+    inputs = _inputs(tmp_path)
+    prefix = inputs["harness_prefix"]
+    duplicate = (
+        prefix
+        / "lib"
+        / "python3.10"
+        / "site-packages"
+        / "agents_scaling-0.1.0.dist-info"
+    )
+    duplicate.mkdir(parents=True)
+    (duplicate / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: agents_scaling\nVersion: 0.1.0\n\n",
+        encoding="utf-8",
+    )
+    git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
+
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="exactly one installed agents_scaling distribution",
+    ):
+        freeze._pip_lock_material(
+            prefix,
+            release_worktree=inputs["release_worktree"],
+            git_identity=git_identity,
+            require_release_package=True,
+        )
+
+
 def test_local_or_editable_pip_requirement_fails_closed(tmp_path, monkeypatch):
     prefix = _fake_environment(tmp_path, "harness", serving=False)
     original_run = freeze._run
 
     def fake_run(argv, *, env=None):
-        if tuple(argv[1:5]) == ("-m", "pip", "freeze", "--all"):
+        if tuple(argv[1:6]) == ("-I", "-m", "pip", "freeze", "--all"):
             return "package @ file:///tmp/build\n"
         return original_run(argv, env=env)
 
@@ -425,7 +896,7 @@ def test_conda_owned_builder_direct_url_is_normalized_to_exact_version(
     original_run = freeze._run
 
     def fake_run(argv, *, env=None):
-        if tuple(argv[1:5]) == ("-m", "pip", "freeze", "--all"):
+        if tuple(argv[1:6]) == ("-I", "-m", "pip", "freeze", "--all"):
             return f"packaging @ {direct_url}\npip==25.1\n"
         return original_run(argv, env=env)
 
@@ -501,7 +972,7 @@ def test_release_package_import_cannot_escape_harness_prefix(tmp_path, monkeypat
     original_run = freeze._run
 
     def fake_run(argv, *, env=None):
-        if "-I" in argv:
+        if tuple(argv[1:3]) == ("-I", "-c"):
             return json.dumps(
                 {
                     "prefix": str(prefix),

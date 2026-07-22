@@ -59,7 +59,7 @@ def _source_run(tmp_path: Path, cells: list[ExperimentCell]) -> Path:
 
 def _pins() -> clone.ReleasePins:
     return clone.ReleasePins(
-        release_id="sweep-recovery-schema5-v1",
+        release_id="sweep-recovery-schema5-v1.1",
         git_commit="a" * 40,
         source_tree_sha256="b" * 64,
         harness_sha256="c" * 64,

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from agents_scaling.agents.base_agent import Agent, SelfConsistencySample
 from agents_scaling.agents.topologies import build_topology
@@ -148,12 +148,13 @@ class WorkerDrainController:
 
     requested: threading.Event = field(default_factory=threading.Event)
     signal_number: int | None = None
+    admission_guard: Callable[[], None] | None = None
 
     def handle_signal(self, signum: int, _frame: FrameType | None) -> None:
         self.signal_number = int(signum)
         self.requested.set()
 
-    def admit_coordinate(self) -> None:
+    def _raise_if_requested(self) -> None:
         if self.requested.is_set():
             signal_label = (
                 "USR1"
@@ -164,12 +165,25 @@ class WorkerDrainController:
                 f"graceful drain requested by {signal_label}; no new coordinate admitted"
             )
 
+    def admit_coordinate(self) -> None:
+        self._raise_if_requested()
+        if self.admission_guard is not None:
+            self.admission_guard()
+        # The integrity guard may perform filesystem I/O.  USR1 can arrive while it is
+        # running, so the pre-guard check alone has a check/use gap that would admit one
+        # new stochastic coordinate after the drain request.  Close that window at the
+        # final callback boundary immediately before the checkpoint claims producer
+        # ownership.
+        self._raise_if_requested()
+
 
 @contextmanager
-def worker_drain_signals() -> Iterator[WorkerDrainController]:
+def worker_drain_signals(
+    admission_guard: Callable[[], None] | None = None,
+) -> Iterator[WorkerDrainController]:
     """Install and restore the worker's ``USR1`` handler around one cell execution."""
 
-    controller = WorkerDrainController()
+    controller = WorkerDrainController(admission_guard=admission_guard)
     usr1 = getattr(signal, "SIGUSR1", None)
     previous: Any = None
     installed = bool(
@@ -791,6 +805,7 @@ def run_cell(
     server_run_id: str | None = None,
     expected_benchmark_contracts_sha256: str | None = None,
     runtime_provenance: Schema5RuntimeProvenance | None = None,
+    coordinate_admission_guard: Callable[[], None] | None = None,
 ) -> str:
     """Execute one cell end-to-end; returns the path to its results.jsonl.
 
@@ -859,7 +874,7 @@ def run_cell(
     # array tasks therefore turn into cheap no-ops instead of racing on one JSONL file.
     try:
         lock = cell_lock(cdir, blocking=False)
-        with lock, worker_drain_signals() as drain:
+        with lock, worker_drain_signals(coordinate_admission_guard) as drain:
             pool_generation = _current_server_pool_generation(
                 server_root, profile.registry_key, production
             )

@@ -295,10 +295,50 @@ def test_dry_run_is_read_only_and_manifest_scoped(
         source_text.encode("utf-8")
     )
     assert planned["after_sha256"] != planned["before_sha256"]
+    assert planned["after_schema_version"] == migration.CHECKPOINT_SCHEMA_VERSION
     assert planned["complete_preimage_embedded_in_incident"] is True
     assert checkpoint_path.read_text(encoding="utf-8") == source_text
     assert not (run_root / migration.INCIDENT_FILENAME).exists()
     assert not (run_root / migration.RUN_LOCK_FILENAME).exists()
+
+
+def test_dry_run_can_project_an_incident_reset_without_touching_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_root, cell, contract_hash = _frozen_run(tmp_path)
+    checkpoint_path, _, source_text = _write_schema1_checkpoint(
+        run_root, cell, contract_hash
+    )
+    _patch_code_version(monkeypatch)
+
+    report = migration.migrate_run(
+        run_root,
+        benchmark_loader=_loader,
+        excluded_cell_ids={cell.cell_id},
+    )
+
+    assert report["schema1_candidates"] == 0
+    assert report["would_change_checkpoints"] == []
+    assert report["explicitly_excluded_cells"] == [cell.cell_id]
+    assert checkpoint_path.read_text(encoding="utf-8") == source_text
+    assert not (run_root / migration.INCIDENT_FILENAME).exists()
+    assert not (run_root / migration.RUN_LOCK_FILENAME).exists()
+
+
+def test_checkpoint_projection_rejects_unknown_excluded_cell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_root, _, _ = _frozen_run(tmp_path)
+    _patch_code_version(monkeypatch)
+
+    with pytest.raises(migration.MigrationError, match="absent from the frozen manifest"):
+        migration.migrate_run(
+            run_root,
+            benchmark_loader=_loader,
+            excluded_cell_ids={"not-manifested"},
+        )
 
 
 def test_dry_run_timestamp_replays_exact_before_after_hashes_on_apply(

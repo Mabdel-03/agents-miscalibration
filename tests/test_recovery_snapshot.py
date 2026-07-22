@@ -29,6 +29,14 @@ def _sources(tmp_path: Path) -> tuple[list[snapshot.SourceSpec], Path, Path]:
     return sources, run, metadata
 
 
+def _rewrite_json_read_only(path: Path, payload: object) -> bytes:
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    path.chmod(0o644)
+    path.write_bytes(encoded)
+    path.chmod(0o444)
+    return encoded
+
+
 def test_dry_run_is_read_only_and_reports_exact_file_bytes(tmp_path):
     sources, _run, _metadata = _sources(tmp_path)
     destination = tmp_path / "snapshot"
@@ -245,6 +253,27 @@ def test_exact_copy_temporary_hardlink_is_rejected_and_preserved(tmp_path):
     assert outside.stat().st_nlink == 2
 
 
+@pytest.mark.parametrize("target_kind", ("payload", "control"))
+def test_sealed_snapshot_verifier_rejects_all_regular_hardlinks(
+    tmp_path, target_kind
+):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    if target_kind == "payload":
+        target = destination / "run" / "cells.json"
+    else:
+        target = destination / snapshot.SNAPSHOT_INVENTORY_FILENAME
+    outside = tmp_path / f"outside-{target_kind}"
+    os.link(target, outside)
+
+    with pytest.raises(snapshot.SnapshotError, match="hardlinked"):
+        snapshot.verify_snapshot(destination)
+
+    assert target.stat().st_nlink == 2
+    assert outside.read_bytes() == target.read_bytes()
+
+
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
 def test_exact_control_temporary_links_are_rejected_and_preserved(tmp_path, link_kind):
     sources, _run, _metadata = _sources(tmp_path)
@@ -367,6 +396,139 @@ def test_external_attestation_binds_every_snapshot_control_file(tmp_path):
     }
     assert report["attestation_sha256"] == snapshot._sha256(attestation)
     assert not attestation.resolve().is_relative_to(destination.resolve())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    (
+        (lambda marker: marker | {"unexpected": "field"}, "schema mismatch"),
+        (lambda marker: marker | {"schema_version": True}, "schema version"),
+        (
+            lambda marker: marker | {"file_count": marker["file_count"] + 1},
+            "file count",
+        ),
+        (
+            lambda marker: marker | {"total_bytes": marker["total_bytes"] + 1},
+            "byte count",
+        ),
+        (lambda marker: marker | {"verified": False}, "verified=true"),
+        (lambda marker: marker | {"read_only": False}, "read_only=true"),
+    ),
+)
+def test_verify_rejects_false_completion_marker_claims(tmp_path, mutation, error):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    marker_path = destination / snapshot.COMPLETE_FILENAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    _rewrite_json_read_only(marker_path, mutation(marker))
+
+    with pytest.raises(snapshot.SnapshotError, match=error):
+        snapshot.verify_snapshot(destination)
+
+
+@pytest.mark.parametrize("filename", sorted(snapshot._CONTROL_FILENAMES))
+def test_verify_requires_every_snapshot_control_to_be_read_only(tmp_path, filename):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    control = destination / filename
+    control.chmod(0o644)
+
+    with pytest.raises(snapshot.SnapshotError, match="control artifact is writable"):
+        snapshot.verify_snapshot(destination)
+
+
+@pytest.mark.parametrize("mutation", ("unsorted", "duplicate"))
+def test_verify_rejects_unsorted_or_duplicate_inventory_rows(tmp_path, mutation):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    copy_inventory = destination / snapshot.SNAPSHOT_INVENTORY_FILENAME
+    rows = copy_inventory.read_text(encoding="utf-8").splitlines()
+    assert len(rows) > 1
+    if mutation == "unsorted":
+        rows = list(reversed(rows))
+    else:
+        rows.insert(1, rows[0])
+    corrupted = ("\n".join(rows) + "\n").encode("utf-8")
+    for filename in (
+        snapshot.SOURCE_INVENTORY_FILENAME,
+        snapshot.SNAPSHOT_INVENTORY_FILENAME,
+    ):
+        path = destination / filename
+        path.chmod(0o644)
+        path.write_bytes(corrupted)
+        path.chmod(0o444)
+
+    with pytest.raises(snapshot.SnapshotError, match="unsorted|duplicates"):
+        snapshot.verify_snapshot(destination)
+
+
+def test_snapshot_attestation_repeat_is_byte_idempotent(tmp_path, monkeypatch):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    attestation = tmp_path / "snapshot.attestation.json"
+    first = snapshot.write_snapshot_attestation(destination, attestation)
+    before = attestation.read_bytes()
+    before_stat = attestation.stat()
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: "2099-12-31T23:59:59Z")
+
+    second = snapshot.write_snapshot_attestation(destination, attestation)
+
+    assert attestation.read_bytes() == before
+    assert attestation.stat().st_ino == before_stat.st_ino
+    assert attestation.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert second["attestation_sha256"] == first["attestation_sha256"]
+    assert second["attested_at"] == first["attested_at"]
+
+
+def test_snapshot_attestation_rejects_existing_drift_without_replacement(tmp_path):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    attestation = tmp_path / "snapshot.attestation.json"
+    snapshot.write_snapshot_attestation(destination, attestation)
+    payload = json.loads(attestation.read_text(encoding="utf-8"))
+    payload["file_count"] += 1
+    drifted = _rewrite_json_read_only(attestation, payload)
+    before_inode = attestation.stat().st_ino
+
+    with pytest.raises(snapshot.SnapshotError, match="differs from the exact"):
+        snapshot.write_snapshot_attestation(destination, attestation)
+
+    assert attestation.read_bytes() == drifted
+    assert attestation.stat().st_ino == before_inode
+
+
+def test_completed_snapshot_retry_finishes_interrupted_root_seal(tmp_path):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    destination.chmod(0o755)
+
+    recovered = snapshot.create_snapshot(destination, sources, apply=True)
+
+    assert recovered["status"] == "already_complete"
+    assert stat.S_IMODE(destination.stat().st_mode) & 0o222 == 0
+    assert snapshot.verify_snapshot(destination)["status"] == "already_complete"
+
+
+def test_interrupted_root_seal_recovery_still_rejects_invalid_marker(tmp_path):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    marker_path = destination / snapshot.COMPLETE_FILENAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["verified"] = False
+    destination.chmod(0o755)
+    _rewrite_json_read_only(marker_path, marker)
+
+    with pytest.raises(snapshot.SnapshotError, match="verified=true"):
+        snapshot.create_snapshot(destination, sources, apply=True)
+
+    assert stat.S_IMODE(destination.stat().st_mode) & 0o222
 
 
 def test_restore_round_trip_is_independent_exact_and_idempotent(tmp_path):

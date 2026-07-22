@@ -186,6 +186,106 @@ def _checkpoint_evidence(cell_dir: Path) -> list[dict[str, Any]]:
     return evidence
 
 
+def _projected_checkpoint_evidence(
+    cell_dir: Path,
+    *,
+    cell_id: str,
+    plans: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate a read-only schema-1 -> schema-2 plan and return its target evidence.
+
+    Legacy consolidation must describe the permanent-ledger archive before it mutates
+    the checkpoints on which that archive depends.  The checkpoint migrator already
+    validates and hashes the exact target bytes; this adapter binds those hashes back to
+    every current source file without materializing or replacing anything.
+    """
+
+    checkpoint_root = cell_dir / CHECKPOINT_DIRECTORY
+    if checkpoint_root.is_symlink() or not checkpoint_root.is_dir():
+        raise PermanentFailureArchiveError(
+            f"checkpoint projection directory is missing: {checkpoint_root}"
+        )
+    current_paths = sorted(checkpoint_root.iterdir(), key=lambda item: item.name)
+    if not current_paths:
+        raise PermanentFailureArchiveError(
+            f"checkpoint projection has no source files: {checkpoint_root}"
+        )
+    projected: dict[str, Mapping[str, Any]] = {}
+    for row in plans:
+        if not isinstance(row, Mapping) or row.get("cell_id") != cell_id:
+            raise PermanentFailureArchiveError(
+                f"checkpoint projection is assigned to the wrong cell: {cell_id}"
+            )
+        relative = row.get("checkpoint_relative_path")
+        parts = Path(relative).parts if isinstance(relative, str) else ()
+        if (
+            not isinstance(relative, str)
+            or len(parts) != 4
+            or parts[:3] != ("cells", cell_id, CHECKPOINT_DIRECTORY)
+            or _CHECKPOINT_NAME_RE.fullmatch(parts[3]) is None
+            or relative in projected
+        ):
+            raise PermanentFailureArchiveError(
+                f"checkpoint projection has an invalid path for {cell_id}: {relative!r}"
+            )
+        projected[relative] = row
+
+    evidence: list[dict[str, Any]] = []
+    observed: set[str] = set()
+    for path in current_paths:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or _CHECKPOINT_NAME_RE.fullmatch(path.name) is None
+        ):
+            raise PermanentFailureArchiveError(
+                f"unsafe projected checkpoint artifact: {path}"
+            )
+        source = _read_regular(path, label=f"projected checkpoint {path}")
+        source_value = _strict_object(source, label=f"projected checkpoint {path}")
+        if source_value.get("schema_version") != 1:
+            raise PermanentFailureArchiveError(
+                f"checkpoint projection source is not schema 1: {path}"
+            )
+        relative = f"cells/{cell_id}/{CHECKPOINT_DIRECTORY}/{path.name}"
+        row = projected.get(relative)
+        if row is None:
+            raise PermanentFailureArchiveError(
+                f"checkpoint projection omits source file: {path}"
+            )
+        before_sha256 = row.get("before_sha256")
+        after_sha256 = row.get("after_sha256")
+        before_size = row.get("before_size")
+        after_size = row.get("after_size")
+        if (
+            before_sha256 != _sha256(source)
+            or before_size != len(source)
+            or not isinstance(after_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", after_sha256) is None
+            or isinstance(after_size, bool)
+            or not isinstance(after_size, int)
+            or after_size < 0
+            or row.get("after_schema_version") != CHECKPOINT_SCHEMA_VERSION
+        ):
+            raise PermanentFailureArchiveError(
+                f"checkpoint projection hashes or schema drifted: {path}"
+            )
+        observed.add(relative)
+        evidence.append(
+            {
+                "relative_path": f"{CHECKPOINT_DIRECTORY}/{path.name}",
+                "sha256": after_sha256,
+                "size": after_size,
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            }
+        )
+    if observed != set(projected):
+        raise PermanentFailureArchiveError(
+            f"checkpoint projection contains unexpected files for {cell_id}"
+        )
+    return evidence
+
+
 def _incident_payload(
     *,
     run_id: str,
@@ -330,6 +430,9 @@ def _validate_completed_archive(
         "before_sha256": preimage_sha256,
         "after_sha256": None,
         "archive": str(archive),
+        "checkpoint_count": len(checkpoints),
+        "checkpoint_evidence": checkpoints,
+        "incident_sha256": _sha256(incident_bytes),
     }
 
 
@@ -462,6 +565,9 @@ def _apply_one(
                 "before_sha256": _sha256(preimage),
                 "after_sha256": None,
                 "archive": str(archive),
+                "checkpoint_count": len(checkpoints),
+                "checkpoint_evidence": checkpoints,
+                "incident_sha256": _sha256(incident_bytes),
             }
     except CellLockUnavailable as exc:
         raise PermanentFailureArchiveError(f"cell is active: {cell_id}") from exc
@@ -473,6 +579,9 @@ def archive_run(
     apply: bool = False,
     target_cell_hashes: Mapping[str, str] = TARGET_CELL_CONFIG_HASHES,
     require_run_id: str | None = TARGET_RUN_ID,
+    projected_checkpoint_plans: Mapping[
+        str, Sequence[Mapping[str, Any]]
+    ] | None = None,
 ) -> dict[str, Any]:
     supplied_root = Path(run_root)
     if supplied_root.is_symlink():
@@ -491,6 +600,17 @@ def archive_run(
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise PermanentFailureArchiveError(f"cannot load frozen manifest: {exc}") from exc
     manifest = {cell.cell_id: cell for cell in snapshot.cells}
+    projections = dict(projected_checkpoint_plans or {})
+    if apply and projections:
+        raise PermanentFailureArchiveError(
+            "projected checkpoints are valid only for a read-only preflight"
+        )
+    unknown_projections = set(projections) - set(target_cell_hashes)
+    if unknown_projections:
+        raise PermanentFailureArchiveError(
+            "checkpoint projections include non-target permanent cells: "
+            f"{sorted(unknown_projections)!r}"
+        )
     missing = sorted(set(target_cell_hashes) - set(manifest))
     if missing:
         raise PermanentFailureArchiveError(f"target cells are absent from manifest: {missing}")
@@ -529,7 +649,23 @@ def archive_run(
                 f"target failure is absent without reset evidence: {cell_id}"
             )
         _validate_failure(payload, cell_id=cell_id, config_hash=expected_hash)
-        checkpoints = _checkpoint_evidence(root / "cells" / cell_id)
+        if cell_id in projections:
+            checkpoints = _projected_checkpoint_evidence(
+                root / "cells" / cell_id,
+                cell_id=cell_id,
+                plans=projections[cell_id],
+            )
+        else:
+            checkpoints = _checkpoint_evidence(root / "cells" / cell_id)
+        incident = _incident_payload(
+            run_id=root.name,
+            manifest_sha256=snapshot.sha256,
+            manifest_cell_count=len(snapshot.cells),
+            cell_id=cell_id,
+            config_hash=expected_hash,
+            failure_payload=payload,
+            checkpoints=checkpoints,
+        )
         row = {
             "cell_id": cell_id,
             "status": "would_reset" if not apply else "pending",
@@ -537,6 +673,9 @@ def archive_run(
             "after_sha256": None,
             "archive": str(archive),
             "checkpoint_count": len(checkpoints),
+            "checkpoint_evidence": checkpoints,
+            "incident_sha256": _sha256(_json_text(incident).encode("utf-8")),
+            "checkpoint_projection_used": cell_id in projections,
         }
         if apply:
             row = _apply_one(

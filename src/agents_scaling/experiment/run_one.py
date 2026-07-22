@@ -14,7 +14,31 @@ from agents_scaling.experiment.artifact_policy import (
     load_artifact_policy,
 )
 from agents_scaling.experiment.runner import Schema5RuntimeProvenance, run_cell
+from agents_scaling.experiment.qid_checkpoint import CoordinateAdmissionClosed
+from agents_scaling import runtime_integrity
 from agents_scaling.serving.model_contracts import ModelContractError, load_model_contracts
+
+
+def _runtime_integrity_coordinate_guard() -> None:
+    """O(1) lease check immediately before each new stochastic coordinate."""
+
+    try:
+        runtime_integrity.verify_generation_lease(
+            lease_path=Path(os.environ["ASYS_RUNTIME_INTEGRITY_LEASE"]),
+            attestation_path=Path(os.environ["ASYS_RUNTIME_ATTESTATION"]),
+            attestation_sha256=os.environ["ASYS_RUNTIME_ATTESTATION_SHA256"],
+            generation=int(os.environ["ASYS_ROLLOUT_GENERATION"]),
+            release_id=os.environ["ASYS_RELEASE_ID"],
+            immutable_pins_sha256=os.environ["ASYS_IMMUTABLE_PINS_SHA256"],
+            expected_environment_hashes={
+                "harness": os.environ["ASYS_HARNESS_ENVIRONMENT_SHA256"],
+                "serving": os.environ["ASYS_SERVING_ENVIRONMENT_SHA256"],
+            },
+        )
+    except (KeyError, ValueError, runtime_integrity.RuntimeIntegrityError) as exc:
+        raise CoordinateAdmissionClosed(
+            f"runtime integrity lease unavailable; no new coordinate admitted: {exc}"
+        ) from exc
 
 
 def main() -> None:
@@ -141,6 +165,7 @@ def main() -> None:
     except ArtifactPolicyError as exc:
         ap.error(f"schema-5 artifact policy failed closed: {exc}")
     runtime_provenance = None
+    coordinate_admission_guard = None
     if policy is not None:
         # Policy and model sidecars are authority.  Scheduler/control values are observed
         # attestations and may only agree with those frozen bytes; they never define the
@@ -257,6 +282,7 @@ def main() -> None:
         # that are also used outside the runner.  This is process-local and is set only
         # after every explicit resource path has matched the immutable release layout.
         os.environ["ASYS_RELEASE_WORKTREE"] = str(release_worktree)
+        coordinate_admission_guard = _runtime_integrity_coordinate_guard
     elif any(value is not None for value in observed_provenance.values()) or any(
         value is not None
         for value in (
@@ -279,6 +305,7 @@ def main() -> None:
         server_run_id=args.server_pool or args.server_run_id,
         expected_benchmark_contracts_sha256=args.benchmark_contracts_sha256,
         runtime_provenance=runtime_provenance,
+        coordinate_admission_guard=coordinate_admission_guard,
     )
     print(f"[run_one] cell {cell.cell_id} -> {path}")
 

@@ -17,7 +17,7 @@ IMMUTABLE_SHA = "a" * 64
 
 def _immutable(tmp_path: Path) -> dict:
     return {
-        "release_id": "sweep-recovery-schema5-v1",
+        "release_id": "sweep-recovery-schema5-v1.1",
         "git_commit": "1" * 40,
         "source_tree_sha256": "2" * 64,
         "harness_environment_sha256": "3" * 64,
@@ -124,7 +124,7 @@ def _typed_suite(
 
 def test_runtime_environment_contains_exact_production_fleet_pin():
     policy = SimpleNamespace(
-        release=SimpleNamespace(release_id="sweep-recovery-schema5-v1"),
+        release=SimpleNamespace(release_id="sweep-recovery-schema5-v1.1"),
         accepted_model_contract_sha256="b" * 64,
         environment=SimpleNamespace(harness_sha256="c" * 64, serving_sha256="d" * 64),
         file_sha256="e" * 64,
@@ -134,10 +134,193 @@ def test_runtime_environment_contains_exact_production_fleet_pin():
         immutable_pins_sha256=IMMUTABLE_SHA,
         fleet_contract_sha256="f" * 64,
         rollout_generation=7,
+        runtime_attestation={
+            "path": "/state/runtime.g000007.json",
+            "sha256": "1" * 64,
+            "lease_path": "/state/lease.g000007.json",
+        },
     )
     assert set(observed) == set(dispatch_sweeps.PRODUCTION_ENVIRONMENT_KEYS)
     assert observed["ASYS_FLEET_CONTRACT_SHA256"] == "f" * 64
     assert observed["ASYS_ROLLOUT_GENERATION"] == "7"
+    assert observed["ASYS_RUNTIME_ATTESTATION_SHA256"] == "1" * 64
+    assert observed["ASYS_RUNTIME_INTEGRITY_LEASE"].endswith(
+        "lease.g000007.json"
+    )
+
+
+def test_long_smoke_worker_renews_g_plus_one_lease_every_minute(
+    tmp_path: Path, monkeypatch
+):
+    refreshes = []
+    monkeypatch.setattr(
+        smoke.runtime_integrity,
+        "refresh_generation_lease",
+        lambda **kwargs: refreshes.append(kwargs) or {"cached": True},
+    )
+
+    class Process:
+        returncode = 0
+
+        def __init__(self):
+            self.communications = 0
+
+        def communicate(self, timeout=None):
+            self.communications += 1
+            if self.communications == 1:
+                raise smoke.subprocess.TimeoutExpired("worker", timeout)
+            return "done\n", ""
+
+        def poll(self):
+            return None
+
+        def send_signal(self, _signal):
+            raise AssertionError("healthy lease renewal must not drain the worker")
+
+    process = Process()
+    monkeypatch.setattr(smoke.subprocess, "Popen", lambda *_a, **_k: process)
+    runtime_attestation = {
+        "generation": 1,
+        "path": str(tmp_path / "runtime.g000001.json"),
+        "sha256": "1" * 64,
+        "lease_path": str(tmp_path / "lease.g000001.json"),
+    }
+    immutable = {
+        "release_id": "sweep-recovery-schema5-v1.1",
+        "harness_environment_sha256": "2" * 64,
+        "serving_environment_sha256": "3" * 64,
+        "harness_environment_prefix": str(tmp_path / "harness"),
+        "serving_environment_prefix": str(tmp_path / "serving"),
+    }
+    task = {
+        "run_id": "smoke",
+        "cell_id": "cell",
+        "runtime_environment": {"ASYS_IMMUTABLE_PINS_SHA256": IMMUTABLE_SHA},
+    }
+
+    report = smoke._run_task(
+        task,
+        state_root=tmp_path / "state",
+        release_worktree=tmp_path / "release",
+        harness_prefix=tmp_path / "harness",
+        hf_home=tmp_path / "hf",
+        runtime_attestation=runtime_attestation,
+        immutable=immutable,
+    )
+    assert report["returncode"] == 0
+    assert len(refreshes) == 2
+    assert all(item["generation"] == 1 for item in refreshes)
+
+
+def test_smoke_lease_refresh_failure_gracefully_drains_and_fails(tmp_path, monkeypatch):
+    refresh_count = 0
+
+    def refresh(**_kwargs):
+        nonlocal refresh_count
+        refresh_count += 1
+        if refresh_count > 1:
+            raise smoke.runtime_integrity.RuntimeIntegrityError("nested drift")
+        return {"cached": True}
+
+    monkeypatch.setattr(smoke.runtime_integrity, "refresh_generation_lease", refresh)
+
+    class Process:
+        returncode = 0
+
+        def __init__(self):
+            self.communications = 0
+            self.signals = []
+
+        def communicate(self, timeout=None):
+            self.communications += 1
+            if self.communications == 1:
+                raise smoke.subprocess.TimeoutExpired("worker", timeout)
+            return "drained\n", ""
+
+        def poll(self):
+            return None
+
+        def send_signal(self, sent):
+            self.signals.append(sent)
+
+    process = Process()
+    monkeypatch.setattr(smoke.subprocess, "Popen", lambda *_a, **_k: process)
+    runtime_attestation = {
+        "generation": 1,
+        "path": str(tmp_path / "runtime.g000001.json"),
+        "sha256": "1" * 64,
+        "lease_path": str(tmp_path / "lease.g000001.json"),
+    }
+    immutable = {
+        "release_id": "sweep-recovery-schema5-v1.1",
+        "harness_environment_sha256": "2" * 64,
+        "serving_environment_sha256": "3" * 64,
+        "harness_environment_prefix": str(tmp_path / "harness"),
+        "serving_environment_prefix": str(tmp_path / "serving"),
+    }
+    task = {
+        "run_id": "smoke",
+        "cell_id": "cell",
+        "runtime_environment": {"ASYS_IMMUTABLE_PINS_SHA256": IMMUTABLE_SHA},
+    }
+
+    with pytest.raises(smoke.SmokeRunError, match="lease refresh failed"):
+        smoke._run_task(
+            task,
+            state_root=tmp_path / "state",
+            release_worktree=tmp_path / "release",
+            harness_prefix=tmp_path / "harness",
+            hf_home=tmp_path / "hf",
+            runtime_attestation=runtime_attestation,
+            immutable=immutable,
+        )
+    assert process.signals == [smoke.signal.SIGUSR1]
+
+
+def test_fresh_paused_control_binds_smoke_to_first_rollout_generation():
+    # ``initialize_control`` publishes exactly this generation/state boundary.  Smoke
+    # provenance is intentionally the generation that the first resume will publish.
+    initialized = {
+        "desired_state": "paused",
+        "drain_requested": False,
+        "rollout_generation": 0,
+    }
+    smoke._validate_preproduction_rollout_generation(initialized, 1)
+
+
+@pytest.mark.parametrize("rollout_generation", [0, 2, 7])
+def test_preproduction_smoke_rejects_arbitrary_rollout_generation(
+    rollout_generation: int,
+):
+    initialized = {
+        "desired_state": "paused",
+        "drain_requested": False,
+        "rollout_generation": 0,
+    }
+    with pytest.raises(smoke.SmokeRunError, match=r"paused control.*\+ 1"):
+        smoke._validate_preproduction_rollout_generation(
+            initialized, rollout_generation
+        )
+
+
+@pytest.mark.parametrize(
+    ("desired_state", "drain_requested", "error"),
+    [
+        ("running", False, "desired_state=paused"),
+        ("resuming", False, "desired_state=paused"),
+        ("paused", True, "forbidden while draining"),
+    ],
+)
+def test_preproduction_smoke_rejects_live_or_draining_control(
+    desired_state: str, drain_requested: bool, error: str
+):
+    control = {
+        "desired_state": desired_state,
+        "drain_requested": drain_requested,
+        "rollout_generation": 0,
+    }
+    with pytest.raises(smoke.SmokeRunError, match=error):
+        smoke._validate_preproduction_rollout_generation(control, 1)
 
 
 def test_incident_accounting_includes_top_level_auxiliary_and_current_failure():
