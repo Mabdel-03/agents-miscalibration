@@ -26,7 +26,9 @@ import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from agents_scaling.experiment import io
@@ -58,6 +60,13 @@ class SchedulerRow:
     command: str
     comment: str
     source: str = "joined"
+    start_timestamp: float | None = None
+    end_timestamp: float | None = None
+    time_limit_seconds: int | None = None
+    # ``None`` means the source cannot report dependencies.  This is accepted only
+    # for terminal sacct-only history; every active allocation must be joined to the
+    # squeue view, where an empty string means "no dependency".
+    dependency: str | None = ""
 
 
 @dataclass(frozen=True)
@@ -67,6 +76,174 @@ class SchedulerSnapshot:
     squeue_ok: bool
     sacct_ok: bool
     errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReconciledFleetAllocation:
+    """One scheduler allocation bound to its exact durable admission intent."""
+
+    replica_id: str
+    profile: str
+    ledger_generation: int
+    row: SchedulerRow
+    attempt: Mapping[str, Any]
+    health: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class FleetReconciliation:
+    """Read-only scheduler/ledger join shared by readiness and the supervisor."""
+
+    allocations: tuple[ReconciledFleetAllocation, ...]
+    ignored_terminal_job_ids: tuple[str, ...]
+
+    @property
+    def active_allocations(self) -> tuple[ReconciledFleetAllocation, ...]:
+        return tuple(
+            allocation
+            for allocation in self.allocations
+            if not terminal_state(allocation.row.state)
+        )
+
+    @property
+    def logical_allocations(self) -> tuple[ReconciledFleetAllocation, ...]:
+        """Return exactly the promoted allocation for each logical replica.
+
+        A rolling handoff may temporarily own two physical Slurm allocations.  The
+        predecessor remains the logical allocation while the successor is ``standby``;
+        after the atomic registry promotion the successor becomes logical and the
+        predecessor is only ``retiring``.  Every other overlap is corruption.
+        """
+
+        by_replica: dict[str, list[ReconciledFleetAllocation]] = {}
+        for allocation in self.active_allocations:
+            by_replica.setdefault(allocation.replica_id, []).append(allocation)
+        selected: list[ReconciledFleetAllocation] = []
+        for replica_id, rows in sorted(by_replica.items()):
+            candidates = [
+                row
+                for row in rows
+                if row.attempt.get("lifecycle") in {"primary", "promoted"}
+            ]
+            if len(candidates) != 1:
+                raise FleetTransactionError(
+                    f"logical fleet allocation is ambiguous for {replica_id}: "
+                    f"{[(row.row.job_id, row.attempt.get('lifecycle')) for row in rows]}"
+                )
+            selected.append(candidates[0])
+        return tuple(selected)
+
+
+@dataclass(frozen=True)
+class CommittedEndpointAdmission:
+    """Exact durable admission facts required to seal one endpoint registration."""
+
+    replica_id: str
+    slurm_job_id: str
+    intent_token: str
+    rollout_generation: int
+    committed_at: float
+    scheduler_comment: str
+    launch_kind: str
+    lifecycle: str
+    sbatch_path: Path
+    sbatch_sha256: str
+
+
+def committed_endpoint_admission(
+    directory: Path,
+    ledger: Mapping[str, Any],
+    *,
+    replica_id: str,
+    attempt: Mapping[str, Any],
+    slurm_job_id: str,
+) -> CommittedEndpointAdmission:
+    """Export a validated committed intent without trusting a caller-made summary.
+
+    The fleet supervisor calls this while holding the transaction lock.  It binds the
+    endpoint archive to the exact in-ledger attempt and immutable local script; a copied
+    dictionary, stale generation, pre-commit intent, or same-replica sibling cannot be
+    substituted.
+    """
+
+    if not str(slurm_job_id).isdigit():
+        raise FleetTransactionError("endpoint admission requires a numeric Slurm job id")
+    generation = ledger.get("rollout_generation")
+    replicas = ledger.get("replicas")
+    if (
+        type(generation) is not int
+        or generation < 1
+        or not isinstance(replicas, Mapping)
+        or replica_id not in replicas
+        or not isinstance(replicas[replica_id], Mapping)
+    ):
+        raise FleetTransactionError("endpoint admission ledger identity is invalid")
+    attempts = replicas[replica_id].get("attempts")
+    if not isinstance(attempts, list):
+        raise FleetTransactionError("endpoint admission ledger lacks attempts")
+    exact = [
+        candidate
+        for candidate in attempts
+        if candidate is attempt
+    ]
+    if len(exact) != 1:
+        raise FleetTransactionError(
+            f"endpoint admission is not one exact ledger attempt for {replica_id}"
+        )
+    material = exact[0]
+    _validate_attempt(
+        material,
+        replica_id=replica_id,
+        generation=generation,
+        directory=directory,
+    )
+    committed_at = material.get("committed_at")
+    if (
+        material.get("state") != "committed"
+        or str(material.get("job_id") or "") != str(slurm_job_id)
+        or not isinstance(committed_at, (int, float))
+        or isinstance(committed_at, bool)
+        or float(committed_at) <= 0
+    ):
+        raise FleetTransactionError(
+            f"endpoint intent for {replica_id} job {slurm_job_id} is not committed"
+        )
+    script_path = Path(str(material["sbatch_path"]))
+    if (
+        script_path.is_symlink()
+        or not script_path.is_file()
+        or stat.S_IMODE(script_path.stat().st_mode) & 0o222
+    ):
+        raise FleetTransactionError(
+            f"endpoint local script is unsafe for {replica_id}"
+        )
+    script_sha256 = hashlib.sha256(script_path.read_bytes()).hexdigest()
+    if script_sha256 != material["sbatch_sha256"]:
+        raise FleetTransactionError(
+            f"endpoint local script hash drifted for {replica_id}"
+        )
+    parsed = parse_intent_comment(str(material["scheduler_comment"]))
+    if (
+        parsed is None
+        or parsed["replica"] != replica_id
+        or parsed["generation"] != str(generation)
+        or parsed["intent"] != material["intent_token"]
+    ):
+        raise FleetTransactionError(
+            f"endpoint scheduler intent drifted for {replica_id}"
+        )
+    return CommittedEndpointAdmission(
+        replica_id=replica_id,
+        slurm_job_id=str(slurm_job_id),
+        intent_token=str(material["intent_token"]),
+        rollout_generation=generation,
+        committed_at=float(committed_at),
+        scheduler_comment=str(material["scheduler_comment"]),
+        launch_kind=str(material["launch_kind"]),
+        lifecycle=str(material["lifecycle"]),
+        sbatch_path=script_path.resolve(),
+        sbatch_sha256=script_sha256,
+    )
 
 
 def state_directory(pool_root: str | Path) -> Path:
@@ -105,6 +282,40 @@ def transaction_lock(pool_root: str | Path) -> Iterator[Path]:
         except BlockingIOError as exc:
             raise FleetTransactionError(
                 f"another canonical fleet transaction owns {lock_path}"
+            ) from exc
+        yield directory
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+@contextmanager
+def read_transaction_lock(pool_root: str | Path) -> Iterator[Path]:
+    """Hold a shared, non-mutating view of an initialized fleet transaction."""
+
+    directory = state_directory(pool_root)
+    if directory.is_symlink() or not directory.is_dir():
+        raise FleetTransactionError(
+            f"fleet state directory is not initialized safely: {directory}"
+        )
+    lock_path = directory / LOCK_FILENAME
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags)
+    except OSError as exc:
+        raise FleetTransactionError(
+            f"cannot open initialized fleet lock {lock_path}: {exc}"
+        ) from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise FleetTransactionError(
+                f"fleet transaction is changing under {lock_path}"
             ) from exc
         yield directory
     finally:
@@ -434,6 +645,21 @@ def _validate_attempt(
         "last_seen_at",
         "missing_since",
         "last_error",
+        "launch_kind",
+        "lifecycle",
+        "predecessor_job_id",
+        "predecessor_end_at",
+        "allocated_gpus",
+        "scheduler_start_at",
+        "scheduler_end_at",
+        "scheduler_time_limit_seconds",
+        "ready_probe_count",
+        "last_ready_probe_at",
+        "promoted_at",
+        "retire_requested_at",
+        "last_retire_attempt_at",
+        "retire_attempts",
+        "retire_error",
     }
     if set(attempt) != required:
         raise FleetTransactionError(
@@ -454,6 +680,54 @@ def _validate_attempt(
         "submission_failed",
     }:
         raise FleetTransactionError(f"invalid attempt state for {replica_id}")
+    if attempt["launch_kind"] not in {"primary", "handoff"}:
+        raise FleetTransactionError(f"invalid launch kind for {replica_id}")
+    if attempt["lifecycle"] not in {
+        "primary",
+        "standby",
+        "promoted",
+        "retiring",
+    }:
+        raise FleetTransactionError(f"invalid allocation lifecycle for {replica_id}")
+    if attempt["launch_kind"] == "primary":
+        if (
+            attempt["predecessor_job_id"] is not None
+            or attempt["predecessor_end_at"] is not None
+        ):
+            raise FleetTransactionError(
+                f"primary fleet intent unexpectedly has a predecessor for {replica_id}"
+            )
+        if attempt["lifecycle"] not in {"primary", "retiring"}:
+            raise FleetTransactionError(
+                f"primary launch has impossible lifecycle for {replica_id}"
+            )
+    else:
+        if not str(attempt["predecessor_job_id"] or "").isdigit():
+            raise FleetTransactionError(
+                f"handoff intent lacks an exact predecessor for {replica_id}"
+            )
+        if (
+            not isinstance(attempt["predecessor_end_at"], (int, float))
+            or isinstance(attempt["predecessor_end_at"], bool)
+        ):
+            raise FleetTransactionError(
+                f"handoff intent lacks an exact predecessor end for {replica_id}"
+            )
+        if attempt["lifecycle"] not in {"standby", "promoted", "retiring"}:
+            raise FleetTransactionError(
+                f"handoff launch has impossible lifecycle for {replica_id}"
+            )
+    for field in (
+        "allocated_gpus",
+        "ready_probe_count",
+        "retire_attempts",
+    ):
+        if (
+            not isinstance(attempt[field], int)
+            or isinstance(attempt[field], bool)
+            or attempt[field] < 0
+        ):
+            raise FleetTransactionError(f"invalid {field} for {replica_id}")
     if (
         not isinstance(attempt["submission_attempts"], int)
         or isinstance(attempt["submission_attempts"], bool)
@@ -487,12 +761,50 @@ def _validate_attempt(
         "terminal_at",
         "last_seen_at",
         "missing_since",
+        "last_ready_probe_at",
+        "promoted_at",
+        "retire_requested_at",
+        "last_retire_attempt_at",
+        "predecessor_end_at",
+        "scheduler_start_at",
+        "scheduler_end_at",
+        "scheduler_time_limit_seconds",
     ):
         value = attempt[field]
         if value is not None and (
             not isinstance(value, (int, float)) or isinstance(value, bool)
         ):
             raise FleetTransactionError(f"invalid {field} for {replica_id}")
+    if attempt["retire_error"] is not None and not isinstance(
+        attempt["retire_error"], str
+    ):
+        raise FleetTransactionError(f"invalid retire_error for {replica_id}")
+    if attempt["lifecycle"] == "standby" and attempt["promoted_at"] is not None:
+        raise FleetTransactionError(
+            f"standby unexpectedly has promotion time for {replica_id}"
+        )
+    if attempt["lifecycle"] == "promoted" and (
+        attempt["launch_kind"] != "handoff"
+        or attempt["promoted_at"] is None
+        or attempt["ready_probe_count"] < 2
+    ):
+        raise FleetTransactionError(
+            f"promoted handoff lacks readiness evidence for {replica_id}"
+        )
+    if (attempt["retire_attempts"] == 0) != (
+        attempt["last_retire_attempt_at"] is None
+    ):
+        raise FleetTransactionError(
+            f"retirement attempt evidence drifted for {replica_id}"
+        )
+    if attempt["scheduler_time_limit_seconds"] is not None and (
+        not isinstance(attempt["scheduler_time_limit_seconds"], int)
+        or isinstance(attempt["scheduler_time_limit_seconds"], bool)
+        or attempt["scheduler_time_limit_seconds"] < 1
+    ):
+        raise FleetTransactionError(
+            f"invalid scheduler time limit for {replica_id}"
+        )
     if attempt["job_id"] is not None and not str(attempt["job_id"]).isdigit():
         raise FleetTransactionError(f"invalid Slurm job id for {replica_id}")
 
@@ -558,6 +870,158 @@ def _validate_health(health: Any, *, replica_id: str) -> None:
             raise FleetTransactionError(f"invalid health timestamp for {replica_id}")
 
 
+def _validate_ledger_material(
+    ledger: Any,
+    *,
+    directory: Path,
+    canonical_root: Path,
+    pool_id: str,
+    fleet_sha256: str,
+    rollout_generation: int,
+    replica_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Validate one generation without repairing or publishing any state."""
+
+    required_root = {
+        "schema_version",
+        "pool_root",
+        "pool_id",
+        "fleet_sha256",
+        "rollout_generation",
+        "visibility_grace_seconds",
+        "created_at",
+        "updated_at",
+        "replicas",
+    }
+    if not isinstance(ledger, dict) or set(ledger) != required_root:
+        raise FleetTransactionError("fleet ledger root fields drifted")
+    if (
+        ledger["schema_version"] != STATE_SCHEMA_VERSION
+        or ledger["pool_root"] != str(canonical_root)
+        or ledger["pool_id"] != pool_id
+        or ledger["fleet_sha256"] != fleet_sha256
+        or ledger["rollout_generation"] != rollout_generation
+        or ledger["visibility_grace_seconds"] != DEFAULT_VISIBILITY_GRACE_SECONDS
+        or not isinstance(ledger["replicas"], dict)
+        or set(ledger["replicas"]) != set(replica_ids)
+    ):
+        raise FleetTransactionError("fleet ledger immutable identity drifted")
+    for replica_id in replica_ids:
+        record = ledger["replicas"][replica_id]
+        if not isinstance(record, dict) or set(record) != {"attempts", "health"}:
+            raise FleetTransactionError(
+                f"replica ledger fields drifted for {replica_id}"
+            )
+        attempts = record["attempts"]
+        if not isinstance(attempts, list):
+            raise FleetTransactionError(
+                f"replica attempts are not an array for {replica_id}"
+            )
+        tokens: set[str] = set()
+        job_ids: set[str] = set()
+        for attempt in attempts:
+            _validate_attempt(
+                attempt,
+                replica_id=replica_id,
+                generation=rollout_generation,
+                directory=directory,
+            )
+            parsed_comment = parse_intent_comment(attempt["scheduler_comment"])
+            if (
+                parsed_comment is None
+                or parsed_comment["pool"] != pool_id
+                or parsed_comment["replica"] != replica_id
+                or parsed_comment["generation"] != str(rollout_generation)
+                or parsed_comment["intent"] != attempt["intent_token"]
+                or parsed_comment["fleet"] != fleet_sha256
+            ):
+                raise FleetTransactionError(
+                    f"scheduler comment does not bind fleet intent for {replica_id}"
+                )
+            if attempt["intent_token"] in tokens:
+                raise FleetTransactionError(
+                    f"duplicate intent token for {replica_id}"
+                )
+            tokens.add(attempt["intent_token"])
+            if attempt["job_id"] is not None:
+                if str(attempt["job_id"]) in job_ids:
+                    raise FleetTransactionError(
+                        f"duplicate committed job id for {replica_id}"
+                    )
+                job_ids.add(str(attempt["job_id"]))
+        nonterminal = [
+            item
+            for item in attempts
+            if item["state"]
+            in {"prepared", "submitting", "submitted", "committed", "missing"}
+        ]
+        if len(nonterminal) > 2:
+            raise FleetTransactionError(
+                f"multiple current attempts for {replica_id}"
+            )
+        if len(nonterminal) == 2:
+            lifecycles = sorted(item["lifecycle"] for item in nonterminal)
+            if lifecycles not in (
+                ["primary", "standby"],
+                ["promoted", "retiring"],
+                ["promoted", "standby"],
+                ["retiring", "standby"],
+            ):
+                raise FleetTransactionError(
+                    f"invalid rolling-handoff overlap for {replica_id}: {lifecycles}"
+                )
+            standby = next(
+                (item for item in nonterminal if item["lifecycle"] == "standby"),
+                None,
+            )
+            predecessor = next(
+                (
+                    item
+                    for item in nonterminal
+                    if item["lifecycle"] in {"primary", "promoted", "retiring"}
+                ),
+                None,
+            )
+            if standby is not None and (
+                predecessor is None
+                or standby["predecessor_job_id"] != predecessor["job_id"]
+            ):
+                raise FleetTransactionError(
+                    f"handoff predecessor binding drifted for {replica_id}"
+                )
+        _validate_health(record["health"], replica_id=replica_id)
+    return ledger
+
+
+def _read_ledger_file(
+    path: Path,
+    *,
+    directory: Path,
+    canonical_root: Path,
+    pool_id: str,
+    fleet_sha256: str,
+    rollout_generation: int,
+    replica_ids: Sequence[str],
+) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise FleetTransactionError(f"fleet ledger is not a regular file: {path}")
+    try:
+        ledger = _strict_json_loads(
+            path.read_text(encoding="utf-8"), artifact=f"fleet ledger {path}"
+        )
+    except (OSError, UnicodeError) as exc:
+        raise FleetTransactionError(f"cannot parse fleet ledger {path}: {exc}") from exc
+    return _validate_ledger_material(
+        ledger,
+        directory=directory,
+        canonical_root=canonical_root,
+        pool_id=pool_id,
+        fleet_sha256=fleet_sha256,
+        rollout_generation=rollout_generation,
+        replica_ids=replica_ids,
+    )
+
+
 def load_or_create_ledger(
     directory: Path,
     *,
@@ -606,82 +1070,15 @@ def load_or_create_ledger(
         )
         save_ledger(directory, ledger, now=now)
         return ledger
-    if path.is_symlink() or not path.is_file():
-        raise FleetTransactionError(f"fleet ledger is not a regular file: {path}")
-    try:
-        ledger = _strict_json_loads(
-            path.read_text(encoding="utf-8"), artifact=f"fleet ledger {path}"
-        )
-    except (OSError, UnicodeError) as exc:
-        raise FleetTransactionError(f"cannot parse fleet ledger {path}: {exc}") from exc
-    required_root = {
-        "schema_version",
-        "pool_root",
-        "pool_id",
-        "fleet_sha256",
-        "rollout_generation",
-        "visibility_grace_seconds",
-        "created_at",
-        "updated_at",
-        "replicas",
-    }
-    if not isinstance(ledger, dict) or set(ledger) != required_root:
-        raise FleetTransactionError("fleet ledger root fields drifted")
-    if (
-        ledger["schema_version"] != STATE_SCHEMA_VERSION
-        or ledger["pool_root"] != str(canonical_root)
-        or ledger["pool_id"] != pool_id
-        or ledger["fleet_sha256"] != fleet_sha256
-        or ledger["rollout_generation"] != rollout_generation
-        or ledger["visibility_grace_seconds"] != DEFAULT_VISIBILITY_GRACE_SECONDS
-        or not isinstance(ledger["replicas"], dict)
-        or set(ledger["replicas"]) != set(replica_ids)
-    ):
-        raise FleetTransactionError("fleet ledger immutable identity drifted")
-    for replica_id in replica_ids:
-        record = ledger["replicas"][replica_id]
-        if not isinstance(record, dict) or set(record) != {"attempts", "health"}:
-            raise FleetTransactionError(f"replica ledger fields drifted for {replica_id}")
-        attempts = record["attempts"]
-        if not isinstance(attempts, list):
-            raise FleetTransactionError(f"replica attempts are not an array for {replica_id}")
-        tokens: set[str] = set()
-        job_ids: set[str] = set()
-        for attempt in attempts:
-            _validate_attempt(
-                attempt,
-                replica_id=replica_id,
-                generation=rollout_generation,
-                directory=directory,
-            )
-            parsed_comment = parse_intent_comment(attempt["scheduler_comment"])
-            if (
-                parsed_comment is None
-                or parsed_comment["pool"] != pool_id
-                or parsed_comment["replica"] != replica_id
-                or parsed_comment["generation"] != str(rollout_generation)
-                or parsed_comment["intent"] != attempt["intent_token"]
-                or parsed_comment["fleet"] != fleet_sha256
-            ):
-                raise FleetTransactionError(
-                    f"scheduler comment does not bind fleet intent for {replica_id}"
-                )
-            if attempt["intent_token"] in tokens:
-                raise FleetTransactionError(f"duplicate intent token for {replica_id}")
-            tokens.add(attempt["intent_token"])
-            if attempt["job_id"] is not None:
-                if str(attempt["job_id"]) in job_ids:
-                    raise FleetTransactionError(f"duplicate committed job id for {replica_id}")
-                job_ids.add(str(attempt["job_id"]))
-        nonterminal = [
-            item
-            for item in attempts
-            if item["state"]
-            in {"prepared", "submitting", "submitted", "committed", "missing"}
-        ]
-        if len(nonterminal) > 1:
-            raise FleetTransactionError(f"multiple current attempts for {replica_id}")
-        _validate_health(record["health"], replica_id=replica_id)
+    ledger = _read_ledger_file(
+        path,
+        directory=directory,
+        canonical_root=canonical_root,
+        pool_id=pool_id,
+        fleet_sha256=fleet_sha256,
+        rollout_generation=rollout_generation,
+        replica_ids=replica_ids,
+    )
     if current is None or int(current["current_generation"]) < rollout_generation:
         # Atomically advance CURRENT only after the complete pre-existing generation
         # ledger validates.  This recovers a crash after publishing gNNNN.json but before
@@ -743,6 +1140,302 @@ def load_generation_ledgers(
     return [generations[generation] for generation in sorted(generations)]
 
 
+def read_generation_ledgers(
+    directory: Path,
+    *,
+    pool_root: str | Path,
+    pool_id: str,
+    fleet_sha256: str,
+    current_generation: int,
+    replica_ids: Sequence[str],
+) -> tuple[dict[str, Any], ...]:
+    """Read and validate every generation without recovery, creation, or mutation.
+
+    Callers must hold :func:`read_transaction_lock` (or the writer lock).  An
+    interrupted two-file publication is reported rather than repaired, and the current
+    ledger is cryptographically rebound to ``CURRENT.json`` after every file is read.
+    """
+
+    canonical_root = Path(pool_root).expanduser().resolve()
+    if directory != state_directory(canonical_root):
+        raise FleetTransactionError("fleet read directory does not match the pool root")
+    if _SHA256_RE.fullmatch(fleet_sha256) is None:
+        raise FleetTransactionError("fleet transaction requires a lowercase SHA-256")
+    if (
+        not isinstance(current_generation, int)
+        or isinstance(current_generation, bool)
+        or current_generation < 1
+    ):
+        raise FleetTransactionError("fleet transaction requires a positive generation")
+    if len(replica_ids) != len(set(replica_ids)) or not replica_ids:
+        raise FleetTransactionError(
+            "fleet transaction replica identities are not unique"
+        )
+    save_intent = directory / SAVE_INTENT_FILENAME
+    if save_intent.exists() or save_intent.is_symlink():
+        raise FleetTransactionError(
+            "fleet ledger publication is in progress or requires locked recovery"
+        )
+    current_before = _read_current_index_raw(directory)
+    if current_before is None:
+        raise FleetTransactionError("fleet transaction state lacks CURRENT.json")
+    if (
+        current_before["pool_root"] != str(canonical_root)
+        or current_before["pool_id"] != pool_id
+        or current_before["fleet_sha256"] != fleet_sha256
+        or current_before["current_generation"] != current_generation
+    ):
+        raise FleetTransactionError("fleet current-index immutable identity drifted")
+    ledger_dir = directory / LEDGERS_DIRECTORY
+    if ledger_dir.is_symlink() or not ledger_dir.is_dir():
+        raise FleetTransactionError("fleet generation-ledger directory is invalid")
+    generations: dict[int, dict[str, Any]] = {}
+    paths = sorted(ledger_dir.iterdir(), key=lambda item: item.name)
+    for path in paths:
+        match = re.fullmatch(r"g([0-9]{6})\.json", path.name)
+        if match is None or path.is_symlink() or not path.is_file():
+            raise FleetTransactionError(f"invalid generation ledger entry: {path}")
+        generation = int(match.group(1))
+        if generation > current_generation:
+            raise FleetTransactionError(
+                f"future fleet ledger g{generation:06d} exceeds current generation"
+            )
+        generations[generation] = _read_ledger_file(
+            path,
+            directory=directory,
+            canonical_root=canonical_root,
+            pool_id=pool_id,
+            fleet_sha256=fleet_sha256,
+            rollout_generation=generation,
+            replica_ids=replica_ids,
+        )
+    if current_generation not in generations:
+        raise FleetTransactionError("fleet current generation ledger is missing")
+    current_path = ledger_path(directory, current_generation)
+    if (
+        str(current_path.resolve()) != current_before["ledger_path"]
+        or hashlib.sha256(current_path.read_bytes()).hexdigest()
+        != current_before["ledger_sha256"]
+    ):
+        raise FleetTransactionError("fleet CURRENT ledger bytes are not attested")
+    current_after = _read_current_index_raw(directory)
+    if current_after != current_before:
+        raise FleetTransactionError("fleet CURRENT changed during read-only reconciliation")
+    return tuple(generations[generation] for generation in sorted(generations))
+
+
+def reconcile_scheduler_rows(
+    rows: Sequence[SchedulerRow],
+    ledgers: Sequence[Mapping[str, Any]],
+    *,
+    pool_id: str,
+    fleet_sha256: str,
+    replica_profiles: Mapping[str, str],
+    replica_job_names: Mapping[str, str],
+) -> FleetReconciliation:
+    """Bind joined scheduler truth to durable intents without changing either side."""
+
+    expected_ids = set(replica_profiles)
+    if (
+        not expected_ids
+        or set(replica_job_names) != expected_ids
+        or len(set(replica_job_names.values())) != len(replica_job_names)
+    ):
+        raise FleetTransactionError("fleet reconciliation identities are not bijective")
+    attempts_by_token: dict[
+        str, tuple[str, Mapping[str, Any], Mapping[str, Any], int]
+    ] = {}
+    recorded_job_ids: dict[str, str] = {}
+    for ledger in ledgers:
+        if (
+            not isinstance(ledger, Mapping)
+            or ledger.get("pool_id") != pool_id
+            or ledger.get("fleet_sha256") != fleet_sha256
+            or set(ledger.get("replicas", {})) != expected_ids
+        ):
+            raise FleetTransactionError("fleet reconciliation ledger identity drifted")
+        generation = ledger.get("rollout_generation")
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 1
+        ):
+            raise FleetTransactionError("fleet reconciliation generation is invalid")
+        replicas = ledger["replicas"]
+        for replica_id in sorted(expected_ids):
+            record = replicas[replica_id]
+            for attempt in record["attempts"]:
+                token = str(attempt["intent_token"])
+                if token in attempts_by_token:
+                    raise FleetTransactionError(
+                        f"fleet intent token {token} is not globally unique"
+                    )
+                attempts_by_token[token] = (
+                    replica_id,
+                    attempt,
+                    record,
+                    generation,
+                )
+                job_id = attempt.get("job_id")
+                if job_id is not None:
+                    owner = recorded_job_ids.setdefault(str(job_id), token)
+                    if owner != token:
+                        raise FleetTransactionError(
+                            f"fleet job id {job_id} is bound to multiple intents"
+                        )
+                sbatch_path = Path(str(attempt["sbatch_path"]))
+                if (
+                    sbatch_path.is_symlink()
+                    or not sbatch_path.is_file()
+                    or sbatch_path.stat().st_mode & 0o222
+                    or hashlib.sha256(sbatch_path.read_bytes()).hexdigest()
+                    != attempt["sbatch_sha256"]
+                ):
+                    raise FleetTransactionError(
+                        f"immutable sbatch provenance drift for {replica_id}"
+                    )
+
+    scheduler_job_ids: set[str] = set()
+    by_token: dict[str, list[SchedulerRow]] = {}
+    active_by_replica: dict[
+        str, list[tuple[SchedulerRow, Mapping[str, Any]]]
+    ] = {}
+    allocations: list[ReconciledFleetAllocation] = []
+    ignored_terminal: list[str] = []
+    for row in rows:
+        if row.job_id in scheduler_job_ids:
+            raise FleetTransactionError(
+                f"duplicate scheduler row for fleet job {row.job_id}"
+            )
+        scheduler_job_ids.add(row.job_id)
+        parsed = parse_intent_comment(row.comment)
+        if parsed is None:
+            if terminal_state(row.state):
+                ignored_terminal.append(row.job_id)
+                continue
+            raise FleetTransactionError(
+                f"unmappable schema-5 fleet job {row.job_id} lacks "
+                "transactional intent provenance"
+            )
+        matched = attempts_by_token.get(parsed["intent"])
+        if matched is None:
+            if terminal_state(row.state):
+                ignored_terminal.append(row.job_id)
+                continue
+            raise FleetTransactionError(
+                f"scheduler exposes unknown fleet intent {parsed['intent']} "
+                f"as job {row.job_id}"
+            )
+        replica_id, attempt, record, generation = matched
+        expected_profile = replica_profiles[replica_id]
+        if (
+            row.comment != attempt["scheduler_comment"]
+            or parsed["pool"] != pool_id
+            or parsed["profile"] != expected_profile
+            or parsed["replica"] != replica_id
+            or parsed["generation"] != str(generation)
+            or parsed["fleet"] != fleet_sha256
+        ):
+            raise FleetTransactionError(
+                f"scheduler intent comment drift for job {row.job_id}"
+            )
+        if (
+            row.job_name != replica_job_names[replica_id]
+            or not command_binds_sbatch(row.command, str(attempt["sbatch_path"]))
+        ):
+            raise FleetTransactionError(
+                f"scheduler provenance drift for fleet job {row.job_id}"
+            )
+        if attempt.get("job_id") not in {None, str(row.job_id)}:
+            raise FleetTransactionError(
+                f"fleet intent {parsed['intent']} changed job id"
+            )
+        by_token.setdefault(parsed["intent"], []).append(row)
+        if not terminal_state(row.state):
+            active_by_replica.setdefault(replica_id, []).append((row, attempt))
+        allocations.append(
+            ReconciledFleetAllocation(
+                replica_id=replica_id,
+                profile=expected_profile,
+                ledger_generation=generation,
+                row=row,
+                attempt=MappingProxyType(dict(attempt)),
+                health=(
+                    None
+                    if record["health"] is None
+                    else MappingProxyType(dict(record["health"]))
+                ),
+            )
+        )
+    duplicate_tokens = {
+        token: [row.job_id for row in token_rows]
+        for token, token_rows in by_token.items()
+        if len(token_rows) != 1
+    }
+    duplicate_replicas: dict[str, list[str]] = {}
+    for replica_id, replica_rows in active_by_replica.items():
+        if len(replica_rows) <= 1:
+            continue
+        lifecycles = sorted(
+            str(attempt.get("lifecycle")) for _row, attempt in replica_rows
+        )
+        allowed = (
+            len(replica_rows) == 2
+            and lifecycles
+            in (
+                ["primary", "standby"],
+                ["promoted", "retiring"],
+                ["promoted", "standby"],
+                ["retiring", "standby"],
+            )
+        )
+        if not allowed:
+            duplicate_replicas[replica_id] = [
+                row.job_id for row, _attempt in replica_rows
+            ]
+            continue
+        standby = next(
+            (
+                (row, attempt)
+                for row, attempt in replica_rows
+                if attempt.get("lifecycle") == "standby"
+            ),
+            None,
+        )
+        predecessor = next(
+            (
+                (row, attempt)
+                for row, attempt in replica_rows
+                if attempt.get("lifecycle")
+                in {"primary", "promoted", "retiring"}
+            ),
+            None,
+        )
+        if standby is not None and (
+            predecessor is None
+            or standby[1].get("predecessor_job_id") != predecessor[0].job_id
+        ):
+            duplicate_replicas[replica_id] = [
+                row.job_id for row, _attempt in replica_rows
+            ]
+    if duplicate_tokens or duplicate_replicas:
+        raise FleetTransactionError(
+            "ambiguous duplicate fleet jobs: "
+            f"tokens={duplicate_tokens}, replicas={duplicate_replicas}"
+        )
+    return FleetReconciliation(
+        allocations=tuple(
+            sorted(
+                allocations,
+                key=lambda item: (item.replica_id, int(item.row.job_id)),
+            )
+        ),
+        ignored_terminal_job_ids=tuple(
+            sorted(ignored_terminal, key=int)
+        ),
+    )
+
+
 def intent_comment(
     *,
     pool_id: str,
@@ -801,6 +1494,11 @@ def prepare_attempt(
     sbatch_text: str,
     now: float,
     token_factory: Callable[[], str] | None = None,
+    launch_kind: str = "primary",
+    predecessor_job_id: str | None = None,
+    predecessor_end_at: float | None = None,
+    predecessor_attempt: Mapping[str, Any] | None = None,
+    allocated_gpus: int = 1,
 ) -> dict[str, Any]:
     """Publish one immutable script and its durable pre-submit intent."""
 
@@ -810,8 +1508,55 @@ def prepare_attempt(
         for item in record["attempts"]
         if item["state"] in {"prepared", "submitting", "submitted", "committed", "missing"}
     ]
-    if current:
-        raise FleetTransactionError(f"replica {replica_id} already has a current intent")
+    if launch_kind not in {"primary", "handoff"}:
+        raise FleetTransactionError("fleet launch kind must be primary or handoff")
+    if (
+        not isinstance(allocated_gpus, int)
+        or isinstance(allocated_gpus, bool)
+        or allocated_gpus < 0
+    ):
+        raise FleetTransactionError(
+            "fleet allocation GPU count must be nonnegative"
+        )
+    if launch_kind == "primary":
+        if (
+            current
+            or predecessor_job_id is not None
+            or predecessor_end_at is not None
+            or predecessor_attempt is not None
+        ):
+            raise FleetTransactionError(
+                f"replica {replica_id} already has a current intent"
+            )
+    else:
+        stable = [
+            item
+            for item in current
+            if item["lifecycle"] in {"primary", "promoted"}
+            and str(item.get("job_id") or "").isdigit()
+        ]
+        if predecessor_attempt is not None and predecessor_attempt not in stable:
+            if (
+                predecessor_attempt.get("lifecycle") not in {"primary", "promoted"}
+                or predecessor_attempt.get("state")
+                not in {"submitted", "committed", "missing"}
+                or not str(predecessor_attempt.get("job_id") or "").isdigit()
+            ):
+                raise FleetTransactionError(
+                    f"handoff for {replica_id} has an invalid external predecessor"
+                )
+            stable.append(predecessor_attempt)
+        if (
+            len(stable) != 1
+            or len(current) not in {0, 1}
+            or (len(current) == 1 and current[0] is not stable[0])
+            or predecessor_job_id != stable[0]["job_id"]
+            or not isinstance(predecessor_end_at, (int, float))
+            or isinstance(predecessor_end_at, bool)
+        ):
+            raise FleetTransactionError(
+                f"handoff for {replica_id} lacks one exact promoted predecessor"
+            )
     token = (token_factory or (lambda: secrets.token_hex(16)))()
     if _TOKEN_RE.fullmatch(token) is None:
         raise FleetTransactionError("intent token factory returned an invalid token")
@@ -855,6 +1600,23 @@ def prepare_attempt(
         "last_seen_at": None,
         "missing_since": None,
         "last_error": None,
+        "launch_kind": launch_kind,
+        "lifecycle": "primary" if launch_kind == "primary" else "standby",
+        "predecessor_job_id": predecessor_job_id,
+        "predecessor_end_at": (
+            None if predecessor_end_at is None else float(predecessor_end_at)
+        ),
+        "allocated_gpus": allocated_gpus,
+        "scheduler_start_at": None,
+        "scheduler_end_at": None,
+        "scheduler_time_limit_seconds": None,
+        "ready_probe_count": 0,
+        "last_ready_probe_at": None,
+        "promoted_at": None,
+        "retire_requested_at": None,
+        "last_retire_attempt_at": None,
+        "retire_attempts": 0,
+        "retire_error": None,
     }
     record["attempts"].append(attempt)
     save_ledger(directory, ledger, now=now)
@@ -951,19 +1713,110 @@ def _submit_line_comment(command: str) -> str | None:
     return values[0] if values else None
 
 
+def _parse_slurm_timestamp(value: str, *, field: str) -> float | None:
+    normalized = value.strip()
+    if normalized.lower() in {
+        "",
+        "(null)",
+        "null",
+        "none",
+        "unknown",
+        "n/a",
+        "notset",
+    }:
+        return None
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise FleetTransactionError(
+            f"invalid Slurm {field} timestamp {value!r}"
+        ) from exc
+    return parsed.timestamp()
+
+
+def _parse_slurm_duration(value: str, *, source: str) -> int | None:
+    normalized = value.strip()
+    if normalized.lower() in {
+        "",
+        "(null)",
+        "null",
+        "none",
+        "unknown",
+        "n/a",
+        "partition_limit",
+        "unlimited",
+    }:
+        return None
+    if normalized.isdigit():
+        # On this cluster sacct's ``TimelimitRaw`` unit is minutes (e.g. 1440
+        # for a 24-hour job and 10080 for seven days).  squeue's ``%l`` is the
+        # formatted duration, so accepting a bare number there would be ambiguous.
+        if source != "sacct":
+            raise FleetTransactionError(
+                f"ambiguous formatted squeue time limit {value!r}"
+            )
+        minutes = int(normalized)
+        return minutes * 60 if minutes > 0 else None
+    match = re.fullmatch(
+        r"(?:(?P<days>[0-9]+)-)?(?:(?P<hours>[0-9]{1,2}):)?"
+        r"(?P<minutes>[0-9]{1,2}):(?P<seconds>[0-9]{2})",
+        normalized,
+    )
+    if match is None:
+        raise FleetTransactionError(f"invalid Slurm time limit {value!r}")
+    days = int(match.group("days") or 0)
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes"))
+    seconds = int(match.group("seconds"))
+    if hours >= 24 or minutes >= 60 or seconds >= 60:
+        raise FleetTransactionError(f"invalid Slurm time limit {value!r}")
+    total = days * 86_400 + hours * 3_600 + minutes * 60 + seconds
+    return total if total > 0 else None
+
+
 def _parse_rows(text: str, *, source: str) -> list[SchedulerRow]:
     rows: list[SchedulerRow] = []
     for line_number, raw in enumerate(text.splitlines(), start=1):
         if not raw.strip():
             continue
-        fields = raw.rstrip("\n").split("|", 6)
-        if len(fields) != 7:
+        fields = raw.rstrip("\n").split("|")
+        allowed_arities = {7, 10} if source == "sacct" else {7, 11}
+        if source not in {"sacct", "squeue"} or len(fields) not in allowed_arities:
             raise FleetTransactionError(
                 f"malformed {source} fleet row {line_number}: {raw!r}"
             )
-        job_id, name, state, partition, node, command, comment = (
-            field.strip() for field in fields
-        )
+        (
+            job_id,
+            name,
+            state,
+            partition,
+            node,
+            command,
+            comment,
+            *timing,
+        ) = (field.strip() for field in fields)
+        start_timestamp: float | None = None
+        end_timestamp: float | None = None
+        time_limit_seconds: int | None = None
+        dependency: str | None = None if source == "sacct" else ""
+        if timing:
+            start_timestamp = _parse_slurm_timestamp(timing[0], field="start")
+            end_timestamp = _parse_slurm_timestamp(timing[1], field="end")
+            time_limit_seconds = _parse_slurm_duration(timing[2], source=source)
+            if source == "squeue":
+                dependency = (
+                    ""
+                    if timing[3].lower()
+                    in {
+                        "",
+                        "(null)",
+                        "null",
+                        "none",
+                        "n/a",
+                        "singleton",
+                    }
+                    else timing[3]
+                )
         # Slurm renders an unset JobComment as either an empty field or ``(null)``
         # depending on whether the row came from sacct or squeue.  Normalize both before
         # joining the two scheduler views; these representations are semantically equal.
@@ -1009,7 +1862,20 @@ def _parse_rows(text: str, *, source: str) -> list[SchedulerRow]:
                 f"invalid {source} fleet row {line_number}: {raw!r}"
             )
         rows.append(
-            SchedulerRow(job_id, name, state, partition, node, command, comment, source)
+            SchedulerRow(
+                job_id,
+                name,
+                state,
+                partition,
+                node,
+                command,
+                comment,
+                source,
+                start_timestamp,
+                end_timestamp,
+                time_limit_seconds,
+                dependency,
+            )
         )
     return rows
 
@@ -1039,7 +1905,10 @@ def query_scheduler(
                 "-P",
                 "-S",
                 time.strftime("%Y-%m-%d", time.localtime(timestamp - 7 * 86_400)),
-                "--format=JobIDRaw,JobName,State,Partition,NodeList,SubmitLine,Comment",
+                (
+                    "--format=JobIDRaw,JobName,State,Partition,NodeList,SubmitLine,"
+                    "Comment,Start,End,TimelimitRaw"
+                ),
             ],
         ),
         (
@@ -1051,7 +1920,7 @@ def query_scheduler(
                 "-h",
                 "-r",
                 "-o",
-                "%i|%j|%T|%P|%N|%o|%k",
+                "%i|%j|%T|%P|%N|%o|%k|%S|%e|%l|%E",
             ],
         ),
     )
@@ -1086,13 +1955,46 @@ def query_scheduler(
                 raise FleetTransactionError(
                     f"squeue/sacct identity conflict for fleet job {row.job_id}"
                 )
-            # The later squeue pass owns current state/node/command.
+            if prior is not None:
+                for field in ("start_timestamp", "end_timestamp"):
+                    left = getattr(prior, field)
+                    right = getattr(row, field)
+                    if (
+                        left is not None
+                        and right is not None
+                        and abs(float(left) - float(right)) > 1.0
+                    ):
+                        raise FleetTransactionError(
+                            f"squeue/sacct {field} conflict for fleet job {row.job_id}"
+                        )
+                if (
+                    prior.time_limit_seconds is not None
+                    and row.time_limit_seconds is not None
+                    and prior.time_limit_seconds != row.time_limit_seconds
+                ):
+                    raise FleetTransactionError(
+                        f"squeue/sacct time limit conflict for fleet job {row.job_id}"
+                    )
+            # The later squeue pass owns current state/node/command and its exact
+            # expected walltime.  Accounting remains the terminal-history source.
             by_id[row.job_id] = row
     if errors or not all(success.values()):
         raise FleetTransactionError(
             "fleet reconciliation requires complete squeue+sacct truth: "
             + "; ".join(errors or ["one scheduler source was unavailable"])
         )
+    for row in by_id.values():
+        if not terminal_state(row.state):
+            if row.source != "squeue" or row.dependency is None:
+                raise FleetTransactionError(
+                    f"active fleet job {row.job_id} lacks complete squeue timing/"
+                    "dependency truth"
+                )
+            if row.dependency:
+                raise FleetTransactionError(
+                    f"active fleet job {row.job_id} has unexpected dependency "
+                    f"{row.dependency!r}"
+                )
     return SchedulerSnapshot(
         rows=tuple(sorted(by_id.values(), key=lambda item: int(item.job_id))),
         captured_at=timestamp,
@@ -1166,7 +2068,11 @@ def append_alert_once(
     return alert_id
 
 
-def read_health_summary(pool_root: str | Path) -> dict[str, Any]:
+def read_health_summary(
+    pool_root: str | Path,
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
     """Read the atomic fleet ledgers for the five-minute/email monitor.
 
     This function never creates files or takes the writer lock.  Every individual file
@@ -1176,11 +2082,15 @@ def read_health_summary(pool_root: str | Path) -> dict[str, Any]:
     """
 
     directory = state_directory(pool_root)
+    observed_at = time.time() if now is None else float(now)
     if not directory.exists():
         return {
             "available": False,
             "current_generation": None,
             "active_hung_allocations": [],
+            "active_handoffs": [],
+            "handoff_violations": [],
+            "handoff_overlap_gpus": 0,
             "historical_alert_count": 0,
             "alerts_path": str(directory / ALERTS_FILENAME),
         }
@@ -1210,6 +2120,7 @@ def read_health_summary(pool_root: str | Path) -> dict[str, Any]:
     if ledger_dir.is_symlink() or not ledger_dir.is_dir():
         raise FleetTransactionError("fleet generation-ledger directory is invalid")
     active: list[dict[str, Any]] = []
+    attempt_rows: list[tuple[int, str, dict[str, Any]]] = []
     for path in sorted(ledger_dir.glob("g*.json")):
         match = re.fullmatch(r"g([0-9]{6})\.json", path.name)
         if match is None or path.is_symlink() or not path.is_file():
@@ -1232,9 +2143,22 @@ def read_health_summary(pool_root: str | Path) -> dict[str, Any]:
             or not isinstance(ledger.get("replicas"), dict)
         ):
             raise FleetTransactionError(f"fleet ledger identity drifted: {path}")
+        _validate_ledger_material(
+            ledger,
+            directory=directory,
+            canonical_root=Path(pool_root).expanduser().resolve(),
+            pool_id=str(current["pool_id"]),
+            fleet_sha256=str(current["fleet_sha256"]),
+            rollout_generation=generation,
+            replica_ids=sorted(str(key) for key in ledger["replicas"]),
+        )
         for replica_id, record in ledger["replicas"].items():
             if not isinstance(record, dict):
                 raise FleetTransactionError(f"invalid fleet replica state in {path}")
+            attempt_rows.extend(
+                (generation, str(replica_id), attempt)
+                for attempt in record["attempts"]
+            )
             health = record.get("health")
             if health is None:
                 continue
@@ -1253,6 +2177,215 @@ def read_health_summary(pool_root: str | Path) -> dict[str, Any]:
                         "alert_id": health["alert_id"],
                     }
                 )
+    current_states = {
+        "prepared",
+        "submitting",
+        "submitted",
+        "committed",
+        "missing",
+    }
+    by_replica: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    active_handoffs: list[dict[str, Any]] = []
+    violations: list[dict[str, Any]] = []
+    for generation, replica_id, attempt in attempt_rows:
+        if attempt["launch_kind"] == "handoff" and attempt["state"] in (
+            current_states | {"submission_failed"}
+        ):
+            active_handoffs.append(
+                {
+                    "replica_id": replica_id,
+                    "ledger_generation": generation,
+                    "job_id": attempt["job_id"],
+                    "state": attempt["state"],
+                    "lifecycle": attempt["lifecycle"],
+                    "predecessor_job_id": attempt["predecessor_job_id"],
+                    "predecessor_end_at": attempt["predecessor_end_at"],
+                    "ready_probe_count": attempt["ready_probe_count"],
+                    "last_ready_probe_at": attempt["last_ready_probe_at"],
+                    "promoted_at": attempt["promoted_at"],
+                    "retire_attempts": attempt["retire_attempts"],
+                    "retire_error": attempt["retire_error"],
+                    "allocated_gpus": attempt["allocated_gpus"],
+                }
+            )
+        if attempt["state"] in current_states:
+            by_replica.setdefault(replica_id, []).append((generation, attempt))
+
+    overlap_gpus = 0
+    allowed_pairs = {
+        ("primary", "standby"),
+        ("promoted", "retiring"),
+        ("promoted", "standby"),
+        ("retiring", "standby"),
+    }
+    for replica_id, current_attempts in sorted(by_replica.items()):
+        lifecycles = tuple(
+            sorted(str(attempt["lifecycle"]) for _generation, attempt in current_attempts)
+        )
+        if len(current_attempts) > 2 or (
+            len(current_attempts) == 2 and lifecycles not in allowed_pairs
+        ):
+            violations.append(
+                {
+                    "replica_id": replica_id,
+                    "kind": "invalid_lifecycle_overlap",
+                    "lifecycles": list(lifecycles),
+                }
+            )
+        if len(current_attempts) == 2:
+            gpu_counts = {
+                int(attempt["allocated_gpus"])
+                for _generation, attempt in current_attempts
+            }
+            if len(gpu_counts) != 1:
+                violations.append(
+                    {
+                        "replica_id": replica_id,
+                        "kind": "handoff_gpu_contract_drift",
+                        "allocated_gpus": sorted(gpu_counts),
+                    }
+                )
+            overlap_gpus += max(gpu_counts)
+
+        standby = next(
+            (
+                attempt
+                for _generation, attempt in current_attempts
+                if attempt["lifecycle"] == "standby"
+            ),
+            None,
+        )
+        if standby is not None:
+            remaining = float(standby["predecessor_end_at"]) - observed_at
+            if remaining <= 0:
+                violations.append(
+                    {
+                        "replica_id": replica_id,
+                        "kind": "handoff_overdue",
+                        "job_id": standby["job_id"],
+                        "seconds_past_predecessor_end": -remaining,
+                    }
+                )
+            elif (
+                remaining <= 3_600
+                and int(standby["ready_probe_count"]) < 2
+            ):
+                violations.append(
+                    {
+                        "replica_id": replica_id,
+                        "kind": "handoff_critical_lead",
+                        "job_id": standby["job_id"],
+                        "seconds_remaining": remaining,
+                        "ready_probe_count": standby["ready_probe_count"],
+                    }
+                )
+            heartbeat = (
+                standby["last_seen_at"]
+                or standby["submit_started_at"]
+                or standby["created_at"]
+            )
+            if observed_at - float(heartbeat) > 900:
+                violations.append(
+                    {
+                        "replica_id": replica_id,
+                        "kind": "handoff_scheduler_stale",
+                        "job_id": standby["job_id"],
+                        "age_seconds": observed_at - float(heartbeat),
+                    }
+                )
+
+        stable = next(
+            (
+                attempt
+                for _generation, attempt in current_attempts
+                if attempt["lifecycle"] in {"primary", "promoted"}
+            ),
+            None,
+        )
+        if (
+            stable is not None
+            and standby is None
+            and stable["scheduler_end_at"] is not None
+            and float(stable["scheduler_end_at"]) - observed_at <= 3_600
+        ):
+            violations.append(
+                {
+                    "replica_id": replica_id,
+                    "kind": "missed_handoff_lead",
+                    "job_id": stable["job_id"],
+                    "seconds_remaining": (
+                        float(stable["scheduler_end_at"]) - observed_at
+                    ),
+                }
+            )
+
+        for _generation, attempt in current_attempts:
+            if (
+                attempt["lifecycle"] == "retiring"
+                and attempt["retire_error"]
+                and int(attempt["retire_attempts"]) >= 5
+            ):
+                violations.append(
+                    {
+                        "replica_id": replica_id,
+                        "kind": "handoff_retirement_exhausted",
+                        "job_id": attempt["job_id"],
+                        "retire_attempts": attempt["retire_attempts"],
+                        "retire_error": attempt["retire_error"],
+                    }
+                )
+            if (
+                attempt["launch_kind"] == "handoff"
+                and attempt["lifecycle"] == "promoted"
+            ):
+                from agents_scaling.serving import registry
+
+                try:
+                    pointer = registry.read_promoted_entry(
+                        pool_root,
+                        str(
+                            parse_intent_comment(
+                                attempt["scheduler_comment"]
+                            )["profile"]
+                        ),
+                        replica_id,
+                    )
+                except (TypeError, ValueError, KeyError) as exc:
+                    violations.append(
+                        {
+                            "replica_id": replica_id,
+                            "kind": "invalid_promoted_pointer",
+                            "job_id": attempt["job_id"],
+                            "error": str(exc),
+                        }
+                    )
+                else:
+                    if (
+                        pointer is None
+                        or str(pointer.slurm_job_id or "")
+                        != str(attempt["job_id"])
+                    ):
+                        violations.append(
+                            {
+                                "replica_id": replica_id,
+                                "kind": "invalid_promoted_pointer",
+                                "job_id": attempt["job_id"],
+                                "observed_job_id": (
+                                    None
+                                    if pointer is None
+                                    else pointer.slurm_job_id
+                                ),
+                            }
+                        )
+    if overlap_gpus > 4:
+        violations.append(
+            {
+                "replica_id": None,
+                "kind": "handoff_overlap_budget_exceeded",
+                "observed_gpus": overlap_gpus,
+                "maximum_gpus": 4,
+            }
+        )
     alerts_path = directory / ALERTS_FILENAME
     alert_ids: set[str] = set()
     if alerts_path.exists():
@@ -1274,6 +2407,22 @@ def read_health_summary(pool_root: str | Path) -> dict[str, Any]:
         "active_hung_allocations": sorted(
             active, key=lambda item: (item["replica_id"], item["job_id"])
         ),
+        "active_handoffs": sorted(
+            active_handoffs,
+            key=lambda item: (
+                item["replica_id"],
+                str(item["job_id"] or ""),
+            ),
+        ),
+        "handoff_violations": sorted(
+            violations,
+            key=lambda item: (
+                str(item.get("replica_id") or ""),
+                str(item.get("kind") or ""),
+                str(item.get("job_id") or ""),
+            ),
+        ),
+        "handoff_overlap_gpus": overlap_gpus,
         "historical_alert_count": len(alert_ids),
         "alerts_path": str(alerts_path),
     }

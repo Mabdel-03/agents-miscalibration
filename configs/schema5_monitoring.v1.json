@@ -25,6 +25,12 @@
     "semantic": 21600,
     "daily": 86400
   },
+  "execution_deadline_seconds": {
+    "health": 240,
+    "semantic": 18000,
+    "daily": 18000,
+    "terminate_grace": 30
+  },
   "throughput": {
     "material_capacity_layout_generation": 1,
     "minimum_observation_hours": 48,
@@ -64,9 +70,19 @@
   },
   "alerts": {
     "email": "mabdel03@mit.edu",
+    "dispatcher_ledger_stale_seconds": 360,
+    "email_retry_delays_seconds": [60, 300, 900, 3600],
     "heartbeat_stale_seconds": 600,
     "minimum_disk_free_bytes": 536870912000,
     "minimum_disk_free_fraction": 0.1,
+    "minimum_free_inodes": 1000000,
+    "minimum_free_inode_fraction": 0.05,
+    "no_progress_semantic_scans": 2,
+    "ramp_stall_seconds": {
+      "24": 28800,
+      "96": 46800,
+      "192": 68400
+    },
     "starvation_polls": 2
   }
 }

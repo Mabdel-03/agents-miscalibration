@@ -57,8 +57,8 @@ available non-MCQ confidence signals.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code and data-flow map.
 - [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md): exact `results.jsonl`, `meta.json`, and
   parquet fields.
-- [docs/OPERATIONS.md](docs/OPERATIONS.md): SLURM, environments, launch/resume, and
-  monitoring runbook.
+- [docs/OPERATIONS.md](docs/OPERATIONS.md): development and retired-run operational
+  reference; it is not the schema-5 production launch path.
 - [docs/RESULTS.md](docs/RESULTS.md): validation milestones, pilot results, and live run
   status.
 - [analysis/README.md](analysis/README.md): aggregation, example scripts, and planned
@@ -107,7 +107,8 @@ PYTHONPATH=src python analysis/examples/summarize_run.py --parquet analysis/mypi
 
 The full multi-cluster sweep is intentionally large and resumable. The authoritative
 schema-5 recovery and production path is
-[docs/SCHEMA5_RECOVERY_RUNBOOK.md](docs/SCHEMA5_RECOVERY_RUNBOOK.md). The older
+[docs/SCHEMA5_V12_RECOVERY_RUNBOOK.md](docs/SCHEMA5_V12_RECOVERY_RUNBOOK.md). The older
+[docs/SCHEMA5_RECOVERY_RUNBOOK.md](docs/SCHEMA5_RECOVERY_RUNBOOK.md) and
 [docs/OPERATIONS.md](docs/OPERATIONS.md) procedures are retained only for development and
 legacy-run forensics.
 

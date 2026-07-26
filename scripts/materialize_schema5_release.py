@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Materialize the immutable schema-5 source and runtime prefixes.
+"""Materialize the immutable schema-5 v1.2 source and runtime prefixes.
 
 This is the mutation step immediately before :mod:`freeze_schema5_release`.  It is
 dry-run by default.  ``--apply`` creates a detached worktree at the exact production
-tag, independently clones the harness and serving Conda prefixes with copy semantics,
+tag, independently clones normalized read-only environment seeds with copy semantics,
 and replaces the cloned harness's development checkout with one non-editable install
-from that exact worktree.
+from that exact worktree.  The mutable developer prefixes are never inspected here;
+they are isolated by :mod:`capture_schema5_environments`.
 
 The command is deliberately fail-closed and resumable at explicit stage boundaries.
 It never deletes or overwrites a destination.  A process interrupted inside a Conda
@@ -31,13 +32,13 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from scripts import capture_schema5_environments as capture  # noqa: E402
 from scripts import freeze_schema5_release as freeze  # noqa: E402
 
 
-# Version 2 adds a transitive symlink-independence contract to every clone stage.
-# Version-1 stage records intentionally fail closed rather than being adopted without
-# evidence that their links are independent of the mutable source prefixes.
-SCHEMA_VERSION = 2
+# Version 3 binds sealed normalized environment seeds, direct conda-meta locks, a
+# release-local package cache, and offline/no-pip-interoperability clone semantics.
+SCHEMA_VERSION = 4
 RELEASE_ID = freeze.RELEASE_ID
 REQUIRED_TAG = freeze.REQUIRED_GIT_TAG
 COMPLETE_MARKER = "MATERIALIZATION_COMPLETE.json"
@@ -46,6 +47,7 @@ STAGE_FILENAMES = {
     "worktree": "WORKTREE_MATERIALIZED.json",
     "harness_clone": "HARNESS_CLONE_COMPLETE.json",
     "serving_clone": "SERVING_CLONE_COMPLETE.json",
+    "package_cache": "CONDA_PACKAGE_CACHE_COMPLETE.json",
     "harness_package": "HARNESS_PACKAGE_COMPLETE.json",
 }
 _SHA256_RE = freeze._SHA256_RE
@@ -54,6 +56,22 @@ _GIT_COMMIT_RE = freeze._GIT_COMMIT_RE
 
 class MaterializationError(RuntimeError):
     """The requested release cannot be materialized or proven exact."""
+
+
+def _require_exact_fields(
+    payload: Mapping[str, Any],
+    expected: Sequence[str] | set[str],
+    *,
+    description: str,
+) -> None:
+    expected_fields = set(expected)
+    observed_fields = set(payload)
+    if observed_fields != expected_fields:
+        raise MaterializationError(
+            f"{description} field inventory drifted; "
+            f"missing={sorted(expected_fields - observed_fields)!r}, "
+            f"unexpected={sorted(observed_fields - expected_fields)!r}"
+        )
 
 
 def _run(
@@ -184,15 +202,33 @@ def _conda_executable(value: str | Path) -> Path:
 
 
 def _command_environment() -> dict[str, str]:
-    blocked = {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"}
-    env = {key: value for key, value in os.environ.items() if key not in blocked}
+    blocked = {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in blocked
+        and not key.startswith(("PIP_", "CONDA_"))
+    }
     env.update(
         {
             "CONDA_ALWAYS_COPY": "true",
+            "CONDA_OFFLINE": "true",
+            "CONDA_PIP_INTEROP_ENABLED": "false",
+            "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
+            "CONDA_NO_PLUGINS": "true",
+            "CONDARC": os.devnull,
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PIP_NO_INDEX": "1",
+            "PIP_NO_INPUT": "1",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_CONFIG_FILE": os.devnull,
         }
     )
     return env
@@ -542,7 +578,7 @@ def _clone_identity(
     *,
     source: Path,
     destination: Path,
-    conda_executable: Path,
+    conda_executable: Path | None = None,
     source_prefixes: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     copy_report = verify_independent_copy(source, destination)
@@ -551,12 +587,10 @@ def _clone_identity(
         source_prefixes=(source,) if source_prefixes is None else source_prefixes,
     )
     try:
-        source_conda = freeze._conda_lock(
-            source, conda_executable=conda_executable
-        )
-        destination_conda = freeze._conda_lock(
-            destination, conda_executable=conda_executable
-        )
+        # Never ask Conda to inspect a prefix.  The normalized seed's inventoried
+        # conda-meta records are the exact artifact authority.
+        source_conda = freeze._conda_lock_from_records(source)
+        destination_conda = freeze._conda_lock_from_records(destination)
     except freeze.ReleaseFreezeError as exc:
         raise MaterializationError(str(exc)) from exc
     if destination_conda != source_conda:
@@ -570,8 +604,10 @@ def _clone_identity(
     return {
         "source_prefix": str(source),
         "destination_prefix": str(destination),
-        "clone_mode": "conda_create_clone_copy",
+        "clone_mode": "conda_create_clone_copy_offline_normalized_seed",
         "conda_always_copy": True,
+        "conda_offline": True,
+        "conda_pip_interop_enabled": False,
         "conda_explicit_sha256": _sha256_bytes(_json_bytes(source_conda)),
         "pip_freeze_sha256": _sha256_bytes(_json_bytes(source_pip)),
         **{f"source_{key}": value for key, value in source_inventory.items()},
@@ -597,7 +633,7 @@ def _assert_live_clone_identity(
     *,
     source: Path,
     destination: Path,
-    conda_executable: Path,
+    conda_executable: Path | None = None,
     source_prefixes: Sequence[Path],
 ) -> dict[str, Any]:
     live = _clone_identity(
@@ -618,13 +654,11 @@ def _post_install_identity(
     harness_prefix: Path,
     release_worktree: Path,
     git_identity: Mapping[str, str],
-    conda_executable: Path,
+    conda_executable: Path | None = None,
     source_prefixes: Sequence[Path],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
-        conda_lock = freeze._conda_lock(
-            harness_prefix, conda_executable=conda_executable
-        )
+        conda_lock = freeze._conda_lock_from_records(harness_prefix)
         pip_lock, binding = freeze._pip_lock_material(
             harness_prefix,
             release_worktree=release_worktree,
@@ -849,10 +883,20 @@ def _materialize_worktree(
                 "git",
                 "-C",
                 str(source_repository),
-                "worktree",
-                "add",
-                "--detach",
+                "clone",
+                "--no-hardlinks",
+                "--no-checkout",
+                str(source_repository),
                 str(worktree),
+            )
+        )
+        _run(
+            (
+                "git",
+                "-C",
+                str(worktree),
+                "checkout",
+                "--detach",
                 f"refs/tags/{REQUIRED_TAG}",
             )
         )
@@ -867,6 +911,7 @@ def _materialize_worktree(
         {
             "source_repository": str(source_repository),
             "release_worktree": str(worktree),
+            "materialization_method": "git_clone_no_hardlinks_detached_tag",
             **identity,
         },
     )
@@ -881,6 +926,7 @@ def _materialize_clone(
     destination: Path,
     output_root: Path,
     conda_executable: Path,
+    package_cache: Path | None = None,
     source_prefixes: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     stage = f"{role}_clone"
@@ -914,18 +960,28 @@ def _materialize_clone(
                 source_prefixes=audit_sources,
             )
         return recorded
+    cache = (
+        output_root / "conda-package-cache"
+        if package_cache is None
+        else package_cache
+    )
+    cache.mkdir(parents=True, exist_ok=True)
+    command_environment = _command_environment()
+    command_environment["CONDA_PKGS_DIRS"] = str(cache)
     _run(
         (
             str(conda_executable),
             "create",
             "--yes",
             "--copy",
+            "--offline",
+            "--no-default-packages",
             "--prefix",
             str(destination),
             "--clone",
             str(source),
         ),
-        env=_command_environment(),
+        env=command_environment,
     )
     if not (destination / "conda-meta").is_dir():
         raise MaterializationError(f"Conda clone did not materialize {destination}")
@@ -937,6 +993,67 @@ def _materialize_clone(
     )
     _validate_recorded_symlink_audit(identity, source_prefixes=audit_sources)
     payload = _stage_payload(stage, identity)
+    _write_stage(output_root, stage, payload)
+    return payload
+
+
+def _verify_pip_check(prefix: Path) -> dict[str, Any]:
+    output = _run(
+        (str(prefix / "bin" / "python"), "-I", "-m", "pip", "check"),
+        env=_command_environment(),
+        cwd=Path("/"),
+    ).strip()
+    if output != "No broken requirements found.":
+        raise MaterializationError(
+            f"pip check did not return the exact clean result for {prefix}: {output!r}"
+        )
+    return {
+        "command": "python -I -m pip check",
+        "stdout": output,
+        "clean": True,
+    }
+
+
+def _materialize_package_cache(
+    *, output_root: Path, package_cache: Path, conda_executable: Path
+) -> dict[str, Any]:
+    """Checksum and seal the release-local cache populated by offline clones."""
+
+    stage = "package_cache"
+    stage_path = output_root / STAGE_FILENAMES[stage]
+    if stage_path.is_file():
+        payload = _verify_stage(stage_path, stage=stage)
+        live = _content_inventory_identity(package_cache)
+        if payload.get("content_inventory") != live:
+            raise MaterializationError("release-local Conda package cache drifted")
+        freeze._assert_read_only(package_cache)
+        return payload
+    if package_cache.is_symlink() or not package_cache.is_dir():
+        raise MaterializationError(
+            f"release-local Conda package cache is absent: {package_cache}"
+        )
+    identity = _content_inventory_identity(package_cache)
+    if int(identity["content_inventory_file_count"]) < 1:
+        raise MaterializationError(
+            "offline Conda clone did not populate its release-local package cache"
+        )
+    tool_sha256 = freeze._sha256_file(conda_executable)
+    freeze._seal_tree_read_only(package_cache)
+    freeze._assert_read_only(package_cache)
+    payload = _stage_payload(
+        stage,
+        {
+            "path": str(package_cache),
+            "content_inventory": identity,
+            "conda_creation_tool": {
+                "path": str(conda_executable),
+                "sha256": tool_sha256,
+            },
+            "offline": True,
+            "pip_interoperability": False,
+            "sealed_read_only": True,
+        },
+    )
     _write_stage(output_root, stage, payload)
     return payload
 
@@ -1040,6 +1157,7 @@ def _materialize_harness_package(
     if binding is None:
         raise MaterializationError("harness release-package binding is absent")
     import_probe = verify_harness_import(harness_prefix, release_worktree)
+    pip_check = _verify_pip_check(harness_prefix)
     payload = _stage_payload(
         stage,
         {
@@ -1047,6 +1165,7 @@ def _materialize_harness_package(
             "release_worktree": str(release_worktree),
             "package_binding": binding,
             "isolated_import": import_probe,
+            "pip_check": pip_check,
             "post_install_identity": post_install_identity,
             "build_evidence": build_evidence,
             "build_evidence_marker": build_evidence_marker,
@@ -1353,6 +1472,7 @@ def _load_completed_build_evidence(
 def _materialization_paths(
     *,
     output_root: str | Path,
+    environment_capture_root: str | Path,
     source_repository: str | Path,
     release_worktree: str | Path,
     source_harness_prefix: str | Path,
@@ -1362,6 +1482,9 @@ def _materialization_paths(
 ) -> dict[str, Path]:
     paths = {
         "output_root": _safe_destination(output_root, description="output root"),
+        "environment_capture_root": _safe_existing_directory(
+            environment_capture_root, description="environment capture root"
+        ),
         "source_repository": _safe_existing_directory(
             source_repository, description="source repository"
         ),
@@ -1381,16 +1504,100 @@ def _materialization_paths(
             serving_prefix, description="production serving prefix"
         ),
     }
-    _validate_nonoverlap(paths)
+    _validate_nonoverlap(
+        {
+            key: value
+            for key, value in paths.items()
+            if key != "environment_capture_root"
+        }
+    )
+    capture_root = paths["environment_capture_root"]
+    if (
+        paths["output_root"] == capture_root
+        or _is_relative_to(paths["output_root"], capture_root)
+        or _is_relative_to(capture_root, paths["output_root"])
+    ):
+        raise MaterializationError(
+            "materialization output and environment capture roots overlap"
+        )
+    for role in ("source_harness_prefix", "source_serving_prefix"):
+        if not _is_relative_to(paths[role], capture_root):
+            raise MaterializationError(
+                f"{role} is not owned by the environment capture root"
+            )
     for role in ("source_harness_prefix", "source_serving_prefix"):
         if not (paths[role] / "conda-meta").is_dir():
             raise MaterializationError(f"{role} is not a Conda prefix: {paths[role]}")
     return paths
 
 
+def _verified_environment_capture_binding(
+    *,
+    capture_root: Path,
+    harness_seed: Path,
+    serving_seed: Path,
+) -> dict[str, Any]:
+    try:
+        report = capture.verify_capture(capture_root)
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(f"environment capture proof is invalid: {exc}") from exc
+    expected = {
+        "harness": str(harness_seed),
+        "serving": str(serving_seed),
+    }
+    if (
+        report.get("release_id") != RELEASE_ID
+        or report.get("seed_prefixes") != expected
+        or _SHA256_RE.fullmatch(str(report.get("capture_id", ""))) is None
+        or _SHA256_RE.fullmatch(
+            str(report.get("capture_marker_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(report.get("ownership_policy_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(
+                report.get(
+                    "integrity_normalization_policy_sha256", ""
+                )
+            )
+        )
+        is None
+    ):
+        raise MaterializationError(
+            "environment capture does not bind the supplied normalized seeds"
+        )
+    return {
+        "schema_version": capture.SCHEMA_VERSION,
+        "release_id": RELEASE_ID,
+        "root": str(capture_root),
+        "capture_id": report["capture_id"],
+        "capture_marker_sha256": report["capture_marker_sha256"],
+        "seed_prefixes": expected,
+        "ownership_policy_path": report["ownership_policy_path"],
+        "ownership_policy_sha256": report["ownership_policy_sha256"],
+        "integrity_normalization_policy_path": report[
+            "integrity_normalization_policy_path"
+        ],
+        "integrity_normalization_policy_sha256": report[
+            "integrity_normalization_policy_sha256"
+        ],
+        "reconciliation_incident_path": report["reconciliation_incident_path"],
+        "reconciliation_incident_sha256": report[
+            "reconciliation_incident_sha256"
+        ],
+        "recovered_record_path": report["recovered_record_path"],
+        "recovered_record_sha256": report["recovered_record_sha256"],
+        "stage_records": report["stage_records"],
+    }
+
+
 def materialize_release(
     *,
     output_root: str | Path,
+    environment_capture_root: str | Path,
     source_repository: str | Path,
     release_worktree: str | Path,
     source_harness_prefix: str | Path,
@@ -1402,6 +1609,7 @@ def materialize_release(
 ) -> dict[str, Any]:
     paths = _materialization_paths(
         output_root=output_root,
+        environment_capture_root=environment_capture_root,
         source_repository=source_repository,
         release_worktree=release_worktree,
         source_harness_prefix=source_harness_prefix,
@@ -1410,6 +1618,12 @@ def materialize_release(
         serving_prefix=serving_prefix,
     )
     conda = _conda_executable(conda_executable)
+    conda_sha256 = freeze._sha256_file(conda)
+    capture_binding = _verified_environment_capture_binding(
+        capture_root=paths["environment_capture_root"],
+        harness_seed=paths["source_harness_prefix"],
+        serving_seed=paths["source_serving_prefix"],
+    )
     commit = _tag_commit(paths["source_repository"])
     marker_path = paths["output_root"] / COMPLETE_MARKER
     if marker_path.is_file():
@@ -1418,6 +1632,7 @@ def materialize_release(
             key: str(paths[key])
             for key in (
                 "source_repository",
+                "environment_capture_root",
                 "release_worktree",
                 "source_harness_prefix",
                 "source_serving_prefix",
@@ -1449,10 +1664,23 @@ def materialize_release(
             if key != "output_root"
         },
         "output_root": str(paths["output_root"]),
-        "conda_executable": str(conda),
+        "conda_creation_tool": {
+            "path": str(conda),
+            "sha256": conda_sha256,
+        },
+        "environment_capture": capture_binding,
         "clone_contract": {
-            "command": "conda create --yes --copy --prefix DEST --clone SOURCE",
+            "command": (
+                "conda create --yes --copy --offline --no-default-packages "
+                "--prefix DEST --clone NORMALIZED_SEED"
+            ),
             "CONDA_ALWAYS_COPY": "true",
+            "CONDA_OFFLINE": "true",
+            "CONDA_PIP_INTEROP_ENABLED": "false",
+            "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
+            "release_local_package_cache": str(
+                paths["output_root"] / "conda-package-cache"
+            ),
             "shared_regular_inode_count": 0,
             "source_prefix_target_symlink_count": 0,
             "unresolvable_symlink_count": 0,
@@ -1474,6 +1702,7 @@ def materialize_release(
         paths["source_harness_prefix"],
         paths["source_serving_prefix"],
     )
+    package_cache = paths["output_root"] / "conda-package-cache"
     worktree_stage = _materialize_worktree(
         source_repository=paths["source_repository"],
         worktree=paths["release_worktree"],
@@ -1486,6 +1715,7 @@ def materialize_release(
         destination=paths["harness_prefix"],
         output_root=paths["output_root"],
         conda_executable=conda,
+        package_cache=package_cache,
         source_prefixes=mutable_source_prefixes,
     )
     serving_clone = _materialize_clone(
@@ -1494,7 +1724,13 @@ def materialize_release(
         destination=paths["serving_prefix"],
         output_root=paths["output_root"],
         conda_executable=conda,
+        package_cache=package_cache,
         source_prefixes=mutable_source_prefixes,
+    )
+    package_cache_stage = _materialize_package_cache(
+        output_root=paths["output_root"],
+        package_cache=package_cache,
+        conda_executable=conda,
     )
     git_identity = {
         key: worktree_stage[key]
@@ -1523,10 +1759,12 @@ def materialize_release(
         )
     except freeze.ReleaseFreezeError as exc:
         raise MaterializationError(str(exc)) from exc
+    serving_pip_check = _verify_pip_check(paths["serving_prefix"])
     stages = {
         "worktree": worktree_stage,
         "harness_clone": harness_clone,
         "serving_clone": serving_clone,
+        "package_cache": package_cache_stage,
         "harness_package": harness_package,
     }
     marker: dict[str, Any] = {
@@ -1543,6 +1781,7 @@ def materialize_release(
             }
             for name, payload in stages.items()
         },
+        "serving_pip_check": serving_pip_check,
     }
     marker["materialization_id"] = _sha256_bytes(_json_bytes(marker))
     freeze._atomic_write_exact(marker_path, _json_bytes(marker))
@@ -1558,14 +1797,38 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
             f"missing regular materialization completion marker: {marker_path}"
         )
     marker = _read_json(marker_path, description="materialization completion marker")
-    materialization_id = marker.pop("materialization_id", None)
+    _require_exact_fields(
+        marker,
+        {
+            "schema_version",
+            "release_id",
+            "git_tag",
+            "tag_commit",
+            "source_tree_sha256",
+            "paths",
+            "output_root",
+            "conda_creation_tool",
+            "environment_capture",
+            "clone_contract",
+            "harness_install_contract",
+            "complete",
+            "publication_protocol",
+            "stage_records",
+            "serving_pip_check",
+            "materialization_id",
+        },
+        description="materialization completion marker",
+    )
+    marker_candidate = dict(marker)
+    materialization_id = marker_candidate.pop("materialization_id", None)
     if (
         marker.get("schema_version") != SCHEMA_VERSION
         or marker.get("release_id") != RELEASE_ID
         or marker.get("git_tag") != REQUIRED_TAG
         or marker.get("complete") is not True
         or marker.get("publication_protocol") != "stage_records_fsync_marker_last"
-        or materialization_id != _sha256_bytes(_json_bytes(marker))
+        or materialization_id != _sha256_bytes(_json_bytes(marker_candidate))
+        or marker.get("output_root") != str(root)
     ):
         raise MaterializationError("materialization completion marker is invalid")
     if stat.S_IMODE(marker_path.stat().st_mode) & 0o222:
@@ -1575,6 +1838,7 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         raise MaterializationError("materialization marker lacks exact paths")
     expected_path_names = {
         "source_repository",
+        "environment_capture_root",
         "release_worktree",
         "source_harness_prefix",
         "source_serving_prefix",
@@ -1583,23 +1847,151 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
     }
     if set(raw_paths) != expected_path_names:
         raise MaterializationError("materialization marker has the wrong path fields")
-    paths = {
-        key: _safe_existing_directory(value, description=key)
-        for key, value in raw_paths.items()
+    paths: dict[str, Path] = {}
+    for key, value in raw_paths.items():
+        if key == "source_repository":
+            # Source checkout is provenance only after publication.  It may be
+            # retired or unavailable; verification must not consult it.
+            candidate = Path(str(value))
+            if not candidate.is_absolute():
+                raise MaterializationError(
+                    "recorded source repository path is not absolute"
+                )
+            paths[key] = candidate
+        else:
+            paths[key] = _safe_existing_directory(value, description=key)
+    capture_binding = marker.get("environment_capture")
+    if not isinstance(capture_binding, dict):
+        raise MaterializationError("materialization lacks environment-capture binding")
+    live_capture = _verified_environment_capture_binding(
+        capture_root=paths["environment_capture_root"],
+        harness_seed=paths["source_harness_prefix"],
+        serving_seed=paths["source_serving_prefix"],
+    )
+    if live_capture != capture_binding:
+        raise MaterializationError("sealed environment-capture binding drifted")
+    conda_tool = marker.get("conda_creation_tool")
+    if (
+        not isinstance(conda_tool, dict)
+        or set(conda_tool) != {"path", "sha256"}
+        or not Path(str(conda_tool.get("path", ""))).is_absolute()
+        or _SHA256_RE.fullmatch(str(conda_tool.get("sha256", ""))) is None
+    ):
+        raise MaterializationError("Conda creation-tool provenance is malformed")
+    expected_clone_contract = {
+        "command": (
+            "conda create --yes --copy --offline --no-default-packages "
+            "--prefix DEST --clone NORMALIZED_SEED"
+        ),
+        "CONDA_ALWAYS_COPY": "true",
+        "CONDA_OFFLINE": "true",
+        "CONDA_PIP_INTEROP_ENABLED": "false",
+        "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
+        "release_local_package_cache": str(root / "conda-package-cache"),
+        "shared_regular_inode_count": 0,
+        "source_prefix_target_symlink_count": 0,
+        "unresolvable_symlink_count": 0,
     }
-    conda_executable = _conda_executable(str(marker.get("conda_executable", "")))
-    commit = _tag_commit(paths["source_repository"])
-    if commit != marker.get("tag_commit"):
-        raise MaterializationError("release tag moved after materialization")
+    expected_harness_install_contract = {
+        "source": str(paths["release_worktree"]),
+        "editable": False,
+        "dependencies_installed": False,
+        "build_isolation": False,
+        "bytecode_compiled": False,
+        "index_access": False,
+        "isolated_import_required": True,
+    }
+    if (
+        marker.get("clone_contract") != expected_clone_contract
+        or marker.get("harness_install_contract")
+        != expected_harness_install_contract
+    ):
+        raise MaterializationError(
+            "materialization clone/install contract drifted"
+        )
+    commit = marker.get("tag_commit")
+    if _GIT_COMMIT_RE.fullmatch(str(commit)) is None:
+        raise MaterializationError("materialization tag commit is malformed")
     try:
         git_identity = freeze.verify_clean_exact_tag(paths["release_worktree"])
     except freeze.ReleaseFreezeError as exc:
         raise MaterializationError(str(exc)) from exc
-    if git_identity["git_commit"] != commit:
+    if (
+        git_identity["git_commit"] != commit
+        or marker.get("source_tree_sha256")
+        != git_identity["source_tree_sha256"]
+    ):
         raise MaterializationError("materialized worktree commit drifted")
     records = marker.get("stage_records")
     if not isinstance(records, dict) or set(records) != set(STAGE_FILENAMES):
         raise MaterializationError("materialization marker has the wrong stage inventory")
+    common_stage_fields = {
+        "schema_version",
+        "release_id",
+        "stage",
+        "record_sha256",
+    }
+    clone_stage_fields = common_stage_fields | {
+        "source_prefix",
+        "destination_prefix",
+        "clone_mode",
+        "conda_always_copy",
+        "conda_offline",
+        "conda_pip_interop_enabled",
+        "conda_explicit_sha256",
+        "pip_freeze_sha256",
+        "source_content_inventory_sha256",
+        "source_content_inventory_entry_count",
+        "source_content_inventory_file_count",
+        "source_content_inventory_symlink_count",
+        "destination_content_inventory_sha256",
+        "destination_content_inventory_entry_count",
+        "destination_content_inventory_file_count",
+        "destination_content_inventory_symlink_count",
+        "source_regular_file_count",
+        "destination_regular_file_count",
+        "shared_regular_inode_count",
+        "symlink_audit_source_prefixes",
+        "destination_symlink_count",
+        "destination_internal_symlink_count",
+        "destination_external_symlink_count",
+        "source_prefix_target_symlink_count",
+        "unresolvable_symlink_count",
+    }
+    expected_stage_fields = {
+        "worktree": common_stage_fields
+        | {
+            "source_repository",
+            "release_worktree",
+            "materialization_method",
+            "git_commit",
+            "git_tag",
+            "source_tree_sha256",
+        },
+        "harness_clone": clone_stage_fields,
+        "serving_clone": clone_stage_fields,
+        "package_cache": common_stage_fields
+        | {
+            "path",
+            "content_inventory",
+            "conda_creation_tool",
+            "offline",
+            "pip_interoperability",
+            "sealed_read_only",
+        },
+        "harness_package": common_stage_fields
+        | {
+            "harness_prefix",
+            "release_worktree",
+            "package_binding",
+            "isolated_import",
+            "pip_check",
+            "post_install_identity",
+            "build_evidence",
+            "build_evidence_marker",
+            "install_contract",
+        },
+    }
     stages: dict[str, dict[str, Any]] = {}
     for stage, filename in STAGE_FILENAMES.items():
         record = records[stage]
@@ -1616,8 +2008,30 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         ):
             raise MaterializationError(f"stage artifact drifted: {stage}")
         stages[stage] = _verify_stage(path, stage=stage)
+        _require_exact_fields(
+            stages[stage],
+            expected_stage_fields[stage],
+            description=f"{stage} stage",
+        )
         if stages[stage]["record_sha256"] != record["record_sha256"]:
             raise MaterializationError(f"stage record identity drifted: {stage}")
+    worktree_stage = stages["worktree"]
+    if (
+        worktree_stage.get("source_repository")
+        != str(paths["source_repository"])
+        or worktree_stage.get("release_worktree")
+        != str(paths["release_worktree"])
+        or worktree_stage.get("materialization_method")
+        != "git_clone_no_hardlinks_detached_tag"
+        or {
+            key: worktree_stage.get(key)
+            for key in ("git_commit", "git_tag", "source_tree_sha256")
+        }
+        != git_identity
+    ):
+        raise MaterializationError(
+            "materialized worktree stage provenance drifted"
+        )
     mutable_source_prefixes = (
         paths["source_harness_prefix"],
         paths["source_serving_prefix"],
@@ -1625,12 +2039,42 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
     live_symlink_audits: dict[str, dict[str, Any]] = {}
     for role in ("harness", "serving"):
         stage = stages[f"{role}_clone"]
+        source_prefix = paths[f"source_{role}_prefix"]
+        try:
+            source_conda = freeze._conda_lock_from_records(source_prefix)
+        except freeze.ReleaseFreezeError as exc:
+            raise MaterializationError(str(exc)) from exc
+        source_content = _content_inventory_identity(source_prefix)
+        source_inodes, source_regular_file_count = _regular_inode_set(
+            source_prefix
+        )
+        del source_inodes
+        expected_source_fields = {
+            "conda_explicit_sha256": _sha256_bytes(
+                _json_bytes(source_conda)
+            ),
+            "pip_freeze_sha256": _sha256_bytes(
+                _json_bytes(_raw_pip_freeze(source_prefix))
+            ),
+            **{
+                f"source_{key}": value
+                for key, value in source_content.items()
+            },
+            "source_regular_file_count": source_regular_file_count,
+        }
         if (
-            stage.get("source_prefix") != str(paths[f"source_{role}_prefix"])
+            stage.get("source_prefix") != str(source_prefix)
             or stage.get("destination_prefix") != str(paths[f"{role}_prefix"])
-            or stage.get("clone_mode") != "conda_create_clone_copy"
+            or stage.get("clone_mode")
+            != "conda_create_clone_copy_offline_normalized_seed"
             or stage.get("conda_always_copy") is not True
+            or stage.get("conda_offline") is not True
+            or stage.get("conda_pip_interop_enabled") is not False
             or stage.get("shared_regular_inode_count") != 0
+            or any(
+                stage.get(key) != value
+                for key, value in expected_source_fields.items()
+            )
         ):
             raise MaterializationError(f"{role} clone contract drifted")
         live_symlink_audits[role] = _assert_live_symlink_audit(
@@ -1643,7 +2087,6 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
                 stage,
                 source=paths["source_serving_prefix"],
                 destination=paths["serving_prefix"],
-                conda_executable=conda_executable,
                 source_prefixes=mutable_source_prefixes,
             )
         else:
@@ -1671,6 +2114,24 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         paths["harness_prefix"], paths["release_worktree"]
     )
     package_stage = stages["harness_package"]
+    expected_package_install_contract = {
+        "editable": False,
+        "dependencies_installed": False,
+        "build_isolation": False,
+        "bytecode_compiled": False,
+        "index_access": False,
+    }
+    if (
+        package_stage.get("harness_prefix")
+        != str(paths["harness_prefix"])
+        or package_stage.get("release_worktree")
+        != str(paths["release_worktree"])
+        or package_stage.get("install_contract")
+        != expected_package_install_contract
+    ):
+        raise MaterializationError(
+            "harness package installation contract drifted"
+        )
     build_evidence = package_stage.get("build_evidence")
     if not isinstance(build_evidence, dict):
         raise MaterializationError("harness package stage lacks build evidence")
@@ -1688,7 +2149,6 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         harness_prefix=paths["harness_prefix"],
         release_worktree=paths["release_worktree"],
         git_identity=git_identity,
-        conda_executable=conda_executable,
         source_prefixes=mutable_source_prefixes,
     )
     if (
@@ -1698,6 +2158,26 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         or post_install_identity != package_stage.get("post_install_identity")
     ):
         raise MaterializationError("installed harness package drifted")
+    harness_pip_check = _verify_pip_check(paths["harness_prefix"])
+    serving_pip_check = _verify_pip_check(paths["serving_prefix"])
+    if (
+        harness_pip_check != package_stage.get("pip_check")
+        or serving_pip_check != marker.get("serving_pip_check")
+    ):
+        raise MaterializationError("materialized pip-check evidence drifted")
+    cache_stage = stages["package_cache"]
+    cache = root / "conda-package-cache"
+    if (
+        cache_stage.get("path") != str(cache)
+        or cache_stage.get("offline") is not True
+        or cache_stage.get("pip_interoperability") is not False
+        or cache_stage.get("sealed_read_only") is not True
+        or _content_inventory_identity(cache)
+        != cache_stage.get("content_inventory")
+        or cache_stage.get("conda_creation_tool") != conda_tool
+    ):
+        raise MaterializationError("release-local Conda package cache drifted")
+    freeze._assert_read_only(cache)
     if post_install_identity["conda_explicit_sha256"] != stages[
         "harness_clone"
     ].get("conda_explicit_sha256"):
@@ -1712,7 +2192,14 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": {key: str(value) for key, value in paths.items()},
         "harness_package": binding,
-        "copy_contract": "conda_create_clone_copy_no_shared_regular_inodes",
+        "environment_capture": live_capture,
+        "conda_creation_tool": dict(conda_tool),
+        "conda_package_cache_sha256": cache_stage["content_inventory"][
+            "content_inventory_sha256"
+        ],
+        "copy_contract": (
+            "offline_normalized_seed_clone_no_shared_regular_inodes"
+        ),
         "clone_symlink_audits": live_symlink_audits,
     }
 
@@ -1724,6 +2211,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "materialize", help="dry-run or apply exact worktree/environment materialization"
     )
     materialize.add_argument("--output-root", type=Path, required=True)
+    materialize.add_argument(
+        "--environment-capture-root", type=Path, required=True
+    )
     materialize.add_argument("--source-repository", type=Path, required=True)
     materialize.add_argument("--release-worktree", type=Path, required=True)
     materialize.add_argument("--source-harness-prefix", type=Path, required=True)
@@ -1745,6 +2235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             report = materialize_release(
                 output_root=args.output_root,
+                environment_capture_root=args.environment_capture_root,
                 source_repository=args.source_repository,
                 release_worktree=args.release_worktree,
                 source_harness_prefix=args.source_harness_prefix,

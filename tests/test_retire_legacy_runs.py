@@ -5,12 +5,28 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import create_recovery_snapshot as snapshot
 from scripts import retire_legacy_runs as retire
+
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def test_retirement_cli_imports_under_isolated_python() -> None:
+    completed = _REAL_SUBPROCESS_RUN(
+        [sys.executable, "-I", str(Path(retire.__file__).resolve()), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "Retire the three legacy sweep roots" in completed.stdout
 
 
 @pytest.fixture(autouse=True)

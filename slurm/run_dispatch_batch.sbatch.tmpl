@@ -2,6 +2,7 @@
 #SBATCH --job-name=asys-dispatch-{BATCH_TAG}
 #SBATCH --comment=asys-schema5-intent:{BATCH_ID}
 #SBATCH --partition={PARTITION}
+#SBATCH --qos={QOS}
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --time=12:00:00

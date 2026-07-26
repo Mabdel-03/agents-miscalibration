@@ -43,6 +43,9 @@ from agents_scaling.agents.message_builder import (  # noqa: E402
 )
 from agents_scaling.benchmarks.loaders import load_benchmark  # noqa: E402
 from agents_scaling.benchmarks.schema import Question  # noqa: E402
+from agents_scaling.benchmarks.runtime_contracts import (  # noqa: E402
+    VerifiedQuestionCatalog,
+)
 from agents_scaling.config import (  # noqa: E402
     ContextShareLevel,
     DEFAULT_HF_HOME,
@@ -498,17 +501,34 @@ def audit_snapshot(
     *,
     run_id: str,
     filters: AuditFilters = AuditFilters(),
+    run_root: str | Path | None = None,
+    question_catalog: VerifiedQuestionCatalog | None = None,
     benchmark_loader: Callable[..., list[Question]] | None = None,
     tokenizer_loader: Callable[[str], Any] | None = None,
     failure_example_limit: int = 100,
     all_routed_profiles: bool = False,
+    prompt_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Audit selected cells without reading or writing result artifacts."""
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ.setdefault("HF_HOME", DEFAULT_HF_HOME)
-    if benchmark_loader is None:
-        benchmark_loader = CacheOnlyBenchmarkLoader()
+    if question_catalog is not None and run_root is not None:
+        raise AuditError("pass question_catalog or run_root, not both")
+    if question_catalog is None and run_root is not None:
+        if benchmark_loader is None:
+            benchmark_loader = CacheOnlyBenchmarkLoader()
+        question_catalog = VerifiedQuestionCatalog(
+            Path(run_root),
+            snapshot=snapshot,
+            benchmark_loader=benchmark_loader,
+        )
+    if question_catalog is None and benchmark_loader is None:
+        raise AuditError(
+            "context audit requires a frozen VerifiedQuestionCatalog; an explicit "
+            "benchmark_loader is accepted only for isolated tests"
+        )
     if tokenizer_loader is None:
         tokenizer_loader = tokenizer_for_profile
     if failure_example_limit < 0:
@@ -546,9 +566,23 @@ def audit_snapshot(
         tokenizer = tokenizer_cache[cell_profile.registry_key]
         contract = (cell.benchmark, cell.n_questions, cell.seed)
         if contract not in question_cache:
-            question_cache[contract] = benchmark_loader(
-                cell.benchmark, n=cell.n_questions, seed=cell.seed
+            if question_catalog is not None:
+                question_cache[contract] = list(
+                    question_catalog.questions_for(cell)
+                )
+            else:
+                assert benchmark_loader is not None
+                question_cache[contract] = benchmark_loader(
+                    cell.benchmark, n=cell.n_questions, seed=cell.seed
+                )
+            fallbacks = list(
+                getattr(benchmark_loader, "diagnostics", [])
             )
+            if fallbacks:
+                raise AuditError(
+                    "benchmark cache fallback is forbidden for a production "
+                    f"context audit: {fallbacks}"
+                )
         questions = question_cache[contract]
         if not questions:
             raise AuditError(
@@ -563,7 +597,10 @@ def audit_snapshot(
             tokenizer=tokenizer,
         )
         peer_context = rendered_peer_context.text
-        system = get_prompt(cell.prompt_complexity_level)
+        system = get_prompt(
+            cell.prompt_complexity_level,
+            prompt_root=prompt_root,
+        )
         output_capacity_floor = requested_generation_tokens(
             cell.reasoning_level, ANSWER_GENERATION_TOKEN_ALLOWANCE
         )
@@ -661,6 +698,16 @@ def audit_snapshot(
                 "benchmark": cell.benchmark,
                 "seed": cell.seed,
                 "n_questions": len(questions),
+                "question_contract_sha256": (
+                    question_catalog.frozen.contract_for_cell(cell)[
+                        "question_contract_sha256"
+                    ]
+                    if question_catalog is not None
+                    else None
+                ),
+                "system_prompt_sha256": hashlib.sha256(
+                    system.encode("utf-8")
+                ).hexdigest(),
                 "n_agents": cell.n_agents,
                 "rounds": cell.rounds,
                 "topology": cell.topology.value,
@@ -711,6 +758,14 @@ def audit_snapshot(
     groups = _group_cell_reports(cell_reports)
     failure_groups = [group for group in groups if not group["passed"]]
     cot_fixture = _exact_length_text(SYNTHETIC_COT_UNIT, PEER_COT_CHAR_LIMIT)
+    if question_catalog is not None:
+        question_catalog.verify_unchanged()
+    fallbacks = list(getattr(benchmark_loader, "diagnostics", []))
+    if fallbacks:
+        raise AuditError(
+            "benchmark cache fallback is forbidden for a production context audit: "
+            f"{fallbacks}"
+        )
     audit_name = (
         "all_routed_profiles_context_capacity"
         if all_routed_profiles
@@ -725,6 +780,19 @@ def audit_snapshot(
             "sha256": snapshot.sha256,
             "cells": len(snapshot.cells),
         },
+        "benchmark_contracts": (
+            {
+                "path": str(question_catalog.frozen.path),
+                "sha256": question_catalog.sidecar_sha256,
+                "verified": True,
+            }
+            if question_catalog is not None
+            else {
+                "path": None,
+                "sha256": None,
+                "verified": False,
+            }
+        ),
         "filters": filters.to_dict(),
         "all_routed_profiles": all_routed_profiles,
         "assumptions": {
@@ -795,6 +863,11 @@ def audit_snapshot(
                 "render_agent_user_prompt -> render_question(..., confidence=True); "
                 "reasoning-off includes the runtime CoT hint"
             ),
+            "system_prompt_root": (
+                str(Path(prompt_root).resolve())
+                if prompt_root is not None
+                else None
+            ),
             "peer_context": {
                 "builder": "agents_scaling.agents.message_builder.build_peer_context",
                 "protocol_version": PEER_CONTEXT_PROTOCOL_VERSION,
@@ -827,9 +900,7 @@ def audit_snapshot(
                 "the MCQ forced-answer completion probe has no peer context and requests "
                 "one output token; this audit targets the larger generation chat request"
             ),
-            "benchmark_loader_fallbacks": list(
-                getattr(benchmark_loader, "diagnostics", [])
-            ),
+            "benchmark_loader_fallbacks": fallbacks,
         },
         "summary": {
             "passed": failure_count == 0,
@@ -920,6 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # datasets performs its lazy import inside load_benchmark.
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ.setdefault("HF_HOME", DEFAULT_HF_HOME)
     try:
         run_root = (
@@ -937,6 +1009,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"immutable manifest checksum is missing: {checksum_path}; freeze it first"
             )
         snapshot = load_manifest(run_root, verify_frozen=True)
+        benchmark_loader = CacheOnlyBenchmarkLoader()
+        question_catalog = VerifiedQuestionCatalog(
+            run_root,
+            snapshot=snapshot,
+            benchmark_loader=benchmark_loader,
+        )
         filters = AuditFilters(
             n_agents=frozenset(args.n_agents or ()),
             reasoning=frozenset(args.reasoning or ()),
@@ -948,8 +1026,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             snapshot,
             run_id=args.run_id,
             filters=filters,
+            question_catalog=question_catalog,
+            benchmark_loader=benchmark_loader,
             failure_example_limit=args.failure_example_limit,
             all_routed_profiles=args.all_routed_profiles,
+            prompt_root=REPO / "configs" / "prompts",
         )
     except Exception as exc:
         error = {

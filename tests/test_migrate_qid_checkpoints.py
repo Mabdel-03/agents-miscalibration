@@ -27,7 +27,6 @@ from agents_scaling.experiment.manifest import freeze_manifest, load_manifest
 from agents_scaling.experiment.qid_checkpoint import (
     CHECKPOINT_DIRECTORY,
     CheckpointCorruptionError,
-    CheckpointingAgent,
     QIDCheckpoint,
 )
 from agents_scaling.serving.profiles import serving_profile_for_cell
@@ -156,7 +155,9 @@ def _write_schema1_checkpoint(
             "termination_status": "completed",
             "agent_output": asdict(output),
             "censored_generation": None,
+            "transport_censor": None,
         },
+        attempt_endpoint_generation=lambda: output.endpoint_generation,
     )
     checkpoint.record_topology_result(
         TopologyResult(
@@ -171,8 +172,7 @@ def _write_schema1_checkpoint(
         wall_ms=123.5,
     )
     payload = json.loads(checkpoint.path.read_text(encoding="utf-8"))
-    payload["schema_version"] = 1
-    payload.pop("migration_history")
+    _downgrade_to_schema1(payload)
     payload["identity"]["code_version"] = next(
         iter(migration.ALLOWED_SOURCE_CODE_VERSIONS)
     )
@@ -233,7 +233,9 @@ def _write_schema1_peer_checkpoint(
             "termination_status": "completed",
             "agent_output": asdict(output),
             "censored_generation": None,
+            "transport_censor": None,
         },
+        attempt_endpoint_generation=lambda: output.endpoint_generation,
     )
     payload = json.loads(checkpoint.path.read_text(encoding="utf-8"))
     durable_output = payload["coordinates"]["topology:agent0:0"]["outcome"][
@@ -243,8 +245,7 @@ def _write_schema1_peer_checkpoint(
     durable_output["peer_context_sha256"] = hashlib.sha256(b"").hexdigest()
     durable_output["peer_context_block_token_counts"] = []
     durable_output["peer_context_truncation_marker_count"] = 0
-    payload["schema_version"] = 1
-    payload.pop("migration_history")
+    _downgrade_to_schema1(payload)
     payload["identity"]["code_version"] = next(
         iter(migration.ALLOWED_SOURCE_CODE_VERSIONS)
     )
@@ -258,6 +259,34 @@ def _write_schema1_peer_checkpoint(
         checkpoint.path.read_text(encoding="utf-8"),
         rendered,
     )
+
+
+def _downgrade_to_schema1(payload: dict) -> None:
+    """Project a current fixture onto the exact sealed schema-1 journal shape.
+
+    The current writer must exercise its durable-attempt contract even when a test
+    needs historical input bytes.  Schema 1 predates pending intents, per-coordinate
+    attempt records, and transport-censor slots, so remove those fields explicitly
+    rather than weakening :meth:`QIDCheckpoint.execute_coordinate`.
+    """
+
+    payload["schema_version"] = 1
+    payload.pop("pending_attempts")
+    payload.pop("migration_history")
+    for coordinate in payload["coordinates"].values():
+        coordinate.pop("attempt")
+        outcome = coordinate["outcome"]
+        outcome.pop("transport_censor")
+        output = outcome.get("agent_output")
+        if output is not None:
+            output.pop("calibration_endpoint_generation")
+    terminal = payload.get("topology_terminal")
+    if terminal is not None:
+        terminal.pop("transport_censor")
+        result = terminal.get("topology_result")
+        if result is not None:
+            for output in result["per_agent"]:
+                output.pop("calibration_endpoint_generation")
 
 
 def _patch_code_version(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -441,19 +470,18 @@ def test_apply_preserves_observations_records_evidence_and_is_idempotent(
         migrated["identity"]
     )
 
-    # The production loader independently validates the migrated checkpoint, including
-    # its exact migration-history schema and all preserved coordinate outcomes.
-    reopened = QIDCheckpoint(
-        checkpoint_path.parent.parent,
-        cell,
-        _question(),
-        code_version=TARGET_CODE_VERSION,
-        serving_profile=serving_profile_for_cell(cell),
-        benchmark_contract_sha256=contract_hash,
-    )
-    assert len(reopened.observed_topology_coordinates()) == 1
-    terminal = reopened.topology_terminal()
-    assert terminal is not None and terminal.wall_ms == pytest.approx(123.5)
+    # Schema 2 is sealed legacy evidence after the schema-3 no-redraw upgrade.  The
+    # production loader must never make it executable; the migration audit below uses
+    # a disposable schema-3 validation projection to check every preserved coordinate.
+    with pytest.raises(CheckpointCorruptionError, match="sealed evidence"):
+        QIDCheckpoint(
+            checkpoint_path.parent.parent,
+            cell,
+            _question(),
+            code_version=TARGET_CODE_VERSION,
+            serving_profile=serving_profile_for_cell(cell),
+            benchmark_contract_sha256=contract_hash,
+        )
 
     incident_path = run_root / migration.INCIDENT_FILENAME
     incident_text = incident_path.read_text(encoding="utf-8")
@@ -478,7 +506,7 @@ def test_apply_preserves_observations_records_evidence_and_is_idempotent(
     assert incident_path.read_text(encoding="utf-8") == incident_text
 
 
-def test_migrated_peer_coordinate_replay_durably_upgrades_without_redraw(
+def test_migrated_peer_coordinate_is_sealed_and_never_redrawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -503,59 +531,22 @@ def test_migrated_peer_coordinate_replay_durably_upgrades_without_redraw(
     assert applied["checkpoints_migrated"] == 1
     assert applied["errors"] == []
 
-    class NoRedrawAgent:
-        agent_id = "agent0"
-
-        def __init__(self) -> None:
-            self.answer_calls = 0
-
-        def answer(self, *args, **kwargs):
-            self.answer_calls += 1
-            raise AssertionError("migrated observation was redrawn")
-
-        def prepare_calibration(self, question):
-            return None
-
-    checkpoint = QIDCheckpoint(
-        checkpoint_path.parent.parent,
-        cell,
-        _question(),
-        code_version=TARGET_CODE_VERSION,
-        serving_profile=serving_profile_for_cell(cell),
-        benchmark_contract_sha256=contract_hash,
-    )
-    with pytest.raises(CheckpointCorruptionError, match="peer block count"):
-        checkpoint.observed_topology_coordinates()
-    replacement = NoRedrawAgent()
-    output = CheckpointingAgent(replacement, checkpoint).answer_with_peer_context_audit(
-        _question(),
-        round_idx=0,
-        peer_context_render=rendered,
-        max_tokens=4096,
-        seed=cell.seed + 999,
-    )
-    assert replacement.answer_calls == 0
-    assert output.peer_context_tokens == rendered.token_count
-    assert output.peer_context_sha256 == rendered.sha256
-
-    upgraded_text = checkpoint_path.read_text(encoding="utf-8")
-    upgraded = json.loads(upgraded_text)
-    coordinate = upgraded["coordinates"]["topology:agent0:0"]
+    migrated_text = checkpoint_path.read_text(encoding="utf-8")
+    migrated = json.loads(migrated_text)
+    coordinate = migrated["coordinates"]["topology:agent0:0"]
     durable_output = coordinate["outcome"]["agent_output"]
-    assert durable_output["peer_context_block_token_counts"] == [5]
-    assert durable_output["peer_context_sha256"] == rendered.sha256
-    # Reopening and strict outcome validation prove censor snapshots can consume this
-    # coordinate without the schema-1 peer-audit exemption.
-    reopened = QIDCheckpoint(
-        checkpoint_path.parent.parent,
-        cell,
-        _question(),
-        code_version=TARGET_CODE_VERSION,
-        serving_profile=serving_profile_for_cell(cell),
-        benchmark_contract_sha256=contract_hash,
-    )
-    observed = reopened.observed_topology_coordinates()
-    reopened._validate_outcome(observed[0]["request"], observed[0]["outcome"])
+    assert durable_output["peer_context_block_token_counts"] == []
+    assert durable_output["peer_context_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert rendered.sha256 != durable_output["peer_context_sha256"]
+    with pytest.raises(CheckpointCorruptionError, match="sealed evidence"):
+        QIDCheckpoint(
+            checkpoint_path.parent.parent,
+            cell,
+            _question(),
+            code_version=TARGET_CODE_VERSION,
+            serving_profile=serving_profile_for_cell(cell),
+            benchmark_contract_sha256=contract_hash,
+        )
 
     incident = json.loads(
         (run_root / migration.INCIDENT_FILENAME).read_text(encoding="utf-8")
@@ -568,7 +559,7 @@ def test_migrated_peer_coordinate_replay_durably_upgrades_without_redraw(
     reaudit = migration.migrate_run(run_root, benchmark_loader=_loader)
     assert reaudit["schema2_already_migrated"] == 1
     assert reaudit["errors"] == []
-    assert checkpoint_path.read_text(encoding="utf-8") == upgraded_text
+    assert checkpoint_path.read_text(encoding="utf-8") == migrated_text
 
 
 def test_interruption_after_incident_publication_resumes_without_new_history(
@@ -717,14 +708,7 @@ def test_migration_history_rejects_tampering_and_growth(
     io.write_json(checkpoint_path, payload)
 
     with pytest.raises(CheckpointCorruptionError, match="exactly one"):
-        QIDCheckpoint(
-            checkpoint_path.parent.parent,
-            cell,
-            _question(),
-            code_version=TARGET_CODE_VERSION,
-            serving_profile=serving_profile_for_cell(cell),
-            benchmark_contract_sha256=contract_hash,
-        )
+        migration.migrate_run(run_root, benchmark_loader=_loader)
 
 
 def test_idempotency_rejects_changed_checkpoint_bytes_with_recomputed_integrity(

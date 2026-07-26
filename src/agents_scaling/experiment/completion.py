@@ -57,6 +57,8 @@ from agents_scaling.experiment.artifact_policy import (
 from agents_scaling.experiment.manifest import ManifestSnapshot, load_manifest
 from agents_scaling.experiment.result_schema import (
     ARTIFACT_SCHEMA_VERSION,
+    CellMeta,
+    QuestionResult,
     SCHEMA_4_TERMINATION_STATUSES,
     SELF_CONSISTENCY_PROTOCOL_HASH,
     SELF_CONSISTENCY_PROTOCOL_V1_HASH,
@@ -66,7 +68,14 @@ from agents_scaling.experiment.result_schema import (
     TERMINATION_COMPLETED,
     TERMINATION_LENGTH_CENSORED,
     TERMINATION_PROTOCOL_CENSORED,
+    TERMINATION_TRANSPORT_CENSORED,
     TERMINATION_STATUSES,
+)
+from agents_scaling.experiment.transport_censor import (
+    TRANSPORT_CENSOR_PROTOCOL_HASH,
+    TRANSPORT_CENSOR_PROTOCOL_VERSION,
+    validate_attempt,
+    validate_transport_censor,
 )
 from agents_scaling.models import get_model
 from agents_scaling.serving.context import (
@@ -344,6 +353,7 @@ class CompletionStatus:
     completed_question_count: int = 0
     length_censored_question_count: int = 0
     protocol_censored_question_count: int = 0
+    transport_censored_question_count: int = 0
     missing_qids: tuple[str, ...] = ()
     duplicate_qids: tuple[str, ...] = ()
     unexpected_qids: tuple[str, ...] = ()
@@ -476,6 +486,10 @@ _CURRENT_AGENT_FIELDS = frozenset(
     ("answer" if field.name == "answer_choice" else field.name)
     for field in fields(AgentOutput)
 )
+_SCHEMA5_QUESTION_RESULT_FIELDS = frozenset(
+    field.name for field in fields(QuestionResult)
+)
+_SCHEMA5_CELL_META_FIELDS = frozenset(field.name for field in fields(CellMeta))
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -1023,6 +1037,29 @@ def _agent_errors(
     endpoint_generation = agent.get("endpoint_generation")
     if not isinstance(endpoint_generation, str) or not endpoint_generation:
         errors.append("current agent endpoint_generation must be non-empty")
+    calibration_endpoint = agent.get("calibration_endpoint_generation")
+    if question is None:
+        if calibration_endpoint is not None and (
+            not isinstance(calibration_endpoint, str)
+            or not calibration_endpoint
+            or calibration_endpoint == "mixed"
+        ):
+            errors.append(
+                "current agent calibration_endpoint_generation must be exact or null"
+            )
+    elif question.answer_type is AnswerType.MCQ:
+        if (
+            not isinstance(calibration_endpoint, str)
+            or not calibration_endpoint
+            or calibration_endpoint == "mixed"
+        ):
+            errors.append(
+                "current MCQ agent calibration_endpoint_generation must be exact"
+            )
+    elif calibration_endpoint is not None:
+        errors.append(
+            "current non-MCQ agent calibration_endpoint_generation must be null"
+        )
     if agent.get("thinking_budget_requested") != finite_budget:
         errors.append("v3 agent thinking_budget_requested does not match manifest")
 
@@ -1499,7 +1536,12 @@ def _self_consistency_errors(
         "auxiliary_efficiency_raw",
     }
     if schema_version >= 5:
-        expected_fields.add("protocol_censored_sample_count")
+        expected_fields.update(
+            {
+                "protocol_censored_sample_count",
+                "transport_censored_sample_count",
+            }
+        )
     if set(value) != expected_fields:
         errors.append(
             "self_consistency fields do not match the registered protocol"
@@ -1529,12 +1571,14 @@ def _self_consistency_errors(
     completed_outputs: list[Mapping[str, Any]] = []
     length_censored_outputs: list[Mapping[str, Any]] = []
     protocol_censored_outputs: list[Mapping[str, Any]] = []
+    transport_censored_outputs: list[Mapping[str, Any]] = []
     expected_sample_fields = {
         "sample_index",
         "seed",
         "termination_status",
         "agent_output",
         "censored_generation",
+        "transport_censor",
     }
     for sample_index, sample in enumerate(samples):
         label = f"self_consistency.samples[{sample_index}]"
@@ -1551,7 +1595,10 @@ def _self_consistency_errors(
         status = sample.get("termination_status")
         if status == TERMINATION_COMPLETED:
             output = sample.get("agent_output")
-            if sample.get("censored_generation") is not None:
+            if (
+                sample.get("censored_generation") is not None
+                or sample.get("transport_censor") is not None
+            ):
                 errors.append(f"{label} completed outcome cannot contain a censor")
             if not isinstance(output, dict):
                 errors.append(f"{label}.agent_output must be a complete AgentOutput")
@@ -1606,14 +1653,56 @@ def _self_consistency_errors(
                     length_censored_outputs.append(censor)
                 else:
                     protocol_censored_outputs.append(censor)
+            if sample.get("transport_censor") is not None:
+                errors.append(
+                    f"{label} generation-censored outcome cannot contain "
+                    "transport_censor"
+                )
+        elif status == TERMINATION_TRANSPORT_CENSORED:
+            if schema_version < 5:
+                errors.append(
+                    f"{label}.termination_status is not registered in schema 4"
+                )
+            if (
+                sample.get("agent_output") is not None
+                or sample.get("censored_generation") is not None
+            ):
+                errors.append(
+                    f"{label} transport-censored outcome cannot contain a model "
+                    "response"
+                )
+            transport = sample.get("transport_censor")
+            try:
+                validated_transport = validate_transport_censor(transport)
+            except ValueError as exc:
+                errors.append(f"{label}.transport_censor is invalid: {exc}")
+            else:
+                expected = {
+                    "qid": qid,
+                    "agent_id": "agent0",
+                    "round": 0,
+                    "generation_role": "self_consistency",
+                    "sample_index": sample_index,
+                    "seed": expected_seed,
+                }
+                for field, expected_value in expected.items():
+                    if validated_transport.get(field) != expected_value:
+                        errors.append(
+                            f"{label}.transport_censor.{field} does not match "
+                            "its scheduled coordinate"
+                        )
+                transport_censored_outputs.append(validated_transport)
         else:
             errors.append(f"{label}.termination_status is not registered")
 
     completed_count = len(completed_outputs)
     length_censored_count = len(length_censored_outputs)
     protocol_censored_count = len(protocol_censored_outputs)
-    censored_outputs = length_censored_outputs + protocol_censored_outputs
-    censored_count = len(censored_outputs)
+    transport_censored_count = len(transport_censored_outputs)
+    generation_censored_outputs = (
+        length_censored_outputs + protocol_censored_outputs
+    )
+    censored_count = len(generation_censored_outputs) + transport_censored_count
     if value.get("sample_count") != cell.n_samples:
         errors.append("self_consistency.sample_count does not match manifest n_samples")
     if value.get("completed_sample_count") != completed_count:
@@ -1624,6 +1713,11 @@ def _self_consistency_errors(
         value.get("protocol_censored_sample_count") != protocol_censored_count
     ):
         errors.append("self_consistency.protocol_censored_sample_count is incorrect")
+    if schema_version >= 5 and (
+        value.get("transport_censored_sample_count")
+        != transport_censored_count
+    ):
+        errors.append("self_consistency.transport_censored_sample_count is incorrect")
     if completed_count + censored_count != cell.n_samples:
         errors.append("self_consistency does not retain one valid outcome per sample")
 
@@ -1672,7 +1766,12 @@ def _self_consistency_errors(
         "wall_ms",
     }
     if schema_version >= 5:
-        expected_auxiliary_fields.add("protocol_censored_samples")
+        expected_auxiliary_fields.update(
+            {
+                "protocol_censored_samples",
+                "transport_censored_samples",
+            }
+        )
     if not isinstance(auxiliary, dict):
         errors.append("self_consistency.auxiliary_efficiency_raw must be an object")
     else:
@@ -1692,7 +1791,8 @@ def _self_consistency_errors(
                 retained_count(output, "prompt_tokens") for output in completed_outputs
             )
             + sum(
-                retained_count(censor, "prompt_tokens") for censor in censored_outputs
+                retained_count(censor, "prompt_tokens")
+                for censor in generation_censored_outputs
             ),
             "total_completion_tokens": sum(
                 retained_count(output, "completion_tokens")
@@ -1700,7 +1800,7 @@ def _self_consistency_errors(
             )
             + sum(
                 retained_count(censor, "completion_tokens")
-                for censor in censored_outputs
+                for censor in generation_censored_outputs
             ),
             "total_reasoning_tokens": sum(
                 retained_count(output, "reasoning_tokens")
@@ -1708,11 +1808,14 @@ def _self_consistency_errors(
             )
             + sum(
                 _auxiliary_censored_reasoning_tokens(censor, cell)
-                for censor in censored_outputs
+                for censor in generation_censored_outputs
             ),
         }
         if schema_version >= 5:
             expected_costs["protocol_censored_samples"] = protocol_censored_count
+            expected_costs["transport_censored_samples"] = (
+                transport_censored_count
+            )
         for field, expected in expected_costs.items():
             if auxiliary.get(field) != expected:
                 errors.append(
@@ -1870,6 +1973,513 @@ def summarize_endpoint_generation(
     if len(generations) == 1:
         return next(iter(generations))
     return "mixed"
+
+
+COORDINATE_PROVENANCE_FIELDS = (
+    "capacity_generation",
+    "endpoint_generation",
+    "fleet_contract_sha256",
+    "release_fleet_contract_sha256",
+    "rollout_generation",
+)
+COORDINATE_PROVENANCE_IDENTITY_FIELDS = (
+    "release_fleet_contract_sha256",
+    "fleet_contract_sha256",
+    "capacity_generation",
+    "rollout_generation",
+    "endpoint_generation",
+)
+_COORDINATE_PROVENANCE_IDENTITY_COUNT_FIELDS = frozenset(
+    (*COORDINATE_PROVENANCE_IDENTITY_FIELDS, "count")
+)
+
+
+def canonical_coordinate_provenance_counts(
+    value: Any, *, require_nonempty: bool = True
+) -> dict[str, dict[str, int]]:
+    """Validate and canonicalize exact per-coordinate runtime provenance counts."""
+
+    if not isinstance(value, Mapping) or set(value) != set(
+        COORDINATE_PROVENANCE_FIELDS
+    ):
+        raise CorruptArtifactError(
+            "coordinate_provenance_counts has the wrong fields"
+        )
+    result: dict[str, dict[str, int]] = {}
+    totals: set[int] = set()
+    for field in COORDINATE_PROVENANCE_FIELDS:
+        observed = value[field]
+        if not isinstance(observed, Mapping):
+            raise CorruptArtifactError(
+                f"coordinate_provenance_counts.{field} must be an object"
+            )
+        canonical: dict[str, int] = {}
+        for raw_key, count in observed.items():
+            if not isinstance(raw_key, str) or not raw_key:
+                raise CorruptArtifactError(
+                    f"coordinate_provenance_counts.{field} has an invalid key"
+                )
+            if (
+                not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 1
+            ):
+                raise CorruptArtifactError(
+                    f"coordinate_provenance_counts.{field} counts must be positive"
+                )
+            if field in {
+                "fleet_contract_sha256",
+                "release_fleet_contract_sha256",
+            } and re.fullmatch(r"[0-9a-f]{64}", raw_key) is None:
+                raise CorruptArtifactError(
+                    f"coordinate_provenance_counts.{field} key must be SHA-256"
+                )
+            if field in {"capacity_generation", "rollout_generation"}:
+                try:
+                    generation = int(raw_key)
+                except ValueError as exc:
+                    raise CorruptArtifactError(
+                        f"coordinate_provenance_counts.{field} key must be positive"
+                    ) from exc
+                if generation < 1 or str(generation) != raw_key:
+                    raise CorruptArtifactError(
+                        f"coordinate_provenance_counts.{field} key must be canonical"
+                    )
+            if field == "endpoint_generation" and raw_key == "mixed":
+                raise CorruptArtifactError(
+                    "coordinate endpoint generation keys must be exact"
+                )
+            canonical[raw_key] = count
+        total = sum(canonical.values())
+        if require_nonempty and total < 1:
+            raise CorruptArtifactError(
+                f"coordinate_provenance_counts.{field} is empty"
+            )
+        totals.add(total)
+        result[field] = {
+            key: canonical[key] for key in sorted(canonical)
+        }
+    if len(totals) != 1:
+        raise CorruptArtifactError(
+            "coordinate provenance fields count different stochastic coordinates"
+        )
+    return result
+
+
+def canonical_coordinate_provenance_identity_counts(
+    value: Any, *, require_nonempty: bool = True
+) -> list[dict[str, Any]]:
+    """Validate canonical joint per-coordinate runtime provenance identities."""
+
+    if not isinstance(value, list):
+        raise CorruptArtifactError(
+            "coordinate_provenance_identity_counts must be a list"
+        )
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for index, observed in enumerate(value):
+        if (
+            not isinstance(observed, Mapping)
+            or set(observed) != _COORDINATE_PROVENANCE_IDENTITY_COUNT_FIELDS
+        ):
+            raise CorruptArtifactError(
+                "coordinate_provenance_identity_counts entry has the wrong fields"
+            )
+        row = dict(observed)
+        for field in (
+            "release_fleet_contract_sha256",
+            "fleet_contract_sha256",
+        ):
+            if (
+                not isinstance(row[field], str)
+                or re.fullmatch(r"[0-9a-f]{64}", row[field]) is None
+            ):
+                raise CorruptArtifactError(
+                    f"coordinate identity {field} must be a lowercase SHA-256"
+                )
+        for field in ("capacity_generation", "rollout_generation"):
+            if (
+                not isinstance(row[field], int)
+                or isinstance(row[field], bool)
+                or row[field] < 1
+            ):
+                raise CorruptArtifactError(
+                    f"coordinate identity {field} must be positive"
+                )
+        endpoint = row["endpoint_generation"]
+        if (
+            not isinstance(endpoint, str)
+            or not endpoint
+            or endpoint == "mixed"
+        ):
+            raise CorruptArtifactError(
+                "coordinate identity endpoint_generation must be exact"
+            )
+        count = row["count"]
+        if (
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+        ):
+            raise CorruptArtifactError(
+                "coordinate provenance identity counts must be positive"
+            )
+        identity = tuple(
+            row[field] for field in COORDINATE_PROVENANCE_IDENTITY_FIELDS
+        )
+        if identity in seen:
+            raise CorruptArtifactError(
+                "coordinate_provenance_identity_counts contains a duplicate identity"
+            )
+        seen.add(identity)
+        rows.append(
+            {
+                **{
+                    field: row[field]
+                    for field in COORDINATE_PROVENANCE_IDENTITY_FIELDS
+                },
+                "count": count,
+            }
+        )
+    if require_nonempty and not rows:
+        raise CorruptArtifactError(
+            "coordinate_provenance_identity_counts is empty"
+        )
+    canonical = sorted(
+        rows,
+        key=lambda row: tuple(
+            row[field] for field in COORDINATE_PROVENANCE_IDENTITY_FIELDS
+        ),
+    )
+    if rows != canonical:
+        raise CorruptArtifactError(
+            "coordinate_provenance_identity_counts is not canonically ordered"
+        )
+    return canonical
+
+
+def marginalize_coordinate_provenance_identity_counts(
+    value: Any, *, require_nonempty: bool = True
+) -> dict[str, dict[str, int]]:
+    """Derive every marginal provenance histogram from joint identities."""
+
+    identities = canonical_coordinate_provenance_identity_counts(
+        value, require_nonempty=require_nonempty
+    )
+    counts: dict[str, dict[str, int]] = {
+        field: {} for field in COORDINATE_PROVENANCE_FIELDS
+    }
+    for identity in identities:
+        count = int(identity["count"])
+        for field in COORDINATE_PROVENANCE_FIELDS:
+            key = str(identity[field])
+            counts[field][key] = counts[field].get(key, 0) + count
+    return canonical_coordinate_provenance_counts(
+        counts, require_nonempty=require_nonempty
+    )
+
+
+def aggregate_coordinate_provenance_identity_counts(
+    records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate canonical joint identities across a complete cell."""
+
+    totals: dict[tuple[Any, ...], int] = {}
+    for record in records:
+        identities = canonical_coordinate_provenance_identity_counts(
+            record.get("coordinate_provenance_identity_counts")
+        )
+        for identity in identities:
+            key = tuple(
+                identity[field]
+                for field in COORDINATE_PROVENANCE_IDENTITY_FIELDS
+            )
+            totals[key] = totals.get(key, 0) + int(identity["count"])
+    rows = [
+        {
+            **{
+                field: value
+                for field, value in zip(
+                    COORDINATE_PROVENANCE_IDENTITY_FIELDS,
+                    identity,
+                    strict=True,
+                )
+            },
+            "count": count,
+        }
+        for identity, count in sorted(totals.items())
+    ]
+    return canonical_coordinate_provenance_identity_counts(
+        rows, require_nonempty=bool(records)
+    )
+
+
+def calibration_endpoint_generations(value: Any) -> tuple[str, ...]:
+    """Return every exact calibration-probe process identity in a result payload."""
+
+    endpoints: list[str] = []
+    if isinstance(value, Mapping):
+        if "calibration_endpoint_generation" in value:
+            endpoint = value["calibration_endpoint_generation"]
+            if endpoint is not None:
+                if (
+                    not isinstance(endpoint, str)
+                    or not endpoint
+                    or endpoint == "mixed"
+                ):
+                    raise CorruptArtifactError(
+                        "calibration endpoint generation is not exact"
+                    )
+                endpoints.append(endpoint)
+        for nested in value.values():
+            endpoints.extend(calibration_endpoint_generations(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            endpoints.extend(calibration_endpoint_generations(nested))
+    return tuple(endpoints)
+
+
+def trusted_generation_catalog_errors(
+    records: Sequence[Mapping[str, Any]],
+    allowed_generation_tuples: Iterable[
+        tuple[str, str, int, int, str]
+    ],
+) -> tuple[str, ...]:
+    """Validate stochastic and calibration endpoint identities against one catalog.
+
+    Calibration probes are independent HTTP responses and therefore are not stochastic
+    checkpoint coordinates.  Their AgentOutput stores the exact endpoint generation.
+    We bind that endpoint to the unique catalog tuple whose first four fields occur in
+    the row's authenticated joint coordinate identities.  This rejects both an unknown
+    endpoint and an endpoint authenticated only for a different fleet generation.
+    """
+
+    allowed = frozenset(allowed_generation_tuples)
+    errors: list[str] = []
+
+    for index, record in enumerate(records):
+        try:
+            identities = canonical_coordinate_provenance_identity_counts(
+                record.get("coordinate_provenance_identity_counts")
+            )
+            row_tuples = {
+                tuple(
+                    identity[field]
+                    for field in COORDINATE_PROVENANCE_IDENTITY_FIELDS
+                )
+                for identity in identities
+            }
+            calibration = calibration_endpoint_generations(record)
+        except CorruptArtifactError as exc:
+            errors.append(
+                f"record {index}: trusted-generation identity is invalid: {exc}"
+            )
+            continue
+        unknown = sorted(row_tuples - allowed)
+        if unknown:
+            errors.append(
+                f"record {index}: stochastic coordinate identities are absent "
+                f"from the trusted generation catalog: {unknown}"
+            )
+        row_prefixes = {identity[:4] for identity in row_tuples}
+        for endpoint in sorted(set(calibration)):
+            matches = {
+                identity
+                for identity in allowed
+                if identity[4] == endpoint and identity[:4] in row_prefixes
+            }
+            if len(matches) != 1:
+                errors.append(
+                    f"record {index}: calibration endpoint {endpoint!r} has "
+                    f"{len(matches)} exact trusted generation bindings"
+                )
+    return tuple(errors)
+
+
+def aggregate_coordinate_provenance_counts(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, int]]:
+    aggregate = {field: {} for field in COORDINATE_PROVENANCE_FIELDS}
+    for record in records:
+        counts = canonical_coordinate_provenance_counts(
+            record.get("coordinate_provenance_counts")
+        )
+        for field in COORDINATE_PROVENANCE_FIELDS:
+            for value, count in counts[field].items():
+                aggregate[field][value] = (
+                    aggregate[field].get(value, 0) + count
+                )
+    return canonical_coordinate_provenance_counts(
+        aggregate, require_nonempty=bool(records)
+    )
+
+
+def singleton_coordinate_provenance(
+    counts: Mapping[str, Mapping[str, int]], field: str
+) -> str | None:
+    values = counts.get(field)
+    if not isinstance(values, Mapping) or len(values) != 1:
+        return None
+    return next(iter(values))
+
+
+def result_coordinate_endpoint_counts(
+    record: Mapping[str, Any],
+) -> dict[str, int]:
+    """Count endpoint identities visible in a canonical QID row.
+
+    Coordinated completed rows may retain only terminal-round outputs while their
+    authenticated checkpoint provenance covers every earlier stochastic coordinate.
+    These visible counts are therefore evidence that must be bounded by, rather than
+    necessarily equal to, ``coordinate_provenance_counts.endpoint_generation``.
+    """
+
+    endpoints: list[str] = []
+
+    def add_payload(value: Any, *, context: str) -> None:
+        if not isinstance(value, Mapping):
+            raise CorruptArtifactError(f"{context} is not an object")
+        endpoint = value.get("endpoint_generation")
+        if not isinstance(endpoint, str) or not endpoint or endpoint == "mixed":
+            raise CorruptArtifactError(
+                f"{context} lacks one exact endpoint_generation"
+            )
+        endpoints.append(endpoint)
+
+    if record.get("termination_status") == TERMINATION_COMPLETED:
+        per_agent = record.get("per_agent")
+        if not isinstance(per_agent, list):
+            raise CorruptArtifactError("completed per_agent is not a list")
+        for index, output in enumerate(per_agent):
+            add_payload(output, context=f"per_agent[{index}]")
+        self_consistency = record.get("self_consistency")
+        if isinstance(self_consistency, Mapping):
+            samples = self_consistency.get("samples", [])
+            if not isinstance(samples, list):
+                raise CorruptArtifactError(
+                    "self_consistency.samples is not a list"
+                )
+            for index, sample in enumerate(samples):
+                if not isinstance(sample, Mapping):
+                    raise CorruptArtifactError(
+                        f"self_consistency.samples[{index}] is not an object"
+                    )
+                payload = sample.get("agent_output")
+                if payload is None:
+                    payload = sample.get("censored_generation")
+                if payload is None:
+                    payload = sample.get("transport_censor")
+                add_payload(
+                    payload,
+                    context=f"self_consistency.samples[{index}] outcome",
+                )
+    else:
+        coordinates = record.get("observed_topology_coordinates")
+        if not isinstance(coordinates, list):
+            raise CorruptArtifactError(
+                "censored observed_topology_coordinates is not a list"
+            )
+        for index, entry in enumerate(coordinates):
+            outcome = entry.get("outcome") if isinstance(entry, Mapping) else None
+            if not isinstance(outcome, Mapping):
+                raise CorruptArtifactError(
+                    f"observed_topology_coordinates[{index}] lacks an outcome"
+                )
+            payload = outcome.get("agent_output")
+            if payload is None:
+                payload = outcome.get("censored_generation")
+            if payload is None:
+                payload = outcome.get("transport_censor")
+            add_payload(
+                payload,
+                context=f"observed_topology_coordinates[{index}] outcome",
+            )
+    counts: dict[str, int] = {}
+    for endpoint in endpoints:
+        counts[endpoint] = counts.get(endpoint, 0) + 1
+    return {endpoint: counts[endpoint] for endpoint in sorted(counts)}
+
+
+def visible_endpoint_counts_are_bounded(
+    authoritative: Mapping[str, int],
+    visible: Mapping[str, int],
+) -> bool:
+    """Return whether every visible outcome is covered by authoritative counts."""
+
+    if not visible:
+        return False
+    return all(
+        endpoint in authoritative
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count > 0
+        and count <= authoritative[endpoint]
+        for endpoint, count in visible.items()
+    )
+
+
+def expected_result_coordinate_count(record: Mapping[str, Any]) -> int:
+    """Return the stochastic-coordinate cardinality committed by one result row."""
+
+    efficiency = record.get("efficiency_raw")
+    if not isinstance(efficiency, Mapping):
+        raise CorruptArtifactError("result efficiency_raw is not an object")
+    turns = efficiency.get("n_turns")
+    if (
+        not isinstance(turns, int)
+        or isinstance(turns, bool)
+        or turns < 1
+    ):
+        raise CorruptArtifactError("result n_turns must be a positive integer")
+    if record.get("termination_status") == TERMINATION_COMPLETED:
+        self_consistency = record.get("self_consistency")
+        auxiliary = 0
+        if isinstance(self_consistency, Mapping) and self_consistency:
+            auxiliary = self_consistency.get("sample_count")
+            if (
+                not isinstance(auxiliary, int)
+                or isinstance(auxiliary, bool)
+                or auxiliary < 0
+            ):
+                raise CorruptArtifactError(
+                    "self_consistency.sample_count must be non-negative"
+                )
+        return turns + auxiliary
+    observed = record.get("observed_topology_coordinates")
+    if not isinstance(observed, list) or len(observed) != turns:
+        raise CorruptArtifactError(
+            "censored coordinate snapshot does not match result n_turns"
+        )
+    return turns
+
+
+def transport_censored_coordinate_count(
+    records: Sequence[Mapping[str, Any]],
+) -> int:
+    """Count retained topology and auxiliary transport censors exactly once."""
+
+    total = 0
+    for record in records:
+        coordinates = record.get("observed_topology_coordinates")
+        if isinstance(coordinates, list):
+            total += sum(
+                isinstance(entry, Mapping)
+                and isinstance(entry.get("outcome"), Mapping)
+                and entry["outcome"].get("termination_status")
+                == TERMINATION_TRANSPORT_CENSORED
+                for entry in coordinates
+            )
+        self_consistency = record.get("self_consistency")
+        if isinstance(self_consistency, Mapping):
+            samples = self_consistency.get("samples")
+            if isinstance(samples, list):
+                total += sum(
+                    isinstance(sample, Mapping)
+                    and sample.get("termination_status")
+                    == TERMINATION_TRANSPORT_CENSORED
+                    for sample in samples
+                )
+    return int(total)
 
 
 @lru_cache(maxsize=None)
@@ -2052,6 +2662,7 @@ def _observed_topology_coordinate_errors(
     effective_context_limit: Any,
     question: Question | None,
     terminal_censor: Any,
+    terminal_transport_censor: Any,
 ) -> tuple[list[str], dict[str, int]]:
     """Validate schema-5 censor snapshots and derive their exact consumed costs."""
 
@@ -2078,9 +2689,13 @@ def _observed_topology_coordinate_errors(
     expected_entry_fields = {
         "coordinate_key",
         "request",
+        "attempt",
         "outcome",
         "observed_at",
         "producer_wall_ms",
+    }
+    expected_entry_fields_with_runtime = expected_entry_fields | {
+        "runtime_provenance"
     }
     expected_request_fields = {
         "generation_role",
@@ -2095,7 +2710,14 @@ def _observed_topology_coordinate_errors(
     }
     for index, entry in enumerate(value):
         label = f"observed_topology_coordinates[{index}]"
-        if not isinstance(entry, dict) or set(entry) != expected_entry_fields:
+        if (
+            not isinstance(entry, dict)
+            or set(entry)
+            not in {
+                frozenset(expected_entry_fields),
+                frozenset(expected_entry_fields_with_runtime),
+            }
+        ):
             errors.append(f"{label} has the wrong fields")
             continue
         key = entry.get("coordinate_key")
@@ -2114,6 +2736,15 @@ def _observed_topology_coordinate_errors(
             continue
         if set(request) != expected_request_fields:
             errors.append(f"{label}.request has the wrong fields")
+        try:
+            attempt = validate_attempt(
+                entry.get("attempt"),
+                coordinate_key=str(key),
+                request=request,
+            )
+        except ValueError as exc:
+            errors.append(f"{label}.attempt is invalid: {exc}")
+            attempt = None
         agent_id = request.get("agent_id")
         round_index = request.get("round")
         expected_key = f"topology:{agent_id}:{round_index}"
@@ -2172,14 +2803,20 @@ def _observed_topology_coordinate_errors(
             "termination_status",
             "agent_output",
             "censored_generation",
+            "transport_censor",
         }:
             errors.append(f"{label}.outcome has the wrong fields")
             continue
         status = outcome.get("termination_status")
         output = outcome.get("agent_output")
         censor = outcome.get("censored_generation")
+        transport_censor = outcome.get("transport_censor")
         if status == TERMINATION_COMPLETED:
-            if not isinstance(output, dict) or censor is not None:
+            if (
+                not isinstance(output, dict)
+                or censor is not None
+                or transport_censor is not None
+            ):
                 errors.append(f"{label} completed outcome is malformed")
                 continue
             normalized = dict(output)
@@ -2233,7 +2870,11 @@ def _observed_topology_coordinate_errors(
             TERMINATION_LENGTH_CENSORED,
             TERMINATION_PROTOCOL_CENSORED,
         }:
-            if output is not None or not isinstance(censor, dict):
+            if (
+                output is not None
+                or transport_censor is not None
+                or not isinstance(censor, dict)
+            ):
                 errors.append(f"{label} censored outcome is malformed")
                 continue
             if any(
@@ -2273,6 +2914,24 @@ def _observed_topology_coordinate_errors(
                 else 0
             )
             reasoning_tokens += _auxiliary_censored_reasoning_tokens(censor, cell)
+        elif status == TERMINATION_TRANSPORT_CENSORED:
+            if (
+                output is not None
+                or censor is not None
+                or not isinstance(transport_censor, dict)
+            ):
+                errors.append(f"{label} transport-censored outcome is malformed")
+                continue
+            try:
+                validated_transport = validate_transport_censor(
+                    transport_censor,
+                    request=request,
+                    attempt=attempt,
+                )
+            except ValueError as exc:
+                errors.append(f"{label}.transport_censor is invalid: {exc}")
+                continue
+            observed_censors.append((request, validated_transport))
         else:
             errors.append(f"{label}.outcome termination_status is not registered")
 
@@ -2287,7 +2946,11 @@ def _observed_topology_coordinate_errors(
             for coordinate, status in observed_schedule.items()
             if coordinate[1] < terminal_round
             and status
-            in {TERMINATION_LENGTH_CENSORED, TERMINATION_PROTOCOL_CENSORED}
+            in {
+                TERMINATION_LENGTH_CENSORED,
+                TERMINATION_PROTOCOL_CENSORED,
+                TERMINATION_TRANSPORT_CENSORED,
+            }
         ]
         if prior_censors:
             errors.append("censored topology snapshot continues after a censor")
@@ -2318,7 +2981,11 @@ def _observed_topology_coordinate_errors(
                 if round_index == terminal_round
                 and index != 0
                 and status
-                in {TERMINATION_LENGTH_CENSORED, TERMINATION_PROTOCOL_CENSORED}
+                in {
+                    TERMINATION_LENGTH_CENSORED,
+                    TERMINATION_PROTOCOL_CENSORED,
+                    TERMINATION_TRANSPORT_CENSORED,
+                }
             }
             if terminal_subagents:
                 expected_coordinates.update(
@@ -2331,6 +2998,7 @@ def _observed_topology_coordinate_errors(
                 if observed_schedule.get((0, terminal_round)) not in {
                     TERMINATION_LENGTH_CENSORED,
                     TERMINATION_PROTOCOL_CENSORED,
+                    TERMINATION_TRANSPORT_CENSORED,
                 }:
                     errors.append(
                         "centralized terminal wave must contain an orchestrator censor"
@@ -2346,10 +3014,16 @@ def _observed_topology_coordinate_errors(
 
     if not observed_censors:
         errors.append("censored topology snapshot must contain at least one censor")
-    elif isinstance(terminal_censor, dict):
+    else:
+        terminal_payload = (
+            terminal_transport_censor
+            if isinstance(terminal_transport_censor, dict)
+            else terminal_censor
+        )
+    if observed_censors and isinstance(terminal_payload, dict):
         comparable_terminal = {
             key: item
-            for key, item in terminal_censor.items()
+            for key, item in terminal_payload.items()
             if key not in {"topology", "benchmark"}
         }
         terminal_matches = [
@@ -2434,6 +3108,16 @@ def _record_errors(
     current_schema, schema_errors = _schema_contract(record, "question result")
     errors.extend(schema_errors)
     record_schema = record.get("schema_version") if current_schema else None
+    if (
+        record_schema == ARTIFACT_SCHEMA_VERSION
+        and set(record) != _SCHEMA5_QUESTION_RESULT_FIELDS
+    ):
+        missing = sorted(_SCHEMA5_QUESTION_RESULT_FIELDS - set(record))
+        unexpected = sorted(set(record) - _SCHEMA5_QUESTION_RESULT_FIELDS)
+        errors.append(
+            "schema-5 question result has the wrong root fields: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
     termination_status = record.get("termination_status", TERMINATION_COMPLETED)
     if current_schema:
         allowed_statuses = (
@@ -2445,13 +3129,18 @@ def _record_errors(
             errors.append(
                 "question result termination_status is not registered"
             )
-    elif "termination_status" in record or "censored_generation" in record:
+    elif (
+        "termination_status" in record
+        or "censored_generation" in record
+        or "transport_censor" in record
+    ):
         errors.append(
             "legacy question result cannot contain termination/censor provenance"
         )
     is_censored = current_schema and termination_status in {
         TERMINATION_LENGTH_CENSORED,
         TERMINATION_PROTOCOL_CENSORED,
+        TERMINATION_TRANSPORT_CENSORED,
     }
     exact_fields = {
         "cell_id": cell.cell_id,
@@ -2582,19 +3271,45 @@ def _record_errors(
             errors.append("censored result system_conf must be empty")
         if record.get("self_consistency") != {}:
             errors.append("censored result self_consistency must be empty")
-        errors.extend(
-            _censored_generation_errors(
-                record.get("censored_generation"),
-                cell=cell,
-                qid=qid,
-                termination_status=termination_status,
-                serving_profile=record.get("serving_profile"),
-                effective_context_limit=record.get("effective_context_limit"),
+        if termination_status == TERMINATION_TRANSPORT_CENSORED:
+            if record.get("censored_generation") is not None:
+                errors.append(
+                    "transport-censored result cannot contain censored_generation"
+                )
+            try:
+                top_transport = validate_transport_censor(
+                    record.get("transport_censor")
+                )
+            except ValueError as exc:
+                errors.append(f"transport_censor is invalid: {exc}")
+            else:
+                if (
+                    top_transport.get("qid") != qid
+                    or top_transport.get("generation_role") != "topology"
+                ):
+                    errors.append(
+                        "transport_censor does not match the top-level QID topology"
+                    )
+        else:
+            if record.get("transport_censor") is not None:
+                errors.append(
+                    "generation-censored result cannot contain transport_censor"
+                )
+            errors.extend(
+                _censored_generation_errors(
+                    record.get("censored_generation"),
+                    cell=cell,
+                    qid=qid,
+                    termination_status=termination_status,
+                    serving_profile=record.get("serving_profile"),
+                    effective_context_limit=record.get("effective_context_limit"),
+                )
             )
-        )
     else:
         if current_schema and record.get("censored_generation") is not None:
             errors.append("completed result cannot contain censored_generation data")
+        if current_schema and record.get("transport_censor") is not None:
+            errors.append("completed result cannot contain transport_censor data")
         for index, agent in enumerate(per_agent):
             errors.extend(
                 f"per_agent[{index}]: {error}"
@@ -2637,12 +3352,34 @@ def _record_errors(
                 effective_context_limit=record.get("effective_context_limit"),
                 question=question,
                 terminal_censor=record.get("censored_generation"),
+                terminal_transport_censor=record.get("transport_censor"),
             )
             errors.extend(coordinate_errors)
         elif observed_coordinates != []:
             errors.append(
                 "completed schema-5 result observed_topology_coordinates must be empty"
             )
+        try:
+            identities = canonical_coordinate_provenance_identity_counts(
+                record.get("coordinate_provenance_identity_counts"),
+                require_nonempty=False,
+            )
+            observed_marginals = canonical_coordinate_provenance_counts(
+                record.get("coordinate_provenance_counts"),
+                require_nonempty=False,
+            )
+            derived_marginals = marginalize_coordinate_provenance_identity_counts(
+                identities,
+                require_nonempty=False,
+            )
+        except CorruptArtifactError as exc:
+            errors.append(f"schema-5 coordinate provenance is invalid: {exc}")
+        else:
+            if observed_marginals != derived_marginals:
+                errors.append(
+                    "schema-5 coordinate provenance marginals are not derived "
+                    "from joint identities"
+                )
     elif current_schema and "observed_topology_coordinates" in record:
         errors.append(
             "schema-4 result cannot contain schema-5 topology-coordinate provenance"
@@ -3022,17 +3759,84 @@ def _artifact_policy_payload_errors(
             errors.append(
                 f"record {index}: schema-5 production effective_context is inconsistent"
             )
-        expected_row_endpoint = summarize_endpoint_generation([record])
+        try:
+            coordinate_identities = (
+                canonical_coordinate_provenance_identity_counts(
+                    record.get("coordinate_provenance_identity_counts")
+                )
+            )
+            coordinate_counts = (
+                marginalize_coordinate_provenance_identity_counts(
+                    coordinate_identities
+                )
+            )
+            observed_counts = canonical_coordinate_provenance_counts(
+                record.get("coordinate_provenance_counts")
+            )
+            derived_endpoints = result_coordinate_endpoint_counts(record)
+            expected_coordinate_count = expected_result_coordinate_count(record)
+        except CorruptArtifactError as exc:
+            errors.append(
+                f"record {index}: schema-5 coordinate provenance is invalid: {exc}"
+            )
+            continue
+        if observed_counts != coordinate_counts:
+            errors.append(
+                f"record {index}: coordinate provenance marginals are not the "
+                "derivation of joint identities"
+            )
         if (
-            expected_row_endpoint is None
-            or record.get("endpoint_generation") != expected_row_endpoint
+            sum(coordinate_counts["endpoint_generation"].values())
+            != expected_coordinate_count
         ):
+            errors.append(
+                f"record {index}: authenticated coordinate count does not match "
+                "the result execution structure"
+            )
+        authoritative_endpoints = coordinate_counts["endpoint_generation"]
+        if not visible_endpoint_counts_are_bounded(
+            authoritative_endpoints, derived_endpoints
+        ):
+            errors.append(
+                f"record {index}: visible endpoint outcomes exceed authenticated "
+                "coordinate counts"
+            )
+        expected_row_endpoint = (
+            next(iter(authoritative_endpoints))
+            if len(authoritative_endpoints) == 1
+            else "mixed"
+        )
+        if record.get("endpoint_generation") != expected_row_endpoint:
             errors.append(
                 f"record {index}: schema-5 production endpoint_generation is inconsistent"
             )
-        if not _is_integer(record.get("rollout_generation"), minimum=1):
+        for count_field, scalar_field, integer in (
+            ("fleet_contract_sha256", "fleet_contract_sha256", False),
+            ("capacity_generation", "capacity_generation", True),
+            ("rollout_generation", "rollout_generation", True),
+        ):
+            expected = singleton_coordinate_provenance(
+                coordinate_counts, count_field
+            )
+            if integer and expected is not None:
+                expected = int(expected)
+            if record.get(scalar_field) != expected:
+                errors.append(
+                    f"record {index}: schema-5 production {scalar_field} "
+                    "does not summarize coordinate provenance"
+                )
+        release_values = coordinate_counts[
+            "release_fleet_contract_sha256"
+        ]
+        release_value = singleton_coordinate_provenance(
+            coordinate_counts, "release_fleet_contract_sha256"
+        )
+        if (
+            len(release_values) != 1
+            or record.get("release_fleet_contract_sha256") != release_value
+        ):
             errors.append(
-                f"record {index}: schema-5 production rollout_generation must be positive"
+                f"record {index}: release fleet lineage is not singleton"
             )
     if meta is None:
         return errors
@@ -3069,13 +3873,92 @@ def _artifact_policy_payload_errors(
             if meta.get(field) != expected:
                 errors.append(f"schema-5 production meta {field} does not match contract")
 
-    expected_endpoint = summarize_endpoint_generation(records)
-    if expected_endpoint is None:
-        errors.append("schema-5 production results lack exact endpoint generations")
-    if meta.get("endpoint_generation") != expected_endpoint:
-        errors.append(
-            "schema-5 production meta endpoint_generation does not match canonical results"
+    try:
+        expected_coordinate_identities = (
+            aggregate_coordinate_provenance_identity_counts(records)
         )
+        expected_coordinate_counts = aggregate_coordinate_provenance_counts(
+            records
+        )
+    except CorruptArtifactError as exc:
+        expected_coordinate_counts = None
+        errors.append(
+            f"schema-5 production coordinate provenance is invalid: {exc}"
+        )
+    if expected_coordinate_counts is not None:
+        if (
+            meta.get("coordinate_provenance_identity_counts")
+            != expected_coordinate_identities
+        ):
+            errors.append(
+                "schema-5 production meta joint coordinate provenance does not "
+                "match canonical results"
+            )
+        try:
+            derived_meta_counts = (
+                marginalize_coordinate_provenance_identity_counts(
+                    meta.get("coordinate_provenance_identity_counts")
+                )
+            )
+        except CorruptArtifactError as exc:
+            errors.append(
+                f"schema-5 production meta joint coordinate provenance is invalid: {exc}"
+            )
+        else:
+            if meta.get("coordinate_provenance_counts") != derived_meta_counts:
+                errors.append(
+                    "schema-5 production meta coordinate marginals are not derived "
+                    "from joint identities"
+                )
+        if (
+            meta.get("coordinate_provenance_counts")
+            != expected_coordinate_counts
+        ):
+            errors.append(
+                "schema-5 production meta coordinate provenance does not match "
+                "canonical results"
+            )
+        expected_endpoint = (
+            next(iter(expected_coordinate_counts["endpoint_generation"]))
+            if len(expected_coordinate_counts["endpoint_generation"]) == 1
+            else "mixed"
+        )
+        if meta.get("endpoint_generation") != expected_endpoint:
+            errors.append(
+                "schema-5 production meta endpoint_generation does not match "
+                "canonical results"
+            )
+        for count_field, scalar_field, integer in (
+            ("fleet_contract_sha256", "fleet_contract_sha256", False),
+            ("capacity_generation", "capacity_generation", True),
+            ("rollout_generation", "rollout_generation", True),
+        ):
+            expected = singleton_coordinate_provenance(
+                expected_coordinate_counts, count_field
+            )
+            if integer and expected is not None:
+                expected = int(expected)
+            if meta.get(scalar_field) != expected:
+                errors.append(
+                    f"schema-5 production meta {scalar_field} does not "
+                    "summarize canonical coordinate provenance"
+                )
+        release_value = singleton_coordinate_provenance(
+            expected_coordinate_counts,
+            "release_fleet_contract_sha256",
+        )
+        if (
+            len(
+                expected_coordinate_counts[
+                    "release_fleet_contract_sha256"
+                ]
+            )
+            != 1
+            or meta.get("release_fleet_contract_sha256") != release_value
+        ):
+            errors.append(
+                "schema-5 production meta release fleet lineage is not singleton"
+            )
     try:
         expected_serving = summarize_serving_provenance(cell, records)
     except CorruptArtifactError as exc:
@@ -3086,9 +3969,6 @@ def _artifact_policy_payload_errors(
             errors.append(
                 "schema-5 production meta effective_context does not match canonical results"
             )
-    rollout = meta.get("rollout_generation")
-    if not _is_integer(rollout, minimum=1):
-        errors.append("schema-5 production meta rollout_generation must be positive")
 
     return errors
 
@@ -3108,6 +3988,16 @@ def _meta_errors(
     current_schema, schema_errors = _schema_contract(meta, "meta")
     errors.extend(schema_errors)
     meta_schema = meta.get("schema_version") if current_schema else None
+    if (
+        meta_schema == ARTIFACT_SCHEMA_VERSION
+        and set(meta) != _SCHEMA5_CELL_META_FIELDS
+    ):
+        missing = sorted(_SCHEMA5_CELL_META_FIELDS - set(meta))
+        unexpected = sorted(set(meta) - _SCHEMA5_CELL_META_FIELDS)
+        errors.append(
+            "schema-5 meta has the wrong root fields: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
     if meta.get("cell_id") != cell.cell_id:
         errors.append("meta cell_id does not match manifest cell")
     if meta.get("config_hash") != cell.config_hash():
@@ -3139,6 +4029,10 @@ def _meta_errors(
             record.get("termination_status") == TERMINATION_PROTOCOL_CENSORED
             for record in records
         )
+        transport_censored_count = sum(
+            record.get("termination_status") == TERMINATION_TRANSPORT_CENSORED
+            for record in records
+        )
         if meta.get("completed_question_count") != completed_count:
             errors.append(
                 "meta completed_question_count does not match canonical results"
@@ -3155,6 +4049,37 @@ def _meta_errors(
                 errors.append(
                     "meta protocol_censored_question_count does not match canonical results"
                 )
+            if (
+                meta.get("transport_censored_question_count")
+                != transport_censored_count
+            ):
+                errors.append(
+                    "meta transport_censored_question_count does not match "
+                    "canonical results"
+                )
+            expected_transport_affected = sum(
+                transport_censored_coordinate_count([record]) > 0
+                for record in records
+            )
+            if (
+                meta.get("transport_affected_question_count")
+                != expected_transport_affected
+            ):
+                errors.append(
+                    "meta transport_affected_question_count does not match "
+                    "canonical results"
+                )
+            expected_transport_coordinates = (
+                transport_censored_coordinate_count(records)
+            )
+            if (
+                meta.get("transport_censored_coordinate_count")
+                != expected_transport_coordinates
+            ):
+                errors.append(
+                    "meta transport_censored_coordinate_count does not match "
+                    "canonical results"
+                )
             expected_schema_counts: dict[str, int] = {}
             for record in records:
                 schema_key = str(record.get("schema_version", "legacy"))
@@ -3169,9 +4094,79 @@ def _meta_errors(
                 errors.append(
                     "meta artifact_schema_counts does not match canonical results"
                 )
-        elif protocol_censored_count:
-            errors.append("schema-4 meta cannot certify protocol-censored results")
-        if completed_count + censored_count + protocol_censored_count != len(records):
+            row_identity_values = [
+                record.get("coordinate_provenance_identity_counts")
+                for record in records
+            ]
+            if records and all(
+                isinstance(value, list) and bool(value)
+                for value in row_identity_values
+            ):
+                try:
+                    expected_identities = (
+                        aggregate_coordinate_provenance_identity_counts(records)
+                    )
+                    expected_marginals = (
+                        marginalize_coordinate_provenance_identity_counts(
+                            expected_identities
+                        )
+                    )
+                except CorruptArtifactError as exc:
+                    errors.append(
+                        f"meta coordinate provenance cannot be derived: {exc}"
+                    )
+                else:
+                    if (
+                        meta.get("coordinate_provenance_identity_counts")
+                        != expected_identities
+                    ):
+                        errors.append(
+                            "meta joint coordinate provenance does not match "
+                            "canonical results"
+                        )
+                    if (
+                        meta.get("coordinate_provenance_counts")
+                        != expected_marginals
+                    ):
+                        errors.append(
+                            "meta coordinate provenance marginals do not match "
+                            "joint identities"
+                        )
+            else:
+                try:
+                    identities = canonical_coordinate_provenance_identity_counts(
+                        meta.get("coordinate_provenance_identity_counts"),
+                        require_nonempty=False,
+                    )
+                    marginals = canonical_coordinate_provenance_counts(
+                        meta.get("coordinate_provenance_counts"),
+                        require_nonempty=False,
+                    )
+                    derived = marginalize_coordinate_provenance_identity_counts(
+                        identities,
+                        require_nonempty=False,
+                    )
+                except CorruptArtifactError as exc:
+                    errors.append(
+                        f"meta coordinate provenance is invalid: {exc}"
+                    )
+                else:
+                    if identities or marginals != derived:
+                        errors.append(
+                            "meta coordinate provenance cannot certify rows without "
+                            "joint coordinate identities"
+                        )
+        elif protocol_censored_count or transport_censored_count:
+            errors.append(
+                "schema-4 meta cannot certify protocol/transport-censored results"
+            )
+        if (
+            completed_count
+            + censored_count
+            + protocol_censored_count
+            + transport_censored_count
+            != len(records)
+        ):
             errors.append("meta termination counts do not cover canonical results")
     model = get_model(cell.model_size)
     if meta.get("model_hf_id") != model.hf_id:
@@ -3293,6 +4288,8 @@ def _meta_errors(
         "thinking_budget_protocol_hash",
         "generation_censor_protocol_version",
         "generation_censor_protocol_hash",
+        "transport_censor_protocol_version",
+        "transport_censor_protocol_hash",
     )
     if not current_schema:
         current_reasoning_fields = (
@@ -3303,6 +4300,9 @@ def _meta_errors(
             "completed_question_count",
             "length_censored_question_count",
             "protocol_censored_question_count",
+            "transport_censored_question_count",
+            "transport_affected_question_count",
+            "transport_censored_coordinate_count",
             "artifact_schema_counts",
         )
         present = [
@@ -3375,6 +4375,12 @@ def _meta_errors(
                     "generation_censor_protocol_hash": (
                         GENERATION_CENSOR_PROTOCOL_HASH
                     ),
+                    "transport_censor_protocol_version": (
+                        TRANSPORT_CENSOR_PROTOCOL_VERSION
+                    ),
+                    "transport_censor_protocol_hash": (
+                        TRANSPORT_CENSOR_PROTOCOL_HASH
+                    ),
                 }
             )
         else:
@@ -3384,6 +4390,11 @@ def _meta_errors(
                     "generation_censor_protocol_version",
                     "generation_censor_protocol_hash",
                     "protocol_censored_question_count",
+                    "transport_censored_question_count",
+                    "transport_affected_question_count",
+                    "transport_censored_coordinate_count",
+                    "transport_censor_protocol_version",
+                    "transport_censor_protocol_hash",
                     "artifact_schema_counts",
                 )
                 if field in meta
@@ -3420,6 +4431,10 @@ def validate_completion_payload(
     verified_benchmark_contracts: FrozenBenchmarkContracts | None = None,
     verified_manifest: ManifestSnapshot | None = None,
     model_contract_path: str | os.PathLike | None = None,
+    trusted_generation_tuples: Iterable[
+        tuple[str, str, int, int, str]
+    ]
+    | None = None,
     _structural_only: bool = False,
 ) -> tuple[str, ...]:
     """Validate in-memory artifacts before publishing the completion metadata."""
@@ -3471,6 +4486,12 @@ def validate_completion_payload(
             if qid in seen:
                 errors.append(f"record {index}: duplicate qid {qid!r}")
             seen.add(qid)
+    if trusted_generation_tuples is not None:
+        errors.extend(
+            trusted_generation_catalog_errors(
+                records, trusted_generation_tuples
+            )
+        )
     missing = [qid for qid in qids if qid not in seen]
     if missing:
         errors.append(f"missing {len(missing)} expected qids")
@@ -3815,6 +4836,10 @@ def get_completion_status(
     code_version: str | None = None,
     server_pool_generation: str | None = None,
     model_contract_path: str | os.PathLike | None = None,
+    trusted_generation_tuples: Iterable[
+        tuple[str, str, int, int, str]
+    ]
+    | None = None,
 ) -> CompletionStatus:
     """Return the semantic state of one manifest cell without mutating its artifacts."""
     cdir = Path(cell_directory)
@@ -3857,6 +4882,10 @@ def get_completion_status(
         record.get("termination_status") == TERMINATION_PROTOCOL_CENSORED
         for record in parsed.records
     )
+    transport_censored_question_count = sum(
+        record.get("termination_status") == TERMINATION_TRANSPORT_CENSORED
+        for record in parsed.records
+    )
     valid_qids = set(parsed.qids)
     missing = tuple(qid for qid in qids if qid not in valid_qids)
     errors = list(parsed.validation_errors)
@@ -3877,6 +4906,12 @@ def get_completion_status(
             != artifact_policy.accepted_benchmark_contracts_sha256
         ):
             errors.append("schema-5 artifact policy benchmark pin mismatch")
+    if trusted_generation_tuples is not None:
+        errors.extend(
+            trusted_generation_catalog_errors(
+                parsed.records, trusted_generation_tuples
+            )
+        )
 
     # Active is an admission state, not a claim that no work has been retained yet.
     # Report the last fully valid JSONL rows so monitors expose real QID progress.  Do
@@ -3891,6 +4926,7 @@ def get_completion_status(
             completed_question_count=completed_question_count,
             length_censored_question_count=length_censored_question_count,
             protocol_censored_question_count=protocol_censored_question_count,
+            transport_censored_question_count=transport_censored_question_count,
             missing_qids=missing,
         )
 
@@ -3942,6 +4978,7 @@ def get_completion_status(
             completed_question_count=completed_question_count,
             length_censored_question_count=length_censored_question_count,
             protocol_censored_question_count=protocol_censored_question_count,
+            transport_censored_question_count=transport_censored_question_count,
             missing_qids=missing,
             duplicate_qids=parsed.duplicate_qids,
             unexpected_qids=parsed.unexpected_qids,
@@ -3960,6 +4997,7 @@ def get_completion_status(
             completed_question_count=completed_question_count,
             length_censored_question_count=length_censored_question_count,
             protocol_censored_question_count=protocol_censored_question_count,
+            transport_censored_question_count=transport_censored_question_count,
             failure=failure,
         )
 
@@ -3980,6 +5018,7 @@ def get_completion_status(
             completed_question_count=completed_question_count,
             length_censored_question_count=length_censored_question_count,
             protocol_censored_question_count=protocol_censored_question_count,
+            transport_censored_question_count=transport_censored_question_count,
             missing_qids=missing,
             next_eligible_at=next_eligible,
             eligible_for_retry=eligible,
@@ -3997,6 +5036,7 @@ def get_completion_status(
         completed_question_count=completed_question_count,
         length_censored_question_count=length_censored_question_count,
         protocol_censored_question_count=protocol_censored_question_count,
+        transport_censored_question_count=transport_censored_question_count,
         missing_qids=missing,
         eligible_for_retry=True,
     )

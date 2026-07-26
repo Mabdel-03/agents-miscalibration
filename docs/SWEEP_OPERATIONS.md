@@ -4,7 +4,7 @@
 > `full_sweep_v1`, `.dispatcher-v3`, `launch_dispatcher.py`, or legacy repair commands are
 > evidence/forensics documentation and must not be used for new admission. The
 > authoritative clean-rerun procedure is
-> [SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md); it uses three new schema-5
+> [SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md); it uses three new schema-5
 > run IDs, a sealed release, `.dispatcher-schema5-v1`, typed readiness gates, and a
 > transactional dual-controller resume.
 

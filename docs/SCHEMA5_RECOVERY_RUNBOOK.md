@@ -1,6 +1,12 @@
-# Durable schema-5 recovery and production runbook
+# Retired schema-5 v1.1-r1 recovery runbook
 
-This is the authoritative operator procedure for the clean schema-5 rerun. It is ordered
+> **Immutable historical record—do not execute these commands.** The r1 chain failed
+> deterministically during environment materialization and is sealed with
+> `requires_superseding_release`. Never submit its proposed `g0001` repair. The
+> authoritative procedure is
+> [SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md).
+
+This was the operator procedure for the superseded r1 attempt. It is ordered
 to preserve the legacy evidence before mutation and to keep production fail-closed until
 every readiness gate is backed by a checksummed artifact. Do not substitute the retired
 `.dispatcher-v3`, chunk drivers, editable environments, or old run IDs.

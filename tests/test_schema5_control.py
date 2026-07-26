@@ -11,11 +11,18 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from slurm import schema5_control as control
+from slurm import dispatch_sweeps as dispatcher
 from agents_scaling import runtime_integrity, snapshot_integrity
+from agents_scaling.serving import (
+    protected_capacity,
+    registry,
+    scheduler_safety,
+)
 
 
 CLUSTER_FIXTURES = Path(__file__).parent / "fixtures" / "slurm_schema5_cluster"
@@ -110,49 +117,105 @@ def make_pins(tmp_path: Path) -> dict:
     (release / "scripts" / "schema5_monitor.py").write_text(
         "#!/usr/bin/env python3\n", encoding="utf-8"
     )
+    (release / "scripts" / "render_schema5_recovery_chain_v12.py").write_text(
+        "#!/usr/bin/env python3\n", encoding="utf-8"
+    )
+    (release / "scripts" / "render_schema5_recovery_chain_v12.py").chmod(0o444)
     (release / "configs" / "schema5_monitoring.v1.json").write_text(
         "{}\n", encoding="utf-8"
     )
-    model_path, model_hash = _artifact(tmp_path / "model_contracts.v1.json", "{}\n")
-    fleet_profiles = []
-    for profile_name, replica_count in control.EXPECTED_FLEET_PROFILES.items():
-        model_size = profile_name.removesuffix("-long")
-        fleet_profiles.append(
-            {
-                "serving_profile": profile_name,
-                "model_size": model_size,
-                "model_revision": f"revision-{model_size}",
-                "tokenizer_id": f"tokenizer-{model_size}",
-                "tokenizer_revision": f"tokenizer-revision-{model_size}",
-                "replicas": [
-                    {
-                        "replica_id": f"schema5-v1--{profile_name}--r{index:02d}",
-                        "replica_index": index,
-                        "partition": "test-partition",
-                    }
-                    for index in range(replica_count)
-                ],
-            }
-        )
-    fleet_payload = {
-        "schema_version": 1,
-        "release_id": "sweep-recovery-schema5-v1.1",
-        "fleet_id": "schema5-v1",
-        "logical_replica_count": 22,
-        "allocated_gpu_count": 24,
-        "model_contract_sha256": model_hash,
-        "server_pool": {
-            "root_suffix": "server_pools/schema5-v1",
-            "no_requeue": True,
-        },
-        "profiles": fleet_profiles,
-    }
-    fleet_path, fleet_hash = _artifact(
-        tmp_path / "fleet_contract.v1.json", json.dumps(fleet_payload) + "\n"
+    config_root = Path(control.__file__).resolve().parent.parent / "configs"
+    model_source = config_root / "model_contracts.v1.json"
+    model_checksum_source = config_root / "model_contracts.v1.sha256"
+    model_target = tmp_path / "model_contracts.v1.json"
+    shutil.copy2(model_source, model_target)
+    shutil.copy2(
+        model_checksum_source, tmp_path / "model_contracts.v1.sha256"
+    )
+    model_path = str(model_target.resolve())
+    model_hash = _sha(model_target)
+    fleet_source = config_root / "schema5_fleet.v1.json"
+    fleet_target = tmp_path / "fleet_contract.v1.json"
+    shutil.copy2(fleet_source, fleet_target)
+    fleet_path = str(fleet_target.resolve())
+    fleet_hash = _sha(fleet_target)
+    (tmp_path / "fleet_contract.v1.sha256").write_text(
+        f"{fleet_hash}  fleet_contract.v1.json\n", encoding="utf-8"
     )
     results_root = tmp_path / "results"
     server_pool = results_root / "server_pools" / "schema5-v1"
     server_pool.mkdir(parents=True)
+    protected_marker_path = protected_capacity.canonical_marker_path(
+        results_root
+    )
+    protected_marker_path.parent.mkdir(parents=True)
+    protected_marker = {
+        "schema_version": protected_capacity.SCHEMA_VERSION,
+        "protocol": protected_capacity.PROTOCOL,
+        "passed": True,
+        "release_id": protected_capacity.RELEASE_ID,
+        "release_tag": protected_capacity.RELEASE_TAG,
+        "release_git_commit": "a" * 40,
+        "release_tag_object": "b" * 40,
+        "chain_namespace": protected_capacity.CHAIN_NAMESPACE,
+        "active_gpus": 24,
+        "warm_headroom_gpus": 4,
+        "cell_ceiling": 384,
+        "reserve_jobs": 64,
+        "submit_headroom": 448,
+        "cpu": 384,
+        "memory_mib": 384 * 4096,
+        "preempt_type": "preempt/qos",
+        "capacity_source": protected_capacity.CAPACITY_SOURCE,
+        "scheduler_cluster": "test_cluster",
+        "scheduler_account": "test_account",
+        "scheduler_user": "test_user",
+        "scheduler_max_submit_jobs": 500,
+        "partition_cpus": 384,
+        "partition_memory_mib": 384 * 4096,
+        "partition_gpus": 28,
+        "fleet_contract_sha256": fleet_hash,
+        "active_fleet_topology_sha256": "9" * 64,
+        "scientific_server_preempt_mode": "OFF",
+        "scientific_client_preempt_mode": "OFF",
+        "squeue_complete": True,
+        "sacct_complete": True,
+        "scheduler_evidence_id": "c" * 64,
+        "scheduler_evidence_sha256": "d" * 64,
+        "canary_id": "e" * 64,
+        "canary_evidence_sha256": "f" * 64,
+        "scientific_server_placements": [
+            {
+                "partition": "ou_bcs_normal",
+                "qos": "normal",
+                "partition_preempt_mode": "OFF",
+                "qos_preempt_mode": "OFF",
+                "active_serving_gpus": 24,
+                "warm_headroom_gpus": 4,
+            },
+        ],
+        "scientific_client_placements": [
+            {
+                "partition": "ou_bcs_normal",
+                "qos": "normal",
+                "partition_preempt_mode": "OFF",
+                "qos_preempt_mode": "OFF",
+                "slots": 384,
+                "cpus": 384,
+                "memory_mib": 384 * 4096,
+                "reserve_jobs": 64,
+                "submit_headroom": 448,
+            }
+        ],
+    }
+    protected_marker["marker_id"] = hashlib.sha256(
+        protected_capacity.canonical_bytes(protected_marker)
+    ).hexdigest()
+    protected_marker_path.write_bytes(
+        protected_capacity.canonical_bytes(protected_marker)
+    )
+    protected_marker_path.chmod(0o444)
+    protected_marker_sha256 = _sha(protected_marker_path)
 
     runs = []
     for run_id, cell_count in control.REQUIRED_RUNS.items():
@@ -200,6 +263,26 @@ def make_pins(tmp_path: Path) -> dict:
         prefix.chmod(0o555)
     (harness / "bin" / "python").chmod(0o555)
     environment_inventories = {}
+    conda_creation_tool = {
+        "path": str((tmp_path / "conda").resolve()),
+        "sha256": "1" * 64,
+    }
+    ownership_policy = {
+        "path": str((tmp_path / "environment_ownership_policy.v1.json").resolve()),
+        "sha256": "2" * 64,
+    }
+    integrity_normalization_policy = {
+        "path": str(
+            (
+                tmp_path
+                / "environment_integrity_normalization_policy.v1.json"
+            ).resolve()
+        ),
+        "sha256": "b" * 64,
+    }
+    conda_package_cache_sha256 = "3" * 64
+    capture_id = "4" * 64
+    capture_marker_sha256 = "5" * 64
     for role, prefix, manifest_path in (
         ("harness", harness, harness_manifest_path),
         ("serving", serving, serving_manifest_path),
@@ -207,21 +290,47 @@ def make_pins(tmp_path: Path) -> dict:
         inventory = runtime_integrity.directory_inventory(prefix)
         environment_inventories[role] = inventory
         runtime = {"fixture": True}
-        locks = {"conda_explicit": [], "pip_freeze_all": []}
+        locks = {
+            "conda_explicit": [
+                "@EXPLICIT",
+                "https://repo.example.invalid/fixture.conda#" + "6" * 64,
+            ],
+            "pip_freeze_all": [],
+        }
+        environment_seed = {
+            "capture_id": capture_id,
+            "capture_marker_sha256": capture_marker_sha256,
+            "prefix": str((tmp_path / "captured-seeds" / role).resolve()),
+            "normalized_content_inventory_sha256": (
+                "7" * 64 if role == "harness" else "8" * 64
+            ),
+        }
+        normalization_receipt = {
+            "id": "9" * 64 if role == "harness" else "a" * 64
+        }
+        installed_files = {
+            "inventory_sha256": inventory["inventory_sha256"],
+            "entry_count": inventory["entry_count"],
+            "file_count": inventory["file_count"],
+            "total_file_bytes": inventory["total_file_bytes"],
+        }
         payload = {
-            "schema_version": 1,
-            "release_id": "sweep-recovery-schema5-v1.1",
+            "schema_version": control.ENVIRONMENT_MANIFEST_SCHEMA_VERSION,
+            "release_id": control.PRODUCTION_RELEASE_ID,
             "role": role,
             "prefix": str(prefix),
             "sealed_read_only": True,
-            "offline_environment": {
-                "HF_HUB_OFFLINE": "1",
-                "TRANSFORMERS_OFFLINE": "1",
-                "HF_DATASETS_OFFLINE": "1",
-            },
+            "offline_environment": control.REQUIRED_OFFLINE_ENVIRONMENT,
+            "conda_creation_tool": conda_creation_tool,
+            "environment_seed": environment_seed,
+            "ownership_policy": ownership_policy,
+            "integrity_normalization_policy": integrity_normalization_policy,
+            "normalization_receipt": normalization_receipt,
+            "conda_package_cache_sha256": conda_package_cache_sha256,
             "runtime": runtime,
             "locks": locks,
             "release_package": None,
+            "installed_files": installed_files,
             "directory_inventory": inventory,
         }
         payload["environment_content_sha256"] = hashlib.sha256(
@@ -230,6 +339,14 @@ def make_pins(tmp_path: Path) -> dict:
                     "runtime": runtime,
                     "locks": locks,
                     "release_package": None,
+                    "environment_seed": environment_seed,
+                    "ownership_policy": ownership_policy,
+                    "integrity_normalization_policy": (
+                        integrity_normalization_policy
+                    ),
+                    "normalization_receipt": normalization_receipt,
+                    "conda_creation_tool": conda_creation_tool,
+                    "conda_package_cache_sha256": conda_package_cache_sha256,
                     "inventory_sha256": inventory["inventory_sha256"],
                 }
             )
@@ -240,17 +357,39 @@ def make_pins(tmp_path: Path) -> dict:
     harness_hash = _sha(harness_manifest_path)
     serving_hash = _sha(serving_manifest_path)
     source_tree_sha256 = control.sha256_tree(release)
+    transport_binding = (
+        control.scheduler_safety.expected_transport_uncertainty_binding()
+    )
+    transport_binding_sha256 = (
+        control.scheduler_safety.transport_uncertainty_binding_sha256(
+            transport_binding
+        )
+    )
     pins = {
-        "release_id": "sweep-recovery-schema5-v1.1",
+        "release_id": control.PRODUCTION_RELEASE_ID,
         "release_bundle_root": str(release_bundle),
         "release_bundle_id": "pending",
         "release_worktree": str(release),
         "git_commit": "a" * 40,
         "source_tree_sha256": source_tree_sha256,
+        "transport_uncertainty_binding": transport_binding,
+        "transport_uncertainty_binding_sha256": (
+            transport_binding_sha256
+        ),
         "model_contract_path": model_path,
         "model_contract_sha256": model_hash,
         "fleet_contract_path": fleet_path,
         "fleet_contract_sha256": fleet_hash,
+        "protected_capacity_marker_path": str(protected_marker_path),
+        "protected_capacity_marker_sha256": protected_marker_sha256,
+        "protected_capacity_marker_id": protected_marker["marker_id"],
+        "protected_client_partition": "ou_bcs_normal",
+        "protected_client_qos": "normal",
+        "protected_client_slots": 384,
+        "protected_client_cpus": 384,
+        "protected_client_memory_mib": 384 * 4096,
+        "protected_client_reserve_jobs": 64,
+        "protected_client_submit_headroom": 448,
         "harness_environment_prefix": str(harness),
         "harness_environment_manifest_path": str(harness_manifest_path),
         "harness_environment_sha256": harness_hash,
@@ -268,19 +407,44 @@ def make_pins(tmp_path: Path) -> dict:
     pins["fleet_supervisor_command"] = control.expected_fleet_supervisor_command(pins)
     materialization_paths = {
         "source_repository": str(release),
+        "environment_capture_root": str((tmp_path / "captured-seeds").resolve()),
         "release_worktree": str(release),
         "source_harness_prefix": str(harness) + ".source",
         "source_serving_prefix": str(serving) + ".source",
         "harness_prefix": str(harness),
         "serving_prefix": str(serving),
     }
+    environment_capture = {
+        "capture_id": capture_id,
+        "capture_marker_sha256": capture_marker_sha256,
+        "ownership_policy_path": ownership_policy["path"],
+        "ownership_policy_sha256": ownership_policy["sha256"],
+        "integrity_normalization_policy_path": (
+            integrity_normalization_policy["path"]
+        ),
+        "integrity_normalization_policy_sha256": (
+            integrity_normalization_policy["sha256"]
+        ),
+        "seed_prefixes": {
+            "harness": str((tmp_path / "captured-seeds" / "harness").resolve()),
+            "serving": str((tmp_path / "captured-seeds" / "serving").resolve()),
+        },
+        "stage_records": {
+            "harness": {"normalization_receipt_id": "9" * 64},
+            "serving": {"normalization_receipt_id": "a" * 64},
+        },
+    }
     materialization_stage_records = {}
     for role, filename in control.MATERIALIZATION_STAGE_FILENAMES.items():
         stage_payload = {
-            "schema_version": 2,
+            "schema_version": control.MATERIALIZATION_SCHEMA_VERSION,
             "release_id": pins["release_id"],
             "stage": role,
         }
+        if role == "package_cache":
+            stage_payload["content_inventory"] = {
+                "content_inventory_sha256": conda_package_cache_sha256
+            }
         stage_payload["record_sha256"] = hashlib.sha256(
             (
                 json.dumps(
@@ -312,14 +476,17 @@ def make_pins(tmp_path: Path) -> dict:
             "record_sha256": stage_payload["record_sha256"],
         }
     materialization_marker = {
-        "schema_version": 2,
+        "schema_version": control.MATERIALIZATION_SCHEMA_VERSION,
         "release_id": pins["release_id"],
-        "git_tag": pins["release_id"],
+        "git_tag": control.PRODUCTION_OPERATIONAL_TAG,
         "tag_commit": pins["git_commit"],
         "source_tree_sha256": pins["source_tree_sha256"],
         "paths": materialization_paths,
         "complete": True,
+        "publication_protocol": "stage_records_fsync_marker_last",
         "stage_records": materialization_stage_records,
+        "environment_capture": environment_capture,
+        "conda_creation_tool": conda_creation_tool,
     }
     materialization_marker["materialization_id"] = hashlib.sha256(
         (
@@ -349,7 +516,7 @@ def make_pins(tmp_path: Path) -> dict:
     )
     materialization_marker_path.chmod(0o444)
     materialization_binding = {
-        "schema_version": 2,
+        "schema_version": control.MATERIALIZATION_SCHEMA_VERSION,
         "release_id": pins["release_id"],
         "root": str(release_bundle.parent),
         "marker_path": str(materialization_marker_path),
@@ -359,12 +526,17 @@ def make_pins(tmp_path: Path) -> dict:
         "source_tree_sha256": pins["source_tree_sha256"],
         "paths": materialization_paths,
         "stage_records": materialization_stage_records,
+        "environment_capture": environment_capture,
+        "conda_creation_tool": conda_creation_tool,
+        "conda_package_cache_sha256": conda_package_cache_sha256,
     }
     fragment_fields = {
         "release_id",
         "release_worktree",
         "git_commit",
         "source_tree_sha256",
+        "transport_uncertainty_binding",
+        "transport_uncertainty_binding_sha256",
         "model_contract_path",
         "model_contract_sha256",
         "fleet_contract_path",
@@ -380,20 +552,21 @@ def make_pins(tmp_path: Path) -> dict:
     identity_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": control.RELEASE_BUNDLE_SCHEMA_VERSION,
                 "release_id": pins["release_id"],
                 "git": {
                     "git_commit": pins["git_commit"],
-                    "git_tag": pins["release_id"],
+                    "git_tag": control.PRODUCTION_OPERATIONAL_TAG,
                     "source_tree_sha256": pins["source_tree_sha256"],
                 },
                 "release_worktree": pins["release_worktree"],
                 "worktree_sealed_read_only": True,
                 "materialization": materialization_binding,
-                "offline_environment": {
-                    "HF_HUB_OFFLINE": "1",
-                    "TRANSFORMERS_OFFLINE": "1",
-                    "HF_DATASETS_OFFLINE": "1",
+                "offline_environment": control.REQUIRED_OFFLINE_ENVIRONMENT,
+                "transport_uncertainty": {
+                    "binding": transport_binding,
+                    "binding_sha256": transport_binding_sha256,
+                    "source_tree_sha256": pins["source_tree_sha256"],
                 },
                 "model_contract": {"path": model_path, "sha256": model_hash},
                 "fleet_contract": {
@@ -442,13 +615,17 @@ def make_pins(tmp_path: Path) -> dict:
         artifacts[path.name] = {"sha256": _sha(path), "size": path.stat().st_size}
         path.chmod(0o444)
     marker = {
-        "schema_version": 1,
+        "schema_version": control.RELEASE_BUNDLE_SCHEMA_VERSION,
         "release_id": pins["release_id"],
         "complete": True,
         "publication_protocol": "fsync_verify_marker_last",
         "artifacts": artifacts,
         "git_commit": pins["git_commit"],
         "source_tree_sha256": pins["source_tree_sha256"],
+        "transport_uncertainty_binding": transport_binding,
+        "transport_uncertainty_binding_sha256": (
+            transport_binding_sha256
+        ),
     }
     marker["release_bundle_id"] = control.sha256_value(marker)
     marker_path = release_bundle / control.RELEASE_COMPLETE_FILENAME
@@ -537,6 +714,34 @@ def _write_json_artifact(path: Path, payload: dict) -> dict:
     return {"name": path.stem, "path": str(path.resolve()), "sha256": _sha(path)}
 
 
+def _write_fleet_current_index(
+    control_state: dict, *, rollout_generation: int
+) -> None:
+    pool_root = Path(control_state["immutable"]["server_pool_root"])
+    directory = control.fleet_transactions.state_directory(pool_root)
+    ledger_path = control.fleet_transactions.ledger_path(
+        directory, rollout_generation
+    )
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(
+        json.dumps({"fixture_generation": rollout_generation}) + "\n",
+        encoding="utf-8",
+    )
+    current = {
+        "schema_version": control.fleet_transactions.STATE_SCHEMA_VERSION,
+        "pool_root": str(pool_root.resolve()),
+        "pool_id": "schema5-v1",
+        "fleet_sha256": control_state["immutable"]["fleet_contract_sha256"],
+        "current_generation": rollout_generation,
+        "ledger_path": str(ledger_path.resolve()),
+        "ledger_sha256": _sha(ledger_path),
+        "updated_at": 20.0,
+    }
+    _write_json_artifact(
+        directory / control.fleet_transactions.CURRENT_FILENAME, current
+    )
+
+
 def _snapshot_envelope(state_dir: Path, name: str) -> Path:
     root = state_dir / "readiness" / f"{name}.sealed"
     root.mkdir(parents=True)
@@ -608,6 +813,116 @@ def _snapshot_envelope(state_dir: Path, name: str) -> Path:
     return envelope
 
 
+def _client_capacity_evidence(control_state: dict) -> dict:
+    immutable = control_state["immutable"]
+    contract = protected_capacity.load_contract(
+        immutable["protected_capacity_marker_path"],
+        expected_release_git_commit=immutable["git_commit"],
+        expected_marker_id=immutable["protected_capacity_marker_id"],
+        expected_sha256=immutable["protected_capacity_marker_sha256"],
+    )
+
+    def runner(argv, *, timeout):
+        assert timeout == 30.0
+        args = list(argv)
+        if args == ["scontrol", "show", "config"]:
+            stdout = (
+                "KillWait                = 30 sec\n"
+                "PreemptMode             = REQUEUE\n"
+                "PreemptType             = preempt/qos\n"
+            )
+        elif args == [
+            "scontrol",
+            "show",
+            "partition",
+            "ou_bcs_normal",
+            "-o",
+        ]:
+            stdout = (
+                "PartitionName=ou_bcs_normal GraceTime=0 MaxTime=1-00:00:00 "
+                "PreemptMode=OFF State=UP TotalNodes=50 AllowQos=normal "
+                "TRES=cpu=384,mem=1572864M,node=50,billing=384,"
+                "gres/gpu=28\n"
+            )
+        elif args == [
+            "sacctmgr",
+            "-nP",
+            "show",
+            "qos",
+            "normal",
+            (
+                "format=Name,PreemptMode,MaxJobsPerUser,"
+                "MaxSubmitJobsPerUser,MaxTRESPerUser"
+            ),
+        ]:
+            stdout = "normal|OFF|||\n"
+        elif args == [
+            "sacctmgr",
+            "-nP",
+            "show",
+            "assoc",
+            "user=test_user",
+            "format=Cluster,Account,User,QOS,MaxJobs,MaxSubmitJobs",
+        ]:
+            stdout = (
+                "test_cluster|test_account|test_user|normal|384|500\n"
+            )
+        else:  # pragma: no cover - defensive fixture boundary
+            raise AssertionError(f"unexpected scheduler-safety command: {args!r}")
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    return protected_capacity.capture_live_client_capacity(
+        contract,
+        partition="ou_bcs_normal",
+        qos="normal",
+        required_time_limit_seconds=43_200,
+        runner=runner,
+        captured_timestamp=23.0,
+    )
+
+
+def _fleet_scheduler_safety(
+    control_state: dict,
+) -> tuple[dict, dict, dict[str, int]]:
+    requirements = {"ou_bcs_normal": 86_400}
+
+    def runner(argv, *, timeout):
+        del timeout
+        args = list(argv)
+        if args == ["scontrol", "show", "config"]:
+            stdout = (
+                "KillWait                = 30 sec\n"
+                "PreemptMode             = REQUEUE\n"
+                "PreemptType             = preempt/partition_prio\n"
+            )
+        elif (
+            len(args) == 5
+            and args[:3] == ["scontrol", "show", "partition"]
+            and args[3] in requirements
+            and args[4] == "-o"
+        ):
+            stdout = (
+                f"PartitionName={args[3]} GraceTime=0 "
+                "MaxTime=1-00:00:00 PreemptMode=OFF "
+                "State=UP TotalNodes=50\n"
+            )
+        else:  # pragma: no cover - defensive fixture boundary
+            raise AssertionError(f"unexpected fleet scheduler command: {args!r}")
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    evidence = scheduler_safety.capture_scheduler_safety_evidence(
+        list(requirements),
+        runner=runner,
+        captured_timestamp=23.0,
+    )
+    policy = scheduler_safety.validate_scheduler_safety_evidence(
+        evidence,
+        expected_partitions=list(requirements),
+        required_time_limits_seconds=requirements,
+    )
+    return evidence, policy, requirements
+
+
 def _gate_metrics(control_state: dict, gate: str) -> dict:
     if gate == "snapshot":
         return {
@@ -637,6 +952,32 @@ def _gate_metrics(control_state: dict, gate: str) -> dict:
             "repair_count": 0,
         }
     if gate == "fleet":
+        client_capacity = _client_capacity_evidence(control_state)
+        contract = protected_capacity.load_contract(
+            control_state["immutable"]["protected_capacity_marker_path"],
+            expected_release_git_commit=control_state["immutable"]["git_commit"],
+            expected_marker_id=control_state["immutable"][
+                "protected_capacity_marker_id"
+            ],
+            expected_sha256=control_state["immutable"][
+                "protected_capacity_marker_sha256"
+            ],
+        )
+        client_summary = (
+            protected_capacity.validate_live_client_capacity_evidence(
+                contract,
+                client_capacity,
+                partition="ou_bcs_normal",
+                qos="normal",
+                required_time_limit_seconds=43_200,
+            )
+        )
+        _scheduler_evidence, scheduler_policy, requirements = (
+            _fleet_scheduler_safety(control_state)
+        )
+        transport = control_state["immutable"][
+            "transport_uncertainty_binding"
+        ]
         return {
             "logical_replicas": 22,
             "allocated_gpus": 24,
@@ -654,6 +995,32 @@ def _gate_metrics(control_state: dict, gate: str) -> dict:
             "fleet_contract_sha256": control_state["immutable"][
                 "fleet_contract_sha256"
             ],
+            "client_capacity_evidence_id": client_summary["evidence_id"],
+            "client_partition": client_summary["partition"],
+            "client_qos": client_summary["qos"],
+            "client_cpu_limit": client_summary["cpu_limit"],
+            "client_memory_limit_mib": client_summary["memory_limit_mib"],
+            "client_max_submit_jobs": client_summary["max_submit_jobs"],
+            "transport_censor_protocol_version": transport[
+                "transport_censor_protocol_version"
+            ],
+            "transport_censor_protocol_hash": transport[
+                "transport_censor_protocol_hash"
+            ],
+            "transport_uncertainty_binding_sha256": control_state[
+                "immutable"
+            ]["transport_uncertainty_binding_sha256"],
+            "scheduler_safety_evidence_id": scheduler_policy[
+                "scheduler_evidence_id"
+            ],
+            "scheduler_safety_policy_id": scheduler_policy["policy_id"],
+            "scheduler_safety_policy_contract_id": scheduler_policy[
+                "policy_contract_id"
+            ],
+            "scheduler_preemptible_partitions": scheduler_policy[
+                "preemptible_partitions"
+            ],
+            "scheduler_partition_time_requirements_seconds": requirements,
         }
     if gate == "context_audit":
         return {
@@ -671,20 +1038,49 @@ def _gate_metrics(control_state: dict, gate: str) -> dict:
             "schema5_complete_cells": 41,
             "context_incidents": 0,
             "protocol_incidents": 0,
+            "transport_incidents": 0,
             "truncation_incidents": 0,
             "provenance_failures": 0,
+            "trusted_generation_failures": 0,
         }
     if gate == "email_test":
+        request_identity = {
+            "immutable_sha256": control_state["immutable_sha256"],
+            "chain_id": "a" * 64,
+            "request_id": "b" * 64,
+            "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
+            "release_git_commit": control_state["immutable"]["git_commit"],
+            "recipient": control_state["alert_email"],
+            "challenge_generation": 1,
+            "challenge_nonce": "c" * 64,
+            "challenge_salt": "d" * 64,
+        }
         return {
             "recipient": control_state["alert_email"],
             "delivery_succeeded": True,
             "returncode": 0,
+            "acknowledged": True,
+            "chain_id": request_identity["chain_id"],
+            "request_id": request_identity["request_id"],
+            "release_tag": request_identity["release_tag"],
+            "release_git_commit": request_identity[
+                "release_git_commit"
+            ],
+            "challenge_generation": request_identity[
+                "challenge_generation"
+            ],
+            "challenge_id": control.schema5_email_ack.challenge_id_for(
+                request_identity
+            ),
+            "challenge_verifier": "e" * 64,
+            "acknowledged_at": "1970-01-01T00:00:23Z",
         }
     raise AssertionError(gate)
 
 
 def attest_all_non_scheduler(state_dir: Path) -> None:
     current = control.load_control(state_dir)
+    _write_fleet_current_index(current, rollout_generation=1)
     immutable_hash = current["immutable_sha256"]
     seven_run = next(
         run
@@ -697,6 +1093,8 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
         _write_json_artifact(source, payload)
         return {"name": name, "path": str(source.resolve()), "sha256": _sha(source)}
 
+    smoke_catalog = None
+    smoke_attempt_binding = None
     for index, gate in enumerate(control.REQUIRED_GATES[:-1]):
         evidence = state_dir / "readiness" / f"{gate}.json"
         evidence.parent.mkdir(exist_ok=True)
@@ -762,25 +1160,59 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                     fleet_contract = json.loads(
                         Path(current["immutable"]["fleet_contract_path"]).read_text()
                     )
+                    (
+                        fleet_scheduler_evidence,
+                        fleet_scheduler_policy,
+                        _fleet_requirements,
+                    ) = _fleet_scheduler_safety(current)
+                    probe_transport_provenance = {
+                        "transport_censor_protocol_version": current[
+                            "immutable"
+                        ]["transport_uncertainty_binding"][
+                            "transport_censor_protocol_version"
+                        ],
+                        "transport_censor_protocol_hash": current[
+                            "immutable"
+                        ]["transport_uncertainty_binding"][
+                            "transport_censor_protocol_hash"
+                        ],
+                        "transport_uncertainty_binding_sha256": current[
+                            "immutable"
+                        ]["transport_uncertainty_binding_sha256"],
+                        "source_tree_sha256": current["immutable"][
+                            "source_tree_sha256"
+                        ],
+                    }
                     replica_rows = []
                     registry_references = []
                     replica_number = 0
                     for profile in fleet_contract["profiles"]:
                         for replica in profile["replicas"]:
                             replica_id = replica["replica_id"]
+                            runtime_profile = control.get_serving_profile(
+                                profile["serving_profile"]
+                            )
                             host = f"node-{replica_number:02d}"
                             port = 20_000 + replica_number
                             job_id = str(9_000 + replica_number)
                             registry_path = (
-                                state_dir
-                                / "readiness"
-                                / "registries"
-                                / f"{replica_id}.json"
+                                Path(current["immutable"]["server_pool_root"])
+                                / "servers"
+                                / profile["serving_profile"]
+                                / f"{host}_{port}.json"
                             )
                             registry = {
                                 "replica_id": replica_id,
                                 "replica_index": replica["replica_index"],
+                                "server_pool_id": "schema5-v1",
                                 "serving_profile": profile["serving_profile"],
+                                "model_size": profile["model_size"],
+                                "hf_id": runtime_profile.hf_id,
+                                "served_model_name": (
+                                    runtime_profile.served_model_name
+                                ),
+                                "max_model_len": runtime_profile.max_model_len,
+                                "tp_size": runtime_profile.tp_size,
                                 "slurm_job_id": job_id,
                                 "host": host,
                                 "port": port,
@@ -794,6 +1226,16 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                                 "fleet_contract_sha256": current["immutable"][
                                     "fleet_contract_sha256"
                                 ],
+                                "release_fleet_contract_sha256": current["immutable"][
+                                    "fleet_contract_sha256"
+                                ],
+                                "capacity_generation": 1,
+                                "rollout_generation": 1,
+                                "model_revision": profile["model_revision"],
+                                "tokenizer_id": profile["tokenizer_id"],
+                                "tokenizer_revision": profile[
+                                    "tokenizer_revision"
+                                ],
                             }
                             _write_json_artifact(registry_path, registry)
                             registry_reference = {
@@ -802,11 +1244,49 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                                 "sha256": _sha(registry_path),
                             }
                             registry_references.append(registry_reference)
+                            intent_token = f"{replica_number + 1:032x}"
+                            script_path = (
+                                control.fleet_transactions.state_directory(
+                                    current["immutable"]["server_pool_root"]
+                                )
+                                / "sbatch"
+                                / "g000001"
+                                / f"{replica_id}.{intent_token}.sbatch"
+                            )
+                            script_path.parent.mkdir(parents=True, exist_ok=True)
+                            script_path.write_text(
+                                "#!/bin/bash\ntrue\n", encoding="utf-8"
+                            )
+                            script_path.chmod(0o444)
+                            script_sha256 = _sha(script_path)
+                            comment = control.fleet_transactions.intent_comment(
+                                pool_id="schema5-v1",
+                                profile=profile["serving_profile"],
+                                replica_id=replica_id,
+                                rollout_generation=1,
+                                intent_token=intent_token,
+                                fleet_sha256=current["immutable"][
+                                    "fleet_contract_sha256"
+                                ],
+                            )
+                            raw_scontrol = (
+                                f"JobId={job_id} "
+                                f"JobName={replica['scheduler_job_name']} "
+                                "JobState=RUNNING Reason=None Requeue=0 "
+                                f"Comment={shlex.quote(comment)} "
+                                f"NodeList={host} "
+                                f"Command={shlex.quote(str(script_path.resolve()))}\n"
+                            )
                             replica_rows.append(
                                 {
                                     "replica_id": replica_id,
                                     "serving_profile": profile["serving_profile"],
+                                    "ledger_generation": 1,
+                                    "intent_token": intent_token,
+                                    "attempt_state": "committed",
                                     "slurm_job_id": job_id,
+                                    "comment": comment,
+                                    "job_name": replica["scheduler_job_name"],
                                     "partition": replica["partition"],
                                     "node": host,
                                     "host": host,
@@ -835,27 +1315,97 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                                         "fleet_contract_sha256": current["immutable"][
                                             "fleet_contract_sha256"
                                         ],
+                                        "release_fleet_contract_sha256": current[
+                                            "immutable"
+                                        ]["fleet_contract_sha256"],
+                                        "capacity_generation": 1,
+                                        "rollout_generation": 1,
+                                        "spooled_script_sha256": script_sha256,
+                                    },
+                                    "local_script_path": str(
+                                        script_path.resolve()
+                                    ),
+                                    "local_script_sha256": script_sha256,
+                                    "spooled_script_sha256": script_sha256,
+                                    "spooled_script_proof": {
+                                        "argv": [
+                                            "scontrol",
+                                            "write",
+                                            "batch_script",
+                                            job_id,
+                                            "-",
+                                        ],
+                                        "local_path": str(
+                                            script_path.resolve()
+                                        ),
+                                        "local_sha256": script_sha256,
+                                        "observed_sha256": script_sha256,
+                                        "observed_bytes": script_path.stat().st_size,
+                                        "exact_match": True,
+                                    },
+                                    "scontrol": {
+                                        "argv": [
+                                            "scontrol",
+                                            "show",
+                                            "job",
+                                            "-o",
+                                            job_id,
+                                        ],
+                                        "job_id": job_id,
+                                        "job_state": "RUNNING",
+                                        "reason": None,
+                                        "comment": comment,
+                                        "job_name": replica[
+                                            "scheduler_job_name"
+                                        ],
+                                        "node": host,
+                                        "command": str(script_path.resolve()),
+                                        "effective_requeue": 0,
+                                        "raw_output": raw_scontrol,
+                                        "raw_output_sha256": hashlib.sha256(
+                                            raw_scontrol.encode("utf-8")
+                                        ).hexdigest(),
                                     },
                                     "http": {
                                         "health_status": 200,
                                         "models_status": 200,
-                                        "model_ids": [profile["serving_profile"]],
-                                        "expected_model": profile["serving_profile"],
+                                        "model_ids": [
+                                            runtime_profile.served_model_name
+                                        ],
+                                        "expected_model": (
+                                            runtime_profile.served_model_name
+                                        ),
                                         "probe_started_timestamp": 22.0,
                                         "probe_completed_timestamp": 23.0,
                                         "healthy": True,
                                     },
+                                    "probe_transport_provenance": (
+                                        probe_transport_provenance
+                                    ),
                                     "registry_path": str(registry_path.resolve()),
                                     "registry_sha256": _sha(registry_path),
                                 }
                             )
                             replica_number += 1
                     raw_fleet = {
-                        "schema_version": 1,
+                        "schema_version": 3,
                         "kind": "raw_fleet_health_probe",
                         "passed": True,
                         "immutable_sha256": immutable_hash,
                         "server_pool_root": current["immutable"]["server_pool_root"],
+                        "rollout_generation": 1,
+                        "isolated_foreign_scheduler_job_ids": [],
+                        "sealed_successful_handoff_terminal_job_ids": [],
+                        "ignored_terminal_job_ids": [],
+                        "client_capacity_contract": _client_capacity_evidence(
+                            current
+                        ),
+                        "fleet_scheduler_safety_evidence": (
+                            fleet_scheduler_evidence
+                        ),
+                        "fleet_scheduler_safety_policy": (
+                            fleet_scheduler_policy
+                        ),
                         "captured_timestamp": 23.0,
                         "replicas": replica_rows,
                         "referenced_artifacts": registry_references,
@@ -938,6 +1488,70 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                         "referenced_artifacts": [source_reference(source_name, raw)],
                     }
                 elif gate == "smoke_runs":
+                    fleet_binding = control.effective_fleet_contract_binding(
+                        current, verify_files=True
+                    )
+                    if smoke_catalog is None:
+                        fleet_contract = json.loads(
+                            Path(fleet_binding["path"]).read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                        endpoint_job = 98_000
+                        for profile_index, profile in enumerate(
+                            fleet_contract["profiles"]
+                        ):
+                            for replica_index, _replica in enumerate(
+                                profile["replicas"]
+                            ):
+                                _seal_control_catalog_endpoint(
+                                    state_dir,
+                                    profile_index=profile_index,
+                                    replica_index=replica_index,
+                                    rollout_generation=1,
+                                    job_id=str(endpoint_job),
+                                )
+                                endpoint_job += 1
+                        smoke_catalog = (
+                            control.refresh_trusted_generation_catalog(
+                                state_dir,
+                                target_rollout_generation=1,
+                                now=19.0,
+                            )
+                        )
+                        smoke_attempt_binding = {
+                            "protocol": (
+                                "schema5-v1.2-r2-smoke-attempt-binding-v1"
+                            ),
+                            "attempt_id": (
+                                "a000001-g000001-c000001-"
+                                f"{smoke_catalog.catalog_id[:16]}"
+                            ),
+                            "attempt_ordinal": 1,
+                            "immutable_sha256": immutable_hash,
+                            "capacity_generation": 1,
+                            "rollout_generation": 1,
+                            "fleet_contract_sha256": fleet_binding["sha256"],
+                            "release_fleet_contract_sha256": current[
+                                "immutable"
+                            ]["fleet_contract_sha256"],
+                            "trusted_catalog_id": smoke_catalog.catalog_id,
+                        }
+                    assert smoke_catalog is not None
+                    assert smoke_attempt_binding is not None
+                    catalog_binding = {
+                        "catalog_id": smoke_catalog.catalog_id,
+                        "marker_path": str(smoke_catalog.marker_path),
+                        "marker_sha256": smoke_catalog.marker_sha256,
+                        "inventory_sha256": smoke_catalog.inventory_sha256,
+                        "catalog_payload_sha256": smoke_catalog.catalog_sha256,
+                        "allowed_generation_tuple_count": len(
+                            smoke_catalog.allowed_generation_tuples
+                        ),
+                    }
+                    allowed_tuple = next(
+                        iter(smoke_catalog.allowed_generation_tuples)
+                    )
                     smoke_contract = {
                         "long_32b_smoke": ("schema5_smoke_32b_long_v1", 15),
                         "selective_long_smoke": (
@@ -973,16 +1587,31 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                         },
                     }
                     run_id, expected_cells = smoke_contract[name]
+                    path = (
+                        state_dir
+                        / "readiness"
+                        / control.SMOKE_ATTEMPT_BASE_NAME
+                        / "attempts"
+                        / smoke_attempt_binding["attempt_id"]
+                        / "artifacts"
+                        / f"{name}.json"
+                    )
                     zero_fields = {
                         "context_incidents": 0,
                         "protocol_incidents": 0,
+                        "transport_incidents": 0,
                         "truncation_incidents": 0,
                         "provenance_failures": 0,
+                        "trusted_generation_failures": 0,
                         "semantic_validation_failures": 0,
                         "top_level_length_censored_qids": 0,
                         "top_level_protocol_censored_qids": 0,
+                        "top_level_transport_censored_qids": 0,
+                        "transport_affected_qids": 0,
+                        "transport_censored_coordinates": 0,
                         "auxiliary_length_censored_draws": 0,
                         "auxiliary_protocol_censored_draws": 0,
+                        "auxiliary_transport_censored_draws": 0,
                     }
                     payload = {
                         **identity,
@@ -990,6 +1619,12 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                         "expected_cells": expected_cells,
                         "schema5_complete_cells": expected_cells,
                         **zero_fields,
+                        "transport_censor_protocol_version": (
+                            control.TRANSPORT_CENSOR_PROTOCOL_VERSION
+                        ),
+                        "transport_censor_protocol_hash": (
+                            control.TRANSPORT_CENSOR_PROTOCOL_HASH
+                        ),
                         "concurrency": 1,
                         "resumable": True,
                         "execution_halted": False,
@@ -1009,13 +1644,27 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                             "model_contract_sha256": current["immutable"][
                                 "model_contract_sha256"
                             ],
-                            "fleet_contract_sha256": current["immutable"][
+                            "fleet_contract_sha256": fleet_binding["sha256"],
+                            "release_fleet_contract_sha256": current["immutable"][
                                 "fleet_contract_sha256"
+                            ],
+                            "capacity_generation": fleet_binding[
+                                "capacity_generation"
                             ],
                             "server_pool_root": current["immutable"][
                                 "server_pool_root"
                             ],
-                            "rollout_generation": 1,
+                            "rollout_generation": (
+                                int(current["rollout_generation"]) + 1
+                                if isinstance(
+                                    current.get("capacity", {}).get(
+                                        "active_transition"
+                                    ),
+                                    dict,
+                                )
+                                else 1
+                            ),
+                            "trusted_generation_catalog": catalog_binding,
                         },
                         "suite_identity": {
                             "run_id": run_id,
@@ -1026,48 +1675,223 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                             "lineage_sha256": "d" * 64,
                             "serving_profile_counts": smoke_profiles[name],
                             "estimand_excluded": True,
+                            "smoke_attempt": smoke_attempt_binding,
                         },
-                        "cells": [
+                        "cells": [],
+                    }
+                    for cell_index in range(expected_cells):
+                        cell_id = f"{run_id}-{cell_index}"
+                        result_path = (
+                            Path(current["immutable"]["results_root"])
+                            / control.SMOKE_ATTEMPT_RUNS_NAME
+                            / smoke_attempt_binding["attempt_id"]
+                            / run_id
+                            / "cells"
+                            / cell_id
+                            / "results.jsonl"
+                        )
+                        result_path.parent.mkdir(parents=True, exist_ok=True)
+                        result_path.write_text(
+                            json.dumps(
+                                {
+                                    "coordinate_provenance_identity_counts": [
+                                        {
+                                            "release_fleet_contract_sha256": (
+                                                allowed_tuple[0]
+                                            ),
+                                            "fleet_contract_sha256": (
+                                                allowed_tuple[1]
+                                            ),
+                                            "capacity_generation": (
+                                                allowed_tuple[2]
+                                            ),
+                                            "rollout_generation": (
+                                                allowed_tuple[3]
+                                            ),
+                                            "endpoint_generation": (
+                                                allowed_tuple[4]
+                                            ),
+                                            "count": 1,
+                                        }
+                                    ]
+                                },
+                                sort_keys=True,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                        result_path.chmod(0o444)
+                        payload["cells"].append(
                             {
-                                "cell_id": f"{run_id}-{cell_index}",
+                                "cell_id": cell_id,
                                 "status": "complete",
                                 "valid_qids": 1,
                                 "expected_qids": 1,
                                 "context_incidents": 0,
                                 "protocol_incidents": 0,
+                                "transport_incidents": 0,
                                 "truncation_incidents": 0,
                                 "provenance_failures": 0,
                                 "top_level_length_censored_qids": 0,
                                 "top_level_protocol_censored_qids": 0,
+                                "top_level_transport_censored_qids": 0,
+                                "transport_affected_qids": 0,
+                                "transport_censored_coordinates": 0,
                                 "auxiliary_length_censored_draws": 0,
                                 "auxiliary_protocol_censored_draws": 0,
+                                "auxiliary_transport_censored_draws": 0,
                                 "provenance_errors": [],
+                                "trusted_generation_errors": [],
+                                "results_artifact": {
+                                    "path": str(result_path.resolve()),
+                                    "sha256": _sha(result_path),
+                                    "row_count": 1,
+                                },
                                 "semantic_errors": [],
                                 "failure": None,
                             }
-                            for cell_index in range(expected_cells)
-                        ],
-                    }
+                        )
                 elif gate == "email_test":
                     receipt_metrics = _gate_metrics(current, gate)
-                    raw_receipt = {
-                        "schema_version": 1,
-                        "kind": "mail_submission_receipt",
+                    source_root = state_dir / "readiness" / "sources"
+                    active_path = (
+                        source_root / "active_email_challenge.json"
+                    ).resolve()
+                    request_path = (
+                        source_root / "email_ack_request.json"
+                    ).resolve()
+                    acknowledgement_path = (
+                        source_root / "email_acknowledgement.json"
+                    ).resolve()
+                    request_payload = {
+                        "schema_version": 2,
+                        "kind": "schema5_email_ack_request",
                         "passed": True,
                         "immutable_sha256": immutable_hash,
-                        "metrics": receipt_metrics,
-                        "submitted_timestamp": 23.0,
-                        "subject": "[agents-scaling] schema-5 readiness delivery test",
-                        "message_sha256": "e" * 64,
-                        "stdout": "",
-                        "stderr": "",
-                        "referenced_artifacts": [],
+                        "chain_id": receipt_metrics["chain_id"],
+                        "request_id": receipt_metrics["request_id"],
+                        "release_tag": receipt_metrics["release_tag"],
+                        "release_git_commit": receipt_metrics[
+                            "release_git_commit"
+                        ],
+                        "recipient": current["alert_email"],
+                        "challenge_generation": receipt_metrics[
+                            "challenge_generation"
+                        ],
+                        "challenge_nonce": "c" * 64,
+                        "challenge_salt": "d" * 64,
+                        "challenge_verifier_algorithm": (
+                            control.schema5_email_ack
+                            .EMAIL_CHALLENGE_VERIFIER_ALGORITHM
+                        ),
+                        "challenge_verifier": receipt_metrics[
+                            "challenge_verifier"
+                        ],
+                        "challenge_id": receipt_metrics["challenge_id"],
+                        "active_challenge": str(active_path),
+                        "acknowledgement": str(
+                            acknowledgement_path
+                        ),
+                        "delivery_succeeded": True,
+                        "returncode": 0,
+                        "delivery_attempts": [
+                            {
+                                "attempt": 1,
+                                "returncode": 0,
+                                "timed_out": False,
+                            }
+                        ],
+                        "submitted_timestamp": 22.0,
+                        "expires_timestamp": 3_622.0,
+                        "subject": (
+                            control.schema5_email_ack.EMAIL_CHALLENGE_SUBJECT
+                        ),
+                        "body_template": (
+                            control.schema5_email_ack.EMAIL_CHALLENGE_BODY_TEMPLATE
+                        ),
+                        "acknowledgement_tool": {
+                            "path": str(Path(control.__file__).resolve()),
+                            "sha256": _sha(Path(control.__file__).resolve()),
+                        },
+                    }
+                    request_ref = source_reference(
+                        "email_ack_request", request_payload
+                    )
+                    active_stable = {
+                        "schema_version": 2,
+                        "kind": "schema5_email_active_challenge",
+                        "passed": True,
+                        "immutable_sha256": immutable_hash,
+                        "chain_id": receipt_metrics["chain_id"],
+                        "request_id": receipt_metrics["request_id"],
+                        "release_tag": receipt_metrics["release_tag"],
+                        "release_git_commit": receipt_metrics[
+                            "release_git_commit"
+                        ],
+                        "recipient": current["alert_email"],
+                        "challenge_generation": receipt_metrics[
+                            "challenge_generation"
+                        ],
+                        "challenge_id": receipt_metrics["challenge_id"],
+                        "request": request_ref["path"],
+                        "request_sha256": request_ref["sha256"],
+                        "acknowledgement": str(
+                            acknowledgement_path
+                        ),
+                        "supersedes": None,
+                        "activated_timestamp": 22.0,
+                    }
+                    active_payload = {
+                        **active_stable,
+                        "active_challenge_id": (
+                            control.schema5_email_ack.identity_sha256(
+                                active_stable
+                            )
+                        ),
+                    }
+                    active_ref = source_reference(
+                        "active_email_challenge", active_payload
+                    )
+                    acknowledgement_stable = {
+                        "schema_version": 2,
+                        "kind": "schema5_email_acknowledgement",
+                        "passed": True,
+                        "immutable_sha256": immutable_hash,
+                        "chain_id": receipt_metrics["chain_id"],
+                        "request_id": receipt_metrics["request_id"],
+                        "release_tag": receipt_metrics["release_tag"],
+                        "release_git_commit": receipt_metrics[
+                            "release_git_commit"
+                        ],
+                        "recipient": current["alert_email"],
+                        "challenge_generation": receipt_metrics[
+                            "challenge_generation"
+                        ],
+                        "challenge_id": receipt_metrics["challenge_id"],
+                        "request": request_ref["path"],
+                        "request_sha256": request_ref["sha256"],
+                        "operator": "test-operator",
+                        "acknowledged_at": receipt_metrics["acknowledged_at"],
+                        "acknowledged_timestamp": 23.0,
+                    }
+                    acknowledgement_payload = {
+                        **acknowledgement_stable,
+                        "acknowledgement_id": (
+                            control.schema5_email_ack.identity_sha256(
+                                acknowledgement_stable
+                            )
+                        ),
                     }
                     payload = {
                         **identity,
                         "metrics": receipt_metrics,
                         "referenced_artifacts": [
-                            source_reference("mail_submission_receipt", raw_receipt)
+                            active_ref,
+                            request_ref,
+                            source_reference(
+                                "email_acknowledgement",
+                                acknowledgement_payload,
+                            ),
                         ],
                     }
                 else:
@@ -1108,6 +1932,519 @@ def reconcile_clean(state_dir: Path, *, now: float = 40.0) -> dict:
 def make_ready(state_dir: Path) -> None:
     attest_all_non_scheduler(state_dir)
     assert reconcile_clean(state_dir)["passed"] is True
+
+
+def _seal_authorization_fixture(path: Path, value: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o444)
+    return path.resolve()
+
+
+def attest_test_production_authorizations(
+    state_dir: Path, *, now: float = 46.0
+) -> None:
+    """Publish sealed synthetic verifier outputs for control-plane unit tests."""
+
+    current = control.load_control(state_dir)
+    if all(
+        current["readiness"][gate].get("passed") is True
+        for gate in control.PRODUCTION_AUTHORIZATION_GATES
+    ):
+        return
+    root = state_dir / "production-authorization-fixture"
+    manifest_path = root / "RECOVERY_CHAIN_SCHEMA5_V1_2_R2.json"
+    chain_id = "1" * 64
+    manifest = {
+        "schema_version": 1,
+        "release_id": control.PRODUCTION_RELEASE_ID,
+        "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
+        "release_git_commit": current["immutable"]["git_commit"],
+        "release_tag_object": "b" * 40,
+        "chain_id": chain_id,
+    }
+    if not manifest_path.exists():
+        _seal_authorization_fixture(manifest_path, manifest)
+    manifest_sha = _sha(manifest_path)
+
+    qualification_root = root / "schema5_throughput_qualification_v1"
+    fixed_marker = qualification_root / "THROUGHPUT_QUALIFICATION_COMPLETE.json"
+    attempt_root = qualification_root / "attempts" / "attempt-1"
+    attempt_marker = attempt_root / fixed_marker.name
+    pointer_path = qualification_root / "attempt-pointers" / "000001-attempt-1.json"
+    catalog_id = control.load_trusted_generation_catalog(
+        state_dir
+    ).catalog_id
+    attempt_id = f"g000001-c000001-{catalog_id}"
+    qualification_id = "3" * 64
+    qualification_marker = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r2-throughput-qualification-v1",
+        "passed": True,
+        "release_id": control.PRODUCTION_RELEASE_ID,
+        "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
+        "release_git_commit": current["immutable"]["git_commit"],
+        "release_tag_object": "b" * 40,
+        "chain_id": chain_id,
+        "manifest": str(manifest_path.resolve()),
+        "manifest_sha256": manifest_sha,
+        "qualification_id": qualification_id,
+    }
+    if not fixed_marker.exists():
+        _seal_authorization_fixture(fixed_marker, qualification_marker)
+        _seal_authorization_fixture(attempt_marker, qualification_marker)
+    readiness_generation = {
+        "rollout_generation": 1,
+        "capacity_generation": 1,
+        "catalog_id": catalog_id,
+        "fleet_contract_sha256": current["immutable"][
+            "fleet_contract_sha256"
+        ],
+        "release_fleet_contract_sha256": current["immutable"][
+            "fleet_contract_sha256"
+        ],
+    }
+    pointer = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r2-throughput-qualification-attempt-pointer-v1"
+        ),
+        "chain_id": chain_id,
+        "attempt_id": attempt_id,
+        "readiness_generation": readiness_generation,
+        "pointer_id": "4" * 64,
+    }
+    if not pointer_path.exists():
+        _seal_authorization_fixture(pointer_path, pointer)
+    current_attempt = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r2-throughput-qualification-current-attempt-v1"
+        ),
+        "attempt_id": attempt_id,
+        "pointer": str(pointer_path.resolve()),
+        "pointer_sha256": _sha(pointer_path),
+        "pointer_id": pointer["pointer_id"],
+        "current_id": "5" * 64,
+    }
+    current_attempt_path = qualification_root / "CURRENT_ATTEMPT.json"
+    if not current_attempt_path.exists():
+        _seal_authorization_fixture(current_attempt_path, current_attempt)
+
+    watchdog_drill = root / "EXTERNAL_WATCHDOG_KILL_DRILL_COMPLETE.json"
+    watchdog_ready = root / "WATCHDOG_READY.json"
+    drill_id = "6" * 64
+    watchdog_id = "7" * 64
+    drill_payload = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r2-external-watchdog-drill-v1",
+        "drill_id": drill_id,
+        "control_sha256": current["immutable_sha256"],
+    }
+    watchdog_payload = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r2-external-watchdog-v1",
+        "marker_id": watchdog_id,
+        "control_sha256": current["immutable_sha256"],
+    }
+    if not watchdog_drill.exists():
+        _seal_authorization_fixture(watchdog_drill, drill_payload)
+        _seal_authorization_fixture(watchdog_ready, watchdog_payload)
+
+    reports = {
+        "verify-throughput-qualification": {
+            "passed": True,
+            "chain_id": chain_id,
+            "manifest": str(manifest_path.resolve()),
+            "qualification_marker": str(fixed_marker.resolve()),
+            "attempt_marker": str(attempt_marker.resolve()),
+            "attempt_id": attempt_id,
+            "attempt_pointer": str(pointer_path.resolve()),
+            "qualification_id": qualification_id,
+            "cells": 768,
+            "qids": 15_360,
+            "steady_384_seconds": 7_200.0,
+            "throughput_qids_per_day": 201_994.0,
+            "chain_verification": {"passed": True, "chain_id": chain_id},
+        },
+        "verify-watchdog-readiness": {
+            "passed": True,
+            "chain_id": chain_id,
+            "manifest": str(manifest_path.resolve()),
+            "control_sha256": current["immutable_sha256"],
+            "external_watchdog_drill": {
+                "marker": str(watchdog_drill.resolve()),
+                "marker_sha256": _sha(watchdog_drill),
+                "marker_size": watchdog_drill.stat().st_size,
+                "protocol": drill_payload["protocol"],
+                "drill_id": drill_id,
+            },
+            "watchdog_ready": {
+                "marker": str(watchdog_ready.resolve()),
+                "marker_sha256": _sha(watchdog_ready),
+                "marker_size": watchdog_ready.stat().st_size,
+                "protocol": watchdog_payload["protocol"],
+                "marker_id": watchdog_id,
+            },
+        },
+    }
+
+    def verifier_runner(argv, environment, timeout):
+        assert argv[0] == str(
+            Path(current["immutable"]["harness_environment_prefix"])
+            / "bin"
+            / "python"
+        )
+        assert argv[1] == "-I"
+        assert argv[2] == str(
+            Path(current["immutable"]["release_worktree"])
+            / control.PRODUCTION_AUTHORIZATION_VERIFIER
+        )
+        assert argv[4:] == ["--chain-manifest", str(manifest_path.resolve())]
+        assert timeout == control.PRODUCTION_AUTHORIZATION_VERIFIER_TIMEOUT_SECONDS
+        assert environment["HF_HUB_OFFLINE"] == "1"
+        assert "PYTHONPATH" not in environment
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps(reports[argv[3]]), ""
+        )
+
+    refreshed = control.load_control(state_dir)
+    if (
+        refreshed["readiness"]["throughput_qualification"].get("passed")
+        is not True
+    ):
+        control.attest_gate(
+            state_dir,
+            gate="throughput_qualification",
+            evidence_path=fixed_marker,
+            chain_manifest=manifest_path,
+            now=now,
+            verifier_runner=verifier_runner,
+        )
+    refreshed = control.load_control(state_dir)
+    if refreshed["readiness"]["external_watchdog"].get("passed") is not True:
+        control.attest_gate(
+            state_dir,
+            gate="external_watchdog",
+            evidence_path=watchdog_ready,
+            chain_manifest=manifest_path,
+            now=now + 0.1,
+            verifier_runner=verifier_runner,
+        )
+
+
+def _seal_control_catalog_endpoint(
+    state_dir: Path,
+    *,
+    profile_index: int = 0,
+    replica_index: int = 0,
+    rollout_generation: int = 1,
+    job_id: str = "98765",
+) -> registry.EndpointHistoryRecord:
+    current = control.load_control(state_dir)
+    immutable = current["immutable"]
+    binding = control.effective_fleet_contract_binding(
+        current, verify_files=True
+    )
+    contract = json.loads(
+        Path(binding["path"]).read_text(encoding="utf-8")
+    )
+    profile = contract["profiles"][profile_index]
+    replica = profile["replicas"][replica_index]
+    runtime = control.get_serving_profile(profile["serving_profile"])
+    pool = Path(immutable["server_pool_root"]).resolve()
+    entry = registry.ServerEntry(
+        model_size=profile["model_size"],
+        hf_id=runtime.hf_id,
+        host="catalog-node-001",
+        port=19_876,
+        slurm_job_id=job_id,
+        started_at=41.0,
+        serving_profile=profile["serving_profile"],
+        served_model_name=runtime.served_model_name,
+        max_model_len=runtime.max_model_len,
+        tp_size=runtime.tp_size,
+        release_id=immutable["release_id"],
+        environment_hash=immutable["serving_environment_sha256"],
+        model_revision=profile["model_revision"],
+        tokenizer_id=profile["tokenizer_id"],
+        tokenizer_revision=profile["tokenizer_revision"],
+        model_contract_sha256=immutable["model_contract_sha256"],
+        fleet_contract_sha256=binding["sha256"],
+        server_pool_id="schema5-v1",
+        replica_id=replica["replica_id"],
+        replica_index=replica["replica_index"],
+        release_fleet_contract_sha256=immutable[
+            "fleet_contract_sha256"
+        ],
+        capacity_generation=binding["capacity_generation"],
+        rollout_generation=rollout_generation,
+    )
+    registry.write_standby_entry(pool, entry)
+    intent_token = f"{int(job_id):032x}"[-32:]
+    script = (
+        pool
+        / ".fleet-transactions-v1"
+        / "sbatch"
+        / f"g{rollout_generation:06d}"
+        / f"{entry.replica_id}.{intent_token}.sbatch"
+    )
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script_payload = "#!/bin/bash\ntrue\n"
+    if script.exists():
+        assert (
+            not script.is_symlink()
+            and script.read_text(encoding="utf-8") == script_payload
+            and script.stat().st_mode & 0o222 == 0
+        )
+    else:
+        script.write_text(script_payload, encoding="utf-8")
+        script.chmod(0o444)
+    script_sha256 = _sha(script)
+    spooled_provenance = {
+        "run_root": str(pool),
+        "server_pool_id": entry.server_pool_id,
+        "replica_id": entry.replica_id,
+        "replica_index": entry.replica_index,
+        "release_id": entry.release_id,
+        "environment_hash": entry.environment_hash,
+        "model_revision": entry.model_revision,
+        "tokenizer_id": entry.tokenizer_id,
+        "tokenizer_revision": entry.tokenizer_revision,
+        "model_contract_sha256": entry.model_contract_sha256,
+        "release_fleet_contract_sha256": (
+            entry.release_fleet_contract_sha256
+        ),
+        "fleet_contract_sha256": entry.fleet_contract_sha256,
+        "capacity_generation": entry.capacity_generation,
+        "rollout_generation": entry.rollout_generation,
+        "effective_context_limit": entry.max_model_len,
+        "tp_size": entry.tp_size,
+        "spooled_script_sha256": script_sha256,
+    }
+    comment = control.fleet_transactions.intent_comment(
+        pool_id="schema5-v1",
+        profile=str(entry.serving_profile),
+        replica_id=str(entry.replica_id),
+        rollout_generation=rollout_generation,
+        intent_token=intent_token,
+        fleet_sha256=str(entry.fleet_contract_sha256),
+    )
+    return registry.seal_endpoint_history(
+        pool,
+        entry,
+        release_fleet_contract_sha256=str(
+            entry.release_fleet_contract_sha256
+        ),
+        capacity_generation=int(entry.capacity_generation),
+        rollout_generation=rollout_generation,
+        ledger_generation=rollout_generation,
+        intent_token=intent_token,
+        intent_state="committed",
+        committed_at=40.0,
+        local_script_path=script,
+        local_script_sha256=script_sha256,
+        spooled_script=script.read_bytes(),
+        spooled_provenance=spooled_provenance,
+        scheduler_job_name=replica["scheduler_job_name"],
+        scheduler_comment=comment,
+        sealed_at=42.0,
+    )
+
+
+def _ensure_resume_generation_catalog(
+    state_dir: Path, *, now: float
+) -> control.TrustedGenerationCatalog:
+    current = control.load_control(state_dir)
+    rollout_generation = int(current["rollout_generation"]) + 1
+    try:
+        existing = control.load_trusted_generation_catalog(state_dir)
+        control._validate_resume_catalog_authority(
+            state_dir,
+            current,
+            target_rollout_generation=rollout_generation,
+            catalog=existing,
+        )
+        return existing
+    except (control.ControlError, control.GenerationCatalogError):
+        pass
+    fleet = json.loads(
+        Path(
+            control.effective_fleet_contract_binding(
+                current, verify_files=True
+            )["path"]
+        ).read_text(encoding="utf-8")
+    )
+    job_number = 98_000 + rollout_generation * 1_000
+    for profile_index, profile in enumerate(fleet["profiles"]):
+        for replica_index, _replica in enumerate(profile["replicas"]):
+            _seal_control_catalog_endpoint(
+                state_dir,
+                profile_index=profile_index,
+                replica_index=replica_index,
+                rollout_generation=rollout_generation,
+                job_id=str(job_number),
+            )
+            job_number += 1
+    return control.refresh_trusted_generation_catalog(
+        state_dir,
+        target_rollout_generation=rollout_generation,
+        now=now,
+    )
+
+
+def test_control_publishes_and_reloads_exact_trusted_generation_catalog(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    published = _ensure_resume_generation_catalog(state_dir, now=50.0)
+    loaded = control.load_trusted_generation_catalog(state_dir)
+    assert loaded.catalog_id == published.catalog_id
+    assert loaded.marker_sha256 == published.marker_sha256
+    endpoint = next(
+        identity
+        for identity in loaded.allowed_generation_tuples
+        if identity[3] == 1
+    )
+    release, fleet, capacity, rollout, endpoint_generation = (
+        endpoint
+    )
+    assert (
+        release,
+        fleet,
+        capacity + 1,
+        rollout,
+        endpoint_generation,
+    ) not in loaded.allowed_generation_tuples
+
+
+def test_resume_fails_closed_when_trusted_generation_pointer_is_missing(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    current_pointer = (
+        control.trusted_generation_catalog_root(state_dir) / "CURRENT.json"
+    )
+    current_pointer.unlink()
+
+    with pytest.raises(control.ReadinessError, match="CURRENT.json is missing"):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 50.0),
+            submit_runner=lambda _argv: pytest.fail(
+                "resume must not submit without generation authority"
+            ),
+            now=50.0,
+        )
+
+    current = control.load_control(state_dir)
+    assert current["desired_state"] == "paused"
+    assert current["rollout_generation"] == 0
+    assert current["resume_intent"] is None
+
+
+@pytest.mark.parametrize("finalization_state", ["complete", "blocked"])
+def test_resume_requires_finalization_state_exactly_idle_before_submission(
+    tmp_path, monkeypatch, finalization_state
+):
+    state_dir, _ = initialize(tmp_path)
+    current = control.load_control(state_dir)
+    current["finalization"]["state"] = finalization_state
+    monkeypatch.setattr(
+        control,
+        "load_control",
+        lambda *_args, **_kwargs: copy.deepcopy(current),
+    )
+
+    with pytest.raises(
+        control.ReadinessError,
+        match="finalization state exactly idle",
+    ):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: pytest.fail(
+                "scheduler queried through non-idle finalization"
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "controller submitted through non-idle finalization"
+            ),
+            now=50.0,
+        )
+
+
+def test_resume_authority_rejects_catalog_missing_one_fleet_endpoint(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    trusted = _ensure_resume_generation_catalog(state_dir, now=50.0)
+    current = control.load_control(state_dir)
+    target = sorted(
+        identity
+        for identity in trusted.allowed_generation_tuples
+        if identity[3] == 1
+    )
+    assert len(target) > 1
+    incomplete = control.TrustedGenerationCatalog(
+        marker_path=trusted.marker_path,
+        marker_sha256=trusted.marker_sha256,
+        inventory_sha256=trusted.inventory_sha256,
+        catalog_sha256=trusted.catalog_sha256,
+        catalog_id=trusted.catalog_id,
+        entries=trusted.entries,
+        generations=trusted.generations,
+        allowed_generation_tuples=frozenset(target[:-1]),
+    )
+
+    with pytest.raises(control.ReadinessError, match="every exact fleet endpoint"):
+        control._validate_resume_catalog_authority(
+            state_dir,
+            current,
+            target_rollout_generation=1,
+            catalog=incomplete,
+        )
+
+
+def _rewrite_rehashed_fleet_evidence(state_dir: Path, mutate) -> None:
+    """Rewrite every reference hash to model a self-consistent evidence forgery."""
+
+    current = control.load_control(state_dir)
+    outer_path = Path(current["readiness"]["fleet"]["evidence"])
+    outer = json.loads(outer_path.read_text(encoding="utf-8"))
+    wrapper_ref = next(
+        item
+        for item in outer["artifacts"]
+        if item["name"] == "fleet_health_report"
+    )
+    wrapper_path = Path(wrapper_ref["path"])
+    wrapper = json.loads(wrapper_path.read_text(encoding="utf-8"))
+    raw_ref = wrapper["referenced_artifacts"][0]
+    raw_path = Path(raw_ref["path"])
+    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    mutate(raw)
+    raw_path.write_text(
+        json.dumps(raw, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    raw_ref["sha256"] = _sha(raw_path)
+    wrapper_path.write_text(
+        json.dumps(wrapper, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    wrapper_ref["sha256"] = _sha(wrapper_path)
+    outer_path.write_text(
+        json.dumps(outer, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    current["readiness"]["fleet"]["sha256"] = _sha(outer_path)
+    control._save_control(state_dir, current, now=49.0)
 
 
 def complete_drill_marker(state_dir: Path, *, now: float = 45.0) -> dict:
@@ -1260,14 +2597,27 @@ def complete_drill_marker(state_dir: Path, *, now: float = 45.0) -> dict:
         "drill_state_sha256": _sha(state_dir / control.DRILL_STATE_FILENAME),
     }
     control._atomic_write_json(state_dir / control.DRILL_COMPLETE_FILENAME, marker)
+    _ensure_resume_generation_catalog(state_dir, now=now + 0.01)
+    attest_test_production_authorizations(state_dir, now=now + 0.1)
     return marker
 
 
-def resume_ready(state_dir: Path, *, now: float = 50.0) -> tuple[dict, tuple]:
+def resume_ready(
+    state_dir: Path,
+    *,
+    now: float = 50.0,
+    accounting_jobs: tuple[control.SchedulerJob, ...] = (),
+) -> tuple[dict, tuple]:
     if not (state_dir / control.DRILL_COMPLETE_FILENAME).exists():
         complete_drill_marker(state_dir, now=now - 1)
-    jobs = []
-    identifiers = iter(("700", "701", "702", "703", "704", "705"))
+    _ensure_resume_generation_catalog(state_dir, now=now - 0.75)
+    attest_test_production_authorizations(state_dir, now=now - 0.5)
+    jobs = list(accounting_jobs)
+    identifiers = iter(
+        ("1700", "1701", "1702", "1703", "1704", "1705")
+        if accounting_jobs
+        else ("700", "701", "702", "703", "704", "705")
+    )
 
     def scheduler():
         return control.SchedulerSnapshot(tuple(jobs), now)
@@ -1360,6 +2710,36 @@ def start_live_drill(state_dir: Path, *, now: float = 50.0):
         )
         state = control.load_drill_state(state_dir)
     return jobs, snapshot, submit
+
+
+def _watchdog_deployment_evidence(state_dir: Path, path: Path) -> Path:
+    current = control.load_control(state_dir)
+    value = {
+        "schema_version": 1,
+        "protocol": "schema5-external-watchdog-deployment-evidence-v1",
+        "passed": True,
+        "release_id": control.PRODUCTION_RELEASE_ID,
+        "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
+        "release_git_commit": current["immutable"]["git_commit"],
+        "release_tag_object": "b" * 40,
+        "chain_namespace": "schema5-v1.2-r2",
+        "deployment_id": "1" * 64,
+        "watchdog_code_sha256": "2" * 64,
+        "immutable_release_sha256": "3" * 64,
+        "control_sha256": current["immutable_sha256"],
+        "liveness_email": current["alert_email"],
+        "forced_command_only": True,
+        "timer_seconds": 300,
+        "systemd_service_loaded": True,
+        "systemd_timer_active": True,
+        "systemd_timer_enabled": True,
+    }
+    value["evidence_id"] = control._watchdog_self_hash(
+        value, "evidence_id"
+    )
+    path.write_bytes(control._watchdog_canonical_json(value))
+    path.chmod(0o444)
+    return path
 
 
 def recover_drill_role(
@@ -1490,6 +2870,347 @@ def test_resume_fails_closed_then_increments_rollout_once(tmp_path):
         now=60.0,
     )
     assert again["rollout_generation"] == 1
+
+
+def test_direct_resume_rejects_missing_production_authorizations_before_scheduler(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    current = control.load_control(state_dir)
+    for gate in control.PRODUCTION_AUTHORIZATION_GATES:
+        current["readiness"][gate] = {
+            "passed": False,
+            "evidence": None,
+            "attested_at": None,
+        }
+    control._save_control(state_dir, current, now=49.0)
+    with pytest.raises(
+        control.ReadinessError, match="production authorization"
+    ):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: pytest.fail(
+                "scheduler queried without production authorization"
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "controller submitted without production authorization"
+            ),
+            now=50.0,
+        )
+
+
+def test_production_authorization_chain_tamper_blocks_resume(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    record = control.load_control(state_dir)["readiness"][
+        "throughput_qualification"
+    ]
+    manifest = Path(record["chain_manifest"]["path"])
+    manifest.chmod(0o644)
+    manifest.write_bytes(manifest.read_bytes() + b" ")
+    manifest.chmod(0o444)
+    with pytest.raises(
+        control.ReadinessError, match="chain manifest.*drifted"
+    ):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: pytest.fail(
+                "scheduler queried after chain tamper"
+            ),
+            now=50.0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("rollout_generation", 2),
+        ("capacity_generation", 2),
+        ("fleet_contract_sha256", "d" * 64),
+        ("release_fleet_contract_sha256", "e" * 64),
+        ("catalog_id", "f" * 64),
+    ),
+)
+def test_initial_launch_rejects_mismatched_qualification_generation(
+    tmp_path,
+    field,
+    replacement,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir, now=49.0)
+    current = control.load_control(state_dir)
+    pin = control._load_resume_catalog_pin(
+        state_dir, current, target_rollout_generation=1
+    )
+    control._validate_initial_qualification_generation(
+        current,
+        resume_catalog_pin=pin,
+        target_rollout_generation=1,
+    )
+    current["readiness"]["throughput_qualification"][
+        "qualification_generation"
+    ][field] = replacement
+    with pytest.raises(
+        control.ReadinessError,
+        match="initial production launch throughput qualification",
+    ):
+        control._validate_initial_qualification_generation(
+            current,
+            resume_catalog_pin=pin,
+            target_rollout_generation=1,
+        )
+
+
+def test_initial_resume_rejects_catalog_published_after_qualification(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    complete_drill_marker(state_dir, now=49.0)
+    qualified = control.load_control(state_dir)["readiness"][
+        "throughput_qualification"
+    ]["qualification_generation"]["catalog_id"]
+    _seal_control_catalog_endpoint(
+        state_dir,
+        profile_index=0,
+        replica_index=0,
+        rollout_generation=1,
+        job_id="199999",
+    )
+    replacement = control.refresh_trusted_generation_catalog(
+        state_dir, target_rollout_generation=1, now=49.5
+    )
+    assert replacement.catalog_id != qualified
+    submitted = []
+    with pytest.raises(
+        control.ReadinessError,
+        match="initial production launch throughput qualification",
+    ):
+        control.resume_control(
+            state_dir,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 50.0),
+            submit_runner=lambda argv: submitted.append(argv)
+            or subprocess.CompletedProcess(argv, 0, "700\n", ""),
+            now=50.0,
+        )
+    assert submitted == []
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+
+
+def test_running_admission_rehashes_production_authorization_artifacts(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    record = control.load_control(state_dir)["readiness"][
+        "external_watchdog"
+    ]
+    marker = Path(record["artifacts"]["watchdog_ready"]["path"])
+    marker.chmod(0o644)
+    value = json.loads(marker.read_text(encoding="utf-8"))
+    value["marker_id"] = "8" * 64
+    marker.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    marker.chmod(0o444)
+    with pytest.raises(
+        control.ReadinessError, match="watchdog_ready.*drifted"
+    ):
+        control.admission_contract_from_state(state_dir)
+
+
+def test_production_authorization_record_replay_from_other_control_is_rejected(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path / "first")
+    make_ready(state_dir)
+    complete_drill_marker(state_dir)
+    other_state, _ = initialize(tmp_path / "second")
+    make_ready(other_state)
+    complete_drill_marker(other_state)
+    current = control.load_control(state_dir)
+    foreign = control.load_control(other_state)["readiness"][
+        "throughput_qualification"
+    ]
+    current["readiness"]["throughput_qualification"] = copy.deepcopy(foreign)
+    with pytest.raises(
+        control.ReadinessError, match="authorization.*invalid|journal-bound"
+    ):
+        control._save_control(state_dir, current, now=49.0)
+
+
+def test_production_authorization_rejects_wrong_chain_verifier_output(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    attest_test_production_authorizations(state_dir)
+    current = control.load_control(state_dir)
+    record = copy.deepcopy(
+        current["readiness"]["throughput_qualification"]
+    )
+    current["readiness"]["throughput_qualification"] = {
+        "passed": False,
+        "evidence": None,
+        "attested_at": None,
+    }
+    control._save_control(state_dir, current, now=47.0)
+
+    def wrong_chain(argv, _environment, _timeout):
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(
+                {
+                    "passed": True,
+                    "chain_id": "8" * 64,
+                    "manifest": record["chain_manifest"]["path"],
+                }
+            ),
+            "",
+        )
+
+    with pytest.raises(control.ReadinessError, match="exact chain manifest"):
+        control.attest_gate(
+            state_dir,
+            gate="throughput_qualification",
+            evidence_path=Path(
+                record["artifacts"]["qualification_marker"]["path"]
+            ),
+            chain_manifest=Path(record["chain_manifest"]["path"]),
+            verifier_runner=wrong_chain,
+            now=48.0,
+        )
+
+
+def test_production_authorization_two_phase_commit_discards_stale_verification(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    attest_test_production_authorizations(state_dir)
+    current = control.load_control(state_dir)
+    valid_record = copy.deepcopy(
+        current["readiness"]["throughput_qualification"]
+    )
+    current["readiness"]["throughput_qualification"] = {
+        "passed": False,
+        "evidence": None,
+        "attested_at": None,
+    }
+    control._save_control(state_dir, current, now=47.0)
+
+    def mutate_during_verification(*_args, **_kwargs):
+        changed = control.load_control(state_dir)
+        changed["alert_email"] = "changed-during-verification@example.invalid"
+        control._save_control(state_dir, changed, now=47.5)
+        return copy.deepcopy(valid_record)
+
+    monkeypatch.setattr(
+        control,
+        "_prepare_production_authorization_record",
+        mutate_during_verification,
+    )
+    with pytest.raises(control.ReadinessError, match="control changed"):
+        control.attest_production_authorization(
+            state_dir,
+            gate="throughput_qualification",
+            evidence_path=Path(
+                valid_record["artifacts"]["qualification_marker"]["path"]
+            ),
+            chain_manifest=Path(valid_record["chain_manifest"]["path"]),
+            now=48.0,
+        )
+    assert (
+        control.load_control(state_dir)["readiness"][
+            "throughput_qualification"
+        ]["passed"]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "running_requeue",
+        "scheduler_identity",
+        "spooled_bytes",
+        "spooled_environment",
+        "http_model",
+        "registry_context",
+        "unmapped_terminal",
+        "rollout_generation",
+    ),
+)
+def test_fleet_gate_rejects_self_consistently_rehashed_provenance(
+    tmp_path, mutation
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+
+    def mutate(raw):
+        row = raw["replicas"][0]
+        if mutation == "running_requeue":
+            row["scontrol"]["effective_requeue"] = 1
+        elif mutation == "scheduler_identity":
+            row["job_name"] = "forged-fleet-name"
+            row["scontrol"]["job_name"] = "forged-fleet-name"
+        elif mutation == "spooled_bytes":
+            forged = "0" * 64
+            row["local_script_sha256"] = forged
+            row["spooled_script_sha256"] = forged
+            row["spooled_script_proof"]["local_sha256"] = forged
+            row["spooled_script_proof"]["observed_sha256"] = forged
+        elif mutation == "spooled_environment":
+            row["spooled_provenance"]["environment_hash"] = "0" * 64
+        elif mutation == "http_model":
+            row["http"]["expected_model"] = "invented-model"
+            row["http"]["model_ids"] = ["invented-model"]
+        elif mutation == "registry_context":
+            registry_path = Path(row["registry_path"])
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            registry["max_model_len"] += 1
+            registry_path.write_text(
+                json.dumps(registry, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            row["registry_sha256"] = _sha(registry_path)
+            reference = next(
+                item
+                for item in raw["referenced_artifacts"]
+                if item["name"] == f"registry_{row['replica_id']}"
+            )
+            reference["sha256"] = row["registry_sha256"]
+        elif mutation == "unmapped_terminal":
+            raw["ignored_terminal_job_ids"] = ["999999"]
+        elif mutation == "rollout_generation":
+            raw["rollout_generation"] += 1
+            for row in raw["replicas"]:
+                row["ledger_generation"] = raw["rollout_generation"]
+                parsed = control.fleet_transactions.parse_intent_comment(
+                    row["comment"]
+                )
+                row["comment"] = control.fleet_transactions.intent_comment(
+                    pool_id=parsed["pool"],
+                    profile=parsed["profile"],
+                    replica_id=parsed["replica"],
+                    rollout_generation=raw["rollout_generation"],
+                    intent_token=parsed["intent"],
+                    fleet_sha256=parsed["fleet"],
+                )
+                row["scontrol"]["comment"] = row["comment"]
+        else:  # pragma: no cover - exhaustive parameter contract.
+            raise AssertionError(mutation)
+
+    _rewrite_rehashed_fleet_evidence(state_dir, mutate)
+    with pytest.raises(control.ReadinessError, match="fleet|resume gates"):
+        control.validate_readiness(
+            control.load_control(state_dir),
+            state_dir=state_dir,
+            now=50.0,
+        )
 
 
 def test_resume_waits_for_both_scheduler_visible_jobs_without_duplicate_submission(
@@ -1887,6 +3608,12 @@ def test_immutable_topology_is_closed_and_commands_have_no_override_surface(tmp_
     assert sum(control.REQUIRED_RUNS.values()) == 22_680
     assert sum(control.REQUIRED_RUN_QIDS.values()) == 4_524_660
     assert pins["dispatcher_command"] == control.expected_dispatcher_command(pins)
+    partition_argument = pins["dispatcher_command"].index("--cell-partition")
+    assert (
+        pins["dispatcher_command"][partition_argument + 1]
+        == control.PRODUCTION_CELL_PARTITION
+        == "ou_bcs_normal"
+    )
     assert pins[
         "fleet_supervisor_command"
     ] == control.expected_fleet_supervisor_command(pins)
@@ -1983,6 +3710,25 @@ def test_prepare_pins_derives_exact_authority_and_initializes_idempotently(
     capsys.readouterr()
 
 
+def test_prepare_pins_rejects_stale_canonical_server_pool(tmp_path):
+    expected = make_preparable_pins(tmp_path)
+    state_dir = Path(expected["results_root"]) / control.CONTROL_STATE_DIRNAME
+    canonical_pool = Path(expected["server_pool_root"])
+    stale_registration = canonical_pool / "registrations" / "stale.json"
+    stale_registration.parent.mkdir()
+    stale_registration.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(
+        control.ImmutablePinError,
+        match="server pool must be empty before v1.2 pin publication",
+    ):
+        control.build_immutable_pins(
+            state_dir=state_dir,
+            release_bundle_root=Path(expected["release_bundle_root"]),
+            hf_home=Path(expected["hf_home"]),
+        )
+
+
 def test_prepare_pins_rejects_semantically_drifted_run_authority(tmp_path):
     expected = make_preparable_pins(tmp_path)
     run = expected["runs"][0]
@@ -2057,6 +3803,110 @@ def test_release_bundle_rejects_bound_materialization_stage_drift(tmp_path):
         control.validate_immutable_pins(pins, verify_files=True)
 
 
+def test_v12_release_and_environment_schema_downgrades_are_rejected(tmp_path):
+    pins = make_pins(tmp_path)
+    assert pins["release_id"] == "sweep-recovery-schema5-v1.2"
+    assert control.PRODUCTION_OPERATIONAL_TAG == "sweep-recovery-schema5-v1.2-r2"
+
+    downgraded_pins = copy.deepcopy(pins)
+    downgraded_pins["release_id"] = "sweep-recovery-schema5-v1.1"
+    with pytest.raises(control.ImmutablePinError, match="downgrade"):
+        control.validate_immutable_pins(downgraded_pins, verify_files=False)
+
+    harness_manifest = json.loads(
+        Path(pins["harness_environment_manifest_path"]).read_text(encoding="utf-8")
+    )
+    downgraded_environment = copy.deepcopy(harness_manifest)
+    downgraded_environment["schema_version"] = 1
+    with pytest.raises(control.ImmutablePinError, match="sealed schema 3"):
+        control._validate_schema3_environment_manifest_static(
+            downgraded_environment, role="harness"
+        )
+
+    provenance_drift = copy.deepcopy(harness_manifest)
+    provenance_drift["ownership_policy"]["sha256"] = "b" * 64
+    with pytest.raises(control.ImmutablePinError, match="content identity"):
+        control._validate_schema3_environment_manifest_static(
+            provenance_drift, role="harness"
+        )
+
+    integrity_policy_drift = copy.deepcopy(harness_manifest)
+    integrity_policy_drift["integrity_normalization_policy"]["sha256"] = "c" * 64
+    with pytest.raises(control.ImmutablePinError, match="content identity"):
+        control._validate_schema3_environment_manifest_static(
+            integrity_policy_drift, role="harness"
+        )
+
+
+def test_release_bundle_rejects_materialization_schema_downgrade(tmp_path):
+    pins = make_pins(tmp_path)
+    bundle = Path(pins["release_bundle_root"])
+    identity_path = bundle / control.RELEASE_IDENTITY_FILENAME
+    identity_checksum = bundle / (control.RELEASE_IDENTITY_FILENAME + ".sha256")
+    marker_path = bundle / control.RELEASE_COMPLETE_FILENAME
+
+    bundle.chmod(0o755)
+    identity_path.chmod(0o644)
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["materialization"]["schema_version"] = 2
+    identity_path.write_text(
+        json.dumps(identity, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    identity_path.chmod(0o444)
+    identity_checksum.chmod(0o644)
+    identity_checksum.write_text(
+        f"{_sha(identity_path)}  {identity_path.name}\n", encoding="utf-8"
+    )
+    identity_checksum.chmod(0o444)
+
+    marker_path.chmod(0o644)
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    for path in (identity_path, identity_checksum):
+        marker["artifacts"][path.name] = {
+            "sha256": _sha(path),
+            "size": path.stat().st_size,
+        }
+    marker.pop("release_bundle_id")
+    marker["release_bundle_id"] = control.sha256_value(marker)
+    marker_path.write_text(
+        json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    marker_path.chmod(0o444)
+    bundle.chmod(0o555)
+    pins["release_bundle_id"] = marker["release_bundle_id"]
+
+    with pytest.raises(control.ImmutablePinError, match="materialization binding"):
+        control.validate_immutable_pins(pins, verify_files=True)
+
+
+def test_context_readiness_accepts_margin_above_floor_and_rejects_below(
+    tmp_path, monkeypatch
+):
+    _, initialized = initialize(tmp_path)
+    monkeypatch.setattr(control, "_validate_context_artifacts", lambda *args, **kw: None)
+    metrics = _gate_metrics(initialized, "context_audit")
+    metrics["minimum_context_margin_tokens"] = 1_288
+    control._validate_gate_metrics(
+        initialized,
+        "context_audit",
+        metrics,
+        {},
+        now=23.0,
+        snapshot_context=control._SnapshotValidationContext(full=True),
+    )
+
+    metrics["minimum_context_margin_tokens"] = 1_286
+    with pytest.raises(control.ReadinessError, match="at least.*1,287"):
+        control._validate_gate_metrics(
+            initialized,
+            "context_audit",
+            metrics,
+            {},
+            now=23.0,
+            snapshot_context=control._SnapshotValidationContext(full=True),
+        )
+
+
 def test_scheduler_reconciliation_rejects_duplicate_or_unmappable_jobs(tmp_path):
     state_dir, initialized = initialize(tmp_path)
     token = control.job_token("dispatcher", 1, "intent1")
@@ -2100,6 +3950,53 @@ def test_scheduler_parser_and_join_prefers_live_squeue():
     assert snapshot.jobs[0].state == "RUNNING"
     assert snapshot.jobs[0].dependency == "afterany:99"
     assert snapshot.active_job_ids == {"123"}
+
+
+def test_scheduler_query_preserves_logical_array_ids_with_parent_summary():
+    token = "asys-schema5-intent:20260721T000000-array"
+    submit = f"sbatch --comment={token} /state/batch-array.sbatch"
+    commands = {}
+
+    def runner(argv):
+        commands[argv[0]] = list(argv)
+        if argv[0] == "squeue":
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                f"321_0|array|RUNNING|{token}|{submit}|(null)\n"
+                f"321_1|array|PENDING|{token}|{submit}|(null)\n",
+                "",
+            )
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            f"321|array|PENDING||{submit}\n"
+            f"321_0|array|RUNNING||{submit}\n"
+            f"321_1|array|PENDING||{submit}\n",
+            "",
+        )
+
+    snapshot = control.query_scheduler(runner=runner, user="u", now=100.0)
+
+    assert commands["sacct"][-1] == (
+        "--format=JobID,JobName,State,Comment,SubmitLine"
+    )
+    assert "JobIDRaw" not in commands["sacct"][-1]
+    assert [job.job_id for job in snapshot.jobs] == [
+        "321",
+        "321_0",
+        "321_1",
+    ]
+    assert {
+        job.job_id: job.source for job in snapshot.jobs
+    } == {
+        "321": "sacct",
+        "321_0": "squeue",
+        "321_1": "squeue",
+    }
+    assert {
+        job.job_id.split("_", 1)[0] for job in snapshot.jobs
+    } == {"321"}
 
 
 def test_scheduler_join_recovers_cluster_blank_sacct_comment_from_submit_line():
@@ -2180,7 +4077,7 @@ def test_cluster_sacct_contract_derives_separate_dependency_from_submitline():
 
     snapshot = control.query_scheduler(runner=runner, user="u", now=100.0)
     assert commands["sacct"][-1] == (
-        "--format=JobIDRaw,JobName,State,Comment,SubmitLine"
+        "--format=JobID,JobName,State,Comment,SubmitLine"
     )
     assert snapshot.jobs[0].comment == token
     assert snapshot.jobs[0].dependency == dependency + "(unfulfilled)"
@@ -2293,9 +4190,11 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
     text = path.read_text()
     assert path.name == "dispatch.g000007.abc123.sbatch"
     assert "#SBATCH --no-requeue" in text
+    assert text.count("#SBATCH --partition=mit_preemptable\n") == 1
+    assert "#SBATCH --partition=mit_normal" not in text
     assert "generation=7;intent=abc123" in text
     assert '--generation 7 --intent-token "abc123"' in text
-    assert 'export ASYS_RELEASE_ID="sweep-recovery-schema5-v1.1"' in text
+    assert f'export ASYS_RELEASE_ID="{control.PRODUCTION_RELEASE_ID}"' in text
     assert (
         'export ASYS_RELEASE_WORKTREE="'
         + initialized["immutable"]["release_worktree"]
@@ -2332,6 +4231,18 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
             generation=7,
             intent_token="abc123",
         )
+    with pytest.raises(control.ControlError, match="partition|runtime contract"):
+        control.validate_controller_generation_sbatch(
+            initialized,
+            payload=text.replace(
+                "#SBATCH --partition=mit_preemptable",
+                "#SBATCH --partition=mit_normal",
+            ),
+            state_dir=state_dir,
+            role="dispatcher",
+            generation=7,
+            intent_token="abc123",
+        )
     assert path.stat().st_mode & 0o222 == 0
     assert (
         control.render_generation_sbatch(
@@ -2352,6 +4263,8 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
         intent_token="def456",
     )
     fleet_text = fleet_path.read_text()
+    assert fleet_text.count("#SBATCH --partition=mit_preemptable\n") == 1
+    assert "#SBATCH --partition=mit_normal" not in fleet_text
     assert "source " not in fleet_text
     assert "mamba activate" not in fleet_text
     assert "export HF_DATASETS_OFFLINE=1" in fleet_text
@@ -2376,6 +4289,52 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
         )
 
 
+def test_controller_live_placement_is_exact_and_non_cell_partition():
+    token = control.job_token("dispatcher", 7, "abc123")
+
+    def runner(argv):
+        assert argv == ["scontrol", "show", "job", "-o", "123"]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            (
+                "JobId=123 JobName=controller JobState=RUNNING "
+                "Partition=mit_preemptable Requeue=0 "
+                f"Comment={token}\n"
+            ),
+            "",
+        )
+
+    observed = control.validate_live_controller_placement(
+        job_id="123",
+        role="dispatcher",
+        generation=7,
+        intent_token="abc123",
+        runner=runner,
+    )
+    assert observed["Partition"] == "mit_preemptable"
+
+    def wrong_partition(argv):
+        process = runner(argv)
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            process.stdout.replace(
+                "Partition=mit_preemptable", "Partition=mit_normal"
+            ),
+            "",
+        )
+
+    with pytest.raises(control.ControllerFenced, match="placement/provenance"):
+        control.validate_live_controller_placement(
+            job_id="123",
+            role="dispatcher",
+            generation=7,
+            intent_token="abc123",
+            runner=wrong_partition,
+        )
+
+
 def test_batch_provenance_environment_is_run_scoped_and_fail_closed(tmp_path):
     state_dir, initialized = initialize(tmp_path)
     run_id = "full_sweep_agent_count_7_schema5_v1"
@@ -2389,10 +4348,62 @@ def test_batch_provenance_environment_is_run_scoped_and_fail_closed(tmp_path):
     make_ready(state_dir)
     resume_ready(state_dir, now=50.0)
     environment = control.production_environment_from_state(state_dir, run_id=run_id)
+    transport = initialized["immutable"]["transport_uncertainty_binding"]
+    scheduler_binding = control.fleet_scheduler_policy_binding(
+        control.load_control(state_dir), require_attested=True
+    )
+    assert scheduler_binding is not None
     assert environment == {
-        "ASYS_RELEASE_ID": "sweep-recovery-schema5-v1.1",
+            "ASYS_RELEASE_ID": control.PRODUCTION_RELEASE_ID,
+            "ASYS_RELEASE_GIT_COMMIT": initialized["immutable"][
+                "git_commit"
+            ],
+            "ASYS_PROTECTED_CAPACITY_MARKER": initialized["immutable"][
+                "protected_capacity_marker_path"
+            ],
+            "ASYS_PROTECTED_CAPACITY_MARKER_SHA256": initialized[
+                "immutable"
+            ]["protected_capacity_marker_sha256"],
+            "ASYS_PROTECTED_CAPACITY_MARKER_ID": initialized["immutable"][
+                "protected_capacity_marker_id"
+            ],
+        "ASYS_TRANSPORT_CENSOR_PROTOCOL_VERSION": str(
+            transport["transport_censor_protocol_version"]
+        ),
+        "ASYS_TRANSPORT_CENSOR_PROTOCOL_HASH": transport[
+            "transport_censor_protocol_hash"
+        ],
+        "ASYS_TRANSPORT_UNCERTAINTY_BINDING_SHA256": initialized[
+            "immutable"
+        ]["transport_uncertainty_binding_sha256"],
+        "ASYS_CHECKPOINT_SCHEMA_VERSION": str(
+            transport["checkpoint_schema_version"]
+        ),
+        "ASYS_ARTIFACT_SCHEMA_VERSION": str(
+            transport["artifact_schema_version"]
+        ),
+        "ASYS_SELF_CONSISTENCY_PROTOCOL_VERSION": str(
+            transport["self_consistency_protocol_version"]
+        ),
+        "ASYS_SELF_CONSISTENCY_PROTOCOL_HASH": transport[
+            "self_consistency_protocol_hash"
+        ],
+        "ASYS_SCHEDULER_POLICY_CONTRACT_ID": scheduler_binding[
+            "scheduler_safety_policy_contract_id"
+        ],
+        "ASYS_SCHEDULER_SAFETY_EVIDENCE_ID": scheduler_binding[
+            "scheduler_safety_evidence_id"
+        ],
+        "ASYS_SCHEDULER_SAFETY_POLICY_ID": scheduler_binding[
+            "scheduler_safety_policy_id"
+        ],
         "ASYS_MODEL_CONTRACT_SHA256": initialized["immutable"]["model_contract_sha256"],
-        "ASYS_FLEET_CONTRACT_SHA256": initialized["immutable"]["fleet_contract_sha256"],
+            "ASYS_FLEET_CONTRACT_SHA256": initialized["immutable"]["fleet_contract_sha256"],
+            "ASYS_FLEET_CONTRACT_PATH": initialized["immutable"]["fleet_contract_path"],
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": initialized["immutable"][
+                "fleet_contract_sha256"
+            ],
+            "ASYS_CAPACITY_GENERATION": "1",
         "ASYS_HARNESS_ENVIRONMENT_SHA256": initialized["immutable"][
             "harness_environment_sha256"
         ],
@@ -2422,6 +4433,8 @@ def test_production_batch_validator_hard_enforces_slurm_contract(tmp_path):
     execution = control.production_cell_execution(initialized)
     manifest_digest = "a" * 64
     payload = f"""#!/bin/bash
+#SBATCH --partition=ou_bcs_normal
+#SBATCH --qos=normal
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --time=12:00:00
@@ -2458,6 +4471,15 @@ exec {shlex.quote(execution["python"])} -u {shlex.quote(execution["dispatcher_sc
         control.validate_production_batch_sbatch(
             initialized,
             payload=payload.replace("#SBATCH --no-requeue\n", ""),
+            task_count=24,
+        )
+    with pytest.raises(control.ControlError, match="non-preemptible"):
+        control.validate_production_batch_sbatch(
+            initialized,
+            payload=payload.replace(
+                "#SBATCH --partition=ou_bcs_normal",
+                "#SBATCH --partition=mit_preemptable",
+            ),
             task_count=24,
         )
     with pytest.raises(control.ControlError, match="exceeds"):
@@ -2747,6 +4769,217 @@ def test_live_status_never_promotes_cached_jobs_to_live(tmp_path):
     assert report["dispatcher_cache"]["cached_state_only"] is True
 
 
+def test_controller_health_and_chain_repair_reject_same_id_wrong_intent_token(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    running, jobs = resume_ready(state_dir, now=50.0)
+    dispatcher = running["controllers"]["dispatcher"]["active"]
+    fleet = running["controllers"]["fleet_supervisor"]["active"]
+    wrong_token = control.job_token(
+        "dispatcher",
+        int(dispatcher["generation"]) + 100,
+        "wrong-intent",
+    )
+    snapshot = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                str(dispatcher["job_id"]),
+                "dispatcher",
+                "RUNNING",
+                wrong_token,
+            ),
+            control.SchedulerJob(
+                str(fleet["job_id"]),
+                "fleet",
+                "RUNNING",
+                str(fleet["job_token"]),
+            ),
+        ),
+        60.0,
+    )
+    report = control.live_status(state_dir, snapshot=snapshot, now=60.0)
+    dispatcher_status = report["controllers"]["dispatcher"]
+    assert dispatcher_status["live_active"] is False
+    assert dispatcher_status["active_identity_mismatch"] is True
+    assert report["healthy"] is False
+    reconciliation = control.build_reconciliation_report(
+        running, snapshot, all_jobs=True, no_admit=True
+    )
+    assert reconciliation["passed"] is False
+    assert any(
+        "token mismatches" in error for error in reconciliation["errors"]
+    )
+    assert (
+        control._role_has_live_chain(
+            running, "dispatcher", snapshot
+        )
+        is False
+    )
+    with pytest.raises(control.SchedulerAmbiguity, match="token mismatch"):
+        control.submit_controller_intent(
+            state_dir,
+            role="dispatcher",
+            target="active",
+            dependency_job_id=None,
+            scheduler=snapshot,
+            submit_runner=lambda _argv: pytest.fail(
+                "wrong-token allocation must not suppress or cross sbatch"
+            ),
+            now=60.0,
+        )
+
+
+def test_wrong_token_same_successor_id_is_not_considered_live(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    running, _jobs = resume_ready(state_dir, now=50.0)
+    active = running["controllers"]["dispatcher"]["active"]
+    successor = control.submit_controller_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id=str(active["job_id"]),
+        scheduler=control.SchedulerSnapshot((), 51.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, "801\n", ""
+        ),
+        now=51.0,
+    )
+    wrong = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                str(successor["job_id"]),
+                "successor",
+                "PENDING",
+                control.job_token(
+                    "dispatcher",
+                    int(successor["generation"]) + 1,
+                    "wrong-successor-intent",
+                ),
+            ),
+        ),
+        52.0,
+    )
+    report = control.live_status(state_dir, snapshot=wrong, now=52.0)
+    row = report["controllers"]["dispatcher"]
+    assert row["successor_live"] is False
+    assert row["successor_identity_mismatch"] is True
+    with pytest.raises(control.SchedulerAmbiguity, match="token mismatch"):
+        control._ensure_own_successor(
+            state_dir,
+            role="dispatcher",
+            job_id=str(active["job_id"]),
+            snapshot=wrong,
+        )
+
+
+def test_own_successor_requires_exact_script_and_afterany_parent_before_work(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    running, _jobs = resume_ready(state_dir, now=50.0)
+    active = running["controllers"]["dispatcher"]["active"]
+    successor = control.submit_controller_intent(
+        state_dir,
+        role="dispatcher",
+        target="successor",
+        dependency_job_id=str(active["job_id"]),
+        scheduler=control.SchedulerSnapshot((), 51.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, "801\n", ""
+        ),
+        now=51.0,
+    )
+    exact = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                str(successor["job_id"]),
+                "asys-s5-dispatch",
+                "PENDING",
+                str(successor["job_token"]),
+                f"sbatch {successor['sbatch_path']}",
+                "squeue",
+                f"afterany:{active['job_id']}(unfulfilled)",
+            ),
+        ),
+        52.0,
+    )
+    assert (
+        control._ensure_own_successor(
+            state_dir,
+            role="dispatcher",
+            job_id=str(active["job_id"]),
+            snapshot=exact,
+        )["job_id"]
+        == "801"
+    )
+
+    wrong_parent = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                str(successor["job_id"]),
+                "asys-s5-dispatch",
+                "PENDING",
+                str(successor["job_token"]),
+                f"sbatch {successor['sbatch_path']}",
+                "squeue",
+                "afterany:999(unfulfilled)",
+            ),
+        ),
+        53.0,
+    )
+    with pytest.raises(control.SchedulerAmbiguity, match="afterany parent"):
+        control._ensure_own_successor(
+            state_dir,
+            role="dispatcher",
+            job_id=str(active["job_id"]),
+            snapshot=wrong_parent,
+        )
+
+    wrong_script = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                str(successor["job_id"]),
+                "asys-s5-dispatch",
+                "PENDING",
+                str(successor["job_token"]),
+                "sbatch /tmp/foreign.sbatch",
+                "squeue",
+                f"afterany:{active['job_id']}(unfulfilled)",
+            ),
+        ),
+        54.0,
+    )
+    with pytest.raises(control.SchedulerAmbiguity, match="immutable sbatch"):
+        control._ensure_own_successor(
+            state_dir,
+            role="dispatcher",
+            job_id=str(active["job_id"]),
+            snapshot=wrong_script,
+        )
+
+
+def test_supervisor_source_never_launches_managed_plane_before_verified_successor():
+    source = Path(control.__file__).read_text(encoding="utf-8")
+    successor_gate = source.index(
+        "if verified_successor is not None:",
+        source.index("def supervise("),
+    )
+    launch = source.index(
+        "child = subprocess.Popen(",
+        source.index("def supervise("),
+    )
+    assert successor_gate < launch
+    between = source[successor_gate:launch]
+    assert "validate_live_controller_placement(" in source[
+        source.index("def supervise("):successor_gate
+    ]
+    assert "break" in between
+
+
 def test_monitor_cadences_and_frozen_command_are_pinned(tmp_path):
     state_dir, initialized = initialize(tmp_path)
     rows = initialized["monitoring"]["cadences"]
@@ -2910,21 +5143,85 @@ def test_monitor_launch_failures_alert_without_escaping_supervision(
     }
 
 
+def test_monitor_owner_retries_email_when_monitor_cannot_start(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+
+    def fail_mail(argv, _body):
+        return subprocess.CompletedProcess(argv, 1, "", "mail unavailable")
+
+    pending = control.record_alert(
+        state_dir,
+        kind="monitor-liveness-test",
+        severity="warning",
+        message="retry independently of monitor execution",
+        dedupe_key="test:monitor-independent-email",
+        send_email=True,
+        mail_runner=fail_mail,
+        now=100.0,
+    )
+    assert pending["email"]["next_retry_timestamp"] == 160.0
+
+    original_record_alert = control.record_alert
+
+    def no_new_mail(*args, **kwargs):
+        kwargs["send_email"] = False
+        return original_record_alert(*args, **kwargs)
+
+    monkeypatch.setattr(control, "record_alert", no_new_mail)
+    calls: list[str] = []
+
+    def succeed_mail(argv, _body):
+        calls.append(str(argv[-1]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def cannot_launch(*_args, **_kwargs):
+        raise OSError("simulated monitor exec failure")
+
+    control._service_schema5_monitors(
+        state_dir,
+        processes={},
+        controller_generation=1,
+        controller_intent_token="first",
+        controller_job_id="700",
+        now=160.0,
+        popen_factory=cannot_launch,
+        alert_mail_runner=succeed_mail,
+    )
+
+    persisted = next(
+        alert
+        for alert in control.load_control(state_dir)["alerts"]
+        if alert["alert_id"] == pending["alert_id"]
+    )
+    assert calls == ["mabdel03@mit.edu"]
+    assert persisted["email"]["attempt_count"] == 2
+    assert persisted["email"]["delivered"] is True
+    assert persisted["email"]["next_retry_timestamp"] is None
+    assert any(
+        alert["dedupe_key"].startswith("monitor-supervisor:")
+        for alert in control.load_control(state_dir)["alerts"]
+    )
+
+
 def test_throughput_epochs_survive_successors_and_close_on_pause(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
     resume_ready(state_dir, now=50.0)
     first = control.record_successful_poll(
-        state_dir, validated_qids=100, fleet_generation="fleet-a", now=60.0
+        state_dir, useful_qids=100, fleet_generation="fleet-a", now=60.0
     )
     second = control.record_successful_poll(
-        state_dir, validated_qids=150, fleet_generation="fleet-a", now=70.0
+        state_dir, useful_qids=150, fleet_generation="fleet-a", now=70.0
     )
     assert len(first["throughput_epochs"]) == 1
     assert len(second["throughput_epochs"]) == 1
     assert len(second["throughput_epochs"][0]["samples"]) == 2
     changed = control.record_successful_poll(
-        state_dir, validated_qids=151, fleet_generation="fleet-b", now=80.0
+        state_dir, useful_qids=151, fleet_generation="fleet-b", now=80.0
     )
     assert len(changed["throughput_epochs"]) == 2
     assert changed["throughput_epochs"][0]["close_reason"] == "material_fleet_change"
@@ -2932,7 +5229,7 @@ def test_throughput_epochs_survive_successors_and_close_on_pause(tmp_path):
     assert paused["throughput_epochs"][-1]["close_reason"] == "pause"
     with pytest.raises(control.ControlError, match="while paused"):
         control.record_successful_poll(
-            state_dir, validated_qids=200, fleet_generation="fleet-b", now=100.0
+            state_dir, useful_qids=200, fleet_generation="fleet-b", now=100.0
         )
 
 
@@ -2943,6 +5240,7 @@ def _ramp_evidence(
     cadence: str,
     fleet_generation: str,
     qids: dict[str, int] | None = None,
+    useful_qids: dict[str, int] | None = None,
     health_clean: bool = True,
     semantic_clean: bool = True,
     critical_keys: tuple[str, ...] = (),
@@ -2950,6 +5248,7 @@ def _ramp_evidence(
 ) -> tuple[Path, str]:
     state = control.load_control(state_dir)
     captured_at = committed_at - 1.0
+    effective_useful_qids = qids if useful_qids is None else useful_qids
     observation = {
         "schema_version": 1,
         "protocol": control.ADMISSION_RAMP_EVIDENCE_PROTOCOL,
@@ -2967,6 +5266,11 @@ def _ramp_evidence(
             set(critical_keys) | set(blocking_keys)
         ),
         "run_validated_qids": copy.deepcopy(qids) if cadence != "health" else None,
+        "run_useful_qids": (
+            copy.deepcopy(effective_useful_qids)
+            if cadence != "health"
+            else None
+        ),
     }
     report = {
         "schema_version": 1,
@@ -2985,10 +5289,19 @@ def _ramp_evidence(
     }
     if cadence != "health":
         assert qids is not None
+        assert effective_useful_qids is not None
         report["semantic"] = {
-            "outcomes": {"validated_qids": sum(qids.values())},
+            "outcomes": {
+                "validated_qids": sum(qids.values()),
+                "useful_qids": sum(effective_useful_qids.values()),
+            },
             "runs": {
-                run_id: {"outcomes": {"validated_qids": qids[run_id]}}
+                run_id: {
+                    "outcomes": {
+                        "validated_qids": qids[run_id],
+                        "useful_qids": effective_useful_qids[run_id],
+                    }
+                }
                 for run_id in control.REQUIRED_RUNS
             },
         }
@@ -3025,6 +5338,11 @@ def test_admission_ramp_automatically_promotes_only_from_complete_clean_windows(
         96: {"next_ceiling": 192, "clean_seconds": 21_600.0},
         192: {"next_ceiling": 384, "clean_seconds": 43_200.0},
     }
+    assert control.ADMISSION_RAMP_STALL_SECONDS == {
+        24: 28_800.0,
+        96: 46_800.0,
+        192: 68_400.0,
+    }
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
     resume_ready(state_dir, now=50.0)
@@ -3039,7 +5357,7 @@ def test_admission_ramp_automatically_promotes_only_from_complete_clean_windows(
     }
     control.record_successful_poll(
         state_dir,
-        validated_qids=sum(qids.values()),
+        useful_qids=sum(qids.values()),
         fleet_generation="fleet-a",
         now=90.0,
     )
@@ -3052,9 +5370,9 @@ def test_admission_ramp_automatically_promotes_only_from_complete_clean_windows(
     )
     assert started["admission_ramp"]["last_action"]["action"] == "window_started"
 
-    # Every stage is continuously covered by observations no more than 10 minutes
-    # apart; promotion itself is always a semantic observation.  All-run progress is
-    # required only for the first stage, so the run completed there can remain fixed.
+    # The verified non-preemptible capacity stage is continuously covered by
+    # observations no more than 10 minutes apart; promotion itself is a semantic
+    # observation and requires every production run to progress.
     stage_boundaries = (
         (100.0, 3_600.0, 96),
         (3_700.0, 21_600.0, 192),
@@ -3081,7 +5399,7 @@ def test_admission_ramp_automatically_promotes_only_from_complete_clean_windows(
         }
         control.record_successful_poll(
             state_dir,
-            validated_qids=sum(qids.values()),
+            useful_qids=sum(qids.values()),
             fleet_generation="fleet-a",
             now=final - 0.5,
         )
@@ -3096,34 +5414,2139 @@ def test_admission_ramp_automatically_promotes_only_from_complete_clean_windows(
         assert promoted["admission_ramp"]["last_action"]["action"] == "promoted"
 
     final = control.load_control(state_dir)
-    assert [row["to_ceiling"] for row in final["admission_ramp"]["promotions"]] == [
-        96,
-        192,
-        384,
-    ]
+    assert [
+        row["to_ceiling"] for row in final["admission_ramp"]["promotions"]
+    ] == [96, 192, 384]
     assert all(
         set(row["final_run_validated_qids"]) == set(control.REQUIRED_RUNS)
+        and set(row["final_run_useful_qids"]) == set(control.REQUIRED_RUNS)
         and row["observations"]
         for row in final["admission_ramp"]["promotions"]
     )
     assert final["admission_ramp"]["promotions"][0]["all_runs_progressed"] is True
-    assert all(
-        row["all_runs_progressed"] is False
-        and row["all_run_progress_required"] is False
-        for row in final["admission_ramp"]["promotions"][1:]
-    )
+    assert {
+        row["client_capacity_authorization_sha256"]
+        for row in final["admission_ramp"]["promotions"]
+    } == {
+        final["immutable"]["protected_capacity_marker_sha256"]
+    }
+    assert final["admission"]["maximum_cell_tasks"] == 384
 
     # A new material fleet identity closes the throughput epoch and immediately
     # returns admission to the initial safety stage.
     changed = control.record_successful_poll(
         state_dir,
-        validated_qids=sum(qids.values()),
+        useful_qids=sum(qids.values()),
         fleet_generation="fleet-b",
         now=68_600.0,
     )
     assert changed["admission"]["current_ceiling"] == 24
     assert changed["admission_ramp"]["window"] is None
     assert changed["throughput_epochs"][-2]["close_reason"] == "material_fleet_change"
+
+
+def test_admission_ramp_does_not_promote_on_transport_only_cardinality_progress(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    validated = {run_id: 10 for run_id in control.REQUIRED_RUNS}
+    useful = dict(validated)
+    control.record_successful_poll(
+        state_dir,
+        useful_qids=sum(useful.values()),
+        fleet_generation="fleet-a",
+        now=90.0,
+    )
+    _commit_ramp_evidence(
+        state_dir,
+        committed_at=100.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=validated,
+        useful_qids=useful,
+    )
+    for timestamp in range(700, 3_700, 600):
+        _commit_ramp_evidence(
+            state_dir,
+            committed_at=float(timestamp),
+            cadence="health",
+            fleet_generation="fleet-a",
+        )
+    transport_only = {
+        run_id: value + 1 for run_id, value in validated.items()
+    }
+    control.record_successful_poll(
+        state_dir,
+        useful_qids=sum(useful.values()),
+        fleet_generation="fleet-a",
+        now=3_699.5,
+    )
+    observed = _commit_ramp_evidence(
+        state_dir,
+        committed_at=3_700.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=transport_only,
+        useful_qids=useful,
+    )
+    assert observed["admission"]["current_ceiling"] == 24
+    assert observed["admission_ramp"]["promotions"] == []
+    assert observed["admission_ramp"]["last_action"]["action"] == (
+        "window_advanced"
+    )
+    assert observed["admission_ramp"]["last_action"][
+        "all_runs_progressed"
+    ] is False
+    assert observed["admission_ramp"]["window"][
+        "latest_run_validated_qids"
+    ] == transport_only
+    assert observed["admission_ramp"]["window"][
+        "latest_run_useful_qids"
+    ] == useful
+
+
+def test_admission_ramp_uses_prelaunch_protected_capacity_through_384(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    staged = control.load_control(state_dir)
+    staged["admission"]["current_ceiling"] = 96
+    staged["admission_ramp"]["current_ceiling"] = 96
+    staged["admission_ramp"]["window"] = None
+    control._save_control(state_dir, staged, now=80.0)
+
+    qids = {run_id: 10 for run_id in control.REQUIRED_RUNS}
+    control.record_successful_poll(
+        state_dir,
+        useful_qids=sum(qids.values()),
+        fleet_generation="fleet-a",
+        now=90.0,
+    )
+    _commit_ramp_evidence(
+        state_dir,
+        committed_at=100.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=qids,
+    )
+    for timestamp in range(700, 21_700, 600):
+        _commit_ramp_evidence(
+            state_dir,
+            committed_at=float(timestamp),
+            cadence="health",
+            fleet_generation="fleet-a",
+        )
+    promoted = _commit_ramp_evidence(
+        state_dir,
+        committed_at=21_700.0,
+        cadence="semantic",
+        fleet_generation="fleet-a",
+        qids=qids,
+    )
+
+    assert promoted["admission"]["current_ceiling"] == 192
+    assert [
+        row["to_ceiling"]
+        for row in promoted["admission_ramp"]["promotions"]
+    ] == [192]
+    assert promoted["admission_ramp"]["capacity_gate"] is None
+    assert promoted["admission_safety_hold"]["active"] is False
+    assert promoted["admission_ramp"]["promotions"][0][
+        "client_capacity_authorization_sha256"
+    ] == promoted["immutable"]["protected_capacity_marker_sha256"]
+    assert not any(
+        row["event"] == "client_capacity_transition_required"
+        for row in promoted["transition_history"]
+    )
+
+
+def test_client_capacity_authorization_rehashes_scheduler_canary_and_readiness(
+    tmp_path, monkeypatch
+):
+    production_state_dir, initialized = initialize(tmp_path / "production")
+    state_dir = tmp_path / "state"
+    evidence_root = (
+        state_dir
+        / "capacity-transitions"
+        / "capacity-g000001-to-g000002"
+        / "client-capacity"
+    )
+    evidence_root.mkdir(parents=True)
+    generation = 2
+    target = 192
+    rollout_generation = 7
+    transition_id = "capacity-g000001-to-g000002"
+    contract_sha = "b" * 64
+    immutable_sha = initialized["immutable_sha256"]
+    placement = {
+        "capacity_generation": generation,
+        "partition": "new_nonpreemptible_clients",
+        "preempt_mode": "OFF",
+        "nonpreemptible_client_slots": target,
+        "cpu_limit": target,
+        "memory_limit_mib": target * 4096,
+        "max_submit_jobs": target + 64,
+        "qos_limit": 448,
+        "reserve_jobs": 64,
+    }
+    scheduler_path = evidence_root / "scheduler.json"
+    canary_path = evidence_root / "canary.json"
+    readiness_path = evidence_root / "readiness.json"
+    submission_root = (
+        evidence_root / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+    )
+    submission_root.mkdir()
+    canary_job_id = "765432"
+    intent_token = "c" * 32
+    scheduler_user = "test-user"
+    sbatch_path = evidence_root / control.CLIENT_CAPACITY_CANARY_SBATCH
+    sbatch_payload = control._client_capacity_canary_sbatch(
+        partition=placement["partition"],
+        target_ceiling=target,
+        capacity_generation=generation,
+        intent_token=intent_token,
+        output_path=evidence_root / "client_capacity_canary_%j.out",
+    )
+    sbatch_path.write_text(sbatch_payload, encoding="utf-8")
+    sbatch_path.chmod(0o444)
+    sbatch_sha256 = _sha(sbatch_path)
+    job_name = control._client_capacity_canary_job_name(
+        capacity_generation=generation,
+        target_ceiling=target,
+    )
+    job_comment = control._client_capacity_canary_comment(
+        capacity_generation=generation,
+        target_ceiling=target,
+        intent_token=intent_token,
+    )
+    submit_argv = control._client_capacity_submission_argv(
+        sbatch_path=sbatch_path,
+        job_comment=job_comment,
+    )
+    submit_line = shlex.join(submit_argv)
+    submission_intent_path = (
+        submission_root / control.CLIENT_CAPACITY_SUBMISSION_INTENT
+    )
+    submission_intent = {
+        "schema_version": 1,
+        "protocol": control.CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "scheduler_user": scheduler_user,
+        "control_immutable_sha256": immutable_sha,
+        "capacity_generation": generation,
+        "rollout_generation": rollout_generation,
+        "transition_id": transition_id,
+        "partition": placement["partition"],
+        "target_ceiling": target,
+        "intent_token": intent_token,
+        "job_name": job_name,
+        "job_comment": job_comment,
+        "sbatch_path": str(sbatch_path.resolve()),
+        "sbatch_sha256": sbatch_sha256,
+        "submit_argv": submit_argv,
+        "created_at": control.utc_timestamp(100.0),
+        "created_timestamp": 100.0,
+    }
+    control._write_sealed_builder_json(
+        submission_intent_path,
+        submission_intent,
+        description="client-capacity submission intent fixture",
+    )
+    attempt_root = (
+        submission_root
+        / control.CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY
+        / "000001"
+    )
+    attempt_root.mkdir(parents=True)
+    attempt_intent_path = attempt_root / "ATTEMPT_INTENT.json"
+    attempt_intent = {
+        "schema_version": 1,
+        "protocol": control.CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "attempt": 1,
+        "submission_intent_sha256": _sha(submission_intent_path),
+        "control_immutable_sha256": immutable_sha,
+        "capacity_generation": generation,
+        "rollout_generation": rollout_generation,
+        "transition_id": transition_id,
+        "partition": placement["partition"],
+        "target_ceiling": target,
+        "intent_token": intent_token,
+        "job_name": job_name,
+        "job_comment": job_comment,
+        "sbatch_path": str(sbatch_path.resolve()),
+        "sbatch_sha256": sbatch_sha256,
+        "submit_argv": submit_argv,
+        "retry_authorization": None,
+        "created_at": control.utc_timestamp(100.0),
+        "created_timestamp": 100.0,
+    }
+    control._write_sealed_builder_json(
+        attempt_intent_path,
+        attempt_intent,
+        description="client-capacity attempt intent fixture",
+    )
+    attempt_result_path = attempt_root / "SBATCH_RESULT.json"
+    attempt_result = {
+        "schema_version": 1,
+        "protocol": control.CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "attempt": 1,
+        "attempt_intent_sha256": _sha(attempt_intent_path),
+        "returncode": 0,
+        "stdout": f"{canary_job_id}\n",
+        "stderr": "",
+        "stdout_sha256": hashlib.sha256(
+            f"{canary_job_id}\n".encode("utf-8")
+        ).hexdigest(),
+        "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        "job_id": canary_job_id,
+        "outcome": "accepted_stdout",
+        "completed_at": control.utc_timestamp(100.0),
+        "completed_timestamp": 100.0,
+    }
+    control._write_sealed_builder_json(
+        attempt_result_path,
+        attempt_result,
+        description="client-capacity sbatch result fixture",
+    )
+    observation_root = attempt_root / "observations" / "000001"
+    observation_root.mkdir(parents=True)
+    observation_references = {}
+    for source, filename in (
+        ("squeue", "SQUEUE_OBSERVATION.json"),
+        ("sacct", "SACCT_OBSERVATION.json"),
+    ):
+        source_path = observation_root / filename
+        source_state = "RUNNING" if source == "squeue" else "COMPLETED"
+        source_stdout = (
+            f"{canary_job_id}|{job_name}|{source_state}|{job_comment}|"
+            f"{submit_line}"
+            f"{'|' if source == 'squeue' else ''}\n"
+        )
+        source_argv = (
+            [
+                "squeue",
+                "-u",
+                scheduler_user,
+                "-h",
+                "-r",
+                "-o",
+                "%i|%j|%T|%k|%o|%E",
+                "--name",
+                job_name,
+            ]
+            if source == "squeue"
+            else [
+                "sacct",
+                "-u",
+                scheduler_user,
+                "-n",
+                "-P",
+                "-S",
+                time.strftime(
+                    "%Y-%m-%d",
+                    time.localtime(101.0 - 7 * 86_400),
+                ),
+                "--format=JobID,JobName,State,Comment,SubmitLine",
+                "--name",
+                job_name,
+            ]
+        )
+        source_payload = {
+            "schema_version": 1,
+            "protocol": control.CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+            "attempt": 1,
+            "observation": 1,
+            "source": source,
+            "complete": True,
+            "captured_at": control.utc_timestamp(101.0),
+            "captured_timestamp": 101.0,
+            "argv": source_argv,
+            "returncode": 0,
+            "stdout": source_stdout,
+            "stderr": "",
+            "stdout_sha256": hashlib.sha256(
+                source_stdout.encode("utf-8")
+            ).hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+            "candidate_job_ids": [canary_job_id],
+        }
+        control._write_sealed_builder_json(
+            source_path,
+            source_payload,
+            description=f"client-capacity {source} observation fixture",
+        )
+        observation_references[source] = {
+            "path": str(source_path.resolve()),
+            "sha256": _sha(source_path),
+        }
+    observation_complete_path = (
+        observation_root / "OBSERVATION_COMPLETE.json"
+    )
+    observation_complete = {
+        "schema_version": 1,
+        "protocol": control.CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "attempt": 1,
+        "observation": 1,
+        "complete": True,
+        "captured_at": control.utc_timestamp(101.0),
+        "captured_timestamp": 101.0,
+        "candidate_job_ids": [canary_job_id],
+        "candidate_sources": ["sacct", "squeue"],
+        "squeue": observation_references["squeue"],
+        "sacct": observation_references["sacct"],
+    }
+    control._write_sealed_builder_json(
+        observation_complete_path,
+        observation_complete,
+        description="client-capacity observation completion fixture",
+    )
+    accepted_submission_path = (
+        submission_root / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    )
+    accepted_submission = {
+        "schema_version": 1,
+        "protocol": control.CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "passed": True,
+        "job_id": canary_job_id,
+        "job_name": job_name,
+        "job_comment": job_comment,
+        "scheduler_user": scheduler_user,
+        "control_immutable_sha256": immutable_sha,
+        "capacity_generation": generation,
+        "rollout_generation": rollout_generation,
+        "transition_id": transition_id,
+        "partition": placement["partition"],
+        "target_ceiling": target,
+        "intent_token": intent_token,
+        "sbatch_path": str(sbatch_path.resolve()),
+        "sbatch_sha256": sbatch_sha256,
+        "submit_argv": submit_argv,
+        "submission_intent": {
+            "path": str(submission_intent_path.resolve()),
+            "sha256": _sha(submission_intent_path),
+        },
+        "attempt": {
+            "ordinal": 1,
+            "intent_path": str(attempt_intent_path.resolve()),
+            "intent_sha256": _sha(attempt_intent_path),
+            "result_path": str(attempt_result_path.resolve()),
+            "result_sha256": _sha(attempt_result_path),
+        },
+        "scheduler_observation": {
+            "path": str(observation_complete_path.resolve()),
+            "sha256": _sha(observation_complete_path),
+        },
+        "scheduler_sources": ["sacct", "squeue"],
+        "accepted_at": control.utc_timestamp(101.0),
+        "accepted_timestamp": 101.0,
+    }
+    control._write_sealed_builder_json(
+        accepted_submission_path,
+        accepted_submission,
+        description="client-capacity accepted submission fixture",
+    )
+
+    def scheduler_runner(argv, *, timeout):
+        del timeout
+        args = list(argv)
+        if args == ["scontrol", "show", "config"]:
+            stdout = (
+                "KillWait                = 30 sec\n"
+                "PreemptMode             = REQUEUE\n"
+                "PreemptType             = preempt/partition_prio\n"
+            )
+        elif args == [
+            "scontrol",
+            "show",
+            "partition",
+            placement["partition"],
+            "-o",
+        ]:
+            stdout = (
+                f"PartitionName={placement['partition']} GraceTime=0 "
+                "MaxTime=12:00:00 PreemptMode=OFF State=UP TotalNodes=50\n"
+            )
+        elif args == [
+            "sacctmgr",
+            "-nP",
+            "show",
+            "qos",
+            placement["partition"],
+            "format=Name,MaxTRESPerUser,MaxSubmitJobsPerUser",
+        ]:
+            stdout = (
+                f"{placement['partition']}|cpu={target},"
+                f"mem={target * 4}G|{target + 64}\n"
+            )
+        else:  # pragma: no cover - fixture boundary
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    raw_scheduler_contract = (
+        scheduler_safety.capture_observed_client_capacity_contract(
+            partition=placement["partition"],
+            runner=scheduler_runner,
+            captured_timestamp=101.0,
+        )
+    )
+    control._atomic_write_json(
+        scheduler_path,
+        {
+            "passed": True,
+            "client_placement": placement,
+            "raw_client_capacity_contract": raw_scheduler_contract,
+        },
+    )
+    control._atomic_write_json(
+        canary_path,
+        {
+            "passed": True,
+            "capacity_generation": generation,
+            "authorized_cell_ceiling": target,
+            "partition": placement["partition"],
+            "preempt_mode": "OFF",
+            "no_requeue": True,
+            "cell_cpus": 1,
+            "cell_memory_mib": 4096,
+            "job_id": canary_job_id,
+            "sbatch_path": str(sbatch_path.resolve()),
+            "sbatch_sha256": sbatch_sha256,
+            "sacct_argv": [
+                "sacct",
+                "-X",
+                "-nP",
+                "-j",
+                canary_job_id,
+                "--format=JobIDRaw,State,Partition,ReqCPUS,ReqMem,ExitCode,SubmitLine",
+            ],
+            "sacct_raw_output": (
+                f"{canary_job_id}|COMPLETED|{placement['partition']}|"
+                f"1|4G|0:0|{submit_line}\n"
+            ),
+            "sacct_raw_output_sha256": hashlib.sha256(
+                (
+                    f"{canary_job_id}|COMPLETED|{placement['partition']}|"
+                    f"1|4G|0:0|{submit_line}\n"
+                ).encode("utf-8")
+            ).hexdigest(),
+            "submit_line": submit_line,
+        },
+    )
+    gate_paths = {}
+    for gate in ("fleet", "smoke_runs", "scheduler_reconciliation"):
+        gate_path = evidence_root / f"{gate}_gate.json"
+        control._atomic_write_json(
+            gate_path, {"gate": gate, "passed": True}
+        )
+        gate_path.chmod(0o444)
+        gate_paths[gate] = gate_path
+    readiness_payload = {
+        "passed": True,
+        "capacity_generation": generation,
+        "scheduler_reconciliation_passed": True,
+        "fleet_readiness_passed": True,
+        "client_canary_passed": True,
+        "control_immutable_sha256": immutable_sha,
+        "rollout_generation": rollout_generation,
+        "transition_id": transition_id,
+        "fleet_evidence": str(gate_paths["fleet"].resolve()),
+        "fleet_evidence_sha256": _sha(gate_paths["fleet"]),
+        "smoke_evidence": str(gate_paths["smoke_runs"].resolve()),
+        "smoke_evidence_sha256": _sha(gate_paths["smoke_runs"]),
+        "scheduler_reconciliation_evidence": str(
+            gate_paths["scheduler_reconciliation"].resolve()
+        ),
+        "scheduler_reconciliation_evidence_sha256": _sha(
+            gate_paths["scheduler_reconciliation"]
+        ),
+    }
+    control._atomic_write_json(readiness_path, readiness_payload)
+    for path in (scheduler_path, canary_path, readiness_path):
+        path.chmod(0o444)
+    authorization_path = evidence_root / "CLIENT_CAPACITY_COMPLETE.json"
+    authorization = {
+        "schema_version": control.CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION,
+        "protocol": control.CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL,
+        "passed": True,
+        "control_immutable_sha256": immutable_sha,
+        "capacity_generation": generation,
+        "capacity_contract_sha256": contract_sha,
+        "authorized_cell_ceiling": target,
+        "partition": placement["partition"],
+        "preempt_mode": "OFF",
+        "nonpreemptible_client_slots": target,
+        "cpu_limit": target,
+        "memory_limit_mib": target * 4096,
+        "max_submit_jobs": target + 64,
+        "qos_limit": 448,
+        "reserve_jobs": 64,
+        "cell_cpus": 1,
+        "cell_memory_mib": 4096,
+        "scheduler_evidence": {
+            "path": str(scheduler_path.resolve()),
+            "sha256": _sha(scheduler_path),
+        },
+        "canary_evidence": {
+            "path": str(canary_path.resolve()),
+            "sha256": _sha(canary_path),
+        },
+        "accepted_submission_evidence": {
+            "path": str(accepted_submission_path.resolve()),
+            "sha256": _sha(accepted_submission_path),
+        },
+        "readiness_evidence": {
+            "path": str(readiness_path.resolve()),
+            "sha256": _sha(readiness_path),
+        },
+        "captured_timestamp": 101.0,
+    }
+    control._atomic_write_json(authorization_path, authorization)
+    authorization_path.chmod(0o444)
+    state = {
+        "immutable_sha256": immutable_sha,
+        "rollout_generation": rollout_generation,
+        "capacity": {
+            "current_generation": generation,
+            "current_contract": {"sha256": contract_sha},
+            "active_transition": None,
+            "history": [
+                {
+                    "transition_id": transition_id,
+                    "phase": "completed",
+                    "from_generation": 1,
+                    "to_generation": generation,
+                    # The immutable authorization was captured after the fleet and
+                    # readiness boundary but before transition completion.  It must
+                    # remain valid after the later completion timestamp is appended.
+                    "fleet_launch_completed_timestamp": 100.0,
+                    "completed_timestamp": 200.0,
+                }
+            ],
+        },
+        "readiness": {
+            gate: {
+                "passed": True,
+                "capacity_generation": generation,
+                "evidence": str(path.resolve()),
+                "sha256": _sha(path),
+            }
+            for gate, path in gate_paths.items()
+        },
+    }
+    record = control._read_client_capacity_authorization(
+        state_dir,
+        state,
+        authorization_path,
+        _sha(authorization_path),
+        attested_timestamp=102.0,
+    )
+    assert record["authorized_cell_ceiling"] == 192
+    assert record["capacity_generation"] == 2
+    assert record["preempt_mode"] == "OFF"
+    assert record["scheduler_evidence_sha256"] == _sha(scheduler_path)
+
+    def reseal(path: Path, payload: dict) -> None:
+        control._atomic_write_json(path, payload)
+        path.chmod(0o444)
+
+    # A self-consistent but stale rollout assertion cannot authorize the current
+    # control generation.
+    stale_readiness = {**readiness_payload, "rollout_generation": 6}
+    reseal(readiness_path, stale_readiness)
+    authorization["readiness_evidence"]["sha256"] = _sha(readiness_path)
+    reseal(authorization_path, authorization)
+    with pytest.raises(control.ControlError, match="current control, rollout"):
+        control._read_client_capacity_authorization(
+            state_dir,
+            state,
+            authorization_path,
+            _sha(authorization_path),
+            attested_timestamp=102.0,
+        )
+
+    # Nor can a forged, correctly hashed artifact replace the exact gate currently
+    # recorded by the control plane.
+    forged_fleet = evidence_root / "forged_fleet_gate.json"
+    reseal(forged_fleet, {"gate": "fleet", "passed": True})
+    forged_readiness = {
+        **readiness_payload,
+        "fleet_evidence": str(forged_fleet.resolve()),
+        "fleet_evidence_sha256": _sha(forged_fleet),
+    }
+    reseal(readiness_path, forged_readiness)
+    authorization["readiness_evidence"]["sha256"] = _sha(readiness_path)
+    reseal(authorization_path, authorization)
+    with pytest.raises(control.ControlError, match="exact current fleet gate"):
+        control._read_client_capacity_authorization(
+            state_dir,
+            state,
+            authorization_path,
+            _sha(authorization_path),
+            attested_timestamp=102.0,
+        )
+
+    reseal(readiness_path, readiness_payload)
+    authorization["readiness_evidence"]["sha256"] = _sha(readiness_path)
+    reseal(authorization_path, authorization)
+
+    # Capacity-transition evidence remains independently verifiable, but the
+    # prelaunch protected-capacity marker is the one client-placement authority
+    # for every registered 24->96->192->384 stage.
+    execution = control.production_cell_execution(initialized)
+    higher = copy.deepcopy(initialized)
+    higher["admission"]["current_ceiling"] = 192
+    higher["capacity"]["current_generation"] = 2
+    higher["capacity"]["current_contract"] = {"sha256": contract_sha}
+    higher["admission_ramp"]["current_ceiling"] = 192
+    higher["admission_ramp"]["client_capacity_authorizations"] = [record]
+    monkeypatch.setattr(
+        control,
+        "production_cell_execution_from_state",
+        lambda _state_dir: execution,
+    )
+    monkeypatch.setattr(
+        control,
+        "load_control",
+        lambda *_args, **_kwargs: higher,
+    )
+    summary = control._client_capacity_contract_summary(
+        higher,
+        target_ceiling=192,
+        verify_files=False,
+    )
+    batch_manifest = tmp_path / "batch.json"
+    batch_manifest.write_text("{}\n", encoding="utf-8")
+    rendered = dispatcher._render_batch_sbatch(
+        batch_manifest,
+        n_tasks=2,
+        partition=str(summary["partition"]),
+        qos=str(summary["qos"]),
+        time_limit="12:00:00",
+        memory="4G",
+        log_dir=tmp_path / "logs",
+        batch_tag="capacity-g2",
+        batch_manifest_sha256="c" * 64,
+        control_state_dir=production_state_dir,
+    )
+    assert "#SBATCH --partition=ou_bcs_normal" in rendered
+    assert "#SBATCH --qos=normal" in rendered
+    assert "#SBATCH --partition=mit_normal" not in rendered
+    with pytest.raises(
+        control.ControlError, match="ou_bcs_normal"
+    ):
+        dispatcher._render_batch_sbatch(
+            batch_manifest,
+            n_tasks=2,
+            partition="mit_normal",
+            qos="mit_normal",
+            time_limit="12:00:00",
+            memory="4G",
+            log_dir=tmp_path / "logs",
+            batch_tag="capacity-g2-unsafe",
+            batch_manifest_sha256="d" * 64,
+            control_state_dir=production_state_dir,
+        )
+
+    scheduler_path.chmod(0o644)
+    with pytest.raises(
+        control.ControlError, match="sealed, single-link regular file"
+    ):
+        control._read_client_capacity_authorization(
+            state_dir,
+            state,
+            authorization_path,
+            _sha(authorization_path),
+            attested_timestamp=102.0,
+        )
+
+
+def test_client_capacity_builder_is_marker_last_idempotent_and_tamper_closed(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized = initialize(tmp_path)
+    partition = "schema5_clients_g2"
+    target = 192
+    transition_id = "capacity-g000001-to-g000002-test"
+    synthetic = copy.deepcopy(initialized)
+    synthetic.update(
+        {
+            "desired_state": "paused",
+            "drain_requested": True,
+            "rollout_generation": 1,
+        }
+    )
+    synthetic["capacity"] = {
+        "schema_version": control.CAPACITY_STATE_SCHEMA_VERSION,
+        "protocol": control.CAPACITY_STATE_PROTOCOL,
+        "current_generation": 2,
+        "current_contract": {"sha256": "b" * 64},
+        "active_transition": {
+            "transition_id": transition_id,
+            "phase": "readiness_pending",
+            "to_generation": 2,
+            "fleet_launch_completed_timestamp": 50.0,
+        },
+        "history": [],
+    }
+    gate_paths = {}
+    for gate_name in ("fleet", "smoke_runs", "scheduler_reconciliation"):
+        gate_path = tmp_path / "builder-gates" / f"{gate_name}.json"
+        gate_path.parent.mkdir(parents=True, exist_ok=True)
+        control._atomic_write_json(
+            gate_path, {"gate": gate_name, "passed": True}
+        )
+        gate_path.chmod(0o444)
+        gate_paths[gate_name] = gate_path
+    for gate_name, gate in synthetic["readiness"].items():
+        gate_path = gate_paths.get(gate_name, gate_paths["fleet"])
+        gate.update(
+            {
+                "passed": True,
+                "evidence": str(gate_path.resolve()),
+                "sha256": _sha(gate_path),
+                "capacity_generation": 2,
+            }
+        )
+    monkeypatch.setattr(
+        control, "load_control", lambda *_args, **_kwargs: synthetic
+    )
+    monkeypatch.setattr(
+        control,
+        "validate_capacity_readiness_pending_state",
+        lambda *_args, **_kwargs: synthetic,
+    )
+    monkeypatch.setattr(
+        control, "_capacity_gates_are_fresh", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        control, "validate_readiness", lambda *_args, **_kwargs: None
+    )
+
+    def scheduler_runner(argv, *, timeout):
+        del timeout
+        args = list(argv)
+        if args == ["scontrol", "show", "config"]:
+            stdout = (
+                "KillWait                = 30 sec\n"
+                "PreemptMode             = REQUEUE\n"
+                "PreemptType             = preempt/partition_prio\n"
+            )
+        elif args == [
+            "scontrol",
+            "show",
+            "partition",
+            partition,
+            "-o",
+        ]:
+            stdout = (
+                f"PartitionName={partition} GraceTime=0 MaxTime=12:00:00 "
+                "PreemptMode=OFF State=UP TotalNodes=50\n"
+            )
+        elif args == [
+            "sacctmgr",
+            "-nP",
+            "show",
+            "qos",
+            partition,
+            "format=Name,MaxTRESPerUser,MaxSubmitJobsPerUser",
+        ]:
+            stdout = f"{partition}|cpu=384,mem=1536G|448\n"
+        else:  # pragma: no cover - fixture boundary
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    root = (
+        state_dir
+        / "capacity-transitions"
+        / transition_id
+        / f"client-capacity-{target}"
+    )
+    dry = control.build_client_capacity_generation(
+        state_dir,
+        action="dry-run",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=scheduler_runner,
+        now=100.0,
+    )
+    assert dry["would_change"] is True
+    assert dry["nonpreemptible_client_slots"] == 384
+    assert dry.get("submit_command") != [
+        "sbatch",
+        str(
+            (
+                state_dir
+                / "capacity-transitions"
+                / transition_id
+                / f"client-capacity-{target}"
+                / control.CLIENT_CAPACITY_CANARY_SBATCH
+            ).resolve()
+        ),
+    ]
+    assert not root.exists()
+
+    prepared = control.build_client_capacity_generation(
+        state_dir,
+        action="prepare",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=scheduler_runner,
+        now=100.0,
+    )
+    assert prepared["state"] == "canary_prepared"
+    assert prepared.get("submit_command") != [
+        "sbatch",
+        prepared["sbatch"],
+    ]
+    assert not (root / control.CLIENT_CAPACITY_COMPLETE).exists()
+    assert not (
+        root / control.CLIENT_CAPACITY_SCHEDULER_EVIDENCE
+    ).exists()
+    preflight = json.loads(
+        (
+            root / control.CLIENT_CAPACITY_SCHEDULER_PREFLIGHT_EVIDENCE
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        preflight["raw_client_capacity_contract"]["captured_timestamp"]
+        == 100.0
+    )
+    assert (
+        root / control.CLIENT_CAPACITY_BUILD_INTENT
+    ).stat().st_mode & 0o222 == 0
+
+    sbatch_path = Path(prepared["sbatch"])
+    sbatch_path.chmod(0o644)
+    with pytest.raises(control.ControlError, match="sbatch drifted"):
+        control.build_client_capacity_generation(
+            state_dir,
+            action="submit",
+            partition=partition,
+            target_ceiling=target,
+            scheduler_runner=scheduler_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(
+                    _client_capacity_submission_snapshot(
+                        SimpleNamespace(), complete=True
+                    )
+                )
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "a drifted sbatch must fail before submission"
+            ),
+            scheduler_user="test-user",
+            now=101.0,
+        )
+    sbatch_path.chmod(0o444)
+
+    sbatch_lines = sbatch_path.read_text(encoding="utf-8").splitlines()
+    submit_fixture = SimpleNamespace(
+        sbatch_path=sbatch_path,
+        comment=next(
+            line.removeprefix("#SBATCH --comment=")
+            for line in sbatch_lines
+            if line.startswith("#SBATCH --comment=")
+        ),
+        job_name=next(
+            line.removeprefix("#SBATCH --job-name=")
+            for line in sbatch_lines
+            if line.startswith("#SBATCH --job-name=")
+        ),
+    )
+    empty = _client_capacity_submission_snapshot(submit_fixture)
+    completed_scheduler = _client_capacity_submission_snapshot(
+        submit_fixture,
+        _exact_client_capacity_job(
+            submit_fixture,
+            "123",
+            state="COMPLETED",
+            source="sacct",
+        ),
+    )
+    control.build_client_capacity_generation(
+        state_dir,
+        action="submit",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=scheduler_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(
+                empty, completed_scheduler
+            )
+        ),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            list(argv), 0, "123\n", ""
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    control.build_client_capacity_generation(
+        state_dir,
+        action="submit",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=scheduler_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(completed_scheduler)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "the exact visible canary must be adopted"
+        ),
+        scheduler_user="test-user",
+        now=101.5,
+    )
+
+    def command_runner(argv):
+        args = list(argv)
+        submit_line = shlex.join(
+            (
+                "sbatch",
+                "--parsable",
+                f"--comment={submit_fixture.comment}",
+                str(sbatch_path.resolve()),
+            )
+        )
+        stdout = f"123|COMPLETED|{partition}|1|4G|0:0|{submit_line}\n"
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    completed = control.build_client_capacity_generation(
+        state_dir,
+        action="apply",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=scheduler_runner,
+        command_runner=command_runner,
+        now=101.0,
+    )
+    assert completed["state"] == "complete"
+    marker = Path(completed["authorization"])
+    assert marker.name == control.CLIENT_CAPACITY_COMPLETE
+    assert marker.stat().st_mode & 0o222 == 0
+    marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    canonical_scheduler = json.loads(
+        (
+            root / control.CLIENT_CAPACITY_SCHEDULER_EVIDENCE
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        canonical_scheduler["raw_client_capacity_contract"][
+            "captured_timestamp"
+        ]
+        == 101.0
+    )
+    assert marker_payload["captured_timestamp"] == 101.0
+    assert (
+        marker_payload["captured_timestamp"]
+        == canonical_scheduler["raw_client_capacity_contract"][
+            "captured_timestamp"
+        ]
+    )
+    repeated = control.build_client_capacity_generation(
+        state_dir,
+        action="apply",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=scheduler_runner,
+        command_runner=command_runner,
+        now=102.0,
+    )
+    assert repeated["state"] == "already_complete"
+    assert repeated["sha256"] == completed["sha256"]
+
+    scheduler_path = root / control.CLIENT_CAPACITY_SCHEDULER_EVIDENCE
+    scheduler_path.chmod(0o644)
+    with pytest.raises(
+        control.ControlError, match="sealed, single-link regular file"
+    ):
+        control.build_client_capacity_generation(
+            state_dir,
+            action="apply",
+            partition=partition,
+            target_ceiling=target,
+            scheduler_runner=scheduler_runner,
+            command_runner=command_runner,
+            now=103.0,
+        )
+
+
+def _prepared_client_capacity_submission_fixture(tmp_path, monkeypatch):
+    """Prepare one generation-2 canary for transactional submission tests."""
+
+    state_dir, initialized = initialize(tmp_path)
+    partition = "schema5_clients_g2"
+    target = 192
+    transition_id = "capacity-g000001-to-g000002-submit-test"
+    synthetic = copy.deepcopy(initialized)
+    synthetic.update(
+        {
+            "desired_state": "paused",
+            "drain_requested": True,
+            "rollout_generation": 1,
+        }
+    )
+    synthetic["capacity"] = {
+        "schema_version": control.CAPACITY_STATE_SCHEMA_VERSION,
+        "protocol": control.CAPACITY_STATE_PROTOCOL,
+        "current_generation": 2,
+        "current_contract": {"sha256": "b" * 64},
+        "active_transition": {
+            "transition_id": transition_id,
+            "phase": "readiness_pending",
+            "to_generation": 2,
+            "fleet_launch_completed_timestamp": 50.0,
+        },
+        "history": [],
+    }
+    gate_paths = {}
+    for gate_name in ("fleet", "smoke_runs", "scheduler_reconciliation"):
+        gate_path = tmp_path / "submit-builder-gates" / f"{gate_name}.json"
+        gate_path.parent.mkdir(parents=True, exist_ok=True)
+        control._atomic_write_json(
+            gate_path, {"gate": gate_name, "passed": True}
+        )
+        gate_path.chmod(0o444)
+        gate_paths[gate_name] = gate_path
+    for gate_name, gate in synthetic["readiness"].items():
+        gate_path = gate_paths.get(gate_name, gate_paths["fleet"])
+        gate.update(
+            {
+                "passed": True,
+                "evidence": str(gate_path.resolve()),
+                "sha256": _sha(gate_path),
+                "capacity_generation": 2,
+            }
+        )
+    monkeypatch.setattr(
+        control, "load_control", lambda *_args, **_kwargs: synthetic
+    )
+    monkeypatch.setattr(
+        control,
+        "validate_capacity_readiness_pending_state",
+        lambda *_args, **_kwargs: synthetic,
+    )
+    monkeypatch.setattr(
+        control, "_capacity_gates_are_fresh", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        control, "validate_readiness", lambda *_args, **_kwargs: None
+    )
+
+    def capacity_runner(argv, *, timeout):
+        del timeout
+        args = list(argv)
+        if args == ["scontrol", "show", "config"]:
+            stdout = (
+                "KillWait                = 30 sec\n"
+                "PreemptMode             = REQUEUE\n"
+                "PreemptType             = preempt/partition_prio\n"
+            )
+        elif args == [
+            "scontrol",
+            "show",
+            "partition",
+            partition,
+            "-o",
+        ]:
+            stdout = (
+                f"PartitionName={partition} GraceTime=0 MaxTime=12:00:00 "
+                "PreemptMode=OFF State=UP TotalNodes=50\n"
+            )
+        elif args == [
+            "sacctmgr",
+            "-nP",
+            "show",
+            "qos",
+            partition,
+            "format=Name,MaxTRESPerUser,MaxSubmitJobsPerUser",
+        ]:
+            stdout = f"{partition}|cpu=384,mem=1536G|448\n"
+        else:  # pragma: no cover - fixture boundary
+            raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    prepared = control.build_client_capacity_generation(
+        state_dir,
+        action="prepare",
+        partition=partition,
+        target_ceiling=target,
+        scheduler_runner=capacity_runner,
+        now=100.0,
+    )
+    root = (
+        state_dir
+        / "capacity-transitions"
+        / transition_id
+        / f"client-capacity-{target}"
+    )
+    intent = json.loads(
+        (root / control.CLIENT_CAPACITY_BUILD_INTENT).read_text(
+            encoding="utf-8"
+        )
+    )
+    sbatch_path = Path(prepared["sbatch"])
+    sbatch_lines = sbatch_path.read_text(encoding="utf-8").splitlines()
+    comment = next(
+        line.removeprefix("#SBATCH --comment=")
+        for line in sbatch_lines
+        if line.startswith("#SBATCH --comment=")
+    )
+    job_name = next(
+        line.removeprefix("#SBATCH --job-name=")
+        for line in sbatch_lines
+        if line.startswith("#SBATCH --job-name=")
+    )
+    return SimpleNamespace(
+        state_dir=state_dir,
+        synthetic=synthetic,
+        partition=partition,
+        target=target,
+        transition_id=transition_id,
+        root=root,
+        prepared=prepared,
+        intent=intent,
+        sbatch_path=sbatch_path,
+        sbatch_sha256=_sha(sbatch_path),
+        comment=comment,
+        job_name=job_name,
+        capacity_runner=capacity_runner,
+    )
+
+
+def _client_capacity_submission_snapshot(
+    fixture,
+    *jobs: tuple[str, str, str, str, str, str],
+    complete: bool = True,
+    captured_at: float = 101.0,
+) -> control.SchedulerSnapshot:
+    return control.SchedulerSnapshot(
+        jobs=tuple(
+            control.SchedulerJob(
+                job_id=job_id,
+                job_name=job_name,
+                state=state,
+                comment=comment,
+                command=command,
+                source=source,
+            )
+            for job_id, job_name, state, comment, command, source in jobs
+        ),
+        captured_at=captured_at,
+        squeue_ok=complete,
+        sacct_ok=complete,
+        errors=() if complete else ("sacct unavailable",),
+    )
+
+
+def _client_capacity_submission_scheduler_runner(*snapshots):
+    """Render complete query_scheduler command output from fixture snapshots."""
+
+    assert snapshots
+    query_index = 0
+
+    def runner(argv):
+        nonlocal query_index
+        args = list(argv)
+        snapshot = snapshots[min(query_index, len(snapshots) - 1)]
+        if args[0] == "squeue":
+            if not snapshot.squeue_ok:
+                return subprocess.CompletedProcess(
+                    args, 1, "", "squeue fixture failure"
+                )
+            rows = []
+            for job in snapshot.jobs:
+                if job.source == "sacct":
+                    continue
+                rows.append(
+                    "|".join(
+                        (
+                            job.job_id,
+                            job.job_name,
+                            job.state,
+                            job.comment,
+                            job.command,
+                            "",
+                        )
+                    )
+                )
+            return subprocess.CompletedProcess(
+                args, 0, "".join(f"{row}\n" for row in rows), ""
+            )
+        if args[0] == "sacct":
+            query_index += 1
+            if not snapshot.sacct_ok:
+                return subprocess.CompletedProcess(
+                    args, 1, "", "sacct fixture failure"
+                )
+            rows = []
+            for job in snapshot.jobs:
+                if job.source == "squeue":
+                    continue
+                rows.append(
+                    "|".join(
+                        (
+                            job.job_id,
+                            job.job_name,
+                            job.state,
+                            job.comment,
+                            job.command,
+                        )
+                    )
+                )
+            return subprocess.CompletedProcess(
+                args, 0, "".join(f"{row}\n" for row in rows), ""
+            )
+        raise AssertionError(args)  # pragma: no cover - fixture boundary
+
+    return runner
+
+
+def _exact_client_capacity_job(
+    fixture,
+    job_id: str,
+    *,
+    state: str = "RUNNING",
+    source: str = "squeue+sacct",
+) -> tuple[str, str, str, str, str, str]:
+    return (
+        job_id,
+        fixture.job_name,
+        state,
+        fixture.comment,
+        shlex.join(
+            (
+                "sbatch",
+                "--parsable",
+                f"--comment={fixture.comment}",
+                str(fixture.sbatch_path),
+            )
+        ),
+        source,
+    )
+
+
+def test_client_capacity_submit_is_marker_first_marker_last_and_replay_safe(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    visible = _client_capacity_submission_snapshot(
+        fixture, _exact_client_capacity_job(fixture, "701")
+    )
+    snapshots = iter((empty, visible))
+    submit_calls = []
+
+    def submit_runner(argv):
+        submit_calls.append(list(argv))
+        submission_root = (
+            fixture.root / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        )
+        intent_path = (
+            submission_root / control.CLIENT_CAPACITY_SUBMISSION_INTENT
+        )
+        attempts = (
+            submission_root
+            / control.CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY
+        )
+        assert intent_path.is_file()
+        assert intent_path.stat().st_mode & 0o222 == 0
+        attempt_intents = list(attempts.rglob("ATTEMPT_INTENT.json"))
+        assert len(attempt_intents) == 1
+        assert attempt_intents[0].stat().st_mode & 0o222 == 0
+        assert not list(attempts.rglob("SBATCH_RESULT.json"))
+        assert not (
+            fixture.root
+            / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+            / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+        ).exists()
+        return subprocess.CompletedProcess(list(argv), 0, "701\n", "")
+
+    submitted = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(*snapshots)
+        ),
+        submit_runner=submit_runner,
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    assert submit_calls == [
+        [
+            "sbatch",
+            "--parsable",
+            f"--comment={fixture.comment}",
+            str(fixture.sbatch_path),
+        ]
+    ]
+    accepted_path = (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    )
+    if submitted["state"] == "submission_pending":
+        submitted = control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(visible)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "a visible submitted canary must be adopted"
+            ),
+            scheduler_user="test-user",
+            now=101.5,
+        )
+    assert submitted["job_id"] == "701"
+    assert accepted_path.is_file()
+    assert accepted_path.stat().st_mode & 0o222 == 0
+    accepted = json.loads(accepted_path.read_text(encoding="utf-8"))
+    assert accepted["job_id"] == "701"
+    assert accepted["job_comment"] == fixture.comment
+    assert accepted["sbatch_path"] == str(fixture.sbatch_path)
+    assert accepted["sbatch_sha256"] == fixture.sbatch_sha256
+    accepted_sha = _sha(accepted_path)
+
+    replayed = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(visible)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "an accepted client canary must never be resubmitted"
+        ),
+        scheduler_user="test-user",
+        now=102.0,
+    )
+    assert replayed["job_id"] == "701"
+    assert replayed["state"] == "already_submitted"
+    assert _sha(accepted_path) == accepted_sha
+
+
+def test_client_capacity_submit_adopts_post_sbatch_crash_without_duplicate(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    with pytest.raises(RuntimeError, match="simulated post-sbatch crash"):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(empty)
+            ),
+            submit_runner=lambda _argv: (_ for _ in ()).throw(
+                RuntimeError("simulated post-sbatch crash")
+            ),
+            scheduler_user="test-user",
+            now=101.0,
+        )
+    assert not (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    ).exists()
+
+    visible = _client_capacity_submission_snapshot(
+        fixture, _exact_client_capacity_job(fixture, "702")
+    )
+    adopted = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(visible)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "a visible post-sbatch crash-window job must be adopted"
+        ),
+        scheduler_user="test-user",
+        now=102.0,
+    )
+    assert adopted["job_id"] == "702"
+    assert adopted["state"] == "adopted"
+
+
+def test_client_capacity_candidate_observation_survives_accept_marker_crash(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    visible = _client_capacity_submission_snapshot(
+        fixture, _exact_client_capacity_job(fixture, "709")
+    )
+    first = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            list(argv), 0, "709\n", ""
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    assert first["state"] == "submission_pending"
+    real_write = control._write_sealed_builder_json
+
+    def crash_before_accept(path, payload, *, description):
+        if description == "client-capacity accepted submission":
+            raise RuntimeError("simulated accepted-marker crash")
+        return real_write(path, payload, description=description)
+
+    monkeypatch.setattr(
+        control, "_write_sealed_builder_json", crash_before_accept
+    )
+    with pytest.raises(RuntimeError, match="accepted-marker crash"):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(visible)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "visible canary must be adopted without another sbatch"
+            ),
+            scheduler_user="test-user",
+            now=102.0,
+        )
+    accepted_path = (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    )
+    assert not accepted_path.exists()
+    monkeypatch.setattr(
+        control, "_write_sealed_builder_json", real_write
+    )
+
+    # Even if both live and accounting views temporarily omit the short canary,
+    # the sealed candidate-bearing observation is permanent acceptance evidence.
+    adopted = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "historical candidate observation must prevent a second sbatch"
+        ),
+        scheduler_user="test-user",
+        now=163.0,
+    )
+    assert adopted["state"] == "adopted"
+    assert adopted["job_id"] == "709"
+    replayed = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "sealed acceptance must remain replay-safe"
+        ),
+        scheduler_user="test-user",
+        now=224.0,
+    )
+    assert replayed["state"] == "already_submitted"
+    assert replayed["job_id"] == "709"
+
+
+@pytest.mark.parametrize(
+    ("crash_description", "recoverable"),
+    [
+        ("client-capacity sacct submission observation", False),
+        ("client-capacity submission observation completion", True),
+    ],
+)
+def test_client_capacity_partial_candidate_observation_never_allows_retry(
+    tmp_path, monkeypatch, crash_description, recoverable
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    visible = _client_capacity_submission_snapshot(
+        fixture, _exact_client_capacity_job(fixture, "710")
+    )
+    control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            list(argv), 0, "710\n", ""
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    real_write = control._write_sealed_builder_json
+
+    def crash_partial(path, payload, *, description):
+        if description == crash_description:
+            raise RuntimeError("simulated partial-observation crash")
+        return real_write(path, payload, description=description)
+
+    monkeypatch.setattr(control, "_write_sealed_builder_json", crash_partial)
+    with pytest.raises(RuntimeError, match="partial-observation crash"):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(visible)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "visible candidate must not cross sbatch again"
+            ),
+            scheduler_user="test-user",
+            now=102.0,
+        )
+    monkeypatch.setattr(control, "_write_sealed_builder_json", real_write)
+    if recoverable:
+        recovered = control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(empty)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "two sealed source observations must recover without sbatch"
+            ),
+            scheduler_user="test-user",
+            now=163.0,
+        )
+        assert recovered["state"] == "adopted"
+        assert recovered["job_id"] == "710"
+    else:
+        with pytest.raises(
+            control.SchedulerVisibilityPending,
+            match="partial durable.*exact candidate",
+        ):
+            control.build_client_capacity_generation(
+                fixture.state_dir,
+                action="submit",
+                partition=fixture.partition,
+                target_ceiling=fixture.target,
+                scheduler_runner=fixture.capacity_runner,
+                submission_scheduler_runner=(
+                    _client_capacity_submission_scheduler_runner(empty)
+                ),
+                submit_runner=lambda _argv: pytest.fail(
+                    "one partial candidate source must fail closed"
+                ),
+                scheduler_user="test-user",
+                now=163.0,
+            )
+
+
+def test_client_capacity_ambiguous_submit_retries_only_after_two_absences(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    ambiguous = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda _argv: (_ for _ in ()).throw(
+            OSError("ambiguous sbatch transport")
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    assert ambiguous["state"] == "submission_pending"
+    assert ambiguous["job_id"] is None
+
+    first_absence = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "one absence observation cannot authorize a retry"
+        ),
+        scheduler_user="test-user",
+        now=120.0,
+    )
+    assert first_absence["state"] == "submission_pending"
+    assert "two complete absence observations" in first_absence["reason"]
+
+    retry_calls = []
+
+    def retry_submit(argv):
+        retry_calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, "707\n", "")
+
+    retried = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=retry_submit,
+        scheduler_user="test-user",
+        now=181.0,
+    )
+    assert retried["state"] == "submission_pending"
+    assert retried["job_id"] == "707"
+    assert retry_calls == [
+        [
+            "sbatch",
+            "--parsable",
+            f"--comment={fixture.comment}",
+            str(fixture.sbatch_path),
+        ]
+    ]
+    attempts_root = (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY
+    )
+    retry_authorization_path = (
+        attempts_root / "000001" / "RETRY_AUTHORIZATION.json"
+    )
+    assert retry_authorization_path.is_file()
+    assert retry_authorization_path.stat().st_mode & 0o222 == 0
+    retry_authorization = json.loads(
+        retry_authorization_path.read_text(encoding="utf-8")
+    )
+    assert retry_authorization["from_attempt"] == 1
+    assert retry_authorization["to_attempt"] == 2
+    assert len(retry_authorization["absence_observations"]) == 2
+    assert retry_authorization["absence_interval_seconds"] == 61.0
+    second_attempt = json.loads(
+        (attempts_root / "000002" / "ATTEMPT_INTENT.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert second_attempt["retry_authorization"] == {
+        "path": str(retry_authorization_path.resolve()),
+        "sha256": _sha(retry_authorization_path),
+    }
+    visible = _client_capacity_submission_snapshot(
+        fixture, _exact_client_capacity_job(fixture, "707")
+    )
+    adopted = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(visible)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "the one retried canary must be adopted without another sbatch"
+        ),
+        scheduler_user="test-user",
+        now=182.0,
+    )
+    assert adopted["state"] == "adopted"
+    assert adopted["job_id"] == "707"
+
+    retry_authorization["absence_interval_seconds"] = 60.0
+    retry_authorization_path.chmod(0o644)
+    retry_authorization_path.write_text(
+        json.dumps(retry_authorization, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    retry_authorization_path.chmod(0o444)
+    with pytest.raises(
+        control.ControlError,
+        match="retry authorization|retry authorization reference",
+    ):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(visible)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "tampered retry lineage must fail before sbatch"
+            ),
+            scheduler_user="test-user",
+            now=183.0,
+        )
+
+
+def test_client_capacity_retry_rejects_tampered_absence_source(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda _argv: (_ for _ in ()).throw(
+            OSError("ambiguous sbatch transport")
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(empty)
+        ),
+        submit_runner=lambda _argv: pytest.fail(
+            "one absence cannot authorize retry"
+        ),
+        scheduler_user="test-user",
+        now=120.0,
+    )
+    source = (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY
+        / "000001"
+        / "observations"
+        / "000001"
+        / "SQUEUE_OBSERVATION.json"
+    )
+    source.chmod(0o644)
+    source.write_bytes(source.read_bytes() + b" ")
+    source.chmod(0o444)
+    with pytest.raises(
+        control.ControlError,
+        match="observation reference drifted|observation drifted",
+    ):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(empty)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "tampered absence evidence cannot authorize retry"
+            ),
+            scheduler_user="test-user",
+            now=181.0,
+        )
+
+
+def test_client_capacity_submit_rejects_exact_comment_on_foreign_sbatch(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    foreign = _client_capacity_submission_snapshot(
+        fixture,
+        (
+            "708",
+            fixture.job_name,
+            "RUNNING",
+            fixture.comment,
+            "sbatch --parsable "
+            f"--comment={shlex.quote(fixture.comment)} "
+            "/tmp/foreign-client-capacity.sbatch",
+            "squeue+sacct",
+        ),
+    )
+    with pytest.raises(
+        control.SchedulerAmbiguity, match="foreign or drifted"
+    ):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(foreign)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "a foreign exact-comment candidate must prevent sbatch"
+            ),
+            scheduler_user="test-user",
+            now=101.0,
+        )
+
+
+@pytest.mark.parametrize("failure", ("incomplete", "duplicate"))
+def test_client_capacity_submit_fails_closed_on_incomplete_or_duplicate_truth(
+    tmp_path, monkeypatch, failure
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    if failure == "incomplete":
+        snapshot = _client_capacity_submission_snapshot(
+            fixture, complete=False
+        )
+        match = "complete.*squeue.*sacct"
+    else:
+        snapshot = _client_capacity_submission_snapshot(
+            fixture,
+            _exact_client_capacity_job(fixture, "703"),
+            _exact_client_capacity_job(
+                fixture, "704", state="PENDING", source="sacct"
+            ),
+        )
+        match = "multiple|exactly one|duplicate|ambiguous"
+    with pytest.raises(
+        (control.ControlError, control.SchedulerAmbiguity), match=match
+    ):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(snapshot)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "unsafe scheduler truth must prevent sbatch"
+            ),
+            scheduler_user="test-user",
+            now=101.0,
+        )
+    assert not (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    ).exists()
+
+
+def test_client_capacity_submit_rejects_misbound_accepted_marker(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    visible = _client_capacity_submission_snapshot(
+        fixture, _exact_client_capacity_job(fixture, "705")
+    )
+    snapshots = iter((empty, visible))
+    control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(*snapshots)
+        ),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            list(argv), 0, "705\n", ""
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    marker = (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    )
+    if not marker.exists():
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(visible)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "a visible submitted canary must be adopted"
+            ),
+            scheduler_user="test-user",
+            now=101.5,
+        )
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["sbatch_path"] = "/tmp/foreign-client-capacity.sbatch"
+    marker.chmod(0o644)
+    marker.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    marker.chmod(0o444)
+
+    with pytest.raises(control.ControlError, match="accepted.*identity|drift"):
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(visible)
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "a misbound accepted marker must fail before sbatch"
+            ),
+            scheduler_user="test-user",
+            now=102.0,
+        )
+
+
+def test_client_capacity_apply_derives_job_id_from_sealed_acceptance(
+    tmp_path, monkeypatch
+):
+    fixture = _prepared_client_capacity_submission_fixture(
+        tmp_path, monkeypatch
+    )
+    empty = _client_capacity_submission_snapshot(fixture)
+    completed_snapshot = _client_capacity_submission_snapshot(
+        fixture,
+        _exact_client_capacity_job(
+            fixture, "706", state="COMPLETED", source="sacct"
+        ),
+    )
+    snapshots = iter((empty, completed_snapshot))
+    control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="submit",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        submission_scheduler_runner=(
+            _client_capacity_submission_scheduler_runner(*snapshots)
+        ),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            list(argv), 0, "706\n", ""
+        ),
+        scheduler_user="test-user",
+        now=101.0,
+    )
+    accepted_path = (
+        fixture.root
+        / control.CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        / control.CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    )
+    if not accepted_path.exists():
+        control.build_client_capacity_generation(
+            fixture.state_dir,
+            action="submit",
+            partition=fixture.partition,
+            target_ceiling=fixture.target,
+            scheduler_runner=fixture.capacity_runner,
+            submission_scheduler_runner=(
+                _client_capacity_submission_scheduler_runner(
+                    completed_snapshot
+                )
+            ),
+            submit_runner=lambda _argv: pytest.fail(
+                "a completed submitted canary must be adopted"
+            ),
+            scheduler_user="test-user",
+            now=101.5,
+        )
+
+    def canary_runner(argv):
+        args = list(argv)
+        assert args[0:5] == ["sacct", "-X", "-nP", "-j", "706"]
+        submit_line = shlex.join(
+            (
+                "sbatch",
+                "--parsable",
+                f"--comment={fixture.comment}",
+                str(fixture.sbatch_path),
+            )
+        )
+        stdout = (
+            f"706|COMPLETED|{fixture.partition}|1|4G|0:0|"
+            f"{submit_line}\n"
+        )
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    completed = control.build_client_capacity_generation(
+        fixture.state_dir,
+        action="apply",
+        partition=fixture.partition,
+        target_ceiling=fixture.target,
+        scheduler_runner=fixture.capacity_runner,
+        command_runner=canary_runner,
+        now=102.0,
+    )
+    assert completed["state"] == "complete"
+    evidence = json.loads(
+        (
+            fixture.root / control.CLIENT_CAPACITY_CANARY_EVIDENCE
+        ).read_text(encoding="utf-8")
+    )
+    assert evidence["job_id"] == "706"
 
 
 def test_admission_ramp_resets_on_blocking_alert_gap_pause_and_rejects_manual_raise(
@@ -3135,7 +7558,7 @@ def test_admission_ramp_resets_on_blocking_alert_gap_pause_and_rejects_manual_ra
     qids = {run_id: 10 for run_id in control.REQUIRED_RUNS}
     control.record_successful_poll(
         state_dir,
-        validated_qids=sum(qids.values()),
+        useful_qids=sum(qids.values()),
         fleet_generation="fleet-a",
         now=90.0,
     )
@@ -3149,8 +7572,8 @@ def test_admission_ramp_resets_on_blocking_alert_gap_pause_and_rejects_manual_ra
     # Exercise rollback from an already elevated stage without spending another full
     # staged timeline in this independent failure-path test.
     elevated = control.load_control(state_dir)
-    elevated["admission"]["current_ceiling"] = 192
-    elevated["admission_ramp"]["current_ceiling"] = 192
+    elevated["admission"]["current_ceiling"] = 96
+    elevated["admission_ramp"]["current_ceiling"] = 96
     elevated["admission_ramp"]["window"] = None
     control._save_control(state_dir, elevated, now=399.0)
     qos_blocked = _commit_ramp_evidence(
@@ -3594,6 +8017,679 @@ def test_alerts_are_persistent_and_deduplicated(tmp_path):
     assert len((state_dir / control.ALERT_JOURNAL).read_text().splitlines()) == 3
 
 
+def test_critical_alert_and_hold_share_one_admission_boundary(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    alert_journal_written = threading.Event()
+    contender_started = threading.Event()
+    contender_acquired = threading.Event()
+    original_append = control._append_jsonl
+
+    def observe_alert_journal(path, payload):
+        original_append(path, payload)
+        if (
+            path == state_dir / control.ALERT_JOURNAL
+            and payload.get("action") == "raised"
+        ):
+            alert_journal_written.set()
+            assert contender_started.wait(timeout=2.0)
+            # The alert is already durable, but the admission boundary must remain
+            # unavailable until the same transaction has persisted ceiling zero.
+            assert not contender_acquired.wait(timeout=0.1)
+
+    monkeypatch.setattr(control, "_append_jsonl", observe_alert_journal)
+    observed_ceiling: list[int] = []
+
+    def contender() -> None:
+        assert alert_journal_written.wait(timeout=2.0)
+        contender_started.set()
+        with control.admission_boundary_lock(state_dir):
+            contender_acquired.set()
+            observed_ceiling.append(
+                control.admission_contract_from_state(state_dir)["current_ceiling"]
+            )
+
+    thread = threading.Thread(target=contender)
+    thread.start()
+    control.record_alert(
+        state_dir,
+        kind="scheduler-query",
+        severity="critical",
+        message="scheduler unavailable",
+        dedupe_key="monitor:scheduler",
+        scheduler=control.SchedulerSnapshot((), 60.0),
+        now=60.0,
+    )
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert contender_acquired.is_set()
+    assert observed_ceiling == [0]
+
+
+def _hold_drain_scheduler_fixture(state_dir, *, captured_at=60.0):
+    sbatch_path = state_dir / "batches" / "batch-hold1.sbatch"
+    sbatch_path.parent.mkdir(exist_ok=True)
+    sbatch_path.write_text("#!/bin/bash\n", encoding="utf-8")
+    (state_dir / "ledger.json").write_text(
+        json.dumps(
+            {
+                "jobs": {
+                    "900": {
+                        "job_id": "900",
+                        "batch_id": "hold1",
+                        "sbatch_path": str(sbatch_path),
+                    }
+                },
+                "intents": {
+                    "hold1": {
+                        "job_id": "900",
+                        "state": "submitted",
+                        "submit_started_at": captured_at - 10.0,
+                        "sbatch_path": str(sbatch_path),
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return sbatch_path, control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                "900_3",
+                "asys-dispatch-hold1",
+                "RUNNING",
+                "asys-schema5-intent:hold1",
+                f"sbatch {sbatch_path}",
+                "squeue",
+            ),
+            control.SchedulerJob(
+                "900_4",
+                "asys-dispatch-hold1",
+                "PENDING",
+                "asys-schema5-intent:hold1",
+                f"sbatch {sbatch_path}",
+                "squeue",
+            ),
+        ),
+        captured_at,
+    )
+
+
+def test_critical_hold_commits_exact_targets_then_drains_running_and_pending_cells(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    _sbatch_path, snapshot = _hold_drain_scheduler_fixture(state_dir)
+    calls: list[list[str]] = []
+
+    control.record_alert(
+        state_dir,
+        kind="untrusted-response",
+        severity="critical",
+        message="response provenance mismatch",
+        dedupe_key="monitor:untrusted",
+        scheduler=snapshot,
+        signal_runner=lambda argv: (
+            calls.append(list(argv))
+            or subprocess.CompletedProcess(argv, 0, "", "")
+        ),
+        now=60.0,
+    )
+
+    assert calls == [
+        ["scancel", "--batch", "--signal=USR1", "900_3"],
+        ["scancel", "900_4"],
+    ]
+    persisted = control.load_control(state_dir)
+    assert persisted["admission_safety_hold"]["active"] is True
+    assert control.admission_contract_from_state(state_dir)["current_ceiling"] == 0
+    intent = persisted["safety_hold_drain_intent"]
+    assert intent["state"] == "complete"
+    assert set(intent["targets"]) == {
+        "cell_usr1:900_3",
+        "pending_cell_cancel:900_4",
+    }
+    assert all(row["accepted"] for row in intent["results"].values())
+    events = [
+        json.loads(line)
+        for line in (state_dir / control.SAFETY_HOLD_DRAIN_JOURNAL)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert events[0]["event"] == "intent_created"
+    assert events[1]["event"] == "targets_committed"
+    assert events[-1]["event"] == "complete"
+
+
+def test_critical_hold_refuses_all_signals_if_one_live_cell_is_unmappable(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    sbatch_path, snapshot = _hold_drain_scheduler_fixture(state_dir)
+    ambiguous = control.SchedulerSnapshot(
+        (
+            *snapshot.jobs,
+            control.SchedulerJob(
+                "901_0",
+                "asys-dispatch-foreign",
+                "RUNNING",
+                "asys-schema5-intent:foreign",
+                f"sbatch {sbatch_path}",
+                "squeue",
+            ),
+        ),
+        snapshot.captured_at,
+    )
+    calls: list[list[str]] = []
+
+    with pytest.raises(
+        control.SchedulerAmbiguity,
+        match="provenance drift|mapping failed",
+    ):
+        control.record_alert(
+            state_dir,
+            kind="scheduler-ambiguity",
+            severity="critical",
+            message="unmappable cell",
+            dedupe_key="monitor:scheduler",
+            scheduler=ambiguous,
+            signal_runner=lambda argv: (
+                calls.append(list(argv))
+                or subprocess.CompletedProcess(argv, 0, "", "")
+            ),
+            now=60.0,
+        )
+
+    assert calls == []
+    persisted = control.load_control(state_dir)
+    assert persisted["admission_safety_hold"]["active"] is True
+    assert persisted["safety_hold_drain_intent"]["state"] == "failed"
+    assert control.admission_contract_from_state(state_dir)["current_ceiling"] == 0
+
+
+def test_failed_hold_signal_retries_without_redrawing_or_reissuing_absent_target(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    sbatch_path, snapshot = _hold_drain_scheduler_fixture(state_dir)
+    running_only = control.SchedulerSnapshot((snapshot.jobs[0],), 60.0)
+    calls: list[list[str]] = []
+
+    with pytest.raises(control.ControlError, match="failed safety-hold drain action"):
+        control.record_alert(
+            state_dir,
+            kind="scheduler-ambiguity",
+            severity="critical",
+            message="signal transport failed",
+            dedupe_key="monitor:scheduler",
+            scheduler=running_only,
+            signal_runner=lambda argv: (
+                calls.append(list(argv))
+                or subprocess.CompletedProcess(argv, 1, "", "temporary failure")
+            ),
+            now=60.0,
+        )
+    assert calls == [["scancel", "--batch", "--signal=USR1", "900_3"]]
+    failed = control.load_control(state_dir)["safety_hold_drain_intent"]
+    assert failed["state"] == "failed"
+    assert failed["results"]["cell_usr1:900_3"]["accepted"] is False
+
+    terminal = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                "900_3",
+                "asys-dispatch-hold1",
+                "CANCELLED",
+                "asys-schema5-intent:hold1",
+                f"sbatch {sbatch_path}",
+                "sacct",
+            ),
+        ),
+        61.0,
+    )
+    control.record_alert(
+        state_dir,
+        kind="scheduler-ambiguity",
+        severity="critical",
+        message="retry after scheduler reconciliation",
+        dedupe_key="monitor:scheduler",
+        scheduler=terminal,
+        signal_runner=lambda argv: pytest.fail(
+            f"terminal target must not be signaled again: {argv}"
+        ),
+        now=61.0,
+    )
+    recovered = control.load_control(state_dir)["safety_hold_drain_intent"]
+    assert recovered["state"] == "complete"
+    assert recovered["attempt_count"] == 2
+    assert (
+        recovered["results"]["cell_usr1:900_3"]["evidence"]
+        == "scheduler_target_no_longer_live"
+    )
+
+
+def test_admission_safety_hold_fences_and_clears_by_incident_class(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+
+    control.record_alert(
+        state_dir,
+        kind="scheduler-query",
+        severity="critical",
+        message="scheduler unavailable",
+        dedupe_key="monitor:scheduler",
+        scheduler=control.SchedulerSnapshot((), 60.0),
+        now=60.0,
+    )
+    contract = control.admission_contract_from_state(state_dir)
+    assert contract["configured_ceiling"] == 24
+    assert contract["current_ceiling"] == 0
+    assert contract["safety_hold"]["mode"] == "transient"
+
+    control.resolve_alert(state_dir, dedupe_key="monitor:scheduler", now=70.0)
+    once = control.update_admission_safety_hold(
+        state_dir, clean_poll=True, now=80.0
+    )
+    assert once["admission_safety_hold"]["active"] is True
+    cleared = control.update_admission_safety_hold(
+        state_dir, clean_poll=True, now=90.0
+    )
+    assert cleared["admission_safety_hold"]["active"] is False
+    assert control.admission_contract_from_state(state_dir)["current_ceiling"] == 24
+
+    control.record_alert(
+        state_dir,
+        kind="untrusted-response",
+        severity="critical",
+        message="provenance mismatch",
+        dedupe_key="monitor:untrusted",
+        scheduler=control.SchedulerSnapshot((), 100.0),
+        now=100.0,
+    )
+    control.resolve_alert(state_dir, dedupe_key="monitor:untrusted", now=110.0)
+    held = control.update_admission_safety_hold(
+        state_dir,
+        clean_poll=True,
+        semantic_scan_clean=True,
+        now=120.0,
+    )
+    assert held["admission_safety_hold"]["mode"] == "integrity"
+    assert held["admission_safety_hold"]["semantic_clean_after_activation"] is True
+    acknowledged = control.acknowledge_admission_hold(
+        state_dir, note="semantic audit clean; incident reviewed", now=130.0
+    )
+    assert acknowledged["admission_safety_hold"]["active"] is False
+
+
+def test_no_progress_hold_closes_epoch_and_requires_progress_clean_scan_and_ack(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    running = control.record_successful_poll(
+        state_dir,
+        useful_qids=100,
+        fleet_generation="fleet-a",
+        now=55.0,
+    )
+    assert running["throughput_epochs"][-1]["closed_at"] is None
+
+    control.record_alert(
+        state_dir,
+        kind="trusted-qid-progress-stall",
+        severity="critical",
+        message="two complete semantic scans made no trusted progress",
+        dedupe_key="monitor:no-progress",
+        scheduler=control.SchedulerSnapshot((), 60.0),
+        now=60.0,
+    )
+    held = control.load_control(state_dir)
+    assert held["admission_safety_hold"]["mode"] == "integrity"
+    assert held["throughput_epochs"][-1]["close_reason"] == (
+        "admission_safety_hold"
+    )
+    assert held["throughput_epochs"][-1]["closed_timestamp"] == 60.0
+
+    # Clean health polls cannot erase a semantic-progress incident.
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, now=70.0
+    )
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, now=80.0
+    )
+    assert control.load_control(state_dir)["admission_safety_hold"]["active"] is True
+
+    # Actual trusted-QID progress causes the semantic monitor to resolve the alert;
+    # its same complete scan supplies the clean evidence, then an explicit review is
+    # still required.
+    control.resolve_alert(
+        state_dir, dedupe_key="monitor:no-progress", now=90.0
+    )
+    clean = control.update_admission_safety_hold(
+        state_dir,
+        semantic_scan_clean=True,
+        now=90.0,
+    )
+    assert clean["admission_safety_hold"]["active"] is True
+    assert clean["admission_safety_hold"]["semantic_clean_after_activation"] is True
+    released = control.acknowledge_admission_hold(
+        state_dir,
+        note="trusted QIDs advanced and the complete semantic scan is clean",
+        now=100.0,
+    )
+    assert released["admission_safety_hold"]["active"] is False
+
+
+def test_alert_email_delivery_retries_from_durable_state(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    calls = []
+
+    def fail(argv, body):
+        calls.append((list(argv), body))
+        return subprocess.CompletedProcess(argv, 1, "", "mail unavailable")
+
+    alert = control.record_alert(
+        state_dir,
+        kind="test-warning",
+        severity="warning",
+        message="delivery retry",
+        dedupe_key="test:email-retry",
+        send_email=True,
+        mail_runner=fail,
+        now=100.0,
+    )
+    assert alert["email"]["attempt_count"] == 1
+    assert alert["email"]["delivered"] is False
+    assert alert["email"]["next_retry_timestamp"] == 160.0
+    assert control.retry_pending_alert_emails(
+        state_dir, mail_runner=fail, now=159.0
+    )["attempted"] == []
+
+    def succeed(argv, body):
+        calls.append((list(argv), body))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    retried = control.retry_pending_alert_emails(
+        state_dir, mail_runner=succeed, now=160.0
+    )
+    assert retried["delivered"] == [alert["alert_id"]]
+    persisted = control.load_control(state_dir)["alerts"][0]["email"]
+    assert persisted["attempt_count"] == 2
+    assert persisted["delivered"] is True
+    assert persisted["next_retry_timestamp"] is None
+
+
+@pytest.mark.parametrize(
+    "crash_boundary",
+    ("after_alert_journal", "after_transition_journal", "before_control_replace"),
+)
+def test_critical_alert_crash_boundaries_keep_admission_at_zero(
+    tmp_path, monkeypatch, crash_boundary
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    original_append = control._append_jsonl
+    original_save = control._save_control
+
+    def crash_after_append(path, record):
+        original_append(path, record)
+        if (
+            crash_boundary == "after_alert_journal"
+            and Path(path).name == control.ALERT_JOURNAL
+            and record.get("action") == "raised"
+        ):
+            raise RuntimeError("crash after alert journal")
+        if (
+            crash_boundary == "after_transition_journal"
+            and Path(path).name == control.TRANSITION_JOURNAL
+            and record.get("event") == "alert_raised"
+        ):
+            raise RuntimeError("crash after transition journal")
+
+    def crash_before_control_replace(*args, **kwargs):
+        if crash_boundary == "before_control_replace":
+            raise RuntimeError("crash before control replace")
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(control, "_append_jsonl", crash_after_append)
+    monkeypatch.setattr(control, "_save_control", crash_before_control_replace)
+    with pytest.raises(RuntimeError, match="crash"):
+        control.record_alert(
+            state_dir,
+            kind="scheduler-ambiguity",
+            severity="critical",
+            message="ambiguous scheduler truth",
+            dedupe_key="test:crash-critical",
+            scheduler=control.SchedulerSnapshot((), 60.0),
+            now=60.0,
+        )
+
+    # The dispatcher acquires the same admission boundary after the failed writer.
+    # Journal-ahead critical truth must therefore fence the very next poll.
+    with control.admission_boundary_lock(state_dir):
+        contract = control.admission_contract_from_state(state_dir)
+    assert contract["configured_ceiling"] == 24
+    assert contract["current_ceiling"] == 0
+    assert contract["active_critical_alerts"] == ["test:crash-critical"]
+
+
+def test_journal_ahead_alert_retry_resolve_and_clean_does_not_orphan_hold(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    original_save = control._save_control
+    crashed = {"value": False}
+
+    def crash_once(*args, **kwargs):
+        if not crashed["value"]:
+            crashed["value"] = True
+            raise RuntimeError("death before control replace")
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(control, "_save_control", crash_once)
+    with pytest.raises(RuntimeError, match="death"):
+        control.record_alert(
+            state_dir,
+            kind="scheduler-ambiguity",
+            severity="critical",
+            message="first journal-ahead raise",
+            dedupe_key="test:recovered-critical",
+            scheduler=control.SchedulerSnapshot((), 60.0),
+            now=60.0,
+        )
+    monkeypatch.setattr(control, "_save_control", original_save)
+    recovered = control.record_alert(
+        state_dir,
+        kind="scheduler-ambiguity",
+        severity="critical",
+        message="idempotent retry under a new control alert ID",
+        dedupe_key="test:recovered-critical",
+        scheduler=control.SchedulerSnapshot((), 61.0),
+        now=61.0,
+    )
+    control.resolve_alert(
+        state_dir, dedupe_key="test:recovered-critical", now=62.0
+    )
+    assert control._active_critical_alerts_from_journal(state_dir) == []
+    assert recovered["resolved_at"] is None
+
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, now=63.0
+    )
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, now=64.0
+    )
+    contract = control.admission_contract_from_state(state_dir)
+    assert contract["active_critical_alerts"] == []
+    assert contract["safety_hold"]["active"] is False
+    assert contract["current_ceiling"] == 24
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("unknown_action", "resolution_mismatch", "identity_drift", "unseen_resolution"),
+)
+def test_alert_journal_corruption_fails_admission_closed(
+    tmp_path, corruption
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    raised = control.record_alert(
+        state_dir,
+        kind="fixture-warning",
+        severity="warning",
+        message="journal parser fixture",
+        dedupe_key="test:journal-parser",
+        now=60.0,
+    )
+    common = {
+        "at": control.utc_timestamp(61.0),
+        "timestamp": 61.0,
+        "alert_id": raised["alert_id"],
+    }
+    if corruption == "unknown_action":
+        row = {**common, "action": "unknown"}
+    elif corruption == "resolution_mismatch":
+        row = {
+            **common,
+            "action": "resolved",
+            "dedupe_key": "test:different",
+        }
+    elif corruption == "unseen_resolution":
+        row = {
+            **common,
+            "alert_id": "unseen-alert-id",
+            "action": "resolved",
+            "dedupe_key": "test:journal-parser",
+        }
+    else:
+        row = {
+            **common,
+            "action": "raised",
+            "kind": "changed-kind",
+            "severity": "warning",
+            "message": "identity drift",
+            "dedupe_key": "test:journal-parser",
+            "occurrences": 2,
+        }
+    control._append_jsonl(state_dir / control.ALERT_JOURNAL, row)
+    with pytest.raises(control.ControlError, match="alert journal"):
+        control.admission_contract_from_state(state_dir)
+
+
+def test_alert_journal_allows_idempotent_duplicate_resolution(tmp_path):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    raised = control.record_alert(
+        state_dir,
+        kind="fixture-warning",
+        severity="warning",
+        message="duplicate resolution fixture",
+        dedupe_key="test:duplicate-resolution",
+        now=60.0,
+    )
+    control.resolve_alert(
+        state_dir, dedupe_key="test:duplicate-resolution", now=61.0
+    )
+    control._append_jsonl(
+        state_dir / control.ALERT_JOURNAL,
+        {
+            "at": control.utc_timestamp(62.0),
+            "timestamp": 62.0,
+            "action": "resolved",
+            "alert_id": raised["alert_id"],
+            "dedupe_key": "test:duplicate-resolution",
+        },
+    )
+    assert control._active_critical_alerts_from_journal(state_dir) == []
+    assert control.admission_contract_from_state(state_dir)["current_ceiling"] == 24
+
+
+def test_monitor_deadline_sends_term_then_kill_and_persists_failure(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    resume_ready(state_dir, now=50.0)
+    state = control.load_control(state_dir)
+    for cadence in ("semantic", "daily"):
+        state["monitoring"]["cadences"][cadence]["next_due_timestamp"] = 10_000.0
+        state["monitoring"]["cadences"][cadence]["next_due_at"] = control.utc_timestamp(
+            10_000.0
+        )
+    control._save_control(state_dir, state, now=50.0)
+    attempt = control.begin_monitor_attempt(
+        state_dir,
+        cadence="health",
+        controller_generation=1,
+        controller_intent_token="first",
+        controller_job_id="700",
+        now=50.0,
+    )
+
+    class Hung:
+        pid = 123
+
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return -9 if self.killed else None
+
+    child = Hung()
+    signals = []
+
+    def signal_child(process, sig):
+        signals.append(sig)
+        if sig == control.signal.SIGKILL:
+            process.killed = True
+
+    monkeypatch.setattr(control, "_signal_process_group", signal_child)
+    monkeypatch.setattr(control, "_monitor_failure_alert", lambda *_a, **_k: None)
+    output_path = tmp_path / "health.log"
+    output = output_path.open("w", encoding="utf-8")
+    processes = {
+        "health": control._ManagedMonitorProcess(
+            cadence="health",
+            attempt_id=attempt["attempt_id"],
+            process=child,
+            output=output,
+            started_timestamp=50.0,
+            timeout_seconds=240.0,
+        )
+    }
+    kwargs = {
+        "state_dir": state_dir,
+        "processes": processes,
+        "controller_generation": 1,
+        "controller_intent_token": "first",
+        "controller_job_id": "700",
+    }
+    control._service_schema5_monitors(**kwargs, now=290.0)
+    control._service_schema5_monitors(**kwargs, now=321.0)
+    control._service_schema5_monitors(**kwargs, now=322.0)
+    assert signals == [control.signal.SIGTERM, control.signal.SIGKILL]
+    assert processes == {}
+    row = control.load_control(state_dir)["monitoring"]["cadences"]["health"]
+    assert row["consecutive_failures"] == 1
+    assert "execution deadline" in row["last_error"]
+
+
 def test_drill_tokens_are_distinct_and_render_no_production_managed_plane(tmp_path):
     state_dir, _ = initialize(tmp_path)
     make_ready(state_dir)
@@ -3634,11 +8730,15 @@ def test_drill_start_requires_readiness_and_paused_empty_production_state(tmp_pa
             state_dir, scheduler=control.SchedulerSnapshot((), 20.0), now=20.0
         )
     make_ready(state_dir)
+    attest_test_production_authorizations(state_dir, now=29.0)
     current = control.load_control(state_dir)
     current["desired_state"] = "resuming"
     current["resume_intent"] = {
         "state": "submitting_controllers",
         "rollout_generation": 1,
+        "production_authorizations": (
+            control._production_authorization_resume_binding(current)
+        ),
     }
     # This synthetic state tests the drill's desired-state fence, not the separate
     # generation-zero preseal invariant.
@@ -4037,6 +9137,251 @@ def test_drill_finish_is_marker_last_and_completed_live_status_succeeds(
     )
 
 
+def test_external_watchdog_drill_cancels_only_sealed_namespace_and_recovers(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    jobs, snapshot, submit = start_live_drill(state_dir, now=50.0)
+    deployment = _watchdog_deployment_evidence(
+        state_dir, tmp_path / "DEPLOYMENT_EVIDENCE.json"
+    )
+
+    armed = control.arm_external_watchdog_drill(
+        state_dir,
+        snapshot=snapshot(55.0),
+        deployment_evidence_path=deployment,
+        now=55.0,
+    )
+    original_ids = {
+        record["job_id"] for record in armed["intent"]["namespace"]
+    }
+    frozen = control.load_drill_state(state_dir)
+    with pytest.raises(control.ControllerFenced, match="froze"):
+        control.submit_drill_intent(
+            state_dir,
+            role="dispatcher",
+            target="successor",
+            dependency_job_id=frozen["roles"]["dispatcher"]["active"]["job_id"],
+            scheduler=snapshot(55.5),
+            submit_runner=submit,
+            now=55.5,
+        )
+    cancelled = []
+
+    def cancel(argv):
+        assert argv[0] == "scancel"
+        assert argv[1] in original_ids
+        cancelled.append(argv[1])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    first = control.cancel_external_watchdog_drill_namespace(
+        state_dir,
+        snapshot=snapshot(56.0),
+        cancel_runner=cancel,
+        now=56.0,
+    )
+    assert first["state"]["phase"] == "cancelling"
+    assert set(cancelled) == original_ids
+    assert len(cancelled) == 4
+
+    jobs[:] = [
+        control.SchedulerJob(
+            job.job_id,
+            job.job_name,
+            "CANCELLED" if job.job_id in original_ids else job.state,
+            job.comment,
+            job.command,
+            job.source,
+            job.dependency,
+        )
+        for job in jobs
+    ]
+    reconciled = control.cancel_external_watchdog_drill_namespace(
+        state_dir,
+        snapshot=snapshot(60.0),
+        cancel_runner=lambda argv: pytest.fail(f"duplicate cancel: {argv}"),
+        now=60.0,
+    )
+    assert reconciled["state"]["phase"] == "cancelled"
+
+    first_status = control.external_watchdog_drill_status(
+        state_dir,
+        snapshot=snapshot(61.0),
+        record_observation=True,
+        now=61.0,
+    )
+    second_status = control.external_watchdog_drill_status(
+        state_dir,
+        snapshot=snapshot(121.0),
+        record_observation=True,
+        now=121.0,
+    )
+    assert first_status["desired_state"] == "paused"
+    assert first_status["effective_admission_ceiling"] == 0
+    assert first_status["watchdog_drill"] == second_status["watchdog_drill"]
+    assert all(
+        not row["live_active"] and not row["successor_live"]
+        for row in second_status["controllers"].values()
+    )
+
+    repair = control.repair_external_watchdog_drill(
+        state_dir,
+        snapshot=snapshot(122.0),
+        submit_runner=submit,
+        now=122.0,
+    )
+    assert repair["desired_state"] == "paused"
+    assert {row["role"] for row in repair["submitted"]} == set(
+        control.ROLE_NAMES
+    )
+    assert not original_ids & {
+        row["job_id"] for row in repair["submitted"]
+    }
+
+    for index, role in enumerate(control.ROLE_NAMES):
+        drill = control.load_drill_state(state_dir)
+        active = drill["roles"][role]["active"]
+        control.claim_drill_controller(
+            state_dir,
+            drill_id=drill["drill_id"],
+            role=role,
+            generation=active["generation"],
+            intent_token=active["intent_token"],
+            job_id=active["job_id"],
+            active_scheduler_job_ids=snapshot(123.0).active_job_ids,
+            now=123.0 + index,
+        )
+        control.submit_drill_intent(
+            state_dir,
+            role=role,
+            target="successor",
+            dependency_job_id=active["job_id"],
+            scheduler=snapshot(124.0 + index),
+            submit_runner=submit,
+            now=124.0 + index,
+        )
+        control.heartbeat_drill_controller(
+            state_dir,
+            drill_id=drill["drill_id"],
+            role=role,
+            generation=active["generation"],
+            intent_token=active["intent_token"],
+            job_id=active["job_id"],
+            now=126.0 + index,
+        )
+
+    evidence_path = tmp_path / "DRILL_EVIDENCE.json"
+    evidence = control.complete_external_watchdog_drill(
+        state_dir,
+        snapshot=snapshot(130.0),
+        output_path=evidence_path,
+        now=130.0,
+    )
+    assert evidence["passed"] is True
+    assert evidence["duplicate_jobs"] == 0
+    assert evidence["duplicate_admission_intents"] == 0
+    assert evidence["fairness_mutations"] == 0
+    assert evidence["namespace_cancellation_recovery_seconds"] == 74.0
+    assert evidence_path.stat().st_mode & 0o222 == 0
+    loaded = control._load_external_watchdog_drill(state_dir)
+    assert loaded is not None and loaded[1]["phase"] == "complete"
+    assert (
+        control.controller_drill_baseline(
+            state_dir, control.load_control(state_dir)
+        )
+        == loaded[0]["baseline"]
+    )
+
+
+def test_external_watchdog_arm_recovers_marker_first_crash_and_rejects_symlink(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    _jobs, snapshot, _submit = start_live_drill(state_dir, now=50.0)
+    deployment = _watchdog_deployment_evidence(
+        state_dir, tmp_path / "deployment.json"
+    )
+    control.arm_external_watchdog_drill(
+        state_dir,
+        snapshot=snapshot(55.0),
+        deployment_evidence_path=deployment,
+        now=55.0,
+    )
+    control._external_watchdog_drill_state_path(state_dir).unlink()
+    recovered = control.arm_external_watchdog_drill(
+        state_dir,
+        snapshot=snapshot(55.0),
+        deployment_evidence_path=deployment,
+        now=55.0,
+    )
+    assert recovered["state"]["phase"] == "armed"
+    assert control._external_watchdog_drill_state_path(state_dir).is_file()
+
+    other_state, _ = initialize(tmp_path / "other")
+    make_ready(other_state)
+    _jobs, other_snapshot, _submit = start_live_drill(other_state, now=50.0)
+    other_deployment = _watchdog_deployment_evidence(
+        other_state, tmp_path / "other-deployment.json"
+    )
+    alias = tmp_path / "deployment-alias.json"
+    alias.symlink_to(other_deployment)
+    with pytest.raises(control.ControlError, match="symlink"):
+        control.arm_external_watchdog_drill(
+            other_state,
+            snapshot=other_snapshot(55.0),
+            deployment_evidence_path=alias,
+            now=55.0,
+        )
+
+
+def test_external_watchdog_deployment_binds_protected_capacity_tag_object(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    make_ready(state_dir)
+    _jobs, snapshot, _submit = start_live_drill(state_dir, now=50.0)
+    deployment = _watchdog_deployment_evidence(
+        state_dir, tmp_path / "deployment-wrong-tag.json"
+    )
+    value = json.loads(deployment.read_text(encoding="utf-8"))
+    value["release_tag_object"] = "c" * 40
+    value["evidence_id"] = control._watchdog_self_hash(
+        value, "evidence_id"
+    )
+    deployment.chmod(0o644)
+    deployment.write_bytes(control._watchdog_canonical_json(value))
+    deployment.chmod(0o444)
+    with pytest.raises(control.ControlError, match="paused control"):
+        control.arm_external_watchdog_drill(
+            state_dir,
+            snapshot=snapshot(55.0),
+            deployment_evidence_path=deployment,
+            now=55.0,
+        )
+
+
+def test_external_watchdog_control_marker_recovers_linked_temp_boundary(
+    tmp_path,
+):
+    target = tmp_path / "INTENT.json"
+    value = {"schema_version": 1, "protocol": "fixture"}
+    payload = control._watchdog_canonical_json(value)
+    interrupted = tmp_path / ".INTENT.json.crashed.publishing"
+    interrupted.write_bytes(payload)
+    interrupted.chmod(0o444)
+    os.link(interrupted, target)
+    assert target.stat().st_nlink == 2
+    path, digest = control._publish_sealed_json_once(
+        target, value, description="test intent"
+    )
+    assert path == target
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert target.stat().st_nlink == 1
+    assert not interrupted.exists()
+
+
 def test_resume_and_completed_start_reject_live_drill_namespace_before_mutation(
     tmp_path,
 ):
@@ -4249,6 +9594,7 @@ def test_later_pause_resume_revalidates_static_drill_proof_without_live_baseline
         role_state["submission_intent"] = None
         role_state["heartbeat"] = None
     control._save_control(state_dir, current, now=60.0)
+    _ensure_resume_generation_catalog(state_dir, now=60.5)
     jobs = []
     identifiers = iter(("910", "911"))
 
@@ -4366,6 +9712,9 @@ def test_crashed_later_resume_rechecks_historical_marker_hash(tmp_path):
         "created_timestamp": 60.0,
         "controller_job_ids": {},
         "controller_drill_marker_sha256": marker_sha,
+        "production_authorizations": (
+            control._production_authorization_resume_binding(current)
+        ),
     }
     for role_state in current["controllers"].values():
         role_state["active"] = None
@@ -5015,3 +10364,3438 @@ def test_resume_rejects_drill_marker_or_state_drift(tmp_path):
     marker_path.write_text(json.dumps(marker) + "\n", encoding="utf-8")
     with pytest.raises(control.ReadinessError, match="recovery is invalid"):
         control.resume_control(state_dir, now=50.0)
+
+
+def _prepare_capacity_transition_fixture(
+    tmp_path: Path,
+) -> tuple[Path, dict, control.SchedulerSnapshot]:
+    state_dir, _ = initialize(tmp_path)
+    # Capacity completion resumes through the normal fail-closed controller
+    # path.  Preserve a genuine snapshot preseal so this fixture exercises that
+    # path instead of relying on a readiness mock to synthesize snapshot
+    # validation state.
+    make_ready(state_dir)
+    _running, controller_jobs = resume_ready(state_dir, now=28.0)
+    live_controllers = control.SchedulerSnapshot(controller_jobs, 30.0)
+    control.pause_control(
+        state_dir,
+        drain=True,
+        scheduler=live_controllers,
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        now=30.0,
+    )
+    current = control.load_control(state_dir)
+    transaction_state = (
+        Path(current["immutable"]["server_pool_root"])
+        / control.fleet_transactions.STATE_DIRECTORY
+    )
+    transaction_state.mkdir(parents=True, exist_ok=True)
+    (transaction_state / control.fleet_transactions.CURRENT_FILENAME).write_text(
+        '{"fixture":true}\n', encoding="utf-8"
+    )
+    old_fleet = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob("900", "serve-a", "RUNNING"),
+            control.SchedulerJob("901", "serve-b", "PENDING"),
+        ),
+        31.0,
+    )
+    return state_dir, current, old_fleet
+
+
+def _capacity_contract_fixture(
+    tmp_path: Path, current: dict, monkeypatch
+) -> tuple[Path, str]:
+    source = Path(current["immutable"]["fleet_contract_path"])
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    profile = payload["profiles"][0]
+    prior = profile["replicas"][-1]
+    index = len(profile["replicas"])
+    added = dict(prior)
+    added.update(
+        {
+            "replica_index": index,
+            "replica_id": (
+                str(prior["replica_id"])[:-2] + f"{index:02d}"
+            ),
+            "scheduler_job_name": (
+                str(prior["scheduler_job_name"])[:-2] + f"{index:02d}"
+            ),
+        }
+    )
+    profile["replicas"].append(added)
+    payload["logical_replica_count"] = 23
+    payload["allocated_gpu_count"] = 25
+    path = tmp_path / "capacity_fleet.v2.json"
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    digest = _sha(path)
+    path.with_suffix(".sha256").write_text(
+        f"{digest}  {path.name}\n", encoding="utf-8"
+    )
+    baseline_counts = dict(control.EXPECTED_FLEET_PROFILES)
+    proposed_counts = dict(baseline_counts)
+    proposed_counts["0.6B"] += 1
+
+    profile_by_name = {
+        row["serving_profile"]: row for row in payload["profiles"]
+    }
+
+    def frozen(counts, fleet_sha256):
+        by_profile = {}
+        all_replicas = []
+        for name, count in counts.items():
+            profile_row = profile_by_name[name]
+            parsed = tuple(
+                SimpleNamespace(
+                    serving_profile=name,
+                    model_size=profile_row["model_size"],
+                    replica_id=row["replica_id"],
+                    replica_index=row["replica_index"],
+                    gpus_per_replica=(
+                        2 if name == "32B-long" else 1
+                    ),
+                    partition=row["partition"],
+                    qos=row["qos"],
+                )
+                for row in profile_row["replicas"][:count]
+            )
+            by_profile[name] = parsed
+            all_replicas.extend(parsed)
+
+        def for_replica(name, replica_index):
+            return next(
+                row
+                for row in by_profile[name]
+                if row.replica_index == replica_index
+            )
+
+        return SimpleNamespace(
+            fleet_id="schema5-v1",
+            sha256=fleet_sha256,
+            by_profile=by_profile,
+            replicas=tuple(all_replicas),
+            for_replica=for_replica,
+        )
+
+    monkeypatch.setattr(
+        control,
+        "load_effective_fleet_contract",
+        lambda observed, **_kwargs: frozen(
+            (
+                proposed_counts
+                if observed["capacity"]["current_generation"] == 2
+                else baseline_counts
+            ),
+            (
+                digest
+                if observed["capacity"]["current_generation"] == 2
+                else current["immutable"]["fleet_contract_sha256"]
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        control,
+        "load_fleet_contract",
+        lambda observed_path, *_args, **_kwargs: frozen(
+            (
+                baseline_counts
+                if Path(observed_path).resolve() == source.resolve()
+                else proposed_counts
+            ),
+            (
+                current["immutable"]["fleet_contract_sha256"]
+                if Path(observed_path).resolve() == source.resolve()
+                else digest
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        control,
+        "load_model_contracts",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            for_size=lambda size: SimpleNamespace(
+                hf_id=control.get_serving_profile(size).hf_id,
+                model_revision=next(
+                    row["model_revision"]
+                    for row in payload["profiles"]
+                    if row["model_size"] == size
+                ),
+                tokenizer_id=next(
+                    row["tokenizer_id"]
+                    for row in payload["profiles"]
+                    if row["model_size"] == size
+                ),
+                tokenizer_revision=next(
+                    row["tokenizer_revision"]
+                    for row in payload["profiles"]
+                    if row["model_size"] == size
+                ),
+            )
+        ),
+    )
+    return path, digest
+
+
+def _full_snapshot_context_from_current_seal(
+    state_dir: Path,
+) -> control._SnapshotValidationContext:
+    """Rehydrate a test full-scan result from the fixture's sealed proof."""
+
+    current = control.load_control(state_dir)
+    seal_path = Path(current[control.SNAPSHOT_ATTESTATION_STATE_KEY]["path"])
+    seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    baseline = json.loads(
+        Path(seal["metadata_baseline_path"]).read_text(encoding="utf-8")
+    )
+    context = control._SnapshotValidationContext(full=True)
+    context.proofs = {
+        str(row["snapshot_root"]): dict(row) for row in seal["snapshots"]
+    }
+    context.members = {
+        (str(row["snapshot_root"]), str(row["logical_path"])): dict(row)
+        for row in seal["sealed_members"]
+    }
+    context.metadata = {
+        str(row["path"]): dict(row) for row in baseline["entries"]
+    }
+    return context
+
+
+def test_capacity_transition_is_exact_archived_and_restartable(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(tmp_path)
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    cancelled: list[str] = []
+
+    def cancel(argv):
+        assert argv == ["scancel", argv[-1]]
+        cancelled.append(argv[-1])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    result = control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=lambda: next(snapshots),
+        fleet_evidence_reader=lambda _state: {
+            "old_fleet_job_ids": ["900", "901"],
+            "fleet_generation": 7,
+        },
+        cancel_runner=cancel,
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "reconciled\n", ""
+        ),
+        now=31.0,
+    )
+    assert result["replacement_launch_complete"] is True
+    assert result["capacity_generation"] == 2
+    assert cancelled == ["900", "901"]
+    current = control.load_control(state_dir)
+    transition = current["capacity"]["active_transition"]
+    assert transition["phase"] == "readiness_pending"
+    assert current["capacity"]["current_generation"] == 2
+    assert current["admission"]["current_ceiling"] == 24
+    assert current["admission_safety_hold"]["active"] is True
+    assert current["admission_safety_hold"]["mode"] == "operator"
+    assert all(
+        current["readiness"][gate]["passed"] is False
+        for gate in ("fleet", "smoke_runs", "scheduler_reconciliation")
+    )
+    archive = Path(transition["archive_path"])
+    assert control._verify_capacity_archive(archive)["complete"] is True
+    assert not any(path.stat().st_mode & 0o222 for path in archive.rglob("*"))
+
+    # Re-running apply after the generation publication is a read-only status result.
+    repeated = control.capacity_transition(
+        state_dir,
+        action="apply",
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 33.0),
+        fleet_evidence_reader=lambda _state: pytest.fail(
+            "published transition must reuse its durable fleet evidence"
+        ),
+        cancel_runner=lambda _argv: pytest.fail(
+            "published transition must not cancel twice"
+        ),
+        now=33.0,
+    )
+    assert repeated["replacement_launch_complete"] is True
+
+    monkeypatch.setattr(
+        control,
+        "validate_readiness",
+        lambda current, **kwargs: current,
+    )
+    with control.control_lock(state_dir):
+        ready = control.load_control(state_dir)
+        for gate in ("fleet", "smoke_runs"):
+            ready["readiness"][gate] = {
+                "passed": True,
+                "evidence": f"/fresh/{gate}",
+                "sha256": "f" * 64,
+                "attested_at": control.utc_timestamp(34.0),
+                "attested_timestamp": 34.0,
+                "capacity_generation": 2,
+            }
+        control._save_control(state_dir, ready, now=34.0)
+    assert reconcile_clean(state_dir, now=34.5)["passed"] is True
+    completed = control.capacity_transition(
+        state_dir,
+        action="complete",
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 35.0),
+        now=35.0,
+    )
+    assert completed == {
+        "action": "complete",
+        "completed": True,
+        "capacity_generation": 2,
+        "resume_ceiling": 24,
+        "production_resumed": False,
+    }
+    final = control.load_control(state_dir)
+    assert final["capacity"]["active_transition"] is None
+    assert final["capacity"]["history"][-1]["phase"] == "completed"
+    assert final["admission_safety_hold"]["active"] is False
+
+
+def test_capacity_transition_dry_run_is_non_mutating_and_requires_drain(tmp_path):
+    state_dir, initialized = initialize(tmp_path)
+    before = (state_dir / control.CONTROL_FILENAME).read_bytes()
+    with pytest.raises(control.ControlError, match="pause --drain"):
+        control.capacity_transition(
+            state_dir,
+            action="dry-run",
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 20.0),
+            fleet_evidence_reader=lambda _state: {"old_fleet_job_ids": []},
+            now=20.0,
+        )
+    assert (state_dir / control.CONTROL_FILENAME).read_bytes() == before
+    assert initialized["capacity"]["current_generation"] == 1
+
+
+def test_capacity_transition_launch_crash_is_fenced_and_restartable(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(tmp_path)
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    cancelled: list[str] = []
+
+    def crash_after_transactional_launch(_argv, _environment):
+        raise RuntimeError("injected launcher crash")
+
+    with pytest.raises(RuntimeError, match="injected launcher crash"):
+        control.capacity_transition(
+            state_dir,
+            action="apply",
+            fleet_contract_path=contract_path,
+            fleet_contract_sha256=contract_sha,
+            scheduler_reader=lambda: next(snapshots),
+            fleet_evidence_reader=lambda _state: {
+                "old_fleet_job_ids": ["900", "901"]
+            },
+            cancel_runner=lambda argv: (
+                cancelled.append(argv[-1])
+                or subprocess.CompletedProcess(argv, 0, "", "")
+            ),
+            fleet_launch_runner=crash_after_transactional_launch,
+            now=31.0,
+        )
+    crashed = control.load_control(state_dir)
+    assert crashed["capacity"]["active_transition"]["phase"] == "fleet_launch_pending"
+    assert crashed["admission_safety_hold"]["active"] is True
+    assert cancelled == ["900", "901"]
+
+    recovered = control.capacity_transition(
+        state_dir,
+        action="apply",
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 33.0),
+        fleet_evidence_reader=lambda _state: pytest.fail(
+            "retry must adopt the durable retirement/contract intent"
+        ),
+        cancel_runner=lambda _argv: pytest.fail("old IDs must not be cancelled twice"),
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "adopted durable intents\n", ""
+        ),
+        now=33.0,
+    )
+    assert recovered["replacement_launch_complete"] is True
+    transition = control.load_control(state_dir)["capacity"]["active_transition"]
+    assert transition["phase"] == "readiness_pending"
+    assert transition["fleet_launch_attempts"] == 2
+
+
+@pytest.mark.parametrize(
+    "marker_name",
+    (
+        control.CAPACITY_ARCHIVE_COMPLETE,
+        control.CAPACITY_CONTRACT_COMPLETE,
+        "FLEET_TRANSACTION_STATE_RETIRED.json",
+    ),
+)
+def test_capacity_transition_recovers_readonly_pre_marker_preimages(
+    tmp_path, monkeypatch, marker_name
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(
+        tmp_path
+    )
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    cancelled = {"value": False}
+
+    def scheduler():
+        return (
+            control.SchedulerSnapshot((), 32.0)
+            if cancelled["value"]
+            else old_fleet
+        )
+
+    def cancel(argv):
+        cancelled["value"] = True
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    original_atomic = control._atomic_write_json
+    injected = {"value": False}
+
+    def crash_before_marker(path, payload):
+        if Path(path).name == marker_name and not injected["value"]:
+            injected["value"] = True
+            raise RuntimeError(f"crash before {marker_name}")
+        return original_atomic(path, payload)
+
+    monkeypatch.setattr(control, "_atomic_write_json", crash_before_marker)
+    with pytest.raises(RuntimeError, match="crash before"):
+        control.capacity_transition(
+            state_dir,
+            action="apply",
+            fleet_contract_path=contract_path,
+            fleet_contract_sha256=contract_sha,
+            scheduler_reader=scheduler,
+            fleet_evidence_reader=lambda _state: {
+                "old_fleet_job_ids": ["900", "901"]
+            },
+            cancel_runner=cancel,
+            fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+                argv, 0, "", ""
+            ),
+            now=31.0,
+        )
+    transition_roots = list((state_dir / "capacity-transitions").iterdir())
+    assert len(transition_roots) == 1
+    assert not any(
+        path.name == marker_name for path in transition_roots[0].rglob("*")
+    )
+
+    recovered = control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=scheduler,
+        fleet_evidence_reader=lambda _state: {
+            "old_fleet_job_ids": ["900", "901"]
+        },
+        cancel_runner=cancel,
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        now=32.0,
+    )
+    assert recovered["replacement_launch_complete"] is True
+    marker_matches = [
+        path
+        for path in transition_roots[0].rglob("*")
+        if path.name == marker_name
+    ]
+    assert len(marker_matches) == 1
+    assert marker_matches[0].stat().st_mode & 0o222 == 0
+
+
+def test_capacity_transition_requires_fresh_generation_gates_before_complete(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(tmp_path)
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=lambda: next(snapshots),
+        fleet_evidence_reader=lambda _state: {"old_fleet_job_ids": ["900", "901"]},
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        now=31.0,
+    )
+    snapshot_context = _full_snapshot_context_from_current_seal(state_dir)
+    monkeypatch.setattr(
+        control, "validate_readiness", lambda current, **kwargs: snapshot_context
+    )
+    with pytest.raises(control.ReadinessError, match="generation-bound gates"):
+        control.capacity_transition(
+            state_dir,
+            action="complete",
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 34.0),
+            now=34.0,
+        )
+    current = control.load_control(state_dir)
+    assert current["desired_state"] == "paused"
+    assert current["admission_safety_hold"]["active"] is True
+    assert current["throughput_epochs"] == []
+
+
+def test_capacity_transition_does_not_clear_mid_transition_integrity_incident(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(tmp_path)
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=lambda: next(snapshots),
+        fleet_evidence_reader=lambda _state: {"old_fleet_job_ids": ["900", "901"]},
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        now=31.0,
+    )
+    control.update_admission_safety_hold(
+        state_dir,
+        active_critical_keys=["monitor:corrupt"],
+        now=32.0,
+    )
+    with control.control_lock(state_dir):
+        ready = control.load_control(state_dir)
+        for gate in ("fleet", "smoke_runs"):
+            ready["readiness"][gate] = {
+                "passed": True,
+                "evidence": f"/fresh/{gate}",
+                "sha256": "e" * 64,
+                "attested_at": control.utc_timestamp(33.0),
+                "attested_timestamp": 33.0,
+                "capacity_generation": 2,
+            }
+        control._save_control(state_dir, ready, now=33.0)
+    assert reconcile_clean(state_dir, now=33.5)["passed"] is True
+    monkeypatch.setattr(control, "validate_readiness", lambda current, **kwargs: current)
+    with pytest.raises(control.ControlError, match="non-capacity reasons"):
+        control.capacity_transition(
+            state_dir,
+            action="complete",
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 34.0),
+            now=34.0,
+        )
+    held = control.load_control(state_dir)["admission_safety_hold"]
+    assert "monitor:corrupt" in held["reasons"]
+
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, semantic_scan_clean=True, now=35.0
+    )
+    control.acknowledge_admission_hold(
+        state_dir, note="clean post-incident semantic scan", now=36.0
+    )
+    layered = control.load_control(state_dir)["admission_safety_hold"]
+    assert layered["active"] is True
+    assert layered["mode"] == "operator"
+    assert layered["reasons"][0].startswith("capacity-transition:")
+
+
+def test_capacity_transition_layers_preexisting_throughput_hold(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(
+        tmp_path
+    )
+    control.record_alert(
+        state_dir,
+        kind="capacity-gate-failure",
+        severity="critical",
+        message="48-hour throughput target missed",
+        dedupe_key="monitor:throughput",
+        now=30.5,
+    )
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    result = control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=lambda: next(snapshots),
+        fleet_evidence_reader=lambda _state: {
+            "old_fleet_job_ids": ["900", "901"]
+        },
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        now=31.0,
+    )
+    assert result["replacement_launch_complete"] is True
+    held = control.load_control(state_dir)["admission_safety_hold"]
+    assert held["active"] is True
+    assert held["mode"] == "operator"
+    assert held["reasons"] == [
+        "capacity-transition:"
+        + control.load_control(state_dir)["capacity"]["active_transition"][
+            "transition_id"
+        ]
+    ]
+    current = control.load_control(state_dir)
+    transition = current["capacity"]["active_transition"]
+    assert transition["consumed_capacity_incidents"] == [
+        "monitor:throughput"
+    ]
+    retirement_intent = json.loads(
+        Path(transition["retirement_intent_path"]).read_text(encoding="utf-8")
+    )
+    assert retirement_intent["schema_version"] == 2
+    assert retirement_intent["consumed_capacity_incidents"] == [
+        "monitor:throughput"
+    ]
+    throughput_alerts = [
+        alert
+        for alert in current["alerts"]
+        if alert["dedupe_key"] == "monitor:throughput"
+    ]
+    assert len(throughput_alerts) == 1
+    assert throughput_alerts[0]["resolved_at"] == control.utc_timestamp(31.0)
+    consumption = [
+        row
+        for row in current["transition_history"]
+        if row["event"] == "capacity_remediation_incidents_consumed"
+    ]
+    assert consumption[-1]["details"]["dedupe_keys"] == [
+        "monitor:throughput"
+    ]
+
+
+def test_capacity_transition_replays_incident_consumption_exactly_once(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(
+        tmp_path
+    )
+    for dedupe_key, kind in (
+        ("monitor:throughput", "capacity-gate-failure"),
+        ("monitor:corrupt", "semantic-corruption"),
+    ):
+        control.record_alert(
+            state_dir,
+            kind=kind,
+            severity="critical",
+            message=f"fixture incident {dedupe_key}",
+            dedupe_key=dedupe_key,
+            now=30.5,
+        )
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+
+    original_save = control._save_control
+    injected = {"value": False}
+
+    def crash_before_control_replace(path, payload, *, now):
+        active = payload["capacity"].get("active_transition")
+        if (
+            not injected["value"]
+            and isinstance(active, dict)
+            and active.get("phase") == "retirement_requested"
+        ):
+            injected["value"] = True
+            raise RuntimeError("crash before capacity control replacement")
+        return original_save(path, payload, now=now)
+
+    monkeypatch.setattr(control, "_save_control", crash_before_control_replace)
+    with pytest.raises(RuntimeError, match="capacity control replacement"):
+        control.capacity_transition(
+            state_dir,
+            action="apply",
+            fleet_contract_path=contract_path,
+            fleet_contract_sha256=contract_sha,
+            scheduler_reader=lambda: old_fleet,
+            fleet_evidence_reader=lambda _state: {
+                "old_fleet_job_ids": ["900", "901"]
+            },
+            cancel_runner=lambda argv: subprocess.CompletedProcess(
+                argv, 0, "", ""
+            ),
+            fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+                argv, 0, "", ""
+            ),
+            now=31.0,
+        )
+
+    # The marker-first intent survives while the atomic control replacement does not.
+    crashed = control.load_control(state_dir)
+    assert crashed["capacity"]["active_transition"] is None
+    assert set(crashed["admission_safety_hold"]["reasons"]) == {
+        "monitor:throughput",
+        "monitor:corrupt",
+    }
+    transition_roots = list((state_dir / "capacity-transitions").iterdir())
+    assert len(transition_roots) == 1
+    intent = json.loads(
+        (
+            transition_roots[0] / control.CAPACITY_RETIREMENT_INTENT
+        ).read_text(encoding="utf-8")
+    )
+    assert intent["consumed_capacity_incidents"] == ["monitor:throughput"]
+
+    monkeypatch.setattr(control, "_save_control", original_save)
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    recovered = control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=lambda: next(snapshots),
+        fleet_evidence_reader=lambda _state: {
+            "old_fleet_job_ids": ["900", "901"]
+        },
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        now=32.0,
+    )
+    assert recovered["replacement_launch_complete"] is True
+
+    current = control.load_control(state_dir)
+    active = current["capacity"]["active_transition"]
+    assert active["consumed_capacity_incidents"] == ["monitor:throughput"]
+    assert set(current["admission_safety_hold"]["reasons"]) == {
+        f"capacity-transition:{active['transition_id']}",
+        "monitor:corrupt",
+    }
+    by_key = {alert["dedupe_key"]: alert for alert in current["alerts"]}
+    assert by_key["monitor:throughput"]["resolved_at"] == control.utc_timestamp(
+        31.0
+    )
+    assert by_key["monitor:corrupt"]["resolved_at"] is None
+    consumed_events = [
+        row
+        for row in current["transition_history"]
+        if row["event"] == "capacity_remediation_incidents_consumed"
+    ]
+    committed_events = [
+        row
+        for row in current["transition_history"]
+        if row["event"] == "capacity_transition_retirement_committed"
+    ]
+    assert len(consumed_events) == 1
+    assert len(committed_events) == 1
+    alert_resolutions = [
+        row
+        for row in control._read_jsonl_locked(state_dir / control.ALERT_JOURNAL)
+        if row.get("action") == "resolved"
+        and row.get("capacity_transition_id") == active["transition_id"]
+    ]
+    assert [
+        (row["dedupe_key"], row["alert_id"]) for row in alert_resolutions
+    ] == [
+        (
+            "monitor:throughput",
+            by_key["monitor:throughput"]["alert_id"],
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "dedupe_key", ["monitor:ramp-stall", "monitor:throughput"]
+)
+def test_capacity_gate_holds_never_auto_clear_or_accept_ack(
+    tmp_path, dedupe_key
+):
+    state_dir, _ = initialize(tmp_path)
+    control.record_alert(
+        state_dir,
+        kind="capacity-gate-failure",
+        severity="critical",
+        message="capacity evidence gate failed",
+        dedupe_key=dedupe_key,
+        now=10.0,
+    )
+    control.resolve_alert(state_dir, dedupe_key=dedupe_key, now=11.0)
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, semantic_scan_clean=True, now=12.0
+    )
+    control.update_admission_safety_hold(
+        state_dir, clean_poll=True, semantic_scan_clean=True, now=13.0
+    )
+    held = control.load_control(state_dir)["admission_safety_hold"]
+    assert held["active"] is True
+    assert held["mode"] == "integrity"
+    assert held["reasons"] == [dedupe_key]
+    with pytest.raises(
+        control.ControlError, match="controlled capacity-transition"
+    ):
+        control.acknowledge_admission_hold(
+            state_dir, note="must not bypass capacity remediation", now=14.0
+        )
+
+
+def test_capacity_transition_explicit_completion_resumes_at_24_and_opens_epoch(
+    tmp_path, monkeypatch
+):
+    state_dir, initialized, old_fleet = _prepare_capacity_transition_fixture(tmp_path)
+    contract_path, contract_sha = _capacity_contract_fixture(
+        tmp_path, initialized, monkeypatch
+    )
+    snapshots = iter((old_fleet, control.SchedulerSnapshot((), 32.0)))
+    control.capacity_transition(
+        state_dir,
+        action="apply",
+        fleet_contract_path=contract_path,
+        fleet_contract_sha256=contract_sha,
+        scheduler_reader=lambda: next(snapshots),
+        fleet_evidence_reader=lambda _state: {"old_fleet_job_ids": ["900", "901"]},
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_launch_runner=lambda argv, _env: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        now=31.0,
+    )
+    with control.control_lock(state_dir):
+        ready = control.load_control(state_dir)
+        for gate in ("fleet", "smoke_runs", "scheduler_reconciliation"):
+            evidence_path = tmp_path / f"fresh-{gate}.json"
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "gate": gate,
+                        "capacity_generation": 2,
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            evidence_path.chmod(0o444)
+            gate_record = {
+                "passed": True,
+                "evidence": str(evidence_path.resolve()),
+                "sha256": _sha(evidence_path),
+                "attested_at": control.utc_timestamp(33.0),
+                "attested_timestamp": 33.0,
+                "capacity_generation": 2,
+            }
+            if gate == "fleet":
+                (
+                    scheduler_evidence,
+                    scheduler_policy,
+                    _requirements,
+                ) = _fleet_scheduler_safety(ready)
+                transport = ready["immutable"][
+                    "transport_uncertainty_binding"
+                ]
+                gate_record.update(
+                    {
+                        "scheduler_safety_evidence_id": (
+                            scheduler_evidence["evidence_id"]
+                        ),
+                        "scheduler_safety_policy_id": scheduler_policy[
+                            "policy_id"
+                        ],
+                        "scheduler_safety_policy_contract_id": (
+                            scheduler_policy["policy_contract_id"]
+                        ),
+                        "transport_uncertainty_binding_sha256": ready[
+                            "immutable"
+                        ][
+                            "transport_uncertainty_binding_sha256"
+                        ],
+                        "transport_censor_protocol_version": transport[
+                            "transport_censor_protocol_version"
+                        ],
+                        "transport_censor_protocol_hash": transport[
+                            "transport_censor_protocol_hash"
+                        ],
+                    }
+                )
+            ready["readiness"][gate] = gate_record
+        control._save_control(state_dir, ready, now=33.0)
+    assert reconcile_clean(state_dir, now=33.5)["passed"] is True
+    snapshot_context = _full_snapshot_context_from_current_seal(state_dir)
+    monkeypatch.setattr(
+        control, "validate_readiness", lambda current, **kwargs: snapshot_context
+    )
+    first = control.capacity_transition(
+        state_dir,
+        action="complete",
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 34.0),
+        now=34.0,
+    )
+    assert first["production_resumed"] is False
+    pending = control.load_control(state_dir)
+    assert pending["desired_state"] == "paused"
+    assert pending["capacity"]["history"][-1]["production_resume_state"] == "pending"
+    assert pending["throughput_epochs"] == []
+
+    # This transition fixture deliberately replaces the expensive semantic fleet
+    # attestation validator above.  Preserve that boundary while still supplying
+    # immutable bytes for the generation catalog's marker-last evidence copy.
+    control_evidence_path = tmp_path / "capacity-control-evidence.json"
+    control_evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "schema5_test_capacity_control_evidence",
+                "capacity_generation": 2,
+                "rollout_generation": 2,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    control_evidence_path.chmod(0o444)
+    monkeypatch.setattr(
+        control,
+        "_trusted_generation_control_evidence",
+        lambda *_args, **_kwargs: control.GenerationEvidence(
+            kind="control_generation",
+            path=control_evidence_path.resolve(),
+            sha256=_sha(control_evidence_path),
+        ),
+    )
+
+    with pytest.raises(control.ControlError, match="pending production resume"):
+        control.capacity_transition(
+            state_dir,
+            action="apply",
+            fleet_contract_path=contract_path,
+            fleet_contract_sha256=contract_sha,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 35.0),
+            fleet_evidence_reader=lambda _state: pytest.fail(
+                "a second transition must be fenced before fleet inspection"
+            ),
+            now=35.0,
+        )
+    still_pending = control.load_control(state_dir)
+    assert still_pending["capacity"]["current_generation"] == 2
+    assert len(still_pending["capacity"]["history"]) == 1
+
+    # The fixture does not run controller processes that would publish their exits.
+    # Represent the prior generation through complete accounting truth and advance
+    # beyond submission visibility grace so it is deterministically superseded.
+    resume_at = 36.0 + control.SUBMISSION_VISIBILITY_GRACE_SECONDS
+    prior_accounting = tuple(
+        control.SchedulerJob(
+            str(record["job_id"]),
+            f"old-{role}",
+            "COMPLETED",
+            str(record["job_token"]),
+        )
+        for role in control.ROLE_NAMES
+        if isinstance(
+            (record := pending["controllers"][role].get("active")), dict
+        )
+    )
+    running, _jobs = resume_ready(
+        state_dir, now=resume_at, accounting_jobs=prior_accounting
+    )
+    assert running["desired_state"] == "running"
+    finished = control.capacity_transition(
+        state_dir,
+        action="complete",
+        scheduler_reader=lambda: control.SchedulerSnapshot((), resume_at + 1.0),
+        resume_callback=lambda path: control.load_control(path),
+        now=resume_at + 1.0,
+    )
+    assert finished["production_resumed"] is True
+    final = control.load_control(state_dir)
+    assert final["admission"]["current_ceiling"] == 24
+    assert final["capacity"]["history"][-1]["production_resume_state"] == "complete"
+    assert len(final["throughput_epochs"]) == 1
+    assert final["throughput_epochs"][0]["samples"] == []
+    assert final["throughput_epochs"][0]["fleet_generation"].startswith(
+        "capacity-g000002-"
+    )
+
+
+def _finalizer_test_catalog(current: dict) -> control.TrustedGenerationCatalog:
+    state_dir = (
+        Path(current["immutable"]["results_root"]).resolve()
+        / control.CONTROL_STATE_DIRNAME
+    )
+    catalog_id = "c" * 64
+    marker_path = (
+        state_dir
+        / "_finalizer-test-trusted-generation"
+        / catalog_id
+        / control.CATALOG_MARKER
+    )
+    if not marker_path.is_file():
+        raise AssertionError("finalizer trusted-generation fixture is not installed")
+    identity = (
+        current["immutable"]["fleet_contract_sha256"],
+        current["immutable"]["fleet_contract_sha256"],
+        1,
+        1,
+        "fixture-endpoint-generation",
+    )
+    return control.TrustedGenerationCatalog(
+        marker_path=marker_path.resolve(),
+        marker_sha256=_sha(marker_path),
+        inventory_sha256="d" * 64,
+        catalog_sha256="e" * 64,
+        catalog_id=catalog_id,
+        entries=(),
+        generations=(),
+        allowed_generation_tuples=frozenset({identity}),
+    )
+
+
+def _trusted_catalog_binding(
+    catalog: control.TrustedGenerationCatalog,
+) -> dict:
+    return {
+        "catalog_id": catalog.catalog_id,
+        "marker_path": str(catalog.marker_path),
+        "marker_sha256": catalog.marker_sha256,
+        "inventory_sha256": catalog.inventory_sha256,
+        "catalog_payload_sha256": catalog.catalog_sha256,
+        "allowed_generation_tuple_count": len(
+            catalog.allowed_generation_tuples
+        ),
+    }
+
+
+def _install_finalizer_test_catalog(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> control.TrustedGenerationCatalog:
+    current = control.load_control(state_dir)
+    marker_path = (
+        state_dir
+        / "_finalizer-test-trusted-generation"
+        / ("c" * 64)
+        / control.CATALOG_MARKER
+    )
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "kind": "schema5_finalizer_test_catalog",
+                "catalog_id": "c" * 64,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    marker_path.chmod(0o444)
+    marker_path.parent.chmod(0o555)
+    trusted = _finalizer_test_catalog(current)
+
+    def validate(marker, *, server_pool_root):
+        del server_pool_root
+        observed = Path(marker).resolve()
+        if (
+            not observed.is_file()
+            or observed.read_bytes() != trusted.marker_path.read_bytes()
+        ):
+            raise control.GenerationCatalogError(
+                "finalizer fixture catalog marker drifted"
+            )
+        return control.TrustedGenerationCatalog(
+            marker_path=observed,
+            marker_sha256=_sha(observed),
+            inventory_sha256=trusted.inventory_sha256,
+            catalog_sha256=trusted.catalog_sha256,
+            catalog_id=trusted.catalog_id,
+            entries=trusted.entries,
+            generations=trusted.generations,
+            allowed_generation_tuples=trusted.allowed_generation_tuples,
+        )
+
+    monkeypatch.setattr(
+        control,
+        "refresh_trusted_generation_catalog",
+        lambda *_args, **_kwargs: trusted,
+    )
+    monkeypatch.setattr(
+        control, "validate_trusted_generation_catalog", validate
+    )
+    return trusted
+
+
+def _complete_semantic_report(current: dict) -> dict:
+    pins = {
+        str(row["run_id"]): row for row in current["immutable"]["runs"]
+    }
+    runs = {}
+    for run_id, cells in control.REQUIRED_RUNS.items():
+        qids = control.REQUIRED_RUN_QIDS[run_id]
+        pin = pins[run_id]
+        runs[run_id] = {
+            "run_root": str(Path(pin["run_root"]).resolve()),
+            "manifest_sha256": pin["manifest_sha256"],
+            "benchmark_contract_sha256": pin["benchmark_contract_sha256"],
+            "artifact_policy_sha256": pin["policy_sha256"],
+            "manifest_cells": cells,
+            "expected_qids": qids,
+            "states": {"complete": cells},
+            "outcomes": {
+                "validated_qids": qids,
+                "useful_qids": qids,
+                "completed_qids": qids,
+                "length_censored_qids": 0,
+                "protocol_censored_qids": 0,
+                "transport_censored_qids": 0,
+                "transport_affected_qids": 0,
+                "topology_transport_censored_coordinates": 0,
+                "transport_censored_coordinates": 0,
+                "auxiliary_outcomes": 0,
+                "auxiliary_completed": 0,
+                "auxiliary_length_censored": 0,
+                "auxiliary_protocol_censored": 0,
+                "auxiliary_transport_censored": 0,
+            },
+            "artifact_schema_counts": {"5": qids},
+            "contract_errors": [],
+            "stale_unmanifested_dirs": 0,
+        }
+    return {
+        "semantic": {
+            "scan_successful": True,
+            "scan_errors": [],
+            "trusted_generation_catalog": _trusted_catalog_binding(
+                _finalizer_test_catalog(current)
+            ),
+            "transport_censor_protocol": {
+                "version": control.TRANSPORT_CENSOR_PROTOCOL_VERSION,
+                "hash": control.TRANSPORT_CENSOR_PROTOCOL_HASH,
+            },
+            "runs": runs,
+            "states": {"complete": control.EXPECTED_TOTAL_CELLS},
+            "outcomes": {
+                "validated_qids": control.EXPECTED_TOTAL_QIDS,
+                "useful_qids": control.EXPECTED_TOTAL_QIDS,
+                "completed_qids": control.EXPECTED_TOTAL_QIDS,
+                "length_censored_qids": 0,
+                "protocol_censored_qids": 0,
+                "transport_censored_qids": 0,
+                "transport_affected_qids": 0,
+                "topology_transport_censored_coordinates": 0,
+                "transport_censored_coordinates": 0,
+                "auxiliary_outcomes": 0,
+                "auxiliary_completed": 0,
+                "auxiliary_length_censored": 0,
+                "auxiliary_protocol_censored": 0,
+                "auxiliary_transport_censored": 0,
+                "malformed_lines": 0,
+                "duplicate_qids": 0,
+                "unexpected_qids": 0,
+                "invalid_rows": 0,
+                "untrusted_valid_rows": 0,
+                "stale_unmanifested_dirs": 0,
+                "contract_errors": 0,
+            },
+            "artifact_schema_counts": {"5": control.EXPECTED_TOTAL_QIDS},
+        },
+        "final_acceptance": {
+            "passed": True,
+            "checks": {
+                "exact_complete_cells": True,
+                "no_noncomplete_cells": True,
+                "exact_validated_qids": True,
+                "top_level_partition_exact": True,
+                "auxiliary_partition_exact": True,
+                "useful_transport_partition_exact": True,
+                "transport_coordinate_partition_exact": True,
+                "topology_transport_coordinate_qid_bound": True,
+                "transport_affected_qid_bounds_exact": True,
+                "transport_protocol_exact": True,
+                "zero_integrity_errors": True,
+                "schema5_only": True,
+                "throughput_projection_acceptable": True,
+            },
+        },
+    }
+
+
+def test_final_semantic_accepts_exact_transport_cardinality_and_useful_partition(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    report = _complete_semantic_report(current)
+    run_id = "full_sweep_schema5_v1"
+    run = report["semantic"]["runs"][run_id]["outcomes"]
+    aggregate = report["semantic"]["outcomes"]
+
+    # One completed top-level QID depends on one ambiguous auxiliary draw.  It remains
+    # trusted cardinality, but is removed from useful throughput exactly once.
+    for outcomes in (run, aggregate):
+        outcomes["useful_qids"] -= 1
+        outcomes["transport_affected_qids"] = 1
+        outcomes["transport_censored_coordinates"] = 1
+        outcomes["auxiliary_outcomes"] = 1
+        outcomes["auxiliary_transport_censored"] = 1
+    control._validate_final_semantic_report(report)
+
+
+def test_final_semantic_accepts_one_exact_topology_transport_censor(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    report = _complete_semantic_report(current)
+    run_id = "full_sweep_schema5_v1"
+    run = report["semantic"]["runs"][run_id]["outcomes"]
+    aggregate = report["semantic"]["outcomes"]
+
+    for outcomes in (run, aggregate):
+        outcomes["useful_qids"] -= 1
+        outcomes["completed_qids"] -= 1
+        outcomes["transport_censored_qids"] = 1
+        outcomes["transport_affected_qids"] = 1
+        outcomes["topology_transport_censored_coordinates"] = 1
+        outcomes["transport_censored_coordinates"] = 1
+    control._validate_final_semantic_report(report)
+
+
+def test_final_semantic_accepts_concurrent_topology_transport_censors(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    report = _complete_semantic_report(current)
+    run_id = "full_sweep_schema5_v1"
+    run = report["semantic"]["runs"][run_id]["outcomes"]
+    aggregate = report["semantic"]["outcomes"]
+
+    # A concurrent terminal wave can durably retain two independently ambiguous
+    # sibling attempts while map-order propagation selects one QID-level terminal.
+    for outcomes in (run, aggregate):
+        outcomes["useful_qids"] -= 1
+        outcomes["completed_qids"] -= 1
+        outcomes["transport_censored_qids"] = 1
+        outcomes["transport_affected_qids"] = 1
+        outcomes["topology_transport_censored_coordinates"] = 2
+        outcomes["transport_censored_coordinates"] = 2
+    control._validate_final_semantic_report(report)
+
+
+def test_final_semantic_rejects_transport_partition_or_protocol_drift(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    report = _complete_semantic_report(current)
+    report["semantic"]["outcomes"]["transport_affected_qids"] = 1
+    with pytest.raises(control.ControlError, match="useful/transport"):
+        control._validate_final_semantic_report(report)
+
+    report = _complete_semantic_report(current)
+    report["semantic"]["transport_censor_protocol"]["hash"] = "f" * 64
+    with pytest.raises(control.ControlError, match="transport-censor protocol"):
+        control._validate_final_semantic_report(report)
+
+
+def test_final_semantic_rejects_duplicate_transport_coordinate_accounting(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    report = _complete_semantic_report(current)
+    run_id = "full_sweep_schema5_v1"
+    run = report["semantic"]["runs"][run_id]["outcomes"]
+    aggregate = report["semantic"]["outcomes"]
+    for outcomes in (run, aggregate):
+        outcomes["useful_qids"] -= 1
+        outcomes["transport_affected_qids"] = 1
+        outcomes["transport_censored_coordinates"] = 2
+        outcomes["auxiliary_outcomes"] = 1
+        outcomes["auxiliary_transport_censored"] = 1
+    with pytest.raises(control.ControlError, match="coordinate partition"):
+        control._validate_final_semantic_report(report)
+
+
+def test_final_semantic_rejects_aggregate_transport_drift_from_run_sums(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    report = _complete_semantic_report(current)
+    aggregate = report["semantic"]["outcomes"]
+    aggregate["useful_qids"] -= 1
+    aggregate["transport_affected_qids"] = 1
+    aggregate["transport_censored_coordinates"] = 1
+    aggregate["auxiliary_outcomes"] = 1
+    aggregate["auxiliary_transport_censored"] = 1
+    with pytest.raises(control.ControlError, match="exact run sum"):
+        control._validate_final_semantic_report(report)
+
+
+def _write_complete_primary_cache(cache_root: Path, current: dict) -> None:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for filename in (
+        "items_v1.parquet",
+        "agents_v1.parquet",
+        "cells_dedup_v1.parquet",
+        "incident_items_scientifically_excluded_v1.parquet",
+        "incident_agents_scientifically_excluded_v1.parquet",
+    ):
+        (cache_root / filename).write_bytes(b"fixture\n")
+    immutable = current["immutable"]
+    marker = {
+        "analysis_mode": "primary-schema5",
+        "mixed_protocol": False,
+        "exact_token_policy": "schema5-required",
+        "run_ids": list(control.REQUIRED_RUNS),
+        "manifest_scoped": True,
+        "manifest_cells_by_run": control.REQUIRED_RUNS,
+        "n_cell_dirs": control.EXPECTED_TOTAL_CELLS,
+        "n_cells_complete": control.EXPECTED_TOTAL_CELLS,
+        "completion_states": {"complete": control.EXPECTED_TOTAL_CELLS},
+        "validated_qids_by_completion_state": {
+            "complete": control.EXPECTED_TOTAL_QIDS
+        },
+        "artifact_schema_counts": {"5": control.EXPECTED_TOTAL_QIDS},
+        "n_bad_lines": 0,
+        "n_bad_cells": 0,
+        "n_dupes_dropped": 0,
+        "n_cells_with_dupes": 0,
+        "n_unexpected_n": 0,
+        "unexpected_n_cells": [],
+        "qid_mismatch_cells": [],
+        "run_contracts": {run_id: {} for run_id in control.REQUIRED_RUNS},
+        "stale_dirs_by_run": {run_id: 0 for run_id in control.REQUIRED_RUNS},
+        "missing_dirs_by_run": {run_id: 0 for run_id in control.REQUIRED_RUNS},
+        "supplementary_preservation": {
+            "active_artifact_validated_qids": control.EXPECTED_TOTAL_QIDS,
+            "sealed_scientifically_excluded_qids": 0,
+            "unmanifested_opt_in_qids_not_in_acceptance": 0,
+        },
+        "analysis_runtime": {
+            "release_worktree": str(Path(immutable["release_worktree"]).resolve()),
+            "harness_prefix": str(
+                Path(immutable["harness_environment_prefix"]).resolve()
+            ),
+            "immutable_pins_sha256": current["immutable_sha256"],
+            "model_contract_sha256": immutable["model_contract_sha256"],
+            "release_id": immutable["release_id"],
+            "git_commit": immutable["git_commit"],
+            "source_tree_sha256": immutable["source_tree_sha256"],
+        },
+        "trusted_generation_catalog": {
+            **_trusted_catalog_binding(_finalizer_test_catalog(current)),
+            "server_pool_root": str(
+                Path(immutable["server_pool_root"]).resolve()
+            ),
+            "validated_qids": control.EXPECTED_TOTAL_QIDS,
+            "observed_coordinate_generation_tuple_count": 1,
+            "observed_calibration_endpoint_count": 1,
+            "passed": True,
+        },
+    }
+    marker["cache_contract_sha256"] = "9" * 64
+    marker["cache_artifacts"] = {
+        filename: {
+            "sha256": _sha(cache_root / filename),
+            "size": (cache_root / filename).stat().st_size,
+        }
+        for filename in (
+            "items_v1.parquet",
+            "agents_v1.parquet",
+            "cells_dedup_v1.parquet",
+            "incident_items_scientifically_excluded_v1.parquet",
+            "incident_agents_scientifically_excluded_v1.parquet",
+        )
+    }
+    marker["cache_generation_id"] = control.sha256_value(
+        {
+            "analysis_mode": marker["analysis_mode"],
+            "run_ids": marker["run_ids"],
+            "cache_contract_sha256": marker["cache_contract_sha256"],
+            "cache_artifacts": marker["cache_artifacts"],
+        }
+    )
+    (cache_root / "ingest_manifest_v1.json").write_text(
+        json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _final_fleet_evidence(
+    current: dict, allocations: list[dict] | None = None, *, captured_at: float = 40.0
+) -> dict:
+    contract = json.loads(
+        Path(current["immutable"]["fleet_contract_path"]).read_text(encoding="utf-8")
+    )
+    rows = [] if allocations is None else allocations
+    return {
+        "pool_root": str(
+            Path(current["immutable"]["server_pool_root"]).resolve()
+        ),
+        "pool_id": contract["fleet_id"],
+        "fleet_sha256": current["immutable"]["fleet_contract_sha256"],
+        "ledger_generation": 1,
+        "scheduler_captured_timestamp": captured_at,
+        "active_allocations": rows,
+        "old_fleet_job_ids": sorted(
+            [str(row["job_id"]) for row in rows], key=int
+        ),
+    }
+
+
+def _write_final_snapshot_fixture(
+    snapshot_root: Path,
+    sources,
+    *,
+    snapshot_id: str,
+    completed_at: str = "1970-01-01T00:00:40Z",
+) -> dict:
+    snapshot_root.mkdir(parents=True)
+    source_rows = []
+    inventory_rows = []
+    directories = []
+    total_bytes = 0
+    for name, source in sorted(sources):
+        source_rows.append(
+            {"name": str(name), "path": str(Path(source).resolve())}
+        )
+        directory = snapshot_root / str(name)
+        directory.mkdir()
+        directories.append(str(name))
+        if name == "trusted_generation_catalog":
+            source_root = Path(source).resolve()
+            for source_path in sorted(source_root.rglob("*")):
+                relative = source_path.relative_to(source_root)
+                target = directory / relative
+                if source_path.is_dir():
+                    target.mkdir()
+                    directories.append(
+                        target.relative_to(snapshot_root).as_posix()
+                    )
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_path, target)
+                target.chmod(0o444)
+                total_bytes += target.stat().st_size
+                inventory_rows.append(
+                    f"{_sha(target)}  "
+                    f"{target.relative_to(snapshot_root).as_posix()}\n"
+                )
+        else:
+            payload = f"{name}\n".encode()
+            target = directory / "payload.bin"
+            target.write_bytes(payload)
+            target.chmod(0o444)
+            total_bytes += len(payload)
+            inventory_rows.append(
+                f"{_sha(target)}  {name}/payload.bin\n"
+            )
+        directory.chmod(0o555)
+    directories.sort()
+    inventory_rows.sort(key=lambda row: row.partition("  ")[2])
+    inventory = "".join(inventory_rows).encode()
+    inventory_sha256 = hashlib.sha256(inventory).hexdigest()
+    (snapshot_root / "SOURCE_INVENTORY.sha256").write_bytes(inventory)
+    (snapshot_root / "SNAPSHOT_INVENTORY.sha256").write_bytes(inventory)
+    (snapshot_root / "DIRECTORY_INVENTORY.txt").write_text(
+        "".join(f"{name}\n" for name in directories),
+        encoding="utf-8",
+    )
+    catalog = {
+        "schema_version": 1,
+        "snapshot_id": snapshot_id,
+        "created_at": completed_at,
+        "copy_contract": "independent_regular_files_no_hardlinks_no_symlinks",
+        "sources": source_rows,
+        "file_count": len(inventory_rows),
+        "directory_count": len(directories),
+        "total_bytes": total_bytes,
+        "source_inventory_sha256": inventory_sha256,
+        "snapshot_inventory_sha256": inventory_sha256,
+        "elapsed_seconds": 0.01,
+    }
+    (snapshot_root / "SNAPSHOT_CATALOG.json").write_text(
+        json.dumps(catalog, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    marker = {
+        "schema_version": 1,
+        "snapshot_id": snapshot_id,
+        "completed_at": completed_at,
+        "file_count": len(inventory_rows),
+        "total_bytes": total_bytes,
+        "snapshot_inventory_sha256": inventory_sha256,
+        "verified": True,
+        "read_only": True,
+    }
+    for name in (
+        "SOURCE_INVENTORY.sha256",
+        "SNAPSHOT_INVENTORY.sha256",
+        "DIRECTORY_INVENTORY.txt",
+        "SNAPSHOT_CATALOG.json",
+    ):
+        (snapshot_root / name).chmod(0o444)
+    (snapshot_root / "SNAPSHOT_COMPLETE.json").write_text(
+        json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (snapshot_root / "SNAPSHOT_COMPLETE.json").chmod(0o444)
+    snapshot_root.chmod(0o555)
+    return marker
+
+
+@pytest.mark.parametrize("mutation", ("unlisted", "catalog_schema", "symlink"))
+def test_final_snapshot_recursive_verifier_rejects_unlisted_and_unsafe_members(
+    tmp_path, mutation
+):
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    sources = []
+    for name in sorted(control.FINAL_SNAPSHOT_REQUIRED_SOURCES):
+        path = source_root / name
+        path.write_bytes(b"source\n")
+        sources.append((name, path))
+    snapshot_root = tmp_path / f"snapshot-{mutation}"
+    _write_final_snapshot_fixture(
+        snapshot_root, sources, snapshot_id=f"fixture-{mutation}"
+    )
+    control._validate_final_snapshot_marker(snapshot_root)
+
+    snapshot_root.chmod(0o755)
+    if mutation == "unlisted":
+        extra = snapshot_root / "unlisted.bin"
+        extra.write_bytes(b"not catalogued\n")
+        extra.chmod(0o444)
+    elif mutation == "catalog_schema":
+        catalog_path = snapshot_root / "SNAPSHOT_CATALOG.json"
+        catalog_path.chmod(0o644)
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog["unlisted_field"] = True
+        catalog_path.write_text(
+            json.dumps(catalog, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        catalog_path.chmod(0o444)
+    else:
+        (snapshot_root / "unsafe-link").symlink_to(
+            snapshot_root / "SNAPSHOT_COMPLETE.json"
+        )
+    snapshot_root.chmod(0o555)
+    with pytest.raises(control.ControlError, match="snapshot"):
+        control._validate_final_snapshot_marker(snapshot_root)
+
+
+def test_final_fleet_retirement_accepts_active_allocations_from_sealed_generations(
+    tmp_path,
+):
+    state_dir, _ = initialize(tmp_path)
+    current = control.load_control(state_dir)
+    contract = json.loads(
+        Path(current["immutable"]["fleet_contract_path"]).read_text(encoding="utf-8")
+    )
+    replicas = [
+        (profile, replica)
+        for profile in contract["profiles"]
+        for replica in profile["replicas"]
+    ][:2]
+    sbatch_path = (
+        Path(current["immutable"]["release_worktree"]) / "slurm" / "common.sh"
+    ).resolve()
+    allocations = [
+        {
+            "job_id": str(900 + index),
+            "replica_id": replica["replica_id"],
+            "profile": profile["serving_profile"],
+            "ledger_generation": generation,
+            "scheduler_state": "RUNNING",
+            "intent_token": f"{index + 1:032x}",
+            "sbatch_path": str(sbatch_path),
+            "sbatch_sha256": _sha(sbatch_path),
+        }
+        for index, (generation, (profile, replica)) in enumerate(
+            zip((1, 2), replicas, strict=True)
+        )
+    ]
+    evidence = _final_fleet_evidence(current, allocations)
+    evidence["ledger_generation"] = 2
+
+    assert control._validate_final_fleet_retirement_evidence(
+        current, evidence
+    ) == ["900", "901"]
+
+    future = json.loads(json.dumps(evidence))
+    future["active_allocations"][0]["ledger_generation"] = 3
+    with pytest.raises(
+        control.SchedulerAmbiguity,
+        match="final fleet retirement allocation is untrusted",
+    ):
+        control._validate_final_fleet_retirement_evidence(current, future)
+
+
+def test_finalizer_publishes_marker_last_and_is_idempotent(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    calls: list[str] = []
+
+    def command_runner(argv, environment, timeout):
+        assert timeout == control.FINALIZER_COMMAND_DEADLINE_SECONDS
+        assert environment["ASYS_IMMUTABLE_PINS_SHA256"] == current[
+            "immutable_sha256"
+        ]
+        if argv[argv.index("--cadence") + 1] == "daily" if "--cadence" in argv else False:
+            calls.append("semantic")
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(_complete_semantic_report(current)), ""
+            )
+        calls.append("cache")
+        cache_root = Path(argv[argv.index("--out-dir") + 1])
+        _write_complete_primary_cache(cache_root, current)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def snapshot_builder(snapshot_root, sources, environment):
+        calls.append("snapshot")
+        assert {name for name, _ in sources} == {
+            *control.REQUIRED_RUNS,
+            "control",
+            "semantic_validation",
+            "semantic_intent",
+            "semantic_preflight",
+            "primary_analysis_cache",
+            "fleet_retirement",
+            "server_pool",
+            "trusted_generation_catalog",
+        }
+        return _write_final_snapshot_fixture(
+            snapshot_root,
+            sources,
+            snapshot_id="final-fixture",
+        )
+
+    result = control.finalize_sweep(
+        state_dir,
+        output_root=output_root,
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 40.0),
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_evidence_reader=lambda state: _final_fleet_evidence(state),
+        command_runner=command_runner,
+        snapshot_builder=snapshot_builder,
+        lock_scanner=lambda _state: [],
+        writer_guard=lambda _state, _path: control.nullcontext(),
+        now=40.0,
+    )
+    assert result["complete"] is True
+    assert result["complete_cells"] == control.EXPECTED_TOTAL_CELLS
+    assert result["trusted_qids"] == control.EXPECTED_TOTAL_QIDS
+    assert result["autonomous_finalizer"] is None
+    assert result["zero_writer_proof"]["publisher_finalizer"] is None
+    assert result["zero_writer_proof"]["active_finalizer_job_ids"] == []
+    assert result["zero_writer_proof"]["successor_retirement"] is None
+    assert calls == ["semantic", "cache", "snapshot"]
+    assert (output_root / control.FINAL_COMPLETE_FILENAME).stat().st_mode & 0o222 == 0
+
+    repeated = control.finalize_sweep(
+        state_dir,
+        output_root=output_root,
+        command_runner=lambda *_args: pytest.fail("final stages must not rerun"),
+        snapshot_builder=lambda *_args: pytest.fail("snapshot must not rerun"),
+        lock_scanner=lambda _state: pytest.fail("locks must not be rescanned"),
+        now=99.0,
+    )
+    assert repeated == result
+
+    # FINAL_COMPLETE is not a shortcut around recursive snapshot verification.
+    snapshot_root = output_root / control.FINAL_SNAPSHOT_DIRNAME
+    payload = next(snapshot_root.glob("*/payload.bin"))
+    original = payload.read_bytes()
+    snapshot_root.chmod(0o755)
+    payload.parent.chmod(0o755)
+    payload.chmod(0o644)
+    payload.write_bytes(b"tampered snapshot payload\n")
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    snapshot_root.chmod(0o555)
+    with pytest.raises(control.ControlError, match="checksum drifted"):
+        control.finalize_sweep(state_dir, output_root=output_root)
+
+    snapshot_root.chmod(0o755)
+    payload.parent.chmod(0o755)
+    payload.chmod(0o644)
+    payload.write_bytes(original)
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    snapshot_root.chmod(0o555)
+    assert control.finalize_sweep(
+        state_dir, output_root=output_root
+    ) == result
+
+    # Catalog bytes are externally bound by FINAL_COMPLETE even when a forged
+    # catalog remains internally well-formed.
+    catalog_path = snapshot_root / "SNAPSHOT_CATALOG.json"
+    catalog_original = catalog_path.read_bytes()
+    snapshot_root.chmod(0o755)
+    catalog_path.chmod(0o644)
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["sources"][0]["path"] = "/forged/source/path"
+    catalog_path.write_text(
+        json.dumps(catalog, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    catalog_path.chmod(0o444)
+    snapshot_root.chmod(0o555)
+    with pytest.raises(control.ControlError, match="snapshot controls drifted"):
+        control.finalize_sweep(state_dir, output_root=output_root)
+    snapshot_root.chmod(0o755)
+    catalog_path.chmod(0o644)
+    catalog_path.write_bytes(catalog_original)
+    catalog_path.chmod(0o444)
+    snapshot_root.chmod(0o555)
+    assert control.finalize_sweep(
+        state_dir, output_root=output_root
+    ) == result
+
+    # Even a recomputed outer final_id cannot bless a malformed zero-writer proof.
+    marker_path = output_root / control.FINAL_COMPLETE_FILENAME
+    marker_path.chmod(0o644)
+    forged = json.loads(marker_path.read_text(encoding="utf-8"))
+    forged["zero_writer_proof"]["active_cell_job_ids"] = ["999"]
+    without_id = dict(forged)
+    without_id.pop("final_id")
+    forged["final_id"] = control.sha256_value(without_id)
+    marker_path.write_text(
+        json.dumps(forged, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    marker_path.chmod(0o444)
+    with pytest.raises(control.ControlError, match="zero-writer proof"):
+        control.finalize_sweep(state_dir, output_root=output_root)
+
+
+def test_finalizer_exactly_retires_active_fleet_and_recovers_after_cancel_crash(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    contract = json.loads(
+        Path(current["immutable"]["fleet_contract_path"]).read_text(encoding="utf-8")
+    )
+    replicas = [
+        (profile, replica)
+        for profile in contract["profiles"]
+        for replica in profile["replicas"]
+    ][:2]
+    sbatch_path = (
+        Path(current["immutable"]["release_worktree"]) / "slurm" / "common.sh"
+    ).resolve()
+    pinned_jobs: dict[str, control.SchedulerJob] = {}
+    allocations: dict[str, dict] = {}
+    for index, (profile, replica) in enumerate(replicas):
+        job_id = str(900 + index)
+        intent_token = f"{index + 1:032x}"
+        comment = (
+            "asys-s5-fleet:"
+            f"pool={contract['fleet_id']};"
+            f"replica={replica['replica_id']};"
+            f"generation=1;intent={intent_token};"
+            f"fleet={current['immutable']['fleet_contract_sha256']}"
+        )
+        pinned_jobs[job_id] = control.SchedulerJob(
+            job_id,
+            replica["scheduler_job_name"],
+            "RUNNING",
+            comment,
+        )
+        allocations[job_id] = {
+            "job_id": job_id,
+            "replica_id": replica["replica_id"],
+            "profile": profile["serving_profile"],
+            "ledger_generation": 1,
+            "scheduler_state": "RUNNING",
+            "intent_token": intent_token,
+            "sbatch_path": str(sbatch_path),
+            "sbatch_sha256": _sha(sbatch_path),
+        }
+    unrelated = control.SchedulerJob(
+        "999", "other-research-job", "RUNNING", "unrelated"
+    )
+    active_ids = {*pinned_jobs, unrelated.job_id}
+    captured_at = [40.0]
+
+    def scheduler_reader():
+        captured_at[0] += 1.0
+        jobs = [
+            *[
+                job
+                for job_id, job in pinned_jobs.items()
+                if job_id in active_ids
+            ],
+            *([unrelated] if unrelated.job_id in active_ids else []),
+        ]
+        return control.SchedulerSnapshot(tuple(jobs), captured_at[0])
+
+    def evidence_reader(state):
+        live = [
+            allocations[job_id]
+            for job_id in sorted(pinned_jobs, key=int)
+            if job_id in active_ids
+        ]
+        return _final_fleet_evidence(
+            state, live, captured_at=captured_at[0]
+        )
+
+    cancelled: list[str] = []
+    crash_once = [True]
+
+    def cancel_runner(argv):
+        assert len(argv) == 2 and argv[0] == "scancel"
+        job_id = argv[1]
+        intent_path = (
+            output_root
+            / control.FINAL_FLEET_RETIREMENT_DIRNAME
+            / control.FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+        )
+        # The exact immutable target set must exist before the first external change.
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        assert intent["exact_job_ids"] == ["900", "901"]
+        assert job_id in intent["exact_job_ids"]
+        cancelled.append(job_id)
+        active_ids.discard(job_id)
+        if job_id == "901" and crash_once[0]:
+            crash_once[0] = False
+            raise RuntimeError("simulated death after scheduler accepted scancel")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    calls: list[str] = []
+
+    def command_runner(argv, _environment, _timeout):
+        if "--cadence" in argv:
+            calls.append("semantic")
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(_complete_semantic_report(current)), ""
+            )
+        calls.append("cache")
+        _write_complete_primary_cache(
+            Path(argv[argv.index("--out-dir") + 1]), current
+        )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def snapshot_builder(snapshot_root, sources, _environment):
+        calls.append("snapshot")
+        assert "fleet_retirement" in {name for name, _ in sources}
+        return _write_final_snapshot_fixture(
+            snapshot_root,
+            sources,
+            snapshot_id="final-fleet-retirement-fixture",
+        )
+
+    with pytest.raises(control.ControlError, match="simulated death"):
+        control.finalize_sweep(
+            state_dir,
+            output_root=output_root,
+            scheduler_reader=scheduler_reader,
+            cancel_runner=cancel_runner,
+            fleet_evidence_reader=evidence_reader,
+            command_runner=command_runner,
+            snapshot_builder=snapshot_builder,
+            lock_scanner=lambda _state: [],
+            writer_guard=lambda _state, _path: control.nullcontext(),
+            now=40.0,
+        )
+    assert cancelled == ["900", "901"]
+    assert active_ids == {"999"}
+    # Exact semantic acceptance is marker-last sealed before the first scancel and is
+    # reused after the injected retirement crash.
+    assert calls == ["semantic"]
+    retirement_intent = json.loads(
+        (
+            output_root
+            / control.FINAL_FLEET_RETIREMENT_DIRNAME
+            / control.FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+        ).read_text(encoding="utf-8")
+    )
+    assert retirement_intent["semantic_preflight_sha256"] == _sha(
+        output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    )
+    assert retirement_intent["semantic_report_sha256"] == _sha(
+        output_root / control.FINAL_SEMANTIC_FILENAME
+    )
+    assert not (output_root / control.FINAL_COMPLETE_FILENAME).exists()
+
+    completed = control.finalize_sweep(
+        state_dir,
+        output_root=output_root,
+        scheduler_reader=scheduler_reader,
+        cancel_runner=lambda argv: pytest.fail(
+            f"already-retired fleet job was cancelled again: {argv}"
+        ),
+        fleet_evidence_reader=evidence_reader,
+        command_runner=command_runner,
+        snapshot_builder=snapshot_builder,
+        lock_scanner=lambda _state: [],
+        writer_guard=lambda _state, _path: control.nullcontext(),
+        now=41.0,
+    )
+    assert completed["complete"] is True
+    assert completed["zero_writer_proof"]["active_fleet_job_ids"] == []
+    assert cancelled == ["900", "901"]
+    assert "999" in active_ids
+    retirement_root = output_root / control.FINAL_FLEET_RETIREMENT_DIRNAME
+    retirement = json.loads(
+        (
+            retirement_root
+            / control.FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+        ).read_text(encoding="utf-8")
+    )
+    assert retirement["retired_job_ids"] == ["900", "901"]
+    assert retirement["attempt_count"] == 2
+    assert retirement_root.stat().st_mode & 0o222 == 0
+    assert calls == ["semantic", "cache", "snapshot"]
+
+
+def test_finalizer_refuses_partial_semantic_data_without_marker(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    cancelled: list[list[str]] = []
+    partial = _complete_semantic_report(current)
+    partial["semantic"]["states"] = {"complete": control.EXPECTED_TOTAL_CELLS - 1}
+    partial["final_acceptance"]["passed"] = False
+    with pytest.raises(control.ControlError, match="acceptance"):
+        control.finalize_sweep(
+            state_dir,
+            output_root=output_root,
+            scheduler_reader=lambda: control.SchedulerSnapshot((), 40.0),
+            cancel_runner=lambda argv: (
+                cancelled.append(list(argv))
+                or subprocess.CompletedProcess(argv, 0, "", "")
+            ),
+            fleet_evidence_reader=lambda state: _final_fleet_evidence(state),
+            command_runner=lambda argv, _environment, _timeout: (
+                subprocess.CompletedProcess(argv, 0, json.dumps(partial), "")
+            ),
+            lock_scanner=lambda _state: [],
+            writer_guard=lambda _state, _path: control.nullcontext(),
+            now=40.0,
+        )
+    assert cancelled == []
+    assert not (
+        output_root / control.FINAL_FLEET_RETIREMENT_DIRNAME
+    ).exists()
+    assert not (output_root / control.FINAL_SEMANTIC_FILENAME).exists()
+    assert not (
+        output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    ).exists()
+    assert not (output_root / control.FINAL_COMPLETE_FILENAME).exists()
+
+
+def test_premature_finalizer_keeps_live_fleet_and_later_retry_completes(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    contract = json.loads(
+        Path(current["immutable"]["fleet_contract_path"]).read_text(encoding="utf-8")
+    )
+    profile, replica = next(
+        (profile, replica)
+        for profile in contract["profiles"]
+        for replica in profile["replicas"]
+    )
+    job = control.SchedulerJob(
+        "900",
+        replica["scheduler_job_name"],
+        "RUNNING",
+        "schema5-finalizer-premature-fixture",
+    )
+    active_ids = {"900"}
+    captured_at = [40.0]
+    sbatch_path = (
+        Path(current["immutable"]["release_worktree"]) / "slurm" / "common.sh"
+    ).resolve()
+    allocation = {
+        "job_id": "900",
+        "replica_id": replica["replica_id"],
+        "profile": profile["serving_profile"],
+        "ledger_generation": 1,
+        "scheduler_state": "RUNNING",
+        "intent_token": "1" * 32,
+        "sbatch_path": str(sbatch_path),
+        "sbatch_sha256": _sha(sbatch_path),
+    }
+
+    def scheduler_reader():
+        captured_at[0] += 1.0
+        jobs = (job,) if "900" in active_ids else ()
+        return control.SchedulerSnapshot(jobs, captured_at[0])
+
+    def evidence_reader(state):
+        return _final_fleet_evidence(
+            state,
+            [allocation] if "900" in active_ids else [],
+            captured_at=captured_at[0],
+        )
+
+    partial = _complete_semantic_report(current)
+    partial["semantic"]["states"] = {
+        "complete": control.EXPECTED_TOTAL_CELLS - 1
+    }
+    partial["final_acceptance"]["passed"] = False
+    semantic_reports = [partial, _complete_semantic_report(current)]
+    semantic_calls = [0]
+
+    def command_runner(argv, _environment, _timeout):
+        if "--cadence" in argv:
+            report = semantic_reports[semantic_calls[0]]
+            semantic_calls[0] += 1
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(report), ""
+            )
+        _write_complete_primary_cache(
+            Path(argv[argv.index("--out-dir") + 1]),
+            current,
+        )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    cancelled: list[str] = []
+
+    def cancel_runner(argv):
+        assert argv == ["scancel", "900"]
+        cancelled.append("900")
+        active_ids.remove("900")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def snapshot_builder(snapshot_root, sources, _environment):
+        return _write_final_snapshot_fixture(
+            snapshot_root,
+            sources,
+            snapshot_id="premature-retry-fixture",
+            completed_at="1970-01-01T00:00:41Z",
+        )
+
+    common = {
+        "output_root": output_root,
+        "scheduler_reader": scheduler_reader,
+        "cancel_runner": cancel_runner,
+        "fleet_evidence_reader": evidence_reader,
+        "command_runner": command_runner,
+        "snapshot_builder": snapshot_builder,
+        "lock_scanner": lambda _state: [],
+        "writer_guard": lambda _state, _path: control.nullcontext(),
+    }
+    with pytest.raises(control.ControlError, match="acceptance"):
+        control.finalize_sweep(state_dir, now=40.0, **common)
+
+    assert semantic_calls == [1]
+    assert cancelled == []
+    assert active_ids == {"900"}
+    assert not (
+        output_root / control.FINAL_FLEET_RETIREMENT_DIRNAME
+    ).exists()
+    assert not (output_root / control.FINAL_SEMANTIC_FILENAME).exists()
+    assert not (
+        output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    ).exists()
+
+    completed = control.finalize_sweep(state_dir, now=41.0, **common)
+    assert completed["complete"] is True
+    assert semantic_calls == [2]
+    assert cancelled == ["900"]
+    assert active_ids == set()
+    assert (
+        output_root / control.FINAL_SEMANTIC_FILENAME
+    ).stat().st_mode & 0o222 == 0
+    assert (
+        output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    ).stat().st_mode & 0o222 == 0
+
+
+def test_finalizer_adopts_valid_semantic_report_sealed_before_marker_crash(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    control.pause_control(
+        state_dir,
+        drain=True,
+        scheduler=control.SchedulerSnapshot((), 39.0),
+        now=39.0,
+    )
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    output_root.mkdir()
+    source_contract, source_contract_sha256 = (
+        control._final_semantic_source_contract(current)
+    )
+    control._create_final_semantic_intent(
+        output_root,
+        control=current,
+        source_contract=source_contract,
+        source_contract_sha256=source_contract_sha256,
+        now=39.0,
+    )
+    semantic_path = output_root / control.FINAL_SEMANTIC_FILENAME
+    semantic_path.write_text(
+        json.dumps(_complete_semantic_report(current), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    semantic_path.chmod(0o444)
+    calls: list[str] = []
+
+    def command_runner(argv, _environment, _timeout):
+        assert "--cadence" not in argv, "sealed semantic report must be adopted"
+        calls.append("cache")
+        _write_complete_primary_cache(
+            Path(argv[argv.index("--out-dir") + 1]),
+            current,
+        )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def snapshot_builder(snapshot_root, sources, _environment):
+        calls.append("snapshot")
+        return _write_final_snapshot_fixture(
+            snapshot_root,
+            sources,
+            snapshot_id="semantic-adoption-fixture",
+        )
+
+    completed = control.finalize_sweep(
+        state_dir,
+        output_root=output_root,
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 40.0),
+        cancel_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, "", ""
+        ),
+        fleet_evidence_reader=lambda state: _final_fleet_evidence(state),
+        command_runner=command_runner,
+        snapshot_builder=snapshot_builder,
+        lock_scanner=lambda _state: [],
+        writer_guard=lambda _state, _path: control.nullcontext(),
+        now=40.0,
+    )
+    assert completed["complete"] is True
+    assert calls == ["cache", "snapshot"]
+    preflight_path = (
+        output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    )
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    assert preflight["semantic_report_sha256"] == _sha(semantic_path)
+    assert preflight_path.stat().st_mode & 0o222 == 0
+
+
+def test_semantic_report_without_transaction_intent_is_archived_and_recomputed(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    control.pause_control(
+        state_dir,
+        drain=True,
+        scheduler=control.SchedulerSnapshot((), 39.0),
+        now=39.0,
+    )
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    output_root.mkdir()
+    semantic_path = output_root / control.FINAL_SEMANTIC_FILENAME
+    semantic_path.write_text(
+        json.dumps(_complete_semantic_report(current), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    semantic_path.chmod(0o444)
+    stale_sha256 = _sha(semantic_path)
+    # Simulate death after the independent preimage copy but before the archive
+    # marker.  Retry must verify/reuse the exact copy and finish marker-last.
+    identity = {
+        "name": control.FINAL_SEMANTIC_FILENAME,
+        "size": semantic_path.stat().st_size,
+        "sha256": stale_sha256,
+    }
+    archive_id = control.sha256_value(
+        {
+            "reason": "semantic_report_without_transaction_intent",
+            "preimages": [identity],
+        }
+    )
+    partial_archive = (
+        output_root
+        / control.FINAL_SEMANTIC_ARCHIVE_DIRNAME
+        / archive_id
+    )
+    partial_archive.mkdir(parents=True)
+    (partial_archive / control.FINAL_SEMANTIC_FILENAME).write_bytes(
+        semantic_path.read_bytes()
+    )
+    calls = []
+
+    def command_runner(argv, _environment, _timeout):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(_complete_semantic_report(current)),
+            "",
+        )
+
+    control._ensure_final_semantic_preflight(
+        output_root,
+        control=current,
+        state_dir=state_dir,
+        results_root=Path(current["immutable"]["results_root"]),
+        environment={},
+        harness_python=Path(
+            current["immutable"]["harness_environment_prefix"]
+        )
+        / "bin"
+        / "python",
+        release_root=Path(current["immutable"]["release_worktree"]),
+        run_command=command_runner,
+        now=40.0,
+    )
+    assert len(calls) == 1
+    archives = list(
+        (output_root / control.FINAL_SEMANTIC_ARCHIVE_DIRNAME).iterdir()
+    )
+    assert len(archives) == 1
+    archived_marker = json.loads(
+        (archives[0] / "ARCHIVE_COMPLETE.json").read_text(encoding="utf-8")
+    )
+    assert archived_marker["reason"] == "semantic_report_without_transaction_intent"
+    assert _sha(archives[0] / control.FINAL_SEMANTIC_FILENAME) == stale_sha256
+    assert (
+        output_root / control.FINAL_SEMANTIC_INTENT_FILENAME
+    ).stat().st_mode & 0o222 == 0
+    assert (
+        output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    ).is_file()
+
+
+def test_semantic_crash_evidence_is_rejected_after_result_source_mutation(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    control.pause_control(
+        state_dir,
+        drain=True,
+        scheduler=control.SchedulerSnapshot((), 39.0),
+        now=39.0,
+    )
+    current = control.load_control(state_dir)
+    output_root = tmp_path / "final"
+    output_root.mkdir()
+    source_contract, source_contract_sha256 = (
+        control._final_semantic_source_contract(current)
+    )
+    _intent, old_intent_sha256 = control._create_final_semantic_intent(
+        output_root,
+        control=current,
+        source_contract=source_contract,
+        source_contract_sha256=source_contract_sha256,
+        now=39.0,
+    )
+    semantic_path = output_root / control.FINAL_SEMANTIC_FILENAME
+    semantic_path.write_text(
+        json.dumps(_complete_semantic_report(current), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    semantic_path.chmod(0o444)
+
+    first_run_root = Path(current["immutable"]["runs"][0]["run_root"])
+    (first_run_root / "post_intent_mutation.bin").write_bytes(b"changed\n")
+    semantic_calls = []
+
+    def command_runner(argv, _environment, _timeout):
+        semantic_calls.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(_complete_semantic_report(current)),
+            "",
+        )
+
+    control._ensure_final_semantic_preflight(
+        output_root,
+        control=current,
+        state_dir=state_dir,
+        results_root=Path(current["immutable"]["results_root"]),
+        environment={},
+        harness_python=Path(
+            current["immutable"]["harness_environment_prefix"]
+        )
+        / "bin"
+        / "python",
+        release_root=Path(current["immutable"]["release_worktree"]),
+        run_command=command_runner,
+        now=40.0,
+    )
+    assert len(semantic_calls) == 1
+    archives = list(
+        (output_root / control.FINAL_SEMANTIC_ARCHIVE_DIRNAME).iterdir()
+    )
+    assert len(archives) == 1
+    assert _sha(
+        archives[0] / control.FINAL_SEMANTIC_INTENT_FILENAME
+    ) == old_intent_sha256
+    archive_marker = json.loads(
+        (archives[0] / "ARCHIVE_COMPLETE.json").read_text(encoding="utf-8")
+    )
+    assert archive_marker["reason"].startswith("intent_rejected:")
+    preflight = json.loads(
+        (
+            output_root / control.FINAL_SEMANTIC_PREFLIGHT_FILENAME
+        ).read_text(encoding="utf-8")
+    )
+    assert preflight["source_contract_sha256"] != source_contract_sha256
+
+
+def _write_autonomous_finalization_evidence(
+    state_dir: Path, current: dict
+) -> tuple[Path, dict]:
+    report = _complete_semantic_report(current)
+    report["captured_timestamp"] = 40.0
+    path = state_dir / "monitoring" / "semantic" / "00000040000000.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    path.chmod(0o444)
+    return path, report
+
+
+def _replace_fixture_harness_python(
+    current: dict,
+    *,
+    target: Path,
+    target_mode: int,
+    refresh_inventory: bool,
+) -> tuple[dict, Path]:
+    updated = copy.deepcopy(current)
+    immutable = updated["immutable"]
+    harness = Path(immutable["harness_environment_prefix"])
+    lexical = harness / "bin" / "python"
+    for directory in (harness, harness / "bin"):
+        directory.chmod(0o755)
+    lexical.chmod(0o644)
+    lexical.unlink()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+    target.chmod(target_mode)
+    lexical.symlink_to(os.path.relpath(target, lexical.parent))
+    (harness / "bin").chmod(0o555)
+    harness.chmod(0o555)
+    if refresh_inventory:
+        manifest_path = Path(
+            immutable["harness_environment_manifest_path"]
+        )
+        manifest_path.chmod(0o644)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["directory_inventory"] = (
+            runtime_integrity.directory_inventory(harness)
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        manifest_path.chmod(0o444)
+        immutable["harness_environment_sha256"] = _sha(manifest_path)
+    return updated, lexical
+
+
+def test_autonomous_finalizer_accepts_inventory_pinned_internal_python_symlink(
+    tmp_path,
+):
+    state_dir, current = initialize(tmp_path)
+    harness = Path(current["immutable"]["harness_environment_prefix"])
+    updated, _lexical = _replace_fixture_harness_python(
+        current,
+        target=harness / "bin" / "python3.12",
+        target_mode=0o555,
+        refresh_inventory=True,
+    )
+    rendered = control._render_finalizer_sbatch(
+        state_dir,
+        updated,
+        intent_id="1" * 64,
+        attempt=1,
+        intent_token="2" * 32,
+    )
+    payload = rendered.read_text(encoding="utf-8")
+    assert f"exec {harness / 'bin' / 'python3.12'} -I -u" in payload
+    log_root = state_dir / control.FINALIZER_STATE_DIRNAME / "logs"
+    assert log_root.is_dir()
+    assert not log_root.is_symlink()
+    assert f"#SBATCH --output={log_root}/finalizer.a000001.%j.out" in payload
+
+
+def test_autonomous_finalizer_rejects_symlinked_log_directory(tmp_path):
+    state_dir, current = initialize(tmp_path)
+    finalizer_root = state_dir / control.FINALIZER_STATE_DIRNAME
+    finalizer_root.mkdir()
+    outside = tmp_path / "outside-finalizer-logs"
+    outside.mkdir()
+    (finalizer_root / "logs").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        control.ImmutablePinError,
+        match="finalizer log directory is unsafe",
+    ):
+        control._render_finalizer_sbatch(
+            state_dir,
+            current,
+            intent_id="1" * 64,
+            attempt=1,
+            intent_token="2" * 32,
+        )
+
+
+def test_autonomous_finalizer_rejects_escaping_python_symlink(tmp_path):
+    state_dir, current = initialize(tmp_path)
+    updated, _lexical = _replace_fixture_harness_python(
+        current,
+        target=tmp_path / "outside-python",
+        target_mode=0o555,
+        refresh_inventory=True,
+    )
+    with pytest.raises(control.ImmutablePinError, match="escapes its harness"):
+        control._render_finalizer_sbatch(
+            state_dir,
+            updated,
+            intent_id="1" * 64,
+            attempt=1,
+            intent_token="2" * 32,
+        )
+
+
+def test_autonomous_finalizer_rejects_unpinned_or_mutable_python_target(
+    tmp_path,
+):
+    state_dir, current = initialize(tmp_path)
+    harness = Path(current["immutable"]["harness_environment_prefix"])
+    unpinned, _lexical = _replace_fixture_harness_python(
+        current,
+        target=harness / "bin" / "python3.12",
+        target_mode=0o555,
+        refresh_inventory=False,
+    )
+    with pytest.raises(control.ImmutablePinError, match="inventory-pinned"):
+        control._render_finalizer_sbatch(
+            state_dir,
+            unpinned,
+            intent_id="1" * 64,
+            attempt=1,
+            intent_token="2" * 32,
+        )
+
+    other_root = tmp_path / "mutable"
+    other_state, other_current = initialize(other_root)
+    other_harness = Path(
+        other_current["immutable"]["harness_environment_prefix"]
+    )
+    mutable, _lexical = _replace_fixture_harness_python(
+        other_current,
+        target=other_harness / "bin" / "python3.12",
+        target_mode=0o755,
+        refresh_inventory=True,
+    )
+    with pytest.raises(control.ImmutablePinError, match="sealed executable"):
+        control._render_finalizer_sbatch(
+            other_state,
+            mutable,
+            intent_id="1" * 64,
+            attempt=1,
+            intent_token="2" * 32,
+        )
+
+
+def _publish_manual_final_complete_fixture(
+    state_dir: Path, current: dict
+) -> dict:
+    output_root = Path(current["finalization"]["output_root"])
+
+    def command_runner(argv, _environment, _timeout):
+        if "--cadence" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(_complete_semantic_report(current)), ""
+            )
+        cache_root = Path(argv[argv.index("--out-dir") + 1])
+        _write_complete_primary_cache(cache_root, current)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return control.finalize_sweep(
+        state_dir,
+        output_root=output_root,
+        scheduler_reader=lambda: control.SchedulerSnapshot((), 40.0),
+        cancel_runner=lambda argv: subprocess.CompletedProcess(argv, 0, "", ""),
+        fleet_evidence_reader=lambda state: _final_fleet_evidence(state),
+        command_runner=command_runner,
+        snapshot_builder=lambda snapshot_root, sources, _environment: (
+            _write_final_snapshot_fixture(
+                snapshot_root,
+                sources,
+                snapshot_id="manual-autonomous-compatibility-fixture",
+            )
+        ),
+        lock_scanner=lambda _state: [],
+        writer_guard=lambda _state, _path: control.nullcontext(),
+        now=40.0,
+    )
+
+
+def _autonomous_scheduler(
+    finalization: dict,
+    *,
+    captured_at: float = 41.0,
+    active_state: str = "RUNNING",
+    successor_state: str = "PENDING",
+    extra_jobs: tuple[control.SchedulerJob, ...] = (),
+) -> control.SchedulerSnapshot:
+    jobs = []
+    for field in ("active_job", "successor_job"):
+        row = finalization.get(field)
+        if not isinstance(row, dict):
+            continue
+        dependency = (
+            ""
+            if row["dependency_job_id"] is None
+            else f"afterany:{row['dependency_job_id']}"
+        )
+        jobs.append(
+            control.SchedulerJob(
+                str(row["job_id"]),
+                f"asys-s5-final-a{row['attempt']:06d}",
+                active_state if field == "active_job" else successor_state,
+                str(row["job_token"]),
+                str(row["sbatch_path"]),
+                dependency=dependency,
+            )
+        )
+    return control.SchedulerSnapshot(tuple([*jobs, *extra_jobs]), captured_at)
+
+
+def test_autonomous_request_preserves_and_verifies_existing_manual_completion(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    marker = _publish_manual_final_complete_fixture(state_dir, current)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+
+    before = (state_dir / control.CONTROL_FILENAME).read_bytes()
+    observed = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler_reader=lambda: pytest.fail(
+            "verified manual completion must not query scheduler truth"
+        ),
+        submit_runner=lambda argv: pytest.fail(
+            f"verified manual completion must not submit a finalizer: {argv}"
+        ),
+        now=41.0,
+    )
+    assert observed["state"] == "idle"
+    assert observed["active_job"] is None
+    assert observed["successor_job"] is None
+    assert (state_dir / control.CONTROL_FILENAME).read_bytes() == before
+
+    marker_path = (
+        Path(current["finalization"]["output_root"])
+        / control.FINAL_COMPLETE_FILENAME
+    )
+    marker_path.chmod(0o644)
+    forged = json.loads(marker_path.read_text(encoding="utf-8"))
+    forged["trusted_qids"] -= 1
+    marker_path.write_text(
+        json.dumps(forged, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    marker_path.chmod(0o444)
+    with pytest.raises(control.ControlError, match="malformed"):
+        control.request_autonomous_finalization(
+            state_dir,
+            semantic_report_path=evidence_path,
+            scheduler_reader=lambda: pytest.fail(
+                "invalid manual completion must fail before scheduler access"
+            ),
+            submit_runner=lambda argv: pytest.fail(
+                f"invalid manual completion must not submit a finalizer: {argv}"
+            ),
+            now=42.0,
+        )
+    assert (state_dir / control.CONTROL_FILENAME).read_bytes() == before
+    assert marker["autonomous_finalizer"] is None
+
+
+def test_finalizer_active_submission_adoption_rejects_unexpected_dependency(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    with pytest.raises(control.ControlError, match="sbatch was rejected"):
+        control.request_autonomous_finalization(
+            state_dir,
+            semantic_report_path=evidence_path,
+            scheduler=control.SchedulerSnapshot((), 40.0),
+            submit_runner=lambda argv: subprocess.CompletedProcess(
+                argv, 1, "", "synthetic rejection"
+            ),
+            now=40.0,
+        )
+    record = control.load_control(state_dir)["finalization"]["active_job"]
+    assert record["state"] == "submitting"
+    assert record["dependency_job_id"] is None
+    ambiguous = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                "901",
+                "asys-s5-final-a000001",
+                "PENDING",
+                record["job_token"],
+                record["sbatch_path"],
+                dependency="afterany:777",
+            ),
+        ),
+        41.0,
+    )
+    with pytest.raises(
+        control.SchedulerAmbiguity, match="scheduler identity is ambiguous"
+    ):
+        control._submit_finalizer_job(
+            state_dir,
+            field="active_job",
+            attempt=1,
+            dependency_job_id=None,
+            snapshot=ambiguous,
+            submit_runner=lambda argv: pytest.fail(
+                f"ambiguous active finalizer must not be resubmitted: {argv}"
+            ),
+            now=41.0,
+        )
+    persisted = control.load_control(state_dir)["finalization"]["active_job"]
+    assert persisted["job_id"] is None
+    assert persisted["state"] == "submitting"
+
+
+def test_autonomous_finalization_requests_chain_before_drain_and_is_live(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+
+    def submit(argv):
+        assert "--parsable" in argv
+        return subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        )
+
+    result = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=submit,
+        now=40.0,
+    )
+    assert result["state"] == "draining"
+    assert result["active_job"]["job_id"] == "901"
+    assert result["successor_job"]["job_id"] == "902"
+    assert result["successor_job"]["dependency_job_id"] == "901"
+    assert result["next_attempt"] == 3
+    assert control.load_control(state_dir)["desired_state"] == "paused"
+    for field in ("active_job", "successor_job"):
+        payload = Path(result[field]["sbatch_path"]).read_text(
+            encoding="utf-8"
+        )
+        assert "#SBATCH --no-requeue" in payload
+        assert "#SBATCH --signal=B:USR1@1200" in payload
+    status = control.live_status(
+        state_dir,
+        snapshot=_autonomous_scheduler(result),
+        now=41.0,
+    )
+    assert status["finalization"]["state"] == "draining"
+    assert status["effective_admission_ceiling"] == 0
+    assert status["immutable_sha256"] == current["immutable_sha256"]
+    assert status["captured_timestamp"] == 41.0
+
+
+def test_autonomous_finalize_publishes_only_after_bound_successor_retirement(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    initial = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, initial
+    )
+    submitted = iter(("901", "902"))
+    requested = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    publisher = control._promote_finalizer_successor(
+        state_dir, job_id="901", attempt=1, now=41.0
+    )
+    current = control.load_control(state_dir)
+    cancelled = False
+    scheduler_timestamp = 41.0
+
+    def scheduler_reader():
+        nonlocal scheduler_timestamp
+        scheduler_timestamp += 1.0
+        finalization = control.load_control(state_dir)["finalization"]
+        return _autonomous_scheduler(
+            finalization,
+            captured_at=scheduler_timestamp,
+            successor_state="CANCELLED" if cancelled else "PENDING",
+        )
+
+    def cancel_runner(argv):
+        nonlocal cancelled
+        assert argv == ["scancel", "902"]
+        binding = control.load_control(state_dir)["finalization"][
+            "successor_retirement"
+        ]
+        assert binding["receipt_path"] is None
+        assert Path(binding["intent_path"]).stat().st_mode & 0o222 == 0
+        marker_path = (
+            Path(requested["output_root"]) / control.FINAL_COMPLETE_FILENAME
+        )
+        assert not marker_path.exists()
+        assert (Path(requested["output_root"]) / "snapshot").is_dir()
+        cancelled = True
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def command_runner(argv, environment, timeout):
+        assert environment["ASYS_IMMUTABLE_PINS_SHA256"] == current[
+            "immutable_sha256"
+        ]
+        if "--cadence" in argv:
+            assert timeout == control.FINALIZER_COMMAND_DEADLINE_SECONDS
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(_complete_semantic_report(current)), ""
+            )
+        cache_root = Path(argv[argv.index("--out-dir") + 1])
+        _write_complete_primary_cache(cache_root, current)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def snapshot_builder(snapshot_root, sources, environment):
+        del environment
+        return _write_final_snapshot_fixture(
+            snapshot_root,
+            sources,
+            snapshot_id="autonomous-final-fixture",
+            completed_at="1970-01-01T00:00:41Z",
+        )
+
+    result = control.finalize_sweep(
+        state_dir,
+        output_root=Path(requested["output_root"]),
+        scheduler_reader=scheduler_reader,
+        cancel_runner=cancel_runner,
+        fleet_evidence_reader=lambda state: _final_fleet_evidence(state),
+        command_runner=command_runner,
+        snapshot_builder=snapshot_builder,
+        lock_scanner=lambda _state: [],
+        writer_guard=lambda _state, _path: control.nullcontext(),
+        publisher_finalizer=publisher,
+        now=41.0,
+    )
+    assert cancelled is True
+    assert result["schema_version"] == 3
+    assert result["autonomous_finalizer"]["publisher"]["job_id"] == "901"
+    assert result["autonomous_finalizer"]["successor"]["job_id"] == "902"
+    retirement = result["autonomous_finalizer"]["successor_retirement"]
+    assert retirement["receipt_id"]
+    assert result["zero_writer_proof"]["publisher_finalizer"]["job_id"] == "901"
+    assert result["zero_writer_proof"]["active_finalizer_job_ids"] == ["901"]
+    assert result["zero_writer_proof"]["other_active_finalizer_job_ids"] == []
+    assert result["zero_writer_proof"]["successor_retirement"] == retirement
+    finalization = control.load_control(state_dir)["finalization"]
+    assert finalization["state"] != "complete"
+    assert finalization["successor_job"]["state"] == "cancelled"
+
+    completed = control._commit_autonomous_finalization_complete(
+        state_dir, now=50.0
+    )
+    assert completed["state"] == "complete"
+    assert completed["completion_marker"]["final_id"] == result["final_id"]
+    completed_control = control.load_control(state_dir)
+
+    snapshot_root = (
+        Path(requested["output_root"]) / control.FINAL_SNAPSHOT_DIRNAME
+    )
+    payload = next(snapshot_root.glob("*/payload.bin"))
+    original_payload = payload.read_bytes()
+    snapshot_root.chmod(0o755)
+    payload.parent.chmod(0o755)
+    payload.chmod(0o644)
+    payload.write_bytes(b"post-completion snapshot corruption\n")
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    snapshot_root.chmod(0o555)
+    with pytest.raises(control.ControlError, match="payload checksum drifted"):
+        control.load_control(state_dir)
+    snapshot_root.chmod(0o755)
+    payload.parent.chmod(0o755)
+    payload.chmod(0o644)
+    payload.write_bytes(original_payload)
+    payload.chmod(0o444)
+    payload.parent.chmod(0o555)
+    snapshot_root.chmod(0o555)
+    assert control.load_control(state_dir)["finalization"]["state"] == "complete"
+
+    marker_path = (
+        Path(requested["output_root"]) / control.FINAL_COMPLETE_FILENAME
+    )
+    marker_path.chmod(0o644)
+    forged = json.loads(marker_path.read_text(encoding="utf-8"))
+    forged["autonomous_finalizer"]["successor_retirement"][
+        "receipt_sha256"
+    ] = "0" * 64
+    without_id = dict(forged)
+    without_id.pop("final_id")
+    forged["final_id"] = control.sha256_value(without_id)
+    marker_path.write_text(
+        json.dumps(forged, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    marker_path.chmod(0o444)
+    with pytest.raises(
+        control.ControlError, match="marker checksum drifted"
+    ):
+        control.load_control(state_dir)
+    with pytest.raises(
+        control.ControlError, match="marker checksum drifted"
+    ):
+        control.live_status(
+            state_dir,
+            snapshot=control.SchedulerSnapshot((), 51.0),
+            now=51.0,
+        )
+    with pytest.raises(
+        control.ControlError, match="retirement binding drifted"
+    ):
+        control._verify_final_complete(
+            Path(requested["output_root"]),
+            control=completed_control,
+        )
+    marker_path.unlink()
+    with pytest.raises(
+        control.ControlError, match="marker is missing"
+    ):
+        control.load_control(state_dir)
+
+
+def test_autonomous_finalizer_retries_transient_and_blocks_semantic_failure(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    result = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    scheduler = _autonomous_scheduler(result)
+    monkeypatch.setattr(
+        control,
+        "record_alert",
+        lambda *_args, **_kwargs: {},
+    )
+    transient = control.run_autonomous_finalizer_worker(
+        state_dir,
+        intent_id=result["intent_id"],
+        attempt=1,
+        job_id="901",
+        scheduler_reader=lambda: scheduler,
+        finalize_runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            control.SchedulerAmbiguity("sacct temporarily unavailable")
+        ),
+        now=41.0,
+    )
+    assert transient == 75
+    retry_state = control.load_control(state_dir)["finalization"]
+    assert retry_state["state"] == "validating"
+    assert retry_state["last_error"]["transient"] is True
+
+    blocked = control.run_autonomous_finalizer_worker(
+        state_dir,
+        intent_id=result["intent_id"],
+        attempt=1,
+        job_id="901",
+        scheduler_reader=lambda: scheduler,
+        finalize_runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            control.ControlError(
+                "semantic acceptance contains duplicate QIDs"
+            )
+        ),
+        now=42.0,
+    )
+    assert blocked == 2
+    blocked_state = control.load_control(state_dir)["finalization"]
+    assert blocked_state["state"] == "blocked"
+    assert blocked_state["last_error"]["transient"] is False
+
+
+def test_autonomous_finalizer_publishes_complete_state_and_cancels_successor(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    result = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    running = _autonomous_scheduler(result)
+    terminal = _autonomous_scheduler(
+        result, captured_at=42.0, successor_state="CANCELLED"
+    )
+    snapshots = iter((running, running, terminal))
+    output_root = Path(result["output_root"])
+    output_root.mkdir(parents=True)
+    final_id = "f" * 64
+    marker = output_root / control.FINAL_COMPLETE_FILENAME
+    cancelled = []
+
+    def cancel(argv):
+        binding = control.load_control(state_dir)["finalization"][
+            "successor_retirement"
+        ]
+        assert binding["receipt_path"] is None
+        intent_path = Path(binding["intent_path"])
+        assert intent_path.stat().st_mode & 0o222 == 0
+        cancelled.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def finalize_runner(*_args, **kwargs):
+        control._retire_autonomous_finalizer_successor(
+            state_dir,
+            publisher_record=kwargs["publisher_finalizer"],
+            scheduler_reader=kwargs["scheduler_reader"],
+            cancel_runner=kwargs["cancel_runner"],
+            now=41.0,
+        )
+        marker.write_text(
+            json.dumps({"final_id": final_id}) + "\n", encoding="utf-8"
+        )
+        marker.chmod(0o444)
+        return {"complete": True, "final_id": final_id}
+
+    monkeypatch.setattr(
+        control,
+        "_verify_final_complete",
+        lambda *_args, **_kwargs: {
+            "complete": True,
+            "final_id": final_id,
+        },
+    )
+    returncode = control.run_autonomous_finalizer_worker(
+        state_dir,
+        intent_id=result["intent_id"],
+        attempt=1,
+        job_id="901",
+        scheduler_reader=lambda: next(snapshots),
+        finalize_runner=finalize_runner,
+        cancel_runner=cancel,
+        now=41.0,
+    )
+    assert returncode == 0
+    completed = control.load_control(state_dir)["finalization"]
+    assert completed["state"] == "complete"
+    assert completed["completion_marker"]["final_id"] == final_id
+    assert completed["successor_retirement"]["receipt_id"]
+    assert completed["successor_job"]["state"] == "cancelled"
+    assert cancelled == [["scancel", "902"]]
+
+
+def test_autonomous_finalizer_reconcile_promotes_afterany_successor_once(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    result = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    successor = result["successor_job"]
+    snapshot = control.SchedulerSnapshot(
+        (
+            control.SchedulerJob(
+                "901",
+                "asys-s5-final-a000001",
+                "COMPLETED",
+                result["active_job"]["job_token"],
+                result["active_job"]["sbatch_path"],
+            ),
+            control.SchedulerJob(
+                "902",
+                "asys-s5-final-a000002",
+                "RUNNING",
+                successor["job_token"],
+                successor["sbatch_path"],
+                dependency="afterany:901",
+            ),
+        ),
+        41.0,
+    )
+    reconciled = control.reconcile_autonomous_finalization(
+        state_dir,
+        snapshot=snapshot,
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, "903\n", ""
+        ),
+        now=41.0,
+    )
+    assert reconciled["active_job"]["job_id"] == "902"
+    assert reconciled["active_job"]["attempt"] == 2
+    assert reconciled["successor_job"]["job_id"] == "903"
+    assert reconciled["successor_job"]["attempt"] == 3
+    assert reconciled["successor_job"]["dependency_job_id"] == "902"
+
+
+def test_successor_retirement_persists_intent_before_cancel_and_adopts_terminal_replay(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    requested = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    publisher = control._promote_finalizer_successor(
+        state_dir, job_id="901", attempt=1, now=41.0
+    )
+    running = _autonomous_scheduler(requested, captured_at=41.0)
+    observed_intent = {}
+
+    def failed_cancel(argv):
+        binding = control.load_control(state_dir)["finalization"][
+            "successor_retirement"
+        ]
+        observed_intent.update(binding)
+        assert binding["receipt_path"] is None
+        assert Path(binding["intent_path"]).stat().st_mode & 0o222 == 0
+        return subprocess.CompletedProcess(argv, 1, "", "temporary scancel failure")
+
+    snapshots = iter((running, running))
+    with pytest.raises(
+        control.ControlError, match="scheduler rejected exact"
+    ):
+        control._retire_autonomous_finalizer_successor(
+            state_dir,
+            publisher_record=publisher,
+            scheduler_reader=lambda: next(snapshots),
+            cancel_runner=failed_cancel,
+            now=41.0,
+        )
+    after_failure = control.load_control(
+        state_dir, verify_files=True
+    )["finalization"]
+    assert after_failure["state"] != "complete"
+    assert after_failure["successor_retirement"] == observed_intent
+    assert after_failure["successor_retirement"]["receipt_path"] is None
+    assert not (
+        Path(after_failure["output_root"]) / control.FINAL_COMPLETE_FILENAME
+    ).exists()
+
+    still_running = iter((running, running))
+    with pytest.raises(
+        control.SchedulerVisibilityPending, match="not terminal"
+    ):
+        control._retire_autonomous_finalizer_successor(
+            state_dir,
+            publisher_record=publisher,
+            scheduler_reader=lambda: next(still_running),
+            cancel_runner=lambda argv: subprocess.CompletedProcess(
+                argv, 0, "", ""
+            ),
+            now=41.5,
+        )
+    assert (
+        control.load_control(state_dir)["finalization"][
+            "successor_retirement"
+        ]["receipt_path"]
+        is None
+    )
+
+    terminal = _autonomous_scheduler(
+        requested, captured_at=42.0, successor_state="CANCELLED"
+    )
+    completed = control._retire_autonomous_finalizer_successor(
+        state_dir,
+        publisher_record=publisher,
+        scheduler_reader=lambda: terminal,
+        cancel_runner=lambda argv: pytest.fail(
+            f"terminal successor must be adopted without cancellation: {argv}"
+        ),
+        now=42.0,
+    )
+    receipt_path = Path(completed["receipt_path"])
+    assert receipt_path.stat().st_mode & 0o222 == 0
+    assert completed["receipt_id"]
+    replay = control._retire_autonomous_finalizer_successor(
+        state_dir,
+        publisher_record=publisher,
+        scheduler_reader=lambda: pytest.fail(
+            "sealed terminal retirement must replay without scheduler access"
+        ),
+        cancel_runner=lambda argv: pytest.fail(
+            f"sealed terminal retirement must not recancel: {argv}"
+        ),
+        now=43.0,
+    )
+    assert replay == completed
+
+
+def test_successor_retirement_rejects_foreign_finalizer_and_receipt_tamper(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    requested = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    publisher = control._promote_finalizer_successor(
+        state_dir, job_id="901", attempt=1, now=41.0
+    )
+    foreign = control.SchedulerJob(
+        "999",
+        "asys-s5-final-a999999",
+        "RUNNING",
+        control.FINALIZER_JOB_TOKEN_PREFIX + ";malformed=foreign",
+        "/foreign/finalizer.sbatch",
+    )
+    ambiguous = _autonomous_scheduler(
+        requested, captured_at=41.0, extra_jobs=(foreign,)
+    )
+    with pytest.raises(
+        control.SchedulerAmbiguity, match="unmapped autonomous finalizer"
+    ):
+        control._retire_autonomous_finalizer_successor(
+            state_dir,
+            publisher_record=publisher,
+            scheduler_reader=lambda: ambiguous,
+            cancel_runner=lambda argv: pytest.fail(
+                f"ambiguity must fence cancellation: {argv}"
+            ),
+            now=41.0,
+        )
+    binding = control.load_control(state_dir)["finalization"][
+        "successor_retirement"
+    ]
+    assert binding["receipt_path"] is None
+
+    terminal = _autonomous_scheduler(
+        requested, captured_at=42.0, successor_state="COMPLETED"
+    )
+    completed = control._retire_autonomous_finalizer_successor(
+        state_dir,
+        publisher_record=publisher,
+        scheduler_reader=lambda: terminal,
+        cancel_runner=lambda argv: pytest.fail(
+            f"terminal successor must not be cancelled: {argv}"
+        ),
+        now=42.0,
+    )
+    receipt_path = Path(completed["receipt_path"])
+    receipt_path.chmod(0o644)
+    receipt_path.write_bytes(receipt_path.read_bytes() + b" ")
+    receipt_path.chmod(0o444)
+    with pytest.raises(
+        control.ControlError, match="receipt checksum drifted"
+    ):
+        control.load_control(state_dir, verify_files=True)
+
+
+def test_reconcile_adopts_marker_crash_without_replacing_bound_finalizer_chain(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    requested = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    publisher = control._promote_finalizer_successor(
+        state_dir, job_id="901", attempt=1, now=41.0
+    )
+    terminal = _autonomous_scheduler(
+        requested,
+        captured_at=42.0,
+        active_state="COMPLETED",
+        successor_state="CANCELLED",
+    )
+    retirement_snapshot = _autonomous_scheduler(
+        requested, captured_at=41.0, successor_state="CANCELLED"
+    )
+    control._retire_autonomous_finalizer_successor(
+        state_dir,
+        publisher_record=publisher,
+        scheduler_reader=lambda: retirement_snapshot,
+        cancel_runner=lambda argv: pytest.fail(
+            f"terminal successor must not be cancelled: {argv}"
+        ),
+        now=41.0,
+    )
+    final_id = "f" * 64
+    marker_path = (
+        Path(requested["output_root"]) / control.FINAL_COMPLETE_FILENAME
+    )
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps({"final_id": final_id}) + "\n", encoding="utf-8"
+    )
+    marker_path.chmod(0o444)
+    monkeypatch.setattr(
+        control,
+        "_verify_final_complete",
+        lambda *_args, **_kwargs: {
+            "complete": True,
+            "final_id": final_id,
+        },
+    )
+    live_retired_successor = _autonomous_scheduler(
+        requested,
+        captured_at=41.5,
+        active_state="COMPLETED",
+        successor_state="RUNNING",
+    )
+    with pytest.raises(
+        control.SchedulerAmbiguity, match="retired successor"
+    ):
+        control.reconcile_autonomous_finalization(
+            state_dir,
+            snapshot=live_retired_successor,
+            submit_runner=lambda argv: pytest.fail(
+                f"ambiguous marker adoption must not submit: {argv}"
+            ),
+            now=41.5,
+        )
+    assert control.load_control(state_dir)["finalization"]["state"] != "complete"
+    reconciled = control.reconcile_autonomous_finalization(
+        state_dir,
+        snapshot=terminal,
+        submit_runner=lambda argv: pytest.fail(
+            f"marker adoption must not replace its bound chain: {argv}"
+        ),
+        now=42.0,
+    )
+    assert reconciled["state"] == "complete"
+    assert reconciled["active_job"]["job_id"] == "901"
+    assert reconciled["successor_job"]["job_id"] == "902"
+    assert reconciled["successor_retirement"]["receipt_id"]
+    replay = control.reconcile_autonomous_finalization(
+        state_dir,
+        snapshot=terminal,
+        submit_runner=lambda argv: pytest.fail(
+            f"completed finalization must remain fenced: {argv}"
+        ),
+        now=43.0,
+    )
+    assert replay == reconciled
+    control_path = state_dir / control.CONTROL_FILENAME
+    before_replay = control_path.read_bytes()
+    assert (
+        control.run_autonomous_finalizer_worker(
+            state_dir,
+            intent_id=requested["intent_id"],
+            attempt=1,
+            job_id="901",
+            scheduler_reader=lambda: terminal,
+            submit_runner=lambda argv: pytest.fail(
+                f"completed worker replay must not submit: {argv}"
+            ),
+            now=43.5,
+        )
+        == 0
+    )
+    assert control_path.read_bytes() == before_replay
+    live_retired_successor = _autonomous_scheduler(
+        reconciled,
+        captured_at=43.6,
+        active_state="COMPLETED",
+        successor_state="RUNNING",
+    )
+    with pytest.raises(
+        control.SchedulerAmbiguity, match="active retired"
+    ):
+        control.run_autonomous_finalizer_worker(
+            state_dir,
+            intent_id=requested["intent_id"],
+            attempt=1,
+            job_id="901",
+            scheduler_reader=lambda: live_retired_successor,
+            now=43.6,
+        )
+    assert control_path.read_bytes() == before_replay
+    with pytest.raises(control.ControllerFenced, match="fenced"):
+        control._promote_finalizer_successor(
+            state_dir, job_id="901", attempt=1, now=44.0
+        )
+
+
+def test_reconcile_receipt_crash_before_marker_starts_fresh_bound_pair(
+    tmp_path, monkeypatch
+):
+    state_dir, _ = initialize(tmp_path)
+    _install_finalizer_test_catalog(state_dir, monkeypatch)
+    current = control.load_control(state_dir)
+    evidence_path, _ = _write_autonomous_finalization_evidence(
+        state_dir, current
+    )
+    submitted = iter(("901", "902"))
+    requested = control.request_autonomous_finalization(
+        state_dir,
+        semantic_report_path=evidence_path,
+        scheduler=control.SchedulerSnapshot((), 40.0),
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(submitted) + "\n", ""
+        ),
+        now=40.0,
+    )
+    publisher = control._promote_finalizer_successor(
+        state_dir, job_id="901", attempt=1, now=41.0
+    )
+    terminal = _autonomous_scheduler(
+        requested,
+        captured_at=42.0,
+        active_state="COMPLETED",
+        successor_state="CANCELLED",
+    )
+    control._retire_autonomous_finalizer_successor(
+        state_dir,
+        publisher_record=publisher,
+        scheduler_reader=lambda: _autonomous_scheduler(
+            requested, captured_at=41.0, successor_state="CANCELLED"
+        ),
+        cancel_runner=lambda argv: pytest.fail(
+            f"terminal successor must not be cancelled: {argv}"
+        ),
+        now=41.0,
+    )
+    old_binding = control.load_control(state_dir)["finalization"][
+        "successor_retirement"
+    ]
+    fresh_ids = iter(("903", "904"))
+    reconciled = control.reconcile_autonomous_finalization(
+        state_dir,
+        snapshot=terminal,
+        submit_runner=lambda argv: subprocess.CompletedProcess(
+            argv, 0, next(fresh_ids) + "\n", ""
+        ),
+        now=42.0,
+    )
+    assert reconciled["active_job"]["job_id"] == "903"
+    assert reconciled["successor_job"]["job_id"] == "904"
+    assert reconciled["successor_retirement"] is None
+    assert Path(old_binding["intent_path"]).is_file()
+    assert Path(old_binding["receipt_path"]).is_file()
+    assert any(
+        row["event"] == "chain_reset_for_retry"
+        and row["details"]["successor_retirement_transaction_id"]
+        == old_binding["transaction_id"]
+        for row in reconciled["history"]
+    )

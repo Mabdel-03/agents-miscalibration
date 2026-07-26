@@ -119,6 +119,9 @@ ANALYSIS_MODE="${ANALYSIS_MODE:-primary-schema5}"
 if [[ "$ANALYSIS_MODE" == "primary-schema5" ]]; then
   DEFAULT_RUN_IDS="full_sweep_schema5_v1 full_sweep_agent_counts_schema5_v1 full_sweep_agent_count_7_schema5_v1"
   DEFAULT_OUT_DIR="analysis/cache"
+elif [[ "$ANALYSIS_MODE" == "interim-schema5" ]]; then
+  DEFAULT_RUN_IDS="full_sweep_schema5_v1 full_sweep_agent_counts_schema5_v1 full_sweep_agent_count_7_schema5_v1"
+  DEFAULT_OUT_DIR="analysis/cache/interim_schema5"
 elif [[ "$ANALYSIS_MODE" == "supplementary-legacy" ]]; then
   DEFAULT_RUN_IDS="full_sweep_v1 full_sweep_agent_counts_v1 full_sweep_agent_count_7_v1"
   DEFAULT_OUT_DIR="analysis/cache/supplementary_legacy"
@@ -140,6 +143,52 @@ INGEST_ARGS=(
   --run-id "${RUN_IDS[@]}"
   --out-dir "$OUT_DIR"
 )
+if [[ "$ANALYSIS_MODE" == "primary-schema5" ]]; then
+  if [[ -n "${ASYS_TRUSTED_GENERATION_CATALOG:-}" || -n "${ASYS_SERVER_POOL_ROOT:-}" ]]; then
+    if [[ -z "${ASYS_TRUSTED_GENERATION_CATALOG:-}" || -z "${ASYS_SERVER_POOL_ROOT:-}" ]]; then
+      echo "[refresh] catalog marker and server-pool root must be supplied together" >&2
+      exit 2
+    fi
+    CATALOG_MARKER="$ASYS_TRUSTED_GENERATION_CATALOG"
+    SERVER_POOL_ROOT="$ASYS_SERVER_POOL_ROOT"
+  else
+    CATALOG_AUTHORITY="$(
+      LD_LIBRARY_PATH="$HARNESS_PREFIX/lib" "$PY" -I - \
+        "$RELEASE_WORKTREE" "$CONTROL_STATE_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+release = Path(sys.argv[1]).resolve()
+state_dir = Path(sys.argv[2]).resolve()
+sys.path.insert(0, str(release))
+from slurm.schema5_control import load_control
+from agents_scaling.serving.generation_catalog import (
+    load_current_trusted_generation_catalog,
+)
+
+control = load_control(state_dir, verify_files=True)
+pool = Path(control["immutable"]["server_pool_root"]).resolve()
+catalog = load_current_trusted_generation_catalog(
+    state_dir, server_pool_root=pool, required=True
+)
+assert catalog is not None
+print(catalog.marker_path)
+print(pool)
+PY
+    )"
+    mapfile -t CATALOG_FIELDS <<< "$CATALOG_AUTHORITY"
+    if [[ "${#CATALOG_FIELDS[@]}" -ne 2 ]]; then
+      echo "[refresh] trusted-generation catalog authority is incomplete" >&2
+      exit 2
+    fi
+    CATALOG_MARKER="${CATALOG_FIELDS[0]}"
+    SERVER_POOL_ROOT="${CATALOG_FIELDS[1]}"
+  fi
+  INGEST_ARGS+=(
+    --trusted-generation-catalog "$CATALOG_MARKER"
+    --server-pool-root "$SERVER_POOL_ROOT"
+  )
+fi
 if [[ "${INCLUDE_UNMANIFESTED:-0}" == "1" ]]; then
   INGEST_ARGS+=(--include-unmanifested)
 fi

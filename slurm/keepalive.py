@@ -31,11 +31,13 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from agents_scaling.config import DEFAULT_RESULTS_ROOT
 from agents_scaling.experiment import io
 from agents_scaling.serving import healthcheck, registry
 from agents_scaling.serving import fleet_transactions as fleet_tx
+from agents_scaling.serving import protected_capacity, scheduler_safety
 from agents_scaling.serving.fleet_contract import (
     FleetContractError,
     FrozenFleetContract,
@@ -79,6 +81,79 @@ class SpooledServingProvenance:
     tokenizer_revision: str
     model_contract_sha256: str
     fleet_contract_sha256: str | None
+    release_fleet_contract_sha256: str | None = None
+    capacity_generation: int | None = None
+    rollout_generation: int | None = None
+    spooled_script_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class ReadOnlyFleetAllocation:
+    """One fully verified live allocation from transactional scheduler truth."""
+
+    replica_id: str
+    ledger_generation: int
+    intent_token: str
+    attempt_state: str
+    row: FleetQueueRow
+    spooled_provenance: SpooledServingProvenance
+    sbatch_path: str
+    sbatch_sha256: str
+
+
+@dataclass(frozen=True)
+class ReadOnlyFleetSnapshot:
+    """A mutation-free readiness view of the canonical production fleet."""
+
+    current_generation: int
+    captured_at: float
+    allocations: tuple[ReadOnlyFleetAllocation, ...]
+    ignored_terminal_job_ids: tuple[str, ...]
+    isolated_foreign_job_ids: tuple[str, ...] = ()
+    sealed_successful_handoff_terminal_job_ids: tuple[str, ...] = ()
+
+
+def _validate_live_fleet_scheduler_policy(
+    fleet: FrozenFleetContract,
+    *,
+    expected_policy_contract_id: str | None,
+    expected_transport_binding_sha256: str,
+    runner=None,
+    captured_timestamp: float | None = None,
+) -> tuple[dict, dict]:
+    """Capture and validate the exact scheduler policy used by one fleet tick."""
+
+    binding_sha256 = scheduler_safety.transport_uncertainty_binding_sha256()
+    if expected_transport_binding_sha256 != binding_sha256:
+        raise FleetContractError(
+            "fleet supervisor transport-uncertainty binding drifted"
+        )
+    requirements = scheduler_safety.fleet_partition_time_requirements(
+        fleet.replicas
+    )
+    try:
+        evidence = scheduler_safety.capture_scheduler_safety_evidence(
+            list(requirements),
+            runner=runner,
+            captured_timestamp=captured_timestamp,
+        )
+        policy = scheduler_safety.validate_scheduler_safety_evidence(
+            evidence,
+            expected_partitions=list(requirements),
+            required_time_limits_seconds=requirements,
+        )
+    except scheduler_safety.SchedulerSafetyError as exc:
+        raise FleetContractError(
+            f"live fleet scheduler-safety validation failed: {exc}"
+        ) from exc
+    if (
+        expected_policy_contract_id is not None
+        and policy["policy_contract_id"] != expected_policy_contract_id
+    ):
+        raise FleetContractError(
+            "live fleet scheduler policy drifted from attested readiness"
+        )
+    return evidence, policy
 
 
 def parse_spec(spec: str, default_gpu: str) -> list[Target]:
@@ -234,6 +309,7 @@ def _spooled_job_provenance(
     *,
     run_root: str | None = None,
     expected_script: str | None = None,
+    runner=None,
 ) -> SpooledServingProvenance | None:
     """Recover and validate complete launch provenance from Slurm's batch-script copy.
 
@@ -247,10 +323,12 @@ def _spooled_job_provenance(
 
     try:
         profile = get_serving_profile(profile_name)
-        proc = subprocess.run(
+        invoke = subprocess.run if runner is None else runner
+        proc = invoke(
             ["scontrol", "write", "batch_script", str(slurm_job_id), "-"],
             capture_output=True,
             text=True,
+            check=False,
             timeout=10.0,
         )
     except (KeyError, OSError, subprocess.TimeoutExpired):
@@ -321,8 +399,10 @@ def _spooled_job_provenance(
         not register_tokens
         or Path(register_tokens[0]).name != "python"
         or not Path(register_tokens[0]).is_absolute()
+        or register_tokens.count("--standby") > 1
     ):
         return None
+    standby = "--standby" in register_tokens
 
     serve_expected = {
         "--served-model-name": profile.served_model_name,
@@ -416,6 +496,15 @@ def _spooled_job_provenance(
     fleet_contract_sha256 = _flag_value(
         register_tokens, "--fleet-contract-sha256"
     )
+    release_fleet_contract_sha256 = _flag_value(
+        register_tokens, "--release-fleet-contract-sha256"
+    )
+    capacity_generation_text = _flag_value(
+        register_tokens, "--capacity-generation"
+    )
+    rollout_generation_text = _flag_value(
+        register_tokens, "--rollout-generation"
+    )
     fleet_contract_path = _flag_value(register_tokens, "--fleet-contract")
     release_worktree = _flag_value(register_tokens, "--release-worktree")
     model_contract_path = _flag_value(register_tokens, "--model-contract")
@@ -492,7 +581,28 @@ def _spooled_job_provenance(
             or not replica_id.startswith("schema5-v1--")
             or fleet_contract_sha256 is None
             or re.fullmatch(r"[0-9a-f]{64}", fleet_contract_sha256) is None
+            or release_fleet_contract_sha256 is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}", release_fleet_contract_sha256
+            )
+            is None
             or not fleet_contract_path
+        ):
+            return None
+        try:
+            capacity_generation = int(str(capacity_generation_text))
+            rollout_generation = int(str(rollout_generation_text))
+        except ValueError:
+            return None
+        if (
+            capacity_generation < 1
+            or rollout_generation < 1
+            or f'export ASYS_RELEASE_FLEET_CONTRACT_SHA256="'
+            f'{release_fleet_contract_sha256}"' not in script
+            or f'export ASYS_CAPACITY_GENERATION="{capacity_generation}"'
+            not in script
+            or f'export ASYS_ROLLOUT_GENERATION="{rollout_generation}"'
+            not in script
         ):
             return None
         try:
@@ -500,6 +610,7 @@ def _spooled_job_provenance(
                 resolved_fleet_contract,
                 model_contracts=contracts,
                 expected_sha256=fleet_contract_sha256,
+                allow_capacity_layout=True,
             )
             fleet.verify_pool_root(canonical_observed_root)
             replica_contract = fleet.for_replica(profile.name, replica_index)
@@ -527,6 +638,9 @@ def _spooled_job_provenance(
         ):
             return None
     else:
+        capacity_generation = None
+        rollout_generation = None
+        release_fleet_contract_sha256 = None
         try:
             legacy_replica_id: str | int = int(replica_id)
         except ValueError:
@@ -545,6 +659,10 @@ def _spooled_job_provenance(
         tokenizer_revision=str(tokenizer_revision),
         model_contract_sha256=str(model_contract_sha256),
         fleet_contract_sha256=fleet_contract_sha256 or None,
+        release_fleet_contract_sha256=release_fleet_contract_sha256,
+        capacity_generation=capacity_generation,
+        rollout_generation=rollout_generation,
+        spooled_script_sha256=hashlib.sha256(script.encode("utf-8")).hexdigest(),
     )
 
 
@@ -653,6 +771,11 @@ def _reregister_running(
             "server_pool_id": provenance.server_pool_id,
             "replica_id": provenance.replica_id,
             "replica_index": provenance.replica_index,
+            "release_fleet_contract_sha256": (
+                provenance.release_fleet_contract_sha256
+            ),
+            "capacity_generation": provenance.capacity_generation,
+            "rollout_generation": provenance.rollout_generation,
         }
         if existing is not None and all(
             getattr(existing, field) == value
@@ -700,8 +823,85 @@ def _reregister_running(
                 server_pool_id=provenance.server_pool_id,
                 replica_id=provenance.replica_id,
                 replica_index=provenance.replica_index,
+                release_fleet_contract_sha256=(
+                    provenance.release_fleet_contract_sha256
+                ),
+                capacity_generation=provenance.capacity_generation,
+                rollout_generation=provenance.rollout_generation,
             )
-            destination = _size_dir(run_root, profile.registry_key) / f"{node}_{port}.json"
+            if (
+                provenance.server_pool_id == "schema5-v1"
+                and isinstance(provenance.replica_id, str)
+            ):
+                if registry._production_lineage_complete(e):  # noqa: SLF001
+                    try:
+                        catalog = registry.collect_endpoint_history_catalog(run_root)
+                    except ValueError as exc:
+                        print(
+                            f"[keepalive] refusing endpoint-history drift for "
+                            f"{provenance.replica_id}: {exc}"
+                        )
+                        continue
+                    history = [
+                        item
+                        for item in catalog.records
+                        if item.server_entry.replica_id == provenance.replica_id
+                        and str(item.server_entry.slurm_job_id) == str(slurm_job_id)
+                        and item.server_entry.serving_profile == profile.name
+                    ]
+                    if len(history) != 1:
+                        print(
+                            f"[keepalive] refusing unsealed schema-5 endpoint "
+                            f"{slurm_job_id} for {provenance.replica_id}"
+                        )
+                        continue
+                    e = history[0].server_entry
+                    if (
+                        e.host != node
+                        or e.port != port
+                        or any(
+                            getattr(e, field) != value
+                            for field, value in expected_fields.items()
+                        )
+                    ):
+                        print(
+                            f"[keepalive] refusing archived endpoint identity drift "
+                            f"for {provenance.replica_id} job {slurm_job_id}"
+                        )
+                        continue
+                try:
+                    promoted = registry.read_promoted_entry(
+                        run_root,
+                        profile.registry_key,
+                        provenance.replica_id,
+                    )
+                except ValueError as exc:
+                    print(
+                        f"[keepalive] refusing unsafe promoted pointer for "
+                        f"{provenance.replica_id}: {exc}"
+                    )
+                    continue
+                if (
+                    promoted is not None
+                    and str(promoted.slurm_job_id or "") != str(slurm_job_id)
+                ):
+                    # A standby or retiring predecessor can remain RUNNING during a
+                    # handoff.  It must never self-heal over the atomic promoted pointer.
+                    print(
+                        f"[keepalive] refusing stale allocation {slurm_job_id} "
+                        f"over promoted job {promoted.slurm_job_id} for "
+                        f"{provenance.replica_id}"
+                    )
+                    continue
+                destination = registry.promoted_entry_path(
+                    run_root,
+                    profile.registry_key,
+                    provenance.replica_id,
+                )
+            else:
+                destination = (
+                    _size_dir(run_root, profile.registry_key) / f"{node}_{port}.json"
+                )
             io.atomic_write_text(
                 destination,
                 _json.dumps(_dc.asdict(e), indent=2, sort_keys=True) + "\n",
@@ -783,6 +983,8 @@ def _expected_fleet_script(
     replica,
     run_root: str,
     launch_options: dict[str, str | int | None],
+    *,
+    standby: bool = False,
 ) -> str:
     script = render_sbatch(
         replica.model_size,
@@ -793,6 +995,8 @@ def _expected_fleet_script(
         str(Path(run_root) / "logs"),
         replica=replica.replica_index,
         serving_profile=replica.serving_profile,
+        qos=replica.qos,
+        standby=standby,
         **launch_options,
     )
     _validate_fleet_script_contract(
@@ -800,6 +1004,7 @@ def _expected_fleet_script(
         replica=replica,
         rollout_generation=_rollout_generation(launch_options),
         fleet_sha256=str(launch_options.get("fleet_contract_sha256") or ""),
+        standby=standby,
     )
     return script
 
@@ -810,6 +1015,7 @@ def _validate_fleet_script_contract(
     replica,
     rollout_generation: int,
     fleet_sha256: str,
+    standby: bool = False,
 ) -> None:
     exact_directives = (
         f"#SBATCH --job-name={replica.scheduler_job_name}",
@@ -818,6 +1024,7 @@ def _validate_fleet_script_contract(
             f"profile={replica.serving_profile};replica={replica.replica_id}"
         ),
         f"#SBATCH --partition={replica.partition}",
+        f"#SBATCH --qos={replica.qos}",
         f"#SBATCH --gres=gpu:{replica.gpu_type}:{replica.gpus_per_replica}",
         f"#SBATCH --cpus-per-task={replica.cpus_per_task}",
         f"#SBATCH --mem={replica.memory}",
@@ -842,6 +1049,90 @@ def _validate_fleet_script_contract(
         raise FleetContractError(
             f"rendered script omits frozen identity for {replica.replica_id}"
         )
+    release_fleet_match = re.search(
+        r'(?m)^export ASYS_RELEASE_FLEET_CONTRACT_SHA256="([0-9a-f]{64})"\s*$',
+        script,
+    )
+    capacity_match = re.search(
+        r'(?m)^export ASYS_CAPACITY_GENERATION="([1-9][0-9]*)"\s*$',
+        script,
+    )
+    if release_fleet_match is None or capacity_match is None:
+        raise FleetContractError(
+            f"rendered script omits endpoint lineage for {replica.replica_id}"
+        )
+    normalized = re.sub(r"\\[ \t]*\r?\n", " ", script)
+    register_line = next(
+        (
+            line
+            for line in normalized.splitlines()
+            if " -m agents_scaling.serving.launch_server --register " in line
+        ),
+        None,
+    )
+    if register_line is None:
+        raise FleetContractError(
+            f"rendered script omits registration for {replica.replica_id}"
+        )
+    try:
+        register_tokens = shlex.split(register_line)
+    except ValueError as exc:
+        raise FleetContractError(
+            f"rendered registration cannot be parsed for {replica.replica_id}"
+        ) from exc
+    if register_tokens.count("--standby") != int(standby):
+        raise FleetContractError(
+            f"rendered script has wrong standby role for {replica.replica_id}"
+        )
+    if (
+        _flag_value(register_tokens, "--release-fleet-contract-sha256")
+        != release_fleet_match.group(1)
+        or _flag_value(register_tokens, "--capacity-generation")
+        != capacity_match.group(1)
+        or _flag_value(register_tokens, "--rollout-generation")
+        != str(rollout_generation)
+    ):
+        raise FleetContractError(
+            f"rendered registration omits exact endpoint lineage for "
+            f"{replica.replica_id}"
+        )
+
+
+def _validate_active_scheduler_timing(row: FleetQueueRow, *, replica) -> None:
+    """Require exact, dependency-free Slurm timing for every active allocation."""
+
+    if fleet_tx.terminal_state(row.state):
+        return
+    if row.source != "squeue" or row.dependency != "":
+        raise FleetContractError(
+            f"fleet job {row.job_id} lacks dependency-free squeue timing truth"
+        )
+    try:
+        expected_seconds = fleet_tx._parse_slurm_duration(  # noqa: SLF001
+            replica.time_limit,
+            source="squeue",
+        )
+    except fleet_tx.FleetTransactionError as exc:
+        raise FleetContractError(str(exc)) from exc
+    if (
+        expected_seconds is None
+        or row.time_limit_seconds != expected_seconds
+    ):
+        raise FleetContractError(
+            f"fleet job {row.job_id} time limit drifted: "
+            f"observed={row.time_limit_seconds}, expected={expected_seconds}"
+        )
+    if row.state.upper() == "RUNNING":
+        if row.start_timestamp is None or row.end_timestamp is None:
+            raise FleetContractError(
+                f"running fleet job {row.job_id} lacks exact start/end timing"
+            )
+        observed_span = float(row.end_timestamp) - float(row.start_timestamp)
+        if abs(observed_span - expected_seconds) > 1.0:
+            raise FleetContractError(
+                f"running fleet job {row.job_id} start/end span drifted: "
+                f"observed={observed_span}, expected={expected_seconds}"
+            )
 
 
 def _attempt_for_token(
@@ -867,7 +1158,9 @@ def _validate_scheduler_row(
     fleet: FrozenFleetContract,
     run_root: str,
     expected_script: str,
-) -> None:
+    scheduler_runner=None,
+) -> SpooledServingProvenance | None:
+    _validate_active_scheduler_timing(row, replica=replica)
     parsed = fleet_tx.parse_intent_comment(row.comment)
     expected_comment = fleet_tx.intent_comment(
         pool_id=replica.pool_id,
@@ -913,6 +1206,7 @@ def _validate_scheduler_row(
             replica.serving_profile,
             run_root=run_root,
             expected_script=expected_script,
+            runner=scheduler_runner,
         )
         if (
             provenance is None
@@ -920,16 +1214,449 @@ def _validate_scheduler_row(
             or provenance.replica_index != replica.replica_index
             or provenance.server_pool_id != replica.pool_id
             or provenance.fleet_contract_sha256 != fleet.sha256
+            or (
+                provenance.release_fleet_contract_sha256 is not None
+                and (
+                    provenance.rollout_generation
+                    != attempt["rollout_generation"]
+                    or provenance.spooled_script_sha256 != expected_hash
+                )
+            )
         ):
             raise FleetContractError(
                 f"job {row.job_id} failed immutable fleet provenance validation"
             )
+        return provenance
+    return None
+
+
+def _scope_readiness_scheduler_rows(
+    rows: Sequence[FleetQueueRow],
+    *,
+    fleet: FrozenFleetContract,
+) -> tuple[tuple[FleetQueueRow, ...], tuple[str, ...]]:
+    """Isolate wholly foreign canaries and reject partial production collisions."""
+
+    replicas = {replica.replica_id: replica for replica in fleet.replicas}
+    production_names = {
+        replica.scheduler_job_name for replica in fleet.replicas
+    }
+    production: list[FleetQueueRow] = []
+    isolated: list[str] = []
+    for row in rows:
+        parsed = fleet_tx.parse_intent_comment(row.comment)
+        if parsed is None:
+            claims_production = (
+                row.job_name in production_names
+                or f"pool={fleet.fleet_id}" in row.comment
+                or f"fleet={fleet.sha256}" in row.comment
+                or any(
+                    f"replica={replica_id}" in row.comment
+                    for replica_id in replicas
+                )
+            )
+            if claims_production:
+                raise FleetContractError(
+                    "malformed scheduler row collides with the production fleet "
+                    f"namespace: job {row.job_id}"
+                )
+            isolated.append(row.job_id)
+            continue
+        replica = replicas.get(parsed["replica"])
+        exact = (
+            parsed["pool"] == fleet.fleet_id
+            and parsed["fleet"] == fleet.sha256
+            and replica is not None
+            and parsed["profile"] == replica.serving_profile
+            and row.job_name == replica.scheduler_job_name
+        )
+        wholly_foreign = (
+            parsed["pool"] != fleet.fleet_id
+            and parsed["fleet"] != fleet.sha256
+            and replica is None
+            and row.job_name not in production_names
+        )
+        if exact:
+            production.append(row)
+        elif wholly_foreign:
+            isolated.append(row.job_id)
+        else:
+            raise FleetContractError(
+                "scheduler row partially collides with production fleet identity: "
+                f"job {row.job_id}"
+            )
+    return (
+        tuple(sorted(production, key=lambda row: int(row.job_id))),
+        tuple(sorted(isolated, key=int)),
+    )
+
+
+def _sealed_handoff_history(
+    *,
+    current_ledger: Mapping[str, Any],
+    logical_allocations: Sequence[fleet_tx.ReconciledFleetAllocation],
+) -> set[str]:
+    """Validate that every non-live current-generation attempt is sealed history."""
+
+    active_by_replica = {
+        allocation.replica_id: allocation for allocation in logical_allocations
+    }
+    replicas = current_ledger.get("replicas")
+    if not isinstance(replicas, Mapping) or set(replicas) != set(active_by_replica):
+        raise FleetContractError("current fleet ledger replica identity drifted")
+    allowed: set[str] = set()
+    for replica_id, record in replicas.items():
+        attempts = record.get("attempts") if isinstance(record, Mapping) else None
+        active = active_by_replica[replica_id]
+        if not isinstance(attempts, list) or not attempts:
+            raise FleetContractError(
+                f"current fleet generation lacks attempts for {replica_id}"
+            )
+        active_matches = [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, Mapping)
+            and attempt.get("intent_token")
+            == active.attempt.get("intent_token")
+        ]
+        if len(active_matches) != 1:
+            raise FleetContractError(
+                f"current logical allocation is not uniquely ledger-bound: {replica_id}"
+            )
+        active_attempt = active_matches[0]
+        if (
+            active_attempt.get("state") != "committed"
+            or active_attempt.get("job_id") != str(active.row.job_id)
+            or active_attempt.get("committed_at") is None
+            or active_attempt.get("last_error") is not None
+            or active_attempt.get("retire_error") is not None
+            or active_attempt.get("lifecycle") not in {"primary", "promoted"}
+        ):
+            raise FleetContractError(
+                f"current logical allocation is not a clean commit: {replica_id}"
+            )
+        by_job: dict[str, Mapping[str, Any]] = {}
+        for attempt in attempts:
+            if not isinstance(attempt, Mapping):
+                raise FleetContractError(
+                    f"fleet attempt is malformed for {replica_id}"
+                )
+            job_id = str(attempt.get("job_id") or "")
+            if not job_id.isdigit() or job_id in by_job:
+                raise FleetContractError(
+                    f"fleet attempt job identity is ambiguous for {replica_id}"
+                )
+            by_job[job_id] = attempt
+        terminal = [
+            attempt for attempt in attempts if attempt is not active_attempt
+        ]
+        terminal_ids = {str(attempt["job_id"]) for attempt in terminal}
+        for predecessor in terminal:
+            predecessor_id = str(predecessor["job_id"])
+            successors = [
+                candidate
+                for candidate in attempts
+                if candidate.get("launch_kind") == "handoff"
+                and str(candidate.get("predecessor_job_id") or "")
+                == predecessor_id
+            ]
+            if (
+                predecessor.get("state") != "terminal"
+                or predecessor.get("lifecycle") != "retiring"
+                or predecessor.get("terminal_at") is None
+                or predecessor.get("last_error") is not None
+                or predecessor.get("retire_requested_at") is None
+                or not isinstance(predecessor.get("retire_attempts"), int)
+                or isinstance(predecessor.get("retire_attempts"), bool)
+                or predecessor["retire_attempts"] < 1
+                or predecessor.get("last_retire_attempt_at") is None
+                or predecessor.get("retire_error") is not None
+                or len(successors) != 1
+            ):
+                raise FleetContractError(
+                    "current generation contains failed/orphaned fleet history for "
+                    f"{replica_id} job {predecessor_id}"
+                )
+            successor = successors[0]
+            if (
+                successor.get("state") not in {"committed", "terminal"}
+                or successor.get("lifecycle") not in {"promoted", "retiring"}
+                or successor.get("promoted_at") is None
+                or not isinstance(successor.get("ready_probe_count"), int)
+                or isinstance(successor.get("ready_probe_count"), bool)
+                or successor["ready_probe_count"] < 2
+                or successor.get("last_error") is not None
+                or successor.get("retire_error") is not None
+            ):
+                raise FleetContractError(
+                    "fleet handoff successor is failed/orphaned or not "
+                    f"sealed/healthy for {replica_id}"
+                )
+            allowed.add(predecessor_id)
+        active_job_id = str(active_attempt["job_id"])
+        for predecessor_id in terminal_ids:
+            visited: set[str] = set()
+            cursor = predecessor_id
+            while cursor != active_job_id:
+                if cursor in visited:
+                    raise FleetContractError(
+                        f"fleet handoff history cycles for {replica_id}"
+                    )
+                visited.add(cursor)
+                successors = [
+                    str(candidate["job_id"])
+                    for candidate in attempts
+                    if candidate.get("launch_kind") == "handoff"
+                    and str(candidate.get("predecessor_job_id") or "") == cursor
+                ]
+                if len(successors) != 1:
+                    raise FleetContractError(
+                        f"fleet handoff history is disconnected for {replica_id}"
+                    )
+                cursor = successors[0]
+                if cursor not in by_job:
+                    raise FleetContractError(
+                        f"fleet handoff successor is absent for {replica_id}"
+                    )
+    return allowed
+
+
+def reconcile_fleet_read_only(
+    run_root: str,
+    fleet: FrozenFleetContract,
+    *,
+    current_generation: int,
+    scheduler_runner=None,
+    scheduler_now: float | None = None,
+) -> ReadOnlyFleetSnapshot:
+    """Prove the live fleet from joined Slurm truth without changing control state.
+
+    This is the readiness counterpart to :func:`tick_fleet`.  Both consume the same
+    durable intent ledger and :func:`fleet_tx.reconcile_scheduler_rows` join.  The
+    readiness view additionally requires every logical replica to be committed,
+    RUNNING, non-hung, and byte-bound to Slurm's immutable spooled script.
+    """
+
+    canonical_root = fleet.verify_pool_root(run_root)
+    if (
+        not isinstance(current_generation, int)
+        or isinstance(current_generation, bool)
+        or current_generation < 1
+    ):
+        raise FleetContractError(
+            "read-only fleet reconciliation requires a positive generation"
+        )
+    replica_ids = [replica.replica_id for replica in fleet.replicas]
+    replica_by_id = {replica.replica_id: replica for replica in fleet.replicas}
+    try:
+        with fleet_tx.read_transaction_lock(canonical_root) as directory:
+            ledgers = fleet_tx.read_generation_ledgers(
+                directory,
+                pool_root=canonical_root,
+                pool_id=fleet.fleet_id,
+                fleet_sha256=fleet.sha256,
+                current_generation=current_generation,
+                replica_ids=replica_ids,
+            )
+            scheduler = fleet_tx.query_scheduler(
+                runner=scheduler_runner,
+                now=scheduler_now,
+            )
+            production_rows, isolated_foreign_job_ids = (
+                _scope_readiness_scheduler_rows(
+                    scheduler.rows,
+                    fleet=fleet,
+                )
+            )
+            reconciled = fleet_tx.reconcile_scheduler_rows(
+                production_rows,
+                ledgers,
+                pool_id=fleet.fleet_id,
+                fleet_sha256=fleet.sha256,
+                replica_profiles={
+                    replica.replica_id: replica.serving_profile
+                    for replica in fleet.replicas
+                },
+                replica_job_names={
+                    replica.replica_id: replica.scheduler_job_name
+                    for replica in fleet.replicas
+                },
+            )
+            physical = reconciled.active_allocations
+            active = reconciled.logical_allocations
+            if len(physical) != len(active):
+                overlaps = sorted(
+                    (
+                        allocation.replica_id,
+                        allocation.row.job_id,
+                        str(allocation.attempt.get("lifecycle")),
+                    )
+                    for allocation in physical
+                )
+                raise FleetContractError(
+                    "preproduction/transition fleet readiness forbids an "
+                    f"in-progress handoff overlap: {overlaps}"
+                )
+            active_ids = [allocation.replica_id for allocation in active]
+            missing = sorted(set(replica_ids) - set(active_ids))
+            unexpected = sorted(set(active_ids) - set(replica_ids))
+            if (
+                missing
+                or unexpected
+                or len(active_ids) != len(set(active_ids))
+                or len(active_ids) != len(replica_ids)
+            ):
+                raise FleetContractError(
+                    "canonical fleet is incomplete or duplicated: "
+                    f"missing={missing}, unexpected={unexpected}, "
+                    f"active={len(active_ids)}, expected={len(replica_ids)}"
+                )
+            non_running = {
+                allocation.replica_id: allocation.row.state
+                for allocation in active
+                if allocation.row.state.upper() != "RUNNING"
+            }
+            if non_running:
+                raise FleetContractError(
+                    f"canonical fleet still has pending/non-running replicas: {non_running}"
+                )
+            current_ledger = next(
+                (
+                    ledger
+                    for ledger in ledgers
+                    if ledger["rollout_generation"] == current_generation
+                ),
+                None,
+            )
+            if current_ledger is None:
+                raise FleetContractError(
+                    "current exact fleet generation ledger is absent"
+                )
+            sealed_terminal_ids = _sealed_handoff_history(
+                current_ledger=current_ledger,
+                logical_allocations=active,
+            )
+            if reconciled.ignored_terminal_job_ids:
+                raise FleetContractError(
+                    "production scheduler truth contains unmapped terminal rows: "
+                    f"{list(reconciled.ignored_terminal_job_ids)}"
+                )
+            invalid_terminal = []
+            for row in production_rows:
+                parsed = fleet_tx.parse_intent_comment(row.comment)
+                state = row.state.upper().split("+", 1)[0].split(" ", 1)[0]
+                if (
+                    parsed is not None
+                    and parsed["generation"] == str(current_generation)
+                    and fleet_tx.terminal_state(row.state)
+                    and (
+                        row.job_id not in sealed_terminal_ids
+                        or state not in {"CANCELLED", "COMPLETED"}
+                    )
+                ):
+                    invalid_terminal.append(row.job_id)
+            if invalid_terminal:
+                raise FleetContractError(
+                    "current fleet generation contains unsealed/failed terminal "
+                    f"scheduler rows: {sorted(invalid_terminal, key=int)}"
+                )
+
+            verified: list[ReadOnlyFleetAllocation] = []
+            for allocation in active:
+                replica = replica_by_id[allocation.replica_id]
+                attempt = allocation.attempt
+                row = allocation.row
+                health = allocation.health
+                if (
+                    attempt.get("state") != "committed"
+                    or attempt.get("job_id") != str(row.job_id)
+                    or attempt.get("committed_at") is None
+                ):
+                    raise FleetContractError(
+                        f"fleet intent for {replica.replica_id} is not durably committed"
+                    )
+                if not row.node or row.node in {"(null)", "N/A", "None", "None assigned"}:
+                    raise FleetContractError(
+                        f"running fleet job {row.job_id} has no scheduler node"
+                    )
+                if (
+                    not isinstance(health, Mapping)
+                    or health.get("job_id") != str(row.job_id)
+                    or health.get("observer_generation") != current_generation
+                ):
+                    raise FleetContractError(
+                        f"fleet supervisor health state is stale for {replica.replica_id}"
+                    )
+                if health.get("cancel_state") is not None:
+                    raise FleetContractError(
+                        f"fleet allocation is hung/fenced for {replica.replica_id}: "
+                        f"{health.get('cancel_state')}"
+                    )
+                script_path = Path(str(attempt["sbatch_path"]))
+                try:
+                    script = script_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    raise FleetContractError(
+                        f"cannot read immutable fleet script for {replica.replica_id}: "
+                        f"{exc}"
+                    ) from exc
+                _validate_fleet_script_contract(
+                    script,
+                    replica=replica,
+                    rollout_generation=allocation.ledger_generation,
+                    fleet_sha256=fleet.sha256,
+                    standby=attempt.get("launch_kind") == "handoff",
+                )
+                provenance = _validate_scheduler_row(
+                    row,
+                    replica=replica,
+                    attempt=dict(attempt),
+                    fleet=fleet,
+                    run_root=str(canonical_root),
+                    expected_script=script,
+                    scheduler_runner=scheduler_runner,
+                )
+                if provenance is None:
+                    raise FleetContractError(
+                        f"active fleet job {row.job_id} lacks spooled provenance"
+                    )
+                verified.append(
+                    ReadOnlyFleetAllocation(
+                        replica_id=replica.replica_id,
+                        ledger_generation=allocation.ledger_generation,
+                        intent_token=str(attempt["intent_token"]),
+                        attempt_state=str(attempt["state"]),
+                        row=row,
+                        spooled_provenance=provenance,
+                        sbatch_path=str(script_path),
+                        sbatch_sha256=str(attempt["sbatch_sha256"]),
+                    )
+                )
+    except fleet_tx.FleetTransactionError as exc:
+        raise FleetContractError(str(exc)) from exc
+    return ReadOnlyFleetSnapshot(
+        current_generation=current_generation,
+        captured_at=scheduler.captured_at,
+        allocations=tuple(sorted(verified, key=lambda item: item.replica_id)),
+        ignored_terminal_job_ids=reconciled.ignored_terminal_job_ids,
+        isolated_foreign_job_ids=isolated_foreign_job_ids,
+        sealed_successful_handoff_terminal_job_ids=tuple(
+            sorted(sealed_terminal_ids, key=int)
+        ),
+    )
 
 
 HUNG_MIN_FAILURES = 3
 HUNG_MIN_SPAN_SECONDS = 600.0
 HUNG_CANCEL_MAX_ATTEMPTS = 5
 HUNG_CANCEL_BACKOFF_SECONDS = 300.0
+HANDOFF_LEAD_SECONDS = 12 * 60 * 60
+HANDOFF_READY_PROBES = 2
+HANDOFF_MAX_OVERLAP_GPUS = 4
+HANDOFF_DRAIN_SECONDS = 660.0
+HANDOFF_RETIRE_BACKOFF_SECONDS = 300.0
+HANDOFF_RETIRE_MAX_ATTEMPTS = 5
+HANDOFF_CRITICAL_SECONDS = 60 * 60
 
 
 def _new_health_record(
@@ -1123,6 +1850,569 @@ def _monitor_running_replica(
     )
 
 
+def _attempt_by_job_id(
+    ledgers: list[dict],
+    *,
+    replica_id: str,
+    job_id: str,
+) -> tuple[dict, dict] | None:
+    matches: list[tuple[dict, dict]] = []
+    for owner in ledgers:
+        for attempt in owner["replicas"][replica_id]["attempts"]:
+            if str(attempt.get("job_id") or "") == str(job_id):
+                matches.append((owner, attempt))
+    if len(matches) > 1:
+        raise FleetContractError(
+            f"job {job_id} is bound to multiple intents for {replica_id}"
+        )
+    return matches[0] if matches else None
+
+
+def _handoff_registry_entry(
+    *,
+    run_root: str,
+    replica,
+    row: FleetQueueRow,
+    provenance: SpooledServingProvenance,
+    attempt: dict,
+    now: float,
+) -> tuple[registry.ServerEntry, bool]:
+    """Return one standby or crash-promoted entry after exact provenance checks."""
+
+    try:
+        entry = registry.read_standby_entry(
+            run_root,
+            replica.serving_profile,
+            replica.replica_id,
+            str(row.job_id),
+        )
+        if entry is None:
+            promoted = registry.read_promoted_entry(
+                run_root,
+                replica.serving_profile,
+                replica.replica_id,
+            )
+            if (
+                promoted is not None
+                and str(promoted.slurm_job_id or "") == str(row.job_id)
+            ):
+                entry = promoted
+    except ValueError as exc:
+        raise FleetContractError(str(exc)) from exc
+    persisted = entry is not None
+    if entry is None:
+        profile = get_serving_profile(replica.serving_profile)
+        started_at = next(
+            (
+                float(value)
+                for value in (
+                    attempt.get("committed_at"),
+                    attempt.get("submitted_at"),
+                    attempt.get("created_at"),
+                    now,
+                )
+                if isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and float(value) > 0
+            ),
+            float(now),
+        )
+        from agents_scaling.serving.launch_server import _port_for
+
+        entry = registry.ServerEntry(
+            model_size=profile.model_size,
+            hf_id=profile.hf_id,
+            host=row.node,
+            port=_port_for(
+                replica.serving_profile, replica.replica_index
+            ),
+            slurm_job_id=str(row.job_id),
+            started_at=started_at,
+            serving_profile=profile.name,
+            served_model_name=profile.served_model_name,
+            max_model_len=profile.max_model_len,
+            tp_size=profile.tp_size,
+            release_id=provenance.release_id,
+            environment_hash=provenance.environment_hash,
+            model_revision=provenance.model_revision,
+            tokenizer_id=provenance.tokenizer_id,
+            tokenizer_revision=provenance.tokenizer_revision,
+            model_contract_sha256=provenance.model_contract_sha256,
+            fleet_contract_sha256=provenance.fleet_contract_sha256,
+            server_pool_id=provenance.server_pool_id,
+            replica_id=provenance.replica_id,
+            replica_index=provenance.replica_index,
+            release_fleet_contract_sha256=(
+                provenance.release_fleet_contract_sha256
+            ),
+            capacity_generation=provenance.capacity_generation,
+            rollout_generation=provenance.rollout_generation,
+        )
+    from agents_scaling.serving.launch_server import _port_for
+
+    exact = {
+        "host": row.node,
+        "port": _port_for(replica.serving_profile, replica.replica_index),
+        "slurm_job_id": str(row.job_id),
+        "serving_profile": replica.serving_profile,
+        "server_pool_id": replica.pool_id,
+        "replica_id": replica.replica_id,
+        "replica_index": replica.replica_index,
+        "release_id": provenance.release_id,
+        "environment_hash": provenance.environment_hash,
+        "model_revision": provenance.model_revision,
+        "tokenizer_id": provenance.tokenizer_id,
+        "tokenizer_revision": provenance.tokenizer_revision,
+        "model_contract_sha256": provenance.model_contract_sha256,
+        "fleet_contract_sha256": provenance.fleet_contract_sha256,
+        "release_fleet_contract_sha256": (
+            provenance.release_fleet_contract_sha256
+        ),
+        "capacity_generation": provenance.capacity_generation,
+        "rollout_generation": provenance.rollout_generation,
+    }
+    if (
+        not registry.entry_has_current_provenance(
+            entry, replica.serving_profile
+        )
+        or any(getattr(entry, field) != value for field, value in exact.items())
+    ):
+        raise FleetContractError(
+            f"standby registry provenance drift for {replica.replica_id} "
+            f"job {row.job_id}"
+        )
+    return entry, persisted
+
+
+def _complete_endpoint_lineage(
+    provenance: SpooledServingProvenance,
+) -> bool:
+    return bool(
+        isinstance(provenance.release_fleet_contract_sha256, str)
+        and re.fullmatch(
+            r"[0-9a-f]{64}", provenance.release_fleet_contract_sha256
+        )
+        and isinstance(provenance.fleet_contract_sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", provenance.fleet_contract_sha256)
+        and type(provenance.capacity_generation) is int
+        and provenance.capacity_generation > 0
+        and type(provenance.rollout_generation) is int
+        and provenance.rollout_generation > 0
+        and isinstance(provenance.spooled_script_sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", provenance.spooled_script_sha256)
+    )
+
+
+def _seal_endpoint_lineage(
+    *,
+    directory: Path,
+    run_root: str,
+    entry: registry.ServerEntry,
+    replica,
+    owner_ledger: dict,
+    attempt: dict,
+    row: FleetQueueRow,
+    provenance: SpooledServingProvenance,
+    now: float,
+) -> registry.EndpointHistoryRecord | None:
+    """Seal the exact committed admission before a schema-5 pointer is routable."""
+
+    if not _complete_endpoint_lineage(provenance):
+        return None
+    try:
+        admission = fleet_tx.committed_endpoint_admission(
+            directory,
+            owner_ledger,
+            replica_id=replica.replica_id,
+            attempt=attempt,
+            slurm_job_id=str(row.job_id),
+        )
+    except fleet_tx.FleetTransactionError as exc:
+        raise FleetContractError(str(exc)) from exc
+    if (
+        admission.rollout_generation != provenance.rollout_generation
+        or admission.scheduler_comment != row.comment
+        or str(entry.slurm_job_id or "") != str(row.job_id)
+        or entry.release_fleet_contract_sha256
+        != provenance.release_fleet_contract_sha256
+        or entry.fleet_contract_sha256 != provenance.fleet_contract_sha256
+        or entry.capacity_generation != provenance.capacity_generation
+        or entry.rollout_generation != provenance.rollout_generation
+    ):
+        raise FleetContractError(
+            f"endpoint/intent generation drift for {replica.replica_id} "
+            f"job {row.job_id}"
+        )
+    script = admission.sbatch_path.read_bytes()
+    if hashlib.sha256(script).hexdigest() != provenance.spooled_script_sha256:
+        raise FleetContractError(
+            f"actual spooled script hash drift for {replica.replica_id} "
+            f"job {row.job_id}"
+        )
+    spooled_provenance = {
+        "run_root": str(Path(run_root).expanduser().resolve()),
+        "server_pool_id": provenance.server_pool_id,
+        "replica_id": provenance.replica_id,
+        "replica_index": provenance.replica_index,
+        "release_id": provenance.release_id,
+        "environment_hash": provenance.environment_hash,
+        "model_revision": provenance.model_revision,
+        "tokenizer_id": provenance.tokenizer_id,
+        "tokenizer_revision": provenance.tokenizer_revision,
+        "model_contract_sha256": provenance.model_contract_sha256,
+        "release_fleet_contract_sha256": (
+            provenance.release_fleet_contract_sha256
+        ),
+        "fleet_contract_sha256": provenance.fleet_contract_sha256,
+        "capacity_generation": provenance.capacity_generation,
+        "rollout_generation": provenance.rollout_generation,
+        "effective_context_limit": entry.max_model_len,
+        "tp_size": entry.tp_size,
+        "spooled_script_sha256": provenance.spooled_script_sha256,
+    }
+    try:
+        return registry.seal_endpoint_history(
+            run_root,
+            entry,
+            release_fleet_contract_sha256=str(
+                provenance.release_fleet_contract_sha256
+            ),
+            capacity_generation=int(provenance.capacity_generation),
+            rollout_generation=int(provenance.rollout_generation),
+            ledger_generation=admission.rollout_generation,
+            intent_token=admission.intent_token,
+            intent_state="committed",
+            committed_at=admission.committed_at,
+            local_script_path=admission.sbatch_path,
+            local_script_sha256=admission.sbatch_sha256,
+            # _validate_scheduler_row accepted this exact local script only after
+            # Slurm's `write batch_script` returned byte-for-byte equality.
+            spooled_script=script,
+            spooled_provenance=spooled_provenance,
+            scheduler_job_name=row.job_name,
+            scheduler_comment=row.comment,
+            sealed_at=now,
+        )
+    except ValueError as exc:
+        raise FleetContractError(str(exc)) from exc
+
+
+def _advance_primary_registration(
+    *,
+    directory: Path,
+    run_root: str,
+    replica,
+    owner_ledger: dict,
+    attempt: dict,
+    row: FleetQueueRow,
+    provenance: SpooledServingProvenance,
+    now: float,
+    probe=None,
+) -> bool:
+    """Stage, dual-probe, seal, then atomically route one initial primary."""
+
+    if (
+        attempt["lifecycle"] != "primary"
+        or row.state.upper() != "RUNNING"
+        or not _complete_endpoint_lineage(provenance)
+    ):
+        return False
+    try:
+        registered = registry.read_standby_entry(
+            run_root,
+            replica.serving_profile,
+            replica.replica_id,
+            str(row.job_id),
+        )
+        if registered is None:
+            promoted = registry.read_promoted_entry(
+                run_root,
+                replica.serving_profile,
+                replica.replica_id,
+            )
+            if (
+                promoted is not None
+                and str(promoted.slurm_job_id or "") == str(row.job_id)
+            ):
+                registered = promoted
+    except ValueError as exc:
+        raise FleetContractError(str(exc)) from exc
+    if registered is None:
+        # Never synthesize a production registration timestamp.  The serving process
+        # publishes its exact ServerEntry after local vLLM readiness; preserving that
+        # byte preimage is part of endpoint lineage.
+        return False
+    entry, persisted = _handoff_registry_entry(
+        run_root=run_root,
+        replica=replica,
+        row=row,
+        provenance=provenance,
+        attempt=attempt,
+        now=now,
+    )
+    invoke_probe = probe or _probe_health_and_models
+    try:
+        health_ok, models_ok = invoke_probe(entry.host, entry.port)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[keepalive] primary probe error for {replica.replica_id}: {exc!r}")
+        health_ok, models_ok = False, False
+    attempt["last_ready_probe_at"] = float(now)
+    attempt["ready_probe_count"] = (
+        int(attempt["ready_probe_count"]) + 1
+        if health_ok and models_ok
+        else 0
+    )
+    if health_ok and models_ok and not persisted:
+        try:
+            registry.write_standby_entry(run_root, entry)
+        except ValueError as exc:
+            raise FleetContractError(str(exc)) from exc
+    fleet_tx.save_ledger(directory, owner_ledger, now=now)
+    if attempt["ready_probe_count"] < HANDOFF_READY_PROBES:
+        return False
+    _seal_endpoint_lineage(
+        directory=directory,
+        run_root=run_root,
+        entry=entry,
+        replica=replica,
+        owner_ledger=owner_ledger,
+        attempt=attempt,
+        row=row,
+        provenance=provenance,
+        now=now,
+    )
+    try:
+        registry.promote_standby_entry(run_root, entry)
+        promoted = registry.read_promoted_entry(
+            run_root, replica.serving_profile, replica.replica_id
+        )
+    except ValueError as exc:
+        raise FleetContractError(str(exc)) from exc
+    if promoted != entry:
+        raise FleetContractError(
+            f"atomic primary pointer did not bind job {row.job_id}"
+        )
+    return True
+
+
+def _advance_handoff(
+    *,
+    directory: Path,
+    ledgers: list[dict],
+    run_root: str,
+    replica,
+    owner_ledger: dict,
+    attempt: dict,
+    row: FleetQueueRow,
+    provenance: SpooledServingProvenance,
+    now: float,
+    probe=None,
+) -> bool:
+    """Probe, atomically promote, and crash-resume one typed standby."""
+
+    if attempt["lifecycle"] != "standby" or row.state.upper() != "RUNNING":
+        return False
+    if _complete_endpoint_lineage(provenance):
+        try:
+            registered = registry.read_standby_entry(
+                run_root,
+                replica.serving_profile,
+                replica.replica_id,
+                str(row.job_id),
+            )
+            if registered is None:
+                promoted = registry.read_promoted_entry(
+                    run_root,
+                    replica.serving_profile,
+                    replica.replica_id,
+                )
+                if (
+                    promoted is not None
+                    and str(promoted.slurm_job_id or "") == str(row.job_id)
+                ):
+                    registered = promoted
+        except ValueError as exc:
+            raise FleetContractError(str(exc)) from exc
+        if registered is None:
+            return False
+    entry, persisted = _handoff_registry_entry(
+        run_root=run_root,
+        replica=replica,
+        row=row,
+        provenance=provenance,
+        attempt=attempt,
+        now=now,
+    )
+
+    invoke_probe = probe or _probe_health_and_models
+    try:
+        health_ok, models_ok = invoke_probe(entry.host, entry.port)
+    except Exception as exc:  # noqa: BLE001 - transport failures are failed probes
+        print(f"[keepalive] standby probe error for {replica.replica_id}: {exc!r}")
+        health_ok, models_ok = False, False
+    attempt["last_ready_probe_at"] = float(now)
+    attempt["ready_probe_count"] = (
+        int(attempt["ready_probe_count"]) + 1
+        if health_ok and models_ok
+        else 0
+    )
+    if health_ok and models_ok and not persisted:
+        try:
+            registry.write_standby_entry(run_root, entry)
+        except ValueError as exc:
+            raise FleetContractError(str(exc)) from exc
+    fleet_tx.save_ledger(directory, owner_ledger, now=now)
+    if attempt["ready_probe_count"] < HANDOFF_READY_PROBES:
+        return False
+
+    predecessor_id = str(attempt["predecessor_job_id"])
+    matched = _attempt_by_job_id(
+        ledgers,
+        replica_id=replica.replica_id,
+        job_id=predecessor_id,
+    )
+    if matched is None:
+        raise FleetContractError(
+            f"handoff for {replica.replica_id} lost predecessor {predecessor_id}"
+        )
+    predecessor_owner, predecessor = matched
+    if predecessor["lifecycle"] not in {"primary", "promoted", "retiring"}:
+        raise FleetContractError(
+            f"handoff predecessor lifecycle drift for {replica.replica_id}"
+        )
+    _seal_endpoint_lineage(
+        directory=directory,
+        run_root=run_root,
+        entry=entry,
+        replica=replica,
+        owner_ledger=owner_ledger,
+        attempt=attempt,
+        row=row,
+        provenance=provenance,
+        now=now,
+    )
+    if predecessor["lifecycle"] != "retiring":
+        # Write-ahead: if the supervisor dies here, readiness fails closed and the
+        # next supervisor resumes promotion from the durable standby.
+        predecessor["lifecycle"] = "retiring"
+        fleet_tx.save_ledger(directory, predecessor_owner, now=now)
+
+    try:
+        promoted = registry.read_promoted_entry(
+            run_root,
+            replica.serving_profile,
+            replica.replica_id,
+        )
+        if promoted != entry:
+            registry.promote_standby_entry(run_root, entry)
+            promoted = registry.read_promoted_entry(
+                run_root,
+                replica.serving_profile,
+                replica.replica_id,
+            )
+    except ValueError as exc:
+        raise FleetContractError(str(exc)) from exc
+    if promoted != entry:
+        raise FleetContractError(
+            f"atomic promoted pointer did not bind job {row.job_id}"
+        )
+
+    attempt["lifecycle"] = "promoted"
+    if attempt["promoted_at"] is None:
+        attempt["promoted_at"] = float(now)
+    attempt["retire_error"] = None
+    owner_ledger["replicas"][replica.replica_id]["health"] = None
+    fleet_tx.save_ledger(directory, owner_ledger, now=now)
+    print(
+        f"[keepalive] PROMOTE {replica.replica_id}: job {row.job_id} "
+        f"replaces exact job {predecessor_id}"
+    )
+    return True
+
+
+def _retire_handoff_predecessor(
+    *,
+    directory: Path,
+    ledgers: list[dict],
+    replica,
+    promoted_attempt: dict,
+    scheduler_rows_by_job: dict[str, FleetQueueRow],
+    now: float,
+    cancellation_runner=None,
+) -> None:
+    """Drain, then retry a bounded exact-ID retirement with write-ahead state."""
+
+    promoted_at = promoted_attempt.get("promoted_at")
+    if promoted_at is None or now < float(promoted_at) + HANDOFF_DRAIN_SECONDS:
+        return
+    predecessor_id = str(promoted_attempt["predecessor_job_id"])
+    matched = _attempt_by_job_id(
+        ledgers,
+        replica_id=replica.replica_id,
+        job_id=predecessor_id,
+    )
+    if matched is None:
+        raise FleetContractError(
+            f"promoted handoff lost predecessor {predecessor_id}"
+        )
+    owner, predecessor = matched
+    row = scheduler_rows_by_job.get(predecessor_id)
+    if row is None or fleet_tx.terminal_state(row.state):
+        return
+    if predecessor["lifecycle"] != "retiring":
+        raise FleetContractError(
+            f"promoted handoff predecessor is not retiring for {replica.replica_id}"
+        )
+    last = predecessor["last_retire_attempt_at"]
+    if (
+        last is not None
+        and now < float(last) + HANDOFF_RETIRE_BACKOFF_SECONDS
+    ):
+        return
+    if predecessor["retire_attempts"] >= HANDOFF_RETIRE_MAX_ATTEMPTS:
+        predecessor["retire_error"] = (
+            f"exact-ID retirement exhausted after "
+            f"{predecessor['retire_attempts']} attempts"
+        )
+        fleet_tx.save_ledger(directory, owner, now=now)
+        return
+    if cancellation_runner is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        raise FleetContractError(
+            "pytest handoff retirement must provide an injected non-Slurm runner"
+        )
+    predecessor["retire_requested_at"] = (
+        predecessor["retire_requested_at"] or float(now)
+    )
+    predecessor["last_retire_attempt_at"] = float(now)
+    predecessor["retire_attempts"] += 1
+    predecessor["retire_error"] = None
+    fleet_tx.save_ledger(directory, owner, now=now)
+    invoke = cancellation_runner or subprocess.run
+    try:
+        proc = invoke(
+            ["scancel", predecessor_id],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30.0,
+        )
+    except BaseException as exc:
+        predecessor["retire_error"] = f"scancel invocation failed: {exc!r}"
+        fleet_tx.save_ledger(directory, owner, now=now)
+        raise
+    if proc.returncode != 0:
+        predecessor["retire_error"] = (
+            f"scancel rc={proc.returncode}: {proc.stderr.strip()[:500]}"
+        )
+        fleet_tx.save_ledger(directory, owner, now=now)
+        return
+    fleet_tx.save_ledger(directory, owner, now=now)
+    print(
+        f"[keepalive] RETIRE {replica.replica_id}: exact predecessor "
+        f"job {predecessor_id}"
+    )
+
+
 def tick_fleet(
     run_root: str,
     fleet: FrozenFleetContract,
@@ -1132,6 +2422,11 @@ def tick_fleet(
     submission_runner=None,
     health_probe=None,
     cancellation_runner=None,
+    scheduler_safety_contract: Mapping[str, str | None] | None = None,
+    scheduler_safety_runner=None,
+    protected_capacity_contract: (
+        protected_capacity.ProtectedCapacityContract | None
+    ) = None,
 ) -> None:
     """Transactionally reconcile, validate, probe, and recover every frozen replica."""
 
@@ -1140,6 +2435,66 @@ def tick_fleet(
     timestamp = time.time() if now is None else float(now)
     try:
         with fleet_tx.transaction_lock(canonical_root) as directory:
+            if scheduler_safety_contract is not None:
+                if protected_capacity_contract is None:
+                    raise FleetContractError(
+                        "production fleet lacks a sealed protected-capacity contract"
+                    )
+                try:
+                    protected_capacity.authorize_fleet(
+                        fleet, protected_capacity_contract
+                    )
+                except protected_capacity.ProtectedCapacityError as exc:
+                    raise FleetContractError(
+                        f"fleet protected-placement authorization failed: {exc}"
+                    ) from exc
+                if set(scheduler_safety_contract) != {
+                    "expected_policy_contract_id",
+                    "transport_uncertainty_binding_sha256",
+                }:
+                    raise FleetContractError(
+                        "fleet scheduler-safety contract has the wrong fields"
+                    )
+                _validate_live_fleet_scheduler_policy(
+                    fleet,
+                    expected_policy_contract_id=(
+                        scheduler_safety_contract[
+                            "expected_policy_contract_id"
+                        ]
+                    ),
+                    expected_transport_binding_sha256=str(
+                        scheduler_safety_contract[
+                            "transport_uncertainty_binding_sha256"
+                        ]
+                    ),
+                    runner=scheduler_safety_runner,
+                    captured_timestamp=timestamp,
+                )
+
+            def verify_submit_placement(replica) -> None:
+                if protected_capacity_contract is None:
+                    if scheduler_safety_contract is not None:
+                        raise FleetContractError(
+                            "protected capacity disappeared before fleet sbatch"
+                        )
+                    return
+                try:
+                    protected_capacity.verify_live_placements(
+                        protected_capacity_contract,
+                        role="server",
+                        placements=[(replica.partition, replica.qos)],
+                        required_time_limits_seconds={
+                            replica.partition: scheduler_safety.slurm_time_limit_seconds(
+                                replica.time_limit
+                            )
+                        },
+                        runner=scheduler_safety_runner,
+                    )
+                except protected_capacity.ProtectedCapacityError as exc:
+                    raise FleetContractError(
+                        f"live protected placement rejected "
+                        f"{replica.replica_id} before sbatch: {exc}"
+                    ) from exc
             ledgers = fleet_tx.load_generation_ledgers(
                 directory,
                 pool_root=canonical_root,
@@ -1151,73 +2506,36 @@ def tick_fleet(
             )
             ledger = ledgers[-1]
             rows = _query_fleet_queue()
-            expected_by_name = {
-                replica.scheduler_job_name: replica for replica in fleet.replicas
+            reconciled = fleet_tx.reconcile_scheduler_rows(
+                rows,
+                ledgers,
+                pool_id=fleet.fleet_id,
+                fleet_sha256=fleet.sha256,
+                replica_profiles={
+                    replica.replica_id: replica.serving_profile
+                    for replica in fleet.replicas
+                },
+                replica_job_names={
+                    replica.replica_id: replica.scheduler_job_name
+                    for replica in fleet.replicas
+                },
+            )
+            rows_by_token = {
+                str(allocation.attempt["intent_token"]): [allocation.row]
+                for allocation in reconciled.allocations
             }
-            production_rows = [
-                row
-                for row in rows
-                if row.job_name.startswith("asys-s5-serve-")
-                or fleet_tx.parse_intent_comment(row.comment) is not None
-            ]
 
-            rows_by_token: dict[str, list[FleetQueueRow]] = {}
-            active_by_replica: dict[str, list[FleetQueueRow]] = {}
-            for row in production_rows:
-                parsed = fleet_tx.parse_intent_comment(row.comment)
-                if parsed is None:
-                    if fleet_tx.terminal_state(row.state):
-                        # A retired pre-transaction schema-5 allocation may remain in
-                        # accounting history for the seven-day reconciliation window.
-                        # It cannot consume capacity or race admission; current/live
-                        # rows without an exact intent always fail closed below.
-                        continue
-                    raise FleetContractError(
-                        f"unmappable schema-5 fleet job {row.job_id} lacks "
-                        "transactional intent provenance"
-                    )
-                matched = _attempt_for_token(ledgers, parsed["intent"])
-                if matched is None:
-                    if fleet_tx.terminal_state(row.state):
-                        # Accounting can legitimately retain a sealed/foreign transaction
-                        # after its pool state was archived.  Ignore only terminal unknown
-                        # tokens; an active unknown token is an admission ambiguity.
-                        continue
-                    raise FleetContractError(
-                        f"scheduler exposes unknown fleet intent {parsed['intent']} "
-                        f"as job {row.job_id}"
-                    )
-                replica_id, _attempt, _owner_ledger = matched
-                replica = expected_by_name.get(row.job_name)
-                if replica is None or replica.replica_id != replica_id:
-                    raise FleetContractError(
-                        f"fleet intent {parsed['intent']} has unmappable scheduler name "
-                        f"{row.job_name!r}"
-                    )
-                if parsed["replica"] != replica_id:
-                    raise FleetContractError(
-                        f"fleet intent {parsed['intent']} changed replica identity"
-                    )
-                rows_by_token.setdefault(parsed["intent"], []).append(row)
-                if not fleet_tx.terminal_state(row.state):
-                    active_by_replica.setdefault(replica_id, []).append(row)
-            duplicate_tokens = {
-                token: [row.job_id for row in token_rows]
-                for token, token_rows in rows_by_token.items()
-                if len({row.job_id for row in token_rows}) > 1
-            }
-            duplicate_replicas = {
-                replica_id: [row.job_id for row in replica_rows]
-                for replica_id, replica_rows in active_by_replica.items()
-                if len({row.job_id for row in replica_rows}) > 1
-            }
-            if duplicate_tokens or duplicate_replicas:
-                raise FleetContractError(
-                    "ambiguous duplicate fleet jobs: "
-                    f"tokens={duplicate_tokens}, replicas={duplicate_replicas}"
-                )
-
-            active_rows: dict[str, tuple[FleetQueueRow, dict]] = {}
+            active_rows: dict[
+                str,
+                list[
+                    tuple[
+                        FleetQueueRow,
+                        dict,
+                        dict,
+                        SpooledServingProvenance,
+                    ]
+                ],
+            ] = {}
             grace = float(ledger["visibility_grace_seconds"])
             for replica in fleet.replicas:
                 generation_records = [
@@ -1243,8 +2561,9 @@ def tick_fleet(
                                 replica=replica,
                                 rollout_generation=owner_generation,
                                 fleet_sha256=fleet.sha256,
+                                standby=attempt["launch_kind"] == "handoff",
                             )
-                            _validate_scheduler_row(
+                            provenance = _validate_scheduler_row(
                                 row,
                                 replica=replica,
                                 attempt=attempt,
@@ -1260,7 +2579,18 @@ def tick_fleet(
                             if attempt["submitted_at"] is None:
                                 attempt["submitted_at"] = timestamp
                                 changed = True
-                            attempt["last_seen_at"] = timestamp
+                            timing_updates = {
+                                "last_seen_at": timestamp,
+                                "scheduler_start_at": row.start_timestamp,
+                                "scheduler_end_at": row.end_timestamp,
+                                "scheduler_time_limit_seconds": (
+                                    row.time_limit_seconds
+                                ),
+                            }
+                            for field, value in timing_updates.items():
+                                if attempt.get(field) != value:
+                                    attempt[field] = value
+                                    changed = True
                             attempt["missing_since"] = None
                             if fleet_tx.terminal_state(row.state):
                                 if attempt["state"] != "terminal":
@@ -1285,7 +2615,21 @@ def tick_fleet(
                                 if attempt["state"] != "committed":
                                     attempt["state"] = "committed"
                                     changed = True
-                                active_rows[replica.replica_id] = (row, owner_ledger)
+                                if provenance is None:
+                                    raise FleetContractError(
+                                        f"active fleet job {row.job_id} lacks "
+                                        "immutable serving provenance"
+                                    )
+                                active_rows.setdefault(
+                                    replica.replica_id, []
+                                ).append(
+                                    (
+                                        row,
+                                        owner_ledger,
+                                        attempt,
+                                        provenance,
+                                    )
+                                )
                             continue
 
                         state = attempt["state"]
@@ -1351,11 +2695,12 @@ def tick_fleet(
                             directory, owner_ledger, now=timestamp
                         )
 
-                current = [
-                    item
-                    for _owner, owner_record in generation_records
+                current_entries = [
+                    (owner, item)
+                    for owner, owner_record in generation_records
                     for item in owner_record["attempts"]
-                    if item["state"] in {
+                    if item["state"]
+                    in {
                         "prepared",
                         "submitting",
                         "submitted",
@@ -1363,19 +2708,64 @@ def tick_fleet(
                         "missing",
                     }
                 ]
+                current = [item for _owner, item in current_entries]
                 failed = [
                     item
                     for item in record["attempts"]
                     if item["state"] == "submission_failed"
                 ]
-                if len(current) > 1:
+                if len(current) > 2:
                     raise FleetContractError(
-                        f"multiple current intents for {replica.replica_id}"
+                        f"too many current intents for {replica.replica_id}"
                     )
-                if not current and failed:
+                prepared = [
+                    (owner, item)
+                    for owner, item in current_entries
+                    if item["state"] == "prepared"
+                ]
+                for owner, pending in prepared:
+                    verify_submit_placement(replica)
+                    submission_timestamp = (
+                        timestamp if now is not None else time.time()
+                    )
+                    job_id = fleet_tx.submit_attempt(
+                        directory,
+                        owner,
+                        replica_id=replica.replica_id,
+                        attempt=pending,
+                        now=submission_timestamp,
+                        runner=submission_runner,
+                    )
+                    print(
+                        f"[keepalive] RECOVER pre-sbatch {replica.replica_id} "
+                        f"-> job {job_id}"
+                    )
+                if prepared:
+                    continue
+
+                retry_submitted = False
+                if failed:
                     retry = failed[-1]
                     retry_basis = retry["submit_started_at"] or retry["created_at"]
-                    if timestamp - float(retry_basis) >= grace:
+                    stable = [
+                        item
+                        for item in current
+                        if item["lifecycle"] in {"primary", "promoted"}
+                        and str(item.get("job_id") or "").isdigit()
+                    ]
+                    retry_allowed = (
+                        retry["launch_kind"] == "primary" and not current
+                    ) or (
+                        retry["launch_kind"] == "handoff"
+                        and len(current) == 1
+                        and len(stable) == 1
+                        and retry["predecessor_job_id"] == stable[0]["job_id"]
+                    )
+                    if (
+                        retry_allowed
+                        and timestamp - float(retry_basis) >= grace
+                    ):
+                        verify_submit_placement(replica)
                         submission_timestamp = (
                             timestamp if now is not None else time.time()
                         )
@@ -1391,8 +2781,25 @@ def tick_fleet(
                             f"[keepalive] RETRY {replica.replica_id} intent "
                             f"{retry['intent_token']} -> job {job_id}"
                         )
+                        retry_submitted = True
+                    elif (
+                        retry["launch_kind"] == "handoff"
+                        and not stable
+                    ):
+                        retry["state"] = "terminal"
+                        retry["terminal_at"] = timestamp
+                        retry["last_error"] = (
+                            "handoff predecessor ended before retry eligibility"
+                        )
+                        fleet_tx.save_ledger(directory, ledger, now=timestamp)
+                        failed = []
+                if retry_submitted:
                     continue
                 if not current:
+                    # A primary submission failure remains a durable fence throughout
+                    # its visibility/backoff window; never create a second token.
+                    if failed:
+                        continue
                     attempt = fleet_tx.prepare_attempt(
                         directory,
                         ledger,
@@ -1403,7 +2810,9 @@ def tick_fleet(
                         rollout_generation=generation,
                         sbatch_text=current_script,
                         now=timestamp,
+                        allocated_gpus=replica.gpus_per_replica,
                     )
+                    verify_submit_placement(replica)
                     submission_timestamp = (
                         timestamp if now is not None else time.time()
                     )
@@ -1419,33 +2828,109 @@ def tick_fleet(
                         f"[keepalive] LAUNCH {replica.replica_id} on "
                         f"{replica.partition} -> job {job_id}"
                     )
-                elif current[0]["state"] == "prepared":
-                    submission_timestamp = (
-                        timestamp if now is not None else time.time()
-                    )
-                    job_id = fleet_tx.submit_attempt(
-                        directory,
-                        ledger,
-                        replica_id=replica.replica_id,
-                        attempt=current[0],
-                        now=submission_timestamp,
-                        runner=submission_runner,
-                    )
-                    print(
-                        f"[keepalive] RECOVER pre-sbatch {replica.replica_id} "
-                        f"-> job {job_id}"
-                    )
 
-            # Registration repair and hung-allocation fencing run only after every
-            # scheduler row and transaction has validated.  A scheduler query or
-            # duplicate ambiguity therefore cannot accidentally trigger scancel.
+            # Promotion, registration repair, and cancellation run only after every
+            # scheduler row and transaction has validated.  Ambiguous scheduler truth
+            # therefore cannot mutate a pointer or retire an allocation.
             from agents_scaling.serving.launch_server import _port_for
 
+            scheduler_rows_by_job = {row.job_id: row for row in rows}
+            replica_by_id = {
+                replica.replica_id: replica for replica in fleet.replicas
+            }
+
+            # Initial production registrations are job-specific standbys too.  Make
+            # them routable only after two clean probes and an immutable lineage seal.
             for replica in fleet.replicas:
-                active = active_rows.get(replica.replica_id)
-                if active is None:
+                for (
+                    row,
+                    owner_ledger,
+                    attempt,
+                    provenance,
+                ) in active_rows.get(replica.replica_id, []):
+                    if attempt["lifecycle"] == "primary":
+                        _advance_primary_registration(
+                            directory=directory,
+                            run_root=str(canonical_root),
+                            replica=replica,
+                            owner_ledger=owner_ledger,
+                            attempt=attempt,
+                            row=row,
+                            provenance=provenance,
+                            now=timestamp,
+                            probe=health_probe,
+                        )
+
+            # First resume/progress every existing standby.  A crash after pointer
+            # replacement is adopted from the exact canonical pointer; a lost staging
+            # file is reconstructed only after immutable-script validation and a clean
+            # dual probe.
+            for replica in fleet.replicas:
+                for (
+                    row,
+                    owner_ledger,
+                    attempt,
+                    provenance,
+                ) in active_rows.get(replica.replica_id, []):
+                    if attempt["lifecycle"] == "standby":
+                        _advance_handoff(
+                            directory=directory,
+                            ledgers=ledgers,
+                            run_root=str(canonical_root),
+                            replica=replica,
+                            owner_ledger=owner_ledger,
+                            attempt=attempt,
+                            row=row,
+                            provenance=provenance,
+                            now=timestamp,
+                            probe=health_probe,
+                        )
+
+            # Drain and retire only the exact predecessor of a durably promoted
+            # successor.  Bounded retries are write-ahead and never target a name.
+            for replica in fleet.replicas:
+                for (
+                    _row,
+                    _owner_ledger,
+                    attempt,
+                    _provenance,
+                ) in active_rows.get(replica.replica_id, []):
+                    if attempt["lifecycle"] == "promoted":
+                        _retire_handoff_predecessor(
+                            directory=directory,
+                            ledgers=ledgers,
+                            replica=replica,
+                            promoted_attempt=attempt,
+                            scheduler_rows_by_job=scheduler_rows_by_job,
+                            now=timestamp,
+                            cancellation_runner=cancellation_runner,
+                        )
+
+            # Exactly one primary/promoted allocation is routable per logical replica.
+            # Standbys and retiring predecessors are never passed to generic self-heal.
+            logical_rows: dict[
+                str,
+                tuple[
+                    FleetQueueRow,
+                    dict,
+                    dict,
+                    SpooledServingProvenance,
+                ],
+            ] = {}
+            for replica in fleet.replicas:
+                candidates = [
+                    item
+                    for item in active_rows.get(replica.replica_id, [])
+                    if item[2]["lifecycle"] in {"primary", "promoted"}
+                ]
+                if len(candidates) > 1:
+                    raise FleetContractError(
+                        f"logical allocation ambiguity for {replica.replica_id}"
+                    )
+                if not candidates:
                     continue
-                row, owner_ledger = active
+                logical_rows[replica.replica_id] = candidates[0]
+                row, owner_ledger, _attempt, _provenance = candidates[0]
                 if row.state.upper() == "RUNNING":
                     _reregister_running(
                         str(canonical_root),
@@ -1471,14 +2956,134 @@ def tick_fleet(
                         cancel_runner=cancellation_runner,
                     )
                 else:
-                    # A different job identity will also reset this record when it first
-                    # runs; clearing it while pending makes the reset explicit.
                     health = owner_ledger["replicas"][replica.replica_id]["health"]
                     if isinstance(health, dict) and health.get("job_id") != row.job_id:
                         owner_ledger["replicas"][replica.replica_id]["health"] = None
                         fleet_tx.save_ledger(
                             directory, owner_ledger, now=timestamp
                         )
+
+            # Bound physical warm overlap globally.  A submitted/pending standby already
+            # consumes its replica's GPU budget even before a node is assigned.
+            current_states = {
+                "prepared",
+                "submitting",
+                "submitted",
+                "committed",
+                "missing",
+            }
+            standby_replicas: set[str] = set()
+            failed_handoff_replicas: set[str] = set()
+            for replica in fleet.replicas:
+                for owner in ledgers:
+                    for attempt in owner["replicas"][replica.replica_id]["attempts"]:
+                        if (
+                            attempt["launch_kind"] == "handoff"
+                            and attempt["state"] in current_states
+                        ):
+                            standby_replicas.add(replica.replica_id)
+                        if (
+                            attempt["launch_kind"] == "handoff"
+                            and attempt["state"] == "submission_failed"
+                        ):
+                            failed_handoff_replicas.add(replica.replica_id)
+            overlap_gpus = sum(
+                replica_by_id[replica_id].gpus_per_replica
+                for replica_id in standby_replicas
+            )
+            if overlap_gpus > HANDOFF_MAX_OVERLAP_GPUS:
+                raise FleetContractError(
+                    f"warm-handoff overlap is {overlap_gpus} GPUs; "
+                    f"maximum is {HANDOFF_MAX_OVERLAP_GPUS}"
+                )
+
+            candidates: list[
+                tuple[
+                    float,
+                    str,
+                    object,
+                    FleetQueueRow,
+                    dict,
+                ]
+            ] = []
+            for replica_id, logical in logical_rows.items():
+                row, _owner, stable_attempt, _provenance = logical
+                replica = replica_by_id[replica_id]
+                if (
+                    row.state.upper() != "RUNNING"
+                    or replica_id in standby_replicas
+                    or replica_id in failed_handoff_replicas
+                ):
+                    continue
+                if row.end_timestamp is None:
+                    raise FleetContractError(
+                        f"running fleet job {row.job_id} lacks a handoff deadline"
+                    )
+                remaining = float(row.end_timestamp) - timestamp
+                if remaining <= 0:
+                    raise FleetContractError(
+                        f"fleet job {row.job_id} passed its scheduler end before handoff"
+                    )
+                if remaining <= HANDOFF_LEAD_SECONDS:
+                    candidates.append(
+                        (
+                            float(row.end_timestamp),
+                            replica_id,
+                            replica,
+                            row,
+                            stable_attempt,
+                        )
+                    )
+
+            for (
+                predecessor_end,
+                replica_id,
+                replica,
+                row,
+                stable_attempt,
+            ) in sorted(candidates, key=lambda item: (item[0], item[1])):
+                required = replica.gpus_per_replica
+                if overlap_gpus + required > HANDOFF_MAX_OVERLAP_GPUS:
+                    continue
+                handoff_script = _expected_fleet_script(
+                    replica,
+                    str(canonical_root),
+                    launch_options,
+                    standby=True,
+                )
+                attempt = fleet_tx.prepare_attempt(
+                    directory,
+                    ledger,
+                    replica_id=replica_id,
+                    profile=replica.serving_profile,
+                    pool_id=replica.pool_id,
+                    fleet_sha256=fleet.sha256,
+                    rollout_generation=generation,
+                    sbatch_text=handoff_script,
+                    now=timestamp,
+                    launch_kind="handoff",
+                    predecessor_job_id=str(row.job_id),
+                    predecessor_end_at=predecessor_end,
+                    predecessor_attempt=stable_attempt,
+                    allocated_gpus=replica.gpus_per_replica,
+                )
+                verify_submit_placement(replica)
+                submission_timestamp = (
+                    timestamp if now is not None else time.time()
+                )
+                job_id = fleet_tx.submit_attempt(
+                    directory,
+                    ledger,
+                    replica_id=replica_id,
+                    attempt=attempt,
+                    now=submission_timestamp,
+                    runner=submission_runner,
+                )
+                overlap_gpus += required
+                print(
+                    f"[keepalive] WARM {replica_id}: standby job {job_id} "
+                    f"for predecessor {row.job_id}"
+                )
     except fleet_tx.FleetTransactionError as exc:
         raise FleetContractError(str(exc)) from exc
 
@@ -1568,6 +3173,18 @@ def main() -> None:
         default=os.environ.get("ASYS_FLEET_CONTRACT_SHA256"),
     )
     ap.add_argument(
+        "--protected-capacity-marker",
+        default=os.environ.get("ASYS_PROTECTED_CAPACITY_MARKER"),
+    )
+    ap.add_argument(
+        "--protected-capacity-marker-sha256",
+        default=os.environ.get("ASYS_PROTECTED_CAPACITY_MARKER_SHA256"),
+    )
+    ap.add_argument(
+        "--protected-capacity-marker-id",
+        default=os.environ.get("ASYS_PROTECTED_CAPACITY_MARKER_ID"),
+    )
+    ap.add_argument(
         "--harness-environment-prefix",
         default=os.environ.get("ASYS_HARNESS_ENVIRONMENT_PREFIX"),
     )
@@ -1637,6 +3254,27 @@ def main() -> None:
             "model_contract": args.model_contract,
             "model_contract_sha256": args.model_contract_sha256,
             "fleet_contract_sha256": args.fleet_contract_sha256,
+            "protected_capacity_marker": args.protected_capacity_marker,
+            "protected_capacity_marker_sha256": (
+                args.protected_capacity_marker_sha256
+            ),
+            "protected_capacity_marker_id": args.protected_capacity_marker_id,
+            "release_git_commit": os.environ.get("ASYS_RELEASE_GIT_COMMIT"),
+            "release_fleet_contract_sha256": os.environ.get(
+                "ASYS_RELEASE_FLEET_CONTRACT_SHA256"
+            ),
+            "transport_censor_protocol_version": os.environ.get(
+                "ASYS_TRANSPORT_CENSOR_PROTOCOL_VERSION"
+            ),
+            "transport_censor_protocol_hash": os.environ.get(
+                "ASYS_TRANSPORT_CENSOR_PROTOCOL_HASH"
+            ),
+            "transport_uncertainty_binding_sha256": os.environ.get(
+                "ASYS_TRANSPORT_UNCERTAINTY_BINDING_SHA256"
+            ),
+            "capacity_generation": os.environ.get(
+                "ASYS_CAPACITY_GENERATION"
+            ),
             "harness_environment_prefix": args.harness_environment_prefix,
             "serving_environment_prefix": args.serving_environment_prefix,
             "harness_environment_manifest": args.harness_environment_manifest,
@@ -1647,6 +3285,50 @@ def main() -> None:
         missing = [name for name, value in required.items() if not value]
         if missing:
             ap.error("production fleet is missing immutable pins: " + ", ".join(missing))
+        transport_binding = (
+            scheduler_safety.expected_transport_uncertainty_binding()
+        )
+        transport_binding_sha256 = (
+            scheduler_safety.transport_uncertainty_binding_sha256(
+                transport_binding
+            )
+        )
+        if (
+            str(required["transport_censor_protocol_version"])
+            != str(
+                transport_binding["transport_censor_protocol_version"]
+            )
+            or required["transport_censor_protocol_hash"]
+            != transport_binding["transport_censor_protocol_hash"]
+            or required["transport_uncertainty_binding_sha256"]
+            != transport_binding_sha256
+        ):
+            ap.error(
+                "production fleet transport/checkpoint identity differs from "
+                "the frozen release"
+            )
+        expected_scheduler_policy_contract_id = os.environ.get(
+            "ASYS_SCHEDULER_POLICY_CONTRACT_ID"
+        )
+        if (
+            expected_scheduler_policy_contract_id is None
+            and not args.once
+        ):
+            ap.error(
+                "continuous production fleet supervision requires the "
+                "attested scheduler policy contract"
+            )
+        if (
+            expected_scheduler_policy_contract_id is not None
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                expected_scheduler_policy_contract_id,
+            )
+            is None
+        ):
+            ap.error(
+                "attested scheduler policy contract ID must be SHA-256"
+            )
         model_contracts = load_model_contracts(
             args.model_contract,
             expected_sha256=args.model_contract_sha256,
@@ -1655,7 +3337,27 @@ def main() -> None:
             args.fleet_contract,
             model_contracts=model_contracts,
             expected_sha256=args.fleet_contract_sha256,
+            allow_capacity_layout=True,
         )
+        try:
+            protected_contract = protected_capacity.load_contract(
+                str(args.protected_capacity_marker),
+                expected_release_git_commit=str(
+                    required["release_git_commit"]
+                ),
+                expected_marker_id=str(
+                    args.protected_capacity_marker_id
+                ),
+                expected_sha256=str(
+                    args.protected_capacity_marker_sha256
+                ),
+            )
+            protected_capacity.authorize_fleet(fleet, protected_contract)
+        except protected_capacity.ProtectedCapacityError as exc:
+            ap.error(
+                "production fleet is not covered by protected capacity: "
+                + str(exc)
+            )
         fleet.verify_pool_root(run_root)
         launch_options = {
             "release_worktree": args.release_worktree,
@@ -1670,6 +3372,14 @@ def main() -> None:
             "harness_environment_hash": args.harness_environment_sha256,
             "fleet_contract_path": args.fleet_contract,
             "fleet_contract_sha256": args.fleet_contract_sha256,
+            "release_fleet_contract_sha256": os.environ.get(
+                "ASYS_RELEASE_FLEET_CONTRACT_SHA256"
+            ),
+            "capacity_generation": (
+                None
+                if os.environ.get("ASYS_CAPACITY_GENERATION") is None
+                else int(os.environ["ASYS_CAPACITY_GENERATION"])
+            ),
             "hf_home": args.hf_home,
         }
         print(
@@ -1679,7 +3389,20 @@ def main() -> None:
             # Production is intentionally fail-closed.  The outer, cross-supervising
             # controller chain records/restarts a failed turn; this process never hides
             # scheduler ambiguity or immutable-provenance drift in an endless loop.
-            tick_fleet(run_root, fleet, launch_options=launch_options)
+            tick_fleet(
+                run_root,
+                fleet,
+                launch_options=launch_options,
+                scheduler_safety_contract={
+                    "expected_policy_contract_id": (
+                        expected_scheduler_policy_contract_id
+                    ),
+                    "transport_uncertainty_binding_sha256": (
+                        transport_binding_sha256
+                    ),
+                },
+                protected_capacity_contract=protected_contract,
+            )
             if args.once:
                 return
             time.sleep(args.interval)

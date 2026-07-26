@@ -9,8 +9,11 @@
   orchestration, and end-to-end data flow for one cell.
 - **[DATA_SCHEMA.md](DATA_SCHEMA.md)**: exact `results.jsonl`, `meta.json`, and tidy
   analysis-table fields.
-- **[SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md)**: authoritative recovery,
-  immutable-release, readiness, relaunch, staged-ramp, and incident-control procedure.
+- **[SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md)**: authoritative
+  v1.2-r2 recovery, immutable-release, readiness, relaunch, staged-ramp, and
+  incident-control procedure.
+- **[SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md)**: retired v1.1-r1
+  recovery record; retained for forensic reproducibility and never to be executed.
 - **[OPERATIONS.md](OPERATIONS.md)**: development and retired chunk-driver procedures,
   retained for legacy-run forensics rather than schema-5 production.
 - **[SCHEMA5_RELEASE.md](SCHEMA5_RELEASE.md)**: exact-tag worktree, independent Conda

@@ -1,4 +1,9 @@
-# Schema-5 v1.1-r1 recovery chain
+# Retired schema-5 v1.1-r1 recovery chain
+
+> **Immutable historical record—do not render, submit, or repair this chain.** Its
+> deterministic materialization failure is sealed and requires the v1.2-r2
+> superseding release. Use
+> [SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md).
 
 The production recovery is rendered only after the repository-wide test suite passes,
 the tree is clean, and the annotated tag `sweep-recovery-schema5-v1.1-r1` resolves to

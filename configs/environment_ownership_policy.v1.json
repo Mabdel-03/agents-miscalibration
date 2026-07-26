@@ -1,0 +1,25 @@
+{
+  "normalizations": [
+    {
+      "conda_artifact_sha256": "82088a6e4daa33329a30bc26dc19a98c7c1d3f05c0f73ce9845d4eab4924e9e1",
+      "conda_build": "pyh332efcf_0",
+      "conda_record_filename": "setuptools-82.0.1-pyh332efcf_0.json",
+      "conda_version": "82.0.1",
+      "normalization_id": "setuptools-conda-pip-ownership-v1",
+      "pip_version": "81.0.0",
+      "project": "setuptools",
+      "roles": {
+        "harness": {
+          "source_record_policy": "absent_requires_incident"
+        },
+        "serving": {
+          "source_record_policy": "present_or_absent_requires_incident"
+        }
+      }
+    }
+  ],
+  "policy_id": "schema5-environment-ownership-v1",
+  "reject_unlisted_version_conflicts": true,
+  "release_id": "sweep-recovery-schema5-v1.2",
+  "schema_version": 1
+}

@@ -20,16 +20,20 @@ Outputs (written atomically: *.tmp then os.replace) under --out-dir:
                           corresponding per-agent rows; never part of estimands
   ingest_manifest_v1.json provenance + data-integrity counters
 
-The default is the authoritative homogeneous schema-5 dataset and is deliberately
-fail-closed: all three production run IDs, their frozen manifests, and their exact
-artifact-policy pins must be present.  Historical data is available only through the
-explicit ``supplementary-legacy`` mode.  It is always labelled mixed-protocol and rows
-without artifact-schema provenance can never populate exact-token columns.  Valid rows
-from partial/active/retryable manifested cells are retained in item/agent tables with
-their coverage state, but only semantically complete cells enter cell aggregates.
+The default is the final authoritative homogeneous schema-5 dataset and is deliberately
+fail-closed: all 22,680 production cells and 4,524,660 outcomes must be semantically
+complete under the exact frozen manifests and artifact policies.  Ongoing homogeneous
+coverage is available only through the explicitly nonauthoritative
+``interim-schema5`` mode.  Historical data is available only through the explicit
+``supplementary-legacy`` mode; it is always labelled mixed-protocol and schema-less rows
+can never populate exact-token claims.  Interim/legacy partial, active, or retryable
+cells may preserve valid row-level evidence, but only semantically complete cells enter
+cell aggregates.
 
 CLI:
   python analysis/nb_lib/ingest.py --out-dir analysis/cache
+  python analysis/nb_lib/ingest.py --mode interim-schema5 \
+      --out-dir analysis/cache/interim_schema5
   python analysis/nb_lib/ingest.py --mode supplementary-legacy \
       --include-unmanifested --out-dir analysis/cache/supplementary_legacy
 """
@@ -69,9 +73,14 @@ from agents_scaling.experiment.analyze import (  # noqa: E402
 )
 from agents_scaling.experiment import io as run_io  # noqa: E402
 from agents_scaling.experiment.completion import (  # noqa: E402
+    COORDINATE_PROVENANCE_IDENTITY_FIELDS,
+    calibration_endpoint_generations,
+    canonical_coordinate_provenance_identity_counts,
     get_completion_status,
     read_canonical_results,
     reasoning_token_summary,
+    transport_censored_coordinate_count,
+    trusted_generation_catalog_errors,
 )
 from agents_scaling.experiment.manifest import load_manifest, manifested_cell_dirs  # noqa: E402
 from agents_scaling.experiment.artifact_policy import (  # noqa: E402
@@ -83,12 +92,18 @@ from agents_scaling.experiment.result_schema import (  # noqa: E402
     TERMINATION_COMPLETED,
     TERMINATION_LENGTH_CENSORED,
     TERMINATION_PROTOCOL_CENSORED,
+    TERMINATION_TRANSPORT_CENSORED,
 )
 from agents_scaling.serving.profiles import serving_profile_for_cell  # noqa: E402
 from agents_scaling.models import get_model  # noqa: E402
 from agents_scaling.serving.model_contracts import (  # noqa: E402
     ModelContractError,
     load_model_contracts,
+)
+from agents_scaling.serving.generation_catalog import (  # noqa: E402
+    GenerationCatalogError,
+    TrustedGenerationCatalog,
+    validate_trusted_generation_catalog,
 )
 
 from nb_lib import calib  # noqa: E402
@@ -105,12 +120,26 @@ BOOT_B = 500
 CHUNK_CELLS = 400
 
 PRIMARY_MODE = "primary-schema5"
+INTERIM_SCHEMA5_MODE = "interim-schema5"
 SUPPLEMENTARY_MODE = "supplementary-legacy"
+SCHEMA5_MODES = frozenset({PRIMARY_MODE, INTERIM_SCHEMA5_MODE})
 PRIMARY_SCHEMA5_RUN_IDS = (
     "full_sweep_schema5_v1",
     "full_sweep_agent_counts_schema5_v1",
     "full_sweep_agent_count_7_schema5_v1",
 )
+PRIMARY_EXPECTED_CELLS_BY_RUN = {
+    "full_sweep_schema5_v1": 4_680,
+    "full_sweep_agent_counts_schema5_v1": 14_400,
+    "full_sweep_agent_count_7_schema5_v1": 3_600,
+}
+PRIMARY_EXPECTED_QIDS_BY_RUN = {
+    "full_sweep_schema5_v1": 933_660,
+    "full_sweep_agent_counts_schema5_v1": 2_872_800,
+    "full_sweep_agent_count_7_schema5_v1": 718_200,
+}
+PRIMARY_EXPECTED_TOTAL_CELLS = 22_680
+PRIMARY_EXPECTED_TOTAL_QIDS = 4_524_660
 LEGACY_RUN_IDS = (
     "full_sweep_v1",
     "full_sweep_agent_counts_v1",
@@ -156,14 +185,95 @@ SUPPLEMENTARY_PRESERVED_STATES = frozenset(
 )
 
 
+class PrimarySchema5IncompleteError(RuntimeError):
+    """The authoritative cache cannot be published from incomplete sweep state."""
+
+
+def _trusted_generation_catalog_authority(
+    *,
+    mode: str,
+    marker_path: Path | None,
+    server_pool_root: Path | None,
+) -> tuple[TrustedGenerationCatalog | None, dict[str, Any] | None]:
+    """Validate and pin the immutable runtime-generation authority for analysis."""
+
+    if mode != PRIMARY_MODE:
+        if (marker_path is None) != (server_pool_root is None):
+            raise ValueError(
+                "trusted-generation catalog and server-pool root must be supplied "
+                "together"
+            )
+        if marker_path is None:
+            return None, None
+    elif marker_path is None or server_pool_root is None:
+        raise PrimarySchema5IncompleteError(
+            "primary schema-5 ingestion requires an immutable trusted-generation "
+            "catalog marker and its server-pool history root"
+        )
+    assert marker_path is not None
+    assert server_pool_root is not None
+    try:
+        catalog = validate_trusted_generation_catalog(
+            marker_path,
+            server_pool_root=server_pool_root,
+        )
+    except GenerationCatalogError as exc:
+        raise PrimarySchema5IncompleteError(
+            f"trusted-generation catalog failed closed: {exc}"
+        ) from exc
+    authority = {
+        "marker_path": str(catalog.marker_path),
+        "marker_sha256": catalog.marker_sha256,
+        "inventory_sha256": catalog.inventory_sha256,
+        "catalog_payload_sha256": catalog.catalog_sha256,
+        "catalog_id": catalog.catalog_id,
+        "server_pool_root": str(server_pool_root.expanduser().resolve()),
+        "allowed_generation_tuple_count": len(
+            catalog.allowed_generation_tuples
+        ),
+    }
+    return catalog, authority
+
+
+def _validate_catalog_records(
+    records: Sequence[Mapping[str, Any]],
+    catalog: TrustedGenerationCatalog,
+) -> tuple[set[tuple[str, str, int, int, str]], set[str]]:
+    """Fail closed and return the exact catalog identities observed in rows."""
+
+    errors = trusted_generation_catalog_errors(
+        records, catalog.allowed_generation_tuples
+    )
+    if errors:
+        raise PrimarySchema5IncompleteError(
+            "trusted-generation row validation failed: " + "; ".join(errors[:10])
+        )
+    coordinate_tuples: set[tuple[str, str, int, int, str]] = set()
+    calibration_endpoints: set[str] = set()
+    for record in records:
+        for identity in canonical_coordinate_provenance_identity_counts(
+            record.get("coordinate_provenance_identity_counts")
+        ):
+            coordinate_tuples.add(
+                tuple(
+                    identity[field]
+                    for field in COORDINATE_PROVENANCE_IDENTITY_FIELDS
+                )
+            )
+        calibration_endpoints.update(
+            calibration_endpoint_generations(record)
+        )
+    return coordinate_tuples, calibration_endpoints
+
+
 def _analysis_runtime_authority(mode: str) -> dict[str, Any] | None:
     """Validate the immutable implementation/environment used for primary ingest."""
 
     release_value = os.environ.get("ASYS_RELEASE_WORKTREE")
     if not release_value:
-        if mode == PRIMARY_MODE:
+        if mode in SCHEMA5_MODES:
             raise RuntimeError(
-                "primary schema-5 ingest requires ASYS_RELEASE_WORKTREE and the "
+                "schema-5 ingest requires ASYS_RELEASE_WORKTREE and the "
                 "immutable harness; run analysis/refresh.sh"
             )
         return None
@@ -200,7 +310,7 @@ def _analysis_runtime_authority(mode: str) -> dict[str, Any] | None:
     if model_path != expected_model or raw_model.is_symlink() or not raw_model.is_file():
         raise RuntimeError("analysis model contract is outside the frozen release")
     if Path(__file__).resolve().is_relative_to(release) is False:
-        raise RuntimeError("primary ingest implementation is not from the frozen release")
+        raise RuntimeError("schema-5 ingest implementation is not from the frozen release")
     executable = (harness / "bin" / "python").resolve()
     if Path(sys.executable).resolve() != executable or Path(sys.prefix).resolve() != harness:
         raise RuntimeError("analysis is not executing with the immutable harness")
@@ -413,18 +523,18 @@ def resolve_ingest_scope(
 ) -> tuple[str, ...]:
     """Return one canonical, auditable run set or fail before reading any artifacts."""
 
-    if mode not in {PRIMARY_MODE, SUPPLEMENTARY_MODE}:
+    if mode not in {PRIMARY_MODE, INTERIM_SCHEMA5_MODE, SUPPLEMENTARY_MODE}:
         raise ValueError(f"unsupported analysis mode {mode!r}")
-    expected = PRIMARY_SCHEMA5_RUN_IDS if mode == PRIMARY_MODE else LEGACY_RUN_IDS
+    expected = PRIMARY_SCHEMA5_RUN_IDS if mode in SCHEMA5_MODES else LEGACY_RUN_IDS
     observed = tuple(requested_run_ids) if requested_run_ids is not None else expected
     if len(observed) != len(set(observed)) or set(observed) != set(expected):
         raise ValueError(
             f"{mode} requires exactly these run IDs: {', '.join(expected)}; "
             f"observed: {', '.join(observed) if observed else '<none>'}"
         )
-    if mode == PRIMARY_MODE and include_unmanifested:
+    if mode in SCHEMA5_MODES and include_unmanifested:
         raise ValueError(
-            "authoritative schema-5 ingestion cannot include unmanifested directories"
+            "schema-5 ingestion cannot include unmanifested directories"
         )
     # Canonical order makes cache identity independent of command-line ordering.
     return expected
@@ -894,6 +1004,7 @@ def _analysis_provenance_annotation(
 ) -> dict[str, Any]:
     row_exact = _row_reasoning_tokens_exact(dict(row))
     supplementary = mode == SUPPLEMENTARY_MODE
+    authoritative = mode == PRIMARY_MODE
     if supplementary and not row_exact:
         token_provenance = "legacy-nonexact-word-count"
     elif supplementary:
@@ -910,7 +1021,7 @@ def _analysis_provenance_annotation(
         "token_provenance": token_provenance,
         # A row-local native span can be inspected in the supplement, but it is never
         # promoted to a homogeneous/authoritative cross-run exact-token claim.
-        "authoritative_exact_token_claim": bool(row_exact and not supplementary),
+        "authoritative_exact_token_claim": bool(row_exact and authoritative),
         "scientifically_excluded": bool(scientifically_excluded),
         "scientific_exclusion_reason": exclusion_reason,
     }
@@ -929,8 +1040,20 @@ def _manifested_ingest_decision(
     """
 
     if mode == PRIMARY_MODE:
-        complete = completion_state == "complete"
-        return complete, complete
+        if completion_state != "complete":
+            raise PrimarySchema5IncompleteError(
+                "primary schema-5 ingestion requires every manifested cell complete; "
+                f"observed {completion_state!r}"
+            )
+        return True, True
+    if mode == INTERIM_SCHEMA5_MODE:
+        if completion_state in {"corrupt", "permanent"}:
+            raise PrimarySchema5IncompleteError(
+                "interim schema-5 ingestion refuses untrusted terminal state "
+                f"{completion_state!r}"
+            )
+        preserve = completion_state in SUPPLEMENTARY_PRESERVED_STATES
+        return preserve, completion_state == "complete"
     if mode != SUPPLEMENTARY_MODE:
         raise ValueError(f"unsupported analysis mode {mode!r}")
     if completion_state in {"corrupt", "permanent"}:
@@ -940,6 +1063,89 @@ def _manifested_ingest_decision(
         )
     preserve = completion_state in SUPPLEMENTARY_PRESERVED_STATES
     return preserve, completion_state == "complete"
+
+
+def primary_schema5_acceptance(
+    *,
+    manifest_cells_by_run: Mapping[str, int],
+    expected_qids_by_run: Mapping[str, int],
+    completion_states: Mapping[str, int],
+    validated_qids_by_completion_state: Mapping[str, int],
+    artifact_schema_counts: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    """Return exact primary-cache acceptance or fail before publication.
+
+    The authoritative mode is a final scientific dataset, not a convenient view of
+    whichever strata happen to finish first.  Ongoing homogeneous results belong only
+    in ``interim-schema5``.
+    """
+
+    observed_states = {
+        str(state): int(count)
+        for state, count in completion_states.items()
+        if int(count) != 0
+    }
+    observed_qid_states = {
+        str(state): int(count)
+        for state, count in validated_qids_by_completion_state.items()
+        if int(count) != 0
+    }
+    cells = {
+        str(run_id): int(count)
+        for run_id, count in manifest_cells_by_run.items()
+    }
+    qids = {
+        str(run_id): int(count)
+        for run_id, count in expected_qids_by_run.items()
+    }
+    errors: list[str] = []
+    if cells != PRIMARY_EXPECTED_CELLS_BY_RUN:
+        errors.append(
+            "manifest cardinality differs from 4,680 + 14,400 + 3,600"
+        )
+    if qids != PRIMARY_EXPECTED_QIDS_BY_RUN:
+        errors.append("frozen QID cardinality differs from the registered run totals")
+    if observed_states != {"complete": PRIMARY_EXPECTED_TOTAL_CELLS}:
+        errors.append(
+            "completion states are not exactly 22,680 semantically complete cells"
+        )
+    if observed_qid_states != {"complete": PRIMARY_EXPECTED_TOTAL_QIDS}:
+        errors.append(
+            "validated QIDs are not exactly 4,524,660 complete-cell outcomes"
+        )
+    schema_counts = (
+        None
+        if artifact_schema_counts is None
+        else {
+            str(schema): int(count)
+            for schema, count in artifact_schema_counts.items()
+            if int(count) != 0
+        }
+    )
+    if schema_counts is not None and schema_counts != {
+        "5": PRIMARY_EXPECTED_TOTAL_QIDS
+    }:
+        errors.append(
+            "artifact schemas are not exactly 4,524,660 schema-5 outcomes"
+        )
+    acceptance = {
+        "expected_cells_by_run": dict(PRIMARY_EXPECTED_CELLS_BY_RUN),
+        "expected_qids_by_run": dict(PRIMARY_EXPECTED_QIDS_BY_RUN),
+        "expected_total_cells": PRIMARY_EXPECTED_TOTAL_CELLS,
+        "expected_total_qids": PRIMARY_EXPECTED_TOTAL_QIDS,
+        "observed_manifest_cells_by_run": cells,
+        "observed_expected_qids_by_run": qids,
+        "observed_completion_states": observed_states,
+        "observed_validated_qids_by_completion_state": observed_qid_states,
+        "observed_artifact_schema_counts": schema_counts,
+        "passed": not errors,
+        "errors": errors,
+    }
+    if errors:
+        raise PrimarySchema5IncompleteError(
+            "primary schema-5 acceptance failed: " + "; ".join(errors)
+        )
+    return acceptance
 
 
 def legacy_consolidated_acceptance(
@@ -1025,11 +1231,11 @@ def _run_contract_record(
     try:
         policy = load_artifact_policy(
             run_root,
-            required=mode == PRIMARY_MODE,
+            required=mode in SCHEMA5_MODES,
         )
     except ArtifactPolicyError as exc:
         raise RuntimeError(f"cannot trust analysis run {run_id}: {exc}") from exc
-    if mode == PRIMARY_MODE:
+    if mode in SCHEMA5_MODES:
         assert policy is not None
         if policy.accepted_manifest_sha256 != snapshot.sha256:
             raise RuntimeError(
@@ -1184,6 +1390,10 @@ def item_record(run_id: str, cell_id: str, cfg: dict, r: dict) -> dict:
         "protocol_censored": (
             r.get("termination_status") == TERMINATION_PROTOCOL_CENSORED
         ),
+        "transport_censored": (
+            r.get("termination_status") == TERMINATION_TRANSPORT_CENSORED
+        ),
+        "transport_affected": transport_censored_coordinate_count([r]) > 0,
         "correct": bool(r.get("correct")),
         "final_answer": (
             None
@@ -1203,12 +1413,19 @@ def item_record(run_id: str, cell_id: str, cfg: dict, r: dict) -> dict:
         "sc_n_protocol_censored_samples": _f(
             sc.get("protocol_censored_sample_count")
         ),
+        "sc_n_transport_censored_samples": _f(
+            sc.get("transport_censored_sample_count")
+        ),
         "sc_length_censor_rate": (
             _f(sc.get("length_censored_sample_count")) / len(samples)
             if samples else np.nan
         ),
         "sc_protocol_censor_rate": (
             _f(sc.get("protocol_censored_sample_count")) / len(samples)
+            if samples else np.nan
+        ),
+        "sc_transport_censor_rate": (
+            _f(sc.get("transport_censored_sample_count")) / len(samples)
             if samples else np.nan
         ),
         "sc_first_correct": (
@@ -1391,7 +1608,12 @@ def cell_record(run_id: str, meta: dict, rows: list[dict], n_bad: int, n_dupes: 
     ]
     n_censored = censor_accounting["n_length_censored_questions"]
     n_protocol_censored = censor_accounting["n_protocol_censored_questions"]
-    n_any_censored = n_censored + n_protocol_censored
+    n_transport_censored = censor_accounting[
+        "n_transport_censored_questions"
+    ]
+    n_any_censored = (
+        n_censored + n_protocol_censored + n_transport_censored
+    )
     eff_raw = [r.get("efficiency_raw") or {} for r in completed_rows]
     mean_turns = (
         float(np.mean([_f(e.get("n_turns")) for e in eff_raw]))
@@ -1747,8 +1969,10 @@ def add_efficiency(cells: pd.DataFrame) -> pd.DataFrame:
             base is None
             or r.get("n_length_censored_questions", 0) > 0
             or r.get("n_protocol_censored_questions", 0) > 0
+            or r.get("n_transport_affected_questions", 0) > 0
             or base.get("n_length_censored_questions", 0) > 0
             or base.get("n_protocol_censored_questions", 0) > 0
+            or base.get("n_transport_affected_questions", 0) > 0
         ):
             ec.append(np.nan), ae.append(np.nan), opct.append(np.nan)
             continue
@@ -1768,9 +1992,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--mode",
-        choices=(PRIMARY_MODE, SUPPLEMENTARY_MODE),
+        choices=(PRIMARY_MODE, INTERIM_SCHEMA5_MODE, SUPPLEMENTARY_MODE),
         default=PRIMARY_MODE,
-        help="authoritative schema-5 primary cache or opt-in mixed legacy supplement",
+        help=(
+            "final authoritative schema-5 cache, explicitly nonauthoritative "
+            "in-progress schema-5 cache, or opt-in mixed legacy supplement"
+        ),
     )
     ap.add_argument(
         "--run-id",
@@ -1799,9 +2026,42 @@ def main() -> None:
             "mode defaults to $ASYS_RESULTS_ROOT/recovery/schema5-v1/pre_repair"
         ),
     )
+    ap.add_argument(
+        "--trusted-generation-catalog",
+        type=Path,
+        default=(
+            Path(os.environ["ASYS_TRUSTED_GENERATION_CATALOG"])
+            if os.environ.get("ASYS_TRUSTED_GENERATION_CATALOG")
+            else None
+        ),
+        help=(
+            "sealed TRUSTED_GENERATION_CATALOG_COMPLETE.json; required for "
+            "authoritative primary schema-5 publication"
+        ),
+    )
+    ap.add_argument(
+        "--server-pool-root",
+        type=Path,
+        default=(
+            Path(os.environ["ASYS_SERVER_POOL_ROOT"])
+            if os.environ.get("ASYS_SERVER_POOL_ROOT")
+            else None
+        ),
+        help=(
+            "server-pool root containing sealed endpoint history; required with "
+            "--trusted-generation-catalog"
+        ),
+    )
     args = ap.parse_args()
 
     analysis_runtime = _analysis_runtime_authority(args.mode)
+    trusted_generation_catalog, trusted_generation_authority = (
+        _trusted_generation_catalog_authority(
+            mode=args.mode,
+            marker_path=args.trusted_generation_catalog,
+            server_pool_root=args.server_pool_root,
+        )
+    )
     model_contract_path = (
         None
         if analysis_runtime is None
@@ -1819,6 +2079,7 @@ def main() -> None:
     except ValueError as exc:
         ap.error(str(exc))
     mixed_protocol = args.mode == SUPPLEMENTARY_MODE
+    interim_schema5 = args.mode == INTERIM_SCHEMA5_MODE
     pre_repair_membership: PreRepairIncidentMembership | None = None
     if mixed_protocol:
         snapshot_root = args.pre_repair_snapshot_root or (
@@ -1861,7 +2122,7 @@ def main() -> None:
             catalog=question_catalogs[run_id],
             mode=args.mode,
         )
-        if args.mode == PRIMARY_MODE:
+        if args.mode in SCHEMA5_MODES:
             assert analysis_runtime is not None
             runtime_checks = {
                 "model_contract_sha256": analysis_runtime[
@@ -1890,6 +2151,59 @@ def main() -> None:
         stale_counts[run_id] = len(stale_ids)
         missing_dir_counts[run_id] = len(missing_ids)
         cell_dirs.extend((run_id, p, cell_by_id.get(p.name)) for p in paths)
+
+    # Authoritative publication performs its complete semantic gate before it
+    # withdraws or replaces any existing cache generation.  Retain the status objects
+    # so the ingest pass does not repeat that full validation.
+    primary_statuses: dict[tuple[str, str], Any] = {}
+    primary_acceptance: dict[str, Any] | None = None
+    if args.mode == PRIMARY_MODE:
+        preflight_states: dict[str, int] = {}
+        preflight_qids_by_state: dict[str, int] = {}
+        expected_qids_by_run: dict[str, int] = {}
+        for run_id in run_ids:
+            snapshot = run_snapshots[run_id]
+            catalog = question_catalogs[run_id]
+            expected_qids_by_run[run_id] = 0
+            for cell in snapshot.cells:
+                questions = catalog.questions_for(cell)
+                expected_qids = tuple(question.qid for question in questions)
+                expected_qids_by_run[run_id] += len(expected_qids)
+                cell_path = run_roots[run_id] / "cells" / cell.cell_id
+                profile = serving_profile_for_cell(cell)
+                status = get_completion_status(
+                    cell,
+                    cell_path,
+                    expected_qids=expected_qids,
+                    expected_questions=questions,
+                    verified_benchmark_contracts=catalog.frozen,
+                    verified_manifest=snapshot,
+                    check_active=False,
+                    serving_profile=profile.name,
+                    model_contract_path=model_contract_path,
+                    trusted_generation_tuples=(
+                        trusted_generation_catalog.allowed_generation_tuples
+                        if trusted_generation_catalog is not None
+                        else None
+                    ),
+                )
+                primary_statuses[(run_id, cell.cell_id)] = status
+                state = status.status.value
+                preflight_states[state] = preflight_states.get(state, 0) + 1
+                preflight_qids_by_state[state] = (
+                    preflight_qids_by_state.get(state, 0)
+                    + status.valid_count
+                )
+            catalog.verify_unchanged()
+        primary_acceptance = primary_schema5_acceptance(
+            manifest_cells_by_run={
+                run_id: len(run_snapshots[run_id].cells)
+                for run_id in run_ids
+            },
+            expected_qids_by_run=expected_qids_by_run,
+            completion_states=preflight_states,
+            validated_qids_by_completion_state=preflight_qids_by_state,
+        )
     rng = np.random.default_rng(0)
 
     cache_generation = CacheGeneration(
@@ -1917,6 +2231,11 @@ def main() -> None:
     n_unmanifested_qids = 0
     items_buf: list[dict] = []
     agents_buf: list[dict] = []
+    observed_catalog_tuples: set[
+        tuple[str, str, int, int, str]
+    ] = set()
+    observed_calibration_endpoints: set[str] = set()
+    catalog_validated_qids = 0
 
     t0 = time.time()
     for i, (run_id, cell_path, manifest_cell) in enumerate(cell_dirs):
@@ -1925,17 +2244,19 @@ def main() -> None:
             profile = serving_profile_for_cell(manifest_cell)
             questions = question_catalogs[run_id].questions_for(manifest_cell)
             expected_qids = tuple(question.qid for question in questions)
-            status = get_completion_status(
-                manifest_cell,
-                cell_path,
-                expected_qids=expected_qids,
-                expected_questions=questions,
-                verified_benchmark_contracts=question_catalogs[run_id].frozen,
-                verified_manifest=question_catalogs[run_id].snapshot,
-                check_active=mixed_protocol,
-                serving_profile=profile.name,
-                model_contract_path=model_contract_path,
-            )
+            status = primary_statuses.get((run_id, manifest_cell.cell_id))
+            if status is None:
+                status = get_completion_status(
+                    manifest_cell,
+                    cell_path,
+                    expected_qids=expected_qids,
+                    expected_questions=questions,
+                    verified_benchmark_contracts=question_catalogs[run_id].frozen,
+                    verified_manifest=question_catalogs[run_id].snapshot,
+                    check_active=(mixed_protocol or interim_schema5),
+                    serving_profile=profile.name,
+                    model_contract_path=model_contract_path,
+                )
             state = status.status.value
             completion_states[state] = completion_states.get(state, 0) + 1
             try:
@@ -1965,6 +2286,15 @@ def main() -> None:
                 )
             if not rows:
                 continue
+            if trusted_generation_catalog is not None:
+                cell_tuples, calibration_endpoints = (
+                    _validate_catalog_records(
+                        rows, trusted_generation_catalog
+                    )
+                )
+                observed_catalog_tuples.update(cell_tuples)
+                observed_calibration_endpoints.update(calibration_endpoints)
+                catalog_validated_qids += len(rows)
             meta = (
                 json.loads((cell_path / "meta.json").read_text())
                 if status.is_complete
@@ -2259,6 +2589,81 @@ def main() -> None:
             f"incidents={incident_count}, acceptance={consolidated_acceptance}"
         )
 
+    trusted_generation_acceptance: dict[str, Any] | None = None
+    if trusted_generation_catalog is not None:
+        assert trusted_generation_authority is not None
+        try:
+            reverified_catalog = validate_trusted_generation_catalog(
+                trusted_generation_catalog.marker_path,
+                server_pool_root=trusted_generation_authority[
+                    "server_pool_root"
+                ],
+            )
+        except GenerationCatalogError as exc:
+            raise PrimarySchema5IncompleteError(
+                f"trusted-generation catalog changed during ingest: {exc}"
+            ) from exc
+        if (
+            reverified_catalog.marker_sha256
+            != trusted_generation_catalog.marker_sha256
+            or reverified_catalog.inventory_sha256
+            != trusted_generation_catalog.inventory_sha256
+            or reverified_catalog.catalog_sha256
+            != trusted_generation_catalog.catalog_sha256
+            or reverified_catalog.allowed_generation_tuples
+            != trusted_generation_catalog.allowed_generation_tuples
+        ):
+            raise PrimarySchema5IncompleteError(
+                "trusted-generation catalog identity changed during ingest"
+            )
+        trusted_generation_acceptance = {
+            **trusted_generation_authority,
+            "validated_qids": catalog_validated_qids,
+            "observed_coordinate_generation_tuple_count": len(
+                observed_catalog_tuples
+            ),
+            "observed_calibration_endpoint_count": len(
+                observed_calibration_endpoints
+            ),
+            "passed": True,
+        }
+
+    if args.mode == PRIMARY_MODE:
+        if (
+            n_bad_lines != 0
+            or n_bad_cells != 0
+            or n_dupes_total != 0
+            or n_cells_with_dupes != 0
+            or n_unexpected_n
+            or qid_mismatch
+            or len(cell_recs) != PRIMARY_EXPECTED_TOTAL_CELLS
+            or catalog_validated_qids != PRIMARY_EXPECTED_TOTAL_QIDS
+            or trusted_generation_acceptance is None
+        ):
+            raise PrimarySchema5IncompleteError(
+                "primary schema-5 ingestion observed post-preflight integrity drift: "
+                f"bad_lines={n_bad_lines}, bad_cells={n_bad_cells}, "
+                f"duplicates={n_dupes_total}, duplicate_cells={n_cells_with_dupes}, "
+                f"unexpected_n={len(n_unexpected_n)}, "
+                f"qid_mismatches={len(qid_mismatch)}, "
+                f"complete_aggregates={len(cell_recs)}, "
+                f"catalog_validated_qids={catalog_validated_qids}, "
+                "trusted_generation_catalog="
+                f"{trusted_generation_acceptance is not None}"
+            )
+        assert primary_acceptance is not None
+        primary_acceptance = primary_schema5_acceptance(
+            manifest_cells_by_run=manifest_counts,
+            expected_qids_by_run=primary_acceptance[
+                "observed_expected_qids_by_run"
+            ],
+            completion_states=completion_states,
+            validated_qids_by_completion_state=(
+                validated_qids_by_completion_state
+            ),
+            artifact_schema_counts=artifact_schema_counts,
+        )
+
     items_w.write(items_buf)
     agents_w.write(agents_buf)
     incident_items_w.write(incident_items_buf)
@@ -2284,7 +2689,11 @@ def main() -> None:
         "exact_token_policy": (
             "schema5-required"
             if args.mode == PRIMARY_MODE
-            else "row-provenance-only; schema-less rows excluded"
+            else (
+                "schema5-exact-interim-nonauthoritative"
+                if args.mode == INTERIM_SCHEMA5_MODE
+                else "row-provenance-only; schema-less rows excluded"
+            )
         ),
         "run_ids": run_ids,
         "run_id": run_ids[0] if len(run_ids) == 1 else None,
@@ -2298,6 +2707,7 @@ def main() -> None:
             run_id: run_contracts[run_id] for run_id in sorted(run_contracts)
         },
         "analysis_runtime": analysis_runtime,
+        "trusted_generation_catalog": trusted_generation_acceptance,
         "stale_dirs_by_run": stale_counts,
         "missing_dirs_by_run": missing_dir_counts,
         "completion_states": completion_states,
@@ -2308,6 +2718,7 @@ def main() -> None:
         "artifact_schema_counts": {
             key: artifact_schema_counts[key] for key in sorted(artifact_schema_counts)
         },
+        "primary_schema5_acceptance": primary_acceptance,
         "incident_artifact_schema_counts": {
             key: incident_artifact_schema_counts[key]
             for key in sorted(incident_artifact_schema_counts)
@@ -2382,7 +2793,9 @@ def main() -> None:
             "run_ids": manifest["run_ids"],
             "run_contracts": manifest["run_contracts"],
             "analysis_runtime": manifest["analysis_runtime"],
+            "trusted_generation_catalog": trusted_generation_acceptance,
             "manifest_scoped": manifest["manifest_scoped"],
+            "primary_schema5_acceptance": primary_acceptance,
             "incident_contracts": incident_contracts,
             "active_artifact_validated_qids": n_manifested_active_artifact_qids,
             "sealed_scientifically_excluded_qids": (

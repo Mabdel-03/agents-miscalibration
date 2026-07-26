@@ -62,6 +62,18 @@ SMOKE_SUITES = (
 LINEAGE_FILENAME = "smoke_lineage.schema5-v1.json"
 LINEAGE_CHECKSUM_FILENAME = "smoke_lineage.schema5-v1.sha256"
 MARKER_FILENAME = "SCHEMA5_SMOKE_INITIALIZED.json"
+ATTEMPT_BINDING_PROTOCOL = "schema5-v1.2-r2-smoke-attempt-binding-v1"
+_ATTEMPT_BINDING_FIELDS = {
+    "protocol",
+    "attempt_id",
+    "attempt_ordinal",
+    "immutable_sha256",
+    "capacity_generation",
+    "rollout_generation",
+    "fleet_contract_sha256",
+    "release_fleet_contract_sha256",
+    "trusted_catalog_id",
+}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -174,6 +186,7 @@ def _lineage_payload(
     release_id: str,
     source_tree_sha256: str,
     routes: Mapping[str, int],
+    attempt_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -191,6 +204,9 @@ def _lineage_payload(
         "release_id": release_id,
         "source_tree_sha256": source_tree_sha256,
         "serving_profile_counts": dict(sorted(routes.items())),
+        "smoke_attempt": (
+            None if attempt_binding is None else dict(attempt_binding)
+        ),
     }
     payload["lineage_id"] = _sha256_bytes(
         _canonical_bytes({"domain": "agents_scaling.schema5_smoke_lineage.v1", "payload": payload})
@@ -210,6 +226,7 @@ def _verify_suite(
     expected_harness_environment_sha256: str | None = None,
     expected_serving_environment_sha256: str | None = None,
     expected_model_contract_sha256: str | None = None,
+    expected_attempt_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     expected = tuple(load_sweep(config_path))
     if len(expected) != expected_cells:
@@ -265,6 +282,18 @@ def _verify_suite(
         or marker.get("manifest_sha256") != snapshot.sha256
         or marker.get("artifact_policy_sha256") != policy.file_sha256
         or lineage.get("configuration", {}).get("sha256") != _sha256_file(config_path)
+        or lineage.get("smoke_attempt")
+        != (
+            None
+            if expected_attempt_binding is None
+            else dict(expected_attempt_binding)
+        )
+        or marker.get("smoke_attempt")
+        != (
+            None
+            if expected_attempt_binding is None
+            else dict(expected_attempt_binding)
+        )
     ):
         raise SmokeInitializationError(f"smoke exclusion/policy marker is invalid: {root}")
     routes = Counter(serving_profile_for_cell(cell).name for cell in snapshot.cells)
@@ -279,6 +308,11 @@ def _verify_suite(
         "lineage_sha256": _sha256_file(lineage_path),
         "serving_profile_counts": dict(sorted(routes.items())),
         "estimand_excluded": True,
+        "smoke_attempt": (
+            None
+            if lineage.get("smoke_attempt") is None
+            else dict(lineage["smoke_attempt"])
+        ),
     }
 
 
@@ -293,10 +327,39 @@ def initialize_all(
     harness_environment_sha256: str,
     serving_environment_sha256: str,
     apply: bool,
+    attempt_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     results_root = results_root.expanduser().resolve()
     release_worktree = release_worktree.expanduser().resolve()
     model_contracts = load_model_contracts(model_contract_path.expanduser().resolve())
+    if attempt_binding is not None:
+        if (
+            set(attempt_binding) != _ATTEMPT_BINDING_FIELDS
+            or attempt_binding.get("protocol") != ATTEMPT_BINDING_PROTOCOL
+            or not isinstance(attempt_binding.get("attempt_id"), str)
+            or not attempt_binding["attempt_id"]
+            or not isinstance(attempt_binding.get("attempt_ordinal"), int)
+            or isinstance(attempt_binding["attempt_ordinal"], bool)
+            or int(attempt_binding["attempt_ordinal"]) < 1
+            or any(
+                not isinstance(attempt_binding.get(field), int)
+                or isinstance(attempt_binding[field], bool)
+                or int(attempt_binding[field]) < 1
+                for field in ("capacity_generation", "rollout_generation")
+            )
+            or any(
+                _SHA256_RE.fullmatch(str(attempt_binding.get(field, ""))) is None
+                for field in (
+                    "immutable_sha256",
+                    "fleet_contract_sha256",
+                    "release_fleet_contract_sha256",
+                    "trusted_catalog_id",
+                )
+            )
+        ):
+            raise SmokeInitializationError(
+                "smoke attempt binding is malformed"
+            )
     if _GIT_RE.fullmatch(git_commit) is None:
         raise SmokeInitializationError("git_commit must be an exact 40-character SHA")
     for label, value in (
@@ -331,6 +394,7 @@ def initialize_all(
                     expected_harness_environment_sha256=harness_environment_sha256,
                     expected_serving_environment_sha256=serving_environment_sha256,
                     expected_model_contract_sha256=model_contracts.sha256,
+                    expected_attempt_binding=attempt_binding,
                 )
             )
             continue
@@ -381,6 +445,7 @@ def initialize_all(
                     release_id=release_id,
                     source_tree_sha256=source_tree_sha256,
                     routes=routes,
+                    attempt_binding=attempt_binding,
                 )
             )
             _atomic_bytes(staged / POLICY_FILENAME, policy_bytes)
@@ -404,6 +469,9 @@ def initialize_all(
                 "smoke_lineage_sha256": _sha256_bytes(lineage_bytes),
                 "estimand_excluded": True,
                 "cells_directory_empty_at_initialization": True,
+                "smoke_attempt": (
+                    None if attempt_binding is None else dict(attempt_binding)
+                ),
             }
             _atomic_bytes(staged / MARKER_FILENAME, _json_bytes(marker))
             _verify_suite(
@@ -417,6 +485,7 @@ def initialize_all(
                 expected_harness_environment_sha256=harness_environment_sha256,
                 expected_serving_environment_sha256=serving_environment_sha256,
                 expected_model_contract_sha256=model_contracts.sha256,
+                expected_attempt_binding=attempt_binding,
             )
             if target.exists() or target.is_symlink():
                 raise SmokeInitializationError(f"smoke target appeared during staging: {target}")
@@ -438,6 +507,7 @@ def initialize_all(
                 expected_harness_environment_sha256=harness_environment_sha256,
                 expected_serving_environment_sha256=serving_environment_sha256,
                 expected_model_contract_sha256=model_contracts.sha256,
+                expected_attempt_binding=attempt_binding,
             )
         )
     return {

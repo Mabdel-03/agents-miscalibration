@@ -14,6 +14,97 @@ import pytest
 from scripts import materialize_schema5_release as materialize
 
 
+def test_capture_binding_preserves_separate_policy_identities(
+    tmp_path, monkeypatch
+):
+    capture_root = (tmp_path / "capture").resolve()
+    harness_seed = (capture_root / "seeds" / "harness").resolve()
+    serving_seed = (capture_root / "seeds" / "serving").resolve()
+    report = {
+        "release_id": materialize.RELEASE_ID,
+        "capture_id": "1" * 64,
+        "capture_marker_sha256": "2" * 64,
+        "seed_prefixes": {
+            "harness": str(harness_seed),
+            "serving": str(serving_seed),
+        },
+        "ownership_policy_path": "/sealed/ownership-policy.json",
+        "ownership_policy_sha256": "3" * 64,
+        "integrity_normalization_policy_path": (
+            "/sealed/integrity-normalization-policy.json"
+        ),
+        "integrity_normalization_policy_sha256": "4" * 64,
+        "reconciliation_incident_path": "/sealed/reconciliation-incident.json",
+        "reconciliation_incident_sha256": "5" * 64,
+        "recovered_record_path": "/sealed/recovered-setuptools-record.json",
+        "recovered_record_sha256": "6" * 64,
+        "stage_records": {"harness": {}, "serving": {}},
+    }
+    monkeypatch.setattr(
+        materialize.capture, "verify_capture", lambda root: dict(report)
+    )
+
+    binding = materialize._verified_environment_capture_binding(
+        capture_root=capture_root,
+        harness_seed=harness_seed,
+        serving_seed=serving_seed,
+    )
+
+    assert binding["ownership_policy_sha256"] == "3" * 64
+    assert binding["integrity_normalization_policy_sha256"] == "4" * 64
+    assert (
+        binding["ownership_policy_path"]
+        != binding["integrity_normalization_policy_path"]
+    )
+
+    invalid = dict(report)
+    invalid.pop("integrity_normalization_policy_sha256")
+    monkeypatch.setattr(
+        materialize.capture, "verify_capture", lambda root: dict(invalid)
+    )
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="does not bind the supplied normalized seeds",
+    ):
+        materialize._verified_environment_capture_binding(
+            capture_root=capture_root,
+            harness_seed=harness_seed,
+            serving_seed=serving_seed,
+        )
+
+
+def test_command_environment_rejects_hostile_pip_and_conda_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile = {
+        "PIP_INDEX_URL": "https://attacker.invalid/simple",
+        "PIP_TARGET": "/tmp/attacker-target",
+        "PIP_PREFIX": "/tmp/attacker-prefix",
+        "PIP_CONFIG_FILE": "/tmp/attacker-pip.conf",
+        "CONDA_PREFIX": "/tmp/attacker-prefix",
+        "CONDA_SOLVER": "classic",
+        "CONDA_PLUGINS_AUTO_ACCEPT_TOS": "yes",
+        "CONDARC": "/tmp/attacker-condarc",
+        "LD_PRELOAD": "/tmp/attacker.so",
+    }
+    for name, value in hostile.items():
+        monkeypatch.setenv(name, value)
+    environment = materialize._command_environment()
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PIP_NO_INDEX"] == "1"
+    assert environment["PIP_NO_INPUT"] == "1"
+    assert environment["CONDARC"] == os.devnull
+    assert environment["CONDA_NO_PLUGINS"] == "true"
+    assert environment["CONDA_OFFLINE"] == "true"
+    assert "PIP_INDEX_URL" not in environment
+    assert "PIP_TARGET" not in environment
+    assert "PIP_PREFIX" not in environment
+    assert "CONDA_PREFIX" not in environment
+    assert "CONDA_SOLVER" not in environment
+    assert "CONDA_PLUGINS_AUTO_ACCEPT_TOS" not in environment
+    assert "LD_PRELOAD" not in environment
+
+
 def _run(*argv: str, cwd: Path) -> str:
     completed = subprocess.run(
         list(argv), cwd=cwd, capture_output=True, text=True, check=True
@@ -39,6 +130,17 @@ def _source_prefix(tmp_path: Path, name: str) -> Path:
     prefix = tmp_path / name
     (prefix / "conda-meta").mkdir(parents=True)
     (prefix / "conda-meta" / "history").write_text("created\n", encoding="utf-8")
+    (prefix / "conda-meta" / "python-3.11-test.json").write_text(
+        json.dumps(
+            {
+                "name": "python",
+                "version": "3.11",
+                "url": "https://conda.example.invalid/python-3.11-test.conda",
+                "sha256": "1" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
     (prefix / "bin").mkdir()
     (prefix / "bin" / "python").write_text("python\n", encoding="utf-8")
     return prefix
@@ -95,14 +197,26 @@ def _release_runtime_resources(worktree: Path) -> dict:
     }
 
 
-def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(tmp_path):
+def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(
+    tmp_path, monkeypatch
+):
     repository, commit = _tagged_repository(tmp_path)
-    source_harness = _source_prefix(tmp_path, "source-harness")
-    source_serving = _source_prefix(tmp_path, "source-serving")
+    capture_root = tmp_path / "capture"
+    source_harness = _source_prefix(capture_root / "seeds", "harness")
+    source_serving = _source_prefix(capture_root / "seeds", "serving")
+    monkeypatch.setattr(
+        materialize,
+        "_verified_environment_capture_binding",
+        lambda **kwargs: {
+            "release_id": materialize.RELEASE_ID,
+            "capture_id": "c" * 64,
+        },
+    )
     release_root = tmp_path / "release"
 
     report = materialize.materialize_release(
         output_root=release_root,
+        environment_capture_root=capture_root,
         source_repository=repository,
         release_worktree=release_root / "worktree",
         source_harness_prefix=source_harness,
@@ -115,8 +229,15 @@ def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(tmp_path)
     assert report["status"] == "dry_run"
     assert report["tag_commit"] == commit
     assert report["clone_contract"] == {
-        "command": "conda create --yes --copy --prefix DEST --clone SOURCE",
+        "command": (
+            "conda create --yes --copy --offline --no-default-packages "
+            "--prefix DEST --clone NORMALIZED_SEED"
+        ),
         "CONDA_ALWAYS_COPY": "true",
+        "CONDA_OFFLINE": "true",
+        "CONDA_PIP_INTEROP_ENABLED": "false",
+        "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
+        "release_local_package_cache": str(release_root / "conda-package-cache"),
         "shared_regular_inode_count": 0,
         "source_prefix_target_symlink_count": 0,
         "unresolvable_symlink_count": 0,
@@ -126,16 +247,28 @@ def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(tmp_path)
     assert not release_root.exists()
 
 
-def test_materialization_rejects_dirty_or_non_tag_source_checkout(tmp_path):
+def test_materialization_rejects_dirty_or_non_tag_source_checkout(
+    tmp_path, monkeypatch
+):
     repository, _commit = _tagged_repository(tmp_path)
-    source_harness = _source_prefix(tmp_path, "source-harness")
-    source_serving = _source_prefix(tmp_path, "source-serving")
+    capture_root = tmp_path / "capture"
+    source_harness = _source_prefix(capture_root / "seeds", "harness")
+    source_serving = _source_prefix(capture_root / "seeds", "serving")
+    monkeypatch.setattr(
+        materialize,
+        "_verified_environment_capture_binding",
+        lambda **kwargs: {
+            "release_id": materialize.RELEASE_ID,
+            "capture_id": "c" * 64,
+        },
+    )
     (repository / "untracked.txt").write_text("dirty\n", encoding="utf-8")
     release_root = tmp_path / "release"
 
     with pytest.raises(materialize.MaterializationError, match="clean exact production tag"):
         materialize.materialize_release(
             output_root=release_root,
+            environment_capture_root=capture_root,
             source_repository=repository,
             release_worktree=release_root / "worktree",
             source_harness_prefix=source_harness,
@@ -146,6 +279,108 @@ def test_materialization_rejects_dirty_or_non_tag_source_checkout(tmp_path):
         )
 
     assert not release_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("clone_contract", "clone/install contract drifted"),
+        ("source_tree_sha256", "worktree commit drifted"),
+    ),
+)
+def test_verifier_rejects_rehashed_materialization_contract_substitution(
+    tmp_path, monkeypatch, mutation, message
+):
+    root = tmp_path / "materialization"
+    root.mkdir()
+    paths = {
+        "source_repository": str(tmp_path / "retired-source"),
+        "environment_capture_root": str(tmp_path / "capture"),
+        "release_worktree": str(tmp_path / "worktree"),
+        "source_harness_prefix": str(tmp_path / "harness-seed"),
+        "source_serving_prefix": str(tmp_path / "serving-seed"),
+        "harness_prefix": str(tmp_path / "harness"),
+        "serving_prefix": str(tmp_path / "serving"),
+    }
+    for key, value in paths.items():
+        if key != "source_repository":
+            Path(value).mkdir(parents=True)
+    capture_binding = {
+        "release_id": materialize.RELEASE_ID,
+        "capture_id": "c" * 64,
+    }
+    git_identity = {
+        "git_commit": "1" * 40,
+        "git_tag": materialize.REQUIRED_TAG,
+        "source_tree_sha256": "2" * 64,
+    }
+    conda_tool = {
+        "path": str(tmp_path / "archived-conda"),
+        "sha256": "3" * 64,
+    }
+    marker = {
+        "schema_version": materialize.SCHEMA_VERSION,
+        "release_id": materialize.RELEASE_ID,
+        "git_tag": materialize.REQUIRED_TAG,
+        "tag_commit": git_identity["git_commit"],
+        "source_tree_sha256": git_identity["source_tree_sha256"],
+        "paths": paths,
+        "output_root": str(root),
+        "conda_creation_tool": conda_tool,
+        "environment_capture": capture_binding,
+        "clone_contract": {
+            "command": (
+                "conda create --yes --copy --offline --no-default-packages "
+                "--prefix DEST --clone NORMALIZED_SEED"
+            ),
+            "CONDA_ALWAYS_COPY": "true",
+            "CONDA_OFFLINE": "true",
+            "CONDA_PIP_INTEROP_ENABLED": "false",
+            "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
+            "release_local_package_cache": str(
+                root / "conda-package-cache"
+            ),
+            "shared_regular_inode_count": 0,
+            "source_prefix_target_symlink_count": 0,
+            "unresolvable_symlink_count": 0,
+        },
+        "harness_install_contract": {
+            "source": paths["release_worktree"],
+            "editable": False,
+            "dependencies_installed": False,
+            "build_isolation": False,
+            "bytecode_compiled": False,
+            "index_access": False,
+            "isolated_import_required": True,
+        },
+        "complete": True,
+        "publication_protocol": "stage_records_fsync_marker_last",
+        "stage_records": {},
+        "serving_pip_check": {},
+    }
+    if mutation == "clone_contract":
+        marker["clone_contract"]["CONDA_OFFLINE"] = "false"
+    else:
+        marker["source_tree_sha256"] = "f" * 64
+    marker["materialization_id"] = materialize._sha256_bytes(
+        materialize._json_bytes(marker)
+    )
+    marker_path = root / materialize.COMPLETE_MARKER
+    marker_path.write_bytes(materialize._json_bytes(marker))
+    marker_path.chmod(0o444)
+    monkeypatch.setattr(
+        materialize,
+        "_verified_environment_capture_binding",
+        lambda **kwargs: dict(capture_binding),
+    )
+    monkeypatch.setattr(
+        materialize.freeze,
+        "verify_clean_exact_tag",
+        lambda path: dict(git_identity),
+    )
+
+    with pytest.raises(materialize.MaterializationError, match=message):
+        materialize.verify_materialization(root)
 
 
 def test_copy_verifier_rejects_shared_regular_inodes(tmp_path):
@@ -291,7 +526,9 @@ def test_clone_identity_records_symlink_independence_contract(tmp_path, monkeypa
     (destination / "bin").mkdir(parents=True)
     (destination / "bin" / "python").write_text("python\n", encoding="utf-8")
     (destination / "bin" / "python-link").symlink_to("python")
-    monkeypatch.setattr(materialize.freeze, "_conda_lock", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        materialize.freeze, "_conda_lock_from_records", lambda *args, **kwargs: []
+    )
     monkeypatch.setattr(materialize, "_raw_pip_freeze", lambda *args, **kwargs: [])
 
     report = materialize._clone_identity(
@@ -331,8 +568,10 @@ def test_clone_stage_uses_copy_flag_and_is_idempotent(tmp_path, monkeypatch):
         lambda **kwargs: {
             "source_prefix": str(source),
             "destination_prefix": str(destination),
-            "clone_mode": "conda_create_clone_copy",
+            "clone_mode": "conda_create_clone_copy_offline_normalized_seed",
             "conda_always_copy": True,
+            "conda_offline": True,
+            "conda_pip_interop_enabled": False,
             "conda_explicit_sha256": "a" * 64,
             "pip_freeze_sha256": "b" * 64,
             "source_regular_file_count": 2,
@@ -370,12 +609,17 @@ def test_clone_stage_uses_copy_flag_and_is_idempotent(tmp_path, monkeypatch):
         "create",
         "--yes",
         "--copy",
+        "--offline",
+        "--no-default-packages",
         "--prefix",
         str(destination),
         "--clone",
         str(source),
     ]
     assert call["env"]["CONDA_ALWAYS_COPY"] == "true"
+    assert call["env"]["CONDA_OFFLINE"] == "true"
+    assert call["env"]["CONDA_PIP_INTEROP_ENABLED"] == "false"
+    assert call["env"]["CONDA_PKGS_DIRS"] == str(output / "conda-package-cache")
 
 
 @pytest.mark.parametrize("mutation", ("regular_file", "internal_symlink"))
@@ -386,7 +630,9 @@ def test_clone_stage_resume_rejects_live_identity_drift(tmp_path, monkeypatch, m
     output = tmp_path / "state"
     output.mkdir()
     conda = _fake_conda(tmp_path)
-    monkeypatch.setattr(materialize.freeze, "_conda_lock", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        materialize.freeze, "_conda_lock_from_records", lambda *args, **kwargs: []
+    )
     monkeypatch.setattr(materialize, "_raw_pip_freeze", lambda *args, **kwargs: [])
     identity = materialize._clone_identity(
         source=source,
@@ -472,6 +718,15 @@ def test_harness_install_is_noneditable_no_deps_no_index_and_stage_bound(
         lambda *args, **kwargs: (["agents_scaling @ " + worktree.as_uri()], binding),
     )
     monkeypatch.setattr(materialize, "verify_harness_import", lambda *args: probe)
+    monkeypatch.setattr(
+        materialize,
+        "_verify_pip_check",
+        lambda prefix: {
+            "command": "python -I -m pip check",
+            "stdout": "No broken requirements found.",
+            "clean": True,
+        },
+    )
     monkeypatch.setattr(
         materialize,
         "_archive_release_build_evidence",
@@ -669,6 +924,15 @@ def test_harness_package_retry_adopts_completed_build_evidence_without_reinstall
         materialize,
         "verify_harness_import",
         lambda *args: {"verified": True},
+    )
+    monkeypatch.setattr(
+        materialize,
+        "_verify_pip_check",
+        lambda prefix: {
+            "command": "python -I -m pip check",
+            "stdout": "No broken requirements found.",
+            "clean": True,
+        },
     )
     real_write_stage = materialize._write_stage
 

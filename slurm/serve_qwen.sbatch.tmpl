@@ -2,7 +2,7 @@
 #SBATCH --job-name={JOB_NAME}
 #SBATCH --comment=asys-schema5-pool:{SERVER_POOL_ID};profile={PROFILE_NAME};replica={REPLICA_ID}
 #SBATCH --partition={PARTITION}
-#SBATCH --gres=gpu:{GPU_TYPE}:{TP_SIZE}
+{QOS_LINE}#SBATCH --gres=gpu:{GPU_TYPE}:{TP_SIZE}
 #SBATCH --cpus-per-task={CPUS}
 #SBATCH --mem={MEM}
 #SBATCH --time={TIME}
@@ -23,6 +23,8 @@ export ASYS_RELEASE_WORKTREE="{RELEASE_WORKTREE}"
 export ASYS_MODEL_CONTRACT="{MODEL_CONTRACT_PATH}"
 export ASYS_MODEL_CONTRACT_SHA256="{MODEL_CONTRACT_SHA256}"
 export ASYS_FLEET_CONTRACT_SHA256="{FLEET_CONTRACT_SHA256}"
+export ASYS_RELEASE_FLEET_CONTRACT_SHA256="{RELEASE_FLEET_CONTRACT_SHA256}"
+export ASYS_CAPACITY_GENERATION="{CAPACITY_GENERATION}"
 export ASYS_HARNESS_ENVIRONMENT_SHA256="{HARNESS_ENVIRONMENT_HASH}"
 export ASYS_SERVING_ENVIRONMENT_SHA256="{ENVIRONMENT_HASH}"
 export ASYS_RUNTIME_ATTESTATION="{RUNTIME_ATTESTATION}"
@@ -137,6 +139,7 @@ VLLM_PID=$!
 # Registration uses the separately frozen harness interpreter.
 LD_LIBRARY_PATH="{HARNESS_PREFIX}/lib" \
 "{HARNESS_PYTHON}" -I -m agents_scaling.serving.launch_server --register \
+{STANDBY_LINE}\
   --run-root "{RUN_ROOT}" \
   --server-pool-id "{SERVER_POOL_ID}" \
   --replica-id "{REPLICA_ID}" \
@@ -152,6 +155,9 @@ LD_LIBRARY_PATH="{HARNESS_PREFIX}/lib" \
   --model-contract-sha256 "{MODEL_CONTRACT_SHA256}" \
   --fleet-contract "{FLEET_CONTRACT_PATH}" \
   --fleet-contract-sha256 "{FLEET_CONTRACT_SHA256}" \
+  --release-fleet-contract-sha256 "{RELEASE_FLEET_CONTRACT_SHA256}" \
+  --capacity-generation {CAPACITY_GENERATION} \
+  --rollout-generation {ROLLOUT_GENERATION} \
   --release-id "{RELEASE_ID}" \
   --environment-hash "{ENVIRONMENT_HASH}" \
   --served-model-name "{SERVED_MODEL_NAME}" \

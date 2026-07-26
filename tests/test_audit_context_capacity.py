@@ -15,6 +15,7 @@ from agents_scaling.agents.base_agent import (
 )
 from agents_scaling.agents.message_builder import PEER_COT_CHAR_LIMIT, build_peer_context
 from agents_scaling.benchmarks.schema import AnswerType, Question
+from agents_scaling.benchmarks.contracts import freeze_benchmark_contracts
 from agents_scaling.config import ExperimentCell, ReasoningLevel
 from agents_scaling.experiment.manifest import ManifestSnapshot, freeze_manifest
 
@@ -430,7 +431,25 @@ def test_cli_requires_frozen_manifest_and_returns_one_for_capacity_failure(
     monkeypatch.setattr(
         audit,
         "load_benchmark",
-        lambda *_args, **_kwargs: [_question("q", "stem")],
+        lambda *_args, **_kwargs: [
+            _question("q1", "stem one"),
+            _question("q2", "stem two"),
+        ],
+    )
+    freeze_benchmark_contracts(
+        run_root,
+        benchmark_loader=lambda *_args, **_kwargs: [
+            _question("q1", "stem one"),
+            _question("q2", "stem two"),
+        ],
+    )
+    monkeypatch.setattr(
+        audit,
+        "load_benchmark",
+        lambda *_args, **_kwargs: [
+            _question("q1", "stem one"),
+            _question("q2", "stem two"),
+        ],
     )
     monkeypatch.setattr(
         audit,
@@ -441,10 +460,33 @@ def test_cli_requires_frozen_manifest_and_returns_one_for_capacity_failure(
     assert audit.main(["--run-id", "run", "--results-root", str(tmp_path)]) == 1
     failed = json.loads(capsys.readouterr().out)
     assert not failed["summary"]["passed"]
-    assert failed["summary"]["failed_requests"] == 1
+    assert failed["summary"]["failed_requests"] == 2
     assert {path.relative_to(run_root) for path in run_root.rglob("*")} == before
     assert os.environ["HF_HUB_OFFLINE"] == "1"
     assert os.environ["HF_DATASETS_OFFLINE"] == "1"
+
+
+def test_production_audit_rejects_any_benchmark_loader_fallback(tmp_path):
+    cell = _cell()
+
+    class FallbackLoader:
+        diagnostics = [
+            {
+                "benchmark": "gpqa",
+                "reason": "cache-metadata-fallback",
+            }
+        ]
+
+        def __call__(self, *_args, **_kwargs):
+            return [_question("q", "stem")]
+
+    with pytest.raises(audit.AuditError, match="fallback is forbidden"):
+        audit.audit_snapshot(
+            _snapshot(tmp_path, [cell]),
+            run_id="run",
+            benchmark_loader=FallbackLoader(),
+            tokenizer_loader=lambda _profile: RecordingTokenizer(),
+        )
 
 
 def test_no_matching_long_cells_is_an_audit_error(tmp_path):

@@ -37,40 +37,109 @@ import hashlib
 import json
 import math
 import os
+import pwd
 import re
 import shlex
+import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, MutableMapping, Sequence, TextIO
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE_ROOT = REPO / "src"
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 from agents_scaling.experiment import io
+from agents_scaling.experiment.completion import (
+    is_cell_active,
+    trusted_generation_catalog_errors,
+)
+from agents_scaling.experiment.manifest import load_manifest
+from agents_scaling.experiment.transport_censor import (
+    TRANSPORT_CENSOR_PROTOCOL_HASH,
+    TRANSPORT_CENSOR_PROTOCOL_VERSION,
+)
 from agents_scaling import runtime_integrity, snapshot_integrity
+from agents_scaling.serving import (
+    fleet_transactions,
+    protected_capacity,
+    scheduler_safety,
+)
+from agents_scaling.serving.generation_catalog import (
+    CATALOG_MARKER,
+    GenerationCatalogError,
+    GenerationEvidence,
+    TrustedGenerationCatalog,
+    catalog_root as trusted_generation_catalog_root,
+    load_current_trusted_generation_catalog,
+    publish_trusted_generation_catalog,
+    validate_trusted_generation_catalog,
+)
+from agents_scaling.serving.fleet_contract import (
+    FleetContractError,
+    FrozenFleetContract,
+    load_fleet_contract,
+)
+from agents_scaling.serving.model_contracts import (
+    ModelContractError,
+    load_model_contracts,
+)
+from agents_scaling.serving.profiles import get_serving_profile
+from agents_scaling.serving.registry import (
+    collect_endpoint_history_catalog,
+    server_pool_id,
+)
+from scripts import schema5_email_ack
 
 CONTROL_SCHEMA_VERSION = 1
 CONTROL_PROTOCOL = "schema5-v1"
+PRODUCTION_RELEASE_ID = "sweep-recovery-schema5-v1.2"
+PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r2"
+PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
+# All production ramp stages are authorized by the sealed protected-capacity
+# contract before control initialization.  A later capacity generation is reserved
+# for material fleet changes, not for reaching the registered 384-cell design.
+PRODUCTION_NONPREEMPTIBLE_CELL_CAP = 384
+PRODUCTION_DESIGN_CELL_CAP = 384
+PRODUCTION_CONTROLLER_PARTITION = "mit_preemptable"
+RELEASE_BUNDLE_SCHEMA_VERSION = 4
+ENVIRONMENT_MANIFEST_SCHEMA_VERSION = 3
+MATERIALIZATION_SCHEMA_VERSION = 4
 CONTROL_FILENAME = "control.json"
 IMMUTABLE_PINS_FILENAME = "immutable_pins.json"
 TRANSITION_JOURNAL = "transitions.jsonl"
 ALERT_JOURNAL = "alerts.jsonl"
+SAFETY_HOLD_DRAIN_JOURNAL = "safety_hold_drains.jsonl"
 RECONCILIATION_FILENAME = "reconciliation.json"
 DRILL_STATE_FILENAME = "controller_drill.json"
 DRILL_JOURNAL_FILENAME = "controller_drill.jsonl"
 DRILL_COMPLETE_FILENAME = "CONTROLLER_KILL_DRILL_COMPLETE.json"
 DRILL_RECONCILIATION_FILENAME = "FINAL_RECONCILIATION.json"
+EXTERNAL_WATCHDOG_DRILL_DIRNAME = "external_watchdog_drill"
+EXTERNAL_WATCHDOG_DRILL_INTENT_FILENAME = "INTENT.json"
+EXTERNAL_WATCHDOG_DRILL_STATE_FILENAME = "STATE.json"
+EXTERNAL_WATCHDOG_DRILL_PROTOCOL = "schema5-external-watchdog-drill-intent-v1"
+EXTERNAL_WATCHDOG_DRILL_STATE_PROTOCOL = "schema5-external-watchdog-drill-state-v1"
+EXTERNAL_WATCHDOG_DRILL_EVIDENCE_PROTOCOL = (
+    "schema5-external-watchdog-drill-evidence-v1"
+)
+EXTERNAL_WATCHDOG_DRILL_MAX_RECOVERY_SECONDS = 900.0
+EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS = 1_800.0
+EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS = 3_600.0
 ROLE_NAMES = ("dispatcher", "fleet_supervisor")
 ROLE_SHORT = {"dispatcher": "dispatch", "fleet_supervisor": "fleet"}
 REQUIRED_RUNS = {
@@ -93,7 +162,13 @@ MATERIALIZATION_STAGE_FILENAMES = {
     "worktree": "WORKTREE_MATERIALIZED.json",
     "harness_clone": "HARNESS_CLONE_COMPLETE.json",
     "serving_clone": "SERVING_CLONE_COMPLETE.json",
+    "package_cache": "CONDA_PACKAGE_CACHE_COMPLETE.json",
     "harness_package": "HARNESS_PACKAGE_COMPLETE.json",
+}
+REQUIRED_OFFLINE_ENVIRONMENT = {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "HF_DATASETS_OFFLINE": "1",
 }
 RUNTIME_ATTESTATION_STATE_KEY = "runtime_integrity"
 SNAPSHOT_ATTESTATION_STATE_KEY = "snapshot_integrity"
@@ -110,6 +185,20 @@ REQUIRED_GATES = (
     "email_test",
     "scheduler_reconciliation",
 )
+# These are launch authorizations, not ordinary readiness gates.  In particular the
+# paused controller drill needs all ordinary readiness before the external watchdog
+# can publish its control-bound marker.  Keeping them separate preserves that ordering
+# while making every path into production fail closed.
+PRODUCTION_AUTHORIZATION_GATES = (
+    "throughput_qualification",
+    "external_watchdog",
+)
+PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
+PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r2-production-authorization-v1"
+PRODUCTION_AUTHORIZATION_VERIFIER = (
+    "scripts/render_schema5_recovery_chain_v12.py"
+)
+PRODUCTION_AUTHORIZATION_VERIFIER_TIMEOUT_SECONDS = 18_000.0
 HEARTBEAT_INTERVAL_SECONDS = 60.0
 STALE_HEARTBEAT_SECONDS = 600.0
 SUBMISSION_VISIBILITY_GRACE_SECONDS = 180.0
@@ -146,7 +235,9 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 DEFAULT_ADMISSION = {
     "qos_limit": 448,
     "reserve": 64,
-    "maximum_cell_tasks": 384,
+    # The sealed protected-capacity marker authorizes the complete 384-client
+    # production design and 64-job reserve before initialization.
+    "maximum_cell_tasks": PRODUCTION_DESIGN_CELL_CAP,
     "current_ceiling": 24,
     "max_batch": 24,
     "cell_cpus": 1,
@@ -156,10 +247,10 @@ DEFAULT_ADMISSION = {
     "no_requeue": True,
 }
 
-ADMISSION_RAMP_SCHEMA_VERSION = 1
-ADMISSION_RAMP_PROTOCOL = "schema5-admission-ramp-v1"
-ADMISSION_RAMP_EVIDENCE_PROTOCOL = "schema5-admission-ramp-observation-v1"
-ADMISSION_RAMP_STAGES = (24, 96, 192, 384)
+ADMISSION_RAMP_SCHEMA_VERSION = 3
+ADMISSION_RAMP_PROTOCOL = "schema5-admission-ramp-v3"
+ADMISSION_RAMP_EVIDENCE_PROTOCOL = "schema5-admission-ramp-observation-v3"
+ADMISSION_RAMP_STAGES = (24, 96, 192, PRODUCTION_DESIGN_CELL_CAP)
 # A stage's timer starts only from a semantically complete observation containing an
 # exact validated-QID total for every frozen production run.  The five-minute health
 # monitor then proves that the interval remained continuously healthy.
@@ -168,10 +259,172 @@ ADMISSION_RAMP_REQUIREMENTS = {
     96: {"next_ceiling": 192, "clean_seconds": 21_600.0},
     192: {"next_ceiling": 384, "clean_seconds": 43_200.0},
 }
+ADMISSION_RAMP_STALL_SECONDS = {
+    24: 28_800.0,
+    96: 46_800.0,
+    192: 68_400.0,
+}
 ADMISSION_RAMP_MAX_OBSERVATION_GAP_SECONDS = 660.0
 ADMISSION_RAMP_BLOCKING_ALERT_KEYS = frozenset(
     {"monitor:qos-memory", "monitor:starvation"}
 )
+CLIENT_CAPACITY_GATE_ALERT_KEYS = frozenset(
+    {"monitor:capacity-gate", "monitor:hold-drain"}
+)
+ADMISSION_SAFETY_HOLD_SCHEMA_VERSION = 1
+ADMISSION_SAFETY_HOLD_PROTOCOL = "schema5-admission-safety-hold-v1"
+SAFETY_HOLD_DRAIN_PROTOCOL = "schema5-safety-hold-cell-drain-v1"
+ADMISSION_SAFETY_HOLD_CLEAR_POLLS = 2
+SCIENTIFIC_INTEGRITY_ALERT_KEYS = frozenset(
+    {
+        "monitor:corrupt",
+        "monitor:permanent",
+        "monitor:untrusted",
+        "monitor:context-protocol",
+        "monitor:transport-censor",
+        # Two consecutive complete semantic scans without trusted-QID progress are a
+        # data-integrity incident, not a transient health blip.  Progress must resume,
+        # a subsequent semantic scan must be clean, and an operator must acknowledge
+        # the incident before admission can resume.
+        "monitor:no-progress",
+        # A higher client stage without a sealed non-preemptible placement
+        # generation is an admission-integrity incident.  It is never auto-cleared:
+        # after capacity transition/readiness, a clean semantic scan and explicit
+        # acknowledgement are required.
+        "monitor:capacity-gate",
+        # Ramp deadlines and the 48-hour throughput gate are not ordinary health
+        # blips.  They require the controlled capacity-transition workflow; two
+        # otherwise clean health polls must never reopen admission at the same
+        # demonstrably inadequate capacity.
+        "monitor:ramp-stall",
+        "monitor:throughput",
+    }
+)
+CAPACITY_REMEDIATION_ALERT_KEYS = frozenset(
+    {"monitor:ramp-stall", "monitor:throughput"}
+)
+EMAIL_RETRY_DELAYS_SECONDS = (60.0, 300.0, 900.0, 3_600.0)
+MONITOR_DEADLINE_SECONDS = {
+    "health": 240.0,
+    "semantic": 18_000.0,
+    "daily": 18_000.0,
+}
+MONITOR_TERMINATE_GRACE_SECONDS = 30.0
+CAPACITY_STATE_SCHEMA_VERSION = 1
+CAPACITY_STATE_PROTOCOL = "schema5-capacity-generation-v1"
+CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION = 1
+CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL = (
+    "schema5-v1.2-r2-client-placement-capacity-generation-v1"
+)
+CLIENT_CAPACITY_BUILD_PROTOCOL = (
+    "schema5-v1.2-r2-client-capacity-build-v1"
+)
+CLIENT_CAPACITY_SUBMISSION_PROTOCOL = (
+    "schema5-v1.2-r2-client-capacity-canary-submission-v1"
+)
+CLIENT_CAPACITY_BUILD_INTENT = "CLIENT_CAPACITY_BUILD_INTENT.json"
+CLIENT_CAPACITY_CANARY_SBATCH = "client_capacity_canary.sbatch"
+CLIENT_CAPACITY_SUBMISSION_DIRECTORY = "submission"
+CLIENT_CAPACITY_SUBMISSION_INTENT = "SUBMISSION_INTENT.json"
+CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY = "attempts"
+CLIENT_CAPACITY_SUBMISSION_ACCEPTED = (
+    "CLIENT_CAPACITY_CANARY_SUBMISSION_ACCEPTED.json"
+)
+CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS = 60.0
+CLIENT_CAPACITY_SCHEDULER_PREFLIGHT_EVIDENCE = "scheduler_preflight.json"
+CLIENT_CAPACITY_SCHEDULER_EVIDENCE = "scheduler_capacity.json"
+CLIENT_CAPACITY_CANARY_EVIDENCE = "client_canary.json"
+CLIENT_CAPACITY_READINESS_EVIDENCE = "capacity_readiness.json"
+CLIENT_CAPACITY_COMPLETE = "CLIENT_CAPACITY_COMPLETE.json"
+CAPACITY_ARCHIVE_COMPLETE = "CAPACITY_ARCHIVE_COMPLETE.json"
+CAPACITY_CONTRACT_COMPLETE = "CAPACITY_CONTRACT_COMPLETE.json"
+CAPACITY_RETIREMENT_INTENT = "FLEET_RETIREMENT_INTENT.json"
+CAPACITY_RETIREMENT_ATTEMPTS = "fleet_retirement_attempts.jsonl"
+CAPACITY_FLEET_LAUNCH_ATTEMPTS = "fleet_launch_attempts.jsonl"
+CAPACITY_FLEET_STATE_RETIREMENT = "retired-fleet-transactions"
+CAPACITY_TRANSITION_PHASES = frozenset(
+    {
+        "retirement_requested",
+        "fleet_launch_pending",
+        "readiness_pending",
+    }
+)
+FINAL_COMPLETE_FILENAME = "FINAL_COMPLETE.json"
+FINAL_SEMANTIC_FILENAME = "semantic_validation.json"
+FINAL_SEMANTIC_INTENT_FILENAME = "SEMANTIC_VALIDATION_INTENT.json"
+FINAL_SEMANTIC_PREFLIGHT_FILENAME = "SEMANTIC_PREFLIGHT_COMPLETE.json"
+FINAL_SEMANTIC_ARCHIVE_DIRNAME = "semantic_recovery_archive"
+FINAL_ANALYSIS_CACHE_DIRNAME = "analysis_cache"
+FINAL_SNAPSHOT_DIRNAME = "snapshot"
+FINAL_FLEET_RETIREMENT_DIRNAME = "fleet_retirement"
+FINAL_FLEET_RETIREMENT_INTENT_FILENAME = "FLEET_RETIREMENT_INTENT.json"
+FINAL_FLEET_RETIREMENT_ATTEMPTS_FILENAME = "retirement_attempts.jsonl"
+FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME = "FLEET_RETIREMENT_COMPLETE.json"
+TRUSTED_GENERATION_EVIDENCE_DIRNAME = "trusted-generation-evidence-schema5-v1"
+FINALIZER_COMMAND_DEADLINE_SECONDS = 18_000.0
+FINALIZER_SNAPSHOT_DEADLINE_SECONDS = 43_200.0
+FINALIZATION_SCHEMA_VERSION = 2
+FINALIZATION_PROTOCOL = "schema5-autonomous-finalization-v2"
+FINALIZATION_STATES = frozenset(
+    {
+        "idle",
+        "requested",
+        "draining",
+        "validating",
+        "retiring_fleet",
+        "snapshotting",
+        "complete",
+        "blocked",
+    }
+)
+ACTIVE_FINALIZATION_STATES = frozenset(
+    {
+        "requested",
+        "draining",
+        "validating",
+        "retiring_fleet",
+        "snapshotting",
+    }
+)
+FINALIZER_JOB_TOKEN_PREFIX = "asys-schema5-finalizer-v1"
+FINALIZER_STATE_DIRNAME = "finalizer"
+FINALIZER_SUCCESSOR_RETIREMENT_DIRNAME = "successor-retirements"
+FINALIZER_SUCCESSOR_RETIREMENT_INTENT_FILENAME = (
+    "SUCCESSOR_RETIREMENT_INTENT.json"
+)
+FINALIZER_SUCCESSOR_RETIREMENT_COMPLETE_FILENAME = (
+    "SUCCESSOR_RETIREMENT_COMPLETE.json"
+)
+FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION = 1
+FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL = (
+    "schema5-finalizer-successor-retirement-v1"
+)
+FINALIZER_JOB_TIME_LIMIT = "12:00:00"
+FINALIZER_JOB_MEMORY = "8G"
+FINALIZER_MAX_TRANSIENT_ATTEMPTS = 128
+FINAL_SNAPSHOT_CONTROL_FILENAMES = frozenset(
+    {
+        "SNAPSHOT_COMPLETE.json",
+        "SNAPSHOT_CATALOG.json",
+        "SOURCE_INVENTORY.sha256",
+        "SNAPSHOT_INVENTORY.sha256",
+        "DIRECTORY_INVENTORY.txt",
+    }
+)
+FINAL_SNAPSHOT_REQUIRED_SOURCES = frozenset(
+    {
+        *REQUIRED_RUNS,
+        "control",
+        "semantic_validation",
+        "semantic_intent",
+        "semantic_preflight",
+        "primary_analysis_cache",
+        "fleet_retirement",
+        "server_pool",
+        "trusted_generation_catalog",
+    }
+)
+FINAL_SNAPSHOT_OPTIONAL_SOURCES = frozenset({"semantic_recovery_archive"})
 
 # Readiness is intentionally a closed, versioned contract.  These are scientific and
 # operational facts that must be independently checksummed; a generic
@@ -197,6 +450,34 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
     ),
     "email_test": ("email_delivery_receipt",),
 }
+SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
+SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
+SMOKE_ATTEMPT_BINDING_PROTOCOL = (
+    "schema5-v1.2-r2-smoke-attempt-binding-v1"
+)
+SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
+    {
+        "protocol",
+        "attempt_id",
+        "attempt_ordinal",
+        "immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "fleet_contract_sha256",
+        "release_fleet_contract_sha256",
+        "trusted_catalog_id",
+    }
+)
+SMOKE_TRUSTED_CATALOG_FIELDS = frozenset(
+    {
+        "catalog_id",
+        "marker_path",
+        "marker_sha256",
+        "inventory_sha256",
+        "catalog_payload_sha256",
+        "allowed_generation_tuple_count",
+    }
+)
 EXPECTED_FLEET_PROFILES = {
     "0.6B": 2,
     "1.7B": 2,
@@ -519,6 +800,24 @@ def admission_boundary_lock(state_dir: Path) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def capacity_transition_lock(state_dir: Path) -> Iterator[None]:
+    """Serialize the multi-stage capacity-generation transaction."""
+
+    with _file_lock(
+        state_dir / "locks" / "capacity-transition.lock", nonblocking=True
+    ):
+        yield
+
+
+@contextmanager
+def finalizer_lock(state_dir: Path) -> Iterator[None]:
+    """Prevent concurrent final snapshots or completion publications."""
+
+    with _file_lock(state_dir / "locks" / "finalizer.lock", nonblocking=True):
+        yield
+
+
 def _append_jsonl(path: Path, record: Mapping[str, Any]) -> None:
     io.append_jsonl(path, dict(record))
 
@@ -617,7 +916,7 @@ def _validate_admission(admission: Mapping[str, Any]) -> None:
     fixed = {
         "qos_limit": 448,
         "reserve": 64,
-        "maximum_cell_tasks": 384,
+        "maximum_cell_tasks": PRODUCTION_DESIGN_CELL_CAP,
         "max_batch": 24,
         "cell_cpus": 1,
         "cell_memory": "4G",
@@ -632,10 +931,427 @@ def _validate_admission(admission: Mapping[str, Any]) -> None:
                 f"expected {expected!r}, found {admission.get(key)!r}"
             )
     ceiling = admission.get("current_ceiling")
-    if not isinstance(ceiling, int) or ceiling not in {24, 96, 192, 384}:
+    if not isinstance(ceiling, int) or ceiling not in ADMISSION_RAMP_STAGES:
         raise ImmutablePinError(
-            "current admission ceiling must be one of staged values 24, 96, 192, 384"
+            "current admission ceiling must be one of the closed staged values "
+            f"{ADMISSION_RAMP_STAGES}; stages above "
+            f"{PRODUCTION_NONPREEMPTIBLE_CELL_CAP} additionally require a sealed "
+            "client-capacity generation"
         )
+
+
+def _new_admission_safety_hold(*, configured_ceiling: int) -> dict[str, Any]:
+    return {
+        "schema_version": ADMISSION_SAFETY_HOLD_SCHEMA_VERSION,
+        "protocol": ADMISSION_SAFETY_HOLD_PROTOCOL,
+        "active": False,
+        "mode": None,
+        "reasons": [],
+        "configured_ceiling": int(configured_ceiling),
+        "consecutive_clean_polls": 0,
+        "semantic_clean_after_activation": False,
+        "activated_at": None,
+        "activated_timestamp": None,
+        "updated_at": None,
+        "updated_timestamp": None,
+        "acknowledged_at": None,
+        "acknowledged_timestamp": None,
+        "history": [],
+    }
+
+
+def _validate_admission_safety_hold(
+    control: Mapping[str, Any], hold: Any
+) -> None:
+    if not isinstance(hold, dict):
+        raise ControlError("schema-5 admission safety hold is missing")
+    required = {
+        "schema_version",
+        "protocol",
+        "active",
+        "mode",
+        "reasons",
+        "configured_ceiling",
+        "consecutive_clean_polls",
+        "semantic_clean_after_activation",
+        "activated_at",
+        "activated_timestamp",
+        "updated_at",
+        "updated_timestamp",
+        "acknowledged_at",
+        "acknowledged_timestamp",
+        "history",
+    }
+    if set(hold) != required:
+        raise ControlError("schema-5 admission safety hold fields are invalid")
+    if (
+        hold.get("schema_version") != ADMISSION_SAFETY_HOLD_SCHEMA_VERSION
+        or hold.get("protocol") != ADMISSION_SAFETY_HOLD_PROTOCOL
+        or not isinstance(hold.get("active"), bool)
+        or hold.get("configured_ceiling") not in ADMISSION_RAMP_STAGES
+        or hold.get("configured_ceiling")
+        != control.get("admission", {}).get("current_ceiling")
+        or not isinstance(hold.get("reasons"), list)
+        or not all(
+            isinstance(item, str) and item for item in hold.get("reasons", [])
+        )
+        or len(set(hold.get("reasons", []))) != len(hold.get("reasons", []))
+        or not isinstance(hold.get("consecutive_clean_polls"), int)
+        or isinstance(hold.get("consecutive_clean_polls"), bool)
+        or hold.get("consecutive_clean_polls", -1) < 0
+        or not isinstance(hold.get("semantic_clean_after_activation"), bool)
+        or not isinstance(hold.get("history"), list)
+    ):
+        raise ControlError("schema-5 admission safety hold is malformed")
+    for field in (
+        "activated_timestamp",
+        "updated_timestamp",
+        "acknowledged_timestamp",
+    ):
+        value = hold.get(field)
+        if value is not None and (
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+        ):
+            raise ControlError(f"admission safety hold {field} is invalid")
+    if hold["active"]:
+        if (
+            hold.get("mode") not in {"transient", "integrity", "operator"}
+            or not hold["reasons"]
+            or hold.get("activated_timestamp") is None
+        ):
+            raise ControlError("active admission safety hold lacks its durable cause")
+    elif hold.get("mode") is not None or hold["reasons"]:
+        raise ControlError("inactive admission safety hold retains active causes")
+    for record in hold["history"]:
+        if (
+            not isinstance(record, dict)
+            or record.get("event") not in {"activated", "updated", "cleared"}
+            or not isinstance(record.get("timestamp"), (int, float))
+            or not isinstance(record.get("reasons"), list)
+        ):
+            raise ControlError("admission safety hold history is invalid")
+
+
+def _validate_safety_hold_drain_intent(value: Any) -> None:
+    """Validate the latest crash-recoverable critical-hold cell-drain intent."""
+
+    if value is None:
+        return
+    required = {
+        "protocol",
+        "drain_id",
+        "rollout_generation",
+        "hold_activated_timestamp",
+        "hold_reasons",
+        "state",
+        "created_at",
+        "created_timestamp",
+        "updated_at",
+        "updated_timestamp",
+        "attempt_count",
+        "snapshot_captured_timestamp",
+        "snapshot_sha256",
+        "targets",
+        "results",
+        "last_error",
+        "completed_at",
+        "completed_timestamp",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ControlError("schema-5 safety-hold drain intent fields are invalid")
+    if (
+        value.get("protocol") != SAFETY_HOLD_DRAIN_PROTOCOL
+        or not isinstance(value.get("drain_id"), str)
+        or not value["drain_id"]
+        or not isinstance(value.get("rollout_generation"), int)
+        or isinstance(value.get("rollout_generation"), bool)
+        or value["rollout_generation"] < 0
+        or not isinstance(value.get("hold_activated_timestamp"), (int, float))
+        or isinstance(value.get("hold_activated_timestamp"), bool)
+        or not isinstance(value.get("hold_reasons"), list)
+        or not value["hold_reasons"]
+        or not all(isinstance(item, str) and item for item in value["hold_reasons"])
+        or len(set(value["hold_reasons"])) != len(value["hold_reasons"])
+        or value.get("state")
+        not in {"reconciling", "signaling", "failed", "complete"}
+        or not isinstance(value.get("attempt_count"), int)
+        or isinstance(value.get("attempt_count"), bool)
+        or value["attempt_count"] < 1
+        or not isinstance(value.get("targets"), dict)
+        or not isinstance(value.get("results"), dict)
+    ):
+        raise ControlError("schema-5 safety-hold drain intent is malformed")
+    for field in (
+        "created_timestamp",
+        "updated_timestamp",
+        "snapshot_captured_timestamp",
+        "completed_timestamp",
+    ):
+        item = value.get(field)
+        if item is not None and (
+            not isinstance(item, (int, float)) or isinstance(item, bool)
+        ):
+            raise ControlError(f"safety-hold drain {field} is invalid")
+    snapshot_sha = value.get("snapshot_sha256")
+    if snapshot_sha is not None and _SHA256_RE.fullmatch(str(snapshot_sha)) is None:
+        raise ControlError("safety-hold drain snapshot digest is invalid")
+    for action_key, target in value["targets"].items():
+        if (
+            not isinstance(action_key, str)
+            or not isinstance(target, dict)
+            or set(target) != {"category", "job_id", "command"}
+            or target.get("category")
+            not in {"cell_usr1", "pending_cell_cancel"}
+            or _EXACT_CELL_TASK_ID.fullmatch(str(target.get("job_id", ""))) is None
+            or action_key
+            != f"{target['category']}:{target['job_id']}"
+            or not isinstance(target.get("command"), list)
+            or not all(isinstance(part, str) and part for part in target["command"])
+        ):
+            raise ControlError("safety-hold drain target is invalid")
+    if not set(value["results"]).issubset(value["targets"]):
+        raise ControlError("safety-hold drain result has no durable target")
+    for action_key, result in value["results"].items():
+        target = value["targets"][action_key]
+        if (
+            not isinstance(result, dict)
+            or set(result)
+            != {
+                "category",
+                "job_id",
+                "command",
+                "returncode",
+                "accepted",
+                "evidence",
+                "stderr",
+                "completed_at",
+                "completed_timestamp",
+            }
+            or result.get("category") != target["category"]
+            or result.get("job_id") != target["job_id"]
+            or result.get("command") != target["command"]
+            or not isinstance(result.get("accepted"), bool)
+            or result.get("evidence")
+            not in {
+                "scheduler_command_returncode_zero",
+                "scheduler_target_no_longer_live",
+                "scheduler_target_state_transitioned",
+                "scheduler_command_failed",
+            }
+            or not isinstance(result.get("stderr"), str)
+            or not isinstance(result.get("completed_timestamp"), (int, float))
+            or isinstance(result.get("completed_timestamp"), bool)
+        ):
+            raise ControlError("safety-hold drain result is invalid")
+        returncode = result.get("returncode")
+        if returncode is not None and (
+            not isinstance(returncode, int) or isinstance(returncode, bool)
+        ):
+            raise ControlError("safety-hold drain return code is invalid")
+        if result["accepted"] is not (
+            result["evidence"]
+            in {
+                "scheduler_command_returncode_zero",
+                "scheduler_target_no_longer_live",
+                "scheduler_target_state_transitioned",
+            }
+        ):
+            raise ControlError("safety-hold drain acceptance evidence is inconsistent")
+    if value["state"] == "complete":
+        if (
+            set(value["results"]) != set(value["targets"])
+            or not all(row["accepted"] for row in value["results"].values())
+            or value.get("completed_timestamp") is None
+            or value.get("last_error") is not None
+        ):
+            raise ControlError("completed safety-hold drain lacks accepted evidence")
+    elif value.get("completed_timestamp") is not None:
+        raise ControlError("unfinished safety-hold drain claims completion")
+
+
+def _new_capacity_state() -> dict[str, Any]:
+    return {
+        "schema_version": CAPACITY_STATE_SCHEMA_VERSION,
+        "protocol": CAPACITY_STATE_PROTOCOL,
+        "current_generation": 1,
+        # ``None`` means the release-bundle fleet pin is effective.  A controlled
+        # capacity transition publishes a sealed operational overlay here; the
+        # scientific/release/model/run pins in ``immutable`` never change.
+        "current_contract": None,
+        "active_transition": None,
+        "history": [],
+    }
+
+
+def _validate_capacity_contract_record(
+    record: Any, *, expected_generation: int
+) -> None:
+    required = {
+        "capacity_generation",
+        "path",
+        "sha256",
+        "marker_path",
+        "marker_sha256",
+        "fleet_id",
+        "logical_replicas",
+        "allocated_gpus",
+        "profile_replicas",
+        "activated_at",
+        "activated_timestamp",
+    }
+    if (
+        not isinstance(record, dict)
+        or set(record) != required
+        or record.get("capacity_generation") != expected_generation
+        or not isinstance(record.get("path"), str)
+        or not Path(record["path"]).is_absolute()
+        or _SHA256_RE.fullmatch(str(record.get("sha256", ""))) is None
+        or not isinstance(record.get("marker_path"), str)
+        or not Path(record["marker_path"]).is_absolute()
+        or _SHA256_RE.fullmatch(str(record.get("marker_sha256", ""))) is None
+        or record.get("fleet_id") != "schema5-v1"
+        or not isinstance(record.get("logical_replicas"), int)
+        or isinstance(record.get("logical_replicas"), bool)
+        or record["logical_replicas"] < 22
+        or not isinstance(record.get("allocated_gpus"), int)
+        or isinstance(record.get("allocated_gpus"), bool)
+        or record["allocated_gpus"] < 24
+        or not isinstance(record.get("profile_replicas"), dict)
+        or set(record["profile_replicas"]) != set(EXPECTED_FLEET_PROFILES)
+        or any(
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < EXPECTED_FLEET_PROFILES[profile]
+            for profile, count in record["profile_replicas"].items()
+        )
+        or not isinstance(record.get("activated_timestamp"), (int, float))
+        or isinstance(record.get("activated_timestamp"), bool)
+    ):
+        raise ControlError("schema-5 capacity contract record is invalid")
+
+
+def _validate_capacity_state(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) not in (
+        {
+            "schema_version",
+            "protocol",
+            "current_generation",
+            "active_transition",
+            "history",
+        },
+        {
+            "schema_version",
+            "protocol",
+            "current_generation",
+            "current_contract",
+            "active_transition",
+            "history",
+        },
+    ):
+        raise ControlError("schema-5 capacity state is missing or malformed")
+    generation = value.get("current_generation")
+    if (
+        value.get("schema_version") != CAPACITY_STATE_SCHEMA_VERSION
+        or value.get("protocol") != CAPACITY_STATE_PROTOCOL
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+        or not isinstance(value.get("history"), list)
+    ):
+        raise ControlError("schema-5 capacity generation is invalid")
+    current_contract = value.get("current_contract")
+    if current_contract is not None:
+        _validate_capacity_contract_record(
+            current_contract, expected_generation=generation
+        )
+    active = value.get("active_transition")
+    if active is not None:
+        required = {
+            "transition_id",
+            "phase",
+            "from_generation",
+            "to_generation",
+            "created_at",
+            "created_timestamp",
+            "old_fleet_job_ids",
+            "archive_path",
+            "archive_sha256",
+            "retirement_attempts",
+            "last_retirement_error",
+            "invalidated_readiness",
+            "new_contract",
+            "retirement_intent_path",
+            "retirement_intent_sha256",
+            "fleet_launch_attempts",
+            "last_fleet_launch_error",
+            "consumed_capacity_incidents",
+        }
+        if (
+            not isinstance(active, dict)
+            or not required.issubset(active)
+            or active.get("phase") not in CAPACITY_TRANSITION_PHASES
+            or (
+                active.get("phase") == "retirement_requested"
+                and (
+                    active.get("from_generation") != generation
+                    or active.get("to_generation") != generation + 1
+                )
+            )
+            or (
+                active.get("phase") in {"fleet_launch_pending", "readiness_pending"}
+                and (
+                    active.get("to_generation") != generation
+                    or active.get("from_generation") != generation - 1
+                )
+            )
+            or not isinstance(active.get("transition_id"), str)
+            or not active["transition_id"]
+            or not isinstance(active.get("old_fleet_job_ids"), list)
+            or not all(str(job_id).isdigit() for job_id in active["old_fleet_job_ids"])
+            or len(set(active["old_fleet_job_ids"]))
+            != len(active["old_fleet_job_ids"])
+            or _SHA256_RE.fullmatch(str(active.get("archive_sha256", ""))) is None
+            or not isinstance(active.get("retirement_attempts"), int)
+            or active["retirement_attempts"] < 0
+            or not isinstance(active.get("fleet_launch_attempts"), int)
+            or active["fleet_launch_attempts"] < 0
+            or not isinstance(active.get("retirement_intent_path"), str)
+            or not Path(active["retirement_intent_path"]).is_absolute()
+            or _SHA256_RE.fullmatch(
+                str(active.get("retirement_intent_sha256", ""))
+            )
+            is None
+            or not isinstance(active.get("consumed_capacity_incidents"), list)
+            or not all(
+                isinstance(key, str) and key in CAPACITY_REMEDIATION_ALERT_KEYS
+                for key in active["consumed_capacity_incidents"]
+            )
+            or len(active["consumed_capacity_incidents"])
+            != len(set(active["consumed_capacity_incidents"]))
+            or active["consumed_capacity_incidents"]
+            != sorted(active["consumed_capacity_incidents"])
+        ):
+            raise ControlError("active schema-5 capacity transition is invalid")
+        _validate_capacity_contract_record(
+            active.get("new_contract"),
+            expected_generation=int(active["to_generation"]),
+        )
+        if (
+            active.get("phase") in {"fleet_launch_pending", "readiness_pending"}
+            and current_contract != active["new_contract"]
+        ):
+            raise ControlError(
+                "published capacity transition differs from current contract"
+            )
+    for record in value["history"]:
+        if (
+            not isinstance(record, dict)
+            or record.get("phase") != "completed"
+            or not isinstance(record.get("from_generation"), int)
+            or record.get("to_generation") != record["from_generation"] + 1
+            or not isinstance(record.get("completed_timestamp"), (int, float))
+        ):
+            raise ControlError("schema-5 capacity history is invalid")
 
 
 def _new_admission_ramp_state(
@@ -656,7 +1372,121 @@ def _new_admission_ramp_state(
         },
         "promotions": [],
         "resets": [],
+        # Authorizations are immutable evidence references retained as history.
+        # ``capacity_gate`` is the one durable request that tells the operator (and
+        # monitor) that a controlled placement/capacity transition is required.
+        "client_capacity_authorizations": [],
+        "capacity_gate": None,
     }
+
+
+def _validate_client_capacity_authorization_record(value: Any) -> None:
+    required = {
+        "capacity_generation",
+        "authorized_cell_ceiling",
+        "path",
+        "sha256",
+        "control_immutable_sha256",
+        "capacity_contract_sha256",
+        "partition",
+        "preempt_mode",
+        "nonpreemptible_client_slots",
+        "cpu_limit",
+        "memory_limit_mib",
+        "max_submit_jobs",
+        "scheduler_evidence_sha256",
+        "canary_evidence_sha256",
+        "accepted_submission_evidence_sha256",
+        "readiness_evidence_sha256",
+        "captured_timestamp",
+        "attested_at",
+        "attested_timestamp",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or not isinstance(value.get("capacity_generation"), int)
+        or isinstance(value.get("capacity_generation"), bool)
+        or value["capacity_generation"] < 2
+        or value.get("authorized_cell_ceiling") not in {192, 384}
+        or not isinstance(value.get("path"), str)
+        or not Path(value["path"]).is_absolute()
+        or any(
+            _SHA256_RE.fullmatch(str(value.get(field, ""))) is None
+            for field in (
+                "sha256",
+                "control_immutable_sha256",
+                "capacity_contract_sha256",
+                "scheduler_evidence_sha256",
+                "canary_evidence_sha256",
+                "accepted_submission_evidence_sha256",
+                "readiness_evidence_sha256",
+            )
+        )
+        or not isinstance(value.get("partition"), str)
+        or not value["partition"]
+        or value.get("preempt_mode") != "OFF"
+        or any(
+            not isinstance(value.get(field), int)
+            or isinstance(value.get(field), bool)
+            or value[field] < 1
+            for field in (
+                "nonpreemptible_client_slots",
+                "cpu_limit",
+                "memory_limit_mib",
+                "max_submit_jobs",
+            )
+        )
+        or value["nonpreemptible_client_slots"] < value["authorized_cell_ceiling"]
+        or value["cpu_limit"] < value["authorized_cell_ceiling"]
+        or value["memory_limit_mib"] < value["authorized_cell_ceiling"] * 4096
+        or value["max_submit_jobs"]
+        < value["authorized_cell_ceiling"] + int(DEFAULT_ADMISSION["reserve"])
+        or not isinstance(value.get("captured_timestamp"), (int, float))
+        or isinstance(value.get("captured_timestamp"), bool)
+        or not isinstance(value.get("attested_timestamp"), (int, float))
+        or isinstance(value.get("attested_timestamp"), bool)
+        or float(value["attested_timestamp"]) < float(value["captured_timestamp"])
+        or not isinstance(value.get("attested_at"), str)
+        or not value["attested_at"]
+    ):
+        raise ControlError("schema-5 client-capacity authorization record is invalid")
+
+
+def _validate_client_capacity_gate(value: Any) -> None:
+    if value is None:
+        return
+    required = {
+        "state",
+        "from_ceiling",
+        "target_ceiling",
+        "capacity_generation",
+        "control_immutable_sha256",
+        "requested_at",
+        "requested_timestamp",
+        "reason",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("state") != "capacity_transition_required"
+        or value.get("from_ceiling") not in {96, 192}
+        or value.get("target_ceiling")
+        != ADMISSION_RAMP_REQUIREMENTS[value["from_ceiling"]]["next_ceiling"]
+        or not isinstance(value.get("capacity_generation"), int)
+        or isinstance(value.get("capacity_generation"), bool)
+        or value["capacity_generation"] < 1
+        or _SHA256_RE.fullmatch(
+            str(value.get("control_immutable_sha256", ""))
+        )
+        is None
+        or not isinstance(value.get("requested_at"), str)
+        or not value["requested_at"]
+        or not isinstance(value.get("requested_timestamp"), (int, float))
+        or isinstance(value.get("requested_timestamp"), bool)
+        or value.get("reason") != "sealed_client_capacity_authorization_missing"
+    ):
+        raise ControlError("schema-5 client-capacity gate request is invalid")
 
 
 def _valid_run_qid_map(value: Any) -> bool:
@@ -688,12 +1518,22 @@ def _validate_ramp_observation_record(value: Any) -> None:
         or not isinstance(value.get("clean"), bool)
     ):
         raise ControlError("admission ramp observation record fields are invalid")
-    qids = value.get("run_validated_qids")
+    validated_qids = value.get("run_validated_qids")
+    useful_qids = value.get("run_useful_qids")
     if value["cadence"] == "health":
-        if qids is not None:
+        if validated_qids is not None or useful_qids is not None:
             raise ControlError("health ramp observation contains semantic progress")
-    elif not _valid_run_qid_map(qids):
-        raise ControlError("semantic ramp observation lacks exact run progress")
+    elif (
+        not _valid_run_qid_map(validated_qids)
+        or not _valid_run_qid_map(useful_qids)
+        or any(
+            useful_qids[run_id] > validated_qids[run_id]
+            for run_id in REQUIRED_RUNS
+        )
+    ):
+        raise ControlError(
+            "semantic ramp observation lacks exact trusted/useful run progress"
+        )
 
 
 def _validate_admission_ramp(
@@ -722,6 +1562,38 @@ def _validate_admission_ramp(
         ramp.get("resets"), list
     ):
         raise ControlError("admission ramp promotion/reset history is invalid")
+    authorizations = ramp.get("client_capacity_authorizations")
+    if (
+        not isinstance(authorizations, list)
+        or len(
+            {
+                (item.get("capacity_generation"), item.get("sha256"))
+                for item in authorizations
+                if isinstance(item, dict)
+            }
+        )
+        != len(authorizations)
+    ):
+        raise ControlError("admission ramp client-capacity history is invalid")
+    for authorization in authorizations:
+        _validate_client_capacity_authorization_record(authorization)
+        if authorization["control_immutable_sha256"] != control.get(
+            "immutable_sha256"
+        ):
+            raise ControlError(
+                "client-capacity authorization binds another immutable control"
+            )
+    _validate_client_capacity_gate(ramp.get("capacity_gate"))
+    capacity_gate = ramp.get("capacity_gate")
+    if isinstance(capacity_gate, dict):
+        if (
+            ceiling > capacity_gate["from_ceiling"]
+            or capacity_gate["capacity_generation"]
+            > control.get("capacity", {}).get("current_generation", 0)
+            or capacity_gate["control_immutable_sha256"]
+            != control.get("immutable_sha256")
+        ):
+            raise ControlError("client-capacity gate is stale or misbound")
     last_observation = ramp.get("last_observation")
     if last_observation is not None:
         _validate_ramp_observation_record(last_observation)
@@ -749,10 +1621,42 @@ def _validate_admission_ramp(
                 promotion.get("baseline_run_validated_qids")
             )
             or not _valid_run_qid_map(promotion.get("final_run_validated_qids"))
+            or not _valid_run_qid_map(
+                promotion.get("baseline_run_useful_qids")
+            )
+            or not _valid_run_qid_map(promotion.get("final_run_useful_qids"))
             or float(promotion.get("clean_seconds", -1.0))
             < float(requirement["clean_seconds"])
         ):
             raise ControlError("admission ramp promotion proof is invalid")
+        capacity_authorization_sha256 = promotion.get(
+            "client_capacity_authorization_sha256"
+        )
+        if promotion["to_ceiling"] > PRODUCTION_NONPREEMPTIBLE_CELL_CAP:
+            matching_authorizations = [
+                authorization
+                for authorization in authorizations
+                if authorization["sha256"] == capacity_authorization_sha256
+                and authorization["capacity_generation"]
+                == promotion.get("capacity_generation")
+                and authorization["authorized_cell_ceiling"]
+                >= promotion["to_ceiling"]
+            ]
+            if len(matching_authorizations) != 1:
+                raise ControlError(
+                    "higher-stage promotion lacks one matching client-capacity "
+                    "generation authorization"
+                )
+            elif (
+                capacity_authorization_sha256
+                != control["immutable"][
+                    "protected_capacity_marker_sha256"
+                ]
+            ):
+                raise ControlError(
+                    "protected-capacity promotion does not bind the immutable "
+                    "full-design marker"
+                )
         for observation in observations:
             _validate_ramp_observation_record(observation)
             if observation["clean"] is not True:
@@ -761,10 +1665,24 @@ def _validate_admission_ramp(
         final_qids = promotion["final_run_validated_qids"]
         if any(final_qids[run_id] < baseline_qids[run_id] for run_id in REQUIRED_RUNS):
             raise ControlError("admission ramp promotion contains regressed run progress")
-        if source == 24 and not all(
-            final_qids[run_id] > baseline_qids[run_id] for run_id in REQUIRED_RUNS
+        baseline_useful = promotion["baseline_run_useful_qids"]
+        final_useful = promotion["final_run_useful_qids"]
+        if any(
+            final_useful[run_id] < baseline_useful[run_id]
+            or baseline_useful[run_id] > baseline_qids[run_id]
+            or final_useful[run_id] > final_qids[run_id]
+            for run_id in REQUIRED_RUNS
         ):
-            raise ControlError("initial admission promotion lacks all-run QID progress")
+            raise ControlError(
+                "admission ramp promotion contains invalid useful-QID progress"
+            )
+        if source == 24 and not all(
+            final_useful[run_id] > baseline_useful[run_id]
+            for run_id in REQUIRED_RUNS
+        ):
+            raise ControlError(
+                "initial admission promotion lacks all-run useful-QID progress"
+            )
         matched = False
         while transition_index < len(promotion_transitions):
             details = promotion_transitions[transition_index].get("details", {})
@@ -780,6 +1698,10 @@ def _validate_admission_ramp(
                 == promotion.get("throughput_epoch")
                 and details.get("evidence_sha256")
                 == promotion.get("evidence_sha256")
+                and details.get("capacity_generation")
+                == promotion.get("capacity_generation")
+                and details.get("client_capacity_authorization_sha256")
+                == promotion.get("client_capacity_authorization_sha256")
             )
             if matched:
                 break
@@ -814,6 +1736,18 @@ def _validate_admission_ramp(
         _valid_run_qid_map(window.get("latest_run_validated_qids"))
     ):
         raise ControlError("admission ramp run progress evidence is invalid")
+    if not _valid_run_qid_map(window.get("baseline_run_useful_qids")) or not (
+        _valid_run_qid_map(window.get("latest_run_useful_qids"))
+    ):
+        raise ControlError("admission ramp useful run progress evidence is invalid")
+    if any(
+        window["baseline_run_useful_qids"][run_id]
+        > window["baseline_run_validated_qids"][run_id]
+        or window["latest_run_useful_qids"][run_id]
+        > window["latest_run_validated_qids"][run_id]
+        for run_id in REQUIRED_RUNS
+    ):
+        raise ControlError("admission ramp useful progress exceeds trusted cardinality")
     if not isinstance(window.get("observations"), list) or not window["observations"]:
         raise ControlError("admission ramp window has no clean observations")
     previous_timestamp: float | None = None
@@ -886,6 +1820,8 @@ def _validate_monitoring_state(monitoring: Any) -> None:
                 "controller_intent_token",
                 "controller_job_id",
                 "log_path",
+                "timeout_seconds",
+                "deadline_timestamp",
             }
             if not required.issubset(active):
                 raise ControlError(
@@ -897,6 +1833,330 @@ def _validate_monitoring_state(monitoring: Any) -> None:
                 raise ControlError(
                     f"monitor cadence {cadence!r} attempt timestamp is invalid"
                 )
+            if (
+                active.get("timeout_seconds") != MONITOR_DEADLINE_SECONDS[cadence]
+                or not isinstance(active.get("deadline_timestamp"), (int, float))
+                or active["deadline_timestamp"]
+                != active["started_timestamp"] + active["timeout_seconds"]
+            ):
+                raise ControlError(
+                    f"monitor cadence {cadence!r} execution deadline is invalid"
+                )
+
+
+def _new_finalization_state(
+    pins: Mapping[str, Any], *, now: float
+) -> dict[str, Any]:
+    results_root = Path(str(pins["results_root"])).expanduser().resolve()
+    return {
+        "schema_version": FINALIZATION_SCHEMA_VERSION,
+        "protocol": FINALIZATION_PROTOCOL,
+        "state": "idle",
+        "intent_id": None,
+        "requested_at": None,
+        "requested_timestamp": None,
+        "semantic_evidence": None,
+        "output_root": str(
+            results_root / "recovery" / "schema5-v1.2-r2" / "final"
+        ),
+        "attempts": 0,
+        "next_attempt": 1,
+        "active_job": None,
+        "successor_job": None,
+        "successor_retirement": None,
+        "last_error": None,
+        "completion_marker": None,
+        "history": [],
+    }
+
+
+def _validate_finalizer_job_record(value: Any, *, context: str) -> None:
+    if value is None:
+        return
+    expected = {
+        "attempt",
+        "intent_token",
+        "job_token",
+        "sbatch_path",
+        "sbatch_sha256",
+        "dependency_job_id",
+        "job_id",
+        "state",
+        "created_at",
+        "created_timestamp",
+        "submitted_at",
+        "submitted_timestamp",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ControlError(f"{context} finalizer job record fields are invalid")
+    attempt = value.get("attempt")
+    created = value.get("created_timestamp")
+    submitted = value.get("submitted_timestamp")
+    dependency = value.get("dependency_job_id")
+    job_id = value.get("job_id")
+    sbatch = Path(str(value.get("sbatch_path", ""))).expanduser()
+    if (
+        not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or attempt < 1
+        or re.fullmatch(r"[0-9a-f]{32}", str(value.get("intent_token", "")))
+        is None
+        or not str(value.get("job_token", "")).startswith(
+            FINALIZER_JOB_TOKEN_PREFIX + ";"
+        )
+        or not sbatch.is_absolute()
+        or _SHA256_RE.fullmatch(str(value.get("sbatch_sha256", ""))) is None
+        or value.get("state")
+        not in {"submitting", "submitted", "started", "terminal", "cancelled"}
+        or not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or value.get("created_at") != utc_timestamp(float(created))
+        or (
+            submitted is not None
+            and (
+                not isinstance(submitted, (int, float))
+                or isinstance(submitted, bool)
+                or value.get("submitted_at") != utc_timestamp(float(submitted))
+            )
+        )
+        or (submitted is None and value.get("submitted_at") is not None)
+        or (
+            dependency is not None
+            and (not isinstance(dependency, str) or not dependency.isdigit())
+        )
+        or (
+            job_id is not None
+            and (not isinstance(job_id, str) or not job_id.isdigit())
+        )
+        or (
+            value.get("state") in {"submitted", "started", "terminal", "cancelled"}
+            and job_id is None
+        )
+    ):
+        raise ControlError(f"{context} finalizer job record is invalid")
+
+
+def _validate_successor_retirement_binding(value: Any) -> None:
+    if value is None:
+        return
+    expected = {
+        "schema_version",
+        "protocol",
+        "transaction_id",
+        "publisher_identity_id",
+        "successor_identity_id",
+        "intent_path",
+        "intent_sha256",
+        "receipt_path",
+        "receipt_sha256",
+        "receipt_id",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ControlError("finalizer successor-retirement binding fields are invalid")
+    intent_path = Path(str(value.get("intent_path", ""))).expanduser()
+    receipt_path_value = value.get("receipt_path")
+    receipt_sha256 = value.get("receipt_sha256")
+    receipt_id = value.get("receipt_id")
+    if (
+        value.get("schema_version")
+        != FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION
+        or value.get("protocol") != FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL
+        or _SHA256_RE.fullmatch(str(value.get("transaction_id", ""))) is None
+        or _SHA256_RE.fullmatch(str(value.get("publisher_identity_id", "")))
+        is None
+        or _SHA256_RE.fullmatch(str(value.get("successor_identity_id", "")))
+        is None
+        or not intent_path.is_absolute()
+        or _SHA256_RE.fullmatch(str(value.get("intent_sha256", ""))) is None
+    ):
+        raise ControlError("finalizer successor-retirement binding is invalid")
+    if receipt_path_value is None:
+        if receipt_sha256 is not None or receipt_id is not None:
+            raise ControlError(
+                "incomplete successor-retirement binding claims a receipt"
+            )
+    else:
+        receipt_path = Path(str(receipt_path_value)).expanduser()
+        if (
+            not receipt_path.is_absolute()
+            or _SHA256_RE.fullmatch(str(receipt_sha256 or "")) is None
+            or _SHA256_RE.fullmatch(str(receipt_id or "")) is None
+        ):
+            raise ControlError(
+                "completed successor-retirement receipt binding is invalid"
+            )
+
+
+def _validate_finalization_state(
+    control: Mapping[str, Any], finalization: Any
+) -> None:
+    expected = {
+        "schema_version",
+        "protocol",
+        "state",
+        "intent_id",
+        "requested_at",
+        "requested_timestamp",
+        "semantic_evidence",
+        "output_root",
+        "attempts",
+        "next_attempt",
+        "active_job",
+        "successor_job",
+        "successor_retirement",
+        "last_error",
+        "completion_marker",
+        "history",
+    }
+    if not isinstance(finalization, dict) or set(finalization) != expected:
+        raise ControlError("schema-5 finalization state fields are invalid")
+    results_root = Path(
+        str(control["immutable"]["results_root"])
+    ).expanduser().resolve()
+    expected_output = (
+        results_root / "recovery" / "schema5-v1.2-r2" / "final"
+    )
+    state = finalization.get("state")
+    requested = finalization.get("requested_timestamp")
+    if (
+        finalization.get("schema_version") != FINALIZATION_SCHEMA_VERSION
+        or finalization.get("protocol") != FINALIZATION_PROTOCOL
+        or state not in FINALIZATION_STATES
+        or Path(str(finalization.get("output_root", ""))).expanduser().resolve()
+        != expected_output
+        or not isinstance(finalization.get("attempts"), int)
+        or isinstance(finalization.get("attempts"), bool)
+        or int(finalization["attempts"]) < 0
+        or not isinstance(finalization.get("next_attempt"), int)
+        or isinstance(finalization.get("next_attempt"), bool)
+        or int(finalization["next_attempt"]) < 1
+    ):
+        raise ControlError("schema-5 finalization state is invalid")
+    if state == "idle":
+        if any(
+            finalization.get(field) is not None
+            for field in (
+                "intent_id",
+                "requested_at",
+                "requested_timestamp",
+                "semantic_evidence",
+                "active_job",
+                "successor_job",
+                "successor_retirement",
+                "last_error",
+                "completion_marker",
+            )
+        ):
+            raise ControlError("idle finalization contains active transaction state")
+    else:
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", str(finalization.get("intent_id", "")))
+            is None
+            or not isinstance(requested, (int, float))
+            or isinstance(requested, bool)
+            or finalization.get("requested_at")
+            != utc_timestamp(float(requested))
+        ):
+            raise ControlError("active finalization intent identity is invalid")
+        evidence = finalization.get("semantic_evidence")
+        if (
+            not isinstance(evidence, dict)
+            or set(evidence) != {"path", "sha256", "captured_timestamp"}
+            or not Path(str(evidence.get("path", ""))).is_absolute()
+            or _SHA256_RE.fullmatch(str(evidence.get("sha256", ""))) is None
+            or not isinstance(evidence.get("captured_timestamp"), (int, float))
+            or isinstance(evidence.get("captured_timestamp"), bool)
+        ):
+            raise ControlError("active finalization semantic evidence is invalid")
+    _validate_finalizer_job_record(
+        finalization.get("active_job"), context="active"
+    )
+    _validate_finalizer_job_record(
+        finalization.get("successor_job"), context="successor"
+    )
+    _validate_successor_retirement_binding(
+        finalization.get("successor_retirement")
+    )
+    last_error = finalization.get("last_error")
+    if last_error is not None and (
+        not isinstance(last_error, dict)
+        or set(last_error)
+        != {"kind", "message", "transient", "at", "timestamp"}
+        or not isinstance(last_error.get("kind"), str)
+        or not isinstance(last_error.get("message"), str)
+        or not isinstance(last_error.get("transient"), bool)
+        or not isinstance(last_error.get("timestamp"), (int, float))
+        or isinstance(last_error.get("timestamp"), bool)
+        or last_error.get("at")
+        != utc_timestamp(float(last_error.get("timestamp", -1)))
+    ):
+        raise ControlError("finalization last_error is invalid")
+    completion = finalization.get("completion_marker")
+    if state == "complete":
+        expected_marker_path = expected_output / FINAL_COMPLETE_FILENAME
+        if (
+            not isinstance(completion, dict)
+            or set(completion) != {"path", "sha256", "final_id"}
+            or Path(str(completion.get("path", ""))).expanduser()
+            != expected_marker_path
+            or _SHA256_RE.fullmatch(str(completion.get("sha256", ""))) is None
+            or _SHA256_RE.fullmatch(str(completion.get("final_id", ""))) is None
+        ):
+            raise ControlError("completed finalization marker binding is invalid")
+        retirement = finalization.get("successor_retirement")
+        if (
+            not isinstance(retirement, dict)
+            or retirement.get("receipt_path") is None
+            or not isinstance(finalization.get("active_job"), dict)
+            or not isinstance(finalization.get("successor_job"), dict)
+            or finalization["successor_job"].get("state")
+            not in {"terminal", "cancelled"}
+        ):
+            raise ControlError(
+                "completed finalization lacks proven successor retirement"
+            )
+    elif completion is not None:
+        raise ControlError("non-complete finalization claims a completion marker")
+    history = finalization.get("history")
+    if not isinstance(history, list):
+        raise ControlError("finalization history must be a list")
+    previous: str | None = None
+    for sequence, row in enumerate(history, start=1):
+        if not isinstance(row, dict):
+            raise ControlError("finalization history record is invalid")
+        payload = dict(row)
+        digest = payload.pop("hash", None)
+        if (
+            payload.get("sequence") != sequence
+            or payload.get("previous_hash") != previous
+            or not isinstance(payload.get("event"), str)
+            or not isinstance(payload.get("timestamp"), (int, float))
+            or payload.get("at")
+            != utc_timestamp(float(payload.get("timestamp", -1)))
+            or digest != sha256_value(payload)
+        ):
+            raise ControlError("finalization history hash chain is invalid")
+        previous = str(digest)
+
+
+def _append_finalization_history(
+    finalization: MutableMapping[str, Any],
+    *,
+    event: str,
+    details: Mapping[str, Any] | None,
+    now: float,
+) -> None:
+    history = finalization["history"]
+    payload: dict[str, Any] = {
+        "sequence": len(history) + 1,
+        "event": event,
+        "details": copy.deepcopy(dict(details or {})),
+        "at": utc_timestamp(now),
+        "timestamp": now,
+        "previous_hash": history[-1]["hash"] if history else None,
+    }
+    payload["hash"] = sha256_value(payload)
+    history.append(payload)
 
 
 def _required_pin(mapping: Mapping[str, Any], field: str, *, context: str) -> Any:
@@ -915,10 +2175,22 @@ _IMMUTABLE_PIN_FIELDS = {
     "release_worktree",
     "git_commit",
     "source_tree_sha256",
+    "transport_uncertainty_binding",
+    "transport_uncertainty_binding_sha256",
     "model_contract_path",
     "model_contract_sha256",
     "fleet_contract_path",
     "fleet_contract_sha256",
+    "protected_capacity_marker_path",
+    "protected_capacity_marker_sha256",
+    "protected_capacity_marker_id",
+    "protected_client_partition",
+    "protected_client_qos",
+    "protected_client_slots",
+    "protected_client_cpus",
+    "protected_client_memory_mib",
+    "protected_client_reserve_jobs",
+    "protected_client_submit_headroom",
     "harness_environment_prefix",
     "harness_environment_manifest_path",
     "harness_environment_sha256",
@@ -952,6 +2224,8 @@ _RELEASE_FRAGMENT_FIELDS = {
     "release_worktree",
     "git_commit",
     "source_tree_sha256",
+    "transport_uncertainty_binding",
+    "transport_uncertainty_binding_sha256",
     "model_contract_path",
     "model_contract_sha256",
     "fleet_contract_path",
@@ -1016,7 +2290,9 @@ def expected_dispatcher_command(pins: Mapping[str, Any]) -> list[str]:
         "--poll-seconds",
         "120",
         "--cell-partition",
-        "mit_preemptable",
+        str(pins["protected_client_partition"]),
+        "--cell-qos",
+        str(pins["protected_client_qos"]),
         "--cell-time",
         "12:00:00",
         "--cell-mem",
@@ -1065,6 +2341,16 @@ def expected_fleet_supervisor_command(pins: Mapping[str, Any]) -> list[str]:
         str(Path(str(pins["fleet_contract_path"])).expanduser().resolve()),
         "--fleet-contract-sha256",
         str(pins["fleet_contract_sha256"]),
+        "--protected-capacity-marker",
+        str(
+            Path(str(pins["protected_capacity_marker_path"]))
+            .expanduser()
+            .resolve()
+        ),
+        "--protected-capacity-marker-sha256",
+        str(pins["protected_capacity_marker_sha256"]),
+        "--protected-capacity-marker-id",
+        str(pins["protected_capacity_marker_id"]),
         "--harness-environment-prefix",
         str(Path(str(pins["harness_environment_prefix"])).expanduser().resolve()),
         "--serving-environment-prefix",
@@ -1168,6 +2454,42 @@ def _assert_root_read_only(path: Path, *, description: str) -> None:
         raise ImmutablePinError(f"{description} is not sealed read-only: {path}")
 
 
+def _validate_schema3_environment_manifest_static(
+    manifest: Mapping[str, Any], *, role: str
+) -> None:
+    """Validate schema-3 provenance without consulting retired build inputs.
+
+    The live-prefix byte scan is owned by the generation-scoped runtime-integrity
+    attestation. This release-bundle verifier authenticates the complete manifest
+    contract and its content address using only sealed release artifacts.
+    """
+
+    if (
+        manifest.get("schema_version") != ENVIRONMENT_MANIFEST_SCHEMA_VERSION
+        or manifest.get("release_id") != PRODUCTION_RELEASE_ID
+        or manifest.get("role") != role
+        or manifest.get("sealed_read_only") is not True
+        or not isinstance(manifest.get("directory_inventory"), dict)
+    ):
+        raise ImmutablePinError(
+            f"{role} environment manifest is not sealed schema 3"
+        )
+    try:
+        expected_content = runtime_integrity._validate_schema3_environment_manifest(
+            manifest,
+            role=role,
+            inventory=manifest["directory_inventory"],
+        )
+    except runtime_integrity.RuntimeIntegrityError as exc:
+        raise ImmutablePinError(
+            f"{role} environment manifest provenance is invalid: {exc}"
+        ) from exc
+    if manifest.get("environment_content_sha256") != expected_content:
+        raise ImmutablePinError(
+            f"{role} environment manifest content identity is invalid"
+        )
+
+
 def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     """Verify the freezer's marker-last bundle and its exact control fragment.
 
@@ -1184,6 +2506,28 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         )
     root = supplied_root.resolve()
     _assert_root_read_only(root, description="release bundle root")
+    try:
+        transport_binding = (
+            scheduler_safety.validate_transport_uncertainty_binding(
+                pins["transport_uncertainty_binding"]
+            )
+        )
+        transport_binding_sha256 = (
+            scheduler_safety.transport_uncertainty_binding_sha256(
+                transport_binding
+            )
+        )
+    except (KeyError, scheduler_safety.SchedulerSafetyError) as exc:
+        raise ImmutablePinError(
+            "release transport/checkpoint/self-consistency pins are invalid"
+        ) from exc
+    if (
+        pins.get("transport_uncertainty_binding_sha256")
+        != transport_binding_sha256
+    ):
+        raise ImmutablePinError(
+            "release transport-uncertainty binding digest drifted"
+        )
     marker_path = root / RELEASE_COMPLETE_FILENAME
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
@@ -1199,6 +2543,8 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         "artifacts",
         "git_commit",
         "source_tree_sha256",
+        "transport_uncertainty_binding",
+        "transport_uncertainty_binding_sha256",
         "release_bundle_id",
     }
     if not isinstance(marker, dict) or set(marker) != marker_fields:
@@ -1206,12 +2552,16 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     candidate = dict(marker)
     bundle_id = candidate.pop("release_bundle_id", None)
     if (
-        marker.get("schema_version") != 1
+        marker.get("schema_version") != RELEASE_BUNDLE_SCHEMA_VERSION
         or marker.get("release_id") != pins["release_id"]
         or marker.get("complete") is not True
         or marker.get("publication_protocol") != "fsync_verify_marker_last"
         or marker.get("git_commit") != pins["git_commit"]
         or marker.get("source_tree_sha256") != pins["source_tree_sha256"]
+        or marker.get("transport_uncertainty_binding")
+        != pins["transport_uncertainty_binding"]
+        or marker.get("transport_uncertainty_binding_sha256")
+        != pins["transport_uncertainty_binding_sha256"]
         or bundle_id != sha256_value(candidate)
         or bundle_id != pins["release_bundle_id"]
     ):
@@ -1264,6 +2614,7 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         "worktree_sealed_read_only",
         "materialization",
         "offline_environment",
+        "transport_uncertainty",
         "model_contract",
         "fleet_contract",
         "environments",
@@ -1274,10 +2625,11 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         raise ImmutablePinError("release identity has the wrong fields")
     expected_fragment = {field: pins[field] for field in _RELEASE_FRAGMENT_FIELDS}
     if (
-        identity.get("schema_version") != 1
+        identity.get("schema_version") != RELEASE_BUNDLE_SCHEMA_VERSION
         or identity.get("release_id") != pins["release_id"]
         or identity.get("release_worktree") != pins["release_worktree"]
         or identity.get("worktree_sealed_read_only") is not True
+        or identity.get("offline_environment") != REQUIRED_OFFLINE_ENVIRONMENT
         or identity.get("publication")
         != {
             "protocol": "fsync_verify_marker_last",
@@ -1287,6 +2639,21 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     ):
         raise ImmutablePinError(
             "release identity does not bind the exact sealed control pins"
+        )
+    transport_record = identity.get("transport_uncertainty")
+    if (
+        not isinstance(transport_record, dict)
+        or set(transport_record)
+        != {"binding", "binding_sha256", "source_tree_sha256"}
+        or transport_record.get("binding")
+        != pins["transport_uncertainty_binding"]
+        or transport_record.get("binding_sha256")
+        != pins["transport_uncertainty_binding_sha256"]
+        or transport_record.get("source_tree_sha256")
+        != pins["source_tree_sha256"]
+    ):
+        raise ImmutablePinError(
+            "release transport/checkpoint/self-consistency identity drifted"
         )
     materialization = identity.get("materialization")
     materialization_fields = {
@@ -1300,6 +2667,9 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         "source_tree_sha256",
         "paths",
         "stage_records",
+        "environment_capture",
+        "conda_creation_tool",
+        "conda_package_cache_sha256",
     }
     expected_materialization_root = root.parent
     expected_materialization_marker = (
@@ -1312,17 +2682,46 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         raise ImmutablePinError("release materialization binding has the wrong fields")
     paths = materialization.get("paths")
     if (
-        materialization.get("schema_version") != 2
+        materialization.get("schema_version") != MATERIALIZATION_SCHEMA_VERSION
         or materialization.get("release_id") != pins["release_id"]
         or materialization.get("root") != str(expected_materialization_root)
         or materialization.get("marker_path") != str(expected_materialization_marker)
         or materialization.get("tag_commit") != pins["git_commit"]
         or materialization.get("source_tree_sha256") != pins["source_tree_sha256"]
         or not isinstance(paths, dict)
+        or set(paths)
+        != {
+            "source_repository",
+            "environment_capture_root",
+            "release_worktree",
+            "source_harness_prefix",
+            "source_serving_prefix",
+            "harness_prefix",
+            "serving_prefix",
+        }
         or paths.get("release_worktree") != pins["release_worktree"]
         or paths.get("harness_prefix") != pins["harness_environment_prefix"]
         or paths.get("serving_prefix") != pins["serving_environment_prefix"]
         or not isinstance(materialization.get("stage_records"), dict)
+        or not isinstance(materialization.get("environment_capture"), dict)
+        or not isinstance(materialization.get("conda_creation_tool"), dict)
+        or set(materialization.get("conda_creation_tool", {}))
+        != {"path", "sha256"}
+        or not Path(
+            str(materialization.get("conda_creation_tool", {}).get("path", ""))
+        ).is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(
+                materialization.get("conda_creation_tool", {}).get(
+                    "sha256", ""
+                )
+            )
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(materialization.get("conda_package_cache_sha256", ""))
+        )
+        is None
         or expected_materialization_marker.is_symlink()
         or not expected_materialization_marker.is_file()
         or sha256_file(expected_materialization_marker)
@@ -1356,10 +2755,21 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         ).encode("utf-8")
     ).hexdigest()
     if (
-        materialization_marker.get("schema_version") != 2
+        materialization_marker.get("schema_version")
+        != MATERIALIZATION_SCHEMA_VERSION
         or materialization_marker.get("release_id") != pins["release_id"]
+        or materialization_marker.get("git_tag") != PRODUCTION_OPERATIONAL_TAG
         or materialization_marker.get("complete") is not True
+        or materialization_marker.get("publication_protocol")
+        != "stage_records_fsync_marker_last"
         or materialization_marker.get("paths") != paths
+        or materialization_marker.get("tag_commit") != pins["git_commit"]
+        or materialization_marker.get("source_tree_sha256")
+        != pins["source_tree_sha256"]
+        or materialization_marker.get("environment_capture")
+        != materialization.get("environment_capture")
+        or materialization_marker.get("conda_creation_tool")
+        != materialization.get("conda_creation_tool")
         or materialization_marker.get("stage_records")
         != materialization.get("stage_records")
         or materialization_id != materialization.get("materialization_id")
@@ -1369,6 +2779,7 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     stage_records = materialization.get("stage_records")
     if set(stage_records) != set(MATERIALIZATION_STAGE_FILENAMES):
         raise ImmutablePinError("materialization stage inventory is incomplete")
+    verified_stage_payloads: dict[str, dict[str, Any]] = {}
     for stage, filename in MATERIALIZATION_STAGE_FILENAMES.items():
         record = stage_records[stage]
         stage_path = expected_materialization_root / filename
@@ -1405,7 +2816,7 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
             ).encode("utf-8")
         ).hexdigest()
         if (
-            stage_payload.get("schema_version") != 2
+            stage_payload.get("schema_version") != MATERIALIZATION_SCHEMA_VERSION
             or stage_payload.get("release_id") != pins["release_id"]
             or stage_payload.get("stage") != stage
             or record_sha256 != record.get("record_sha256")
@@ -1414,9 +2825,25 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
             raise ImmutablePinError(
                 f"materialization stage record identity drifted: {stage}"
             )
+        verified_stage_payloads[stage] = stage_payload
+    package_cache_identity = verified_stage_payloads["package_cache"].get(
+        "content_inventory"
+    )
+    if (
+        not isinstance(package_cache_identity, dict)
+        or package_cache_identity.get("content_inventory_sha256")
+        != materialization.get("conda_package_cache_sha256")
+    ):
+        raise ImmutablePinError(
+            "materialization package-cache content identity drifted"
+        )
     git_identity = identity.get("git")
-    if not isinstance(git_identity, dict) or (
-        git_identity.get("git_commit") != pins["git_commit"]
+    if (
+        not isinstance(git_identity, dict)
+        or set(git_identity)
+        != {"git_commit", "git_tag", "source_tree_sha256"}
+        or git_identity.get("git_tag") != PRODUCTION_OPERATIONAL_TAG
+        or git_identity.get("git_commit") != pins["git_commit"]
         or git_identity.get("source_tree_sha256") != pins["source_tree_sha256"]
     ):
         raise ImmutablePinError("release identity Git/source pin drifted")
@@ -1437,6 +2864,13 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         manifest_field = f"{role}_environment_manifest_path"
         if (
             not isinstance(record, dict)
+            or set(record)
+            != {
+                "prefix",
+                "manifest_path",
+                "manifest_sha256",
+                "directory_inventory_sha256",
+            }
             or record.get("prefix") != pins[prefix_field]
             or record.get("manifest_path") != str(manifest_path)
             or record.get("manifest_sha256") != pins[sha_field]
@@ -1451,13 +2885,16 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
             ) from exc
         if (
             not isinstance(manifest, dict)
-            or manifest.get("schema_version") != 1
-            or manifest.get("release_id") != pins["release_id"]
-            or manifest.get("role") != role
             or manifest.get("prefix") != pins[prefix_field]
-            or manifest.get("sealed_read_only") is not True
+            or record.get("directory_inventory_sha256")
+            != (
+                manifest.get("directory_inventory", {}).get("inventory_sha256")
+                if isinstance(manifest.get("directory_inventory"), dict)
+                else None
+            )
         ):
             raise ImmutablePinError(f"{role} environment manifest is not sealed")
+        _validate_schema3_environment_manifest_static(manifest, role=role)
         _assert_root_read_only(
             Path(str(pins[prefix_field])).resolve(), description=f"{role} environment"
         )
@@ -1483,10 +2920,22 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
         "release_worktree",
         "git_commit",
         "source_tree_sha256",
+        "transport_uncertainty_binding",
+        "transport_uncertainty_binding_sha256",
         "model_contract_path",
         "model_contract_sha256",
         "fleet_contract_path",
         "fleet_contract_sha256",
+        "protected_capacity_marker_path",
+        "protected_capacity_marker_sha256",
+        "protected_capacity_marker_id",
+        "protected_client_partition",
+        "protected_client_qos",
+        "protected_client_slots",
+        "protected_client_cpus",
+        "protected_client_memory_mib",
+        "protected_client_reserve_jobs",
+        "protected_client_submit_headroom",
         "harness_environment_prefix",
         "harness_environment_manifest_path",
         "harness_environment_sha256",
@@ -1501,8 +2950,34 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
         "runs",
     ):
         _required_pin(pins, field, context="immutable pins")
-    if pins["release_id"] != "sweep-recovery-schema5-v1.1":
-        raise ImmutablePinError("release_id must be 'sweep-recovery-schema5-v1.1'")
+    if pins["release_id"] != PRODUCTION_RELEASE_ID:
+        raise ImmutablePinError(
+            f"release_id must be {PRODUCTION_RELEASE_ID!r}; schema-5 v1.1 "
+            "and other downgrade identities are not production-authorized"
+        )
+    try:
+        expected_transport_binding = (
+            scheduler_safety.validate_transport_uncertainty_binding(
+                pins["transport_uncertainty_binding"]
+            )
+        )
+        expected_transport_sha256 = (
+            scheduler_safety.transport_uncertainty_binding_sha256(
+                expected_transport_binding
+            )
+        )
+    except scheduler_safety.SchedulerSafetyError as exc:
+        raise ImmutablePinError(
+            "immutable transport/checkpoint/self-consistency binding is invalid: "
+            f"{exc}"
+        ) from exc
+    if (
+        pins["transport_uncertainty_binding_sha256"]
+        != expected_transport_sha256
+    ):
+        raise ImmutablePinError(
+            "immutable transport-uncertainty binding digest drifted"
+        )
     if not isinstance(pins["dispatcher_command"], list) or not all(
         isinstance(item, str) and item for item in pins["dispatcher_command"]
     ):
@@ -1593,6 +3068,48 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
     expected_pool = results_root / "server_pools" / "schema5-v1"
     if Path(str(pins["server_pool_root"])).expanduser().resolve() != expected_pool:
         raise ImmutablePinError(f"canonical server pool must be {expected_pool}")
+    expected_capacity_marker = protected_capacity.canonical_marker_path(results_root)
+    if (
+        Path(str(pins["protected_capacity_marker_path"]))
+        .expanduser()
+        .resolve()
+        != expected_capacity_marker
+        or _SHA256_RE.fullmatch(
+            str(pins["protected_capacity_marker_sha256"])
+        )
+        is None
+        or _SHA256_RE.fullmatch(str(pins["protected_capacity_marker_id"])) is None
+    ):
+        raise ImmutablePinError(
+            "protected-capacity pins do not bind the canonical sealed marker"
+        )
+    if (
+        not isinstance(pins["protected_client_partition"], str)
+        or not pins["protected_client_partition"]
+        or not isinstance(pins["protected_client_qos"], str)
+        or not pins["protected_client_qos"]
+        or not isinstance(pins["protected_client_slots"], int)
+        or isinstance(pins["protected_client_slots"], bool)
+        or pins["protected_client_slots"] < PRODUCTION_DESIGN_CELL_CAP
+        or not isinstance(pins["protected_client_cpus"], int)
+        or isinstance(pins["protected_client_cpus"], bool)
+        or pins["protected_client_cpus"] < PRODUCTION_DESIGN_CELL_CAP
+        or not isinstance(pins["protected_client_memory_mib"], int)
+        or isinstance(pins["protected_client_memory_mib"], bool)
+        or pins["protected_client_memory_mib"]
+        < PRODUCTION_DESIGN_CELL_CAP * 4096
+        or not isinstance(pins["protected_client_reserve_jobs"], int)
+        or isinstance(pins["protected_client_reserve_jobs"], bool)
+        or pins["protected_client_reserve_jobs"] < 64
+        or not isinstance(pins["protected_client_submit_headroom"], int)
+        or isinstance(pins["protected_client_submit_headroom"], bool)
+        or pins["protected_client_submit_headroom"]
+        < PRODUCTION_DESIGN_CELL_CAP + 64
+    ):
+        raise ImmutablePinError(
+            "protected client pins do not authorize the full 384-cell "
+            "production design plus the 64-job reserve"
+        )
     for run_id, run in by_id.items():
         run_root = Path(str(run["run_root"])).expanduser().resolve()
         if run_root != results_root / run_id:
@@ -1664,6 +3181,10 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
         (pins["model_contract_path"], pins["model_contract_sha256"]),
         (pins["fleet_contract_path"], pins["fleet_contract_sha256"]),
         (
+            pins["protected_capacity_marker_path"],
+            pins["protected_capacity_marker_sha256"],
+        ),
+        (
             pins["harness_environment_manifest_path"],
             pins["harness_environment_sha256"],
         ),
@@ -1686,6 +3207,50 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
             raise ImmutablePinError(
                 f"pinned artifact drifted: {path}; expected {expected_hash}, got {observed}"
             )
+    try:
+        capacity_contract = protected_capacity.load_contract(
+            pins["protected_capacity_marker_path"],
+            expected_release_git_commit=str(pins["git_commit"]),
+            expected_marker_id=str(pins["protected_capacity_marker_id"]),
+            expected_sha256=str(pins["protected_capacity_marker_sha256"]),
+        )
+        model_contracts = load_model_contracts(
+            pins["model_contract_path"],
+            expected_sha256=pins["model_contract_sha256"],
+        )
+        frozen_fleet = load_fleet_contract(
+            pins["fleet_contract_path"],
+            model_contracts=model_contracts,
+            expected_sha256=pins["fleet_contract_sha256"],
+            allow_capacity_layout=True,
+        )
+        protected_capacity.authorize_fleet(frozen_fleet, capacity_contract)
+        protected_client = protected_capacity.authorize_client(
+            capacity_contract,
+            partition=str(pins["protected_client_partition"]),
+            qos=str(pins["protected_client_qos"]),
+            required_slots=PRODUCTION_DESIGN_CELL_CAP,
+            required_reserve_jobs=64,
+        )
+        expected_client_capacity = {
+            "slots": int(pins["protected_client_slots"]),
+            "cpus": int(pins["protected_client_cpus"]),
+            "memory_mib": int(pins["protected_client_memory_mib"]),
+            "reserve_jobs": int(pins["protected_client_reserve_jobs"]),
+            "submit_headroom": int(pins["protected_client_submit_headroom"]),
+        }
+        if dict(protected_client.capacity) != expected_client_capacity:
+            raise protected_capacity.ProtectedCapacityError(
+                "protected client placement capacity differs from immutable pins"
+            )
+    except (
+        FleetContractError,
+        ModelContractError,
+        protected_capacity.ProtectedCapacityError,
+    ) as exc:
+        raise ImmutablePinError(
+            f"scientific fleet is not covered by protected capacity: {exc}"
+        ) from exc
     for run_id, run in by_id.items():
         run_root = Path(str(run["run_root"])).resolve()
         for artifact_field, checksum_name in (
@@ -1771,7 +3336,23 @@ def load_control(state_dir: Path, *, verify_files: bool = False) -> dict[str, An
         )
     validate_immutable_pins(immutable, verify_files=verify_files)
     _validate_admission(value.get("admission", {}))
+    _validate_admission_safety_hold(value, value.get("admission_safety_hold"))
+    _validate_safety_hold_drain_intent(
+        value.get("safety_hold_drain_intent")
+    )
+    _validate_capacity_state(value.get("capacity"))
     _validate_monitoring_state(value.get("monitoring"))
+    _validate_finalization_state(value, value.get("finalization"))
+    if (
+        verify_files
+        and isinstance(value["finalization"].get("successor_retirement"), dict)
+    ):
+        _verify_successor_retirement_artifacts(
+            value,
+            value["finalization"]["successor_retirement"],
+        )
+    if value["finalization"]["state"] == "complete":
+        _verify_completed_finalization_control_binding(value)
     _validate_admission_ramp(value, value.get("admission_ramp"))
     validate_transition_history(value)
     journal_path = state_dir / TRANSITION_JOURNAL
@@ -1818,15 +3399,23 @@ def load_control(state_dir: Path, *, verify_files: bool = False) -> dict[str, An
             validate_snapshot_integrity_attestation(
                 value, state_dir=state_dir, verify_lease=False
             )
-    for gate in REQUIRED_GATES:
+    for gate in (*REQUIRED_GATES, *PRODUCTION_AUTHORIZATION_GATES):
         if gate not in value.get("readiness", {}):
             raise ControlError(f"readiness gate {gate!r} is missing")
+    _validate_production_authorization_state(
+        value,
+        state_dir=state_dir,
+        require_passed=value.get("desired_state") in {"resuming", "running"},
+        verify_files=verify_files,
+    )
     for role in ROLE_NAMES:
         if role not in value.get("controllers", {}):
             raise ControlError(f"controller state for {role!r} is missing")
     resume_intent = value.get("resume_intent")
     if value.get("desired_state") == "resuming" and not isinstance(resume_intent, dict):
         raise ControlError("resuming desired state requires a durable resume_intent")
+    if value.get("desired_state") in {"resuming", "running"}:
+        _validate_resume_production_authorizations(value)
     if value.get("desired_state") == "running":
         if (
             not isinstance(resume_intent, dict)
@@ -1887,6 +3476,11 @@ def initialize_control(
             "immutable": copy.deepcopy(dict(pins)),
             "immutable_sha256": sha256_value(pins),
             "admission": copy.deepcopy(DEFAULT_ADMISSION),
+            "admission_safety_hold": _new_admission_safety_hold(
+                configured_ceiling=int(DEFAULT_ADMISSION["current_ceiling"])
+            ),
+            "safety_hold_drain_intent": None,
+            "capacity": _new_capacity_state(),
             "admission_ramp": _new_admission_ramp_state(
                 rollout_generation=0,
                 current_ceiling=int(DEFAULT_ADMISSION["current_ceiling"]),
@@ -1902,7 +3496,7 @@ def initialize_control(
             "resume_intent": None,
             "readiness": {
                 gate: {"passed": False, "evidence": None, "attested_at": None}
-                for gate in REQUIRED_GATES
+                for gate in (*REQUIRED_GATES, *PRODUCTION_AUTHORIZATION_GATES)
             },
             "controllers": {
                 role: {
@@ -1941,6 +3535,7 @@ def initialize_control(
                     for cadence, interval in MONITOR_CADENCE_SECONDS.items()
                 },
             },
+            "finalization": _new_finalization_state(pins, now=timestamp),
             "alerts": [],
             "alert_email": alert_email,
             "last_reconciliation": None,
@@ -1968,9 +3563,29 @@ def _save_control(
     if control.get("immutable_sha256") != sha256_value(control.get("immutable")):
         raise ImmutablePinError("refusing to save mutated immutable pins")
     _validate_admission(control.get("admission", {}))
+    if isinstance(control.get("admission_safety_hold"), dict):
+        # ``configured_ceiling`` is a denormalized mirror of the staged ramp ceiling.
+        # Keep private/test recovery mutations atomic with that source of truth.
+        control["admission_safety_hold"]["configured_ceiling"] = int(
+            control["admission"]["current_ceiling"]
+        )
+    _validate_admission_safety_hold(
+        control, control.get("admission_safety_hold")
+    )
+    _validate_safety_hold_drain_intent(
+        control.get("safety_hold_drain_intent")
+    )
+    _validate_capacity_state(control.get("capacity"))
     _validate_monitoring_state(control.get("monitoring"))
+    _validate_finalization_state(control, control.get("finalization"))
     _validate_admission_ramp(control, control.get("admission_ramp"))
     validate_transition_history(control)
+    _validate_production_authorization_state(
+        control,
+        state_dir=state_dir,
+        require_passed=control.get("desired_state") in {"resuming", "running"},
+        verify_files=False,
+    )
     _atomic_write_json(_state_path(state_dir), control)
 
 
@@ -2163,6 +3778,7 @@ def _validate_fleet_artifact(
     *,
     snapshot_context: _SnapshotValidationContext,
 ) -> None:
+    fleet_binding = effective_fleet_contract_binding(control, verify_files=True)
     name = "fleet_health_report"
     report = _validate_artifact_identity(
         control,
@@ -2197,6 +3813,13 @@ def _validate_fleet_artifact(
             "passed",
             "immutable_sha256",
             "server_pool_root",
+            "rollout_generation",
+            "isolated_foreign_scheduler_job_ids",
+            "sealed_successful_handoff_terminal_job_ids",
+            "ignored_terminal_job_ids",
+            "client_capacity_contract",
+            "fleet_scheduler_safety_evidence",
+            "fleet_scheduler_safety_policy",
             "captured_timestamp",
             "replicas",
             "referenced_artifacts",
@@ -2204,36 +3827,204 @@ def _validate_fleet_artifact(
         context="raw fleet health probe",
     )
     pool_root = str(Path(control["immutable"]["server_pool_root"]).resolve())
+    try:
+        transaction_directory = fleet_transactions.state_directory(pool_root)
+        current_fleet = fleet_transactions._read_current_index_raw(  # noqa: SLF001
+            transaction_directory
+        )
+        current_ledger = (
+            None
+            if current_fleet is None
+            else Path(str(current_fleet["ledger_path"]))
+        )
+        current_fleet_valid = (
+            isinstance(current_fleet, dict)
+            and current_fleet.get("pool_root") == pool_root
+            and current_fleet.get("pool_id") == "schema5-v1"
+            and current_fleet.get("fleet_sha256") == fleet_binding["sha256"]
+            and current_ledger is not None
+            and current_ledger.is_file()
+            and not current_ledger.is_symlink()
+            and sha256_file(current_ledger) == current_fleet["ledger_sha256"]
+        )
+    except (OSError, fleet_transactions.FleetTransactionError):
+        current_fleet = None
+        current_fleet_valid = False
     if (
-        raw.get("schema_version") != 1
+        raw.get("schema_version") != 3
         or raw.get("kind") != "raw_fleet_health_probe"
         or raw.get("passed") is not True
         or raw.get("immutable_sha256") != control["immutable_sha256"]
         or raw.get("server_pool_root") != pool_root
+        or not isinstance(raw.get("rollout_generation"), int)
+        or isinstance(raw.get("rollout_generation"), bool)
+        or raw["rollout_generation"] < 1
+        or raw["rollout_generation"]
+        > int(control.get("rollout_generation", 0)) + 1
+        or not current_fleet_valid
+        or current_fleet.get("current_generation")
+        != raw["rollout_generation"]
+        or raw.get("ignored_terminal_job_ids") != []
         or raw.get("captured_timestamp") != metrics.get("captured_timestamp")
     ):
         raise ReadinessError("raw fleet health probe identity differs from its wrapper")
+    try:
+        transport_binding = (
+            scheduler_safety.validate_transport_uncertainty_binding(
+                control["immutable"]["transport_uncertainty_binding"]
+            )
+        )
+        transport_binding_sha256 = (
+            scheduler_safety.transport_uncertainty_binding_sha256(
+                transport_binding
+            )
+        )
+        if (
+            control["immutable"][
+                "transport_uncertainty_binding_sha256"
+            ]
+            != transport_binding_sha256
+        ):
+            raise scheduler_safety.SchedulerSafetyError(
+                "immutable transport binding digest drifted"
+            )
+        effective_fleet = load_effective_fleet_contract(
+            control, verify_files=True
+        )
+        partition_time_requirements = (
+            scheduler_safety.fleet_partition_time_requirements(
+                effective_fleet.replicas
+            )
+        )
+        scheduler_policy = (
+            scheduler_safety.validate_scheduler_safety_evidence(
+                raw.get("fleet_scheduler_safety_evidence", {}),
+                expected_partitions=list(partition_time_requirements),
+                required_time_limits_seconds=partition_time_requirements,
+            )
+        )
+    except (ImmutablePinError, scheduler_safety.SchedulerSafetyError) as exc:
+        raise ReadinessError(
+            f"fleet scheduler-safety evidence failed closed: {exc}"
+        ) from exc
+    if (
+        raw.get("fleet_scheduler_safety_policy") != scheduler_policy
+        or metrics.get("transport_censor_protocol_version")
+        != transport_binding["transport_censor_protocol_version"]
+        or metrics.get("transport_censor_protocol_hash")
+        != transport_binding["transport_censor_protocol_hash"]
+        or metrics.get("transport_uncertainty_binding_sha256")
+        != transport_binding_sha256
+        or metrics.get("scheduler_safety_evidence_id")
+        != scheduler_policy["scheduler_evidence_id"]
+        or metrics.get("scheduler_safety_policy_id")
+        != scheduler_policy["policy_id"]
+        or metrics.get("scheduler_safety_policy_contract_id")
+        != scheduler_policy["policy_contract_id"]
+        or metrics.get("scheduler_preemptible_partitions")
+        != scheduler_policy["preemptible_partitions"]
+        or metrics.get(
+            "scheduler_partition_time_requirements_seconds"
+        )
+        != partition_time_requirements
+    ):
+        raise ReadinessError(
+            "fleet wrapper scheduler/transport metrics differ from raw evidence"
+        )
+    try:
+        capacity_contract = protected_capacity.load_contract(
+            control["immutable"]["protected_capacity_marker_path"],
+            expected_release_git_commit=str(
+                control["immutable"]["git_commit"]
+            ),
+            expected_marker_id=str(
+                control["immutable"]["protected_capacity_marker_id"]
+            ),
+            expected_sha256=str(
+                control["immutable"][
+                    "protected_capacity_marker_sha256"
+                ]
+            ),
+        )
+        client_capacity_summary = (
+            protected_capacity.validate_live_client_capacity_evidence(
+                capacity_contract,
+                raw.get("client_capacity_contract", {}),
+                partition=str(
+                    control["immutable"]["protected_client_partition"]
+                ),
+                qos=str(
+                    control["immutable"]["protected_client_qos"]
+                ),
+                required_time_limit_seconds=(
+                    scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                ),
+            )
+        )
+    except (
+        scheduler_safety.SchedulerSafetyError,
+        protected_capacity.ProtectedCapacityError,
+    ) as exc:
+        raise ReadinessError(
+            f"fleet client partition/QOS evidence failed closed: {exc}"
+        ) from exc
+    if (
+        metrics.get("client_capacity_evidence_id")
+        != client_capacity_summary["evidence_id"]
+        or metrics.get("client_partition")
+        != client_capacity_summary["partition"]
+        or metrics.get("client_qos")
+        != client_capacity_summary["qos"]
+        or metrics.get("client_cpu_limit") != client_capacity_summary["cpu_limit"]
+        or metrics.get("client_memory_limit_mib")
+        != client_capacity_summary["memory_limit_mib"]
+        or metrics.get("client_max_submit_jobs")
+        != client_capacity_summary["max_submit_jobs"]
+    ):
+        raise ReadinessError(
+            "fleet wrapper metrics differ from client partition/QOS evidence"
+        )
     rows = raw.get("replicas")
     references = raw.get("referenced_artifacts")
-    if not isinstance(rows, list) or len(rows) != 22:
-        raise ReadinessError("raw fleet health probe must contain exactly 22 replicas")
-    if not isinstance(references, list) or len(references) != 22:
+    expected_count = int(fleet_binding["logical_replicas"])
+    if not isinstance(rows, list) or len(rows) != expected_count:
         raise ReadinessError(
-            "raw fleet health probe must bind exactly 22 registrations"
+            "raw fleet health probe must contain the effective replica count"
+        )
+    if not isinstance(references, list) or len(references) != expected_count:
+        raise ReadinessError(
+            "raw fleet health probe must bind the effective registrations"
+        )
+    scheduler_history_sets: list[set[str]] = []
+    for field in (
+        "isolated_foreign_scheduler_job_ids",
+        "sealed_successful_handoff_terminal_job_ids",
+    ):
+        values = raw.get(field)
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(value, str) or not value.isdigit() for value in values)
+            or values != sorted(set(values), key=int)
+        ):
+            raise ReadinessError(
+                f"raw fleet health probe has invalid {field}"
+            )
+        scheduler_history_sets.append(set(values))
+    if scheduler_history_sets[0].intersection(scheduler_history_sets[1]):
+        raise ReadinessError(
+            "raw fleet health probe canary and handoff histories overlap"
         )
     reference_by_name = {
         reference.get("name"): reference
         for reference in references
         if isinstance(reference, dict)
     }
-    if len(reference_by_name) != 22:
+    if len(reference_by_name) != expected_count:
         raise ReadinessError("raw fleet registration references are not unique")
 
     try:
         fleet_contract = json.loads(
-            Path(str(control["immutable"]["fleet_contract_path"])).read_text(
-                encoding="utf-8"
-            )
+            Path(str(fleet_binding["path"])).read_text(encoding="utf-8")
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ReadinessError(f"cannot parse pinned fleet topology: {exc}") from exc
@@ -2252,17 +4043,25 @@ def _validate_fleet_artifact(
                 raise ReadinessError(
                     "pinned fleet topology contains a malformed replica"
                 )
+            serving_profile = str(profile.get("serving_profile"))
+            runtime_profile = get_serving_profile(serving_profile)
             expected_replicas[replica["replica_id"]] = {
-                "serving_profile": profile.get("serving_profile"),
+                "serving_profile": serving_profile,
+                "model_size": profile.get("model_size"),
+                "hf_id": runtime_profile.hf_id,
+                "served_model_name": runtime_profile.served_model_name,
+                "max_model_len": runtime_profile.max_model_len,
+                "tp_size": runtime_profile.tp_size,
                 "partition": replica.get("partition"),
+                "scheduler_job_name": replica.get("scheduler_job_name"),
                 "replica_index": replica.get("replica_index"),
                 "model_revision": profile.get("model_revision"),
                 "tokenizer_id": profile.get("tokenizer_id"),
                 "tokenizer_revision": profile.get("tokenizer_revision"),
             }
-    if len(expected_replicas) != 22:
+    if len(expected_replicas) != expected_count:
         raise ReadinessError(
-            "pinned fleet topology does not enumerate exactly 22 replicas"
+            "effective fleet topology has the wrong replica cardinality"
         )
 
     observed_ids: set[str] = set()
@@ -2271,13 +4070,24 @@ def _validate_fleet_artifact(
     replica_fields = {
         "replica_id",
         "serving_profile",
+        "ledger_generation",
+        "intent_token",
+        "attempt_state",
         "slurm_job_id",
+        "comment",
+        "job_name",
         "partition",
         "node",
         "host",
         "port",
         "spooled_provenance",
+        "local_script_path",
+        "local_script_sha256",
+        "spooled_script_sha256",
+        "spooled_script_proof",
+        "scontrol",
         "http",
+        "probe_transport_provenance",
         "registry_path",
         "registry_sha256",
     }
@@ -2293,6 +4103,10 @@ def _validate_fleet_artifact(
         "tokenizer_revision",
         "model_contract_sha256",
         "fleet_contract_sha256",
+        "release_fleet_contract_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "spooled_script_sha256",
     }
     http_fields = {
         "health_status",
@@ -2303,7 +4117,43 @@ def _validate_fleet_artifact(
         "probe_completed_timestamp",
         "healthy",
     }
+    scontrol_fields = {
+        "argv",
+        "job_id",
+        "job_state",
+        "reason",
+        "comment",
+        "job_name",
+        "node",
+        "command",
+        "effective_requeue",
+        "raw_output",
+        "raw_output_sha256",
+    }
+    spool_fields = {
+        "argv",
+        "local_path",
+        "local_sha256",
+        "observed_sha256",
+        "observed_bytes",
+        "exact_match",
+    }
     captured = float(raw["captured_timestamp"])
+    expected_probe_transport = {
+        "transport_censor_protocol_version": transport_binding[
+            "transport_censor_protocol_version"
+        ],
+        "transport_censor_protocol_hash": transport_binding[
+            "transport_censor_protocol_hash"
+        ],
+        "transport_uncertainty_binding_sha256": (
+            transport_binding_sha256
+        ),
+        "source_tree_sha256": control["immutable"][
+            "source_tree_sha256"
+        ],
+    }
+    active_scheduler_job_ids: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise ReadinessError("raw fleet probe contains a non-object replica")
@@ -2319,6 +4169,9 @@ def _validate_fleet_artifact(
         if (
             profile != expected["serving_profile"]
             or row.get("partition") != expected["partition"]
+            or row.get("job_name") != expected["scheduler_job_name"]
+            or row.get("ledger_generation") != raw["rollout_generation"]
+            or row.get("attempt_state") != "committed"
             or not str(row.get("slurm_job_id", "")).isdigit()
             or not isinstance(row.get("node"), str)
             or not row["node"]
@@ -2332,11 +4185,141 @@ def _validate_fleet_artifact(
             )
         profile_counts[str(profile)] = profile_counts.get(str(profile), 0) + 1
 
+        job_id = str(row["slurm_job_id"])
+        active_scheduler_job_ids.add(job_id)
+        local_path = Path(str(row.get("local_script_path", "")))
+        local_sha256 = row.get("local_script_sha256")
+        spooled_sha256 = row.get("spooled_script_sha256")
+        try:
+            local_valid = (
+                local_path.is_absolute()
+                and not local_path.is_symlink()
+                and local_path.is_file()
+                and not local_path.stat().st_mode & 0o222
+                and sha256_file(local_path) == local_sha256
+            )
+        except OSError:
+            local_valid = False
+        parsed_comment = fleet_transactions.parse_intent_comment(
+            str(row.get("comment", ""))
+        )
+        scontrol = row.get("scontrol")
+        spool = row.get("spooled_script_proof")
+        if (
+            not local_valid
+            or not isinstance(local_sha256, str)
+            or _SHA256_RE.fullmatch(local_sha256) is None
+            or spooled_sha256 != local_sha256
+            or parsed_comment is None
+            or parsed_comment.get("pool") != "schema5-v1"
+            or parsed_comment.get("profile") != profile
+            or parsed_comment.get("replica") != replica_id
+            or parsed_comment.get("generation")
+            != str(raw["rollout_generation"])
+            or parsed_comment.get("intent") != row.get("intent_token")
+            or parsed_comment.get("fleet") != fleet_binding["sha256"]
+            or local_path.parent
+            != (
+                transaction_directory
+                / "sbatch"
+                / f"g{int(raw['rollout_generation']):06d}"
+            ).resolve()
+            or local_path.name
+            != (
+                re.sub(r"[^A-Za-z0-9_.-]+", "_", str(replica_id))
+                + f".{row.get('intent_token')}.sbatch"
+            )
+            or not isinstance(scontrol, dict)
+        ):
+            raise ReadinessError(
+                f"fleet effective scheduler/spool identity drifted for {replica_id}"
+            )
+        _exact_keys(
+            scontrol, scontrol_fields, context="fleet effective Slurm state"
+        )
+        raw_output = scontrol.get("raw_output")
+        raw_lines = (
+            [line.strip() for line in raw_output.splitlines() if line.strip()]
+            if isinstance(raw_output, str)
+            else []
+        )
+        raw_fields: dict[str, str] = {}
+        if len(raw_lines) == 1:
+            try:
+                raw_tokens = shlex.split(raw_lines[0], posix=True)
+            except (TypeError, ValueError):
+                raw_tokens = []
+            for token in raw_tokens:
+                if "=" not in token:
+                    continue
+                key, value = token.split("=", 1)
+                if not key or key in raw_fields:
+                    raw_fields = {}
+                    break
+                raw_fields[key] = value.strip('"')
+        normalized_raw_output = (
+            raw_lines[0] + "\n" if len(raw_lines) == 1 else None
+        )
+        if (
+            scontrol.get("argv")
+            != ["scontrol", "show", "job", "-o", job_id]
+            or scontrol.get("job_id") != job_id
+            or scontrol.get("job_state") != "RUNNING"
+            or scontrol.get("reason") is not None
+            or scontrol.get("comment") != row.get("comment")
+            or scontrol.get("job_name") != row.get("job_name")
+            or scontrol.get("node") != row.get("node")
+            or scontrol.get("command") != str(local_path)
+            or scontrol.get("effective_requeue") != 0
+            or normalized_raw_output != raw_output
+            or scontrol.get("raw_output_sha256")
+            != hashlib.sha256(str(raw_output).encode("utf-8")).hexdigest()
+            or raw_fields.get("JobId") != job_id
+            or raw_fields.get("JobState") != "RUNNING"
+            or raw_fields.get("Reason") not in {None, "None"}
+            or raw_fields.get("Requeue") != "0"
+            or raw_fields.get("Comment") != row.get("comment")
+            or raw_fields.get("JobName") != row.get("job_name")
+            or raw_fields.get("NodeList") != row.get("node")
+            or not fleet_transactions.command_binds_sbatch(
+                raw_fields.get("Command", ""), str(local_path)
+            )
+            or not isinstance(spool, dict)
+        ):
+            raise ReadinessError(
+                f"fleet effective Requeue=0 proof drifted for {replica_id}"
+            )
+        _exact_keys(spool, spool_fields, context="fleet spooled script proof")
+        if (
+            spool.get("argv")
+            != ["scontrol", "write", "batch_script", job_id, "-"]
+            or spool.get("local_path") != str(local_path)
+            or spool.get("local_sha256") != local_sha256
+            or spool.get("observed_sha256") != spooled_sha256
+            or not isinstance(spool.get("observed_bytes"), int)
+            or isinstance(spool.get("observed_bytes"), bool)
+            or spool["observed_bytes"] < 1
+            or spool["observed_bytes"] != local_path.stat().st_size
+            or spool.get("exact_match") is not True
+        ):
+            raise ReadinessError(
+                f"fleet exact spooled-script proof drifted for {replica_id}"
+            )
+
         reference_name = f"registry_{replica_id}"
         reference = reference_by_name.get(reference_name)
+        expected_registry_path = str(
+            (
+                Path(pool_root)
+                / "servers"
+                / str(profile)
+                / f"{row.get('host')}_{row.get('port')}.json"
+            ).resolve()
+        )
         if (
             not isinstance(reference, dict)
             or reference.get("path") != row.get("registry_path")
+            or reference.get("path") != expected_registry_path
             or reference.get("sha256") != row.get("registry_sha256")
         ):
             raise ReadinessError(f"raw fleet registry binding drifted for {replica_id}")
@@ -2350,7 +4333,15 @@ def _validate_fleet_artifact(
         if (
             not isinstance(registry, dict)
             or str(registry.get("replica_id")) != replica_id
+            or registry.get("replica_index") != expected["replica_index"]
+            or registry.get("server_pool_id") != "schema5-v1"
             or registry.get("serving_profile") != profile
+            or registry.get("model_size") != expected["model_size"]
+            or registry.get("hf_id") != expected["hf_id"]
+            or registry.get("served_model_name")
+            != expected["served_model_name"]
+            or registry.get("max_model_len") != expected["max_model_len"]
+            or registry.get("tp_size") != expected["tp_size"]
             or str(registry.get("slurm_job_id")) != str(row["slurm_job_id"])
             or registry.get("host") != row["host"]
             or registry.get("port") != row["port"]
@@ -2360,7 +4351,17 @@ def _validate_fleet_artifact(
             or registry.get("model_contract_sha256")
             != control["immutable"]["model_contract_sha256"]
             or registry.get("fleet_contract_sha256")
+            != fleet_binding["sha256"]
+            or registry.get("release_fleet_contract_sha256")
             != control["immutable"]["fleet_contract_sha256"]
+            or registry.get("capacity_generation")
+            != fleet_binding["capacity_generation"]
+            or registry.get("rollout_generation")
+            != raw["rollout_generation"]
+            or registry.get("model_revision") != expected["model_revision"]
+            or registry.get("tokenizer_id") != expected["tokenizer_id"]
+            or registry.get("tokenizer_revision")
+            != expected["tokenizer_revision"]
         ):
             raise ReadinessError(
                 f"fleet registration provenance drifted for {replica_id}"
@@ -2384,11 +4385,26 @@ def _validate_fleet_artifact(
             or provenance.get("model_contract_sha256")
             != control["immutable"]["model_contract_sha256"]
             or provenance.get("fleet_contract_sha256")
+            != fleet_binding["sha256"]
+            or provenance.get("release_fleet_contract_sha256")
             != control["immutable"]["fleet_contract_sha256"]
+            or provenance.get("capacity_generation")
+            != fleet_binding["capacity_generation"]
+            or provenance.get("rollout_generation")
+            != raw["rollout_generation"]
+            or provenance.get("spooled_script_sha256")
+            != row.get("spooled_script_sha256")
         ):
             raise ReadinessError(f"spooled fleet provenance drifted for {replica_id}")
 
         http = row.get("http")
+        if (
+            row.get("probe_transport_provenance")
+            != expected_probe_transport
+        ):
+            raise ReadinessError(
+                f"fleet probe transport provenance drifted for {replica_id}"
+            )
         if not isinstance(http, dict):
             raise ReadinessError(f"HTTP health evidence is missing for {replica_id}")
         _exact_keys(http, http_fields, context="fleet HTTP probe")
@@ -2399,6 +4415,7 @@ def _validate_fleet_artifact(
             or http.get("health_status") != 200
             or http.get("models_status") != 200
             or not isinstance(http.get("model_ids"), list)
+            or http.get("expected_model") != expected["served_model_name"]
             or http.get("expected_model") not in http["model_ids"]
             or not isinstance(started, (int, float))
             or isinstance(started, bool)
@@ -2408,11 +4425,18 @@ def _validate_fleet_artifact(
         ):
             raise ReadinessError(f"fleet HTTP probe failed for {replica_id}")
         probe_ages.append(captured - float(completed))
+    if any(
+        active_scheduler_job_ids.intersection(history)
+        for history in scheduler_history_sets
+    ):
+        raise ReadinessError(
+            "raw fleet health probe history overlaps active allocations"
+        )
     if observed_ids != set(expected_replicas):
         raise ReadinessError("raw fleet probe does not cover the frozen replica set")
-    if profile_counts != EXPECTED_FLEET_PROFILES:
+    if profile_counts != fleet_binding["profile_replicas"]:
         raise ReadinessError(
-            "raw fleet probe profile counts differ from the frozen topology"
+            "raw fleet probe profile counts differ from the effective topology"
         )
     if not probe_ages or max(probe_ages) != metrics.get("max_heartbeat_age_seconds"):
         raise ReadinessError(
@@ -2549,11 +4573,150 @@ def _validate_context_artifacts(
         )
 
 
+def _validate_smoke_catalog_binding(
+    control: Mapping[str, Any],
+    value: Any,
+    *,
+    expected_fleet_sha256: str,
+    expected_capacity_generation: int,
+    expected_rollout_generation: int,
+) -> TrustedGenerationCatalog:
+    """Independently load the exact sealed endpoint catalog named by smoke evidence."""
+
+    if not isinstance(value, Mapping) or set(value) != SMOKE_TRUSTED_CATALOG_FIELDS:
+        raise ReadinessError("smoke trusted-generation catalog binding is malformed")
+    marker_path = Path(str(value.get("marker_path", "")))
+    if (
+        not marker_path.is_absolute()
+        or _SHA256_RE.fullmatch(str(value.get("catalog_id", ""))) is None
+        or any(
+            _SHA256_RE.fullmatch(str(value.get(field, ""))) is None
+            for field in (
+                "marker_sha256",
+                "inventory_sha256",
+                "catalog_payload_sha256",
+            )
+        )
+        or not isinstance(value.get("allowed_generation_tuple_count"), int)
+        or isinstance(value.get("allowed_generation_tuple_count"), bool)
+        or int(value["allowed_generation_tuple_count"]) < 1
+    ):
+        raise ReadinessError("smoke trusted-generation catalog binding is invalid")
+    try:
+        catalog = validate_trusted_generation_catalog(
+            marker_path,
+            server_pool_root=Path(
+                str(control["immutable"]["server_pool_root"])
+            ).resolve(),
+        )
+    except (OSError, ValueError, GenerationCatalogError) as exc:
+        raise ReadinessError(
+            f"smoke trusted-generation catalog failed validation: {exc}"
+        ) from exc
+    expected = {
+        "catalog_id": catalog.catalog_id,
+        "marker_path": str(catalog.marker_path),
+        "marker_sha256": catalog.marker_sha256,
+        "inventory_sha256": catalog.inventory_sha256,
+        "catalog_payload_sha256": catalog.catalog_sha256,
+        "allowed_generation_tuple_count": len(
+            catalog.allowed_generation_tuples
+        ),
+    }
+    if dict(value) != expected:
+        raise ReadinessError(
+            "smoke trusted-generation catalog binding differs from sealed bytes"
+        )
+    expected_prefix = (
+        str(control["immutable"]["fleet_contract_sha256"]),
+        expected_fleet_sha256,
+        expected_capacity_generation,
+        expected_rollout_generation,
+    )
+    if not any(
+        identity[:4] == expected_prefix
+        for identity in catalog.allowed_generation_tuples
+    ):
+        raise ReadinessError(
+            "smoke trusted-generation catalog lacks the exact readiness generation"
+        )
+    return catalog
+
+
+def _smoke_result_records(
+    reference: Any,
+    *,
+    expected_path: Path,
+    expected_rows: int,
+) -> list[dict[str, Any]]:
+    """Read one sealed canonical smoke JSONL and verify its evidence reference."""
+
+    if (
+        not isinstance(reference, Mapping)
+        or set(reference) != {"path", "sha256", "row_count"}
+        or reference.get("path") != str(expected_path)
+        or _SHA256_RE.fullmatch(str(reference.get("sha256", ""))) is None
+        or reference.get("row_count") != expected_rows
+    ):
+        raise ReadinessError("smoke cell result-artifact binding is malformed")
+    path, raw = _read_stable_authorization_file(
+        expected_path, description="sealed smoke result artifact"
+    )
+    if (
+        path != expected_path
+        or hashlib.sha256(raw).hexdigest() != reference["sha256"]
+    ):
+        raise ReadinessError("smoke cell result artifact drifted")
+    lines = raw.splitlines()
+    if len(lines) != expected_rows or any(not line for line in lines):
+        raise ReadinessError(
+            "smoke cell result artifact row count is not exact"
+        )
+    records: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        def reject_duplicates(
+            pairs: Sequence[tuple[str, Any]],
+        ) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, nested in pairs:
+                if key in value:
+                    raise ReadinessError(
+                        f"smoke cell result row {index} duplicates key {key!r}"
+                    )
+                value[key] = nested
+            return value
+
+        def reject_nonfinite(token: str) -> Any:
+            raise ReadinessError(
+                f"smoke cell result row {index} contains non-finite {token}"
+            )
+
+        try:
+            record = json.loads(
+                line.decode("utf-8"),
+                object_pairs_hook=reject_duplicates,
+                parse_constant=reject_nonfinite,
+            )
+        except ReadinessError:
+            raise
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ReadinessError(
+                f"smoke cell result row {index} is malformed"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ReadinessError(
+                f"smoke cell result row {index} is not an object"
+            )
+        records.append(record)
+    return records
+
+
 def _validate_smoke_artifacts(
     control: Mapping[str, Any],
     metrics: Mapping[str, Any],
     artifacts: Mapping[str, tuple[Path, Mapping[str, Any] | None]],
 ) -> None:
+    fleet_binding = effective_fleet_contract_binding(control, verify_files=True)
     suites = {
         "long_32b_smoke": ("schema5_smoke_32b_long_v1", 15),
         "selective_long_smoke": ("schema5_smoke_selective_long_v1", 20),
@@ -2593,12 +4756,31 @@ def _validate_smoke_artifacts(
             "serving_environment_sha256"
         ],
         "model_contract_sha256": control["immutable"]["model_contract_sha256"],
-        "fleet_contract_sha256": control["immutable"]["fleet_contract_sha256"],
+        "fleet_contract_sha256": fleet_binding["sha256"],
+        "release_fleet_contract_sha256": control["immutable"][
+            "fleet_contract_sha256"
+        ],
+        "capacity_generation": fleet_binding["capacity_generation"],
         "server_pool_root": str(
             Path(control["immutable"]["server_pool_root"]).resolve()
         ),
-        "rollout_generation": 1,
+        # Smokes are executed while paused for the generation that ``resume`` will
+        # publish.  A capacity transition therefore cannot reuse generation-1 smoke
+        # provenance from the initial launch.
+        "rollout_generation": (
+            int(control["rollout_generation"]) + 1
+            if isinstance(
+                control.get("capacity", {}).get("active_transition"), dict
+            )
+            else 1
+        ),
     }
+    expected_attempt_root: Path | None = None
+    expected_attempt_binding: Mapping[str, Any] | None = None
+    selected_catalog: TrustedGenerationCatalog | None = None
+    selected_generation_tuples: frozenset[
+        tuple[str, str, int, int, str]
+    ] | None = None
     derived = {
         "long_32b_cells": 0,
         "selective_long_cells": 0,
@@ -2606,8 +4788,10 @@ def _validate_smoke_artifacts(
         "schema5_complete_cells": 0,
         "context_incidents": 0,
         "protocol_incidents": 0,
+        "transport_incidents": 0,
         "truncation_incidents": 0,
         "provenance_failures": 0,
+        "trusted_generation_failures": 0,
     }
     metric_names = {
         "long_32b_smoke": "long_32b_cells",
@@ -2624,13 +4808,21 @@ def _validate_smoke_artifacts(
         "schema5_complete_cells",
         "context_incidents",
         "protocol_incidents",
+        "transport_incidents",
         "truncation_incidents",
         "provenance_failures",
+        "trusted_generation_failures",
         "semantic_validation_failures",
         "top_level_length_censored_qids",
         "top_level_protocol_censored_qids",
+        "top_level_transport_censored_qids",
+        "transport_affected_qids",
+        "transport_censored_coordinates",
         "auxiliary_length_censored_draws",
         "auxiliary_protocol_censored_draws",
+        "auxiliary_transport_censored_draws",
+        "transport_censor_protocol_version",
+        "transport_censor_protocol_hash",
         "concurrency",
         "resumable",
         "execution_halted",
@@ -2649,13 +4841,19 @@ def _validate_smoke_artifacts(
         zero_fields = (
             "context_incidents",
             "protocol_incidents",
+            "transport_incidents",
             "truncation_incidents",
             "provenance_failures",
+            "trusted_generation_failures",
             "semantic_validation_failures",
             "top_level_length_censored_qids",
             "top_level_protocol_censored_qids",
+            "top_level_transport_censored_qids",
+            "transport_affected_qids",
+            "transport_censored_coordinates",
             "auxiliary_length_censored_draws",
             "auxiliary_protocol_censored_draws",
+            "auxiliary_transport_censored_draws",
         )
         cells = suite.get("cells")
         identity = suite.get("suite_identity")
@@ -2668,6 +4866,135 @@ def _validate_smoke_artifacts(
             "lineage_sha256",
             "serving_profile_counts",
             "estimand_excluded",
+            "smoke_attempt",
+        }
+        artifact_path = artifacts[name][0]
+        attempt_root = artifact_path.parent.parent
+        attempt_binding = (
+            identity.get("smoke_attempt")
+            if isinstance(identity, Mapping)
+            else None
+        )
+        attempt_ordinal = (
+            attempt_binding.get("attempt_ordinal")
+            if isinstance(attempt_binding, Mapping)
+            else None
+        )
+        trusted_catalog_id = (
+            attempt_binding.get("trusted_catalog_id")
+            if isinstance(attempt_binding, Mapping)
+            else None
+        )
+        if (
+            not isinstance(attempt_binding, Mapping)
+            or set(attempt_binding) != SMOKE_ATTEMPT_BINDING_FIELDS
+            or attempt_binding.get("protocol")
+            != SMOKE_ATTEMPT_BINDING_PROTOCOL
+            or not isinstance(attempt_binding.get("attempt_id"), str)
+            or not attempt_binding["attempt_id"]
+            or not isinstance(attempt_ordinal, int)
+            or isinstance(attempt_ordinal, bool)
+            or int(attempt_ordinal) < 1
+            or attempt_binding.get("immutable_sha256")
+            != control["immutable_sha256"]
+            or attempt_binding.get("capacity_generation")
+            != provenance_expected["capacity_generation"]
+            or attempt_binding.get("rollout_generation")
+            != provenance_expected["rollout_generation"]
+            or attempt_binding.get("fleet_contract_sha256")
+            != provenance_expected["fleet_contract_sha256"]
+            or attempt_binding.get("release_fleet_contract_sha256")
+            != provenance_expected["release_fleet_contract_sha256"]
+            or _SHA256_RE.fullmatch(str(trusted_catalog_id or "")) is None
+            or attempt_binding["attempt_id"]
+            != (
+                f"a{int(attempt_ordinal):06d}-"
+                f"g{int(provenance_expected['rollout_generation']):06d}-"
+                f"c{int(provenance_expected['capacity_generation']):06d}-"
+                f"{str(trusted_catalog_id)[:16]}"
+            )
+            or artifact_path.parent.name != "artifacts"
+            or attempt_root.name != attempt_binding["attempt_id"]
+            or attempt_root.parent.name != "attempts"
+            or attempt_root.parent.parent.name != SMOKE_ATTEMPT_BASE_NAME
+        ):
+            raise ReadinessError(
+                f"smoke suite {name} is outside its generation-scoped attempt"
+            )
+        if expected_attempt_root is None:
+            expected_attempt_root = attempt_root
+            expected_attempt_binding = dict(attempt_binding)
+        elif (
+            attempt_root != expected_attempt_root
+            or dict(attempt_binding) != dict(expected_attempt_binding or {})
+        ):
+            raise ReadinessError(
+                "smoke suite artifacts do not share one exact attempt"
+            )
+        provenance = suite.get("provenance")
+        catalog_binding = (
+            provenance.get("trusted_generation_catalog")
+            if isinstance(provenance, Mapping)
+            else None
+        )
+        if selected_catalog is None:
+            selected_catalog = _validate_smoke_catalog_binding(
+                control,
+                catalog_binding,
+                expected_fleet_sha256=str(fleet_binding["sha256"]),
+                expected_capacity_generation=int(
+                    fleet_binding["capacity_generation"]
+                ),
+                expected_rollout_generation=int(
+                    provenance_expected["rollout_generation"]
+                ),
+            )
+            if trusted_catalog_id != selected_catalog.catalog_id:
+                raise ReadinessError(
+                    "smoke attempt does not bind its exact trusted-generation "
+                    "catalog"
+                )
+            selected_generation_tuples = frozenset(
+                candidate
+                for candidate in selected_catalog.allowed_generation_tuples
+                if candidate[:4]
+                == (
+                    provenance_expected[
+                        "release_fleet_contract_sha256"
+                    ],
+                    provenance_expected["fleet_contract_sha256"],
+                    provenance_expected["capacity_generation"],
+                    provenance_expected["rollout_generation"],
+                )
+            )
+            if not selected_generation_tuples:
+                raise ReadinessError(
+                    "smoke catalog contains no endpoint for its selected "
+                    "readiness generation"
+                )
+        else:
+            expected_catalog_binding = {
+                "catalog_id": selected_catalog.catalog_id,
+                "marker_path": str(selected_catalog.marker_path),
+                "marker_sha256": selected_catalog.marker_sha256,
+                "inventory_sha256": selected_catalog.inventory_sha256,
+                "catalog_payload_sha256": selected_catalog.catalog_sha256,
+                "allowed_generation_tuple_count": len(
+                    selected_catalog.allowed_generation_tuples
+                ),
+            }
+            if dict(catalog_binding or {}) != expected_catalog_binding:
+                raise ReadinessError(
+                    "smoke suites bind different trusted-generation catalogs"
+                )
+            if trusted_catalog_id != selected_catalog.catalog_id:
+                raise ReadinessError(
+                    "smoke attempt does not bind its exact trusted-generation "
+                    "catalog"
+                )
+        expected_provenance = {
+            **provenance_expected,
+            "trusted_generation_catalog": dict(catalog_binding),
         }
         valid_identity = (
             isinstance(identity, dict)
@@ -2676,6 +5003,8 @@ def _validate_smoke_artifacts(
             and identity.get("cell_count") == expected_cells
             and identity.get("serving_profile_counts") == expected_profiles[name]
             and identity.get("estimand_excluded") is True
+            and dict(identity.get("smoke_attempt") or {})
+            == dict(expected_attempt_binding or {})
             and all(
                 _SHA256_RE.fullmatch(str(identity.get(field, ""))) is not None
                 for field in (
@@ -2695,7 +5024,11 @@ def _validate_smoke_artifacts(
             or suite.get("resumable") is not True
             or suite.get("execution_halted") is not False
             or suite.get("execution_halt_reason") is not None
-            or suite.get("provenance") != provenance_expected
+            or suite.get("transport_censor_protocol_version")
+            != TRANSPORT_CENSOR_PROTOCOL_VERSION
+            or suite.get("transport_censor_protocol_hash")
+            != TRANSPORT_CENSOR_PROTOCOL_HASH
+            or suite.get("provenance") != expected_provenance
             or not valid_identity
             or not isinstance(cells, list)
             or len(cells) != expected_cells
@@ -2710,13 +5043,20 @@ def _validate_smoke_artifacts(
             "expected_qids",
             "top_level_length_censored_qids",
             "top_level_protocol_censored_qids",
+            "top_level_transport_censored_qids",
+            "transport_affected_qids",
+            "transport_censored_coordinates",
             "auxiliary_length_censored_draws",
             "auxiliary_protocol_censored_draws",
+            "auxiliary_transport_censored_draws",
             "context_incidents",
             "protocol_incidents",
+            "transport_incidents",
             "truncation_incidents",
             "provenance_failures",
             "provenance_errors",
+            "trusted_generation_errors",
+            "results_artifact",
             "semantic_errors",
             "failure",
         }
@@ -2740,11 +5080,36 @@ def _validate_smoke_artifacts(
                 or cell.get("valid_qids") != cell.get("expected_qids")
                 or any(cell.get(field) != 0 for field in zero_fields if field in cell)
                 or cell.get("provenance_errors") != []
+                or cell.get("trusted_generation_errors") != []
                 or cell.get("semantic_errors") != []
                 or cell.get("failure") is not None
             ):
                 raise ReadinessError(
                     f"smoke suite {name} has a non-canonical cell result"
+                )
+            assert selected_catalog is not None
+            assert selected_generation_tuples is not None
+            expected_result_path = (
+                Path(str(control["immutable"]["results_root"])).resolve()
+                / SMOKE_ATTEMPT_RUNS_NAME
+                / str(attempt_binding["attempt_id"])
+                / run_id
+                / "cells"
+                / str(cell["cell_id"])
+                / "results.jsonl"
+            )
+            records = _smoke_result_records(
+                cell.get("results_artifact"),
+                expected_path=expected_result_path,
+                expected_rows=int(cell["valid_qids"]),
+            )
+            observed_trusted_errors = trusted_generation_catalog_errors(
+                records, selected_generation_tuples
+            )
+            if observed_trusted_errors:
+                raise ReadinessError(
+                    f"smoke suite {name} contains out-of-catalog endpoint "
+                    f"provenance: {observed_trusted_errors[:3]}"
                 )
         if len(cell_ids) != expected_cells:
             raise ReadinessError(f"smoke suite {name} repeats a cell ID")
@@ -2753,8 +5118,10 @@ def _validate_smoke_artifacts(
         for field in (
             "context_incidents",
             "protocol_incidents",
+            "transport_incidents",
             "truncation_incidents",
             "provenance_failures",
+            "trusted_generation_failures",
         ):
             derived[field] += int(suite[field])
     if dict(metrics) != derived:
@@ -2784,47 +5151,101 @@ def _validate_email_artifact(
     )
     if receipt.get("metrics") != dict(metrics):
         raise ReadinessError("email receipt metrics differ from the outer envelope")
-    raw = _load_only_source_report(
-        receipt,
-        expected_name="mail_submission_receipt",
-        snapshot_context=snapshot_context,
+    references = receipt.get("referenced_artifacts")
+    expected_names = (
+        "active_email_challenge",
+        "email_ack_request",
+        "email_acknowledgement",
     )
-    _exact_keys(
-        raw,
-        {
-            "schema_version",
-            "kind",
-            "passed",
-            "immutable_sha256",
-            "metrics",
-            "submitted_timestamp",
-            "subject",
-            "message_sha256",
-            "stdout",
-            "stderr",
-            "referenced_artifacts",
-        },
-        context="raw mail submission receipt",
-    )
-    submitted = raw.get("submitted_timestamp")
     if (
-        raw.get("schema_version") != 1
-        or raw.get("kind") != "mail_submission_receipt"
-        or raw.get("passed") is not True
-        or raw.get("immutable_sha256") != control["immutable_sha256"]
-        or raw.get("metrics") != dict(metrics)
-        or not isinstance(submitted, (int, float))
-        or isinstance(submitted, bool)
-        or submitted < 0
-        or raw.get("subject") != "[agents-scaling] schema-5 readiness delivery test"
-        or not isinstance(raw.get("message_sha256"), str)
-        or len(raw["message_sha256"]) != 64
-        or not isinstance(raw.get("stdout"), str)
-        or not isinstance(raw.get("stderr"), str)
-        or raw.get("referenced_artifacts") != []
+        not isinstance(references, list)
+        or len(references) != len(expected_names)
+        or tuple(
+            reference.get("name") if isinstance(reference, dict) else None
+            for reference in references
+        )
+        != expected_names
     ):
         raise ReadinessError(
-            "raw mail submission receipt does not prove the outer metrics"
+            "email delivery receipt must reference exactly its active challenge, "
+            "request, and one-time acknowledgement"
+        )
+    verified: set[tuple[str, str]] = set()
+    active: set[tuple[str, str]] = set()
+    active_path, active_challenge = _validate_referenced_artifact(
+        references[0],
+        context="active email challenge",
+        verified=verified,
+        active=active,
+        snapshot_context=snapshot_context,
+    )
+    request_path, request = _validate_referenced_artifact(
+        references[1],
+        context="email acknowledgement request",
+        verified=verified,
+        active=active,
+        snapshot_context=snapshot_context,
+    )
+    acknowledgement_path, acknowledgement = _validate_referenced_artifact(
+        references[2],
+        context="email acknowledgement",
+        verified=verified,
+        active=active,
+        snapshot_context=snapshot_context,
+    )
+    if (
+        not isinstance(active_challenge, dict)
+        or not isinstance(request, dict)
+        or not isinstance(acknowledgement, dict)
+    ):
+        raise ReadinessError(
+            "active email challenge, request, and acknowledgement must be objects"
+        )
+    if (
+        request.get("immutable_sha256") != control["immutable_sha256"]
+        or request.get("recipient") != control.get("alert_email")
+        or request.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
+        or request.get("release_git_commit")
+        != control["immutable"]["git_commit"]
+    ):
+        raise ReadinessError(
+            "email challenge differs from immutable production control"
+        )
+    try:
+        schema5_email_ack.validate_request_payload(request)
+        schema5_email_ack.validate_active_challenge(
+            active_challenge,
+            active_path=active_path,
+            request=request,
+            request_path=request_path,
+        )
+        schema5_email_ack.validate_acknowledgement(
+            acknowledgement,
+            acknowledgement_path=acknowledgement_path,
+            request=request,
+            request_path=request_path,
+        )
+    except schema5_email_ack.AcknowledgementError as exc:
+        raise ReadinessError(
+            f"email challenge closed-schema validation failed: {exc}"
+        ) from exc
+    derived = {
+        "recipient": request["recipient"],
+        "delivery_succeeded": request["delivery_succeeded"],
+        "returncode": request["returncode"],
+        "acknowledged": True,
+        "chain_id": request["chain_id"],
+        "request_id": request["request_id"],
+        "release_tag": request["release_tag"],
+        "release_git_commit": request["release_git_commit"],
+        "challenge_generation": request["challenge_generation"],
+        "challenge_id": request["challenge_id"],
+        "challenge_verifier": request["challenge_verifier"],
+        "acknowledged_at": acknowledgement["acknowledged_at"],
+    }
+    if dict(metrics) != derived:
+        raise ReadinessError(
+            "outer email metrics are not derived from the request and acknowledgement"
         )
 
 
@@ -3526,6 +5947,9 @@ def _validate_gate_metrics(
             "repair_count": 0,
         }
     elif gate == "fleet":
+        fleet_binding = effective_fleet_contract_binding(
+            control, verify_files=True
+        )
         expected_keys = {
             "logical_replicas",
             "allocated_gpus",
@@ -3539,21 +5963,44 @@ def _validate_gate_metrics(
             "captured_timestamp",
             "model_contract_sha256",
             "fleet_contract_sha256",
+            "client_capacity_evidence_id",
+            "client_partition",
+            "client_qos",
+            "client_cpu_limit",
+            "client_memory_limit_mib",
+            "client_max_submit_jobs",
+            "transport_censor_protocol_version",
+            "transport_censor_protocol_hash",
+            "transport_uncertainty_binding_sha256",
+            "scheduler_safety_evidence_id",
+            "scheduler_safety_policy_id",
+            "scheduler_safety_policy_contract_id",
+            "scheduler_preemptible_partitions",
+            "scheduler_partition_time_requirements_seconds",
         }
         _exact_keys(metrics, expected_keys, context="fleet metrics")
         for key, expected in {
-            "logical_replicas": 22,
-            "allocated_gpus": 24,
-            "healthy_replicas": 22,
+            "logical_replicas": fleet_binding["logical_replicas"],
+            "allocated_gpus": fleet_binding["allocated_gpus"],
+            "healthy_replicas": fleet_binding["logical_replicas"],
             "unhealthy_replicas": 0,
             "revision_mismatches": 0,
             "missing_profiles": 0,
             "stale_registrations": 0,
+            "client_cpu_limit": control["immutable"][
+                "protected_client_cpus"
+            ],
+            "client_memory_limit_mib": control["immutable"][
+                "protected_client_memory_mib"
+            ],
+            "client_max_submit_jobs": control["immutable"][
+                "protected_client_submit_headroom"
+            ],
         }.items():
             _exact_integer(metrics[key], expected, context=f"fleet {key}")
-        if metrics.get("profile_replicas") != EXPECTED_FLEET_PROFILES:
+        if metrics.get("profile_replicas") != fleet_binding["profile_replicas"]:
             raise ReadinessError(
-                "fleet profile replica counts do not match the 22-replica contract"
+                "fleet profile replica counts do not match the effective contract"
             )
         if (
             metrics.get("model_contract_sha256")
@@ -3564,7 +6011,7 @@ def _validate_gate_metrics(
             )
         if (
             metrics.get("fleet_contract_sha256")
-            != control["immutable"]["fleet_contract_sha256"]
+            != fleet_binding["sha256"]
         ):
             raise ReadinessError("fleet-contract hash does not match immutable pins")
         age = metrics.get("max_heartbeat_age_seconds")
@@ -3575,6 +6022,54 @@ def _validate_gate_metrics(
         ):
             raise ReadinessError(
                 "fleet max_heartbeat_age_seconds must be within [0, 600]"
+            )
+        if (
+            metrics.get("client_partition")
+            != control["immutable"]["protected_client_partition"]
+            or metrics.get("client_qos")
+            != control["immutable"]["protected_client_qos"]
+            or not isinstance(metrics.get("client_capacity_evidence_id"), str)
+            or _SHA256_RE.fullmatch(
+                metrics["client_capacity_evidence_id"]
+            )
+            is None
+        ):
+            raise ReadinessError(
+                "fleet metrics lack the exact protected client partition/QOS "
+                "capacity evidence identity"
+            )
+        transport_binding = control["immutable"][
+            "transport_uncertainty_binding"
+        ]
+        if (
+            metrics.get("transport_censor_protocol_version")
+            != transport_binding["transport_censor_protocol_version"]
+            or metrics.get("transport_censor_protocol_hash")
+            != transport_binding["transport_censor_protocol_hash"]
+            or metrics.get("transport_uncertainty_binding_sha256")
+            != control["immutable"][
+                "transport_uncertainty_binding_sha256"
+            ]
+            or any(
+                _SHA256_RE.fullmatch(str(metrics.get(field, ""))) is None
+                for field in (
+                    "scheduler_safety_evidence_id",
+                    "scheduler_safety_policy_id",
+                    "scheduler_safety_policy_contract_id",
+                )
+            )
+            or not isinstance(
+                metrics.get("scheduler_preemptible_partitions"), list
+            )
+            or not isinstance(
+                metrics.get(
+                    "scheduler_partition_time_requirements_seconds"
+                ),
+                dict,
+            )
+        ):
+            raise ReadinessError(
+                "fleet metrics lack exact scheduler/transport provenance"
             )
         captured = metrics.get("captured_timestamp")
         if (
@@ -3589,10 +6084,9 @@ def _validate_gate_metrics(
             )
         fleet_contract = artifacts["fleet_contract"][0]
         if (
-            str(fleet_contract)
-            != str(Path(control["immutable"]["fleet_contract_path"]).resolve())
+            str(fleet_contract) != str(Path(fleet_binding["path"]).resolve())
             or sha256_file(fleet_contract)
-            != control["immutable"]["fleet_contract_sha256"]
+            != fleet_binding["sha256"]
         ):
             raise ReadinessError(
                 "fleet evidence does not reference the exact immutable contract"
@@ -3614,9 +6108,9 @@ def _validate_gate_metrics(
         expected_keys = set(exact_metrics) | {"minimum_context_margin_tokens"}
         _exact_keys(metrics, expected_keys, context="context-audit metrics")
         margin = metrics.get("minimum_context_margin_tokens")
-        if not isinstance(margin, int) or isinstance(margin, bool) or margin != 1_287:
+        if not isinstance(margin, int) or isinstance(margin, bool) or margin < 1_287:
             raise ReadinessError(
-                "minimum context margin must equal the audited 1,287 tokens"
+                "minimum context margin must be at least the audited 1,287 tokens"
             )
         for key, expected in exact_metrics.items():
             _exact_integer(metrics.get(key), expected, context=f"context_audit {key}")
@@ -3635,11 +6129,26 @@ def _validate_gate_metrics(
             "schema5_complete_cells": 41,
             "context_incidents": 0,
             "protocol_incidents": 0,
+            "transport_incidents": 0,
             "truncation_incidents": 0,
             "provenance_failures": 0,
+            "trusted_generation_failures": 0,
         }
     elif gate == "email_test":
-        expected_keys = {"recipient", "delivery_succeeded", "returncode"}
+        expected_keys = {
+            "recipient",
+            "delivery_succeeded",
+            "returncode",
+            "acknowledged",
+            "chain_id",
+            "request_id",
+            "release_tag",
+            "release_git_commit",
+            "challenge_generation",
+            "challenge_id",
+            "challenge_verifier",
+            "acknowledged_at",
+        }
         _exact_keys(metrics, expected_keys, context="email-test metrics")
         if metrics.get("recipient") != control.get("alert_email"):
             raise ReadinessError(
@@ -3649,6 +6158,47 @@ def _validate_gate_metrics(
             metrics.get("delivery_succeeded"), True, context="email delivery"
         )
         _exact_integer(metrics.get("returncode"), 0, context="email returncode")
+        _exact_boolean(
+            metrics.get("acknowledged"), True, context="email receipt acknowledgement"
+        )
+        for field in (
+            "chain_id",
+            "request_id",
+            "challenge_id",
+            "challenge_verifier",
+        ):
+            if _SHA256_RE.fullmatch(str(metrics.get(field, ""))) is None:
+                raise ReadinessError(
+                    f"email receipt {field} must be a lowercase SHA-256"
+                )
+        if metrics.get("release_tag") != PRODUCTION_OPERATIONAL_TAG:
+            raise ReadinessError(
+                "email receipt release tag differs from production"
+            )
+        if (
+            metrics.get("release_git_commit")
+            != control["immutable"]["git_commit"]
+        ):
+            raise ReadinessError(
+                "email receipt release commit differs from immutable control"
+            )
+        challenge_generation = metrics.get("challenge_generation")
+        if (
+            not isinstance(challenge_generation, int)
+            or isinstance(challenge_generation, bool)
+            or challenge_generation < 0
+        ):
+            raise ReadinessError(
+                "email receipt challenge generation is invalid"
+            )
+        try:
+            time.strptime(
+                str(metrics.get("acknowledged_at")), "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except ValueError as exc:
+            raise ReadinessError(
+                "email receipt acknowledged_at must be a canonical UTC timestamp"
+            ) from exc
         _validate_email_artifact(
             control,
             metrics,
@@ -3872,18 +6422,1233 @@ def _validate_attestation(
     )
 
 
+def _read_stable_authorization_file(
+    path: Path, *, description: str
+) -> tuple[Path, bytes]:
+    """Read one sealed single-link file without following any symlink component."""
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if any(character in str(lexical) for character in ("\x00", "\n", "\r")):
+        raise ReadinessError(f"{description} path is unsafe")
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ReadinessError(f"{description} is unavailable: {exc}") from exc
+    if resolved != lexical:
+        raise ReadinessError(f"{description} traverses a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise ReadinessError(f"cannot open {description}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            chunks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ReadinessError(f"cannot restat {description}: {exc}") from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or identity(before) != identity(after)
+        or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino)
+        or stat.S_IMODE(before.st_mode) & 0o222
+        or before.st_nlink != 1
+    ):
+        raise ReadinessError(
+            f"{description} is mutable, linked, or changed while being read"
+        )
+    return lexical, b"".join(chunks)
+
+
+def _parse_authorization_json(
+    raw: bytes, *, description: str
+) -> dict[str, Any]:
+    def reject_duplicates(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ReadinessError(
+                    f"{description} duplicates JSON key {key!r}"
+                )
+            result[key] = value
+        return result
+
+    def reject_nonfinite(token: str) -> Any:
+        raise ReadinessError(f"{description} contains non-finite {token}")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=reject_nonfinite,
+        )
+    except ReadinessError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ReadinessError(f"{description} is invalid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ReadinessError(f"{description} must contain one JSON object")
+    return value
+
+
+def _authorization_file_binding(
+    path: Path,
+    *,
+    description: str,
+    identity_field: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    canonical, raw = _read_stable_authorization_file(
+        path, description=description
+    )
+    binding: dict[str, Any] = {
+        "path": str(canonical),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+    }
+    value: dict[str, Any] | None = None
+    if identity_field is not None:
+        value = _parse_authorization_json(raw, description=description)
+        identity = value.get(identity_field)
+        if not isinstance(identity, str) or not identity:
+            raise ReadinessError(
+                f"{description} lacks {identity_field!r} identity"
+            )
+        binding[identity_field] = identity
+    return binding, value
+
+
+def _authorization_lineage(
+    control: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    chain_id: str,
+) -> dict[str, str]:
+    immutable = control["immutable"]
+    marker_path = Path(str(immutable["protected_capacity_marker_path"]))
+    marker_binding, marker = _authorization_file_binding(
+        marker_path,
+        description="protected-capacity release lineage",
+        identity_field="marker_id",
+    )
+    assert marker is not None
+    if (
+        marker_binding["sha256"]
+        != immutable["protected_capacity_marker_sha256"]
+        or marker_binding["marker_id"]
+        != immutable["protected_capacity_marker_id"]
+    ):
+        raise ReadinessError(
+            "production authorization protected-capacity lineage drifted"
+        )
+    lineage = {
+        "release_id": str(manifest.get("release_id", "")),
+        "release_tag": str(manifest.get("release_tag", "")),
+        "release_git_commit": str(
+            manifest.get("release_git_commit", "")
+        ),
+        "release_tag_object": str(
+            manifest.get("release_tag_object", "")
+        ),
+        "immutable_sha256": str(control["immutable_sha256"]),
+        "chain_id": chain_id,
+    }
+    if (
+        lineage["release_id"] != immutable["release_id"]
+        or lineage["release_id"] != PRODUCTION_RELEASE_ID
+        or lineage["release_tag"] != PRODUCTION_OPERATIONAL_TAG
+        or lineage["release_git_commit"] != immutable["git_commit"]
+        or _SHA256_RE.fullmatch(lineage["chain_id"]) is None
+        or re.fullmatch(r"[0-9a-f]{40}", lineage["release_tag_object"])
+        is None
+        or marker.get("release_id") != lineage["release_id"]
+        or marker.get("release_tag") != lineage["release_tag"]
+        or marker.get("release_git_commit")
+        != lineage["release_git_commit"]
+        or marker.get("release_tag_object")
+        != lineage["release_tag_object"]
+    ):
+        raise ReadinessError(
+            "production authorization chain has the wrong release lineage"
+        )
+    return lineage
+
+
+def _production_authorization_environment(
+    control: Mapping[str, Any]
+) -> dict[str, str]:
+    """Build the isolated, offline verifier environment from immutable pins."""
+
+    harness = Path(
+        str(control["immutable"]["harness_environment_prefix"])
+    ).expanduser().resolve()
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("PYTHON", "PIP_", "CONDA_"))
+        and name
+        not in {
+            "VIRTUAL_ENV",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+        }
+    }
+    environment.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_NO_INPUT": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "CONDARC": os.devnull,
+            "CONDA_NO_PLUGINS": "true",
+            "LD_LIBRARY_PATH": str(harness / "lib"),
+        }
+    )
+    return environment
+
+
+def _invoke_production_authorization_verifier(
+    control: Mapping[str, Any],
+    *,
+    gate: str,
+    chain_manifest: Path,
+    verifier_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str], float],
+            subprocess.CompletedProcess[str],
+        ]
+        | None
+    ) = None,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+]:
+    immutable = control["immutable"]
+    harness_prefix = (
+        Path(str(immutable["harness_environment_prefix"]))
+        .expanduser()
+        .resolve()
+    )
+    try:
+        # Conda normally publishes ``bin/python`` as a same-prefix symlink.  Invoke
+        # and bind its sealed regular target so the verifier never trusts a symlink
+        # inode while retaining the exact pinned environment.
+        harness_python = (harness_prefix / "bin" / "python").resolve(
+            strict=True
+        )
+        harness_python.relative_to(harness_prefix)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ReadinessError(
+            "pinned production-authorization Python escapes its harness prefix"
+        ) from exc
+    verifier = (
+        Path(str(immutable["release_worktree"])).expanduser().resolve()
+        / PRODUCTION_AUTHORIZATION_VERIFIER
+    )
+    python_binding, _ = _authorization_file_binding(
+        harness_python,
+        description="pinned production-authorization harness Python",
+    )
+    verifier_binding, _ = _authorization_file_binding(
+        verifier,
+        description="frozen production-authorization verifier",
+    )
+    manifest_binding, manifest = _authorization_file_binding(
+        chain_manifest,
+        description="production-authorization chain manifest",
+        identity_field="chain_id",
+    )
+    assert manifest is not None
+    subcommand = {
+        "throughput_qualification": "verify-throughput-qualification",
+        "external_watchdog": "verify-watchdog-readiness",
+    }[gate]
+    argv = [
+        str(harness_python),
+        "-I",
+        str(verifier),
+        subcommand,
+        "--chain-manifest",
+        str(Path(str(manifest_binding["path"]))),
+    ]
+    environment = _production_authorization_environment(control)
+    try:
+        if verifier_runner is None:
+            completed = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+                timeout=PRODUCTION_AUTHORIZATION_VERIFIER_TIMEOUT_SECONDS,
+            )
+        else:
+            completed = verifier_runner(
+                argv,
+                environment,
+                PRODUCTION_AUTHORIZATION_VERIFIER_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReadinessError(
+            f"{gate} frozen verifier could not run: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        raise ReadinessError(
+            f"{gate} frozen verifier failed ({completed.returncode}): "
+            f"{completed.stderr.strip()[:1000]}"
+        )
+    report = _parse_authorization_json(
+        completed.stdout.encode("utf-8"),
+        description=f"{gate} frozen verifier output",
+    )
+    if (
+        report.get("passed") is not True
+        or report.get("chain_id") != manifest_binding["chain_id"]
+        or report.get("manifest") != manifest_binding["path"]
+    ):
+        raise ReadinessError(
+            f"{gate} frozen verifier did not bind the exact chain manifest"
+        )
+    return (
+        report,
+        manifest_binding,
+        manifest,
+        {
+            "harness_python": python_binding,
+            "verifier": verifier_binding,
+        },
+    )
+
+
+def _binding_matches_file(
+    binding: Mapping[str, Any],
+    *,
+    description: str,
+    identity_field: str | None = None,
+) -> dict[str, Any] | None:
+    expected = {"path", "sha256", "size"}
+    if identity_field is not None:
+        expected.add(identity_field)
+    if set(binding) != expected:
+        raise ReadinessError(f"{description} binding fields drifted")
+    path = Path(str(binding.get("path", "")))
+    observed, value = _authorization_file_binding(
+        path,
+        description=description,
+        identity_field=identity_field,
+    )
+    if observed != dict(binding):
+        raise ReadinessError(f"{description} binding drifted")
+    return value
+
+
+def _build_throughput_authorization_artifacts(
+    report: Mapping[str, Any],
+    *,
+    evidence_path: Path | None,
+    expected_sha256: str | None,
+    manifest_binding: Mapping[str, Any],
+    lineage: Mapping[str, str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    exact_report_fields = {
+        "passed",
+        "chain_id",
+        "manifest",
+        "qualification_marker",
+        "attempt_marker",
+        "attempt_id",
+        "attempt_pointer",
+        "qualification_id",
+        "cells",
+        "qids",
+        "steady_384_seconds",
+        "throughput_qids_per_day",
+        "chain_verification",
+    }
+    if set(report) != exact_report_fields:
+        raise ReadinessError(
+            "throughput-qualification verifier output fields drifted"
+        )
+    if (
+        report.get("cells") != 768
+        or report.get("qids") != 15_360
+        or not isinstance(report.get("chain_verification"), Mapping)
+        or report["chain_verification"].get("chain_id")
+        != report["chain_id"]
+    ):
+        raise ReadinessError(
+            "throughput-qualification verifier output is incomplete"
+        )
+    fixed, fixed_value = _authorization_file_binding(
+        Path(str(report["qualification_marker"])),
+        description="fixed throughput-qualification marker",
+        identity_field="qualification_id",
+    )
+    attempt, attempt_value = _authorization_file_binding(
+        Path(str(report["attempt_marker"])),
+        description="current throughput-qualification attempt marker",
+        identity_field="qualification_id",
+    )
+    pointer, pointer_value = _authorization_file_binding(
+        Path(str(report["attempt_pointer"])),
+        description="current throughput-qualification attempt pointer",
+        identity_field="pointer_id",
+    )
+    assert fixed_value is not None
+    assert attempt_value is not None
+    assert pointer_value is not None
+    current_path = Path(str(fixed["path"])).parent / "CURRENT_ATTEMPT.json"
+    current, current_value = _authorization_file_binding(
+        current_path,
+        description="current throughput-qualification attempt selector",
+        identity_field="current_id",
+    )
+    assert current_value is not None
+    if (
+        fixed["qualification_id"] != report["qualification_id"]
+        or attempt["qualification_id"] != report["qualification_id"]
+        or fixed["sha256"] != attempt["sha256"]
+        or fixed["size"] != attempt["size"]
+        or pointer_value.get("attempt_id") != report["attempt_id"]
+        or current_value.get("attempt_id") != report["attempt_id"]
+        or current_value.get("pointer") != pointer["path"]
+        or current_value.get("pointer_sha256") != pointer["sha256"]
+        or current_value.get("pointer_id") != pointer["pointer_id"]
+        or pointer_value.get("chain_id") != lineage["chain_id"]
+        or fixed_value.get("chain_id") != lineage["chain_id"]
+        or fixed_value.get("manifest") != manifest_binding["path"]
+        or fixed_value.get("manifest_sha256")
+        != manifest_binding["sha256"]
+        or fixed_value.get("release_id") != lineage["release_id"]
+        or fixed_value.get("release_tag") != lineage["release_tag"]
+        or fixed_value.get("release_git_commit")
+        != lineage["release_git_commit"]
+        or fixed_value.get("release_tag_object")
+        != lineage["release_tag_object"]
+    ):
+        raise ReadinessError(
+            "throughput-qualification artifacts do not bind one exact attempt"
+        )
+    if evidence_path is not None and evidence_path.expanduser().resolve() != Path(
+        str(fixed["path"])
+    ):
+        raise ReadinessError(
+            "--evidence must be the verifier-selected qualification marker"
+        )
+    if expected_sha256 is not None and expected_sha256 != fixed["sha256"]:
+        raise ReadinessError(
+            "throughput-qualification evidence hash differs from the verifier"
+        )
+    readiness = pointer_value.get("readiness_generation")
+    if not isinstance(readiness, Mapping):
+        raise ReadinessError(
+            "throughput-qualification pointer lacks readiness generation"
+        )
+    generation_fields = (
+        "rollout_generation",
+        "capacity_generation",
+        "catalog_id",
+        "fleet_contract_sha256",
+        "release_fleet_contract_sha256",
+    )
+    if any(field not in readiness for field in generation_fields):
+        raise ReadinessError(
+            "throughput-qualification readiness generation is incomplete"
+        )
+    generation = {field: readiness[field] for field in generation_fields}
+    for field in ("rollout_generation", "capacity_generation"):
+        if (
+            not isinstance(generation[field], int)
+            or isinstance(generation[field], bool)
+            or generation[field] < 1
+        ):
+            raise ReadinessError(
+                "throughput-qualification generation is malformed"
+            )
+    for field in (
+        "catalog_id",
+        "fleet_contract_sha256",
+        "release_fleet_contract_sha256",
+    ):
+        if _SHA256_RE.fullmatch(str(generation[field])) is None:
+            raise ReadinessError(
+                "throughput-qualification generation hash is malformed"
+            )
+    artifacts = {
+        "qualification_marker": fixed,
+        "attempt_marker": attempt,
+        "attempt_pointer": {
+            **pointer,
+            "attempt_id": str(report["attempt_id"]),
+        },
+        "current_attempt": {
+            **current,
+            "attempt_id": str(report["attempt_id"]),
+            "pointer_id": str(pointer["pointer_id"]),
+        },
+    }
+    return artifacts, generation
+
+
+def _build_watchdog_authorization_artifacts(
+    report: Mapping[str, Any],
+    *,
+    control: Mapping[str, Any],
+    evidence_path: Path | None,
+    expected_sha256: str | None,
+) -> dict[str, Any]:
+    exact_report_fields = {
+        "passed",
+        "chain_id",
+        "manifest",
+        "control_sha256",
+        "external_watchdog_drill",
+        "watchdog_ready",
+    }
+    if set(report) != exact_report_fields:
+        raise ReadinessError("external-watchdog verifier output fields drifted")
+    if report.get("control_sha256") != control["immutable_sha256"]:
+        raise ReadinessError(
+            "external-watchdog verifier binds a different control"
+        )
+    artifacts: dict[str, Any] = {}
+    for report_name, identity_field, stored_name in (
+        ("external_watchdog_drill", "drill_id", "watchdog_drill"),
+        ("watchdog_ready", "marker_id", "watchdog_ready"),
+    ):
+        source = report.get(report_name)
+        expected_fields = {
+            "marker",
+            "marker_sha256",
+            "marker_size",
+            "protocol",
+            identity_field,
+        }
+        if not isinstance(source, Mapping) or set(source) != expected_fields:
+            raise ReadinessError(
+                f"external-watchdog {report_name} binding fields drifted"
+            )
+        observed, value = _authorization_file_binding(
+            Path(str(source["marker"])),
+            description=f"external-watchdog {report_name} marker",
+            identity_field=identity_field,
+        )
+        assert value is not None
+        expected = {
+            "path": source["marker"],
+            "sha256": source["marker_sha256"],
+            "size": source["marker_size"],
+            identity_field: source[identity_field],
+        }
+        if (
+            observed != expected
+            or value.get(identity_field) != source[identity_field]
+            or value.get("control_sha256") != control["immutable_sha256"]
+        ):
+            raise ReadinessError(
+                f"external-watchdog {report_name} marker drifted"
+            )
+        artifacts[stored_name] = {
+            **observed,
+            "protocol": str(source["protocol"]),
+        }
+    ready = artifacts["watchdog_ready"]
+    if evidence_path is not None and evidence_path.expanduser().resolve() != Path(
+        str(ready["path"])
+    ):
+        raise ReadinessError(
+            "--evidence must be the verifier-selected WATCHDOG_READY marker"
+        )
+    if expected_sha256 is not None and expected_sha256 != ready["sha256"]:
+        raise ReadinessError(
+            "external-watchdog evidence hash differs from the verifier"
+        )
+    return artifacts
+
+
+def _authorization_record_identity(record: Mapping[str, Any]) -> str:
+    identity = dict(record)
+    identity.pop("authorization_id", None)
+    return sha256_value(identity)
+
+
+def _production_authorization_core(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(value)
+        for key, value in record.items()
+        if key
+        not in {
+            "authorization_id",
+            "attested_at",
+            "attested_timestamp",
+        }
+    }
+
+
+def _validate_production_authorization_record(
+    control: Mapping[str, Any],
+    *,
+    gate: str,
+    record: Mapping[str, Any],
+    state_dir: Path,
+    verify_files: bool,
+) -> None:
+    common_fields = {
+        "schema_version",
+        "protocol",
+        "gate",
+        "passed",
+        "authorization_id",
+        "chain_id",
+        "chain_manifest",
+        "harness_python",
+        "verifier",
+        "verifier_report_sha256",
+        "release_lineage",
+        "artifacts",
+        "qualification_generation",
+        "attested_at",
+        "attested_timestamp",
+    }
+    if set(record) != common_fields:
+        raise ReadinessError(
+            f"{gate} production-authorization fields drifted"
+        )
+    authorization_id = str(record.get("authorization_id", ""))
+    lineage = record.get("release_lineage")
+    chain_manifest = record.get("chain_manifest")
+    harness_python = record.get("harness_python")
+    verifier = record.get("verifier")
+    bindings_valid = bool(
+        isinstance(chain_manifest, Mapping)
+        and set(chain_manifest) == {"path", "sha256", "size", "chain_id"}
+        and isinstance(harness_python, Mapping)
+        and set(harness_python) == {"path", "sha256", "size"}
+        and isinstance(verifier, Mapping)
+        and set(verifier) == {"path", "sha256", "size"}
+    )
+    if (
+        record.get("schema_version")
+        != PRODUCTION_AUTHORIZATION_SCHEMA_VERSION
+        or record.get("protocol") != PRODUCTION_AUTHORIZATION_PROTOCOL
+        or record.get("gate") != gate
+        or record.get("passed") is not True
+        or _SHA256_RE.fullmatch(authorization_id) is None
+        or authorization_id != _authorization_record_identity(record)
+        or record.get("chain_id")
+        != (lineage.get("chain_id") if isinstance(lineage, Mapping) else None)
+        or not isinstance(record.get("attested_at"), str)
+        or not isinstance(record.get("attested_timestamp"), (int, float))
+        or isinstance(record.get("attested_timestamp"), bool)
+        or not math.isfinite(float(record.get("attested_timestamp", 0)))
+        or _SHA256_RE.fullmatch(
+            str(record.get("verifier_report_sha256", ""))
+        )
+        is None
+        or not bindings_valid
+        or any(
+            _SHA256_RE.fullmatch(str(binding.get("sha256", ""))) is None
+            or not isinstance(binding.get("path"), str)
+            or not binding.get("path")
+            or not isinstance(binding.get("size"), int)
+            or isinstance(binding.get("size"), bool)
+            or int(binding.get("size", -1)) < 0
+            for binding in (
+                chain_manifest
+                if isinstance(chain_manifest, Mapping)
+                else {},
+                harness_python
+                if isinstance(harness_python, Mapping)
+                else {},
+                verifier if isinstance(verifier, Mapping) else {},
+            )
+        )
+        or not isinstance(lineage, Mapping)
+        or set(lineage)
+        != {
+            "release_id",
+            "release_tag",
+            "release_git_commit",
+            "release_tag_object",
+            "immutable_sha256",
+            "chain_id",
+        }
+        or lineage.get("release_id") != control["immutable"]["release_id"]
+        or lineage.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
+        or lineage.get("release_git_commit")
+        != control["immutable"]["git_commit"]
+        or lineage.get("immutable_sha256") != control["immutable_sha256"]
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(lineage.get("release_tag_object", ""))
+        )
+        is None
+        or chain_manifest.get("chain_id") != record.get("chain_id")
+        or chain_manifest.get("chain_id") != lineage.get("chain_id")
+    ):
+        raise ReadinessError(f"{gate} production authorization is invalid")
+    artifacts = record.get("artifacts")
+    qualification_generation = record.get("qualification_generation")
+    if not isinstance(artifacts, Mapping):
+        raise ReadinessError(f"{gate} authorization artifacts are invalid")
+    if gate == "throughput_qualification":
+        expected_artifacts = {
+            "qualification_marker": {
+                "path",
+                "sha256",
+                "size",
+                "qualification_id",
+            },
+            "attempt_marker": {
+                "path",
+                "sha256",
+                "size",
+                "qualification_id",
+            },
+            "attempt_pointer": {
+                "path",
+                "sha256",
+                "size",
+                "pointer_id",
+                "attempt_id",
+            },
+            "current_attempt": {
+                "path",
+                "sha256",
+                "size",
+                "current_id",
+                "attempt_id",
+                "pointer_id",
+            },
+        }
+        if (
+            set(artifacts) != set(expected_artifacts)
+            or any(
+                not isinstance(artifacts[name], Mapping)
+                or set(artifacts[name]) != fields
+                for name, fields in expected_artifacts.items()
+            )
+            or not isinstance(qualification_generation, Mapping)
+            or set(qualification_generation)
+            != {
+                "rollout_generation",
+                "capacity_generation",
+                "catalog_id",
+                "fleet_contract_sha256",
+                "release_fleet_contract_sha256",
+            }
+        ):
+            raise ReadinessError(
+                "throughput-qualification authorization bindings are malformed"
+            )
+    else:
+        expected_artifacts = {
+            "watchdog_drill": {
+                "path",
+                "sha256",
+                "size",
+                "drill_id",
+                "protocol",
+            },
+            "watchdog_ready": {
+                "path",
+                "sha256",
+                "size",
+                "marker_id",
+                "protocol",
+            },
+        }
+        if (
+            set(artifacts) != set(expected_artifacts)
+            or any(
+                not isinstance(artifacts[name], Mapping)
+                or set(artifacts[name]) != fields
+                for name, fields in expected_artifacts.items()
+            )
+            or qualification_generation is not None
+        ):
+            raise ReadinessError(
+                "external-watchdog authorization bindings are malformed"
+            )
+    matching_events = [
+        row
+        for row in control.get("transition_history", [])
+        if row.get("event") == "production_authorization_attested"
+        and row.get("details")
+        == {
+            "gate": gate,
+            "authorization_id": authorization_id,
+            "chain_id": record["chain_id"],
+            "chain_manifest_sha256": chain_manifest["sha256"],
+        }
+    ]
+    if len(matching_events) != 1:
+        raise ReadinessError(
+            f"{gate} production authorization is not uniquely journal-bound"
+        )
+    if not verify_files:
+        return
+    _binding_matches_file(
+        record["chain_manifest"],
+        description=f"{gate} chain manifest",
+        identity_field="chain_id",
+    )
+    _binding_matches_file(
+        record["harness_python"],
+        description=f"{gate} pinned harness Python",
+    )
+    _binding_matches_file(
+        record["verifier"],
+        description=f"{gate} frozen verifier",
+    )
+    if gate == "throughput_qualification":
+        qualification = _binding_matches_file(
+            artifacts["qualification_marker"],
+            description="authorized throughput-qualification marker",
+            identity_field="qualification_id",
+        )
+        attempt = _binding_matches_file(
+            artifacts["attempt_marker"],
+            description="authorized throughput-qualification attempt marker",
+            identity_field="qualification_id",
+        )
+        pointer_binding = dict(artifacts["attempt_pointer"])
+        pointer_attempt_id = pointer_binding.pop("attempt_id", None)
+        pointer = _binding_matches_file(
+            pointer_binding,
+            description="authorized throughput-qualification pointer",
+            identity_field="pointer_id",
+        )
+        current_binding = dict(artifacts["current_attempt"])
+        current_attempt_id = current_binding.pop("attempt_id", None)
+        current_pointer_id = current_binding.pop("pointer_id", None)
+        current = _binding_matches_file(
+            current_binding,
+            description="authorized current-attempt selector",
+            identity_field="current_id",
+        )
+        if (
+            qualification is None
+            or attempt is None
+            or pointer is None
+            or current is None
+            or artifacts["qualification_marker"]["sha256"]
+            != artifacts["attempt_marker"]["sha256"]
+            or qualification.get("qualification_id")
+            != attempt.get("qualification_id")
+            or pointer.get("attempt_id") != pointer_attempt_id
+            or current.get("attempt_id") != current_attempt_id
+            or current.get("pointer_id") != current_pointer_id
+            or current.get("pointer") != artifacts["attempt_pointer"]["path"]
+            or current.get("pointer_sha256")
+            != artifacts["attempt_pointer"]["sha256"]
+        ):
+            raise ReadinessError(
+                "throughput-qualification authorization selection drifted"
+            )
+        generation = record.get("qualification_generation")
+        if (
+            not isinstance(generation, Mapping)
+            or pointer.get("readiness_generation") is None
+            or any(
+                pointer["readiness_generation"].get(key) != value
+                for key, value in generation.items()
+            )
+        ):
+            raise ReadinessError(
+                "throughput-qualification generation binding drifted"
+            )
+    else:
+        if set(artifacts) != {"watchdog_drill", "watchdog_ready"}:
+            raise ReadinessError(
+                "external-watchdog artifact bindings drifted"
+            )
+        for name, identity_field in (
+            ("watchdog_drill", "drill_id"),
+            ("watchdog_ready", "marker_id"),
+        ):
+            binding = dict(artifacts[name])
+            binding.pop("protocol", None)
+            value = _binding_matches_file(
+                binding,
+                description=f"authorized external-watchdog {name}",
+                identity_field=identity_field,
+            )
+            if (
+                value is None
+                or value.get("control_sha256") != control["immutable_sha256"]
+            ):
+                raise ReadinessError(
+                    f"external-watchdog {name} control binding drifted"
+                )
+
+
+def _validate_production_authorization_state(
+    control: Mapping[str, Any],
+    *,
+    state_dir: Path,
+    require_passed: bool,
+    verify_files: bool,
+) -> None:
+    readiness = control.get("readiness")
+    if not isinstance(readiness, Mapping):
+        raise ControlError("schema-5 readiness state is missing")
+    failures: list[str] = []
+    for gate in PRODUCTION_AUTHORIZATION_GATES:
+        record = readiness.get(gate)
+        if not isinstance(record, Mapping):
+            failures.append(f"{gate}: record missing")
+            continue
+        if record.get("passed") is not True:
+            if dict(record) != {
+                "passed": False,
+                "evidence": None,
+                "attested_at": None,
+            }:
+                failures.append(f"{gate}: unpassed record is malformed")
+            elif require_passed:
+                failures.append(f"{gate}: not passed")
+            continue
+        try:
+            _validate_production_authorization_record(
+                control,
+                gate=gate,
+                record=record,
+                state_dir=state_dir,
+                verify_files=verify_files,
+            )
+        except ReadinessError as exc:
+            failures.append(str(exc))
+    if failures:
+        raise ReadinessError(
+            "production authorization failed:\n- " + "\n- ".join(failures)
+        )
+
+
+def _production_authorization_resume_binding(
+    control: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
+    binding: dict[str, dict[str, str]] = {}
+    for gate in PRODUCTION_AUTHORIZATION_GATES:
+        record = control.get("readiness", {}).get(gate)
+        if not isinstance(record, Mapping) or record.get("passed") is not True:
+            raise ReadinessError(
+                f"production authorization {gate} is not passed"
+            )
+        binding[gate] = {
+            "authorization_id": str(record.get("authorization_id", "")),
+            "chain_id": str(record.get("chain_id", "")),
+            "chain_manifest_sha256": str(
+                record.get("chain_manifest", {}).get("sha256", "")
+            ),
+        }
+        if any(
+            _SHA256_RE.fullmatch(value) is None
+            for value in binding[gate].values()
+        ):
+            raise ReadinessError(
+                f"production authorization {gate} resume binding is invalid"
+            )
+    return binding
+
+
+def _validate_resume_production_authorizations(
+    control: Mapping[str, Any],
+) -> None:
+    intent = control.get("resume_intent")
+    if not isinstance(intent, Mapping):
+        raise ReadinessError(
+            "resume transaction lacks production authorizations"
+        )
+    expected = _production_authorization_resume_binding(control)
+    if intent.get("production_authorizations") != expected:
+        raise ReadinessError(
+            "resume transaction production authorizations drifted"
+        )
+
+
+def _validate_initial_qualification_generation(
+    control: Mapping[str, Any],
+    *,
+    resume_catalog_pin: Mapping[str, Any],
+    target_rollout_generation: int,
+) -> None:
+    """Bind the 0 -> 1 launch to the exact qualified serving generation.
+
+    Later ordinary pause/resume cycles intentionally reuse their established
+    qualification unless a capacity transition invalidates it.  The initial launch
+    has no such historical generation, so accepting a qualification produced before
+    a prelaunch fleet/catalog change would start an unmeasured system.
+    """
+
+    if int(target_rollout_generation) != 1:
+        return
+    record = control.get("readiness", {}).get("throughput_qualification")
+    generation = (
+        record.get("qualification_generation")
+        if isinstance(record, Mapping)
+        else None
+    )
+    fleet = effective_fleet_contract_binding(control, verify_files=True)
+    expected = {
+        "rollout_generation": 1,
+        "capacity_generation": int(fleet["capacity_generation"]),
+        "catalog_id": resume_catalog_pin.get("catalog_id"),
+        "fleet_contract_sha256": str(fleet["sha256"]),
+        "release_fleet_contract_sha256": str(
+            control["immutable"]["fleet_contract_sha256"]
+        ),
+    }
+    if (
+        not isinstance(generation, Mapping)
+        or dict(generation) != expected
+        or resume_catalog_pin.get("rollout_generation") != 1
+        or resume_catalog_pin.get("capacity_generation")
+        != expected["capacity_generation"]
+        or resume_catalog_pin.get("fleet_contract_sha256")
+        != expected["fleet_contract_sha256"]
+        or resume_catalog_pin.get("release_fleet_contract_sha256")
+        != expected["release_fleet_contract_sha256"]
+    ):
+        raise ReadinessError(
+            "initial production launch throughput qualification does not bind "
+            "the exact rollout/capacity/fleet/catalog generation"
+        )
+
+
+def _prepare_production_authorization_record(
+    control: Mapping[str, Any],
+    *,
+    gate: str,
+    chain_manifest: Path,
+    evidence_path: Path | None,
+    expected_sha256: str | None,
+    timestamp: float,
+    verifier_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str], float],
+            subprocess.CompletedProcess[str],
+        ]
+        | None
+    ) = None,
+) -> dict[str, Any]:
+    report, manifest_binding, manifest, executable_bindings = (
+        _invoke_production_authorization_verifier(
+            control,
+            gate=gate,
+            chain_manifest=chain_manifest,
+            verifier_runner=verifier_runner,
+        )
+    )
+    chain_id = str(report["chain_id"])
+    lineage = _authorization_lineage(control, manifest, chain_id=chain_id)
+    if gate == "throughput_qualification":
+        artifacts, qualification_generation = (
+            _build_throughput_authorization_artifacts(
+                report,
+                evidence_path=evidence_path,
+                expected_sha256=expected_sha256,
+                manifest_binding=manifest_binding,
+                lineage=lineage,
+            )
+        )
+    else:
+        artifacts = _build_watchdog_authorization_artifacts(
+            report,
+            control=control,
+            evidence_path=evidence_path,
+            expected_sha256=expected_sha256,
+        )
+        qualification_generation = None
+    record: dict[str, Any] = {
+        "schema_version": PRODUCTION_AUTHORIZATION_SCHEMA_VERSION,
+        "protocol": PRODUCTION_AUTHORIZATION_PROTOCOL,
+        "gate": gate,
+        "passed": True,
+        "chain_id": chain_id,
+        "chain_manifest": manifest_binding,
+        "harness_python": executable_bindings["harness_python"],
+        "verifier": executable_bindings["verifier"],
+        "verifier_report_sha256": sha256_value(report),
+        "release_lineage": lineage,
+        "artifacts": artifacts,
+        "qualification_generation": qualification_generation,
+        "attested_at": utc_timestamp(timestamp),
+        "attested_timestamp": timestamp,
+    }
+    record["authorization_id"] = _authorization_record_identity(record)
+    return record
+
+
+def _require_pristine_authorization_control(
+    control: Mapping[str, Any],
+) -> None:
+    if (
+        control["desired_state"] != "paused"
+        or control.get("drain_requested")
+        or control["finalization"]["state"] != "idle"
+        or control.get("resume_intent") is not None
+    ):
+        raise ReadinessError(
+            "production authorization requires pristine paused control"
+        )
+
+
+def attest_production_authorization(
+    state_dir: Path,
+    *,
+    gate: str,
+    chain_manifest: Path,
+    evidence_path: Path | None = None,
+    expected_sha256: str | None = None,
+    now: float | None = None,
+    verifier_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str], float],
+            subprocess.CompletedProcess[str],
+        ]
+        | None
+    ) = None,
+) -> dict[str, Any]:
+    if gate not in PRODUCTION_AUTHORIZATION_GATES:
+        raise ReadinessError("unknown production-authorization gate")
+    timestamp = time.time() if now is None else float(now)
+    chain_manifest = chain_manifest.expanduser()
+
+    # The verifier can legitimately take hours.  Snapshot the complete paused control
+    # under lock, release it while the bounded subprocess runs, and accept the result
+    # only if the exact control bytes are still current.  This keeps status and repair
+    # inspection responsive without creating a time-of-check/time-of-use launch gap.
+    with control_lock(state_dir):
+        snapshot = load_control(state_dir, verify_files=True)
+        _require_pristine_authorization_control(snapshot)
+        snapshot_sha256 = sha256_value(snapshot)
+    record = _prepare_production_authorization_record(
+        snapshot,
+        gate=gate,
+        chain_manifest=chain_manifest,
+        evidence_path=evidence_path,
+        expected_sha256=expected_sha256,
+        timestamp=timestamp,
+        verifier_runner=verifier_runner,
+    )
+    manifest_binding = record["chain_manifest"]
+    chain_id = record["chain_id"]
+
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        _require_pristine_authorization_control(control)
+        if sha256_value(control) != snapshot_sha256:
+            raise ReadinessError(
+                "control changed while the production-authorization verifier ran; "
+                "discarding the stale result"
+            )
+        current = control["readiness"][gate]
+        if current.get("passed") is True:
+            if _production_authorization_core(current) == (
+                _production_authorization_core(record)
+            ):
+                return control
+            if gate != "throughput_qualification":
+                raise ReadinessError(
+                    "external-watchdog authorization is immutable once published"
+                )
+            old_generation = current.get("qualification_generation")
+            new_generation = record.get("qualification_generation")
+            if (
+                not isinstance(old_generation, Mapping)
+                or not isinstance(new_generation, Mapping)
+                or (
+                    int(new_generation["rollout_generation"]),
+                    int(new_generation["capacity_generation"]),
+                )
+                <= (
+                    int(old_generation["rollout_generation"]),
+                    int(old_generation["capacity_generation"]),
+                )
+                or current.get("chain_id") != record.get("chain_id")
+                or current.get("release_lineage")
+                != record.get("release_lineage")
+            ):
+                raise ReadinessError(
+                    "throughput-qualification replacement is not a newer "
+                    "same-chain additive attempt"
+                )
+        control["readiness"][gate] = record
+        append_transition(
+            state_dir,
+            control,
+            event="production_authorization_attested",
+            details={
+                "gate": gate,
+                "authorization_id": record["authorization_id"],
+                "chain_id": chain_id,
+                "chain_manifest_sha256": manifest_binding["sha256"],
+            },
+            now=timestamp,
+        )
+        _save_control(state_dir, control, now=timestamp)
+        return control
+
+
 def attest_gate(
     state_dir: Path,
     *,
     gate: str,
-    evidence_path: Path,
+    evidence_path: Path | None = None,
     expected_sha256: str | None = None,
+    chain_manifest: Path | None = None,
     now: float | None = None,
+    verifier_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str], float],
+            subprocess.CompletedProcess[str],
+        ]
+        | None
+    ) = None,
 ) -> dict[str, Any]:
+    if gate in PRODUCTION_AUTHORIZATION_GATES:
+        if chain_manifest is None:
+            raise ReadinessError(
+                f"{gate} attestation requires --chain-manifest"
+            )
+        return attest_production_authorization(
+            state_dir,
+            gate=gate,
+            chain_manifest=chain_manifest,
+            evidence_path=evidence_path,
+            expected_sha256=expected_sha256,
+            now=now,
+            verifier_runner=verifier_runner,
+        )
     if gate not in REQUIRED_GATES or gate == "scheduler_reconciliation":
         raise ReadinessError(
             "gate must be a non-scheduler required gate; reconciliation owns its gate"
         )
+    if evidence_path is None:
+        raise ReadinessError(f"{gate} attestation requires --evidence")
     timestamp = time.time() if now is None else float(now)
     evidence_path = evidence_path.expanduser().resolve()
     evidence_hash = expected_sha256 or sha256_file(evidence_path)
@@ -3929,6 +7694,46 @@ def attest_gate(
             "attested_at": utc_timestamp(timestamp),
             "attested_timestamp": timestamp,
         }
+        if gate == "fleet":
+            payload = _load_json_object(
+                evidence_path, description="fleet readiness evidence"
+            )
+            metrics = payload.get("metrics")
+            if not isinstance(metrics, Mapping):
+                raise ReadinessError(
+                    "fleet readiness evidence lacks scheduler metrics"
+                )
+            replacement.update(
+                {
+                    "scheduler_safety_evidence_id": metrics[
+                        "scheduler_safety_evidence_id"
+                    ],
+                    "scheduler_safety_policy_id": metrics[
+                        "scheduler_safety_policy_id"
+                    ],
+                    "scheduler_safety_policy_contract_id": metrics[
+                        "scheduler_safety_policy_contract_id"
+                    ],
+                    "transport_uncertainty_binding_sha256": metrics[
+                        "transport_uncertainty_binding_sha256"
+                    ],
+                    "transport_censor_protocol_version": metrics[
+                        "transport_censor_protocol_version"
+                    ],
+                    "transport_censor_protocol_hash": metrics[
+                        "transport_censor_protocol_hash"
+                    ],
+                }
+            )
+        active_capacity = control["capacity"].get("active_transition")
+        if (
+            isinstance(active_capacity, dict)
+            and active_capacity.get("phase") == "readiness_pending"
+            and gate in active_capacity.get("invalidated_readiness", [])
+        ):
+            replacement["capacity_generation"] = int(
+                active_capacity["to_generation"]
+            )
         control["readiness"][gate] = replacement
         if gate == "snapshot" and not isinstance(snapshot_record, dict):
             target_generation = int(control["rollout_generation"]) + 1
@@ -4043,6 +7848,19 @@ def validate_readiness(
             failures.append(str(exc))
     if failures:
         raise ReadinessError("resume gates failed:\n- " + "\n- ".join(failures))
+    if state_dir is None:
+        if control.get("desired_state") in {"resuming", "running"}:
+            raise ReadinessError(
+                "production authorization validation requires the control state directory"
+            )
+    else:
+        _validate_production_authorization_state(
+            control,
+            state_dir=state_dir,
+            require_passed=control.get("desired_state")
+            in {"resuming", "running"},
+            verify_files=verify_files,
+        )
     return snapshot_context
 
 
@@ -4105,6 +7923,7 @@ def _reset_admission_ramp(
         }
         ramp["resets"].append(reset)
     control["admission"]["current_ceiling"] = target_ceiling
+    control["admission_safety_hold"]["configured_ceiling"] = target_ceiling
     ramp["rollout_generation"] = target_generation
     ramp["current_ceiling"] = target_ceiling
     ramp["window"] = None
@@ -4390,6 +8209,18 @@ def resume_control(
     del release_runner
     with control_lock(state_dir):
         control = load_control(state_dir, verify_files=True)
+        if control["finalization"]["state"] != "idle":
+            raise ReadinessError(
+                "production resume requires finalization state exactly idle"
+            )
+        if control["capacity"]["active_transition"] is not None:
+            raise ReadinessError(
+                "capacity transition is incomplete; finish it before resume"
+            )
+        if control["admission_safety_hold"]["active"]:
+            raise ReadinessError(
+                "admission safety hold is active; clear it before resume"
+            )
         if control["desired_state"] == "resuming":
             # A visibility retry may occur long after the controller jobs were accepted.
             # Expiry is not evidence of drift: first bind the immutable generation
@@ -4469,6 +8300,17 @@ def resume_control(
                 allow_completed_drain=True,
             )
             drill_marker_sha256 = current_marker_sha256
+        _validate_production_authorization_state(
+            control,
+            state_dir=state_dir,
+            require_passed=True,
+            verify_files=True,
+        )
+        production_authorizations = (
+            _production_authorization_resume_binding(control)
+        )
+        if control["desired_state"] in {"resuming", "running"}:
+            _validate_resume_production_authorizations(control)
         if control["desired_state"] == "paused":
             pre_resume_snapshot = read_scheduler()
             # The persisted readiness gate is not live scheduler truth.  Join the
@@ -4512,6 +8354,16 @@ def resume_control(
                 return control
         elif control["desired_state"] == "paused":
             generation = int(control["rollout_generation"]) + 1
+            trusted_generation_catalog_pin = _load_resume_catalog_pin(
+                state_dir,
+                control,
+                target_rollout_generation=generation,
+            )
+            _validate_initial_qualification_generation(
+                control,
+                resume_catalog_pin=trusted_generation_catalog_pin,
+                target_rollout_generation=generation,
+            )
             # Establish the expensive byte-level environment proof before publishing
             # or submitting anything for the new rollout generation.  The immutable
             # generation file is then metadata-validated by every process at startup.
@@ -4566,6 +8418,10 @@ def resume_control(
                 "created_timestamp": timestamp,
                 "controller_job_ids": {},
                 "controller_drill_marker_sha256": drill_marker_sha256,
+                "production_authorizations": production_authorizations,
+                "trusted_generation_catalog": (
+                    trusted_generation_catalog_pin
+                ),
             }
             append_transition(
                 state_dir,
@@ -4585,6 +8441,14 @@ def resume_control(
         raise SchedulerAmbiguity("resume transaction has no durable intent")
 
     if control["desired_state"] == "resuming":
+        _validate_production_authorization_state(
+            control,
+            state_dir=state_dir,
+            require_passed=True,
+            verify_files=True,
+        )
+        _validate_resume_production_authorizations(control)
+        _validate_pinned_resume_catalog(state_dir, control)
         expected_drill_marker = control["resume_intent"].get(
             "controller_drill_marker_sha256"
         )
@@ -4682,6 +8546,14 @@ def resume_control(
                 control,
                 expected_marker_sha256=expected_marker,
             )
+            _validate_production_authorization_state(
+                control,
+                state_dir=state_dir,
+                require_passed=True,
+                verify_files=True,
+            )
+            _validate_resume_production_authorizations(control)
+            _validate_pinned_resume_catalog(state_dir, control)
             expected_ids = {role: visible[role].job_id for role in ROLE_NAMES}
             if resume_intent.get("controller_job_ids") != expected_ids:
                 raise SchedulerAmbiguity(
@@ -4981,6 +8853,446 @@ def _exact_running_cell_task_ids(
     return signal_ids
 
 
+def _safety_hold_scheduler_snapshot_sha256(
+    snapshot: SchedulerSnapshot,
+) -> str:
+    return sha256_value(
+        {
+            "captured_at": snapshot.captured_at,
+            "squeue_ok": snapshot.squeue_ok,
+            "sacct_ok": snapshot.sacct_ok,
+            "errors": list(snapshot.errors),
+            "jobs": [
+                {
+                    "job_id": row.job_id,
+                    "job_name": row.job_name,
+                    "state": row.state,
+                    "comment": row.comment,
+                    "command": row.command,
+                    "source": row.source,
+                    "dependency": row.dependency,
+                }
+                for row in snapshot.jobs
+            ],
+        }
+    )
+
+
+def _append_safety_hold_drain_event(
+    state_dir: Path,
+    *,
+    intent: Mapping[str, Any],
+    event: str,
+    details: Mapping[str, Any],
+    now: float,
+) -> None:
+    _append_jsonl(
+        state_dir / SAFETY_HOLD_DRAIN_JOURNAL,
+        {
+            "at": utc_timestamp(now),
+            "timestamp": now,
+            "event": event,
+            "drain_id": intent["drain_id"],
+            "rollout_generation": intent["rollout_generation"],
+            "hold_activated_timestamp": intent["hold_activated_timestamp"],
+            "details": copy.deepcopy(dict(details)),
+        },
+    )
+
+
+def _set_safety_hold_drain_failure(
+    state_dir: Path,
+    *,
+    message: str,
+    now: float,
+) -> None:
+    """Persist a failed drain attempt without releasing the admission fence."""
+
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        intent = control.get("safety_hold_drain_intent")
+        if not isinstance(intent, dict):
+            raise SchedulerAmbiguity(
+                "safety-hold drain intent disappeared during failure persistence"
+            )
+        intent["state"] = "failed"
+        intent["last_error"] = message[:2000]
+        intent["updated_at"] = utc_timestamp(now)
+        intent["updated_timestamp"] = now
+        intent["completed_at"] = None
+        intent["completed_timestamp"] = None
+        _append_safety_hold_drain_event(
+            state_dir,
+            intent=intent,
+            event="failed",
+            details={"error": message[:2000]},
+            now=now,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="admission_safety_hold_cell_drain_failed",
+            details={
+                "drain_id": intent["drain_id"],
+                "error": message[:2000],
+                "effective_ceiling": 0,
+            },
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+
+
+def _persist_safety_hold_drain_result(
+    state_dir: Path,
+    *,
+    action_key: str,
+    returncode: int | None,
+    accepted: bool,
+    evidence: str,
+    stderr: str,
+    now: float,
+) -> None:
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        intent = control.get("safety_hold_drain_intent")
+        if not isinstance(intent, dict) or intent.get("state") != "signaling":
+            raise SchedulerAmbiguity(
+                "safety-hold drain intent changed during scheduler mutation"
+            )
+        target = intent["targets"].get(action_key)
+        if not isinstance(target, dict):
+            raise SchedulerAmbiguity(
+                f"safety-hold drain target {action_key!r} disappeared"
+            )
+        result = {
+            "category": target["category"],
+            "job_id": target["job_id"],
+            "command": list(target["command"]),
+            "returncode": returncode,
+            "accepted": bool(accepted),
+            "evidence": evidence,
+            "stderr": stderr[:1000],
+            "completed_at": utc_timestamp(now),
+            "completed_timestamp": now,
+        }
+        intent["results"][action_key] = result
+        intent["updated_at"] = utc_timestamp(now)
+        intent["updated_timestamp"] = now
+        _append_safety_hold_drain_event(
+            state_dir,
+            intent=intent,
+            event="action_result",
+            details={"action_key": action_key, "result": result},
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+
+
+def _ensure_safety_hold_cell_drain_locked(
+    state_dir: Path,
+    *,
+    scheduler: SchedulerSnapshot | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    signal_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Drain the exact cell cut for an active critical hold.
+
+    The caller owns :func:`admission_boundary_lock`.  Therefore the durable ceiling-zero
+    hold, the complete scheduler cut, and every external signal form one serialized
+    admission transaction.  An intent precedes scheduler reads and exact targets
+    precede ``scancel``; repeating the operation after any crash is safe.
+    """
+
+    if scheduler is not None and scheduler_reader is not None:
+        raise ControlError(
+            "safety-hold drain accepts scheduler or scheduler_reader, not both"
+        )
+    timestamp = time.time() if now is None else float(now)
+    current = load_control(state_dir)
+    hold = current["admission_safety_hold"]
+    if not hold["active"] or current["desired_state"] != "running":
+        # Paused/resuming control cannot admit cells.  Their quiescence/reconciliation
+        # contracts remain authoritative, while production-running holds require the
+        # explicit scheduler drain below.
+        return current
+    activation = float(hold["activated_timestamp"])
+    existing = current.get("safety_hold_drain_intent")
+    same_activation = bool(
+        isinstance(existing, dict)
+        and int(existing.get("rollout_generation", -1))
+        == int(current["rollout_generation"])
+        and float(existing.get("hold_activated_timestamp", -1.0)) == activation
+    )
+    if same_activation and existing.get("state") == "complete":
+        return current
+
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        hold = control["admission_safety_hold"]
+        if not hold["active"] or control["desired_state"] != "running":
+            return control
+        activation = float(hold["activated_timestamp"])
+        previous = control.get("safety_hold_drain_intent")
+        same_activation = bool(
+            isinstance(previous, dict)
+            and int(previous.get("rollout_generation", -1))
+            == int(control["rollout_generation"])
+            and float(previous.get("hold_activated_timestamp", -1.0))
+            == activation
+        )
+        if same_activation and previous.get("state") == "complete":
+            return control
+        if same_activation:
+            intent = copy.deepcopy(previous)
+            intent["state"] = "reconciling"
+            intent["attempt_count"] = int(intent["attempt_count"]) + 1
+            intent["hold_reasons"] = sorted(hold["reasons"])
+            intent["last_error"] = None
+            intent["completed_at"] = None
+            intent["completed_timestamp"] = None
+            event = "retry_started"
+        else:
+            intent = {
+                "protocol": SAFETY_HOLD_DRAIN_PROTOCOL,
+                "drain_id": uuid.uuid4().hex,
+                "rollout_generation": int(control["rollout_generation"]),
+                "hold_activated_timestamp": activation,
+                "hold_reasons": sorted(hold["reasons"]),
+                "state": "reconciling",
+                "created_at": utc_timestamp(timestamp),
+                "created_timestamp": timestamp,
+                "updated_at": utc_timestamp(timestamp),
+                "updated_timestamp": timestamp,
+                "attempt_count": 1,
+                "snapshot_captured_timestamp": None,
+                "snapshot_sha256": None,
+                "targets": {},
+                "results": {},
+                "last_error": None,
+                "completed_at": None,
+                "completed_timestamp": None,
+            }
+            event = "intent_created"
+        intent["updated_at"] = utc_timestamp(timestamp)
+        intent["updated_timestamp"] = timestamp
+        control["safety_hold_drain_intent"] = intent
+        _append_safety_hold_drain_event(
+            state_dir,
+            intent=intent,
+            event=event,
+            details={
+                "attempt_count": intent["attempt_count"],
+                "hold_reasons": intent["hold_reasons"],
+            },
+            now=timestamp,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="admission_safety_hold_cell_drain_started",
+            details={
+                "drain_id": intent["drain_id"],
+                "attempt_count": intent["attempt_count"],
+                "effective_ceiling": 0,
+            },
+            now=timestamp,
+        )
+        _save_control(state_dir, control, now=timestamp)
+
+    try:
+        snapshot = (
+            scheduler
+            if scheduler is not None
+            else (
+                scheduler_reader()
+                if scheduler_reader is not None
+                else query_scheduler(tolerate_errors=True)
+            )
+        )
+        _assert_cell_submission_cut_visible(
+            state_dir,
+            snapshot,
+            now=timestamp,
+        )
+        running_ids, pending_ids = _exact_live_cell_task_actions(
+            state_dir, snapshot
+        )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        _set_safety_hold_drain_failure(
+            state_dir, message=message, now=timestamp
+        )
+        raise
+
+    current_categories = {
+        **{job_id: "cell_usr1" for job_id in running_ids},
+        **{job_id: "pending_cell_cancel" for job_id in pending_ids},
+    }
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        intent = control.get("safety_hold_drain_intent")
+        if not isinstance(intent, dict) or intent.get("state") != "reconciling":
+            raise SchedulerAmbiguity(
+                "safety-hold drain intent changed before exact target commit"
+            )
+        expected_commands = {
+            "cell_usr1": ["scancel", "--batch", "--signal=USR1"],
+            "pending_cell_cancel": ["scancel"],
+        }
+        for job_id, category in sorted(current_categories.items()):
+            action_key = f"{category}:{job_id}"
+            intent["targets"].setdefault(
+                action_key,
+                {
+                    "category": category,
+                    "job_id": job_id,
+                    "command": [*expected_commands[category], job_id],
+                },
+            )
+        intent["state"] = "signaling"
+        intent["snapshot_captured_timestamp"] = float(snapshot.captured_at)
+        intent["snapshot_sha256"] = _safety_hold_scheduler_snapshot_sha256(
+            snapshot
+        )
+        intent["updated_at"] = utc_timestamp(timestamp)
+        intent["updated_timestamp"] = timestamp
+        intent["last_error"] = None
+        _append_safety_hold_drain_event(
+            state_dir,
+            intent=intent,
+            event="targets_committed",
+            details={
+                "snapshot_captured_timestamp": snapshot.captured_at,
+                "snapshot_sha256": intent["snapshot_sha256"],
+                "targets": copy.deepcopy(intent["targets"]),
+            },
+            now=timestamp,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="admission_safety_hold_cell_drain_targets_committed",
+            details={
+                "drain_id": intent["drain_id"],
+                "running_cell_task_ids": running_ids,
+                "pending_cell_task_ids": pending_ids,
+                "snapshot_sha256": intent["snapshot_sha256"],
+            },
+            now=timestamp,
+        )
+        _save_control(state_dir, control, now=timestamp)
+
+    runner = signal_runner or _run_subprocess
+    intent = load_control(state_dir)["safety_hold_drain_intent"]
+    for action_key, target in sorted(intent["targets"].items()):
+        latest = load_control(state_dir)["safety_hold_drain_intent"]
+        prior = latest["results"].get(action_key)
+        if isinstance(prior, dict) and prior.get("accepted") is True:
+            continue
+        job_id = str(target["job_id"])
+        current_category = current_categories.get(job_id)
+        if current_category is None:
+            _persist_safety_hold_drain_result(
+                state_dir,
+                action_key=action_key,
+                returncode=None,
+                accepted=True,
+                evidence="scheduler_target_no_longer_live",
+                stderr="",
+                now=timestamp,
+            )
+            continue
+        if current_category != target["category"]:
+            _persist_safety_hold_drain_result(
+                state_dir,
+                action_key=action_key,
+                returncode=None,
+                accepted=True,
+                evidence="scheduler_target_state_transitioned",
+                stderr="",
+                now=timestamp,
+            )
+            continue
+        command = list(target["command"])
+        try:
+            proc = runner(command)
+            returncode: int | None = int(proc.returncode)
+            stderr = proc.stderr.strip()[:1000]
+        except Exception as exc:
+            returncode = None
+            stderr = f"{type(exc).__name__}: {exc}"[:1000]
+        accepted = returncode == 0
+        _persist_safety_hold_drain_result(
+            state_dir,
+            action_key=action_key,
+            returncode=returncode,
+            accepted=accepted,
+            evidence=(
+                "scheduler_command_returncode_zero"
+                if accepted
+                else "scheduler_command_failed"
+            ),
+            stderr=stderr,
+            now=timestamp,
+        )
+        if not accepted:
+            message = (
+                f"failed safety-hold drain action {command!r}: "
+                f"returncode={returncode!r} stderr={stderr}"
+            )
+            _set_safety_hold_drain_failure(
+                state_dir, message=message, now=timestamp
+            )
+            raise ControlError(message)
+
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        intent = control.get("safety_hold_drain_intent")
+        if not isinstance(intent, dict) or intent.get("state") != "signaling":
+            raise SchedulerAmbiguity(
+                "safety-hold drain intent changed before completion"
+            )
+        if (
+            set(intent["results"]) != set(intent["targets"])
+            or not all(row.get("accepted") is True for row in intent["results"].values())
+        ):
+            raise SchedulerAmbiguity(
+                "safety-hold drain cannot complete without every accepted exact action"
+            )
+        intent["state"] = "complete"
+        intent["last_error"] = None
+        intent["completed_at"] = utc_timestamp(timestamp)
+        intent["completed_timestamp"] = timestamp
+        intent["updated_at"] = utc_timestamp(timestamp)
+        intent["updated_timestamp"] = timestamp
+        _append_safety_hold_drain_event(
+            state_dir,
+            intent=intent,
+            event="complete",
+            details={
+                "target_count": len(intent["targets"]),
+                "result_count": len(intent["results"]),
+            },
+            now=timestamp,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="admission_safety_hold_cell_drain_complete",
+            details={
+                "drain_id": intent["drain_id"],
+                "target_count": len(intent["targets"]),
+                "effective_ceiling": 0,
+            },
+            now=timestamp,
+        )
+        _save_control(state_dir, control, now=timestamp)
+        return copy.deepcopy(control)
+
+
 def _persist_drain_result(
     state_dir: Path,
     *,
@@ -5201,11 +9513,8326 @@ def pause_control(
         )
 
 
+def _require_complete_quiescent_scheduler(
+    snapshot: SchedulerSnapshot, *, operation: str
+) -> None:
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise SchedulerAmbiguity(
+            f"{operation} requires complete squeue+sacct truth: "
+            + "; ".join(snapshot.errors)
+        )
+    active_cells = sorted(
+        job.job_id for job in snapshot.jobs if job.active and _cell_job(job.job_name)
+    )
+    active_controllers = sorted(
+        job.job_id
+        for job in snapshot.jobs
+        if job.active
+        and (
+            job.comment.startswith(TOKEN_PREFIX)
+            or parse_job_token(job.comment) is not None
+        )
+    )
+    if active_cells or active_controllers:
+        raise ControlError(
+            f"{operation} requires a fully drained control plane; "
+            f"active_cells={active_cells}, active_controllers={active_controllers}"
+        )
+
+
+def effective_fleet_contract_binding(
+    control: Mapping[str, Any], *, verify_files: bool = True
+) -> dict[str, Any]:
+    """Return the sealed operational fleet identity effective for this generation.
+
+    The release-bundle fleet remains part of the immutable release identity.  Capacity
+    overlays are separate, marker-last operational artifacts and may only increase the
+    deterministic replica layout.  This distinction lets the serving capacity change
+    without rewriting any scientific/run/model/environment pin.
+    """
+
+    immutable = control["immutable"]
+    record = control.get("capacity", {}).get("current_contract")
+    if record is None:
+        payload = _load_json_object(
+            Path(str(immutable["fleet_contract_path"])).resolve(),
+            description="immutable fleet contract",
+        )
+        return {
+            "capacity_generation": int(
+                control.get("capacity", {}).get("current_generation", 1)
+            ),
+            "path": str(Path(str(immutable["fleet_contract_path"])).resolve()),
+            "sha256": str(immutable["fleet_contract_sha256"]),
+            "fleet_id": str(payload.get("fleet_id")),
+            "logical_replicas": int(payload.get("logical_replica_count", -1)),
+            "allocated_gpus": int(payload.get("allocated_gpu_count", -1)),
+            "profile_replicas": {
+                str(profile.get("serving_profile")): len(profile.get("replicas", []))
+                for profile in payload.get("profiles", [])
+                if isinstance(profile, dict)
+            },
+            "is_capacity_overlay": False,
+        }
+    _validate_capacity_contract_record(
+        record,
+        expected_generation=int(control["capacity"]["current_generation"]),
+    )
+    path = Path(record["path"]).resolve()
+    marker = Path(record["marker_path"]).resolve()
+    if verify_files:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or sha256_file(path) != record["sha256"]
+            or marker.is_symlink()
+            or not marker.is_file()
+            or sha256_file(marker) != record["marker_sha256"]
+        ):
+            raise ImmutablePinError("effective capacity fleet artifact drifted")
+        _verify_capacity_contract_marker(marker)
+    return {
+        "capacity_generation": int(record["capacity_generation"]),
+        "path": str(path),
+        "sha256": str(record["sha256"]),
+        "fleet_id": str(record["fleet_id"]),
+        "logical_replicas": int(record["logical_replicas"]),
+        "allocated_gpus": int(record["allocated_gpus"]),
+        "profile_replicas": copy.deepcopy(record["profile_replicas"]),
+        "is_capacity_overlay": True,
+    }
+
+
+def validate_capacity_readiness_pending_state(
+    control: Mapping[str, Any],
+    *,
+    require_fleet_gate: bool = False,
+    verify_files: bool = True,
+) -> Mapping[str, Any]:
+    """Validate the sole drained state allowed to build post-capacity gates."""
+
+    capacity = control.get("capacity")
+    active = (
+        capacity.get("active_transition")
+        if isinstance(capacity, Mapping)
+        else None
+    )
+    hold = control.get("admission_safety_hold")
+    if (
+        control.get("desired_state") != "paused"
+        or control.get("drain_requested") is not True
+        or not isinstance(active, Mapping)
+        or active.get("phase") != "readiness_pending"
+        or not isinstance(hold, Mapping)
+        or hold.get("active") is not True
+        or hold.get("mode") != "operator"
+    ):
+        raise ControlError(
+            "draining control is not an exact capacity readiness-pending state"
+        )
+    transition_id = active.get("transition_id")
+    capacity_reason = f"capacity-transition:{transition_id}"
+    old_ids = active.get("old_fleet_job_ids")
+    new_contract = active.get("new_contract")
+    if (
+        not isinstance(transition_id, str)
+        or not transition_id
+        or capacity_reason not in hold.get("reasons", [])
+        or not isinstance(old_ids, list)
+        or not all(isinstance(job_id, str) and job_id.isdigit() for job_id in old_ids)
+        or len(old_ids) != len(set(old_ids))
+        or active.get("last_retirement_error") is not None
+        or not isinstance(active.get("published_timestamp"), (int, float))
+        or active.get("last_fleet_launch_error") is not None
+        or not isinstance(
+            active.get("fleet_launch_completed_timestamp"), (int, float)
+        )
+        or not isinstance(new_contract, Mapping)
+        or active.get("to_generation") != capacity.get("current_generation")
+        or capacity.get("current_contract") != new_contract
+    ):
+        raise ControlError(
+            "capacity readiness-pending state has incomplete retirement or fleet proof"
+        )
+    binding = effective_fleet_contract_binding(
+        control, verify_files=verify_files
+    )
+    if (
+        binding["capacity_generation"] != active["to_generation"]
+        or binding["sha256"] != new_contract.get("sha256")
+        or Path(str(binding["path"])).resolve()
+        != Path(str(new_contract.get("path", ""))).resolve()
+    ):
+        raise ControlError("capacity readiness-pending fleet binding drifted")
+    if require_fleet_gate:
+        fleet_gate = control.get("readiness", {}).get("fleet")
+        if (
+            not isinstance(fleet_gate, Mapping)
+            or fleet_gate.get("passed") is not True
+            or fleet_gate.get("capacity_generation") != active["to_generation"]
+        ):
+            raise ControlError(
+                "capacity smoke execution requires the fresh generation fleet gate"
+            )
+    return active
+
+
+def load_effective_fleet_contract(
+    control: Mapping[str, Any], *, verify_files: bool = True
+) -> FrozenFleetContract:
+    binding = effective_fleet_contract_binding(control, verify_files=verify_files)
+    immutable = control["immutable"]
+    try:
+        models = load_model_contracts(
+            immutable["model_contract_path"],
+            expected_sha256=immutable["model_contract_sha256"],
+        )
+        return load_fleet_contract(
+            binding["path"],
+            model_contracts=models,
+            expected_sha256=binding["sha256"],
+            allow_capacity_layout=True,
+        )
+    except (FleetContractError, ModelContractError, OSError, ValueError) as exc:
+        raise ImmutablePinError(
+            f"effective capacity fleet contract is invalid: {exc}"
+        ) from exc
+
+
+def _trusted_generation_control_evidence(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    fleet_binding: Mapping[str, Any],
+    target_rollout_generation: int,
+    now: float,
+) -> GenerationEvidence:
+    """Seal the exact control facts that authorize one catalog generation."""
+
+    capacity_generation = int(fleet_binding["capacity_generation"])
+    history = [
+        copy.deepcopy(record)
+        for record in control.get("capacity", {}).get("history", [])
+        if isinstance(record, Mapping)
+        and record.get("phase") == "completed"
+        and record.get("to_generation") == capacity_generation
+    ]
+    if capacity_generation == 1:
+        if history:
+            raise ControlError("capacity generation one has transition history")
+        capacity_transition = None
+    else:
+        if len(history) != 1:
+            raise ControlError(
+                "trusted capacity generation lacks one completed predecessor transition"
+            )
+        transition = history[0]
+        if (
+            transition.get("from_generation") != capacity_generation - 1
+            or transition.get("to_generation") != capacity_generation
+        ):
+            raise ControlError("trusted capacity transition is not chain-continuous")
+        new_contract = transition.get("new_contract")
+        if (
+            not isinstance(new_contract, Mapping)
+            or new_contract.get("sha256") != fleet_binding["sha256"]
+            or _SHA256_RE.fullmatch(
+                str(transition.get("archive_sha256", ""))
+            )
+            is None
+        ):
+            raise ControlError(
+                "trusted capacity transition lacks its sealed fleet/archive identity"
+            )
+        capacity_transition = {
+            "transition_id": transition.get("transition_id"),
+            "from_generation": transition.get("from_generation"),
+            "to_generation": transition.get("to_generation"),
+            "fleet_contract_sha256": new_contract.get("sha256"),
+            "capacity_contract_marker_sha256": new_contract.get(
+                "marker_sha256"
+            ),
+            "archive_path": transition.get("archive_path"),
+            "archive_sha256": transition.get("archive_sha256"),
+        }
+
+    fleet_gate = control.get("readiness", {}).get("fleet")
+    if (
+        not isinstance(fleet_gate, Mapping)
+        or fleet_gate.get("passed") is not True
+        or not isinstance(fleet_gate.get("evidence"), str)
+        or _SHA256_RE.fullmatch(str(fleet_gate.get("sha256", ""))) is None
+    ):
+        raise ReadinessError(
+            "trusted-generation publication requires the fleet readiness gate"
+        )
+    _validate_attestation(
+        control,
+        "fleet",
+        Path(str(fleet_gate["evidence"])).resolve(),
+        str(fleet_gate["sha256"]),
+        now=None,
+    )
+    scheduler_binding = fleet_scheduler_policy_binding(
+        control, require_attested=True
+    )
+    assert scheduler_binding is not None
+    if capacity_generation > 1 and (
+        fleet_gate.get("capacity_generation") != capacity_generation
+    ):
+        raise ReadinessError(
+            "capacity-transition catalog requires generation-bound fleet readiness"
+        )
+
+    runtime_record = control.get(RUNTIME_ATTESTATION_STATE_KEY)
+    runtime_binding = None
+    if (
+        isinstance(runtime_record, Mapping)
+        and runtime_record.get("generation") == target_rollout_generation
+    ):
+        runtime_path = Path(str(runtime_record.get("path", ""))).resolve()
+        if (
+            runtime_path.is_symlink()
+            or not runtime_path.is_file()
+            or sha256_file(runtime_path) != runtime_record.get("sha256")
+        ):
+            raise ImmutablePinError(
+                "trusted-generation runtime attestation drifted"
+            )
+        runtime_binding = {
+            "path": str(runtime_path),
+            "sha256": str(runtime_record["sha256"]),
+            "attestation_id": runtime_record.get("attestation_id"),
+        }
+    snapshot_record = control.get(SNAPSHOT_ATTESTATION_STATE_KEY)
+    snapshot_binding = None
+    if (
+        isinstance(snapshot_record, Mapping)
+        and snapshot_record.get("generation") == target_rollout_generation
+    ):
+        snapshot_path = Path(str(snapshot_record.get("path", ""))).resolve()
+        if (
+            snapshot_path.is_symlink()
+            or not snapshot_path.is_file()
+            or sha256_file(snapshot_path) != snapshot_record.get("sha256")
+        ):
+            raise ReadinessError(
+                "trusted-generation snapshot integrity seal drifted"
+            )
+        snapshot_binding = {
+            "path": str(snapshot_path),
+            "sha256": str(snapshot_record["sha256"]),
+            "seal_id": snapshot_record.get("seal_id"),
+        }
+
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": "schema5_trusted_generation_control_evidence",
+        "immutable_sha256": control["immutable_sha256"],
+        "release_id": control["immutable"]["release_id"],
+        "release_fleet_contract_sha256": control["immutable"][
+            "fleet_contract_sha256"
+        ],
+        "fleet_contract_path": str(Path(str(fleet_binding["path"])).resolve()),
+        "fleet_contract_sha256": fleet_binding["sha256"],
+        "capacity_generation": capacity_generation,
+        "rollout_generation": target_rollout_generation,
+        "fleet_readiness": {
+            "path": str(Path(str(fleet_gate["evidence"])).resolve()),
+            "sha256": fleet_gate["sha256"],
+            "attested_timestamp": fleet_gate.get("attested_timestamp"),
+            "capacity_generation": fleet_gate.get("capacity_generation"),
+            "scheduler_safety_evidence_id": scheduler_binding[
+                "scheduler_safety_evidence_id"
+            ],
+            "scheduler_safety_policy_id": scheduler_binding[
+                "scheduler_safety_policy_id"
+            ],
+            "scheduler_safety_policy_contract_id": scheduler_binding[
+                "scheduler_safety_policy_contract_id"
+            ],
+            "transport_uncertainty_binding_sha256": scheduler_binding[
+                "transport_uncertainty_binding_sha256"
+            ],
+            "transport_censor_protocol_version": scheduler_binding[
+                "transport_censor_protocol_version"
+            ],
+            "transport_censor_protocol_hash": scheduler_binding[
+                "transport_censor_protocol_hash"
+            ],
+        },
+        "runtime_integrity": runtime_binding,
+        "snapshot_integrity": snapshot_binding,
+        "capacity_transition": capacity_transition,
+        "captured_timestamp": float(now),
+    }
+    record["evidence_id"] = sha256_value(record)
+    evidence_root = (
+        state_dir
+        / TRUSTED_GENERATION_EVIDENCE_DIRNAME
+        / f"capacity-g{capacity_generation:06d}"
+        / f"rollout-g{target_rollout_generation:06d}"
+    )
+    evidence_path = evidence_root / "CONTROL_GENERATION_EVIDENCE.json"
+    if evidence_path.exists() or evidence_path.is_symlink():
+        if evidence_path.is_symlink() or not evidence_path.is_file():
+            raise ControlError("trusted-generation control evidence is unsafe")
+        existing = _load_json_object(
+            evidence_path, description="trusted-generation control evidence"
+        )
+        # Runtime/snapshot attestations may be added by the resume transaction after
+        # the initial paused readiness proof.  They cannot revoke or alter the stable
+        # generation identity; the first marker-last proof remains authoritative.
+        stable_fields = {
+            "schema_version",
+            "kind",
+            "immutable_sha256",
+            "release_id",
+            "release_fleet_contract_sha256",
+            "fleet_contract_path",
+            "fleet_contract_sha256",
+            "capacity_generation",
+            "rollout_generation",
+            "fleet_readiness",
+            "capacity_transition",
+        }
+        if (
+            any(existing.get(field) != record.get(field) for field in stable_fields)
+            or evidence_path.stat().st_mode & 0o222
+            or evidence_path.stat().st_nlink != 1
+        ):
+            raise ControlError(
+                "trusted-generation control evidence conflicts with sealed history"
+            )
+    else:
+        evidence_root.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(evidence_path, record)
+        evidence_path.chmod(0o444)
+    return GenerationEvidence(
+        kind="control_generation",
+        path=evidence_path.resolve(),
+        sha256=sha256_file(evidence_path),
+    )
+
+
+def refresh_trusted_generation_catalog(
+    state_dir: Path,
+    *,
+    target_rollout_generation: int | None = None,
+    now: float | None = None,
+) -> TrustedGenerationCatalog:
+    """Catalog every sealed endpoint for the current/next authorized generation.
+
+    The endpoint-history collector proves process-level scheduler and serving
+    provenance.  This control-plane layer additionally proves the endpoint belongs to
+    the effective frozen fleet and binds the generation to readiness/capacity evidence.
+    """
+
+    state_dir = state_dir.expanduser().resolve()
+    timestamp = time.time() if now is None else float(now)
+    current = load_control(state_dir, verify_files=True)
+    completed_drain = (
+        current.get("drain_requested") is True
+        and isinstance(current.get("drain_intent"), Mapping)
+        and current["drain_intent"].get("state") == "complete"
+    )
+    paused_next_generation = (
+        current["desired_state"] == "paused"
+        and (
+            not current.get("drain_requested", False)
+            or completed_drain
+        )
+    )
+    if target_rollout_generation is None:
+        target_rollout_generation = int(current["rollout_generation"])
+        if paused_next_generation:
+            target_rollout_generation += 1
+    target_rollout_generation = int(target_rollout_generation)
+    if target_rollout_generation < 1:
+        raise ControlError("trusted-generation rollout must be positive")
+    allowed_rollouts = {int(current["rollout_generation"])}
+    if paused_next_generation:
+        allowed_rollouts.add(int(current["rollout_generation"]) + 1)
+    if target_rollout_generation not in allowed_rollouts:
+        raise ControlError(
+            "trusted-generation target is not the current or fenced next rollout"
+        )
+
+    binding = effective_fleet_contract_binding(current, verify_files=True)
+    effective_fleet = load_effective_fleet_contract(current, verify_files=True)
+    models = load_model_contracts(
+        current["immutable"]["model_contract_path"],
+        expected_sha256=current["immutable"]["model_contract_sha256"],
+    )
+    pool = Path(current["immutable"]["server_pool_root"]).resolve()
+    try:
+        endpoint_catalog = collect_endpoint_history_catalog(pool)
+    except (OSError, ValueError) as exc:
+        raise ControlError(f"endpoint-history catalog is untrusted: {exc}") from exc
+    target_records = [
+        record
+        for record in endpoint_catalog.records
+        if record.allowed_generation_tuple[:4]
+        == (
+            current["immutable"]["fleet_contract_sha256"],
+            binding["sha256"],
+            int(binding["capacity_generation"]),
+            target_rollout_generation,
+        )
+    ]
+    if not target_records:
+        raise ReadinessError(
+            "trusted-generation publication found no sealed endpoint for its generation"
+        )
+    for record in target_records:
+        entry = record.server_entry
+        try:
+            replica = effective_fleet.for_replica(
+                str(entry.serving_profile), int(entry.replica_index)
+            )
+            identity = models.for_size(entry.model_size)
+        except (FleetContractError, ModelContractError, TypeError, ValueError) as exc:
+            raise ControlError(
+                f"endpoint history is outside the effective fleet: {exc}"
+            ) from exc
+        if (
+            entry.server_pool_id != server_pool_id(pool)
+            or entry.server_pool_id != effective_fleet.fleet_id
+            or entry.replica_id != replica.replica_id
+            or entry.model_size != replica.model_size
+            or entry.release_id != current["immutable"]["release_id"]
+            or entry.environment_hash
+            != current["immutable"]["serving_environment_sha256"]
+            or entry.model_contract_sha256
+            != current["immutable"]["model_contract_sha256"]
+            or entry.hf_id != identity.hf_id
+            or entry.model_revision != identity.model_revision
+            or entry.tokenizer_id != identity.tokenizer_id
+            or entry.tokenizer_revision != identity.tokenizer_revision
+        ):
+            raise ControlError(
+                "endpoint-history record differs from frozen fleet/model provenance"
+            )
+
+    control_evidence = _trusted_generation_control_evidence(
+        state_dir,
+        current,
+        fleet_binding=binding,
+        target_rollout_generation=target_rollout_generation,
+        now=timestamp,
+    )
+    fleet_gate = current["readiness"]["fleet"]
+    evidence = [
+        control_evidence,
+        GenerationEvidence(
+            kind="fleet_readiness",
+            path=Path(str(fleet_gate["evidence"])).resolve(),
+            sha256=str(fleet_gate["sha256"]),
+        ),
+        GenerationEvidence(
+            kind="effective_fleet_contract",
+            path=Path(str(binding["path"])).resolve(),
+            sha256=str(binding["sha256"]),
+        ),
+    ]
+    capacity_record = current.get("capacity", {}).get("current_contract")
+    if isinstance(capacity_record, Mapping):
+        evidence.append(
+            GenerationEvidence(
+                kind="capacity_contract_marker",
+                path=Path(str(capacity_record["marker_path"])).resolve(),
+                sha256=str(capacity_record["marker_sha256"]),
+            )
+        )
+    try:
+        return publish_trusted_generation_catalog(
+            state_dir,
+            server_pool_root=pool,
+            server_pool_id=effective_fleet.fleet_id,
+            endpoint_records=endpoint_catalog.records,
+            release_fleet_contract_sha256=current["immutable"][
+                "fleet_contract_sha256"
+            ],
+            fleet_contract_sha256=str(binding["sha256"]),
+            capacity_generation=int(binding["capacity_generation"]),
+            rollout_generation=target_rollout_generation,
+            generation_evidence=evidence,
+            now=timestamp,
+        )
+    except GenerationCatalogError as exc:
+        raise ControlError(f"trusted-generation catalog failed: {exc}") from exc
+
+
+def load_trusted_generation_catalog(
+    state_dir: Path,
+    *,
+    server_pool_root: Path | None = None,
+) -> TrustedGenerationCatalog:
+    """Load the current immutable catalog through a control-bound pool root."""
+
+    current = load_control(state_dir, verify_files=True)
+    expected_pool = Path(current["immutable"]["server_pool_root"]).resolve()
+    if server_pool_root is not None and server_pool_root.resolve() != expected_pool:
+        raise ControlError("trusted-generation server-pool override drifted")
+    try:
+        catalog = load_current_trusted_generation_catalog(
+            state_dir,
+            server_pool_root=expected_pool,
+            required=True,
+        )
+    except GenerationCatalogError as exc:
+        raise ControlError(f"trusted-generation catalog is invalid: {exc}") from exc
+    assert catalog is not None
+    return catalog
+
+
+def _resume_catalog_pin(
+    catalog: TrustedGenerationCatalog,
+    *,
+    release_fleet_contract_sha256: str,
+    fleet_contract_sha256: str,
+    capacity_generation: int,
+    rollout_generation: int,
+) -> dict[str, Any]:
+    return {
+        **_trusted_generation_catalog_binding(catalog),
+        "release_fleet_contract_sha256": release_fleet_contract_sha256,
+        "fleet_contract_sha256": fleet_contract_sha256,
+        "capacity_generation": capacity_generation,
+        "rollout_generation": rollout_generation,
+    }
+
+
+def _validate_resume_catalog_authority(
+    state_dir: Path,
+    current: Mapping[str, Any],
+    *,
+    target_rollout_generation: int,
+    catalog: TrustedGenerationCatalog,
+) -> dict[str, Any]:
+    """Prove a catalog covers the whole effective fleet and latest readiness bytes."""
+
+    fleet_binding = effective_fleet_contract_binding(
+        current, verify_files=True
+    )
+    release_fleet = str(current["immutable"]["fleet_contract_sha256"])
+    effective_fleet_sha256 = str(fleet_binding["sha256"])
+    capacity_generation = int(fleet_binding["capacity_generation"])
+    expected_prefix = (
+        release_fleet,
+        effective_fleet_sha256,
+        capacity_generation,
+        int(target_rollout_generation),
+    )
+    generations = [
+        row
+        for row in catalog.generations
+        if (
+            row.get("release_fleet_contract_sha256"),
+            row.get("fleet_contract_sha256"),
+            row.get("capacity_generation"),
+            row.get("rollout_generation"),
+        )
+        == expected_prefix
+    ]
+    if len(generations) != 1:
+        raise ReadinessError(
+            "trusted-generation catalog lacks the exact resume generation"
+        )
+    evidence = generations[0].get("evidence")
+    if not isinstance(evidence, list):
+        raise ReadinessError(
+            "trusted-generation resume proof has malformed evidence"
+        )
+    evidence_hashes = {
+        (str(row.get("kind")), str(row.get("sha256")))
+        for row in evidence
+        if isinstance(row, Mapping)
+    }
+    fleet_gate = current.get("readiness", {}).get("fleet")
+    required_evidence = {
+        ("control_generation", next(
+            (
+                str(row.get("sha256"))
+                for row in evidence
+                if isinstance(row, Mapping)
+                and row.get("kind") == "control_generation"
+            ),
+            "",
+        )),
+        (
+            "fleet_readiness",
+            str(
+                fleet_gate.get("sha256")
+                if isinstance(fleet_gate, Mapping)
+                else ""
+            ),
+        ),
+        ("effective_fleet_contract", effective_fleet_sha256),
+    }
+    capacity_contract = current.get("capacity", {}).get("current_contract")
+    if isinstance(capacity_contract, Mapping):
+        marker_sha256 = str(capacity_contract.get("marker_sha256", ""))
+        if _SHA256_RE.fullmatch(marker_sha256) is None:
+            raise ReadinessError(
+                "effective capacity contract lacks its immutable marker hash"
+            )
+        required_evidence.add(
+            ("capacity_contract_marker", marker_sha256)
+        )
+    if (
+        ("control_generation", "") in required_evidence
+        or not required_evidence.issubset(evidence_hashes)
+    ):
+        raise ReadinessError(
+            "trusted-generation catalog does not bind current fleet readiness"
+        )
+    target_tuples = {
+        identity
+        for identity in catalog.allowed_generation_tuples
+        if identity[:4] == expected_prefix
+    }
+    if not target_tuples:
+        raise ReadinessError(
+            "trusted-generation catalog contains no endpoint for resume"
+        )
+    pool = Path(str(current["immutable"]["server_pool_root"])).resolve()
+    try:
+        endpoint_history = collect_endpoint_history_catalog(pool)
+        effective_fleet = load_effective_fleet_contract(
+            current, verify_files=True
+        )
+    except (OSError, ValueError, ImmutablePinError) as exc:
+        raise ReadinessError(
+            f"cannot prove resume endpoint-history coverage: {exc}"
+        ) from exc
+    target_records = [
+        record
+        for record in endpoint_history.records
+        if record.allowed_generation_tuple[:4] == expected_prefix
+    ]
+    history_tuples = {
+        record.allowed_generation_tuple for record in target_records
+    }
+    expected_replicas = {
+        str(replica.replica_id) for replica in effective_fleet.replicas
+    }
+    observed_replicas = {
+        str(record.server_entry.replica_id) for record in target_records
+    }
+    if (
+        target_tuples != history_tuples
+        or observed_replicas != expected_replicas
+    ):
+        raise ReadinessError(
+            "trusted-generation catalog does not cover every exact fleet endpoint"
+        )
+    return _resume_catalog_pin(
+        catalog,
+        release_fleet_contract_sha256=release_fleet,
+        fleet_contract_sha256=effective_fleet_sha256,
+        capacity_generation=capacity_generation,
+        rollout_generation=target_rollout_generation,
+    )
+
+
+def _load_resume_catalog_pin(
+    state_dir: Path,
+    current: Mapping[str, Any],
+    *,
+    target_rollout_generation: int,
+) -> dict[str, Any]:
+    try:
+        catalog = load_current_trusted_generation_catalog(
+            state_dir,
+            server_pool_root=Path(
+                str(current["immutable"]["server_pool_root"])
+            ).resolve(),
+            required=True,
+        )
+    except GenerationCatalogError as exc:
+        raise ReadinessError(
+            f"resume trusted-generation catalog is invalid: {exc}"
+        ) from exc
+    assert catalog is not None
+    return _validate_resume_catalog_authority(
+        state_dir,
+        current,
+        target_rollout_generation=target_rollout_generation,
+        catalog=catalog,
+    )
+
+
+def _validate_pinned_resume_catalog(
+    state_dir: Path,
+    current: Mapping[str, Any],
+) -> dict[str, Any]:
+    intent = current.get("resume_intent")
+    pin = (
+        intent.get("trusted_generation_catalog")
+        if isinstance(intent, Mapping)
+        else None
+    )
+    if not isinstance(pin, Mapping):
+        raise ReadinessError(
+            "resume transaction lacks a trusted-generation catalog pin"
+        )
+    marker = Path(str(pin.get("marker_path", ""))).resolve()
+    try:
+        catalog = validate_trusted_generation_catalog(
+            marker,
+            server_pool_root=Path(
+                str(current["immutable"]["server_pool_root"])
+            ).resolve(),
+        )
+    except GenerationCatalogError as exc:
+        raise ReadinessError(
+            f"pinned resume trusted-generation catalog is invalid: {exc}"
+        ) from exc
+    expected = _validate_resume_catalog_authority(
+        state_dir,
+        current,
+        target_rollout_generation=int(current["rollout_generation"]),
+        catalog=catalog,
+    )
+    if dict(pin) != expected:
+        raise ReadinessError(
+            "resume trusted-generation catalog pin drifted"
+        )
+    _validate_initial_qualification_generation(
+        current,
+        resume_catalog_pin=expected,
+        target_rollout_generation=int(current["rollout_generation"]),
+    )
+    return expected
+
+
+def effective_fleet_supervisor_command(
+    control: Mapping[str, Any],
+) -> list[str]:
+    """Rebind only the contract flags in the frozen supervisor command."""
+
+    command = list(control["immutable"]["fleet_supervisor_command"])
+    binding = effective_fleet_contract_binding(control, verify_files=True)
+    replacements = {
+        "--fleet-contract": str(binding["path"]),
+        "--fleet-contract-sha256": str(binding["sha256"]),
+    }
+    for flag, replacement in replacements.items():
+        try:
+            index = command.index(flag)
+        except ValueError as exc:
+            raise ImmutablePinError(
+                f"frozen fleet supervisor command lacks {flag}"
+            ) from exc
+        if index + 1 >= len(command):
+            raise ImmutablePinError(
+                f"frozen fleet supervisor command has no value for {flag}"
+            )
+        command[index + 1] = replacement
+    return command
+
+
+def _capacity_profile_counts(fleet: FrozenFleetContract) -> dict[str, int]:
+    return {
+        profile: len(fleet.by_profile[profile])
+        for profile in sorted(fleet.by_profile)
+    }
+
+
+def _verify_capacity_contract_marker(marker_path: Path) -> dict[str, Any]:
+    marker = _load_json_object(
+        marker_path, description="capacity contract completion marker"
+    )
+    required = {
+        "schema_version",
+        "kind",
+        "complete",
+        "transition_id",
+        "capacity_generation",
+        "release_id",
+        "immutable_sha256",
+        "model_contract_sha256",
+        "contract_path",
+        "contract_sha256",
+        "checksum_path",
+        "checksum_sha256",
+        "logical_replicas",
+        "allocated_gpus",
+        "profile_replicas",
+        "created_at",
+        "created_timestamp",
+    }
+    if (
+        set(marker) != required
+        or marker.get("schema_version") != 1
+        or marker.get("kind") != "schema5_capacity_contract"
+        or marker.get("complete") is not True
+        or marker.get("release_id") != PRODUCTION_RELEASE_ID
+        or _SHA256_RE.fullmatch(str(marker.get("immutable_sha256", ""))) is None
+        or _SHA256_RE.fullmatch(str(marker.get("model_contract_sha256", ""))) is None
+        or _SHA256_RE.fullmatch(str(marker.get("contract_sha256", ""))) is None
+        or _SHA256_RE.fullmatch(str(marker.get("checksum_sha256", ""))) is None
+    ):
+        raise ImmutablePinError("capacity contract marker is malformed")
+    contract_path = Path(str(marker["contract_path"])).resolve()
+    checksum_path = Path(str(marker["checksum_path"])).resolve()
+    if (
+        marker_path.is_symlink()
+        or marker_path.stat().st_mode & 0o222
+        or contract_path.is_symlink()
+        or not contract_path.is_file()
+        or contract_path.stat().st_mode & 0o222
+        or sha256_file(contract_path) != marker["contract_sha256"]
+        or checksum_path.is_symlink()
+        or not checksum_path.is_file()
+        or checksum_path.stat().st_mode & 0o222
+        or sha256_file(checksum_path) != marker["checksum_sha256"]
+        or checksum_path.read_text(encoding="utf-8").strip().split()
+        != [marker["contract_sha256"], contract_path.name]
+    ):
+        raise ImmutablePinError("sealed capacity contract bytes drifted")
+    return marker
+
+
+def _seal_capacity_contract(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    transition_id: str,
+    to_generation: int,
+    source_path: Path,
+    expected_sha256: str,
+    now: float,
+) -> dict[str, Any]:
+    """Copy an operator-supplied contract into a marker-last immutable generation."""
+
+    source = source_path.expanduser().resolve()
+    if (
+        source.is_symlink()
+        or not source.is_file()
+        or _SHA256_RE.fullmatch(expected_sha256) is None
+        or sha256_file(source) != expected_sha256
+    ):
+        raise ImmutablePinError(
+            "capacity contract is missing, symlinked, or differs from --sha256"
+        )
+    source_sidecar = source.with_suffix(".sha256")
+    if (
+        source_sidecar.is_symlink()
+        or not source_sidecar.is_file()
+        or source_sidecar.read_text(encoding="utf-8").strip().split()
+        != [expected_sha256, source.name]
+    ):
+        raise ImmutablePinError(
+            "capacity contract checksum sidecar does not bind the supplied file"
+        )
+    current_binding = effective_fleet_contract_binding(control, verify_files=True)
+    _assert_additive_capacity_contract(
+        Path(current_binding["path"]).resolve(), source
+    )
+    immutable = control["immutable"]
+    try:
+        models = load_model_contracts(
+            immutable["model_contract_path"],
+            expected_sha256=immutable["model_contract_sha256"],
+        )
+        fleet = load_fleet_contract(
+            source,
+            model_contracts=models,
+            expected_sha256=expected_sha256,
+            allow_capacity_layout=True,
+        )
+    except (FleetContractError, ModelContractError, OSError, ValueError) as exc:
+        raise ImmutablePinError(f"capacity contract validation failed: {exc}") from exc
+    current = load_effective_fleet_contract(control)
+    current_counts = _capacity_profile_counts(current)
+    proposed_counts = _capacity_profile_counts(fleet)
+    if any(
+        proposed_counts[profile] < current_counts[profile]
+        for profile in current_counts
+    ):
+        raise ImmutablePinError(
+            "capacity transition may not remove an existing profile replica"
+        )
+    if proposed_counts == current_counts:
+        raise ImmutablePinError("capacity contract does not change the fleet layout")
+
+    root = state_dir / "capacity-transitions" / transition_id / "contract"
+    marker_path = root / CAPACITY_CONTRACT_COMPLETE
+    if marker_path.exists():
+        marker = _verify_capacity_contract_marker(marker_path)
+        if (
+            marker["contract_sha256"] != expected_sha256
+            or marker["capacity_generation"] != to_generation
+            or marker["immutable_sha256"] != control["immutable_sha256"]
+        ):
+            raise ImmutablePinError(
+                "existing capacity contract marker conflicts with this transition"
+            )
+        return {
+            "capacity_generation": to_generation,
+            "path": marker["contract_path"],
+            "sha256": marker["contract_sha256"],
+            "marker_path": str(marker_path.resolve()),
+            "marker_sha256": sha256_file(marker_path),
+            "fleet_id": fleet.fleet_id,
+            "logical_replicas": len(fleet.replicas),
+            "allocated_gpus": sum(item.gpus_per_replica for item in fleet.replicas),
+            "profile_replicas": proposed_counts,
+            "activated_at": utc_timestamp(now),
+            "activated_timestamp": now,
+        }
+    root.mkdir(parents=True, exist_ok=True)
+    intent_path = root / "CONTRACT_CAPTURE_INTENT.json"
+    intent = {
+        "schema_version": 1,
+        "kind": "schema5_capacity_contract_capture_intent",
+        "transition_id": transition_id,
+        "capacity_generation": to_generation,
+        "source_path": str(source),
+        "source_sha256": expected_sha256,
+        "immutable_sha256": control["immutable_sha256"],
+    }
+    if intent_path.exists():
+        if _load_json_object(intent_path, description="capacity contract intent") != intent:
+            raise ImmutablePinError("capacity contract capture intent conflicts")
+    else:
+        _atomic_write_json(intent_path, intent)
+    target = root / "fleet_contract.json"
+    target_sidecar = target.with_suffix(".sha256")
+    if target.exists() or target.is_symlink():
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat().st_ino == source.stat().st_ino
+            or sha256_file(target) != expected_sha256
+        ):
+            raise ImmutablePinError(
+                "partial capacity contract copy is not independent and exact"
+            )
+    else:
+        shutil.copyfile(source, target)
+    if target.stat().st_ino == source.stat().st_ino or sha256_file(target) != expected_sha256:
+        raise ImmutablePinError("capacity contract copy is not independent and exact")
+    expected_sidecar = f"{expected_sha256}  {target.name}\n"
+    if target_sidecar.exists() or target_sidecar.is_symlink():
+        if (
+            target_sidecar.is_symlink()
+            or not target_sidecar.is_file()
+            or target_sidecar.read_text(encoding="utf-8") != expected_sidecar
+        ):
+            raise ImmutablePinError(
+                "partial capacity contract checksum sidecar conflicts"
+            )
+    else:
+        io.atomic_write_text(target_sidecar, expected_sidecar)
+    marker = {
+        "schema_version": 1,
+        "kind": "schema5_capacity_contract",
+        "complete": True,
+        "transition_id": transition_id,
+        "capacity_generation": to_generation,
+        "release_id": immutable["release_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "model_contract_sha256": immutable["model_contract_sha256"],
+        "contract_path": str(target.resolve()),
+        "contract_sha256": expected_sha256,
+        "checksum_path": str(target_sidecar.resolve()),
+        "checksum_sha256": sha256_file(target_sidecar),
+        "logical_replicas": len(fleet.replicas),
+        "allocated_gpus": sum(item.gpus_per_replica for item in fleet.replicas),
+        "profile_replicas": proposed_counts,
+        "created_at": utc_timestamp(now),
+        "created_timestamp": now,
+    }
+    for path in (intent_path, target, target_sidecar):
+        path.chmod(0o444)
+    _atomic_write_json(marker_path, marker)
+    marker_path.chmod(0o444)
+    root.chmod(0o555)
+    _verify_capacity_contract_marker(marker_path)
+    return {
+        "capacity_generation": to_generation,
+        "path": str(target.resolve()),
+        "sha256": expected_sha256,
+        "marker_path": str(marker_path.resolve()),
+        "marker_sha256": sha256_file(marker_path),
+        "fleet_id": fleet.fleet_id,
+        "logical_replicas": len(fleet.replicas),
+        "allocated_gpus": sum(item.gpus_per_replica for item in fleet.replicas),
+        "profile_replicas": proposed_counts,
+        "activated_at": utc_timestamp(now),
+        "activated_timestamp": now,
+    }
+
+
+def _fleet_contract_reconciliation_identity(
+    control: Mapping[str, Any],
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    binding = effective_fleet_contract_binding(control, verify_files=True)
+    contract = _load_json_object(
+        Path(binding["path"]), description="effective fleet contract"
+    )
+    pool_id = contract.get("fleet_id")
+    profiles = contract.get("profiles")
+    if pool_id != "schema5-v1" or not isinstance(profiles, list):
+        raise ImmutablePinError("fleet contract lacks its reconciliation identity")
+    replica_profiles: dict[str, str] = {}
+    replica_job_names: dict[str, str] = {}
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise ImmutablePinError("fleet contract profile is malformed")
+        profile_name = profile.get("serving_profile")
+        replicas = profile.get("replicas")
+        if not isinstance(profile_name, str) or not isinstance(replicas, list):
+            raise ImmutablePinError("fleet contract profile identity is malformed")
+        for replica in replicas:
+            if not isinstance(replica, dict):
+                raise ImmutablePinError("fleet contract replica is malformed")
+            replica_id = replica.get("replica_id")
+            job_name = replica.get("scheduler_job_name")
+            if (
+                not isinstance(replica_id, str)
+                or not replica_id
+                or not isinstance(job_name, str)
+                or not job_name
+                or replica.get("pool_id", pool_id) != pool_id
+                or replica_id in replica_profiles
+            ):
+                raise ImmutablePinError(
+                    "fleet contract does not provide a bijective scheduler identity"
+                )
+            replica_profiles[replica_id] = profile_name
+            replica_job_names[replica_id] = job_name
+    if (
+        len(replica_profiles) != binding["logical_replicas"]
+        or len(set(replica_job_names.values())) != len(replica_job_names)
+    ):
+        raise ImmutablePinError("fleet contract replica cardinality is inconsistent")
+    return str(pool_id), replica_profiles, replica_job_names
+
+
+def _default_fleet_retirement_evidence(
+    control: Mapping[str, Any],
+    *,
+    scheduler: fleet_transactions.SchedulerSnapshot | None = None,
+) -> dict[str, Any]:
+    """Resolve exact active fleet IDs through the supervisor's transaction join."""
+
+    pool_root = Path(control["immutable"]["server_pool_root"]).resolve()
+    pool_id, replica_profiles, replica_job_names = (
+        _fleet_contract_reconciliation_identity(control)
+    )
+    snapshot = scheduler or fleet_transactions.query_scheduler()
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise SchedulerAmbiguity(
+            "capacity transition requires complete fleet squeue+sacct truth: "
+            + "; ".join(snapshot.errors)
+        )
+    fleet_sha256 = str(
+        effective_fleet_contract_binding(control, verify_files=True)["sha256"]
+    )
+    with fleet_transactions.read_transaction_lock(pool_root) as directory:
+        current_path = directory / fleet_transactions.CURRENT_FILENAME
+        current = _load_json_object(
+            current_path, description="fleet transaction CURRENT"
+        )
+        ledger_generation = current.get("current_generation")
+        if (
+            not isinstance(ledger_generation, int)
+            or isinstance(ledger_generation, bool)
+            or ledger_generation < 1
+        ):
+            raise SchedulerAmbiguity(
+                "fleet transaction CURRENT has an invalid generation"
+            )
+        ledgers = fleet_transactions.read_generation_ledgers(
+            directory,
+            pool_root=pool_root,
+            pool_id=pool_id,
+            fleet_sha256=fleet_sha256,
+            current_generation=ledger_generation,
+            replica_ids=sorted(replica_profiles),
+        )
+        expected_names = set(replica_job_names.values())
+        scoped_rows = tuple(
+            row
+            for row in snapshot.rows
+            if row.job_name in expected_names
+            or row.comment.startswith("asys-s5-fleet:")
+        )
+        reconciliation = fleet_transactions.reconcile_scheduler_rows(
+            scoped_rows,
+            ledgers,
+            pool_id=pool_id,
+            fleet_sha256=fleet_sha256,
+            replica_profiles=replica_profiles,
+            replica_job_names=replica_job_names,
+        )
+    allocations = [
+        {
+            "job_id": allocation.row.job_id,
+            "replica_id": allocation.replica_id,
+            "profile": allocation.profile,
+            "ledger_generation": allocation.ledger_generation,
+            "scheduler_state": allocation.row.state,
+            "intent_token": allocation.attempt["intent_token"],
+            "sbatch_path": allocation.attempt["sbatch_path"],
+            "sbatch_sha256": allocation.attempt["sbatch_sha256"],
+        }
+        for allocation in reconciliation.active_allocations
+    ]
+    return {
+        "pool_root": str(pool_root),
+        "pool_id": pool_id,
+        "fleet_sha256": fleet_sha256,
+        "ledger_generation": ledger_generation,
+        "scheduler_captured_timestamp": snapshot.captured_at,
+        "active_allocations": allocations,
+        "old_fleet_job_ids": sorted(
+            (row["job_id"] for row in allocations), key=int
+        ),
+    }
+
+
+def _capacity_archive_source_files(
+    state_dir: Path, control: Mapping[str, Any]
+) -> list[tuple[str, Path]]:
+    """Select stable control/fleet evidence; mutable log streams are excluded."""
+
+    sources: dict[str, Path] = {}
+
+    def add(logical: str, path: Path, *, required: bool = True) -> None:
+        resolved = path.expanduser().resolve()
+        if not path.exists():
+            if required:
+                raise ControlError(f"capacity archive source is missing: {path}")
+            return
+        if path.is_symlink() or not resolved.is_file():
+            raise ControlError(f"capacity archive source is unsafe: {path}")
+        sources[logical] = resolved
+
+    add("control/control.json", _state_path(state_dir))
+    add("control/immutable_pins.json", state_dir / IMMUTABLE_PINS_FILENAME)
+    add("control/transitions.jsonl", state_dir / TRANSITION_JOURNAL)
+    add(
+        "control/reconciliation.json",
+        state_dir / RECONCILIATION_FILENAME,
+        required=False,
+    )
+    fleet_binding = effective_fleet_contract_binding(control, verify_files=True)
+    add("fleet/fleet_contract.json", Path(fleet_binding["path"]))
+    if fleet_binding["is_capacity_overlay"]:
+        record = control["capacity"]["current_contract"]
+        add("fleet/capacity_contract_complete.json", Path(record["marker_path"]))
+    pool_root = Path(control["immutable"]["server_pool_root"]).resolve()
+    transaction_root = fleet_transactions.state_directory(pool_root)
+    if transaction_root.is_symlink() or not transaction_root.is_dir():
+        raise ControlError("fleet transaction state is unavailable for archive")
+    for path in sorted(transaction_root.rglob("*")):
+        if not path.is_file() or path.name == fleet_transactions.LOCK_FILENAME:
+            continue
+        if path.is_symlink():
+            raise ControlError(f"fleet transaction archive source is symlinked: {path}")
+        relative = path.relative_to(transaction_root).as_posix()
+        add(f"fleet/transactions/{relative}", path)
+    # Preserve the immutable scripts referenced by every ledger attempt even when the
+    # renderer stores them outside the pool's transaction-state directory.
+    for logical, ledger_path in list(sources.items()):
+        if not logical.startswith("fleet/transactions/ledgers/"):
+            continue
+        ledger = _load_json_object(ledger_path, description="fleet ledger")
+        for replica_id, record in sorted(ledger.get("replicas", {}).items()):
+            for attempt_index, attempt in enumerate(record.get("attempts", [])):
+                if not isinstance(attempt, dict) or not attempt.get("sbatch_path"):
+                    raise ControlError("fleet ledger attempt lacks immutable sbatch path")
+                add(
+                    (
+                        "fleet/sbatch/"
+                        f"{replica_id}/attempt-{attempt_index:04d}.sbatch"
+                    ),
+                    Path(str(attempt["sbatch_path"])),
+                )
+    return sorted(sources.items())
+
+
+def _capacity_file_inventory(
+    sources: Sequence[tuple[str, Path]],
+) -> tuple[list[dict[str, Any]], str]:
+    rows = [
+        {
+            "path": logical,
+            "source": str(path),
+            "size": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+        for logical, path in sources
+    ]
+    return rows, sha256_value(rows)
+
+
+def _verify_capacity_archive(archive_root: Path) -> dict[str, Any]:
+    marker_path = archive_root / CAPACITY_ARCHIVE_COMPLETE
+    marker = _load_json_object(marker_path, description="capacity archive marker")
+    if (
+        marker.get("schema_version") != 1
+        or marker.get("kind") != "schema5_capacity_archive"
+        or marker.get("complete") is not True
+        or _SHA256_RE.fullmatch(str(marker.get("inventory_sha256", ""))) is None
+    ):
+        raise ControlError("capacity archive completion marker is invalid")
+    inventory_path = archive_root / "INVENTORY.json"
+    inventory = _load_json_object(inventory_path, description="capacity archive inventory")
+    rows = inventory.get("files")
+    if (
+        inventory.get("schema_version") != 1
+        or inventory.get("kind") != "schema5_capacity_archive_inventory"
+        or not isinstance(rows, list)
+        or sha256_value(rows) != marker["inventory_sha256"]
+        or sha256_file(inventory_path) != marker.get("inventory_file_sha256")
+    ):
+        raise ControlError("capacity archive inventory is invalid")
+    payload_root = archive_root / "payload"
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"path", "size", "sha256"}:
+            raise ControlError("capacity archive inventory row is invalid")
+        relative = Path(str(row["path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ControlError("capacity archive inventory path escapes its payload")
+        target = payload_root / relative
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat().st_size != row["size"]
+            or sha256_file(target) != row["sha256"]
+        ):
+            raise ControlError(f"capacity archive payload drifted: {relative}")
+    if any(path.stat().st_mode & 0o222 for path in archive_root.rglob("*")):
+        raise ControlError("capacity archive is not sealed read-only")
+    return marker
+
+
+def _create_capacity_archive(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    transition_id: str,
+    now: float,
+) -> tuple[Path, str]:
+    """Copy and seal a marker-last, crash-recoverable capacity preimage."""
+
+    archive_root = state_dir / "capacity-transitions" / transition_id / "archive"
+    marker_path = archive_root / CAPACITY_ARCHIVE_COMPLETE
+    if marker_path.exists():
+        marker = _verify_capacity_archive(archive_root)
+        return archive_root, sha256_file(marker_path)
+    archive_root.mkdir(parents=True, exist_ok=True)
+    intent_path = archive_root / "ARCHIVE_INTENT.json"
+    intent = {
+        "schema_version": 1,
+        "kind": "schema5_capacity_archive_intent",
+        "transition_id": transition_id,
+        "immutable_sha256": control["immutable_sha256"],
+    }
+    if intent_path.exists():
+        if _load_json_object(intent_path, description="capacity archive intent") != intent:
+            raise ControlError("capacity archive intent conflicts with this transition")
+    else:
+        _atomic_write_json(intent_path, intent)
+    sources = _capacity_archive_source_files(state_dir, control)
+    before, before_sha256 = _capacity_file_inventory(sources)
+    payload_root = archive_root / "payload"
+    inventory_path = archive_root / "INVENTORY.json"
+    expected_copied_rows = [
+        {
+            "path": source_row["path"],
+            "size": source_row["size"],
+            "sha256": source_row["sha256"],
+        }
+        for source_row in before
+    ]
+    reuse_pre_marker = False
+    if inventory_path.exists() or inventory_path.is_symlink():
+        if inventory_path.is_symlink() or not inventory_path.is_file():
+            raise ControlError("partial capacity archive inventory is unsafe")
+        existing_inventory = _load_json_object(
+            inventory_path, description="partial capacity archive inventory"
+        )
+        if existing_inventory != {
+            "schema_version": 1,
+            "kind": "schema5_capacity_archive_inventory",
+            "files": expected_copied_rows,
+        }:
+            raise ControlError(
+                "partial capacity archive inventory conflicts with current sources"
+            )
+        if payload_root.is_symlink() or not payload_root.is_dir():
+            raise ControlError("partial capacity archive payload is missing or unsafe")
+        actual_files: set[str] = set()
+        actual_dirs: set[str] = set()
+        for path in payload_root.rglob("*"):
+            if path.is_symlink():
+                raise ControlError(
+                    f"partial capacity archive contains a symlink: {path}"
+                )
+            relative = path.relative_to(payload_root).as_posix()
+            if path.is_file():
+                actual_files.add(relative)
+            elif path.is_dir():
+                actual_dirs.add(relative)
+        expected_files = {row["path"] for row in expected_copied_rows}
+        expected_dirs = {
+            parent.as_posix()
+            for logical in expected_files
+            for parent in Path(logical).parents
+            if parent != Path(".")
+        }
+        if actual_files != expected_files or actual_dirs != expected_dirs:
+            raise ControlError(
+                "partial capacity archive payload topology conflicts with inventory"
+            )
+        for row, (_logical, source) in zip(
+            expected_copied_rows, sources, strict=True
+        ):
+            target = payload_root / row["path"]
+            if (
+                target.stat().st_size != row["size"]
+                or sha256_file(target) != row["sha256"]
+                or target.stat().st_ino == source.stat().st_ino
+            ):
+                raise ControlError(
+                    f"partial capacity archive payload drifted: {row['path']}"
+                )
+        reuse_pre_marker = True
+    elif payload_root.exists() or payload_root.is_symlink():
+        if payload_root.is_symlink() or not payload_root.is_dir():
+            raise ControlError("partial capacity archive payload is unsafe")
+        # No inventory means the copy never reached its complete pre-marker preimage.
+        # This exact transition-local tree is safe to rebuild after making sealed
+        # partial directories traversable again.
+        for path in sorted(payload_root.rglob("*"), reverse=True):
+            if path.is_symlink():
+                raise ControlError(
+                    f"partial capacity archive contains a symlink: {path}"
+                )
+            path.chmod(0o755 if path.is_dir() else 0o600)
+        payload_root.chmod(0o755)
+        shutil.rmtree(payload_root)
+
+    copied_rows: list[dict[str, Any]] = []
+    if reuse_pre_marker:
+        copied_rows = expected_copied_rows
+    else:
+        payload_root.mkdir()
+        for source_row, (logical, source) in zip(before, sources, strict=True):
+            target = payload_root / logical
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            copied_rows.append(
+                {
+                    "path": logical,
+                    "size": target.stat().st_size,
+                    "sha256": sha256_file(target),
+                }
+            )
+            if (
+                copied_rows[-1]["size"] != source_row["size"]
+                or copied_rows[-1]["sha256"] != source_row["sha256"]
+                or target.stat().st_ino == source.stat().st_ino
+            ):
+                raise ControlError(
+                    f"capacity archive copy verification failed: {source}"
+                )
+    after, after_sha256 = _capacity_file_inventory(sources)
+    if after != before or after_sha256 != before_sha256:
+        raise ControlError("capacity archive sources changed during capture")
+    inventory = {
+        "schema_version": 1,
+        "kind": "schema5_capacity_archive_inventory",
+        "files": copied_rows,
+    }
+    if not reuse_pre_marker:
+        _atomic_write_json(inventory_path, inventory)
+    for path in sorted(payload_root.rglob("*"), reverse=True):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    payload_root.chmod(0o555)
+    intent_path.chmod(0o444)
+    inventory_path.chmod(0o444)
+    marker = {
+        "schema_version": 1,
+        "kind": "schema5_capacity_archive",
+        "complete": True,
+        "transition_id": transition_id,
+        "immutable_sha256": control["immutable_sha256"],
+        "created_at": utc_timestamp(now),
+        "created_timestamp": now,
+        "source_inventory_sha256": before_sha256,
+        "inventory_sha256": sha256_value(copied_rows),
+        "inventory_file_sha256": sha256_file(inventory_path),
+        "file_count": len(copied_rows),
+    }
+    _atomic_write_json(marker_path, marker)
+    marker_path.chmod(0o444)
+    archive_root.chmod(0o555)
+    _verify_capacity_archive(archive_root)
+    return archive_root, sha256_file(marker_path)
+
+
+def _activate_operator_hold(
+    hold: MutableMapping[str, Any], *, reason: str, now: float
+) -> None:
+    event = "updated" if hold["active"] else "activated"
+    prior_reasons = list(hold["reasons"]) if hold["active"] else []
+    if not hold["active"]:
+        hold["activated_at"] = utc_timestamp(now)
+        hold["activated_timestamp"] = now
+    reasons = sorted(set([*prior_reasons, reason]))
+    hold.update(
+        {
+            "active": True,
+            "mode": "operator",
+            "reasons": reasons,
+            "consecutive_clean_polls": 0,
+            "semantic_clean_after_activation": False,
+            "updated_at": utc_timestamp(now),
+            "updated_timestamp": now,
+            "acknowledged_at": None,
+            "acknowledged_timestamp": None,
+        }
+    )
+    hold["history"].append(
+        {
+            "event": event,
+            "mode": "operator",
+            "reasons": reasons,
+            "at": utc_timestamp(now),
+            "timestamp": now,
+        }
+    )
+
+
+def _consume_capacity_remediation_incidents_locked(
+    state_dir: Path,
+    control: MutableMapping[str, Any],
+    *,
+    transition_id: str,
+    incident_keys: Sequence[str],
+    now: float,
+) -> list[str]:
+    """Consume the exact capacity incidents sealed by this transition's intent.
+
+    The caller holds ``control_lock`` and publishes the capacity transition in the
+    same control replacement.  The intent is marker-first and the journal writes are
+    idempotent by transition and alert identity, so a crash before ``control.json``
+    replacement replays the same closed set exactly once.  Scientific/data-integrity
+    incidents outside this set remain layered on the operator hold and continue to
+    block transition completion.
+    """
+
+    consumed = sorted(set(incident_keys))
+    if (
+        len(consumed) != len(incident_keys)
+        or any(key not in CAPACITY_REMEDIATION_ALERT_KEYS for key in consumed)
+    ):
+        raise ControlError(
+            "capacity transition incident intent contains an invalid dedupe key"
+        )
+    if not consumed:
+        return []
+    hold = control["admission_safety_hold"]
+    resolved_alert_ids: list[str] = []
+    durable_alert_records = _read_jsonl_locked(
+        state_dir / ALERT_JOURNAL, missing_ok=True
+    )
+    for alert in control.get("alerts", []):
+        if (
+            isinstance(alert, dict)
+            and alert.get("dedupe_key") in consumed
+            and alert.get("resolved_at") is None
+        ):
+            journal_identity = {
+                "action": "resolved",
+                "alert_id": alert["alert_id"],
+                "dedupe_key": alert["dedupe_key"],
+                "capacity_transition_id": transition_id,
+            }
+            prior = [
+                row
+                for row in durable_alert_records
+                if all(row.get(key) == value for key, value in journal_identity.items())
+            ]
+            if len(prior) > 1:
+                raise ControlError(
+                    "capacity incident resolution journal contains duplicate replay"
+                )
+            if prior:
+                resolution_at = prior[0].get("at")
+                resolution_timestamp = prior[0].get("timestamp")
+                if (
+                    not isinstance(resolution_at, str)
+                    or not isinstance(resolution_timestamp, (int, float))
+                    or isinstance(resolution_timestamp, bool)
+                ):
+                    raise ControlError(
+                        "capacity incident resolution replay timestamp is invalid"
+                    )
+            else:
+                resolution_at = utc_timestamp(now)
+                resolution_timestamp = now
+                record = {
+                    "at": resolution_at,
+                    "timestamp": resolution_timestamp,
+                    **journal_identity,
+                }
+                _append_jsonl(state_dir / ALERT_JOURNAL, record)
+                durable_alert_records.append(record)
+            alert["resolved_at"] = resolution_at
+            alert["resolved_timestamp"] = resolution_timestamp
+            resolved_alert_ids.append(str(alert["alert_id"]))
+    hold["reasons"] = sorted(
+        reason for reason in hold["reasons"] if reason not in consumed
+    )
+    hold["updated_at"] = utc_timestamp(now)
+    hold["updated_timestamp"] = now
+    hold["history"].append(
+        {
+            "event": "updated",
+            "mode": hold["mode"],
+            "reasons": list(hold["reasons"]),
+            "update_reason": "capacity_remediation_consumed",
+            "consumed_reasons": consumed,
+            "transition_id": transition_id,
+            "at": utc_timestamp(now),
+            "timestamp": now,
+        }
+    )
+    _append_capacity_transition_event_once(
+        state_dir,
+        control,
+        event="capacity_remediation_incidents_consumed",
+        details={
+            "transition_id": transition_id,
+            "dedupe_keys": consumed,
+            "resolved_alert_ids": resolved_alert_ids,
+        },
+        now=now,
+    )
+    return consumed
+
+
+def _append_capacity_transition_event_once(
+    state_dir: Path,
+    control: MutableMapping[str, Any],
+    *,
+    event: str,
+    details: Mapping[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    """Append one transition event, adopting a journaled pre-save replay."""
+
+    transition_id = details.get("transition_id")
+    if not isinstance(transition_id, str) or not transition_id:
+        raise ControlError("capacity transition event lacks a transition identity")
+    durable = _read_jsonl_locked(state_dir / TRANSITION_JOURNAL, missing_ok=True)
+    memory = list(control.get("transition_history", []))
+    if durable[: len(memory)] != memory:
+        raise ControlError("transition journal diverged during capacity replay")
+    matches = [
+        row
+        for row in durable
+        if row.get("event") == event
+        and isinstance(row.get("details"), dict)
+        and row["details"].get("transition_id") == transition_id
+    ]
+    if len(matches) > 1:
+        raise ControlError(
+            f"capacity transition event {event!r} was journaled more than once"
+        )
+    if matches:
+        if matches[0].get("details") != dict(details):
+            raise ControlError(
+                f"capacity transition event {event!r} conflicts with durable replay"
+            )
+        if len(durable) > len(memory):
+            control["transition_history"] = copy.deepcopy(durable)
+            validate_transition_history(control)
+        return matches[0]
+    return append_transition(
+        state_dir,
+        control,
+        event=event,
+        details=details,
+        now=now,
+    )
+
+
+def _clear_capacity_operator_hold(
+    hold: MutableMapping[str, Any], *, transition_id: str, now: float
+) -> None:
+    expected_reason = f"capacity-transition:{transition_id}"
+    if (
+        not hold["active"]
+        or hold["mode"] != "operator"
+        or hold["reasons"] != [expected_reason]
+    ):
+        raise ControlError(
+            "capacity transition cannot clear a hold containing unresolved "
+            "non-capacity reasons"
+        )
+    previous_reasons = list(hold["reasons"])
+    hold["history"].append(
+        {
+            "event": "cleared",
+            "mode": "operator",
+            "reasons": previous_reasons,
+            "at": utc_timestamp(now),
+            "timestamp": now,
+            "clear_reason": "capacity_generation_readiness_complete",
+        }
+    )
+    hold.update(
+        {
+            "active": False,
+            "mode": None,
+            "reasons": [],
+            "consecutive_clean_polls": 0,
+            "semantic_clean_after_activation": False,
+            "activated_at": None,
+            "activated_timestamp": None,
+            "updated_at": utc_timestamp(now),
+            "updated_timestamp": now,
+            "acknowledged_at": None,
+            "acknowledged_timestamp": None,
+        }
+    )
+
+
+def _write_capacity_retirement_intent(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    transition_id: str,
+    from_generation: int,
+    to_generation: int,
+    old_fleet_job_ids: Sequence[str],
+    fleet_evidence_sha256: str,
+    consumed_capacity_incidents: Sequence[str],
+) -> tuple[Path, str, list[str]]:
+    path = (
+        state_dir
+        / "capacity-transitions"
+        / transition_id
+        / CAPACITY_RETIREMENT_INTENT
+    )
+    intended_incidents = sorted(set(consumed_capacity_incidents))
+    if (
+        len(intended_incidents) != len(consumed_capacity_incidents)
+        or any(
+            key not in CAPACITY_REMEDIATION_ALERT_KEYS
+            for key in intended_incidents
+        )
+    ):
+        raise ControlError(
+            "capacity retirement intent contains an invalid incident set"
+        )
+    payload = {
+        "schema_version": 2,
+        "kind": "schema5_capacity_fleet_retirement_intent",
+        "transition_id": transition_id,
+        "immutable_sha256": control["immutable_sha256"],
+        "from_capacity_generation": from_generation,
+        "to_capacity_generation": to_generation,
+        "old_fleet_job_ids": list(old_fleet_job_ids),
+        "fleet_evidence_sha256": fleet_evidence_sha256,
+        "consumed_capacity_incidents": intended_incidents,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        existing = _load_json_object(
+            path, description="capacity retirement intent"
+        )
+        expected_identity = {
+            key: value
+            for key, value in payload.items()
+            if key != "consumed_capacity_incidents"
+        }
+        observed_identity = {
+            key: value
+            for key, value in existing.items()
+            if key != "consumed_capacity_incidents"
+        }
+        recorded_incidents = existing.get("consumed_capacity_incidents")
+        if (
+            observed_identity != expected_identity
+            or not isinstance(recorded_incidents, list)
+            or recorded_incidents != sorted(set(recorded_incidents))
+            or any(
+                not isinstance(key, str)
+                or key not in CAPACITY_REMEDIATION_ALERT_KEYS
+                for key in recorded_incidents
+            )
+        ):
+            raise SchedulerAmbiguity(
+                "existing exact fleet-retirement intent conflicts with transition"
+            )
+        intended_incidents = list(recorded_incidents)
+    else:
+        _atomic_write_json(path, payload)
+        path.chmod(0o444)
+    return path.resolve(), sha256_file(path), intended_incidents
+
+
+def _directory_file_inventory(root: Path) -> tuple[list[dict[str, Any]], str]:
+    rows: list[dict[str, Any]] = []
+    if root.is_symlink() or not root.is_dir():
+        raise ControlError(f"fleet transaction state is unsafe: {root}")
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ControlError(f"fleet transaction state contains symlink: {path}")
+        if path.is_file():
+            rows.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "size": path.stat().st_size,
+                    "sha256": sha256_file(path),
+                }
+            )
+    return rows, sha256_value(rows)
+
+
+def _retire_fleet_transaction_state(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    transition_id: str,
+    now: float,
+) -> dict[str, Any]:
+    """Move the old hash-bound ledger aside before the replacement supervisor starts."""
+
+    pool_root = Path(control["immutable"]["server_pool_root"]).resolve()
+    source = fleet_transactions.state_directory(pool_root)
+    transition_root = state_dir / "capacity-transitions" / transition_id
+    target = transition_root / CAPACITY_FLEET_STATE_RETIREMENT
+    intent_path = transition_root / "FLEET_TRANSACTION_STATE_RETIREMENT_INTENT.json"
+    complete_path = transition_root / "FLEET_TRANSACTION_STATE_RETIRED.json"
+    if complete_path.exists():
+        marker = _load_json_object(
+            complete_path, description="retired fleet transaction state"
+        )
+        rows, digest = _directory_file_inventory(target)
+        if (
+            marker.get("complete") is not True
+            or marker.get("transition_id") != transition_id
+            or marker.get("inventory_sha256") != digest
+            or marker.get("file_count") != len(rows)
+            or source.exists()
+        ):
+            raise ControlError("retired fleet transaction state marker drifted")
+        return marker
+    if source.exists():
+        rows, digest = _directory_file_inventory(source)
+    elif target.exists():
+        rows, digest = _directory_file_inventory(target)
+    else:
+        raise ControlError("old fleet transaction state disappeared before retirement")
+    intent = {
+        "schema_version": 1,
+        "kind": "schema5_fleet_transaction_state_retirement_intent",
+        "transition_id": transition_id,
+        "source": str(source),
+        "target": str(target),
+        "inventory_sha256": digest,
+        "file_count": len(rows),
+    }
+    if intent_path.exists():
+        if _load_json_object(intent_path, description="fleet state retire intent") != intent:
+            raise ControlError("fleet transaction retirement intent conflicts")
+    else:
+        _atomic_write_json(intent_path, intent)
+    if source.exists():
+        if target.exists():
+            raise ControlError(
+                "both live and retired fleet transaction states exist ambiguously"
+            )
+        os.replace(source, target)
+    retired_rows, retired_digest = _directory_file_inventory(target)
+    if retired_rows != rows or retired_digest != digest:
+        raise ControlError("fleet transaction state changed during exact retirement")
+    for path in sorted(target.rglob("*"), reverse=True):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    target.chmod(0o555)
+    marker = {
+        "schema_version": 1,
+        "kind": "schema5_fleet_transaction_state_retired",
+        "complete": True,
+        "transition_id": transition_id,
+        "retired_at": utc_timestamp(now),
+        "retired_timestamp": now,
+        "source": str(source),
+        "target": str(target),
+        "inventory_sha256": digest,
+        "file_count": len(rows),
+    }
+    _atomic_write_json(complete_path, marker)
+    complete_path.chmod(0o444)
+    intent_path.chmod(0o444)
+    return marker
+
+
+def _launch_capacity_fleet_once(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    transition: Mapping[str, Any],
+    runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str]], subprocess.CompletedProcess[str]
+        ]
+        | None
+    ) = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [*effective_fleet_supervisor_command(control), "--once"]
+    environment = os.environ.copy()
+    environment.update(REQUIRED_OFFLINE_ENVIRONMENT)
+    environment.update(
+        {
+            "ASYS_RELEASE_ID": str(control["immutable"]["release_id"]),
+            "ASYS_MODEL_CONTRACT_SHA256": str(
+                control["immutable"]["model_contract_sha256"]
+            ),
+            "ASYS_FLEET_CONTRACT_SHA256": str(
+                transition["new_contract"]["sha256"]
+            ),
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": str(
+                control["immutable"]["fleet_contract_sha256"]
+            ),
+            "ASYS_CAPACITY_GENERATION": str(
+                transition["to_generation"]
+            ),
+            "ASYS_TRANSPORT_CENSOR_PROTOCOL_VERSION": str(
+                control["immutable"]["transport_uncertainty_binding"][
+                    "transport_censor_protocol_version"
+                ]
+            ),
+            "ASYS_TRANSPORT_CENSOR_PROTOCOL_HASH": str(
+                control["immutable"]["transport_uncertainty_binding"][
+                    "transport_censor_protocol_hash"
+                ]
+            ),
+            "ASYS_TRANSPORT_UNCERTAINTY_BINDING_SHA256": str(
+                control["immutable"][
+                    "transport_uncertainty_binding_sha256"
+                ]
+            ),
+            "ASYS_HARNESS_ENVIRONMENT_SHA256": str(
+                control["immutable"]["harness_environment_sha256"]
+            ),
+            "ASYS_SERVING_ENVIRONMENT_SHA256": str(
+                control["immutable"]["serving_environment_sha256"]
+            ),
+            "ASYS_ROLLOUT_GENERATION": str(
+                int(control["rollout_generation"]) + 1
+            ),
+            "ASYS_IMMUTABLE_PINS_SHA256": str(control["immutable_sha256"]),
+            "ASYS_SCHEMA5_CONTROL": str(_state_path(state_dir).resolve()),
+        }
+    )
+    if runner is not None:
+        return runner(command, environment)
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900.0,
+        env=environment,
+    )
+
+
+def _capacity_gates_are_fresh(
+    control: Mapping[str, Any], transition: Mapping[str, Any]
+) -> None:
+    generation = int(transition["to_generation"])
+    published = float(transition.get("published_timestamp", math.inf))
+    failures: list[str] = []
+    for gate in transition["invalidated_readiness"]:
+        record = control["readiness"].get(gate, {})
+        if (
+            record.get("passed") is not True
+            or record.get("capacity_generation") != generation
+            or not isinstance(record.get("attested_timestamp"), (int, float))
+            or float(record["attested_timestamp"]) < published
+        ):
+            failures.append(gate)
+    if failures:
+        raise ReadinessError(
+            "capacity transition requires fresh generation-bound gates: "
+            + ", ".join(failures)
+        )
+
+
+def _retired_capacity_transition_v1_reference_do_not_call(
+    state_dir: Path,
+    *,
+    action: str,
+    fleet_contract_path: Path | None = None,
+    fleet_contract_sha256: str | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    fleet_evidence_reader: (
+        Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+    ) = None,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    fleet_launch_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str]], subprocess.CompletedProcess[str]
+        ]
+        | None
+    ) = None,
+    resume_callback: Callable[[Path], Mapping[str, Any]] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Non-authoritative v1 reference retained only for sealed-history review.
+
+    The callable path is deliberately fenced.  Production and tests resolve the later
+    :func:`capacity_transition`, which requires an explicit additive fleet contract.
+    """
+
+    raise ControlError(
+        "retired capacity-transition v1 cannot publish a production generation"
+    )
+
+    if action not in {"status", "dry-run", "apply", "complete"}:
+        raise ControlError(f"unknown capacity-transition action {action!r}")
+    timestamp = time.time() if now is None else float(now)
+    read_scheduler = scheduler_reader or (
+        lambda: query_scheduler(tolerate_errors=False)
+    )
+    resolve_fleet = fleet_evidence_reader or _default_fleet_retirement_evidence
+    runner = cancel_runner or _run_subprocess
+    with capacity_transition_lock(state_dir):
+        if action == "status":
+            control = load_control(state_dir)
+            return {
+                "action": action,
+                "capacity": copy.deepcopy(control["capacity"]),
+                "admission_safety_hold": copy.deepcopy(
+                    control["admission_safety_hold"]
+                ),
+            }
+        if action == "complete":
+            # A crash may occur after ``resume_control`` has durably published
+            # ``running`` but before this workflow marks the transition's resume
+            # receipt and opens its throughput epoch.  That state is no longer
+            # quiescent and must not be forced back through the pause/drain gate.
+            # The completed resume transaction is already scheduler-fenced, so the
+            # marker-only retry can finish without another scheduler mutation.
+            control = load_control(state_dir, verify_files=True)
+            if control["capacity"]["active_transition"] is None:
+                pending = [
+                    row
+                    for row in control["capacity"]["history"]
+                    if row.get("phase") == "completed"
+                    and row.get("production_resume_state") == "pending"
+                ]
+                if len(pending) != 1:
+                    raise ControlError(
+                        "capacity transition is not waiting for completion"
+                    )
+                transition_id = str(pending[0]["transition_id"])
+                resumed = _complete_capacity_resume(
+                    state_dir,
+                    transition_id=transition_id,
+                    resume_callback=resume,
+                    now=timestamp,
+                )
+                return {
+                    "action": action,
+                    "completed": True,
+                    "capacity_generation": pending[0]["to_generation"],
+                    "resume_ceiling": 24,
+                    "production_resumed": resumed,
+                }
+        with admission_boundary_lock(state_dir):
+            snapshot = read_scheduler()
+            _require_complete_quiescent_scheduler(
+                snapshot, operation="capacity transition"
+            )
+            with control_lock(state_dir):
+                control = load_control(state_dir, verify_files=True)
+                pending_resumes = [
+                    row
+                    for row in control["capacity"]["history"]
+                    if row.get("production_resume_state") == "pending"
+                ]
+                if action in {"dry-run", "apply"} and pending_resumes:
+                    raise ControlError(
+                        "a completed capacity transition still has a pending "
+                        "production resume; retry capacity-transition complete"
+                    )
+                if (
+                    control["desired_state"] != "paused"
+                    or control.get("drain_requested") is not True
+                ):
+                    raise ControlError(
+                        "capacity transition requires pause --drain to complete first"
+                    )
+                active = copy.deepcopy(control["capacity"]["active_transition"])
+            if action == "dry-run":
+                if active is not None:
+                    return {
+                        "action": action,
+                        "would_resume_transition": True,
+                        "transition": active,
+                    }
+                evidence = dict(resolve_fleet(control))
+                job_ids = [str(item) for item in evidence.get("old_fleet_job_ids", [])]
+                if (
+                    not all(job_id.isdigit() for job_id in job_ids)
+                    or len(job_ids) != len(set(job_ids))
+                ):
+                    raise SchedulerAmbiguity(
+                        "fleet retirement evidence contains invalid job IDs"
+                    )
+                return {
+                    "action": action,
+                    "would_change": True,
+                    "from_generation": control["capacity"]["current_generation"],
+                    "to_generation": control["capacity"]["current_generation"] + 1,
+                    "old_fleet_job_ids": sorted(job_ids, key=int),
+                    "fleet_evidence_sha256": sha256_value(evidence),
+                }
+            if action == "complete":
+                if active is None or active.get("phase") != "readiness_pending":
+                    raise ControlError(
+                        "capacity transition is not waiting for readiness completion"
+                    )
+                old_live = sorted(
+                    set(active["old_fleet_job_ids"]) & snapshot.active_job_ids,
+                    key=int,
+                )
+                if old_live:
+                    raise SchedulerAmbiguity(
+                        f"old fleet jobs remain active: {old_live}"
+                    )
+                validate_readiness(
+                    control,
+                    state_dir=state_dir,
+                    verify_files=True,
+                    now=timestamp,
+                )
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    current = control["capacity"]["active_transition"]
+                    if current != active:
+                        raise ControlError(
+                            "capacity transition changed during readiness validation"
+                        )
+                    critical = _active_critical_alerts(control)
+                    if critical:
+                        raise ControlError(
+                            "capacity transition cannot complete with critical alerts: "
+                            + ", ".join(critical)
+                        )
+                    completed = copy.deepcopy(current)
+                    completed.update(
+                        {
+                            "phase": "completed",
+                            "completed_at": utc_timestamp(timestamp),
+                            "completed_timestamp": timestamp,
+                        }
+                    )
+                    control["capacity"]["history"].append(completed)
+                    control["capacity"]["active_transition"] = None
+                    # The capacity transaction itself has proven the drain, exact old
+                    # retirement, replacement launch, and fresh gates.  Clear the
+                    # consumed drain request so the explicit resume transaction can
+                    # pass its ordinary paused-state fencing contract.
+                    control["drain_requested"] = False
+                    control["drain_intent"] = None
+                    _clear_capacity_operator_hold(
+                        control["admission_safety_hold"],
+                        transition_id=active["transition_id"],
+                        now=timestamp,
+                    )
+                    _reset_admission_ramp(
+                        state_dir,
+                        control,
+                        reason="capacity_transition_completed",
+                        now=timestamp,
+                        ceiling=24,
+                        clear_last_observation=True,
+                    )
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_transition_completed",
+                        details={
+                            "transition_id": active["transition_id"],
+                            "capacity_generation": active["to_generation"],
+                            "resume_ceiling": 24,
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                return {
+                    "action": action,
+                    "completed": True,
+                    "capacity_generation": active["to_generation"],
+                    "resume_ceiling": 24,
+                }
+
+            # apply: establish the immutable preimage and exact retirement intent once.
+            if active is None:
+                evidence = dict(resolve_fleet(control))
+                job_ids = [str(item) for item in evidence.get("old_fleet_job_ids", [])]
+                if (
+                    not all(job_id.isdigit() for job_id in job_ids)
+                    or len(job_ids) != len(set(job_ids))
+                ):
+                    raise SchedulerAmbiguity(
+                        "fleet retirement evidence contains invalid job IDs"
+                    )
+                job_ids = sorted(job_ids, key=int)
+                from_generation = int(control["capacity"]["current_generation"])
+                transition_id = (
+                    f"capacity-g{from_generation:06d}-to-"
+                    f"g{from_generation + 1:06d}-"
+                    + hashlib.sha256(
+                        canonical_json(
+                            {
+                                "immutable_sha256": control["immutable_sha256"],
+                                "job_ids": job_ids,
+                            }
+                        )
+                    ).hexdigest()[:16]
+                )
+                archive_root, archive_sha256 = _create_capacity_archive(
+                    state_dir,
+                    control,
+                    transition_id=transition_id,
+                    now=timestamp,
+                )
+                invalidated = ("fleet", "smoke_runs", "scheduler_reconciliation")
+                active = {
+                    "transition_id": transition_id,
+                    "phase": "retirement_requested",
+                    "from_generation": from_generation,
+                    "to_generation": from_generation + 1,
+                    "created_at": utc_timestamp(timestamp),
+                    "created_timestamp": timestamp,
+                    "old_fleet_job_ids": job_ids,
+                    "fleet_evidence_sha256": sha256_value(evidence),
+                    "archive_path": str(archive_root),
+                    "archive_sha256": archive_sha256,
+                    "retirement_attempts": 0,
+                    "retirement_results": {},
+                    "last_retirement_error": None,
+                    "invalidated_readiness": list(invalidated),
+                }
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    if control["capacity"]["active_transition"] is not None:
+                        raise ControlError(
+                            "another capacity transition was published concurrently"
+                        )
+                    _close_open_epoch(
+                        control, reason="capacity_transition", now=timestamp
+                    )
+                    _reset_admission_ramp(
+                        state_dir,
+                        control,
+                        reason="capacity_transition",
+                        now=timestamp,
+                        ceiling=24,
+                        clear_last_observation=True,
+                    )
+                    consumed_capacity_incidents = (
+                        _consume_capacity_remediation_incidents_locked(
+                            state_dir,
+                            control,
+                            transition_id=transition_id,
+                            incident_keys=sorted(
+                                set(
+                                    control["admission_safety_hold"].get(
+                                        "reasons", ()
+                                    )
+                                )
+                                & CAPACITY_REMEDIATION_ALERT_KEYS
+                            ),
+                            now=timestamp,
+                        )
+                    )
+                    _activate_operator_hold(
+                        control["admission_safety_hold"],
+                        reason=f"capacity-transition:{transition_id}",
+                        now=timestamp,
+                    )
+                    for gate in invalidated:
+                        control["readiness"][gate] = {
+                            "passed": False,
+                            "evidence": None,
+                            "attested_at": None,
+                        }
+                    control["capacity"]["active_transition"] = copy.deepcopy(active)
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_transition_retirement_committed",
+                        details={
+                            "transition_id": transition_id,
+                            "old_fleet_job_ids": job_ids,
+                            "archive_path": str(archive_root),
+                            "archive_sha256": archive_sha256,
+                            "invalidated_readiness": list(invalidated),
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+            elif active.get("phase") == "readiness_pending":
+                return {
+                    "action": action,
+                    "transition": active,
+                    "retirement_complete": True,
+                    "readiness_pending": list(active["invalidated_readiness"]),
+                }
+
+            live_old_ids = sorted(
+                set(active["old_fleet_job_ids"]) & snapshot.active_job_ids, key=int
+            )
+            results: dict[str, Any] = {}
+            error: str | None = None
+            for job_id in live_old_ids:
+                proc = runner(["scancel", job_id])
+                results[job_id] = {
+                    "returncode": int(proc.returncode),
+                    "stderr": proc.stderr.strip()[:1000],
+                    "at": utc_timestamp(timestamp),
+                }
+                if proc.returncode != 0 and error is None:
+                    error = (
+                        f"failed exact fleet retirement {job_id}: "
+                        f"{proc.stderr.strip()[:500]}"
+                    )
+            with control_lock(state_dir):
+                control = load_control(state_dir)
+                current = control["capacity"]["active_transition"]
+                if (
+                    not isinstance(current, dict)
+                    or current.get("transition_id") != active["transition_id"]
+                ):
+                    raise ControlError(
+                        "capacity transition changed during exact fleet retirement"
+                    )
+                current["retirement_attempts"] += 1
+                current.setdefault("retirement_results", {}).update(results)
+                current["last_retirement_error"] = error
+                append_transition(
+                    state_dir,
+                    control,
+                    event="capacity_transition_retirement_attempted",
+                    details={
+                        "transition_id": active["transition_id"],
+                        "target_job_ids": live_old_ids,
+                        "error": error,
+                    },
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+            if error is not None:
+                raise ControlError(error)
+            fresh = read_scheduler()
+            _require_complete_quiescent_scheduler(
+                fresh, operation="capacity transition publication"
+            )
+            remaining = sorted(
+                set(active["old_fleet_job_ids"]) & fresh.active_job_ids, key=int
+            )
+            if remaining:
+                return {
+                    "action": action,
+                    "transition_id": active["transition_id"],
+                    "retirement_requested": True,
+                    "remaining_old_fleet_job_ids": remaining,
+                }
+            with control_lock(state_dir):
+                control = load_control(state_dir)
+                current = control["capacity"]["active_transition"]
+                if (
+                    not isinstance(current, dict)
+                    or current.get("transition_id") != active["transition_id"]
+                ):
+                    raise ControlError(
+                        "capacity transition changed before generation publication"
+                    )
+                current["phase"] = "readiness_pending"
+                current["last_retirement_error"] = None
+                current["published_at"] = utc_timestamp(timestamp)
+                current["published_timestamp"] = timestamp
+                control["capacity"]["current_generation"] = current["to_generation"]
+                append_transition(
+                    state_dir,
+                    control,
+                    event="capacity_generation_published",
+                    details={
+                        "transition_id": current["transition_id"],
+                        "capacity_generation": current["to_generation"],
+                        "readiness_pending": current["invalidated_readiness"],
+                    },
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+            return {
+                "action": action,
+                "transition_id": active["transition_id"],
+                "capacity_generation": active["to_generation"],
+                "retirement_complete": True,
+                "readiness_pending": list(active["invalidated_readiness"]),
+            }
+
+
+def _assert_additive_capacity_contract(
+    current_path: Path, proposed_path: Path
+) -> None:
+    """Prove the proposal retains every existing fleet semantic byte-for-byte."""
+
+    current = _load_json_object(current_path, description="current fleet contract")
+    proposed = _load_json_object(proposed_path, description="proposed fleet contract")
+    mutable_root = {"logical_replica_count", "allocated_gpu_count", "profiles"}
+    if set(current) != set(proposed) or any(
+        current[field] != proposed[field]
+        for field in set(current) - mutable_root
+    ):
+        raise ImmutablePinError(
+            "capacity contract changes release/model/pool/offline fleet semantics"
+        )
+    current_profiles = current.get("profiles")
+    proposed_profiles = proposed.get("profiles")
+    if not isinstance(current_profiles, list) or not isinstance(proposed_profiles, list):
+        raise ImmutablePinError("capacity contract profiles are malformed")
+
+    def by_name(rows: Sequence[Any], *, label: str) -> dict[str, Mapping[str, Any]]:
+        result: dict[str, Mapping[str, Any]] = {}
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("serving_profile"), str)
+                or row["serving_profile"] in result
+            ):
+                raise ImmutablePinError(
+                    f"{label} fleet profiles are malformed or duplicated"
+                )
+            result[row["serving_profile"]] = row
+        return result
+
+    old_by_name = by_name(current_profiles, label="current")
+    new_by_name = by_name(proposed_profiles, label="proposed")
+    if set(old_by_name) != set(new_by_name):
+        raise ImmutablePinError("capacity contract adds/removes serving profiles")
+    all_ids: set[str] = set()
+    all_names: set[str] = set()
+    for profile_name in sorted(old_by_name):
+        old = old_by_name[profile_name]
+        new = new_by_name[profile_name]
+        if set(old) != set(new) or any(
+            old[field] != new[field] for field in set(old) - {"replicas"}
+        ):
+            raise ImmutablePinError(
+                f"capacity contract changes {profile_name} model/profile semantics"
+            )
+        old_replicas = old.get("replicas")
+        new_replicas = new.get("replicas")
+        if (
+            not isinstance(old_replicas, list)
+            or not isinstance(new_replicas, list)
+            or len(new_replicas) < len(old_replicas)
+            or new_replicas[: len(old_replicas)] != old_replicas
+        ):
+            raise ImmutablePinError(
+                f"capacity contract replaces/mutates an existing {profile_name} replica"
+            )
+        for index, replica in enumerate(new_replicas):
+            if (
+                not isinstance(replica, dict)
+                or replica.get("replica_index") != index
+                or not isinstance(replica.get("replica_id"), str)
+                or not isinstance(replica.get("scheduler_job_name"), str)
+                or replica["replica_id"] in all_ids
+                or replica["scheduler_job_name"] in all_names
+            ):
+                raise ImmutablePinError(
+                    "capacity contract replica indices/IDs/job names are not unique"
+                )
+            all_ids.add(replica["replica_id"])
+            all_names.add(replica["scheduler_job_name"])
+
+
+def _inspect_capacity_contract(
+    control: Mapping[str, Any],
+    *,
+    path: Path | None,
+    expected_sha256: str | None,
+) -> tuple[Path, str, FrozenFleetContract, dict[str, int]]:
+    if path is None or expected_sha256 is None:
+        raise ImmutablePinError(
+            "capacity transition requires --fleet-contract and --fleet-contract-sha256"
+        )
+    resolved = path.expanduser().resolve()
+    if (
+        resolved.is_symlink()
+        or not resolved.is_file()
+        or _SHA256_RE.fullmatch(expected_sha256) is None
+        or sha256_file(resolved) != expected_sha256
+    ):
+        raise ImmutablePinError("proposed capacity contract/hash is invalid")
+    sidecar = resolved.with_suffix(".sha256")
+    if (
+        sidecar.is_symlink()
+        or not sidecar.is_file()
+        or sidecar.read_text(encoding="utf-8").strip().split()
+        != [expected_sha256, resolved.name]
+    ):
+        raise ImmutablePinError(
+            "proposed capacity contract lacks its exact checksum sidecar"
+        )
+    current_binding = effective_fleet_contract_binding(control, verify_files=True)
+    _assert_additive_capacity_contract(
+        Path(current_binding["path"]).resolve(), resolved
+    )
+    immutable = control["immutable"]
+    try:
+        models = load_model_contracts(
+            immutable["model_contract_path"],
+            expected_sha256=immutable["model_contract_sha256"],
+        )
+        fleet = load_fleet_contract(
+            resolved,
+            model_contracts=models,
+            expected_sha256=expected_sha256,
+            allow_capacity_layout=True,
+        )
+    except (FleetContractError, ModelContractError, OSError, ValueError) as exc:
+        raise ImmutablePinError(f"proposed capacity contract failed closed: {exc}") from exc
+    current_counts = _capacity_profile_counts(load_effective_fleet_contract(control))
+    proposed_counts = _capacity_profile_counts(fleet)
+    if proposed_counts == current_counts:
+        raise ImmutablePinError("proposed capacity contract does not change layout")
+    reductions = {
+        profile: (current_counts[profile], proposed_counts[profile])
+        for profile in current_counts
+        if proposed_counts[profile] < current_counts[profile]
+    }
+    if reductions:
+        raise ImmutablePinError(
+            f"proposed capacity contract removes replicas: {reductions}"
+        )
+    return resolved, expected_sha256, fleet, proposed_counts
+
+
+def _complete_capacity_resume(
+    state_dir: Path,
+    *,
+    transition_id: str,
+    resume_callback: Callable[[Path], Mapping[str, Any]] | None,
+    now: float,
+) -> bool:
+    """Resume once and open the generation epoch after the transition commit."""
+
+    def validate_binding(
+        control: Mapping[str, Any],
+    ) -> tuple[Mapping[str, Any], dict[str, Any], str]:
+        history = control["capacity"]["history"]
+        matches = [
+            row for row in history if row.get("transition_id") == transition_id
+        ]
+        if (
+            len(matches) != 1
+            or not history
+            or history[-1] is not matches[0]
+            or control["capacity"].get("active_transition") is not None
+        ):
+            raise ControlError(
+                "completed capacity transition history is ambiguous or stale"
+            )
+        completed = matches[0]
+        new_contract = completed.get("new_contract")
+        current_contract = control["capacity"].get("current_contract")
+        to_generation = completed.get("to_generation")
+        if (
+            completed.get("phase") != "completed"
+            or not isinstance(to_generation, int)
+            or isinstance(to_generation, bool)
+            or to_generation != control["capacity"].get("current_generation")
+            or not isinstance(new_contract, dict)
+            or current_contract != new_contract
+        ):
+            raise ControlError(
+                "completed capacity transition no longer binds current capacity"
+            )
+        binding = effective_fleet_contract_binding(control, verify_files=True)
+        if (
+            binding["capacity_generation"] != to_generation
+            or binding["sha256"] != new_contract.get("sha256")
+            or Path(str(binding["path"])).resolve()
+            != Path(str(new_contract.get("path", ""))).resolve()
+        ):
+            raise ControlError(
+                "completed capacity transition fleet binding drifted"
+            )
+        fleet_generation = (
+            f"capacity-g{to_generation:06d}-"
+            f"{str(binding['sha256'])[:16]}"
+        )
+        return completed, binding, fleet_generation
+
+    initial = load_control(state_dir)
+    completed, _binding, fleet_generation = validate_binding(initial)
+    if completed.get("production_resume_state") == "complete":
+        epoch_number = completed.get("throughput_epoch")
+        epochs = initial["throughput_epochs"]
+        if (
+            not isinstance(epoch_number, int)
+            or isinstance(epoch_number, bool)
+            or epoch_number < 1
+            or epoch_number > len(epochs)
+            or epochs[epoch_number - 1].get("fleet_generation")
+            != fleet_generation
+            or epochs[epoch_number - 1].get("rollout_generation")
+            != initial["rollout_generation"]
+            or epochs[epoch_number - 1].get("closed_at") is not None
+            or epoch_number != len(epochs)
+        ):
+            raise ControlError(
+                "completed capacity resume throughput epoch is inconsistent"
+            )
+        return True
+    if completed.get("production_resume_state") != "pending":
+        raise ControlError("capacity transition resume state is invalid")
+    if resume_callback is None:
+        return False
+    resumed = resume_callback(state_dir)
+    if resumed.get("desired_state") != "running":
+        raise ControlError("capacity transition resume did not publish running state")
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        if control.get("desired_state") != "running":
+            raise ControlError(
+                "capacity resume callback returned before running was durable"
+            )
+        completed, binding, fleet_generation = validate_binding(control)
+        if completed.get("production_resume_state") != "pending":
+            raise ControlError("capacity transition resume state is invalid")
+        epochs = control["throughput_epochs"]
+        open_epoch = (
+            epochs[-1] if epochs and epochs[-1].get("closed_at") is None else None
+        )
+        if open_epoch is not None:
+            if open_epoch.get("fleet_generation") != fleet_generation:
+                raise ControlError(
+                    "unexpected throughput epoch was opened during capacity resume"
+                )
+        else:
+            open_epoch = {
+                "epoch": len(epochs) + 1,
+                "rollout_generation": control["rollout_generation"],
+                "fleet_generation": fleet_generation,
+                "started_at": utc_timestamp(now),
+                "started_timestamp": now,
+                "closed_at": None,
+                "samples": [],
+            }
+            epochs.append(open_epoch)
+            append_transition(
+                state_dir,
+                control,
+                event="throughput_epoch_started",
+                details={
+                    "epoch": open_epoch["epoch"],
+                    "rollout_generation": control["rollout_generation"],
+                    "fleet_generation": fleet_generation,
+                    "reason": "capacity_transition",
+                },
+                now=now,
+            )
+        completed["production_resume_state"] = "complete"
+        completed["resumed_at"] = utc_timestamp(now)
+        completed["resumed_timestamp"] = now
+        completed["throughput_epoch"] = int(open_epoch["epoch"])
+        append_transition(
+            state_dir,
+            control,
+            event="capacity_transition_resumed",
+            details={
+                "transition_id": transition_id,
+                "capacity_generation": binding["capacity_generation"],
+                "ceiling": 24,
+                "throughput_epoch": open_epoch["epoch"],
+            },
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+    return True
+
+
+def capacity_transition(
+    state_dir: Path,
+    *,
+    action: str,
+    fleet_contract_path: Path | None = None,
+    fleet_contract_sha256: str | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    fleet_evidence_reader: (
+        Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+    ) = None,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    fleet_launch_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str]], subprocess.CompletedProcess[str]
+        ]
+        | None
+    ) = None,
+    resume_callback: Callable[[Path], Mapping[str, Any]] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Execute a crash-safe capacity generation transition.
+
+    ``dry-run`` is read-only and requires an explicit checksummed contract. ``apply``
+    seals that contract, commits exact retirement IDs before any ``scancel``, retires
+    the hash-bound old transaction ledger, publishes the operational overlay, and
+    invokes the same one-shot transactional fleet reconciler used by the supervisor.
+    ``complete`` is the only path that can clear the operator hold and resume at 24.
+    """
+
+    if action not in {"status", "dry-run", "apply", "complete"}:
+        raise ControlError(f"unknown capacity-transition action {action!r}")
+    timestamp = time.time() if now is None else float(now)
+    read_scheduler = scheduler_reader or (
+        lambda: query_scheduler(tolerate_errors=False)
+    )
+    resolve_fleet = fleet_evidence_reader or _default_fleet_retirement_evidence
+    cancel = cancel_runner or _run_subprocess
+    # The CLI supplies this explicitly so injected read-only scheduler fixtures cannot
+    # accidentally submit controller jobs.  This also makes the resume crash boundary
+    # directly testable.
+    resume = resume_callback
+
+    with capacity_transition_lock(state_dir):
+        if action == "status":
+            control = load_control(state_dir)
+            return {
+                "action": action,
+                "capacity": copy.deepcopy(control["capacity"]),
+                "effective_fleet": effective_fleet_contract_binding(control),
+                "admission_safety_hold": copy.deepcopy(
+                    control["admission_safety_hold"]
+                ),
+            }
+        if action == "complete":
+            # A crash may occur after ``resume_control`` has durably published
+            # ``running`` but before this workflow marks the resume receipt and opens
+            # its throughput epoch.  That marker-only retry is intentionally valid in
+            # the non-quiescent running state: the completed resume transaction has
+            # already fenced scheduler identity.
+            control = load_control(state_dir, verify_files=True)
+            if control["capacity"]["active_transition"] is None:
+                pending = [
+                    row
+                    for row in control["capacity"]["history"]
+                    if row.get("phase") == "completed"
+                    and row.get("production_resume_state") == "pending"
+                ]
+                if len(pending) != 1:
+                    raise ControlError(
+                        "capacity transition is not waiting for completion"
+                    )
+                transition_id = str(pending[0]["transition_id"])
+                resumed = _complete_capacity_resume(
+                    state_dir,
+                    transition_id=transition_id,
+                    resume_callback=resume,
+                    now=timestamp,
+                )
+                return {
+                    "action": action,
+                    "completed": True,
+                    "capacity_generation": pending[0]["to_generation"],
+                    "resume_ceiling": 24,
+                    "production_resumed": resumed,
+                }
+        with admission_boundary_lock(state_dir):
+            snapshot = read_scheduler()
+            _require_complete_quiescent_scheduler(
+                snapshot, operation="capacity transition"
+            )
+            with control_lock(state_dir):
+                control = load_control(state_dir, verify_files=True)
+                pending_resumes = [
+                    row
+                    for row in control["capacity"]["history"]
+                    if row.get("production_resume_state") == "pending"
+                ]
+                if action in {"dry-run", "apply"} and pending_resumes:
+                    raise ControlError(
+                        "a completed capacity transition still has a pending "
+                        "production resume; retry capacity-transition complete"
+                    )
+                if (
+                    control["desired_state"] != "paused"
+                    or control.get("drain_requested") is not True
+                ):
+                    raise ControlError(
+                        "capacity transition requires pause --drain to complete first"
+                    )
+                # Schema-1 controls created before this workflow remain readable and
+                # acquire the overlay field on their first transition write.
+                control["capacity"].setdefault("current_contract", None)
+                active = copy.deepcopy(control["capacity"]["active_transition"])
+
+            if action == "dry-run":
+                if active is not None:
+                    return {
+                        "action": action,
+                        "would_resume_transition": True,
+                        "transition": active,
+                    }
+                proposed_path, proposed_hash, fleet, proposed_counts = (
+                    _inspect_capacity_contract(
+                        control,
+                        path=fleet_contract_path,
+                        expected_sha256=fleet_contract_sha256,
+                    )
+                )
+                evidence = dict(resolve_fleet(control))
+                job_ids = sorted(
+                    (str(item) for item in evidence.get("old_fleet_job_ids", [])),
+                    key=int,
+                )
+                if (
+                    not all(item.isdigit() for item in job_ids)
+                    or len(job_ids) != len(set(job_ids))
+                ):
+                    raise SchedulerAmbiguity(
+                        "fleet retirement evidence contains invalid job IDs"
+                    )
+                return {
+                    "action": action,
+                    "dry_run": True,
+                    "would_change": True,
+                    "from_generation": control["capacity"]["current_generation"],
+                    "to_generation": control["capacity"]["current_generation"] + 1,
+                    "fleet_contract_path": str(proposed_path),
+                    "fleet_contract_sha256": proposed_hash,
+                    "logical_replicas": len(fleet.replicas),
+                    "allocated_gpus": sum(
+                        item.gpus_per_replica for item in fleet.replicas
+                    ),
+                    "profile_replicas": proposed_counts,
+                    "old_fleet_job_ids": job_ids,
+                    "fleet_evidence_sha256": sha256_value(evidence),
+                }
+
+            if action == "complete":
+                if active is None:
+                    pending = [
+                        row
+                        for row in control["capacity"]["history"]
+                        if row.get("phase") == "completed"
+                        and row.get("production_resume_state") == "pending"
+                    ]
+                    if len(pending) != 1:
+                        raise ControlError(
+                            "capacity transition is not waiting for completion"
+                        )
+                    transition_id = str(pending[0]["transition_id"])
+                    resumed = _complete_capacity_resume(
+                        state_dir,
+                        transition_id=transition_id,
+                        resume_callback=resume,
+                        now=timestamp,
+                    )
+                    return {
+                        "action": action,
+                        "completed": True,
+                        "capacity_generation": pending[0]["to_generation"],
+                        "resume_ceiling": 24,
+                        "production_resumed": resumed,
+                    }
+                if active.get("phase") != "readiness_pending":
+                    raise ControlError(
+                        "replacement fleet launch/readiness is not complete"
+                    )
+                old_live = sorted(
+                    set(active["old_fleet_job_ids"]) & snapshot.active_job_ids,
+                    key=int,
+                )
+                if old_live:
+                    raise SchedulerAmbiguity(
+                        f"old fleet jobs remain active: {old_live}"
+                    )
+                _capacity_gates_are_fresh(control, active)
+                client_gate = control["admission_ramp"].get("capacity_gate")
+                if isinstance(client_gate, Mapping):
+                    authorization = _verified_client_capacity_authorization(
+                        state_dir,
+                        control,
+                        target_ceiling=int(client_gate["target_ceiling"]),
+                        attested_timestamp=timestamp,
+                    )
+                    if authorization is None:
+                        raise ControlError(
+                            "capacity transition cannot complete until the sealed "
+                            "client-placement authorization, no-requeue canary, and "
+                            "post-transition readiness evidence cover requested "
+                            f"ceiling {client_gate['target_ceiling']}"
+                        )
+                    raise ControlError(
+                        "verified client-capacity evidence must be attached with "
+                        "attest-client-capacity before transition completion"
+                    )
+                validate_readiness(
+                    control,
+                    state_dir=state_dir,
+                    verify_files=True,
+                    now=timestamp,
+                )
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    current = control["capacity"]["active_transition"]
+                    if current != active:
+                        raise ControlError(
+                            "capacity transition changed during readiness validation"
+                        )
+                    critical = _active_critical_alerts(control)
+                    if critical:
+                        raise ControlError(
+                            "capacity transition cannot complete with critical alerts: "
+                            + ", ".join(critical)
+                        )
+                    completed = copy.deepcopy(current)
+                    completed.update(
+                        {
+                            "phase": "completed",
+                            "completed_at": utc_timestamp(timestamp),
+                            "completed_timestamp": timestamp,
+                            "production_resume_state": "pending",
+                        }
+                    )
+                    control["capacity"]["history"].append(completed)
+                    control["capacity"]["active_transition"] = None
+                    control["drain_requested"] = False
+                    control["drain_intent"] = None
+                    _clear_capacity_operator_hold(
+                        control["admission_safety_hold"],
+                        transition_id=active["transition_id"],
+                        now=timestamp,
+                    )
+                    _reset_admission_ramp(
+                        state_dir,
+                        control,
+                        reason="capacity_transition_completed",
+                        now=timestamp,
+                        ceiling=24,
+                        clear_last_observation=True,
+                    )
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_transition_completed",
+                        details={
+                            "transition_id": active["transition_id"],
+                            "capacity_generation": active["to_generation"],
+                            "resume_ceiling": 24,
+                            "resume_pending": True,
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                resumed = _complete_capacity_resume(
+                    state_dir,
+                    transition_id=active["transition_id"],
+                    resume_callback=resume,
+                    now=timestamp,
+                )
+                return {
+                    "action": action,
+                    "completed": True,
+                    "capacity_generation": active["to_generation"],
+                    "resume_ceiling": 24,
+                    "production_resumed": resumed,
+                }
+
+            # ``apply``: establish the marker-last contract/archive and exact-ID intent.
+            if active is None:
+                proposed_path, proposed_hash, _fleet, _counts = (
+                    _inspect_capacity_contract(
+                        control,
+                        path=fleet_contract_path,
+                        expected_sha256=fleet_contract_sha256,
+                    )
+                )
+                evidence = dict(resolve_fleet(control))
+                job_ids = [str(item) for item in evidence.get("old_fleet_job_ids", [])]
+                if (
+                    not all(item.isdigit() for item in job_ids)
+                    or len(job_ids) != len(set(job_ids))
+                ):
+                    raise SchedulerAmbiguity(
+                        "fleet retirement evidence contains invalid job IDs"
+                    )
+                job_ids = sorted(job_ids, key=int)
+                from_generation = int(control["capacity"]["current_generation"])
+                to_generation = from_generation + 1
+                transition_id = (
+                    f"capacity-g{from_generation:06d}-to-g{to_generation:06d}-"
+                    + hashlib.sha256(
+                        canonical_json(
+                            {
+                                "immutable_sha256": control["immutable_sha256"],
+                                "current_fleet": effective_fleet_contract_binding(
+                                    control
+                                )["sha256"],
+                                "new_fleet": proposed_hash,
+                                "job_ids": job_ids,
+                            }
+                        )
+                    ).hexdigest()[:16]
+                )
+                archive_root, archive_sha256 = _create_capacity_archive(
+                    state_dir,
+                    control,
+                    transition_id=transition_id,
+                    now=timestamp,
+                )
+                contract_record = _seal_capacity_contract(
+                    state_dir,
+                    control,
+                    transition_id=transition_id,
+                    to_generation=to_generation,
+                    source_path=proposed_path,
+                    expected_sha256=proposed_hash,
+                    now=timestamp,
+                )
+                evidence_sha = sha256_value(evidence)
+                incident_intent = sorted(
+                    set(control["admission_safety_hold"].get("reasons", ()))
+                    & CAPACITY_REMEDIATION_ALERT_KEYS
+                )
+                (
+                    retirement_path,
+                    retirement_sha,
+                    consumed_capacity_incidents,
+                ) = (
+                    _write_capacity_retirement_intent(
+                        state_dir,
+                        control,
+                        transition_id=transition_id,
+                        from_generation=from_generation,
+                        to_generation=to_generation,
+                        old_fleet_job_ids=job_ids,
+                        fleet_evidence_sha256=evidence_sha,
+                        consumed_capacity_incidents=incident_intent,
+                    )
+                )
+                invalidated = ("fleet", "smoke_runs", "scheduler_reconciliation")
+                active = {
+                    "transition_id": transition_id,
+                    "phase": "retirement_requested",
+                    "from_generation": from_generation,
+                    "to_generation": to_generation,
+                    "created_at": utc_timestamp(timestamp),
+                    "created_timestamp": timestamp,
+                    "old_fleet_job_ids": job_ids,
+                    "fleet_evidence_sha256": evidence_sha,
+                    "archive_path": str(archive_root),
+                    "archive_sha256": archive_sha256,
+                    "retirement_intent_path": str(retirement_path),
+                    "retirement_intent_sha256": retirement_sha,
+                    "retirement_attempts": 0,
+                    "retirement_results": {},
+                    "last_retirement_error": None,
+                    "new_contract": contract_record,
+                    "fleet_launch_attempts": 0,
+                    "fleet_launch_results": [],
+                    "last_fleet_launch_error": None,
+                    "invalidated_readiness": list(invalidated),
+                    "consumed_capacity_incidents": (
+                        consumed_capacity_incidents
+                    ),
+                }
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    control["capacity"].setdefault("current_contract", None)
+                    if control["capacity"]["active_transition"] is not None:
+                        raise ControlError(
+                            "another capacity transition was published concurrently"
+                        )
+                    _close_open_epoch(
+                        control, reason="capacity_transition", now=timestamp
+                    )
+                    _reset_admission_ramp(
+                        state_dir,
+                        control,
+                        reason="capacity_transition",
+                        now=timestamp,
+                        ceiling=24,
+                        clear_last_observation=True,
+                    )
+                    consumed_capacity_incidents = (
+                        _consume_capacity_remediation_incidents_locked(
+                            state_dir,
+                            control,
+                            transition_id=transition_id,
+                            incident_keys=active[
+                                "consumed_capacity_incidents"
+                            ],
+                            now=timestamp,
+                        )
+                    )
+                    _activate_operator_hold(
+                        control["admission_safety_hold"],
+                        reason=f"capacity-transition:{transition_id}",
+                        now=timestamp,
+                    )
+                    for gate in invalidated:
+                        control["readiness"][gate] = {
+                            "passed": False,
+                            "evidence": None,
+                            "attested_at": None,
+                        }
+                    control["capacity"]["active_transition"] = copy.deepcopy(active)
+                    _append_capacity_transition_event_once(
+                        state_dir,
+                        control,
+                        event="capacity_transition_retirement_committed",
+                        details={
+                            "transition_id": transition_id,
+                            "old_fleet_job_ids": job_ids,
+                            "retirement_intent": str(retirement_path),
+                            "retirement_intent_sha256": retirement_sha,
+                            "new_fleet_contract_sha256": proposed_hash,
+                            "archive_path": str(archive_root),
+                            "archive_sha256": archive_sha256,
+                            "consumed_capacity_incidents": (
+                                consumed_capacity_incidents
+                            ),
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+
+            if active.get("phase") == "retirement_requested":
+                live_old_ids = sorted(
+                    set(active["old_fleet_job_ids"]) & snapshot.active_job_ids,
+                    key=int,
+                )
+                results: dict[str, Any] = {}
+                error: str | None = None
+                attempts_path = (
+                    state_dir
+                    / "capacity-transitions"
+                    / active["transition_id"]
+                    / CAPACITY_RETIREMENT_ATTEMPTS
+                )
+                for job_id in live_old_ids:
+                    proc = cancel(["scancel", job_id])
+                    result = {
+                        "job_id": job_id,
+                        "returncode": int(proc.returncode),
+                        "stderr": proc.stderr.strip()[:1000],
+                        "at": utc_timestamp(timestamp),
+                        "timestamp": timestamp,
+                    }
+                    _append_jsonl(attempts_path, result)
+                    results[job_id] = result
+                    if proc.returncode != 0 and error is None:
+                        error = (
+                            f"failed exact fleet retirement {job_id}: "
+                            f"{proc.stderr.strip()[:500]}"
+                        )
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    current = control["capacity"]["active_transition"]
+                    if (
+                        not isinstance(current, dict)
+                        or current.get("transition_id") != active["transition_id"]
+                    ):
+                        raise ControlError(
+                            "capacity transition changed during exact retirement"
+                        )
+                    current["retirement_attempts"] += 1
+                    current["retirement_results"].update(results)
+                    current["last_retirement_error"] = error
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_transition_retirement_attempted",
+                        details={
+                            "transition_id": active["transition_id"],
+                            "target_job_ids": live_old_ids,
+                            "error": error,
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                if error is not None:
+                    raise ControlError(error)
+                fresh = read_scheduler()
+                _require_complete_quiescent_scheduler(
+                    fresh, operation="capacity transition publication"
+                )
+                remaining = sorted(
+                    set(active["old_fleet_job_ids"]) & fresh.active_job_ids,
+                    key=int,
+                )
+                if remaining:
+                    return {
+                        "action": action,
+                        "transition_id": active["transition_id"],
+                        "retirement_requested": True,
+                        "remaining_old_fleet_job_ids": remaining,
+                    }
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    current = control["capacity"]["active_transition"]
+                    if (
+                        not isinstance(current, dict)
+                        or current.get("transition_id") != active["transition_id"]
+                    ):
+                        raise ControlError(
+                            "capacity transition changed before generation publication"
+                        )
+                    _retire_fleet_transaction_state(
+                        state_dir,
+                        control,
+                        transition_id=active["transition_id"],
+                        now=timestamp,
+                    )
+                    current["phase"] = "fleet_launch_pending"
+                    current["last_retirement_error"] = None
+                    current["published_at"] = utc_timestamp(timestamp)
+                    current["published_timestamp"] = timestamp
+                    control["capacity"]["current_generation"] = current["to_generation"]
+                    control["capacity"]["current_contract"] = copy.deepcopy(
+                        current["new_contract"]
+                    )
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_generation_published",
+                        details={
+                            "transition_id": current["transition_id"],
+                            "capacity_generation": current["to_generation"],
+                            "fleet_contract_sha256": current["new_contract"]["sha256"],
+                            "logical_replicas": current["new_contract"][
+                                "logical_replicas"
+                            ],
+                            "allocated_gpus": current["new_contract"][
+                                "allocated_gpus"
+                            ],
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                    active = copy.deepcopy(current)
+
+            if active.get("phase") == "fleet_launch_pending":
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    current = control["capacity"]["active_transition"]
+                    if (
+                        not isinstance(current, dict)
+                        or current.get("transition_id") != active["transition_id"]
+                    ):
+                        raise ControlError("capacity launch intent changed")
+                    current["fleet_launch_attempts"] += 1
+                    attempt_number = int(current["fleet_launch_attempts"])
+                    current["last_fleet_launch_error"] = "launch_in_progress"
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_fleet_launch_started",
+                        details={
+                            "transition_id": active["transition_id"],
+                            "attempt": attempt_number,
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                launch = _launch_capacity_fleet_once(
+                    state_dir,
+                    load_control(state_dir, verify_files=True),
+                    transition=active,
+                    runner=fleet_launch_runner,
+                )
+                launch_record = {
+                    "attempt": attempt_number,
+                    "returncode": int(launch.returncode),
+                    "stdout": launch.stdout.strip()[-2000:],
+                    "stderr": launch.stderr.strip()[-2000:],
+                    "at": utc_timestamp(timestamp),
+                    "timestamp": timestamp,
+                }
+                _append_jsonl(
+                    state_dir
+                    / "capacity-transitions"
+                    / active["transition_id"]
+                    / CAPACITY_FLEET_LAUNCH_ATTEMPTS,
+                    launch_record,
+                )
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    current = control["capacity"]["active_transition"]
+                    if (
+                        not isinstance(current, dict)
+                        or current.get("transition_id") != active["transition_id"]
+                        or current.get("phase") != "fleet_launch_pending"
+                    ):
+                        raise ControlError(
+                            "capacity transition changed during fleet launch"
+                        )
+                    current["fleet_launch_results"].append(launch_record)
+                    current["last_fleet_launch_error"] = (
+                        None
+                        if launch.returncode == 0
+                        else f"one-shot fleet reconcile rc={launch.returncode}"
+                    )
+                    if launch.returncode == 0:
+                        current["phase"] = "readiness_pending"
+                        current["fleet_launch_completed_at"] = utc_timestamp(timestamp)
+                        current["fleet_launch_completed_timestamp"] = timestamp
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="capacity_fleet_launch_finished",
+                        details={
+                            "transition_id": active["transition_id"],
+                            "attempt": attempt_number,
+                            "returncode": int(launch.returncode),
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                    active = copy.deepcopy(current)
+                if launch.returncode != 0:
+                    raise ControlError(
+                        "replacement fleet transactional launch failed; retry apply: "
+                        + launch.stderr.strip()[:500]
+                    )
+
+            return {
+                "action": action,
+                "transition_id": active["transition_id"],
+                "capacity_generation": active["to_generation"],
+                "fleet_contract_sha256": active["new_contract"]["sha256"],
+                "replacement_launch_complete": (
+                    active.get("phase") == "readiness_pending"
+                ),
+                "readiness_pending": list(active["invalidated_readiness"]),
+            }
+
+
+def _validate_final_fleet_retirement_evidence(
+    control: Mapping[str, Any], evidence: Mapping[str, Any]
+) -> list[str]:
+    """Validate the complete ledger/squeue/sacct join used to freeze exact IDs."""
+
+    expected_fields = {
+        "pool_root",
+        "pool_id",
+        "fleet_sha256",
+        "ledger_generation",
+        "scheduler_captured_timestamp",
+        "active_allocations",
+        "old_fleet_job_ids",
+    }
+    if not isinstance(evidence, dict) or set(evidence) != expected_fields:
+        raise SchedulerAmbiguity(
+            "final fleet retirement evidence has the wrong fields"
+        )
+    pool_id, replica_profiles, _ = _fleet_contract_reconciliation_identity(control)
+    ledger_generation = evidence.get("ledger_generation")
+    captured = evidence.get("scheduler_captured_timestamp")
+    allocations = evidence.get("active_allocations")
+    if (
+        evidence.get("pool_root")
+        != str(Path(control["immutable"]["server_pool_root"]).resolve())
+        or evidence.get("pool_id") != pool_id
+        or evidence.get("fleet_sha256")
+        != effective_fleet_contract_binding(control, verify_files=True)["sha256"]
+        or not isinstance(ledger_generation, int)
+        or isinstance(ledger_generation, bool)
+        or ledger_generation < 1
+        or not isinstance(captured, (int, float))
+        or isinstance(captured, bool)
+        or captured < 0
+        or not isinstance(allocations, list)
+    ):
+        raise SchedulerAmbiguity(
+            "final fleet retirement evidence does not bind the frozen fleet"
+        )
+    allocation_fields = {
+        "job_id",
+        "replica_id",
+        "profile",
+        "ledger_generation",
+        "scheduler_state",
+        "intent_token",
+        "sbatch_path",
+        "sbatch_sha256",
+    }
+    observed_job_ids: list[str] = []
+    observed_replicas: set[str] = set()
+    for allocation in allocations:
+        if not isinstance(allocation, dict) or set(allocation) != allocation_fields:
+            raise SchedulerAmbiguity(
+                "final fleet retirement allocation evidence is malformed"
+            )
+        job_id = str(allocation.get("job_id", ""))
+        replica_id = str(allocation.get("replica_id", ""))
+        allocation_generation = allocation.get("ledger_generation")
+        sbatch_path = Path(str(allocation.get("sbatch_path", ""))).expanduser()
+        if (
+            not job_id.isdigit()
+            or replica_id not in replica_profiles
+            or replica_id in observed_replicas
+            or allocation.get("profile") != replica_profiles[replica_id]
+            # A healthy current fleet may legitimately contain allocations adopted
+            # from older sealed generations.  The transactional reconciliation that
+            # builds this evidence already binds every allocation to its exact
+            # generation ledger and intent.  Reject only future/invalid generations;
+            # requiring every live replica to come from CURRENT would make a rolling
+            # supervisor generation impossible to finalize.
+            or not isinstance(allocation_generation, int)
+            or isinstance(allocation_generation, bool)
+            or allocation_generation < 1
+            or allocation_generation > ledger_generation
+            or normalize_scheduler_state(str(allocation.get("scheduler_state", "")))
+            not in ACTIVE_SCHEDULER_STATES
+            or re.fullmatch(
+                r"[0-9a-f]{32}", str(allocation.get("intent_token", ""))
+            )
+            is None
+            or not sbatch_path.is_absolute()
+            or sbatch_path.is_symlink()
+            or not sbatch_path.is_file()
+            or _SHA256_RE.fullmatch(
+                str(allocation.get("sbatch_sha256", ""))
+            )
+            is None
+            or sha256_file(sbatch_path) != allocation.get("sbatch_sha256")
+        ):
+            raise SchedulerAmbiguity(
+                f"final fleet retirement allocation is untrusted: {replica_id!r}"
+            )
+        observed_job_ids.append(job_id)
+        observed_replicas.add(replica_id)
+    job_ids = evidence.get("old_fleet_job_ids")
+    if (
+        not isinstance(job_ids, list)
+        or not all(isinstance(job_id, str) and job_id.isdigit() for job_id in job_ids)
+        or len(job_ids) != len(set(job_ids))
+        or job_ids != sorted(job_ids, key=int)
+        or set(job_ids) != set(observed_job_ids)
+        or len(observed_job_ids) != len(set(observed_job_ids))
+    ):
+        raise SchedulerAmbiguity(
+            "final fleet retirement evidence does not map exact unique job IDs"
+        )
+    return list(job_ids)
+
+
+def _active_fleet_scope_job_ids(
+    control: Mapping[str, Any], snapshot: SchedulerSnapshot
+) -> list[str]:
+    """Return every active job in the frozen fleet namespace, including malformed ones."""
+
+    _, _, replica_job_names = _fleet_contract_reconciliation_identity(control)
+    expected_names = set(replica_job_names.values())
+    scoped = {
+        job.job_id
+        for job in snapshot.jobs
+        if job.active
+        and (
+            job.job_name in expected_names
+            or job.comment.startswith("asys-s5-fleet:")
+        )
+    }
+    malformed = sorted(job_id for job_id in scoped if not job_id.isdigit())
+    if malformed:
+        raise SchedulerAmbiguity(
+            f"canonical fleet scope contains malformed job IDs: {malformed}"
+        )
+    return sorted(scoped, key=int)
+
+
+def _validate_final_fleet_retirement_intent(
+    control: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    *,
+    retirement_root: Path,
+) -> list[str]:
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "release_id",
+        "immutable_sha256",
+        "capacity_generation",
+        "created_at",
+        "created_timestamp",
+        "exact_job_ids",
+        "semantic_preflight",
+        "semantic_preflight_sha256",
+        "semantic_report_sha256",
+        "fleet_evidence",
+        "fleet_evidence_sha256",
+        "retirement_id",
+    }
+    without_id = dict(intent)
+    retirement_id = without_id.pop("retirement_id", None)
+    semantic_preflight_path = (
+        retirement_root.parent / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    ).resolve()
+    if (
+        semantic_preflight_path.is_symlink()
+        or not semantic_preflight_path.is_file()
+        or semantic_preflight_path.stat().st_mode & 0o222
+    ):
+        raise ControlError(
+            "final fleet retirement intent lacks sealed semantic preflight"
+        )
+    semantic_preflight_sha256 = sha256_file(semantic_preflight_path)
+    if (
+        not isinstance(intent, dict)
+        or set(intent) != expected_fields
+        or intent.get("schema_version") != 1
+        or intent.get("kind") != "schema5_final_fleet_retirement_intent"
+        or intent.get("release_id") != control["immutable"]["release_id"]
+        or intent.get("immutable_sha256") != control["immutable_sha256"]
+        or intent.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or not isinstance(intent.get("created_timestamp"), (int, float))
+        or isinstance(intent.get("created_timestamp"), bool)
+        or intent.get("created_at")
+        != utc_timestamp(float(intent.get("created_timestamp", -1)))
+        or Path(str(intent.get("semantic_preflight", ""))).resolve()
+        != semantic_preflight_path
+        or intent.get("semantic_preflight_sha256")
+        != semantic_preflight_sha256
+        or retirement_id != sha256_value(without_id)
+    ):
+        raise ControlError("final fleet retirement intent is invalid")
+    _, report_sha256, _, _ = _verify_final_semantic_preflight(
+        retirement_root.parent,
+        control=control,
+    )
+    if intent.get("semantic_report_sha256") != report_sha256:
+        raise ControlError(
+            "final fleet retirement intent semantic preflight drifted"
+        )
+    evidence = intent.get("fleet_evidence")
+    if not isinstance(evidence, dict):
+        raise ControlError("final fleet retirement intent lacks fleet evidence")
+    job_ids = _validate_final_fleet_retirement_evidence(control, evidence)
+    if (
+        intent.get("fleet_evidence_sha256") != sha256_value(evidence)
+        or intent.get("exact_job_ids") != job_ids
+    ):
+        raise ControlError("final fleet retirement intent evidence identity drifted")
+    return job_ids
+
+
+def _prepare_final_fleet_retirement(
+    control: Mapping[str, Any],
+    *,
+    final_root: Path,
+    snapshot: SchedulerSnapshot,
+    semantic_preflight_path: Path,
+    semantic_report_sha256: str,
+    fleet_evidence_reader: Callable[
+        [Mapping[str, Any]], Mapping[str, Any]
+    ],
+    now: float,
+) -> tuple[Path, dict[str, Any]]:
+    """Publish or adopt the immutable exact-ID intent before the first scancel."""
+
+    retirement_root = final_root / FINAL_FLEET_RETIREMENT_DIRNAME
+    if retirement_root.is_symlink() or (
+        retirement_root.exists() and not retirement_root.is_dir()
+    ):
+        raise ControlError(
+            f"final fleet retirement root is unsafe: {retirement_root}"
+        )
+    retirement_root.mkdir(parents=True, exist_ok=True)
+    intent_path = retirement_root / FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+    complete_path = retirement_root / FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+    expected_preflight = (
+        final_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    ).resolve()
+    verified_report_sha256: str | None = None
+    verified_preflight_sha256: str | None = None
+    if semantic_preflight_path.is_file() and not semantic_preflight_path.is_symlink():
+        (
+            _report,
+            verified_report_sha256,
+            _preflight,
+            verified_preflight_sha256,
+        ) = _verify_final_semantic_preflight(
+            final_root,
+            control=control,
+        )
+    if (
+        semantic_preflight_path.resolve() != expected_preflight
+        or semantic_preflight_path.is_symlink()
+        or not semantic_preflight_path.is_file()
+        or semantic_preflight_path.stat().st_mode & 0o222
+        or sha256_file(semantic_preflight_path) != verified_preflight_sha256
+        or semantic_report_sha256 != verified_report_sha256
+    ):
+        raise ControlError(
+            "fleet retirement requires the sealed final semantic preflight"
+        )
+
+    evidence = dict(fleet_evidence_reader(control))
+    current_ids = _validate_final_fleet_retirement_evidence(control, evidence)
+    scoped_ids = _active_fleet_scope_job_ids(control, snapshot)
+    if scoped_ids != current_ids:
+        raise SchedulerAmbiguity(
+            "final fleet scheduler snapshots disagree with the durable ledger join: "
+            f"control={scoped_ids}, fleet={current_ids}"
+        )
+    if intent_path.exists():
+        if intent_path.is_symlink() or not intent_path.is_file():
+            raise ControlError("final fleet retirement intent is unsafe")
+        intent = _load_json_object(
+            intent_path, description="final fleet retirement intent"
+        )
+        exact_ids = _validate_final_fleet_retirement_intent(
+            control,
+            intent,
+            retirement_root=retirement_root,
+        )
+        unexpected = sorted(set(current_ids) - set(exact_ids), key=int)
+        if unexpected:
+            raise SchedulerAmbiguity(
+                "a new canonical fleet allocation appeared after final retirement "
+                f"was committed: {unexpected}"
+            )
+    else:
+        unexpected_entries = sorted(
+            path.name
+            for path in retirement_root.iterdir()
+            if path.name
+            not in {
+                FINAL_FLEET_RETIREMENT_ATTEMPTS_FILENAME,
+                FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME,
+            }
+        )
+        if unexpected_entries:
+            raise ControlError(
+                "unrecognized partial final fleet retirement state: "
+                + ", ".join(unexpected_entries)
+            )
+        intent = {
+            "schema_version": 1,
+            "kind": "schema5_final_fleet_retirement_intent",
+            "release_id": control["immutable"]["release_id"],
+            "immutable_sha256": control["immutable_sha256"],
+            "capacity_generation": control["capacity"]["current_generation"],
+            "created_at": utc_timestamp(now),
+            "created_timestamp": now,
+            "exact_job_ids": current_ids,
+            "semantic_preflight": str(semantic_preflight_path.resolve()),
+            "semantic_preflight_sha256": sha256_file(
+                semantic_preflight_path
+            ),
+            "semantic_report_sha256": semantic_report_sha256,
+            "fleet_evidence": evidence,
+            "fleet_evidence_sha256": sha256_value(evidence),
+        }
+        intent["retirement_id"] = sha256_value(intent)
+        _atomic_write_json(intent_path, intent)
+        intent_path.chmod(0o444)
+    if complete_path.exists():
+        _verify_final_fleet_retirement(retirement_root, control=control)
+    return retirement_root, intent
+
+
+def _validate_final_fleet_retirement_attempts(
+    path: Path, *, retirement_id: str, exact_job_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    attempts = _read_jsonl_locked(path)
+    expected_targets = set(exact_job_ids)
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "retirement_id",
+        "attempt",
+        "started_at",
+        "started_timestamp",
+        "target_job_ids",
+        "results",
+        "exception",
+        "post_scheduler_captured_timestamp",
+        "remaining_job_ids",
+    }
+    for index, attempt in enumerate(attempts, start=1):
+        targets = attempt.get("target_job_ids")
+        results = attempt.get("results")
+        remaining = attempt.get("remaining_job_ids")
+        if (
+            set(attempt) != expected_fields
+            or attempt.get("schema_version") != 1
+            or attempt.get("kind") != "schema5_final_fleet_retirement_attempt"
+            or attempt.get("retirement_id") != retirement_id
+            or attempt.get("attempt") != index
+            or not isinstance(attempt.get("started_timestamp"), (int, float))
+            or isinstance(attempt.get("started_timestamp"), bool)
+            or attempt.get("started_at")
+            != utc_timestamp(float(attempt.get("started_timestamp", -1)))
+            or not isinstance(targets, list)
+            or not all(isinstance(job_id, str) for job_id in targets)
+            or len(targets) != len(set(targets))
+            or not set(targets).issubset(expected_targets)
+            or not isinstance(results, dict)
+            or not set(results).issubset(set(targets))
+            or attempt.get("exception") is not None
+            and not isinstance(attempt.get("exception"), str)
+            or (
+                attempt.get("post_scheduler_captured_timestamp") is not None
+                and (
+                    not isinstance(
+                        attempt.get("post_scheduler_captured_timestamp"),
+                        (int, float),
+                    )
+                    or isinstance(
+                        attempt.get("post_scheduler_captured_timestamp"), bool
+                    )
+                )
+            )
+            or (
+                remaining is not None
+                and (
+                    not isinstance(remaining, list)
+                    or not set(remaining).issubset(expected_targets)
+                )
+            )
+        ):
+            raise ControlError("final fleet retirement attempt journal is invalid")
+        for job_id, result in results.items():
+            if (
+                not isinstance(result, dict)
+                or set(result) != {"returncode", "stderr"}
+                or not isinstance(result.get("returncode"), int)
+                or not isinstance(result.get("stderr"), str)
+            ):
+                raise ControlError(
+                    f"final fleet retirement result is invalid for {job_id}"
+                )
+    return attempts
+
+
+def _verify_final_fleet_retirement(
+    retirement_root: Path, *, control: Mapping[str, Any]
+) -> tuple[dict[str, Any], str]:
+    intent_path = retirement_root / FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+    attempts_path = retirement_root / FINAL_FLEET_RETIREMENT_ATTEMPTS_FILENAME
+    marker_path = retirement_root / FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+    intent = _load_json_object(intent_path, description="final fleet retirement intent")
+    exact_ids = _validate_final_fleet_retirement_intent(
+        control,
+        intent,
+        retirement_root=retirement_root,
+    )
+    attempts = _validate_final_fleet_retirement_attempts(
+        attempts_path,
+        retirement_id=str(intent["retirement_id"]),
+        exact_job_ids=exact_ids,
+    )
+    marker = _load_json_object(
+        marker_path, description="final fleet retirement completion marker"
+    )
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "complete",
+        "release_id",
+        "immutable_sha256",
+        "capacity_generation",
+        "retirement_id",
+        "intent_sha256",
+        "retired_job_ids",
+        "attempt_count",
+        "attempts_sha256",
+        "scheduler_captured_timestamp",
+        "completed_at",
+        "completed_timestamp",
+        "completion_id",
+    }
+    without_id = dict(marker)
+    completion_id = without_id.pop("completion_id", None)
+    if (
+        set(marker) != expected_fields
+        or marker.get("schema_version") != 1
+        or marker.get("kind") != "schema5_final_fleet_retirement"
+        or marker.get("complete") is not True
+        or marker.get("release_id") != control["immutable"]["release_id"]
+        or marker.get("immutable_sha256") != control["immutable_sha256"]
+        or marker.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or marker.get("retirement_id") != intent["retirement_id"]
+        or marker.get("intent_sha256") != sha256_file(intent_path)
+        or marker.get("retired_job_ids") != exact_ids
+        or marker.get("attempt_count") != len(attempts)
+        or marker.get("attempts_sha256") != sha256_file(attempts_path)
+        or not isinstance(marker.get("scheduler_captured_timestamp"), (int, float))
+        or isinstance(marker.get("scheduler_captured_timestamp"), bool)
+        or not isinstance(marker.get("completed_timestamp"), (int, float))
+        or isinstance(marker.get("completed_timestamp"), bool)
+        or marker.get("completed_at")
+        != utc_timestamp(float(marker.get("completed_timestamp", -1)))
+        or completion_id != sha256_value(without_id)
+    ):
+        raise ControlError("final fleet retirement completion marker is invalid")
+    if (
+        retirement_root.stat().st_mode & 0o222
+        or any(
+            path.is_symlink() or path.stat().st_mode & 0o222
+            for path in (intent_path, attempts_path, marker_path)
+        )
+    ):
+        raise ControlError("final fleet retirement evidence is not sealed read-only")
+    return marker, sha256_file(marker_path)
+
+
+def _advance_final_fleet_retirement(
+    retirement_root: Path,
+    control: Mapping[str, Any],
+    *,
+    scheduler_reader: Callable[[], SchedulerSnapshot],
+    cancel_runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+    now: float,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Retire only marker-pinned IDs, then marker-last seal zero-fleet proof."""
+
+    intent_path = retirement_root / FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+    attempts_path = retirement_root / FINAL_FLEET_RETIREMENT_ATTEMPTS_FILENAME
+    marker_path = retirement_root / FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+    intent = _load_json_object(intent_path, description="final fleet retirement intent")
+    exact_ids = _validate_final_fleet_retirement_intent(
+        control,
+        intent,
+        retirement_root=retirement_root,
+    )
+    if marker_path.exists():
+        marker, _ = _verify_final_fleet_retirement(
+            retirement_root, control=control
+        )
+        snapshot = scheduler_reader()
+        _require_complete_quiescent_scheduler(
+            snapshot, operation="completed final fleet retirement"
+        )
+        active = _active_fleet_scope_job_ids(control, snapshot)
+        if active:
+            raise SchedulerAmbiguity(
+                f"canonical fleet reappeared after sealed retirement: {active}"
+            )
+        return marker, []
+
+    snapshot = scheduler_reader()
+    _require_complete_quiescent_scheduler(
+        snapshot, operation="final fleet retirement"
+    )
+    active = _active_fleet_scope_job_ids(control, snapshot)
+    unexpected = sorted(set(active) - set(exact_ids), key=int)
+    if unexpected:
+        raise SchedulerAmbiguity(
+            "refusing to retire fleet IDs outside the marker-first intent: "
+            f"{unexpected}"
+        )
+    targets = sorted(set(active) & set(exact_ids), key=int)
+    prior_attempts = _read_jsonl_locked(attempts_path, missing_ok=True)
+    attempt_number = len(prior_attempts) + 1
+    results: dict[str, dict[str, Any]] = {}
+    exception: str | None = None
+    try:
+        for job_id in targets:
+            proc = cancel_runner(["scancel", job_id])
+            results[job_id] = {
+                "returncode": int(proc.returncode),
+                "stderr": proc.stderr.strip()[:1000],
+            }
+            if proc.returncode != 0:
+                exception = (
+                    f"failed exact final fleet retirement {job_id}: "
+                    f"{proc.stderr.strip()[:500]}"
+                )
+                break
+    except Exception as exc:
+        exception = f"{type(exc).__name__}: {exc}"
+
+    post_snapshot: SchedulerSnapshot | None = None
+    remaining: list[str] | None = None
+    if exception is None:
+        post_snapshot = scheduler_reader()
+        _require_complete_quiescent_scheduler(
+            post_snapshot, operation="final fleet retirement verification"
+        )
+        post_active = _active_fleet_scope_job_ids(control, post_snapshot)
+        unexpected = sorted(set(post_active) - set(exact_ids), key=int)
+        if unexpected:
+            exception = (
+                "new fleet IDs appeared during exact retirement: "
+                + ", ".join(unexpected)
+            )
+        else:
+            remaining = sorted(set(post_active) & set(exact_ids), key=int)
+    if attempts_path.exists():
+        attempts_path.chmod(0o644)
+    attempt_record = {
+        "schema_version": 1,
+        "kind": "schema5_final_fleet_retirement_attempt",
+        "retirement_id": intent["retirement_id"],
+        "attempt": attempt_number,
+        "started_at": utc_timestamp(now),
+        "started_timestamp": now,
+        "target_job_ids": targets,
+        "results": results,
+        "exception": exception,
+        "post_scheduler_captured_timestamp": (
+            post_snapshot.captured_at if post_snapshot is not None else None
+        ),
+        "remaining_job_ids": remaining,
+    }
+    _append_jsonl(attempts_path, attempt_record)
+    if exception is not None:
+        raise ControlError(exception)
+    assert post_snapshot is not None and remaining is not None
+    if remaining:
+        return None, remaining
+
+    attempts = _validate_final_fleet_retirement_attempts(
+        attempts_path,
+        retirement_id=str(intent["retirement_id"]),
+        exact_job_ids=exact_ids,
+    )
+    intent_path.chmod(0o444)
+    attempts_path.chmod(0o444)
+    marker = {
+        "schema_version": 1,
+        "kind": "schema5_final_fleet_retirement",
+        "complete": True,
+        "release_id": control["immutable"]["release_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "capacity_generation": control["capacity"]["current_generation"],
+        "retirement_id": intent["retirement_id"],
+        "intent_sha256": sha256_file(intent_path),
+        "retired_job_ids": exact_ids,
+        "attempt_count": len(attempts),
+        "attempts_sha256": sha256_file(attempts_path),
+        "scheduler_captured_timestamp": post_snapshot.captured_at,
+        "completed_at": utc_timestamp(now),
+        "completed_timestamp": now,
+    }
+    marker["completion_id"] = sha256_value(marker)
+    _atomic_write_json(marker_path, marker)
+    marker_path.chmod(0o444)
+    retirement_root.chmod(0o555)
+    verified, _ = _verify_final_fleet_retirement(
+        retirement_root, control=control
+    )
+    return verified, []
+
+
+def _run_finalizer_process(
+    argv: Sequence[str], *, environment: Mapping[str, str], timeout_seconds: float
+) -> subprocess.CompletedProcess[str]:
+    """Run one frozen finalizer stage with TERM/KILL deadline enforcement."""
+
+    child = subprocess.Popen(
+        list(argv),
+        env=dict(environment),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = child.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _signal_process_group(child, signal.SIGTERM)
+        try:
+            stdout, stderr = child.communicate(
+                timeout=MONITOR_TERMINATE_GRACE_SECONDS
+            )
+        except subprocess.TimeoutExpired:
+            _signal_process_group(child, signal.SIGKILL)
+            stdout, stderr = child.communicate()
+        raise ControlError(
+            f"finalizer command exceeded {timeout_seconds:.0f}s and was terminated: "
+            f"{shlex.join(list(argv))}; stderr={stderr.strip()[:500]}"
+        )
+    return subprocess.CompletedProcess(
+        list(argv), int(child.returncode), stdout, stderr
+    )
+
+
+def _finalizer_environment(control: Mapping[str, Any]) -> dict[str, str]:
+    immutable = control["immutable"]
+    environment = os.environ.copy()
+    environment.update(production_environment(control))
+    environment.update(
+        {
+            "ASYS_RESULTS_ROOT": str(Path(immutable["results_root"]).resolve()),
+            "ASYS_RELEASE_WORKTREE": str(
+                Path(immutable["release_worktree"]).resolve()
+            ),
+            "ASYS_HARNESS_ENVIRONMENT_PREFIX": str(
+                Path(immutable["harness_environment_prefix"]).resolve()
+            ),
+            "ASYS_HARNESS_ENVIRONMENT_SHA256": str(
+                immutable["harness_environment_sha256"]
+            ),
+            "ASYS_IMMUTABLE_PINS_SHA256": str(control["immutable_sha256"]),
+            "ASYS_MODEL_CONTRACT": str(
+                Path(immutable["model_contract_path"]).resolve()
+            ),
+            "ASYS_MODEL_CONTRACT_SHA256": str(
+                immutable["model_contract_sha256"]
+            ),
+            "ASYS_RELEASE_ID": str(immutable["release_id"]),
+            "ASYS_RELEASE_GIT_COMMIT": str(immutable["git_commit"]),
+            "ASYS_SOURCE_TREE_SHA256": str(immutable["source_tree_sha256"]),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    return environment
+
+
+_FINAL_TRANSPORT_ACCOUNTING_FIELDS = (
+    "validated_qids",
+    "useful_qids",
+    "completed_qids",
+    "length_censored_qids",
+    "protocol_censored_qids",
+    "transport_censored_qids",
+    "transport_affected_qids",
+    "topology_transport_censored_coordinates",
+    "transport_censored_coordinates",
+    "auxiliary_outcomes",
+    "auxiliary_completed",
+    "auxiliary_length_censored",
+    "auxiliary_protocol_censored",
+    "auxiliary_transport_censored",
+)
+_FINAL_INTEGRITY_OUTCOME_FIELDS = (
+    "malformed_lines",
+    "duplicate_qids",
+    "unexpected_qids",
+    "invalid_rows",
+    "untrusted_valid_rows",
+)
+
+
+def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
+    semantic = report.get("semantic")
+    acceptance = report.get("final_acceptance")
+    if (
+        not isinstance(semantic, dict)
+        or semantic.get("scan_successful") is not True
+        or semantic.get("scan_errors") != []
+        or not isinstance(acceptance, dict)
+        or acceptance.get("passed") is not True
+        or not isinstance(acceptance.get("checks"), dict)
+        or not acceptance["checks"]
+        or not all(value is True for value in acceptance["checks"].values())
+    ):
+        raise ControlError("final semantic scan did not pass every acceptance check")
+    states = semantic.get("states")
+    outcomes = semantic.get("outcomes")
+    if (
+        states != {"complete": EXPECTED_TOTAL_CELLS}
+        or not isinstance(outcomes, dict)
+        or outcomes.get("validated_qids") != EXPECTED_TOTAL_QIDS
+        or semantic.get("artifact_schema_counts")
+        != {"5": EXPECTED_TOTAL_QIDS}
+    ):
+        raise ControlError(
+            "final semantic scan does not contain the exact 22,680/4,524,660 "
+            "schema-5 result set"
+        )
+    if semantic.get("transport_censor_protocol") != {
+        "version": TRANSPORT_CENSOR_PROTOCOL_VERSION,
+        "hash": TRANSPORT_CENSOR_PROTOCOL_HASH,
+    }:
+        raise ControlError(
+            "final semantic scan does not bind the frozen transport-censor protocol"
+        )
+    for name in (
+        *_FINAL_INTEGRITY_OUTCOME_FIELDS,
+        "stale_unmanifested_dirs",
+        "contract_errors",
+    ):
+        if outcomes.get(name, 0) != 0:
+            raise ControlError(f"final semantic outcome {name} is nonzero")
+    _validate_final_transport_accounting(
+        outcomes,
+        expected_qids=EXPECTED_TOTAL_QIDS,
+        context="aggregate",
+    )
+    runs = semantic.get("runs")
+    catalog_binding = semantic.get("trusted_generation_catalog")
+    if (
+        not isinstance(catalog_binding, dict)
+        or set(catalog_binding)
+        != {
+            "catalog_id",
+            "marker_path",
+            "marker_sha256",
+            "inventory_sha256",
+            "catalog_payload_sha256",
+            "allowed_generation_tuple_count",
+        }
+        or _SHA256_RE.fullmatch(str(catalog_binding.get("catalog_id", "")))
+        is None
+        or _SHA256_RE.fullmatch(
+            str(catalog_binding.get("marker_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(catalog_binding.get("inventory_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(catalog_binding.get("catalog_payload_sha256", ""))
+        )
+        is None
+        or not isinstance(catalog_binding.get("marker_path"), str)
+        or not Path(catalog_binding["marker_path"]).is_absolute()
+        or not isinstance(
+            catalog_binding.get("allowed_generation_tuple_count"), int
+        )
+        or isinstance(
+            catalog_binding.get("allowed_generation_tuple_count"), bool
+        )
+        or catalog_binding["allowed_generation_tuple_count"] < 1
+    ):
+        raise ControlError(
+            "final semantic report lacks an exact trusted-generation catalog"
+        )
+    if not isinstance(runs, dict) or set(runs) != set(REQUIRED_RUNS):
+        raise ControlError("final semantic report does not cover the exact run set")
+    run_outcomes: list[Mapping[str, Any]] = []
+    for run_id, expected_cells in REQUIRED_RUNS.items():
+        row = runs[run_id]
+        row_outcomes = row.get("outcomes") if isinstance(row, dict) else None
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row_outcomes, Mapping)
+            or row.get("manifest_cells") != expected_cells
+            or row.get("expected_qids") != REQUIRED_RUN_QIDS[run_id]
+            or row.get("states") != {"complete": expected_cells}
+            or row_outcomes.get("validated_qids")
+            != REQUIRED_RUN_QIDS[run_id]
+            or row.get("artifact_schema_counts")
+            != {"5": REQUIRED_RUN_QIDS[run_id]}
+            or row.get("contract_errors") != []
+            or row.get("stale_unmanifested_dirs") != 0
+        ):
+            raise ControlError(
+                f"final semantic report for {run_id} violates its frozen contract"
+            )
+        for name in _FINAL_INTEGRITY_OUTCOME_FIELDS:
+            if row_outcomes.get(name, 0) != 0:
+                raise ControlError(
+                    f"final semantic outcome {run_id}/{name} is nonzero"
+                )
+        _validate_final_transport_accounting(
+            row_outcomes,
+            expected_qids=REQUIRED_RUN_QIDS[run_id],
+            context=run_id,
+        )
+        run_outcomes.append(row_outcomes)
+    for field in (
+        *_FINAL_TRANSPORT_ACCOUNTING_FIELDS,
+        *_FINAL_INTEGRITY_OUTCOME_FIELDS,
+    ):
+        if outcomes.get(field, 0) != sum(
+            int(row.get(field, 0)) for row in run_outcomes
+        ):
+            raise ControlError(
+                f"final semantic aggregate {field} is not the exact run sum"
+            )
+
+
+def _validate_final_transport_accounting(
+    outcomes: Mapping[str, Any],
+    *,
+    expected_qids: int,
+    context: str,
+) -> None:
+    """Validate trusted cardinality and useful/transport partitions exactly."""
+
+    fields = _FINAL_TRANSPORT_ACCOUNTING_FIELDS
+    values: dict[str, int] = {}
+    for field in fields:
+        value = outcomes.get(field, 0)
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+        ):
+            raise ControlError(
+                f"final semantic {context} {field} is not a non-negative integer"
+            )
+        values[field] = value
+    if values["validated_qids"] != expected_qids:
+        raise ControlError(
+            f"final semantic {context} validated-QID cardinality is not exact"
+        )
+    if values["validated_qids"] != (
+        values["completed_qids"]
+        + values["length_censored_qids"]
+        + values["protocol_censored_qids"]
+        + values["transport_censored_qids"]
+    ):
+        raise ControlError(
+            f"final semantic {context} top-level termination partition is not exact"
+        )
+    if values["auxiliary_outcomes"] != (
+        values["auxiliary_completed"]
+        + values["auxiliary_length_censored"]
+        + values["auxiliary_protocol_censored"]
+        + values["auxiliary_transport_censored"]
+    ):
+        raise ControlError(
+            f"final semantic {context} auxiliary termination partition is not exact"
+        )
+    if values["validated_qids"] != (
+        values["useful_qids"] + values["transport_affected_qids"]
+    ):
+        raise ControlError(
+            f"final semantic {context} useful/transport QID partition is not exact"
+        )
+    # Every ambiguous topology attempt is retained in one observed coordinate.
+    # Concurrent terminal waves can retain multiple independently censored siblings
+    # even though map-order propagation yields only one top-level QID terminal.
+    # Auxiliary transport censors are retained in exactly one self-consistency sample.
+    if values["transport_censored_coordinates"] != (
+        values["topology_transport_censored_coordinates"]
+        + values["auxiliary_transport_censored"]
+    ):
+        raise ControlError(
+            f"final semantic {context} transport-coordinate partition is not exact"
+        )
+    if (
+        values["topology_transport_censored_coordinates"]
+        < values["transport_censored_qids"]
+    ):
+        raise ControlError(
+            f"final semantic {context} topology transport coordinate/QID bound "
+            "is invalid"
+        )
+    if not (
+        values["transport_censored_qids"]
+        <= values["transport_affected_qids"]
+        <= values["transport_censored_coordinates"]
+    ):
+        raise ControlError(
+            f"final semantic {context} transport-affected QID bounds are invalid"
+        )
+
+
+def _trusted_generation_catalog_binding(
+    catalog: TrustedGenerationCatalog,
+) -> dict[str, Any]:
+    return {
+        "catalog_id": catalog.catalog_id,
+        "marker_path": str(catalog.marker_path),
+        "marker_sha256": catalog.marker_sha256,
+        "inventory_sha256": catalog.inventory_sha256,
+        "catalog_payload_sha256": catalog.catalog_sha256,
+        "allowed_generation_tuple_count": len(
+            catalog.allowed_generation_tuples
+        ),
+    }
+
+
+def _load_sealed_final_semantic_report(path: Path) -> tuple[dict[str, Any], str]:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_mode & 0o222
+    ):
+        raise ControlError("final semantic evidence is unsafe or unsealed")
+    report = _load_json_object(path, description="final semantic report")
+    _validate_final_semantic_report(report)
+    return report, sha256_file(path)
+
+
+def _final_semantic_control_contract(
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project the exact stable control state authorized to finalize results."""
+
+    return {
+        "immutable_sha256": control["immutable_sha256"],
+        "release_id": control["immutable"]["release_id"],
+        "desired_state": control["desired_state"],
+        "drain_requested": control["drain_requested"],
+        "rollout_generation": control["rollout_generation"],
+        "capacity_generation": control["capacity"]["current_generation"],
+        "capacity_transition": copy.deepcopy(
+            control["capacity"]["active_transition"]
+        ),
+        "admission_ceiling": control["admission"]["current_ceiling"],
+        "admission_safety_hold": copy.deepcopy(
+            control["admission_safety_hold"]
+        ),
+    }
+
+
+def _final_semantic_source_contract(
+    control: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Hash every final result-source byte before a semantic scan is adopted.
+
+    This is intentionally stronger than binding only the immutable manifests.  A
+    crash may leave a valid-looking ``semantic_validation.json`` without its
+    marker.  Reusing that report is safe only when the complete run trees are
+    byte-identical to the trees protected by the durable pre-scan intent.
+    """
+
+    runs: list[dict[str, Any]] = []
+    for pinned in control["immutable"]["runs"]:
+        run_root = Path(str(pinned["run_root"])).resolve()
+        manifest_path = Path(str(pinned["manifest_path"])).resolve()
+        if (
+            manifest_path.is_symlink()
+            or not manifest_path.is_file()
+            or sha256_file(manifest_path) != pinned["manifest_sha256"]
+        ):
+            raise ImmutablePinError(
+                "final semantic source manifest drifted: "
+                f"{pinned['run_id']}"
+            )
+        inventory, _file_inventory_sha256 = _directory_inventory(run_root)
+        directories = sorted(
+            path.relative_to(run_root).as_posix()
+            for path in run_root.rglob("*")
+            if path.is_dir() and not path.is_symlink()
+        )
+        inventory_sha256 = sha256_value(
+            {"files": inventory, "directories": directories}
+        )
+        runs.append(
+            {
+                "run_id": str(pinned["run_id"]),
+                "run_root": str(run_root),
+                "manifest_sha256": str(pinned["manifest_sha256"]),
+                "benchmark_contract_sha256": str(
+                    pinned["benchmark_contract_sha256"]
+                ),
+                "policy_sha256": str(pinned["policy_sha256"]),
+                "cell_count": int(pinned["cell_count"]),
+                "file_count": len(inventory),
+                "directory_count": len(directories),
+                "total_bytes": sum(int(row["size"]) for row in inventory),
+                "tree_inventory_sha256": inventory_sha256,
+            }
+        )
+    contract = {
+        "schema_version": 1,
+        "kind": "schema5_final_semantic_source_contract",
+        "control": _final_semantic_control_contract(control),
+        "runs": runs,
+    }
+    return contract, sha256_value(contract)
+
+
+def _validate_semantic_report_source_binding(
+    report: Mapping[str, Any], source_contract: Mapping[str, Any]
+) -> None:
+    expected = {
+        str(row["run_id"]): row for row in source_contract["runs"]
+    }
+    observed = report.get("semantic", {}).get("runs")
+    if not isinstance(observed, dict) or set(observed) != set(expected):
+        raise ControlError("final semantic report source run set drifted")
+    for run_id, contract in expected.items():
+        row = observed[run_id]
+        if (
+            not isinstance(row, dict)
+            or row.get("run_root") != contract["run_root"]
+            or row.get("manifest_sha256") != contract["manifest_sha256"]
+            or row.get("benchmark_contract_sha256")
+            != contract["benchmark_contract_sha256"]
+            or row.get("artifact_policy_sha256") != contract["policy_sha256"]
+        ):
+            raise ControlError(
+                f"final semantic report source binding drifted: {run_id}"
+            )
+
+
+def _final_semantic_intent_path(final_root: Path) -> Path:
+    return final_root / FINAL_SEMANTIC_INTENT_FILENAME
+
+
+def _validate_final_semantic_intent(
+    path: Path,
+    *,
+    final_root: Path,
+    control: Mapping[str, Any],
+    source_contract: Mapping[str, Any],
+    source_contract_sha256: str,
+) -> tuple[dict[str, Any], str]:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_mode & 0o222
+        or path.stat().st_nlink != 1
+    ):
+        raise ControlError("final semantic transaction intent is unsafe or unsealed")
+    intent = _load_json_object(
+        path, description="final semantic transaction intent"
+    )
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "release_id",
+        "immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "control_contract",
+        "control_contract_sha256",
+        "source_contract",
+        "source_contract_sha256",
+        "semantic_report",
+        "created_at",
+        "created_timestamp",
+        "intent_id",
+    }
+    without_id = dict(intent)
+    intent_id = without_id.pop("intent_id", None)
+    timestamp = intent.get("created_timestamp")
+    control_contract = _final_semantic_control_contract(control)
+    if (
+        set(intent) != expected_fields
+        or intent.get("schema_version") != 1
+        or intent.get("kind") != "schema5_final_semantic_transaction_intent"
+        or intent.get("release_id") != control["immutable"]["release_id"]
+        or intent.get("immutable_sha256") != control["immutable_sha256"]
+        or intent.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or intent.get("rollout_generation") != control["rollout_generation"]
+        or intent.get("control_contract") != control_contract
+        or intent.get("control_contract_sha256")
+        != sha256_value(control_contract)
+        or intent.get("source_contract") != source_contract
+        or intent.get("source_contract_sha256") != source_contract_sha256
+        or Path(str(intent.get("semantic_report", ""))).resolve()
+        != (final_root / FINAL_SEMANTIC_FILENAME).resolve()
+        or not isinstance(timestamp, (int, float))
+        or isinstance(timestamp, bool)
+        or not math.isfinite(float(timestamp))
+        or float(timestamp) < 0
+        or intent.get("created_at") != utc_timestamp(float(timestamp))
+        or intent_id != sha256_value(without_id)
+    ):
+        raise ControlError(
+            "final semantic transaction intent does not bind current sources"
+        )
+    return intent, sha256_file(path)
+
+
+def _write_independent_archive_copy(source: Path, destination: Path) -> None:
+    """Copy one regular preimage without links/reflinks and fsync it."""
+
+    if source.is_symlink() or not source.is_file():
+        raise ControlError(f"cannot archive unsafe semantic preimage: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with source.open("rb") as reader, temporary.open("xb") as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            writer.flush()
+            os.fsync(writer.fileno())
+        if sha256_file(temporary) != sha256_file(source):
+            raise ControlError(
+                f"semantic preimage archive checksum mismatch: {source}"
+            )
+        os.replace(temporary, destination)
+        io._fsync_directory(destination.parent)
+        destination.chmod(0o444)
+        destination_stat = destination.stat()
+        source_stat = source.stat()
+        if (
+            destination_stat.st_dev,
+            destination_stat.st_ino,
+        ) == (
+            source_stat.st_dev,
+            source_stat.st_ino,
+        ):
+            raise ControlError(
+                f"semantic preimage archive shares an inode: {source}"
+            )
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _archive_stale_final_semantic_evidence(
+    final_root: Path, *, reason: str, now: float
+) -> dict[str, Any] | None:
+    """Preserve rejected canonical preimages before a clean transaction starts."""
+
+    targets = [
+        final_root / FINAL_SEMANTIC_INTENT_FILENAME,
+        final_root / FINAL_SEMANTIC_FILENAME,
+    ]
+    present = [path for path in targets if path.exists() or path.is_symlink()]
+    if not present:
+        return None
+    identities: list[dict[str, Any]] = []
+    for path in present:
+        if path.is_symlink() or not path.is_file():
+            raise ControlError(
+                f"refusing unsafe stale semantic evidence: {path}"
+            )
+        identities.append(
+            {
+                "name": path.name,
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+        )
+    archive_id = sha256_value({"reason": reason, "preimages": identities})
+    archive_root = (
+        final_root / FINAL_SEMANTIC_ARCHIVE_DIRNAME / archive_id
+    )
+    marker_path = archive_root / "ARCHIVE_COMPLETE.json"
+    if archive_root.is_symlink():
+        raise ControlError("semantic recovery archive root is a symlink")
+    if marker_path.exists():
+        marker = _load_json_object(
+            marker_path, description="semantic recovery archive marker"
+        )
+        without_id = dict(marker)
+        completion_id = without_id.pop("completion_id", None)
+        archived_timestamp = marker.get("archived_timestamp")
+        if (
+            set(marker)
+            != {
+                "schema_version",
+                "kind",
+                "complete",
+                "archive_id",
+                "reason",
+                "preimages",
+                "archived_at",
+                "archived_timestamp",
+                "completion_id",
+            }
+            or marker.get("schema_version") != 1
+            or marker.get("kind")
+            != "schema5_final_semantic_recovery_archive"
+            or marker.get("archive_id") != archive_id
+            or marker.get("reason") != reason
+            or marker.get("preimages") != identities
+            or marker.get("complete") is not True
+            or not isinstance(archived_timestamp, (int, float))
+            or isinstance(archived_timestamp, bool)
+            or not math.isfinite(float(archived_timestamp))
+            or float(archived_timestamp) < 0
+            or marker.get("archived_at")
+            != utc_timestamp(float(archived_timestamp))
+            or completion_id != sha256_value(without_id)
+            or marker_path.is_symlink()
+            or not marker_path.is_file()
+            or marker_path.stat().st_nlink != 1
+            or not archive_root.is_dir()
+        ):
+            raise ControlError("semantic recovery archive marker drifted")
+        for row in identities:
+            archived = archive_root / str(row["name"])
+            if (
+                archived.is_symlink()
+                or not archived.is_file()
+                or archived.stat().st_nlink != 1
+                or sha256_file(archived) != row["sha256"]
+                or archived.stat().st_size != row["size"]
+            ):
+                raise ControlError("semantic recovery archive preimage drifted")
+            archived.chmod(0o444)
+        marker_path.chmod(0o444)
+        archive_root.chmod(0o555)
+    else:
+        archive_root.mkdir(parents=True, exist_ok=True)
+        io._fsync_directory(archive_root.parent)
+        expected_names = {str(row["name"]) for row in identities}
+        observed_names: set[str] = set()
+        for candidate in archive_root.iterdir():
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ControlError(
+                    "incomplete semantic recovery archive contains an unsafe member"
+                )
+            observed_names.add(candidate.name)
+        if observed_names - expected_names:
+            raise ControlError(
+                "incomplete semantic recovery archive contains unlisted preimages"
+            )
+        by_name = {path.name: path for path in present}
+        for row in identities:
+            name = str(row["name"])
+            archived = archive_root / name
+            if archived.exists():
+                if (
+                    archived.is_symlink()
+                    or not archived.is_file()
+                    or archived.stat().st_nlink != 1
+                    or archived.stat().st_size != row["size"]
+                    or sha256_file(archived) != row["sha256"]
+                ):
+                    raise ControlError(
+                        "incomplete semantic recovery archive preimage drifted"
+                    )
+                archived.chmod(0o444)
+            else:
+                _write_independent_archive_copy(by_name[name], archived)
+        marker = {
+            "schema_version": 1,
+            "kind": "schema5_final_semantic_recovery_archive",
+            "complete": True,
+            "archive_id": archive_id,
+            "reason": reason,
+            "preimages": identities,
+            "archived_at": utc_timestamp(now),
+            "archived_timestamp": now,
+        }
+        marker["completion_id"] = sha256_value(marker)
+        _atomic_write_json(marker_path, marker)
+        marker_path.chmod(0o444)
+        archive_root.chmod(0o555)
+    for path in present:
+        # The complete archive is now the durable preimage.  Removing the canonical
+        # name makes the next scan unambiguously start a new transaction.
+        io.remove_file(path)
+    return marker
+
+
+def _create_final_semantic_intent(
+    final_root: Path,
+    *,
+    control: Mapping[str, Any],
+    source_contract: Mapping[str, Any],
+    source_contract_sha256: str,
+    now: float,
+) -> tuple[dict[str, Any], str]:
+    path = _final_semantic_intent_path(final_root)
+    control_contract = _final_semantic_control_contract(control)
+    intent: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": "schema5_final_semantic_transaction_intent",
+        "release_id": control["immutable"]["release_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "capacity_generation": control["capacity"]["current_generation"],
+        "rollout_generation": control["rollout_generation"],
+        "control_contract": control_contract,
+        "control_contract_sha256": sha256_value(control_contract),
+        "source_contract": copy.deepcopy(dict(source_contract)),
+        "source_contract_sha256": source_contract_sha256,
+        "semantic_report": str(
+            (final_root / FINAL_SEMANTIC_FILENAME).resolve()
+        ),
+        "created_at": utc_timestamp(now),
+        "created_timestamp": now,
+    }
+    intent["intent_id"] = sha256_value(intent)
+    _atomic_write_json(path, intent)
+    path.chmod(0o444)
+    return _validate_final_semantic_intent(
+        path,
+        final_root=final_root,
+        control=control,
+        source_contract=source_contract,
+        source_contract_sha256=source_contract_sha256,
+    )
+
+
+def _verify_final_semantic_preflight(
+    final_root: Path,
+    *,
+    control: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, dict[str, Any], str]:
+    """Verify the marker-last semantic gate that authorizes fleet retirement."""
+
+    semantic_path = final_root / FINAL_SEMANTIC_FILENAME
+    marker_path = final_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    source_contract, source_contract_sha256 = _final_semantic_source_contract(
+        control
+    )
+    intent_path = _final_semantic_intent_path(final_root)
+    intent, intent_sha256 = _validate_final_semantic_intent(
+        intent_path,
+        final_root=final_root,
+        control=control,
+        source_contract=source_contract,
+        source_contract_sha256=source_contract_sha256,
+    )
+    report, report_sha256 = _load_sealed_final_semantic_report(semantic_path)
+    _validate_semantic_report_source_binding(report, source_contract)
+    marker = _load_json_object(
+        marker_path, description="final semantic preflight marker"
+    )
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "complete",
+        "release_id",
+        "immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "completed_at",
+        "completed_timestamp",
+        "run_ids",
+        "complete_cells",
+        "trusted_qids",
+        "semantic_report",
+        "semantic_report_sha256",
+        "semantic_intent",
+        "semantic_intent_sha256",
+        "semantic_intent_id",
+        "source_contract_sha256",
+        "preflight_id",
+    }
+    without_id = dict(marker)
+    preflight_id = without_id.pop("preflight_id", None)
+    timestamp = marker.get("completed_timestamp")
+    if (
+        set(marker) != expected_fields
+        or marker.get("schema_version") != 2
+        or marker.get("kind") != "schema5_final_semantic_preflight"
+        or marker.get("complete") is not True
+        or marker.get("release_id") != control["immutable"]["release_id"]
+        or marker.get("immutable_sha256") != control["immutable_sha256"]
+        or marker.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or marker.get("rollout_generation") != control["rollout_generation"]
+        or not isinstance(timestamp, (int, float))
+        or isinstance(timestamp, bool)
+        or timestamp < 0
+        or marker.get("completed_at") != utc_timestamp(float(timestamp))
+        or marker.get("run_ids") != list(REQUIRED_RUNS)
+        or marker.get("complete_cells") != EXPECTED_TOTAL_CELLS
+        or marker.get("trusted_qids") != EXPECTED_TOTAL_QIDS
+        or Path(str(marker.get("semantic_report", ""))).resolve()
+        != semantic_path.resolve()
+        or marker.get("semantic_report_sha256") != report_sha256
+        or Path(str(marker.get("semantic_intent", ""))).resolve()
+        != intent_path.resolve()
+        or marker.get("semantic_intent_sha256") != intent_sha256
+        or marker.get("semantic_intent_id") != intent["intent_id"]
+        or marker.get("source_contract_sha256")
+        != source_contract_sha256
+        or preflight_id != sha256_value(without_id)
+        or marker_path.is_symlink()
+        or not marker_path.is_file()
+        or marker_path.stat().st_mode & 0o222
+    ):
+        raise ControlError("final semantic preflight marker is invalid")
+    return report, report_sha256, marker, sha256_file(marker_path)
+
+
+def _ensure_final_semantic_preflight(
+    final_root: Path,
+    *,
+    control: Mapping[str, Any],
+    state_dir: Path,
+    results_root: Path,
+    environment: Mapping[str, str],
+    harness_python: Path,
+    release_root: Path,
+    run_command: Callable[
+        [Sequence[str], Mapping[str, str], float],
+        subprocess.CompletedProcess[str],
+    ],
+    now: float,
+) -> tuple[dict[str, Any], str, dict[str, Any], str]:
+    """Validate transient scan output before publishing canonical semantic evidence.
+
+    A rejected or partial scan never reaches either canonical path.  If a crash lands
+    after the validated report is sealed but before the marker is published, a retry
+    revalidates those exact bytes and completes the marker-last transaction.
+    """
+
+    semantic_path = final_root / FINAL_SEMANTIC_FILENAME
+    marker_path = final_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+    if marker_path.exists() or marker_path.is_symlink():
+        return _verify_final_semantic_preflight(final_root, control=control)
+
+    source_contract, source_contract_sha256 = _final_semantic_source_contract(
+        control
+    )
+    intent_path = _final_semantic_intent_path(final_root)
+    intent: dict[str, Any] | None = None
+    intent_sha256: str | None = None
+    stale_reason: str | None = None
+    if intent_path.exists() or intent_path.is_symlink():
+        try:
+            intent, intent_sha256 = _validate_final_semantic_intent(
+                intent_path,
+                final_root=final_root,
+                control=control,
+                source_contract=source_contract,
+                source_contract_sha256=source_contract_sha256,
+            )
+        except ControlError as exc:
+            stale_reason = f"intent_rejected:{type(exc).__name__}:{exc}"
+    elif semantic_path.exists() or semantic_path.is_symlink():
+        stale_reason = "semantic_report_without_transaction_intent"
+
+    report: dict[str, Any] | None = None
+    report_sha256: str | None = None
+    if stale_reason is None and intent is not None and (
+        semantic_path.exists() or semantic_path.is_symlink()
+    ):
+        try:
+            report, report_sha256 = _load_sealed_final_semantic_report(
+                semantic_path
+            )
+            _validate_semantic_report_source_binding(report, source_contract)
+        except ControlError as exc:
+            stale_reason = f"semantic_report_rejected:{type(exc).__name__}:{exc}"
+
+    if stale_reason is not None:
+        _archive_stale_final_semantic_evidence(
+            final_root, reason=stale_reason, now=now
+        )
+        intent = None
+        intent_sha256 = None
+        report = None
+        report_sha256 = None
+
+    if intent is None:
+        intent, intent_sha256 = _create_final_semantic_intent(
+            final_root,
+            control=control,
+            source_contract=source_contract,
+            source_contract_sha256=source_contract_sha256,
+            now=now,
+        )
+
+    if report is None:
+        command = [
+            str(harness_python),
+            "-u",
+            str(release_root / "scripts" / "schema5_monitor.py"),
+            "--cadence",
+            "daily",
+            "--config",
+            str(release_root / "configs" / "schema5_monitoring.v1.json"),
+            "--results-root",
+            str(results_root),
+            "--state-dir",
+            str(state_dir),
+        ]
+        proc = run_command(
+            command, environment, FINALIZER_COMMAND_DEADLINE_SECONDS
+        )
+        if proc.returncode not in MONITOR_SUCCESS_RETURN_CODES:
+            raise ControlError(
+                "final semantic scan failed: "
+                f"rc={proc.returncode}; {proc.stderr.strip()[:1000]}"
+            )
+        try:
+            transient = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise ControlError(
+                "final semantic scan did not emit one JSON report"
+            ) from exc
+        if not isinstance(transient, dict):
+            raise ControlError("final semantic report is not a JSON object")
+        # This check deliberately precedes the canonical write.  Partial data cannot
+        # poison a later retry and, most importantly, cannot authorize any scancel.
+        _validate_final_semantic_report(transient)
+        _validate_semantic_report_source_binding(transient, source_contract)
+        post_contract, post_contract_sha256 = _final_semantic_source_contract(
+            control
+        )
+        if (
+            post_contract != source_contract
+            or post_contract_sha256 != source_contract_sha256
+        ):
+            raise ControlError(
+                "final semantic result sources changed during the scan"
+            )
+        _atomic_write_json(semantic_path, transient)
+        semantic_path.chmod(0o444)
+        report, report_sha256 = _load_sealed_final_semantic_report(semantic_path)
+        _validate_semantic_report_source_binding(report, source_contract)
+
+    marker = {
+        "schema_version": 2,
+        "kind": "schema5_final_semantic_preflight",
+        "complete": True,
+        "release_id": control["immutable"]["release_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "capacity_generation": control["capacity"]["current_generation"],
+        "rollout_generation": control["rollout_generation"],
+        "completed_at": utc_timestamp(now),
+        "completed_timestamp": now,
+        "run_ids": list(REQUIRED_RUNS),
+        "complete_cells": EXPECTED_TOTAL_CELLS,
+        "trusted_qids": EXPECTED_TOTAL_QIDS,
+        "semantic_report": str(semantic_path.resolve()),
+        "semantic_report_sha256": report_sha256,
+        "semantic_intent": str(intent_path.resolve()),
+        "semantic_intent_sha256": intent_sha256,
+        "semantic_intent_id": intent["intent_id"],
+        "source_contract_sha256": source_contract_sha256,
+    }
+    marker["preflight_id"] = sha256_value(marker)
+    _atomic_write_json(marker_path, marker)
+    marker_path.chmod(0o444)
+    return _verify_final_semantic_preflight(final_root, control=control)
+
+
+def _validate_primary_analysis_cache(
+    cache_root: Path,
+    control: Mapping[str, Any],
+    *,
+    trusted_catalog: TrustedGenerationCatalog | None = None,
+) -> tuple[dict[str, Any], str]:
+    marker_path = cache_root / "ingest_manifest_v1.json"
+    marker = _load_json_object(marker_path, description="primary analysis cache")
+    run_ids = list(REQUIRED_RUNS)
+    exact_zero_fields = (
+        "n_bad_lines",
+        "n_bad_cells",
+        "n_dupes_dropped",
+        "n_cells_with_dupes",
+        "n_unexpected_n",
+    )
+    if (
+        marker.get("analysis_mode") != "primary-schema5"
+        or marker.get("mixed_protocol") is not False
+        or marker.get("exact_token_policy") != "schema5-required"
+        or marker.get("run_ids") != run_ids
+        or marker.get("manifest_scoped") is not True
+        or marker.get("manifest_cells_by_run") != REQUIRED_RUNS
+        or marker.get("n_cell_dirs") != EXPECTED_TOTAL_CELLS
+        or marker.get("n_cells_complete") != EXPECTED_TOTAL_CELLS
+        or marker.get("completion_states") != {"complete": EXPECTED_TOTAL_CELLS}
+        or marker.get("validated_qids_by_completion_state")
+        != {"complete": EXPECTED_TOTAL_QIDS}
+        or marker.get("artifact_schema_counts")
+        != {"5": EXPECTED_TOTAL_QIDS}
+        or any(marker.get(field) != 0 for field in exact_zero_fields)
+        or marker.get("unexpected_n_cells") != []
+        or marker.get("qid_mismatch_cells") != []
+        or set(marker.get("run_contracts", {})) != set(REQUIRED_RUNS)
+        or any(
+            value != 0
+            for value in marker.get("stale_dirs_by_run", {}).values()
+        )
+        or any(
+            value != 0
+            for value in marker.get("missing_dirs_by_run", {}).values()
+        )
+        or set(marker.get("stale_dirs_by_run", {})) != set(REQUIRED_RUNS)
+        or set(marker.get("missing_dirs_by_run", {})) != set(REQUIRED_RUNS)
+    ):
+        raise ControlError(
+            "primary analysis cache is not an exact schema-5-only final cache"
+        )
+    preservation = marker.get("supplementary_preservation")
+    if (
+        not isinstance(preservation, dict)
+        or preservation.get("active_artifact_validated_qids")
+        != EXPECTED_TOTAL_QIDS
+        or preservation.get("sealed_scientifically_excluded_qids") != 0
+        or preservation.get("unmanifested_opt_in_qids_not_in_acceptance") != 0
+    ):
+        raise ControlError(
+            "primary analysis cache contains supplementary or excluded outcomes"
+        )
+    runtime = marker.get("analysis_runtime")
+    immutable = control["immutable"]
+    if (
+        not isinstance(runtime, dict)
+        or runtime.get("release_worktree")
+        != str(Path(immutable["release_worktree"]).resolve())
+        or runtime.get("harness_prefix")
+        != str(Path(immutable["harness_environment_prefix"]).resolve())
+        or runtime.get("immutable_pins_sha256") != control["immutable_sha256"]
+        or runtime.get("model_contract_sha256")
+        != immutable["model_contract_sha256"]
+        or runtime.get("release_id") != immutable["release_id"]
+        or runtime.get("git_commit") != immutable["git_commit"]
+        or runtime.get("source_tree_sha256") != immutable["source_tree_sha256"]
+    ):
+        raise ControlError("primary analysis cache runtime provenance drifted")
+    if trusted_catalog is None:
+        canonical_state_dir = (
+            Path(str(immutable["results_root"])).resolve()
+            / CONTROL_STATE_DIRNAME
+        )
+        try:
+            trusted_catalog = load_current_trusted_generation_catalog(
+                canonical_state_dir,
+                server_pool_root=Path(
+                    str(immutable["server_pool_root"])
+                ).resolve(),
+                required=True,
+            )
+        except GenerationCatalogError as exc:
+            raise ControlError(
+                f"primary analysis catalog authority is invalid: {exc}"
+            ) from exc
+        assert trusted_catalog is not None
+    catalog_contract = marker.get("trusted_generation_catalog")
+    if (
+        not isinstance(catalog_contract, dict)
+        or set(catalog_contract)
+        != {
+            "marker_path",
+            "marker_sha256",
+            "inventory_sha256",
+            "catalog_payload_sha256",
+            "catalog_id",
+            "server_pool_root",
+            "allowed_generation_tuple_count",
+            "validated_qids",
+            "observed_coordinate_generation_tuple_count",
+            "observed_calibration_endpoint_count",
+            "passed",
+        }
+        or catalog_contract.get("passed") is not True
+        or Path(str(catalog_contract.get("marker_path", ""))).resolve()
+        != trusted_catalog.marker_path
+        or catalog_contract.get("marker_sha256")
+        != trusted_catalog.marker_sha256
+        or catalog_contract.get("inventory_sha256")
+        != trusted_catalog.inventory_sha256
+        or catalog_contract.get("catalog_payload_sha256")
+        != trusted_catalog.catalog_sha256
+        or catalog_contract.get("catalog_id") != trusted_catalog.catalog_id
+        or Path(
+            str(catalog_contract.get("server_pool_root", ""))
+        ).resolve()
+        != Path(str(immutable["server_pool_root"])).resolve()
+        or catalog_contract.get("allowed_generation_tuple_count")
+        != len(trusted_catalog.allowed_generation_tuples)
+        or catalog_contract.get("validated_qids") != EXPECTED_TOTAL_QIDS
+        or not isinstance(
+            catalog_contract.get(
+                "observed_coordinate_generation_tuple_count"
+            ),
+            int,
+        )
+        or isinstance(
+            catalog_contract.get(
+                "observed_coordinate_generation_tuple_count"
+            ),
+            bool,
+        )
+        or catalog_contract[
+            "observed_coordinate_generation_tuple_count"
+        ]
+        < 1
+        or not isinstance(
+            catalog_contract.get("observed_calibration_endpoint_count"),
+            int,
+        )
+        or isinstance(
+            catalog_contract.get("observed_calibration_endpoint_count"),
+            bool,
+        )
+        or catalog_contract["observed_calibration_endpoint_count"] < 0
+    ):
+        raise ControlError(
+            "primary analysis cache trusted-generation contract drifted"
+        )
+    if (cache_root / ".cache_generation_in_progress.json").exists():
+        raise ControlError("primary analysis cache publication is incomplete")
+    required_artifacts = (
+        "items_v1.parquet",
+        "agents_v1.parquet",
+        "cells_dedup_v1.parquet",
+        "incident_items_scientifically_excluded_v1.parquet",
+        "incident_agents_scientifically_excluded_v1.parquet",
+    )
+    contracts = marker.get("cache_artifacts")
+    if not isinstance(contracts, dict) or set(contracts) != set(required_artifacts):
+        raise ControlError("primary analysis cache artifact contract is incomplete")
+    for filename in required_artifacts:
+        path = cache_root / filename
+        if path.is_symlink() or not path.is_file():
+            raise ControlError(f"primary analysis cache lacks {filename}")
+        expected = contracts[filename]
+        if (
+            not isinstance(expected, dict)
+            or set(expected) != {"sha256", "size"}
+            or expected.get("sha256") != sha256_file(path)
+            or expected.get("size") != path.stat().st_size
+        ):
+            raise ControlError(f"primary analysis cache artifact drifted: {filename}")
+    cache_contract_sha256 = marker.get("cache_contract_sha256")
+    expected_generation_id = sha256_value(
+        {
+            "analysis_mode": marker["analysis_mode"],
+            "run_ids": marker["run_ids"],
+            "cache_contract_sha256": cache_contract_sha256,
+            "cache_artifacts": contracts,
+        }
+    )
+    if (
+        _SHA256_RE.fullmatch(str(cache_contract_sha256 or "")) is None
+        or marker.get("cache_generation_id") != expected_generation_id
+        or (cache_root / "ingest_manifest_v1.previous.json").exists()
+    ):
+        raise ControlError("primary analysis cache generation identity is invalid")
+    return marker, sha256_file(marker_path)
+
+
+def _directory_inventory(root: Path) -> tuple[list[dict[str, Any]], str]:
+    if root.is_symlink() or not root.is_dir():
+        raise ControlError(f"final artifact tree is missing or unsafe: {root}")
+    rows: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ControlError(f"final artifact tree contains a symlink: {path}")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise ControlError(f"final artifact tree contains a special file: {path}")
+        if path.stat().st_nlink != 1:
+            raise ControlError(f"final artifact tree contains a hardlink: {path}")
+        rows.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+        )
+    return rows, sha256_value(rows)
+
+
+def _seal_read_only_tree(root: Path) -> None:
+    for path in sorted(root.rglob("*"), reverse=True):
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    root.chmod(0o555)
+
+
+def _active_manifest_cell_locks(control: Mapping[str, Any]) -> list[str]:
+    active: list[str] = []
+    for run in control["immutable"]["runs"]:
+        run_root = Path(run["run_root"]).resolve()
+        snapshot = load_manifest(run_root)
+        if (
+            snapshot.sha256 != run["manifest_sha256"]
+            or len(snapshot.cells) != run["cell_count"]
+        ):
+            raise ImmutablePinError(
+                f"manifest drift while scanning final locks: {run['run_id']}"
+            )
+        for cell in snapshot.cells:
+            cell_directory = run_root / "cells" / cell.cell_id
+            if is_cell_active(cell_directory):
+                active.append(f"{run['run_id']}/{cell.cell_id}")
+    return active
+
+
+@contextmanager
+def _final_writer_exclusion(control: Mapping[str, Any], state_dir: Path) -> Iterator[None]:
+    """Prove and retain exclusion over controller and fleet writers."""
+
+    with ExitStack() as stack:
+        for role in ROLE_NAMES:
+            stack.enter_context(role_singleton_lock(state_dir, role))
+        stack.enter_context(
+            fleet_transactions.read_transaction_lock(
+                Path(control["immutable"]["server_pool_root"])
+            )
+        )
+        yield
+
+
+def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any], str]:
+    """Recursively re-prove a marker-last recovery snapshot from its inventories."""
+
+    if (
+        snapshot_root.is_symlink()
+        or not snapshot_root.is_dir()
+        or snapshot_root.stat().st_mode & 0o222
+    ):
+        raise ControlError("final snapshot root is missing, unsafe, or writable")
+    marker_path = snapshot_root / "SNAPSHOT_COMPLETE.json"
+    marker = _load_json_object(marker_path, description="final snapshot marker")
+    marker_fields = {
+        "schema_version",
+        "snapshot_id",
+        "completed_at",
+        "file_count",
+        "total_bytes",
+        "snapshot_inventory_sha256",
+        "verified",
+        "read_only",
+    }
+    if (
+        set(marker) != marker_fields
+        or marker.get("schema_version") != 1
+        or not isinstance(marker.get("snapshot_id"), str)
+        or not marker["snapshot_id"]
+        or not isinstance(marker.get("completed_at"), str)
+        or marker.get("verified") is not True
+        or marker.get("read_only") is not True
+        or not isinstance(marker.get("file_count"), int)
+        or isinstance(marker.get("file_count"), bool)
+        or marker.get("file_count", 0) < 1
+        or not isinstance(marker.get("total_bytes"), int)
+        or isinstance(marker.get("total_bytes"), bool)
+        or marker.get("total_bytes", -1) < 0
+        or _SHA256_RE.fullmatch(
+            str(marker.get("snapshot_inventory_sha256", ""))
+        )
+        is None
+    ):
+        raise ControlError("final snapshot completion marker is invalid")
+    try:
+        time.strptime(str(marker["completed_at"]), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ControlError(
+            "final snapshot completion timestamp is non-canonical"
+        ) from exc
+
+    control_paths = {
+        name: snapshot_root / name
+        for name in FINAL_SNAPSHOT_CONTROL_FILENAMES
+    }
+    for name, path in control_paths.items():
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_nlink != 1
+            or path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                f"final snapshot control artifact is unsafe: {name}"
+            )
+
+    source_inventory = control_paths["SOURCE_INVENTORY.sha256"]
+    copy_inventory = control_paths["SNAPSHOT_INVENTORY.sha256"]
+    source_bytes = source_inventory.read_bytes()
+    inventory_bytes = copy_inventory.read_bytes()
+    if source_bytes != inventory_bytes:
+        raise ControlError("final snapshot source/copy inventories differ")
+    try:
+        inventory_text = inventory_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ControlError("final snapshot inventory is not UTF-8") from exc
+    inventory: list[dict[str, Any]] = []
+    canonical_lines: list[str] = []
+    logical_paths: list[str] = []
+    for line_number, line in enumerate(inventory_text.splitlines(), 1):
+        digest, separator, logical = line.partition("  ")
+        relative = Path(logical)
+        if (
+            not separator
+            or _SHA256_RE.fullmatch(digest) is None
+            or not logical
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != logical
+            or logical in FINAL_SNAPSHOT_CONTROL_FILENAMES
+        ):
+            raise ControlError(
+                f"final snapshot inventory row is invalid: {line_number}"
+            )
+        canonical_lines.append(f"{digest}  {logical}\n")
+        logical_paths.append(logical)
+        inventory.append({"path": logical, "sha256": digest})
+    if (
+        not inventory
+        or "".join(canonical_lines).encode("utf-8") != inventory_bytes
+        or logical_paths != sorted(logical_paths)
+        or len(logical_paths) != len(set(logical_paths))
+    ):
+        raise ControlError(
+            "final snapshot inventory is empty, non-canonical, or duplicated"
+        )
+
+    directory_path = control_paths["DIRECTORY_INVENTORY.txt"]
+    try:
+        directory_text = directory_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ControlError("cannot read final snapshot directory inventory") from exc
+    directories = directory_text.splitlines()
+    if (
+        "".join(f"{name}\n" for name in directories) != directory_text
+        or directories != sorted(directories)
+        or len(directories) != len(set(directories))
+    ):
+        raise ControlError(
+            "final snapshot directory inventory is non-canonical or duplicated"
+        )
+    for logical in directories:
+        relative = Path(logical)
+        path = snapshot_root / relative
+        if (
+            not logical
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != logical
+            or path.is_symlink()
+            or not path.is_dir()
+            or path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                f"final snapshot directory is missing or unsafe: {logical}"
+            )
+
+    observed_files: set[str] = set()
+    observed_directories: set[str] = set()
+    for root, directory_names, file_names in os.walk(
+        snapshot_root, topdown=True, followlinks=False
+    ):
+        directory_names.sort()
+        file_names.sort()
+        root_path = Path(root)
+        for name in directory_names:
+            path = root_path / name
+            if path.is_symlink() or not path.is_dir():
+                raise ControlError(
+                    f"final snapshot contains an unsafe directory: {path}"
+                )
+            observed_directories.add(
+                path.relative_to(snapshot_root).as_posix()
+            )
+        for name in file_names:
+            path = root_path / name
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_nlink != 1
+                or path.stat().st_mode & 0o222
+            ):
+                raise ControlError(
+                    f"final snapshot contains an unsafe file: {path}"
+                )
+            relative = path.relative_to(snapshot_root).as_posix()
+            if (
+                path.parent == snapshot_root
+                and name in FINAL_SNAPSHOT_CONTROL_FILENAMES
+            ):
+                continue
+            observed_files.add(relative)
+    if observed_files != set(logical_paths) or observed_directories != set(
+        directories
+    ):
+        raise ControlError(
+            "final snapshot has missing or unlisted members: "
+            f"files={sorted(observed_files ^ set(logical_paths))[:10]}, "
+            f"directories={sorted(observed_directories ^ set(directories))[:10]}"
+        )
+
+    total_bytes = 0
+    for row in inventory:
+        path = snapshot_root / str(row["path"])
+        if sha256_file(path) != row["sha256"]:
+            raise ControlError(
+                f"final snapshot payload checksum drifted: {row['path']}"
+            )
+        total_bytes += path.stat().st_size
+    inventory_sha256 = hashlib.sha256(inventory_bytes).hexdigest()
+
+    catalog = _load_json_object(
+        control_paths["SNAPSHOT_CATALOG.json"],
+        description="final snapshot catalog",
+    )
+    catalog_fields = {
+        "schema_version",
+        "snapshot_id",
+        "created_at",
+        "copy_contract",
+        "sources",
+        "file_count",
+        "directory_count",
+        "total_bytes",
+        "source_inventory_sha256",
+        "snapshot_inventory_sha256",
+        "elapsed_seconds",
+    }
+    sources = catalog.get("sources")
+    if (
+        set(catalog) != catalog_fields
+        or catalog.get("schema_version") != 1
+        or catalog.get("snapshot_id") != marker["snapshot_id"]
+        or not isinstance(catalog.get("created_at"), str)
+        or catalog.get("copy_contract")
+        != "independent_regular_files_no_hardlinks_no_symlinks"
+        or not isinstance(sources, list)
+        or not sources
+        or catalog.get("file_count") != len(inventory)
+        or catalog.get("directory_count") != len(directories)
+        or catalog.get("total_bytes") != total_bytes
+        or catalog.get("source_inventory_sha256") != inventory_sha256
+        or catalog.get("snapshot_inventory_sha256") != inventory_sha256
+        or not isinstance(catalog.get("elapsed_seconds"), (int, float))
+        or isinstance(catalog.get("elapsed_seconds"), bool)
+        or not math.isfinite(float(catalog["elapsed_seconds"]))
+        or float(catalog["elapsed_seconds"]) < 0
+        or marker.get("file_count") != len(inventory)
+        or marker.get("total_bytes") != total_bytes
+        or marker.get("snapshot_inventory_sha256") != inventory_sha256
+    ):
+        raise ControlError("final snapshot catalog/inventory contract is invalid")
+    try:
+        created = time.strptime(str(catalog["created_at"]), "%Y-%m-%dT%H:%M:%SZ")
+        completed = time.strptime(
+            str(marker["completed_at"]), "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except ValueError as exc:
+        raise ControlError("final snapshot catalog timestamp is invalid") from exc
+    if created > completed:
+        raise ControlError("final snapshot marker predates its catalog")
+    source_names: list[str] = []
+    for source in sources:
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"name", "path"}
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]*", str(source.get("name", ""))
+            )
+            is None
+            or not isinstance(source.get("path"), str)
+            or not Path(str(source["path"])).is_absolute()
+        ):
+            raise ControlError("final snapshot catalog source is invalid")
+        source_names.append(str(source["name"]))
+    if (
+        len(source_names) != len(set(source_names))
+        or not FINAL_SNAPSHOT_REQUIRED_SOURCES.issubset(source_names)
+        or set(source_names)
+        - FINAL_SNAPSHOT_REQUIRED_SOURCES
+        - FINAL_SNAPSHOT_OPTIONAL_SOURCES
+        or {
+            Path(path).parts[0] for path in [*logical_paths, *directories]
+        }
+        != set(source_names)
+    ):
+        raise ControlError("final snapshot catalog source set is invalid")
+    return marker, sha256_file(marker_path)
+
+
+def _final_snapshot_control_hashes(snapshot_root: Path) -> dict[str, str]:
+    return {
+        name: sha256_file(snapshot_root / name)
+        for name in sorted(FINAL_SNAPSHOT_CONTROL_FILENAMES)
+    }
+
+
+def _validate_zero_writer_proof(
+    proof: Any,
+    *,
+    control: Mapping[str, Any],
+    semantic_preflight: Mapping[str, Any],
+    fleet_retirement: Mapping[str, Any],
+    autonomous_finalizer: Mapping[str, Any] | None,
+) -> None:
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "desired_state",
+        "drain_requested",
+        "control_contract_sha256",
+        "semantic_preflight_id",
+        "fleet_retirement_id",
+        "fleet_retirement_completion_id",
+        "scheduler_captured_at",
+        "scheduler_captured_timestamp",
+        "scheduler_squeue_ok",
+        "scheduler_sacct_ok",
+        "scheduler_errors",
+        "active_cell_job_ids",
+        "active_controller_job_ids",
+        "active_fleet_job_ids",
+        "publisher_finalizer",
+        "active_finalizer_job_ids",
+        "other_active_finalizer_job_ids",
+        "successor_retirement",
+        "active_cell_locks",
+        "proof_id",
+    }
+    if not isinstance(proof, dict):
+        raise ControlError("FINAL_COMPLETE zero-writer proof is not an object")
+    without_id = dict(proof)
+    proof_id = without_id.pop("proof_id", None)
+    timestamp = proof.get("scheduler_captured_timestamp")
+    if (
+        set(proof) != expected_fields
+        or proof.get("schema_version") != 2
+        or proof.get("kind") != "schema5_final_zero_writer_proof"
+        or proof.get("immutable_sha256") != control["immutable_sha256"]
+        or proof.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or proof.get("rollout_generation") != control["rollout_generation"]
+        or proof.get("desired_state") != "paused"
+        or proof.get("drain_requested") is not True
+        or proof.get("control_contract_sha256")
+        != sha256_value(_final_semantic_control_contract(control))
+        or proof.get("semantic_preflight_id")
+        != semantic_preflight.get("preflight_id")
+        or proof.get("fleet_retirement_id")
+        != fleet_retirement.get("retirement_id")
+        or proof.get("fleet_retirement_completion_id")
+        != fleet_retirement.get("completion_id")
+        or not isinstance(timestamp, (int, float))
+        or isinstance(timestamp, bool)
+        or not math.isfinite(float(timestamp))
+        or float(timestamp) < 0
+        or proof.get("scheduler_captured_at")
+        != utc_timestamp(float(timestamp))
+        or proof.get("scheduler_squeue_ok") is not True
+        or proof.get("scheduler_sacct_ok") is not True
+        or proof.get("scheduler_errors") != []
+        or proof.get("active_cell_job_ids") != []
+        or proof.get("active_controller_job_ids") != []
+        or proof.get("active_fleet_job_ids") != []
+        or proof.get("publisher_finalizer")
+        != (
+            None
+            if autonomous_finalizer is None
+            else autonomous_finalizer.get("publisher")
+        )
+        or proof.get("active_finalizer_job_ids")
+        != (
+            []
+            if autonomous_finalizer is None
+            else [autonomous_finalizer["publisher"]["job_id"]]
+        )
+        or proof.get("other_active_finalizer_job_ids") != []
+        or proof.get("successor_retirement")
+        != (
+            None
+            if autonomous_finalizer is None
+            else autonomous_finalizer.get("successor_retirement")
+        )
+        or proof.get("active_cell_locks") != []
+        or proof_id != sha256_value(without_id)
+    ):
+        raise ControlError(
+            "FINAL_COMPLETE zero-writer proof is malformed or stale"
+        )
+
+
+def _verify_final_complete(
+    output_root: Path, *, control: Mapping[str, Any]
+) -> dict[str, Any]:
+    marker_path = output_root / FINAL_COMPLETE_FILENAME
+    if (
+        marker_path.is_symlink()
+        or not marker_path.is_file()
+        or marker_path.stat().st_nlink != 1
+    ):
+        raise ControlError("FINAL_COMPLETE.json is missing or unsafe")
+    marker = _load_json_object(marker_path, description="final completion marker")
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "complete",
+        "release_id",
+        "immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "completed_at",
+        "completed_timestamp",
+        "run_ids",
+        "complete_cells",
+        "trusted_qids",
+        "semantic_report",
+        "semantic_report_sha256",
+        "semantic_preflight",
+        "semantic_preflight_sha256",
+        "analysis_cache",
+        "analysis_manifest_sha256",
+        "analysis_tree_sha256",
+        "trusted_generation_catalog",
+        "trusted_generation_catalog_marker_sha256",
+        "trusted_generation_catalog_inventory_sha256",
+        "trusted_generation_catalog_payload_sha256",
+        "trusted_generation_catalog_id",
+        "snapshot",
+        "snapshot_marker_sha256",
+        "snapshot_control_artifacts",
+        "fleet_retirement",
+        "fleet_retirement_marker_sha256",
+        "autonomous_finalizer",
+        "zero_writer_proof",
+        "final_id",
+    }
+    without_id = dict(marker)
+    final_id = without_id.pop("final_id", None)
+    completed_timestamp = marker.get("completed_timestamp")
+    if (
+        set(marker) != expected_fields
+        or marker.get("schema_version") != 3
+        or marker.get("kind") != "schema5_final_completion"
+        or marker.get("complete") is not True
+        or marker.get("complete_cells") != EXPECTED_TOTAL_CELLS
+        or marker.get("trusted_qids") != EXPECTED_TOTAL_QIDS
+        or marker.get("run_ids") != list(REQUIRED_RUNS)
+        or not isinstance(completed_timestamp, (int, float))
+        or isinstance(completed_timestamp, bool)
+        or not math.isfinite(float(completed_timestamp))
+        or float(completed_timestamp) < 0
+        or marker.get("completed_at")
+        != utc_timestamp(float(completed_timestamp))
+        or final_id != sha256_value(without_id)
+    ):
+        raise ControlError("FINAL_COMPLETE.json is malformed")
+    semantic_path = Path(str(marker["semantic_report"]))
+    semantic_preflight_path = Path(str(marker["semantic_preflight"]))
+    cache_root = Path(str(marker["analysis_cache"]))
+    snapshot_root = Path(str(marker["snapshot"]))
+    retirement_root = Path(str(marker["fleet_retirement"]))
+    catalog_marker_path = Path(
+        str(marker["trusted_generation_catalog"])
+    ).resolve()
+    snapshot_control_artifacts = marker.get("snapshot_control_artifacts")
+    if (
+        semantic_path.is_symlink()
+        or not semantic_path.is_file()
+        or sha256_file(semantic_path) != marker["semantic_report_sha256"]
+        or semantic_preflight_path.is_symlink()
+        or not semantic_preflight_path.is_file()
+        or semantic_preflight_path.resolve()
+        != (output_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME).resolve()
+        or sha256_file(semantic_preflight_path)
+        != marker["semantic_preflight_sha256"]
+        or sha256_file(cache_root / "ingest_manifest_v1.json")
+        != marker["analysis_manifest_sha256"]
+        or _directory_inventory(cache_root)[1] != marker["analysis_tree_sha256"]
+        or catalog_marker_path.is_symlink()
+        or not catalog_marker_path.is_file()
+        or snapshot_root.is_symlink()
+        or snapshot_root.resolve()
+        != (output_root / FINAL_SNAPSHOT_DIRNAME).resolve()
+        or sha256_file(
+            retirement_root / FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+        )
+        != marker["fleet_retirement_marker_sha256"]
+        or retirement_root.is_symlink()
+        or retirement_root.resolve()
+        != (output_root / FINAL_FLEET_RETIREMENT_DIRNAME).resolve()
+    ):
+        raise ControlError("FINAL_COMPLETE.json referenced artifact drifted")
+    try:
+        trusted_catalog = validate_trusted_generation_catalog(
+            catalog_marker_path,
+            server_pool_root=Path(
+                str(control["immutable"]["server_pool_root"])
+            ).resolve(),
+        )
+    except GenerationCatalogError as exc:
+        raise ControlError(
+            f"FINAL_COMPLETE trusted-generation catalog is invalid: {exc}"
+        ) from exc
+    if (
+        trusted_catalog.marker_sha256
+        != marker["trusted_generation_catalog_marker_sha256"]
+        or trusted_catalog.inventory_sha256
+        != marker["trusted_generation_catalog_inventory_sha256"]
+        or trusted_catalog.catalog_sha256
+        != marker["trusted_generation_catalog_payload_sha256"]
+        or trusted_catalog.catalog_id
+        != marker["trusted_generation_catalog_id"]
+    ):
+        raise ControlError("FINAL_COMPLETE trusted-generation pins drifted")
+    _, semantic_sha256, _, semantic_preflight_sha256 = (
+        _verify_final_semantic_preflight(output_root, control=control)
+    )
+    semantic_report = _load_json_object(
+        semantic_path, description="FINAL_COMPLETE semantic report"
+    )
+    if (
+        semantic_sha256 != marker["semantic_report_sha256"]
+        or semantic_preflight_sha256 != marker["semantic_preflight_sha256"]
+        or semantic_report.get("semantic", {}).get(
+            "trusted_generation_catalog"
+        )
+        != _trusted_generation_catalog_binding(trusted_catalog)
+    ):
+        raise ControlError("FINAL_COMPLETE.json semantic preflight drifted")
+    _, snapshot_marker_sha256 = _validate_final_snapshot_marker(snapshot_root)
+    if (
+        snapshot_marker_sha256 != marker["snapshot_marker_sha256"]
+        or not isinstance(snapshot_control_artifacts, dict)
+        or set(snapshot_control_artifacts)
+        != FINAL_SNAPSHOT_CONTROL_FILENAMES
+        or snapshot_control_artifacts
+        != _final_snapshot_control_hashes(snapshot_root)
+    ):
+        raise ControlError("FINAL_COMPLETE.json snapshot controls drifted")
+    snapshot_catalog_marker = (
+        snapshot_root
+        / "trusted_generation_catalog"
+        / CATALOG_MARKER
+    )
+    try:
+        snapshot_catalog = validate_trusted_generation_catalog(
+            snapshot_catalog_marker,
+            server_pool_root=snapshot_root / "server_pool",
+        )
+    except GenerationCatalogError as exc:
+        raise ControlError(
+            f"final snapshot trusted-generation catalog is invalid: {exc}"
+        ) from exc
+    if (
+        snapshot_catalog.marker_sha256 != trusted_catalog.marker_sha256
+        or snapshot_catalog.inventory_sha256
+        != trusted_catalog.inventory_sha256
+        or snapshot_catalog.catalog_sha256 != trusted_catalog.catalog_sha256
+        or snapshot_catalog.catalog_id != trusted_catalog.catalog_id
+    ):
+        raise ControlError(
+            "final snapshot trusted-generation catalog differs from FINAL_COMPLETE"
+        )
+    if (
+        marker.get("release_id") != control["immutable"]["release_id"]
+        or marker.get("immutable_sha256") != control["immutable_sha256"]
+        or marker.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or marker.get("rollout_generation") != control["rollout_generation"]
+    ):
+        raise ControlError("FINAL_COMPLETE.json does not bind the current control")
+    fleet_retirement, _ = _verify_final_fleet_retirement(
+        retirement_root, control=control
+    )
+    semantic_preflight = _load_json_object(
+        semantic_preflight_path,
+        description="final semantic preflight marker",
+    )
+    autonomous_finalizer = marker.get("autonomous_finalizer")
+    if autonomous_finalizer is None:
+        if control["finalization"]["state"] != "idle":
+            raise ControlError(
+                "manual FINAL_COMPLETE cannot bless an autonomous finalization"
+            )
+    elif (
+        not isinstance(autonomous_finalizer, dict)
+        or autonomous_finalizer
+        != _autonomous_finalizer_completion_binding(control)
+    ):
+        raise ControlError(
+            "FINAL_COMPLETE autonomous finalizer retirement binding drifted"
+        )
+    _validate_zero_writer_proof(
+        marker.get("zero_writer_proof"),
+        control=control,
+        semantic_preflight=semantic_preflight,
+        fleet_retirement=fleet_retirement,
+        autonomous_finalizer=autonomous_finalizer,
+    )
+    if marker_path.stat().st_mode & 0o222:
+        raise ControlError("FINAL_COMPLETE.json is not sealed read-only")
+    return marker
+
+
+def _verify_completed_finalization_control_binding(
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Re-prove the exact terminal marker bound by completed control state.
+
+    This helper deliberately accepts an already-loaded control object.  It must not
+    call :func:`load_control`: completed-state validation invokes it from the control
+    loader, and a second load would recurse instead of proving the terminal artifact.
+    """
+
+    finalization = control["finalization"]
+    if finalization.get("state") != "complete":
+        raise ControlError(
+            "terminal finalization binding requires complete control state"
+        )
+    completion = finalization["completion_marker"]
+    output_root = Path(str(finalization["output_root"])).expanduser().resolve()
+    marker_path = output_root / FINAL_COMPLETE_FILENAME
+    bound_path = Path(str(completion["path"])).expanduser()
+    if (
+        not bound_path.is_absolute()
+        or bound_path != marker_path
+        or marker_path.is_symlink()
+        or not marker_path.is_file()
+        or marker_path.stat().st_nlink != 1
+        or marker_path.stat().st_mode & 0o222
+    ):
+        raise ControlError(
+            "completed finalization marker is missing, unsafe, or not exactly bound"
+        )
+    marker_sha256 = sha256_file(marker_path)
+    if marker_sha256 != completion["sha256"]:
+        raise ControlError("completed finalization marker checksum drifted")
+    verified = _verify_final_complete(output_root, control=control)
+    if verified.get("final_id") != completion["final_id"]:
+        raise ControlError("completed finalization marker identity drifted")
+    return verified
+
+
+def finalize_sweep(
+    state_dir: Path,
+    *,
+    output_root: Path | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    fleet_evidence_reader: (
+        Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+    ) = None,
+    command_runner: (
+        Callable[
+            [Sequence[str], Mapping[str, str], float],
+            subprocess.CompletedProcess[str],
+        ]
+        | None
+    ) = None,
+    snapshot_builder: (
+        Callable[[Path, Sequence[tuple[str, Path]], Mapping[str, str]], Mapping[str, Any]]
+        | None
+    ) = None,
+    lock_scanner: Callable[[Mapping[str, Any]], Sequence[str]] | None = None,
+    writer_guard: Callable[[Mapping[str, Any], Path], Any] | None = None,
+    publisher_finalizer: Mapping[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Publish FINAL_COMPLETE last, after exact data, cache, and snapshot proofs."""
+
+    timestamp = time.time() if now is None else float(now)
+    state_dir = state_dir.expanduser().resolve()
+    initial = load_control(state_dir, verify_files=True)
+    if publisher_finalizer is None:
+        if initial["finalization"]["state"] != "idle":
+            raise ControllerFenced(
+                "autonomous finalization must bind its exact publisher"
+            )
+    else:
+        publisher_identity = _finalizer_job_identity(publisher_finalizer)
+        active_record = initial["finalization"].get("active_job")
+        if (
+            initial["finalization"]["state"] not in ACTIVE_FINALIZATION_STATES
+            or not isinstance(active_record, Mapping)
+            or _finalizer_job_identity(active_record) != publisher_identity
+        ):
+            raise ControllerFenced(
+                "autonomous finalizer publisher no longer owns control state"
+            )
+    results_root = Path(initial["immutable"]["results_root"]).resolve()
+    final_root = (
+        output_root.expanduser().resolve()
+        if output_root is not None
+        else results_root / "recovery" / "schema5-v1.2-r2" / "final"
+    )
+    if (
+        publisher_finalizer is not None
+        and final_root
+        != Path(str(initial["finalization"]["output_root"])).expanduser().resolve()
+    ):
+        raise ControllerFenced(
+            "autonomous finalizer output root differs from its durable intent"
+        )
+    marker_path = final_root / FINAL_COMPLETE_FILENAME
+    if marker_path.exists():
+        return _verify_final_complete(final_root, control=initial)
+    final_root.mkdir(parents=True, exist_ok=True)
+    read_scheduler = scheduler_reader or (
+        lambda: query_scheduler(tolerate_errors=False)
+    )
+    run_command = command_runner or (
+        lambda argv, environment, timeout: _run_finalizer_process(
+            argv, environment=environment, timeout_seconds=timeout
+        )
+    )
+    scan_locks = lock_scanner or _active_manifest_cell_locks
+    guard_factory = writer_guard or _final_writer_exclusion
+    resolve_fleet = fleet_evidence_reader or _default_fleet_retirement_evidence
+    retire_runner = cancel_runner or _run_subprocess
+    with finalizer_lock(state_dir):
+        # Pause is itself fenced by admission-boundary.lock. A live worker may need
+        # one retry after receiving USR1; no audit or cache is written until it drains.
+        current = load_control(state_dir)
+        if (
+            current["desired_state"] != "paused"
+            or current.get("drain_requested") is not True
+        ):
+            pause_control(
+                state_dir,
+                drain=True,
+                scheduler=read_scheduler(),
+                cancel_runner=cancel_runner,
+                now=timestamp,
+            )
+        with admission_boundary_lock(state_dir):
+            snapshot = read_scheduler()
+            _require_complete_quiescent_scheduler(
+                snapshot, operation="finalization"
+            )
+            current = load_control(state_dir, verify_files=True)
+            if current["capacity"]["active_transition"] is not None:
+                raise ControlError(
+                    "finalization cannot cross an incomplete capacity transition"
+                )
+            if current["admission_safety_hold"]["active"]:
+                raise ControlError(
+                    "finalization cannot publish through an admission safety hold"
+                )
+            # Freeze every endpoint identity before the semantic scan.  The monitor
+            # and analysis cache consume this exact immutable revision; historical
+            # trust never depends on whatever registry pointers remain current later.
+            trusted_catalog = refresh_trusted_generation_catalog(
+                state_dir,
+                target_rollout_generation=int(current["rollout_generation"]),
+                now=timestamp,
+            )
+            trusted_catalog_binding = _trusted_generation_catalog_binding(
+                trusted_catalog
+            )
+            environment = _finalizer_environment(current)
+            immutable = current["immutable"]
+            harness_python = (
+                Path(immutable["harness_environment_prefix"]).resolve()
+                / "bin"
+                / "python"
+            )
+            release_root = Path(immutable["release_worktree"]).resolve()
+            semantic_path = final_root / FINAL_SEMANTIC_FILENAME
+            semantic_preflight_path = (
+                final_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+            )
+
+            # Phase one: retain serving capacity while proving the complete dataset.
+            # Admission is paused and both controller writers are excluded, but the
+            # fleet remains available until the exact semantic report is validated and
+            # marker-last sealed.  A partial scan exits here with zero scancel calls and
+            # no retirement intent.
+            with guard_factory(current, state_dir):
+                locked = sorted(str(item) for item in scan_locks(current))
+                if locked:
+                    raise ControlError(
+                        "finalization found active cell locks: "
+                        + ", ".join(locked[:20])
+                    )
+                (
+                    _semantic,
+                    semantic_report_sha256,
+                    _semantic_preflight,
+                    semantic_preflight_sha256,
+                ) = _ensure_final_semantic_preflight(
+                    final_root,
+                    control=current,
+                    state_dir=state_dir,
+                    results_root=results_root,
+                    environment=environment,
+                    harness_python=harness_python,
+                    release_root=release_root,
+                    run_command=run_command,
+                    now=timestamp,
+                )
+                if (
+                    _semantic.get("semantic", {}).get(
+                        "trusted_generation_catalog"
+                    )
+                    != trusted_catalog_binding
+                ):
+                    raise ControlError(
+                        "final semantic scan did not bind the sealed generation catalog"
+                    )
+
+            # Phase two: only sealed semantic acceptance can authorize the immutable
+            # exact-ID retirement intent.  Refresh scheduler truth after the potentially
+            # long semantic scan before freezing those IDs.
+            retirement_snapshot = read_scheduler()
+            _require_complete_quiescent_scheduler(
+                retirement_snapshot,
+                operation="semantic-approved final fleet retirement",
+            )
+            retirement_root, _ = _prepare_final_fleet_retirement(
+                current,
+                final_root=final_root,
+                snapshot=retirement_snapshot,
+                semantic_preflight_path=semantic_preflight_path,
+                semantic_report_sha256=semantic_report_sha256,
+                fleet_evidence_reader=resolve_fleet,
+                now=timestamp,
+            )
+            with guard_factory(current, state_dir):
+                locked = sorted(str(item) for item in scan_locks(current))
+                if locked:
+                    raise ControlError(
+                        "finalization found active cell locks after semantic preflight: "
+                        + ", ".join(locked[:20])
+                    )
+                retirement, remaining_fleet = _advance_final_fleet_retirement(
+                    retirement_root,
+                    current,
+                    scheduler_reader=read_scheduler,
+                    cancel_runner=retire_runner,
+                    now=timestamp,
+                )
+                if retirement is None:
+                    return {
+                        "complete": False,
+                        "phase": "fleet_retirement_pending",
+                        "retirement_id": _load_json_object(
+                            retirement_root
+                            / FINAL_FLEET_RETIREMENT_INTENT_FILENAME,
+                            description="final fleet retirement intent",
+                        )["retirement_id"],
+                        "remaining_fleet_job_ids": remaining_fleet,
+                    }
+                _, retirement_marker_sha256 = _verify_final_fleet_retirement(
+                    retirement_root, control=current
+                )
+
+                cache_root = final_root / FINAL_ANALYSIS_CACHE_DIRNAME
+                cache_marker = cache_root / "ingest_manifest_v1.json"
+                if not cache_marker.exists():
+                    if cache_root.exists() and any(cache_root.iterdir()):
+                        raise ControlError(
+                            "incomplete primary analysis cache requires explicit "
+                            "evidence-preserving recovery"
+                        )
+                    cache_root.mkdir(parents=True, exist_ok=True)
+                    command = [
+                        str(harness_python),
+                        "-I",
+                        "-u",
+                        str(release_root / "analysis" / "nb_lib" / "ingest.py"),
+                        "--mode",
+                        "primary-schema5",
+                        "--run-id",
+                        *list(REQUIRED_RUNS),
+                        "--out-dir",
+                        str(cache_root),
+                        "--trusted-generation-catalog",
+                        str(trusted_catalog.marker_path),
+                        "--server-pool-root",
+                        str(Path(immutable["server_pool_root"]).resolve()),
+                    ]
+                    proc = run_command(
+                        command, environment, FINALIZER_COMMAND_DEADLINE_SECONDS
+                    )
+                    if proc.returncode != 0:
+                        raise ControlError(
+                            "primary analysis cache build failed: "
+                            f"rc={proc.returncode}; {proc.stderr.strip()[:1000]}"
+                        )
+                _, cache_marker_sha256 = _validate_primary_analysis_cache(
+                    cache_root,
+                    current,
+                    trusted_catalog=trusted_catalog,
+                )
+                _seal_read_only_tree(cache_root)
+                _, cache_tree_sha256 = _directory_inventory(cache_root)
+
+                sources = [
+                    *[
+                        (str(run["run_id"]), Path(run["run_root"]).resolve())
+                        for run in immutable["runs"]
+                    ],
+                    ("control", state_dir),
+                    ("semantic_validation", semantic_path),
+                    (
+                        "semantic_intent",
+                        final_root / FINAL_SEMANTIC_INTENT_FILENAME,
+                    ),
+                    ("semantic_preflight", semantic_preflight_path),
+                    ("primary_analysis_cache", cache_root),
+                    ("fleet_retirement", retirement_root),
+                    (
+                        "server_pool",
+                        Path(immutable["server_pool_root"]).resolve(),
+                    ),
+                    (
+                        "trusted_generation_catalog",
+                        trusted_catalog.marker_path.parent,
+                    ),
+                ]
+                semantic_archive = (
+                    final_root / FINAL_SEMANTIC_ARCHIVE_DIRNAME
+                )
+                if semantic_archive.is_dir():
+                    sources.append(
+                        ("semantic_recovery_archive", semantic_archive)
+                    )
+                snapshot_root = final_root / FINAL_SNAPSHOT_DIRNAME
+                if snapshot_builder is None:
+                    snapshot_script = (
+                        release_root / "scripts" / "create_recovery_snapshot.py"
+                    )
+                    command = [
+                        str(harness_python),
+                        "-u",
+                        str(snapshot_script),
+                        "--snapshot-root",
+                        str(snapshot_root),
+                    ]
+                    for name, source in sources:
+                        command.extend(("--source", f"{name}={source}"))
+                    proc = run_command(
+                        command,
+                        environment,
+                        FINALIZER_SNAPSHOT_DEADLINE_SECONDS,
+                    )
+                    if proc.returncode != 0:
+                        raise ControlError(
+                            "final snapshot creation failed: "
+                            f"rc={proc.returncode}; {proc.stderr.strip()[:1000]}"
+                        )
+                    verify = run_command(
+                        [
+                            str(harness_python),
+                            "-u",
+                            str(snapshot_script),
+                            "--snapshot-root",
+                            str(snapshot_root),
+                            "--verify-only",
+                        ],
+                        environment,
+                        FINALIZER_SNAPSHOT_DEADLINE_SECONDS,
+                    )
+                    if verify.returncode != 0:
+                        raise ControlError(
+                            "final snapshot verification failed: "
+                            f"rc={verify.returncode}; {verify.stderr.strip()[:1000]}"
+                        )
+                else:
+                    snapshot_builder(snapshot_root, sources, environment)
+                _, snapshot_marker_sha256 = _validate_final_snapshot_marker(
+                    snapshot_root
+                )
+
+                # Re-prove scheduler and per-cell locks immediately before the one
+                # publication that declares the experiment final.
+                autonomous_binding: dict[str, Any] | None = None
+                if publisher_finalizer is not None:
+                    _retire_autonomous_finalizer_successor(
+                        state_dir,
+                        publisher_record=publisher_finalizer,
+                        scheduler_reader=read_scheduler,
+                        cancel_runner=cancel_runner,
+                        now=timestamp,
+                    )
+                    current = load_control(state_dir, verify_files=True)
+                    autonomous_binding = (
+                        _autonomous_finalizer_completion_binding(current)
+                    )
+                    if (
+                        autonomous_binding["publisher"]
+                        != _finalizer_job_identity(publisher_finalizer)
+                    ):
+                        raise ControllerFenced(
+                            "autonomous finalizer publisher changed before marker "
+                            "publication"
+                        )
+                final_scheduler = read_scheduler()
+                _require_complete_quiescent_scheduler(
+                    final_scheduler, operation="final marker publication"
+                )
+                final_active_fleet = _active_fleet_scope_job_ids(
+                    current, final_scheduler
+                )
+                final_locks = sorted(str(item) for item in scan_locks(current))
+                if final_active_fleet or final_locks:
+                    raise ControlError(
+                        "writer exclusion changed before FINAL_COMPLETE publication: "
+                        f"fleet={final_active_fleet}, locks={final_locks[:20]}"
+                    )
+                active_finalizers = _finalizer_namespace_active_job_ids(
+                    final_scheduler
+                )
+                expected_finalizers = (
+                    []
+                    if autonomous_binding is None
+                    else [autonomous_binding["publisher"]["job_id"]]
+                )
+                if active_finalizers != expected_finalizers:
+                    raise SchedulerAmbiguity(
+                        "final marker publication has unexpected active finalizers: "
+                        f"expected={expected_finalizers}, observed={active_finalizers}"
+                    )
+                if autonomous_binding is not None:
+                    _finalizer_scheduler_observation(
+                        final_scheduler,
+                        autonomous_binding["publisher"],
+                        require_active=True,
+                        context="final marker publisher",
+                    )
+                zero_writer_proof: dict[str, Any] = {
+                    "schema_version": 2,
+                    "kind": "schema5_final_zero_writer_proof",
+                    "immutable_sha256": current["immutable_sha256"],
+                    "capacity_generation": current["capacity"][
+                        "current_generation"
+                    ],
+                    "rollout_generation": current["rollout_generation"],
+                    "desired_state": current["desired_state"],
+                    "drain_requested": current["drain_requested"],
+                    "control_contract_sha256": sha256_value(
+                        _final_semantic_control_contract(current)
+                    ),
+                    "semantic_preflight_id": _semantic_preflight[
+                        "preflight_id"
+                    ],
+                    "fleet_retirement_id": retirement["retirement_id"],
+                    "fleet_retirement_completion_id": retirement[
+                        "completion_id"
+                    ],
+                    "scheduler_captured_at": utc_timestamp(
+                        final_scheduler.captured_at
+                    ),
+                    "scheduler_captured_timestamp": (
+                        final_scheduler.captured_at
+                    ),
+                    "scheduler_squeue_ok": final_scheduler.squeue_ok,
+                    "scheduler_sacct_ok": final_scheduler.sacct_ok,
+                    "scheduler_errors": list(final_scheduler.errors),
+                    "active_cell_job_ids": [],
+                    "active_controller_job_ids": [],
+                    "active_fleet_job_ids": [],
+                    "publisher_finalizer": (
+                        None
+                        if autonomous_binding is None
+                        else autonomous_binding["publisher"]
+                    ),
+                    "active_finalizer_job_ids": active_finalizers,
+                    "other_active_finalizer_job_ids": [],
+                    "successor_retirement": (
+                        None
+                        if autonomous_binding is None
+                        else autonomous_binding["successor_retirement"]
+                    ),
+                    "active_cell_locks": [],
+                }
+                zero_writer_proof["proof_id"] = sha256_value(
+                    zero_writer_proof
+                )
+                _validate_zero_writer_proof(
+                    zero_writer_proof,
+                    control=current,
+                    semantic_preflight=_semantic_preflight,
+                    fleet_retirement=retirement,
+                    autonomous_finalizer=autonomous_binding,
+                )
+                final_payload: dict[str, Any] = {
+                    "schema_version": 3,
+                    "kind": "schema5_final_completion",
+                    "complete": True,
+                    "release_id": immutable["release_id"],
+                    "immutable_sha256": current["immutable_sha256"],
+                    "capacity_generation": current["capacity"]["current_generation"],
+                    "rollout_generation": current["rollout_generation"],
+                    "completed_at": utc_timestamp(timestamp),
+                    "completed_timestamp": timestamp,
+                    "run_ids": list(REQUIRED_RUNS),
+                    "complete_cells": EXPECTED_TOTAL_CELLS,
+                    "trusted_qids": EXPECTED_TOTAL_QIDS,
+                    "semantic_report": str(semantic_path),
+                    "semantic_report_sha256": semantic_report_sha256,
+                    "semantic_preflight": str(semantic_preflight_path),
+                    "semantic_preflight_sha256": semantic_preflight_sha256,
+                    "analysis_cache": str(cache_root),
+                    "analysis_manifest_sha256": cache_marker_sha256,
+                    "analysis_tree_sha256": cache_tree_sha256,
+                    "trusted_generation_catalog": str(
+                        trusted_catalog.marker_path
+                    ),
+                    "trusted_generation_catalog_marker_sha256": (
+                        trusted_catalog.marker_sha256
+                    ),
+                    "trusted_generation_catalog_inventory_sha256": (
+                        trusted_catalog.inventory_sha256
+                    ),
+                    "trusted_generation_catalog_payload_sha256": (
+                        trusted_catalog.catalog_sha256
+                    ),
+                    "trusted_generation_catalog_id": (
+                        trusted_catalog.catalog_id
+                    ),
+                    "snapshot": str(snapshot_root),
+                    "snapshot_marker_sha256": snapshot_marker_sha256,
+                    "snapshot_control_artifacts": (
+                        _final_snapshot_control_hashes(snapshot_root)
+                    ),
+                    "fleet_retirement": str(retirement_root),
+                    "fleet_retirement_marker_sha256": (
+                        retirement_marker_sha256
+                    ),
+                    "autonomous_finalizer": autonomous_binding,
+                    "zero_writer_proof": zero_writer_proof,
+                }
+                final_payload["final_id"] = sha256_value(final_payload)
+                _atomic_write_json(marker_path, final_payload)
+                marker_path.chmod(0o444)
+    return _verify_final_complete(final_root, control=current)
+
+
+def finalizer_job_token(
+    *, intent_id: str, attempt: int, intent_token: str
+) -> str:
+    if _SHA256_RE.fullmatch(intent_id) is None:
+        raise ControlError("finalizer intent ID is invalid")
+    if attempt < 1:
+        raise ControlError("finalizer attempt must be positive")
+    if re.fullmatch(r"[0-9a-f]{32}", intent_token) is None:
+        raise ControlError("finalizer job intent token is invalid")
+    return (
+        f"{FINALIZER_JOB_TOKEN_PREFIX};intent={intent_id};"
+        f"attempt={attempt};token={intent_token}"
+    )
+
+
+def _resolved_finalizer_harness_python(
+    immutable: Mapping[str, Any],
+) -> Path:
+    """Return the sealed, inventory-pinned target of ``bin/python``.
+
+    Conda environments normally expose ``bin/python`` as a same-prefix symlink.
+    Rejecting that lexical symlink made autonomous finalization unusable in the
+    production environment.  Trust is instead anchored in the sealed environment
+    manifest: both the lexical entry and its resolved regular target must occur
+    exactly in the pinned directory inventory, and the target itself must be a
+    read-only executable inode inside the harness prefix.
+    """
+
+    try:
+        harness = (
+            Path(str(immutable["harness_environment_prefix"]))
+            .expanduser()
+            .resolve(strict=True)
+        )
+        lexical = harness / "bin" / "python"
+        target = lexical.resolve(strict=True)
+        relative_target = target.relative_to(harness)
+        relative_lexical = lexical.relative_to(harness)
+    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise ImmutablePinError(
+            "autonomous finalizer Python is unavailable or escapes its harness"
+        ) from exc
+    if target == harness:
+        raise ImmutablePinError(
+            "autonomous finalizer Python resolves to the harness directory"
+        )
+    try:
+        target_stat = target.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ImmutablePinError(
+            "autonomous finalizer Python target cannot be inspected"
+        ) from exc
+    if (
+        not stat.S_ISREG(target_stat.st_mode)
+        or target_stat.st_nlink != 1
+        or stat.S_IMODE(target_stat.st_mode) & 0o222
+        or stat.S_IMODE(target_stat.st_mode) & 0o111 == 0
+    ):
+        raise ImmutablePinError(
+            "autonomous finalizer Python target is not a sealed executable"
+        )
+    try:
+        canonical_target, target_bytes = _read_stable_authorization_file(
+            target,
+            description="pinned autonomous finalizer harness Python",
+        )
+    except ReadinessError as exc:
+        raise ImmutablePinError(str(exc)) from exc
+    if canonical_target != target:
+        raise ImmutablePinError(
+            "autonomous finalizer Python target is not canonical"
+        )
+
+    manifest_path = Path(
+        str(immutable.get("harness_environment_manifest_path", ""))
+    ).expanduser()
+    try:
+        canonical_manifest, raw_manifest = _read_stable_authorization_file(
+            manifest_path,
+            description="pinned finalizer harness environment manifest",
+        )
+        manifest = _parse_authorization_json(
+            raw_manifest,
+            description="pinned finalizer harness environment manifest",
+        )
+    except ReadinessError as exc:
+        raise ImmutablePinError(str(exc)) from exc
+    if (
+        canonical_manifest != manifest_path.resolve()
+        or hashlib.sha256(raw_manifest).hexdigest()
+        != immutable.get("harness_environment_sha256")
+        or Path(str(manifest.get("prefix", ""))).expanduser().resolve()
+        != harness
+    ):
+        raise ImmutablePinError(
+            "autonomous finalizer harness manifest does not match immutable pins"
+        )
+    inventory = manifest.get("directory_inventory")
+    entries = inventory.get("entries") if isinstance(inventory, Mapping) else None
+    if not isinstance(entries, list):
+        raise ImmutablePinError(
+            "autonomous finalizer harness inventory is missing"
+        )
+    by_path: dict[str, Mapping[str, Any]] = {}
+    for entry in entries:
+        if (
+            not isinstance(entry, Mapping)
+            or not isinstance(entry.get("path"), str)
+            or entry["path"] in by_path
+        ):
+            raise ImmutablePinError(
+                "autonomous finalizer harness inventory is malformed"
+            )
+        by_path[entry["path"]] = entry
+    lexical_entry = by_path.get(relative_lexical.as_posix())
+    target_entry = by_path.get(relative_target.as_posix())
+    if lexical.is_symlink():
+        try:
+            link_target = os.readlink(lexical)
+        except OSError as exc:
+            raise ImmutablePinError(
+                "autonomous finalizer Python symlink cannot be inspected"
+            ) from exc
+        if (
+            not isinstance(lexical_entry, Mapping)
+            or lexical_entry.get("type") != "symlink"
+            or lexical_entry.get("target") != link_target
+        ):
+            raise ImmutablePinError(
+                "autonomous finalizer Python symlink is not inventory-pinned"
+            )
+    elif (
+        not isinstance(lexical_entry, Mapping)
+        or lexical_entry.get("type") != "file"
+        or target != lexical
+    ):
+        raise ImmutablePinError(
+            "autonomous finalizer Python lexical entry is unsafe"
+        )
+    target_sha256 = hashlib.sha256(target_bytes).hexdigest()
+    if (
+        not isinstance(target_entry, Mapping)
+        or target_entry.get("type") != "file"
+        or target_entry.get("mode") != stat.S_IMODE(target_stat.st_mode)
+        or target_entry.get("size") != len(target_bytes)
+        or target_entry.get("sha256") != target_sha256
+    ):
+        raise ImmutablePinError(
+            "autonomous finalizer Python target is not inventory-pinned"
+        )
+    return target
+
+
+def _render_finalizer_sbatch(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    intent_id: str,
+    attempt: int,
+    intent_token: str,
+) -> Path:
+    token = finalizer_job_token(
+        intent_id=intent_id,
+        attempt=attempt,
+        intent_token=intent_token,
+    )
+    immutable = control["immutable"]
+    python = _resolved_finalizer_harness_python(immutable)
+    release = Path(str(immutable["release_worktree"])).resolve()
+    script = release / "slurm" / "schema5_control.py"
+    if (
+        script.is_symlink()
+        or not script.is_file()
+    ):
+        raise ImmutablePinError("autonomous finalizer runtime is not immutable")
+    finalizer_root = state_dir / FINALIZER_STATE_DIRNAME
+    finalizer_root.mkdir(parents=True, exist_ok=True)
+    if finalizer_root.is_symlink() or not finalizer_root.is_dir():
+        raise ImmutablePinError(
+            "autonomous finalizer state directory is unsafe"
+        )
+    root = finalizer_root / "sbatch"
+    log_root = finalizer_root / "logs"
+    for directory, description in (
+        (root, "sbatch"),
+        (log_root, "log"),
+    ):
+        directory.mkdir(exist_ok=True)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ImmutablePinError(
+                f"autonomous finalizer {description} directory is unsafe"
+            )
+    target = root / f"finalizer.a{attempt:06d}.{intent_token}.sbatch"
+    log = log_root / f"finalizer.a{attempt:06d}.%j.out"
+    payload = f"""#!/bin/bash
+#SBATCH --job-name=asys-s5-final-a{attempt:06d}
+#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}
+#SBATCH --cpus-per-task=1
+#SBATCH --mem={FINALIZER_JOB_MEMORY}
+#SBATCH --time={FINALIZER_JOB_TIME_LIMIT}
+#SBATCH --signal=B:USR1@1200
+#SBATCH --no-requeue
+#SBATCH --output={shlex.quote(str(log))}
+
+set -euo pipefail
+umask 027
+unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export PYTHONSAFEPATH=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export HF_HOME={shlex.quote(str(Path(str(immutable["hf_home"])).resolve()))}
+export ASYS_IMMUTABLE_PINS_SHA256={shlex.quote(str(control["immutable_sha256"]))}
+exec {shlex.quote(str(python))} -I -u {shlex.quote(str(script))} \
+  --state-dir {shlex.quote(str(state_dir.resolve()))} finalizer-worker \
+  --intent-id {shlex.quote(intent_id)} --attempt {attempt}
+"""
+    required = {
+        "#SBATCH --no-requeue",
+        "#SBATCH --signal=B:USR1@1200",
+        f"#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}",
+        f"--intent-id {intent_id} --attempt {attempt}",
+    }
+    if not all(fragment in payload for fragment in required):
+        raise ControlError("rendered autonomous finalizer sbatch is incomplete")
+    if target.exists():
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.read_text(encoding="utf-8") != payload
+            or target.stat().st_mode & 0o222
+        ):
+            raise ImmutablePinError(
+                f"autonomous finalizer sbatch drifted: {target}"
+            )
+        return target
+    io.atomic_write_text(target, payload)
+    target.chmod(0o444)
+    return target
+
+
+def _finalizer_scheduler_matches(
+    snapshot: SchedulerSnapshot, record: Mapping[str, Any]
+) -> list[SchedulerJob]:
+    return [
+        job
+        for job in snapshot.jobs
+        if job.comment == record.get("job_token")
+    ]
+
+
+def _finalizer_job_identity(
+    record: Mapping[str, Any], *, verify_sbatch: bool = True
+) -> dict[str, Any]:
+    _validate_finalizer_job_record(record, context="identity")
+    job_id = record.get("job_id")
+    if not isinstance(job_id, str) or not job_id.isdigit():
+        raise ControlError("finalizer identity requires an accepted numeric job ID")
+    sbatch_path = Path(str(record["sbatch_path"])).expanduser().resolve()
+    if verify_sbatch and (
+        sbatch_path.is_symlink()
+        or not sbatch_path.is_file()
+        or sbatch_path.stat().st_nlink != 1
+        or sbatch_path.stat().st_mode & 0o222
+        or sha256_file(sbatch_path) != record["sbatch_sha256"]
+    ):
+        raise ImmutablePinError(
+            f"finalizer identity sbatch is unsafe or drifted: {sbatch_path}"
+        )
+    identity: dict[str, Any] = {
+        "attempt": int(record["attempt"]),
+        "intent_token": str(record["intent_token"]),
+        "job_token": str(record["job_token"]),
+        "sbatch_path": str(sbatch_path),
+        "sbatch_sha256": str(record["sbatch_sha256"]),
+        "dependency_job_id": record.get("dependency_job_id"),
+        "job_id": job_id,
+    }
+    identity["identity_id"] = sha256_value(identity)
+    return identity
+
+
+def _validate_finalizer_identity(value: Any, *, context: str) -> None:
+    expected = {
+        "attempt",
+        "intent_token",
+        "job_token",
+        "sbatch_path",
+        "sbatch_sha256",
+        "dependency_job_id",
+        "job_id",
+        "identity_id",
+    }
+    without_id = dict(value) if isinstance(value, dict) else {}
+    identity_id = without_id.pop("identity_id", None)
+    dependency = value.get("dependency_job_id") if isinstance(value, dict) else None
+    attempt = value.get("attempt") if isinstance(value, dict) else None
+    intent_token = value.get("intent_token") if isinstance(value, dict) else None
+    token = str(value.get("job_token", "")) if isinstance(value, dict) else ""
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or not isinstance(value.get("attempt"), int)
+        or isinstance(value.get("attempt"), bool)
+        or int(value["attempt"]) < 1
+        or re.fullmatch(r"[0-9a-f]{32}", str(value.get("intent_token", "")))
+        is None
+        or not str(value.get("job_token", "")).startswith(
+            FINALIZER_JOB_TOKEN_PREFIX + ";"
+        )
+        or not Path(str(value.get("sbatch_path", ""))).is_absolute()
+        or _SHA256_RE.fullmatch(str(value.get("sbatch_sha256", ""))) is None
+        or (
+            dependency is not None
+            and (not isinstance(dependency, str) or not dependency.isdigit())
+        )
+        or not str(value.get("job_id", "")).isdigit()
+        or identity_id != sha256_value(without_id)
+        or re.fullmatch(
+            rf"{re.escape(FINALIZER_JOB_TOKEN_PREFIX)};"
+            rf"intent=[0-9a-f]{{64}};attempt={int(attempt or 0)};"
+            rf"token={re.escape(str(intent_token or ''))}",
+            token,
+        )
+        is None
+    ):
+        raise ControlError(f"{context} finalizer identity is invalid")
+
+
+def _finalizer_scheduler_observation(
+    snapshot: SchedulerSnapshot,
+    identity: Mapping[str, Any],
+    *,
+    require_active: bool | None,
+    context: str,
+) -> dict[str, Any]:
+    _validate_finalizer_identity(identity, context=context)
+    matching_token = [
+        job for job in snapshot.jobs if job.comment == identity["job_token"]
+    ]
+    same_id = [
+        job for job in snapshot.jobs if job.job_id == str(identity["job_id"])
+    ]
+    if len(matching_token) != 1 or len(same_id) != 1 or matching_token != same_id:
+        raise SchedulerAmbiguity(
+            f"{context} finalizer scheduler identity is absent or ambiguous"
+        )
+    job = matching_token[0]
+    expected_name = f"asys-s5-final-a{int(identity['attempt']):06d}"
+    dependency = identity.get("dependency_job_id")
+    normalized_state = normalize_scheduler_state(job.state)
+    if (
+        job.job_name != expected_name
+        or not _command_binds_exact_sbatch(
+            job.command, str(identity["sbatch_path"])
+        )
+        or (
+            dependency is None
+            and bool(_normalized_scheduler_dependency(job.dependency))
+        )
+        or (
+            dependency is not None
+            and not _dependency_binds_exact_afterany(
+                job.dependency, str(dependency)
+            )
+        )
+        or normalized_state
+        not in ACTIVE_SCHEDULER_STATES | TERMINAL_SCHEDULER_STATES
+        or (require_active is True and normalized_state not in ACTIVE_SCHEDULER_STATES)
+        or (
+            require_active is False
+            and normalized_state not in TERMINAL_SCHEDULER_STATES
+        )
+    ):
+        raise SchedulerAmbiguity(
+            f"{context} finalizer scheduler provenance is invalid"
+        )
+    return {
+        "job_id": job.job_id,
+        "job_name": job.job_name,
+        "state": normalized_state,
+        "comment": job.comment,
+        "command": job.command,
+        "source": job.source,
+        "dependency": job.dependency,
+    }
+
+
+def _finalizer_namespace_active_job_ids(
+    snapshot: SchedulerSnapshot,
+) -> list[str]:
+    scoped = {
+        job.job_id
+        for job in snapshot.jobs
+        if job.active
+        and (
+            job.comment.startswith(FINALIZER_JOB_TOKEN_PREFIX + ";")
+            or job.job_name.startswith("asys-s5-final-")
+        )
+    }
+    malformed = sorted(job_id for job_id in scoped if not job_id.isdigit())
+    if malformed:
+        raise SchedulerAmbiguity(
+            f"autonomous finalizer namespace has malformed job IDs: {malformed}"
+        )
+    return sorted(scoped, key=int)
+
+
+def _require_complete_finalizer_scheduler(
+    snapshot: SchedulerSnapshot, *, operation: str
+) -> None:
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise SchedulerAmbiguity(
+            f"{operation} requires complete squeue+sacct scheduler truth"
+        )
+
+
+def _successor_retirement_root(
+    control: Mapping[str, Any], transaction_id: str
+) -> Path:
+    state_dir = (
+        Path(str(control["immutable"]["results_root"])).expanduser().resolve()
+        / CONTROL_STATE_DIRNAME
+    )
+    finalizer_root = state_dir / FINALIZER_STATE_DIRNAME
+    retirement_root = (
+        finalizer_root / FINALIZER_SUCCESSOR_RETIREMENT_DIRNAME
+    )
+    for path in (finalizer_root, retirement_root):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ControlError(
+                f"finalizer successor-retirement directory is unsafe: {path}"
+            )
+    transaction_root = retirement_root / transaction_id
+    if transaction_root.is_symlink() or (
+        transaction_root.exists() and not transaction_root.is_dir()
+    ):
+        raise ControlError(
+            "finalizer successor-retirement transaction directory is unsafe: "
+            f"{transaction_root}"
+        )
+    return transaction_root
+
+
+def _successor_retirement_intent_identity(
+    control: Mapping[str, Any],
+    *,
+    publisher: Mapping[str, Any],
+    successor: Mapping[str, Any],
+) -> dict[str, Any]:
+    finalization = control["finalization"]
+    payload: dict[str, Any] = {
+        "schema_version": FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION,
+        "protocol": FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL,
+        "kind": "schema5_finalizer_successor_retirement_intent_identity",
+        "release_id": control["immutable"]["release_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "finalization_intent_id": finalization["intent_id"],
+        "publisher": dict(publisher),
+        "successor": dict(successor),
+    }
+    payload["transaction_id"] = sha256_value(payload)
+    return payload
+
+
+def _validate_successor_retirement_intent(
+    control: Mapping[str, Any],
+    intent: Mapping[str, Any],
+    *,
+    binding: Mapping[str, Any],
+) -> None:
+    expected = {
+        "schema_version",
+        "protocol",
+        "kind",
+        "release_id",
+        "immutable_sha256",
+        "finalization_intent_id",
+        "publisher",
+        "successor",
+        "created_at",
+        "created_timestamp",
+        "transaction_id",
+    }
+    timestamp = intent.get("created_timestamp")
+    identity = {
+        key: copy.deepcopy(value)
+        for key, value in intent.items()
+        if key not in {"created_at", "created_timestamp", "transaction_id"}
+    }
+    expected_transaction_id = sha256_value(identity)
+    if (
+        set(intent) != expected
+        or intent.get("schema_version")
+        != FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION
+        or intent.get("protocol") != FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL
+        or intent.get("kind")
+        != "schema5_finalizer_successor_retirement_intent_identity"
+        or intent.get("release_id") != control["immutable"]["release_id"]
+        or intent.get("immutable_sha256") != control["immutable_sha256"]
+        or intent.get("finalization_intent_id")
+        != control["finalization"]["intent_id"]
+        or not isinstance(timestamp, (int, float))
+        or isinstance(timestamp, bool)
+        or not math.isfinite(float(timestamp))
+        or float(timestamp) < 0
+        or intent.get("created_at") != utc_timestamp(float(timestamp))
+        or intent.get("transaction_id") != expected_transaction_id
+        or intent.get("transaction_id") != binding["transaction_id"]
+    ):
+        raise ControlError("finalizer successor-retirement intent is invalid")
+    _validate_finalizer_identity(intent.get("publisher"), context="publisher")
+    _validate_finalizer_identity(intent.get("successor"), context="successor")
+    if (
+        intent["publisher"]["job_token"]
+        != finalizer_job_token(
+            intent_id=str(intent["finalization_intent_id"]),
+            attempt=int(intent["publisher"]["attempt"]),
+            intent_token=str(intent["publisher"]["intent_token"]),
+        )
+        or intent["successor"]["job_token"]
+        != finalizer_job_token(
+            intent_id=str(intent["finalization_intent_id"]),
+            attempt=int(intent["successor"]["attempt"]),
+            intent_token=str(intent["successor"]["intent_token"]),
+        )
+        or
+        intent["publisher"]["identity_id"] != binding["publisher_identity_id"]
+        or intent["successor"]["identity_id"] != binding["successor_identity_id"]
+    ):
+        raise ControlError(
+            "finalizer successor-retirement intent identity binding drifted"
+        )
+
+
+def _validate_successor_retirement_receipt(
+    control: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    *,
+    intent: Mapping[str, Any],
+    binding: Mapping[str, Any],
+) -> None:
+    expected = {
+        "schema_version",
+        "protocol",
+        "kind",
+        "transaction_id",
+        "finalization_intent_id",
+        "immutable_sha256",
+        "intent_sha256",
+        "publisher",
+        "successor",
+        "captured_at",
+        "captured_timestamp",
+        "scheduler_squeue_ok",
+        "scheduler_sacct_ok",
+        "scheduler_errors",
+        "publisher_observation",
+        "successor_observation",
+        "active_finalizer_job_ids",
+        "other_active_finalizer_job_ids",
+        "receipt_id",
+    }
+    without_id = dict(receipt)
+    receipt_id = without_id.pop("receipt_id", None)
+    timestamp = receipt.get("captured_timestamp")
+    publisher_observation = receipt.get("publisher_observation")
+    successor_observation = receipt.get("successor_observation")
+    observation_fields = {
+        "job_id",
+        "job_name",
+        "state",
+        "comment",
+        "command",
+        "source",
+        "dependency",
+    }
+    if (
+        set(receipt) != expected
+        or receipt.get("schema_version")
+        != FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION
+        or receipt.get("protocol") != FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL
+        or receipt.get("kind")
+        != "schema5_finalizer_successor_retirement_complete"
+        or receipt.get("transaction_id") != intent["transaction_id"]
+        or receipt.get("finalization_intent_id")
+        != control["finalization"]["intent_id"]
+        or receipt.get("immutable_sha256") != control["immutable_sha256"]
+        or receipt.get("intent_sha256") != binding["intent_sha256"]
+        or receipt.get("publisher") != intent["publisher"]
+        or receipt.get("successor") != intent["successor"]
+        or not isinstance(timestamp, (int, float))
+        or isinstance(timestamp, bool)
+        or not math.isfinite(float(timestamp))
+        or float(timestamp) < 0
+        or receipt.get("captured_at") != utc_timestamp(float(timestamp))
+        or receipt.get("scheduler_squeue_ok") is not True
+        or receipt.get("scheduler_sacct_ok") is not True
+        or receipt.get("scheduler_errors") != []
+        or not isinstance(publisher_observation, dict)
+        or set(publisher_observation) != observation_fields
+        or not isinstance(successor_observation, dict)
+        or set(successor_observation) != observation_fields
+        or publisher_observation.get("job_id")
+        != intent["publisher"]["job_id"]
+        or publisher_observation.get("comment")
+        != intent["publisher"]["job_token"]
+        or normalize_scheduler_state(
+            str(publisher_observation.get("state", ""))
+        )
+        not in ACTIVE_SCHEDULER_STATES
+        or successor_observation.get("job_id")
+        != intent["successor"]["job_id"]
+        or successor_observation.get("comment")
+        != intent["successor"]["job_token"]
+        or normalize_scheduler_state(
+            str(successor_observation.get("state", ""))
+        )
+        not in TERMINAL_SCHEDULER_STATES
+        or receipt.get("active_finalizer_job_ids")
+        != [intent["publisher"]["job_id"]]
+        or receipt.get("other_active_finalizer_job_ids") != []
+        or receipt_id != sha256_value(without_id)
+        or receipt_id != binding.get("receipt_id")
+    ):
+        raise ControlError(
+            "finalizer successor-retirement completion receipt is invalid"
+        )
+
+
+def _load_sealed_finalizer_artifact(
+    path: Path, *, description: str
+) -> tuple[dict[str, Any], str]:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+    ):
+        raise ControlError(f"{description} is missing, unsafe, or unsealed")
+    return _load_json_object(path, description=description), sha256_file(path)
+
+
+def _verify_successor_retirement_artifacts(
+    control: Mapping[str, Any],
+    binding: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    _validate_successor_retirement_binding(binding)
+    transaction_id = str(binding["transaction_id"])
+    root = _successor_retirement_root(control, transaction_id)
+    intent_path = Path(str(binding["intent_path"])).expanduser().resolve()
+    expected_intent_path = (
+        root / FINALIZER_SUCCESSOR_RETIREMENT_INTENT_FILENAME
+    ).resolve()
+    if intent_path != expected_intent_path:
+        raise ControlError(
+            "finalizer successor-retirement intent path escapes its transaction"
+        )
+    intent, intent_sha256 = _load_sealed_finalizer_artifact(
+        intent_path, description="finalizer successor-retirement intent"
+    )
+    if intent_sha256 != binding["intent_sha256"]:
+        raise ControlError("finalizer successor-retirement intent checksum drifted")
+    _validate_successor_retirement_intent(
+        control, intent, binding=binding
+    )
+    receipt_path_value = binding.get("receipt_path")
+    if receipt_path_value is None:
+        return intent, None
+    receipt_path = Path(str(receipt_path_value)).expanduser().resolve()
+    expected_receipt_path = (
+        root / FINALIZER_SUCCESSOR_RETIREMENT_COMPLETE_FILENAME
+    ).resolve()
+    if receipt_path != expected_receipt_path:
+        raise ControlError(
+            "finalizer successor-retirement receipt path escapes its transaction"
+        )
+    receipt, receipt_sha256 = _load_sealed_finalizer_artifact(
+        receipt_path, description="finalizer successor-retirement receipt"
+    )
+    if receipt_sha256 != binding["receipt_sha256"]:
+        raise ControlError("finalizer successor-retirement receipt checksum drifted")
+    _validate_successor_retirement_receipt(
+        control, receipt, intent=intent, binding=binding
+    )
+    return intent, receipt
+
+
+def _ensure_successor_retirement_intent(
+    state_dir: Path,
+    *,
+    publisher_record: Mapping[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    publisher = _finalizer_job_identity(publisher_record)
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        if finalization["state"] not in ACTIVE_FINALIZATION_STATES:
+            raise ControllerFenced(
+                "successor retirement requires active finalization"
+            )
+        current_publisher = finalization.get("active_job")
+        successor_record = finalization.get("successor_job")
+        if (
+            not isinstance(current_publisher, Mapping)
+            or _finalizer_job_identity(current_publisher) != publisher
+            or current_publisher.get("state") in {"terminal", "cancelled"}
+            or not isinstance(successor_record, Mapping)
+        ):
+            raise ControllerFenced(
+                "successor retirement publisher or successor identity changed"
+            )
+        successor = _finalizer_job_identity(successor_record)
+        identity = _successor_retirement_intent_identity(
+            control, publisher=publisher, successor=successor
+        )
+        transaction_id = str(identity["transaction_id"])
+        root = _successor_retirement_root(control, transaction_id)
+        intent_path = (
+            root / FINALIZER_SUCCESSOR_RETIREMENT_INTENT_FILENAME
+        )
+        root.mkdir(parents=True, exist_ok=True)
+        if root.is_symlink() or not root.is_dir():
+            raise ControlError(
+                "finalizer successor-retirement transaction root is unsafe"
+            )
+        if intent_path.exists():
+            intent, intent_sha256 = _load_sealed_finalizer_artifact(
+                intent_path,
+                description="orphaned finalizer successor-retirement intent",
+            )
+            provisional = {
+                "schema_version": FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION,
+                "protocol": FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL,
+                "transaction_id": transaction_id,
+                "publisher_identity_id": publisher["identity_id"],
+                "successor_identity_id": successor["identity_id"],
+                "intent_path": str(intent_path.resolve()),
+                "intent_sha256": intent_sha256,
+                "receipt_path": None,
+                "receipt_sha256": None,
+                "receipt_id": None,
+            }
+            _validate_successor_retirement_intent(
+                control, intent, binding=provisional
+            )
+        else:
+            intent = {
+                **identity,
+                "created_at": utc_timestamp(now),
+                "created_timestamp": now,
+            }
+            _atomic_write_json(intent_path, intent)
+            intent_path.chmod(0o444)
+            intent_sha256 = sha256_file(intent_path)
+        binding = {
+            "schema_version": FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION,
+            "protocol": FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL,
+            "transaction_id": transaction_id,
+            "publisher_identity_id": publisher["identity_id"],
+            "successor_identity_id": successor["identity_id"],
+            "intent_path": str(intent_path.resolve()),
+            "intent_sha256": intent_sha256,
+            "receipt_path": None,
+            "receipt_sha256": None,
+            "receipt_id": None,
+        }
+        existing = finalization.get("successor_retirement")
+        if existing is not None:
+            _verify_successor_retirement_artifacts(control, existing)
+            if existing["transaction_id"] != transaction_id:
+                raise ControllerFenced(
+                    "a different finalizer successor-retirement transaction is active"
+                )
+            return copy.deepcopy(existing)
+        if successor_record.get("state") in {"terminal", "cancelled"}:
+            raise ControllerFenced(
+                "terminal successor lacks its durable retirement transaction"
+            )
+        finalization["successor_retirement"] = binding
+        _append_finalization_history(
+            finalization,
+            event="successor_retirement_intent",
+            details={
+                "transaction_id": transaction_id,
+                "publisher_job_id": publisher["job_id"],
+                "successor_job_id": successor["job_id"],
+                "intent_sha256": intent_sha256,
+            },
+            now=now,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="finalizer_successor_retirement_intent",
+            details={
+                "transaction_id": transaction_id,
+                "publisher_job_id": publisher["job_id"],
+                "successor_job_id": successor["job_id"],
+            },
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+        return copy.deepcopy(binding)
+
+
+def _retire_autonomous_finalizer_successor(
+    state_dir: Path,
+    *,
+    publisher_record: Mapping[str, Any],
+    scheduler_reader: Callable[[], SchedulerSnapshot],
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ),
+    now: float,
+) -> dict[str, Any]:
+    """Retire one exact after-any successor before final marker publication."""
+
+    binding = _ensure_successor_retirement_intent(
+        state_dir, publisher_record=publisher_record, now=now
+    )
+    control = load_control(state_dir, verify_files=True)
+    intent, receipt = _verify_successor_retirement_artifacts(control, binding)
+    if receipt is not None:
+        return copy.deepcopy(binding)
+    publisher = intent["publisher"]
+    successor = intent["successor"]
+    snapshot = scheduler_reader()
+    _require_complete_finalizer_scheduler(
+        snapshot, operation="finalizer successor retirement"
+    )
+    _finalizer_scheduler_observation(
+        snapshot,
+        publisher,
+        require_active=True,
+        context="publisher",
+    )
+    successor_observation = _finalizer_scheduler_observation(
+        snapshot,
+        successor,
+        require_active=None,
+        context="successor",
+    )
+    allowed_active_ids = {publisher["job_id"], successor["job_id"]}
+    unexpected = sorted(
+        set(_finalizer_namespace_active_job_ids(snapshot)) - allowed_active_ids,
+        key=int,
+    )
+    if unexpected:
+        raise SchedulerAmbiguity(
+            "unmapped autonomous finalizer jobs are active during successor "
+            f"retirement: {unexpected}"
+        )
+    if successor_observation["state"] in ACTIVE_SCHEDULER_STATES:
+        invoke = cancel_runner or _run_subprocess
+        proc = invoke(["scancel", str(successor["job_id"])])
+        post_cancel = scheduler_reader()
+        _require_complete_finalizer_scheduler(
+            post_cancel, operation="finalizer successor cancellation receipt"
+        )
+        _finalizer_scheduler_observation(
+            post_cancel,
+            publisher,
+            require_active=True,
+            context="publisher",
+        )
+        successor_observation = _finalizer_scheduler_observation(
+            post_cancel,
+            successor,
+            require_active=None,
+            context="successor",
+        )
+        snapshot = post_cancel
+        if successor_observation["state"] in ACTIVE_SCHEDULER_STATES:
+            if proc.returncode != 0:
+                raise ControlError(
+                    "scheduler rejected exact finalizer successor cancellation: "
+                    f"rc={proc.returncode}; {proc.stderr.strip()[:500]}"
+                )
+            raise SchedulerVisibilityPending(
+                "finalizer successor cancellation is not terminal in complete "
+                "scheduler truth"
+            )
+    active_finalizers = _finalizer_namespace_active_job_ids(snapshot)
+    if active_finalizers != [publisher["job_id"]]:
+        raise SchedulerAmbiguity(
+            "finalizer successor retirement did not leave exactly its publisher "
+            f"active: {active_finalizers}"
+        )
+    receipt_payload: dict[str, Any] = {
+        "schema_version": FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION,
+        "protocol": FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL,
+        "kind": "schema5_finalizer_successor_retirement_complete",
+        "transaction_id": intent["transaction_id"],
+        "finalization_intent_id": intent["finalization_intent_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "intent_sha256": binding["intent_sha256"],
+        "publisher": publisher,
+        "successor": successor,
+        "captured_at": utc_timestamp(snapshot.captured_at),
+        "captured_timestamp": snapshot.captured_at,
+        "scheduler_squeue_ok": snapshot.squeue_ok,
+        "scheduler_sacct_ok": snapshot.sacct_ok,
+        "scheduler_errors": list(snapshot.errors),
+        "publisher_observation": _finalizer_scheduler_observation(
+            snapshot,
+            publisher,
+            require_active=True,
+            context="publisher",
+        ),
+        "successor_observation": successor_observation,
+        "active_finalizer_job_ids": active_finalizers,
+        "other_active_finalizer_job_ids": [],
+    }
+    receipt_payload["receipt_id"] = sha256_value(receipt_payload)
+    receipt_path = (
+        _successor_retirement_root(control, str(intent["transaction_id"]))
+        / FINALIZER_SUCCESSOR_RETIREMENT_COMPLETE_FILENAME
+    )
+    if receipt_path.exists():
+        existing_receipt, receipt_sha256 = _load_sealed_finalizer_artifact(
+            receipt_path,
+            description="existing finalizer successor-retirement receipt",
+        )
+        provisional = {
+            **binding,
+            "receipt_path": str(receipt_path.resolve()),
+            "receipt_sha256": receipt_sha256,
+            "receipt_id": existing_receipt.get("receipt_id"),
+        }
+        _validate_successor_retirement_receipt(
+            control,
+            existing_receipt,
+            intent=intent,
+            binding=provisional,
+        )
+        receipt_payload = existing_receipt
+    else:
+        _atomic_write_json(receipt_path, receipt_payload)
+        receipt_path.chmod(0o444)
+        receipt_sha256 = sha256_file(receipt_path)
+    completed_binding = {
+        **binding,
+        "receipt_path": str(receipt_path.resolve()),
+        "receipt_sha256": receipt_sha256,
+        "receipt_id": receipt_payload["receipt_id"],
+    }
+    with control_lock(state_dir):
+        updated = load_control(state_dir, verify_files=True)
+        finalization = updated["finalization"]
+        current_binding = finalization.get("successor_retirement")
+        current_publisher = finalization.get("active_job")
+        current_successor = finalization.get("successor_job")
+        if (
+            not isinstance(current_binding, Mapping)
+            or current_binding["transaction_id"] != binding["transaction_id"]
+            or not isinstance(current_publisher, Mapping)
+            or _finalizer_job_identity(current_publisher) != publisher
+            or not isinstance(current_successor, Mapping)
+            or _finalizer_job_identity(current_successor) != successor
+            or finalization["state"] not in ACTIVE_FINALIZATION_STATES
+        ):
+            raise SchedulerAmbiguity(
+                "finalizer identities changed before retirement receipt commit"
+            )
+        finalization["successor_retirement"] = completed_binding
+        current_successor["state"] = (
+            "cancelled"
+            if successor_observation["state"] == "CANCELLED"
+            else "terminal"
+        )
+        _append_finalization_history(
+            finalization,
+            event="successor_retirement_complete",
+            details={
+                "transaction_id": binding["transaction_id"],
+                "receipt_id": receipt_payload["receipt_id"],
+                "receipt_sha256": receipt_sha256,
+                "successor_state": successor_observation["state"],
+            },
+            now=now,
+        )
+        append_transition(
+            state_dir,
+            updated,
+            event="finalizer_successor_retirement_complete",
+            details={
+                "transaction_id": binding["transaction_id"],
+                "receipt_id": receipt_payload["receipt_id"],
+            },
+            now=now,
+        )
+        _save_control(state_dir, updated, now=now)
+    return copy.deepcopy(completed_binding)
+
+
+def _autonomous_finalizer_completion_binding(
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    finalization = control["finalization"]
+    publisher_record = finalization.get("active_job")
+    successor_record = finalization.get("successor_job")
+    retirement = finalization.get("successor_retirement")
+    if (
+        not isinstance(publisher_record, Mapping)
+        or not isinstance(successor_record, Mapping)
+        or successor_record.get("state") not in {"terminal", "cancelled"}
+        or not isinstance(retirement, Mapping)
+        or retirement.get("receipt_path") is None
+    ):
+        raise ControlError(
+            "autonomous finalization lacks terminal successor-retirement proof"
+        )
+    publisher = _finalizer_job_identity(publisher_record)
+    successor = _finalizer_job_identity(successor_record)
+    intent, receipt = _verify_successor_retirement_artifacts(control, retirement)
+    if (
+        receipt is None
+        or intent["publisher"] != publisher
+        or intent["successor"] != successor
+    ):
+        raise ControlError(
+            "autonomous finalizer completion identities do not match retirement"
+        )
+    return {
+        "publisher": publisher,
+        "successor": successor,
+        "successor_retirement": {
+            "transaction_id": retirement["transaction_id"],
+            "receipt_path": retirement["receipt_path"],
+            "receipt_sha256": retirement["receipt_sha256"],
+            "receipt_id": retirement["receipt_id"],
+        },
+    }
+
+
+def _parse_sbatch_job_id(proc: subprocess.CompletedProcess[str]) -> str:
+    if proc.returncode != 0:
+        raise ControlError(
+            f"finalizer sbatch was rejected rc={proc.returncode}: "
+            f"{proc.stderr.strip()[:500]}"
+        )
+    value = proc.stdout.strip().split(";", 1)[0]
+    if not value.isdigit():
+        raise ControlError(
+            f"finalizer sbatch returned an invalid job ID: {proc.stdout!r}"
+        )
+    return value
+
+
+def _submit_finalizer_job(
+    state_dir: Path,
+    *,
+    field: str,
+    attempt: int,
+    dependency_job_id: str | None,
+    snapshot: SchedulerSnapshot,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    if field not in {"active_job", "successor_job"}:
+        raise ControlError("finalizer job field is invalid")
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise SchedulerAmbiguity(
+            "finalizer submission requires complete squeue+sacct truth"
+        )
+    timestamp = snapshot.captured_at if now is None else float(now)
+    runner = submit_runner or _run_subprocess
+    created = False
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        if finalization["state"] not in ACTIVE_FINALIZATION_STATES:
+            raise ControlError("autonomous finalization is not active")
+        record = finalization.get(field)
+        if isinstance(record, dict):
+            matches = _finalizer_scheduler_matches(snapshot, record)
+            if len(matches) > 1:
+                raise SchedulerAmbiguity(
+                    f"finalizer {field} maps to multiple scheduler jobs"
+                )
+            if len(matches) == 1:
+                job = matches[0]
+                if (
+                    record.get("job_id") not in (None, job.job_id)
+                    or not _command_binds_exact_sbatch(
+                        job.command, str(record["sbatch_path"])
+                    )
+                    or (
+                        record.get("dependency_job_id") is None
+                        and bool(_normalized_scheduler_dependency(job.dependency))
+                    )
+                    or (
+                        record.get("dependency_job_id") is not None
+                        and not _dependency_binds_exact_afterany(
+                            job.dependency,
+                            str(record["dependency_job_id"]),
+                        )
+                    )
+                ):
+                    raise SchedulerAmbiguity(
+                        f"finalizer {field} scheduler identity is ambiguous"
+                    )
+                record["job_id"] = job.job_id
+                record["submitted_at"] = utc_timestamp(timestamp)
+                record["submitted_timestamp"] = timestamp
+                record["state"] = (
+                    "submitted" if job.active else "terminal"
+                )
+                _save_control(state_dir, control, now=timestamp)
+                return copy.deepcopy(record)
+            if record.get("job_id") is not None:
+                same_id = [
+                    job
+                    for job in snapshot.jobs
+                    if job.job_id == str(record["job_id"])
+                ]
+                if same_id:
+                    raise SchedulerAmbiguity(
+                        f"finalizer {field} job ID has a token mismatch"
+                    )
+                submitted = record.get("submitted_timestamp")
+                if (
+                    isinstance(submitted, (int, float))
+                    and timestamp - float(submitted)
+                    < SUBMISSION_VISIBILITY_GRACE_SECONDS
+                ):
+                    raise SchedulerVisibilityPending(
+                        f"finalizer {field} is inside scheduler visibility grace"
+                    )
+                raise SchedulerAmbiguity(
+                    f"accepted finalizer {field} disappeared from complete scheduler truth"
+                )
+            age = timestamp - float(record["created_timestamp"])
+            if age < SUBMISSION_VISIBILITY_GRACE_SECONDS:
+                raise SchedulerVisibilityPending(
+                    f"finalizer {field} submission is inside visibility grace"
+                )
+        intent_token = uuid.uuid4().hex
+        intent_id = str(finalization["intent_id"])
+        sbatch_path = _render_finalizer_sbatch(
+            state_dir,
+            control,
+            intent_id=intent_id,
+            attempt=attempt,
+            intent_token=intent_token,
+        )
+        record = {
+            "attempt": attempt,
+            "intent_token": intent_token,
+            "job_token": finalizer_job_token(
+                intent_id=intent_id,
+                attempt=attempt,
+                intent_token=intent_token,
+            ),
+            "sbatch_path": str(sbatch_path),
+            "sbatch_sha256": sha256_file(sbatch_path),
+            "dependency_job_id": dependency_job_id,
+            "job_id": None,
+            "state": "submitting",
+            "created_at": utc_timestamp(timestamp),
+            "created_timestamp": timestamp,
+            "submitted_at": None,
+            "submitted_timestamp": None,
+        }
+        finalization[field] = record
+        _append_finalization_history(
+            finalization,
+            event="job_submission_intent",
+            details={
+                "field": field,
+                "attempt": attempt,
+                "intent_token": intent_token,
+                "dependency_job_id": dependency_job_id,
+            },
+            now=timestamp,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="finalizer_submission_intent",
+            details={
+                "field": field,
+                "attempt": attempt,
+                "intent_token": intent_token,
+                "dependency_job_id": dependency_job_id,
+            },
+            now=timestamp,
+        )
+        _save_control(state_dir, control, now=timestamp)
+        record_copy = copy.deepcopy(record)
+        created = True
+    if not created:
+        raise AssertionError("finalizer submission record was not created")
+    proc = runner(
+        _submit_argv(
+            Path(record_copy["sbatch_path"]),
+            token=str(record_copy["job_token"]),
+            dependency_job_id=dependency_job_id,
+        )
+    )
+    completed_at = time.time() if now is None else timestamp
+    try:
+        job_id = _parse_sbatch_job_id(proc)
+    except ControlError as exc:
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            finalization = control["finalization"]
+            finalization["last_error"] = {
+                "kind": "SchedulerSubmissionError",
+                "message": str(exc)[:2000],
+                "transient": True,
+                "at": utc_timestamp(completed_at),
+                "timestamp": completed_at,
+            }
+            _append_finalization_history(
+                finalization,
+                event="job_submission_rejected",
+                details={"field": field, "attempt": attempt},
+                now=completed_at,
+            )
+            _save_control(state_dir, control, now=completed_at)
+        raise
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        finalization = control["finalization"]
+        current = finalization.get(field)
+        if (
+            not isinstance(current, dict)
+            or current.get("intent_token") != record_copy["intent_token"]
+        ):
+            raise SchedulerAmbiguity(
+                "finalizer submission intent changed during sbatch"
+            )
+        current["job_id"] = job_id
+        current["state"] = "submitted"
+        current["submitted_at"] = utc_timestamp(completed_at)
+        current["submitted_timestamp"] = completed_at
+        finalization["last_error"] = None
+        _append_finalization_history(
+            finalization,
+            event="job_submitted",
+            details={"field": field, "attempt": attempt, "job_id": job_id},
+            now=completed_at,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="finalizer_submitted",
+            details={"field": field, "attempt": attempt, "job_id": job_id},
+            now=completed_at,
+        )
+        _save_control(state_dir, control, now=completed_at)
+        return copy.deepcopy(current)
+
+
+def _finalization_semantic_evidence(
+    state_dir: Path,
+    report_path: Path,
+    report: Mapping[str, Any],
+) -> dict[str, Any]:
+    path = report_path.expanduser().resolve()
+    monitoring_root = (state_dir / "monitoring").resolve()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_mode & 0o222
+        or monitoring_root not in path.parents
+    ):
+        raise ControlError(
+            "autonomous finalization requires sealed monitor semantic evidence"
+        )
+    _validate_final_semantic_report(report)
+    captured = report.get("captured_timestamp")
+    if not isinstance(captured, (int, float)) or isinstance(captured, bool):
+        raise ControlError("final semantic monitor evidence lacks capture time")
+    return {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "captured_timestamp": float(captured),
+    }
+
+
+def request_autonomous_finalization(
+    state_dir: Path,
+    *,
+    semantic_report_path: Path,
+    semantic_report: Mapping[str, Any] | None = None,
+    scheduler: SchedulerSnapshot | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Request finalization, submit its successor chain, then gracefully drain."""
+
+    state_dir = state_dir.expanduser().resolve()
+    timestamp = time.time() if now is None else float(now)
+    if scheduler is not None and scheduler_reader is not None:
+        raise ControlError("finalization accepts scheduler or scheduler_reader, not both")
+    report = (
+        dict(semantic_report)
+        if semantic_report is not None
+        else _load_json_object(
+            semantic_report_path.expanduser().resolve(),
+            description="autonomous finalization semantic report",
+        )
+    )
+    evidence = _finalization_semantic_evidence(
+        state_dir, semantic_report_path, report
+    )
+    with admission_boundary_lock(state_dir):
+        with control_lock(state_dir):
+            control = load_control(state_dir, verify_files=True)
+            finalization = control["finalization"]
+            if finalization["state"] == "complete":
+                return copy.deepcopy(finalization)
+            if finalization["state"] == "blocked":
+                raise ControlError(
+                    "blocked finalization requires scientific-integrity review"
+                )
+            if finalization["state"] != "idle":
+                if finalization["semantic_evidence"] != evidence:
+                    raise ControlError(
+                        "active finalization is bound to different semantic evidence"
+                    )
+            else:
+                manual_marker = (
+                    Path(str(finalization["output_root"]))
+                    / FINAL_COMPLETE_FILENAME
+                )
+                if manual_marker.exists() or manual_marker.is_symlink():
+                    _verify_final_complete(
+                        Path(str(finalization["output_root"])).resolve(),
+                        control=control,
+                    )
+                    return copy.deepcopy(finalization)
+                if control["capacity"]["active_transition"] is not None:
+                    raise ControlError(
+                        "finalization cannot begin during a capacity transition"
+                    )
+                if control["admission_safety_hold"]["active"]:
+                    raise ControlError(
+                        "finalization cannot begin through an admission safety hold"
+                    )
+                intent_payload = {
+                    "release_id": control["immutable"]["release_id"],
+                    "immutable_sha256": control["immutable_sha256"],
+                    "semantic_evidence": evidence,
+                    "requested_timestamp": timestamp,
+                }
+                finalization.update(
+                    {
+                        "state": "requested",
+                        "intent_id": sha256_value(intent_payload),
+                        "requested_at": utc_timestamp(timestamp),
+                        "requested_timestamp": timestamp,
+                        "semantic_evidence": evidence,
+                        "attempts": 0,
+                        "next_attempt": 1,
+                        "active_job": None,
+                        "successor_job": None,
+                        "successor_retirement": None,
+                        "last_error": None,
+                        "completion_marker": None,
+                    }
+                )
+                _append_finalization_history(
+                    finalization,
+                    event="requested",
+                    details={"semantic_evidence": evidence},
+                    now=timestamp,
+                )
+                append_transition(
+                    state_dir,
+                    control,
+                    event="autonomous_finalization_requested",
+                    details={
+                        "intent_id": finalization["intent_id"],
+                        "semantic_evidence": evidence,
+                    },
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+    read_scheduler = scheduler_reader or (
+        lambda: query_scheduler(tolerate_errors=False)
+    )
+    snapshot = scheduler or read_scheduler()
+    active = _submit_finalizer_job(
+        state_dir,
+        field="active_job",
+        attempt=1,
+        dependency_job_id=None,
+        snapshot=snapshot,
+        submit_runner=submit_runner,
+        now=timestamp,
+    )
+    successor_snapshot = read_scheduler() if scheduler is None else SchedulerSnapshot(
+        (
+            *snapshot.jobs,
+            SchedulerJob(
+                str(active["job_id"]),
+                f"asys-s5-final-a{int(active['attempt']):06d}",
+                "PENDING",
+                str(active["job_token"]),
+                str(active["sbatch_path"]),
+            ),
+        ),
+        timestamp,
+        True,
+        True,
+        (),
+    )
+    _submit_finalizer_job(
+        state_dir,
+        field="successor_job",
+        attempt=2,
+        dependency_job_id=str(active["job_id"]),
+        snapshot=successor_snapshot,
+        submit_runner=submit_runner,
+        now=timestamp,
+    )
+    pause_snapshot = read_scheduler() if scheduler is None else snapshot
+    pause_control(
+        state_dir,
+        drain=True,
+        scheduler=pause_snapshot,
+        cancel_runner=cancel_runner,
+        now=timestamp,
+    )
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        finalization = control["finalization"]
+        if finalization["state"] == "requested":
+            finalization["state"] = "draining"
+            finalization["next_attempt"] = 3
+            _append_finalization_history(
+                finalization,
+                event="draining",
+                details={
+                    "active_job_id": active["job_id"],
+                    "successor_job_id": finalization["successor_job"]["job_id"],
+                },
+                now=timestamp,
+            )
+            append_transition(
+                state_dir,
+                control,
+                event="autonomous_finalization_draining",
+                details={"intent_id": finalization["intent_id"]},
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+        return copy.deepcopy(finalization)
+
+
+def _promote_finalizer_successor(
+    state_dir: Path, *, job_id: str, attempt: int, now: float
+) -> dict[str, Any]:
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        if finalization["state"] not in ACTIVE_FINALIZATION_STATES:
+            raise ControllerFenced(
+                "finalizer promotion is fenced after finalization stops"
+            )
+        active = finalization.get("active_job")
+        successor = finalization.get("successor_job")
+        if (
+            isinstance(active, dict)
+            and active.get("job_id") == job_id
+            and active.get("attempt") == attempt
+        ):
+            if active.get("state") in {"terminal", "cancelled"}:
+                raise ControllerFenced(
+                    "terminal finalizer job cannot be replayed as active"
+                )
+            active["state"] = "started"
+            _save_control(state_dir, control, now=now)
+            return copy.deepcopy(active)
+        if (
+            not isinstance(successor, dict)
+            or successor.get("job_id") != job_id
+            or successor.get("attempt") != attempt
+        ):
+            raise ControllerFenced(
+                "finalizer worker does not own the active or successor identity"
+            )
+        if successor.get("state") in {"terminal", "cancelled"}:
+            raise ControllerFenced(
+                "retired finalizer successor cannot be promoted"
+            )
+        retirement = finalization.get("successor_retirement")
+        if isinstance(retirement, Mapping):
+            intent, receipt = _verify_successor_retirement_artifacts(
+                control, retirement
+            )
+            if receipt is not None:
+                raise ControllerFenced(
+                    "successor has a terminal retirement receipt"
+                )
+            if intent["successor"] != _finalizer_job_identity(successor):
+                raise SchedulerAmbiguity(
+                    "successor promotion conflicts with a different retirement "
+                    "transaction"
+                )
+            finalization["successor_retirement"] = None
+            _append_finalization_history(
+                finalization,
+                event="successor_retirement_superseded_by_promotion",
+                details={
+                    "transaction_id": retirement["transaction_id"],
+                    "promoted_job_id": job_id,
+                    "attempt": attempt,
+                },
+                now=now,
+            )
+        if isinstance(active, dict):
+            active["state"] = "terminal"
+        successor["state"] = "started"
+        finalization["active_job"] = successor
+        finalization["successor_job"] = None
+        finalization["next_attempt"] = max(
+            int(finalization["next_attempt"]), attempt + 1
+        )
+        _append_finalization_history(
+            finalization,
+            event="successor_started",
+            details={"job_id": job_id, "attempt": attempt},
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+        return copy.deepcopy(successor)
+
+
+def _reset_finalizer_chain_for_retry(
+    state_dir: Path,
+    *,
+    reason: str,
+    now: float,
+) -> None:
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        if finalization["state"] not in ACTIVE_FINALIZATION_STATES:
+            raise ControllerFenced("finalizer retry reset is no longer authorized")
+        marker_path = (
+            Path(str(finalization["output_root"])) / FINAL_COMPLETE_FILENAME
+        )
+        if marker_path.exists():
+            raise ControlError(
+                "cannot replace a finalizer chain after FINAL_COMPLETE publication"
+            )
+        retirement = finalization.get("successor_retirement")
+        details: dict[str, Any] = {"reason": reason}
+        if isinstance(retirement, Mapping):
+            _verify_successor_retirement_artifacts(control, retirement)
+            details["successor_retirement_transaction_id"] = retirement[
+                "transaction_id"
+            ]
+        for field in ("active_job", "successor_job"):
+            record = finalization.get(field)
+            if isinstance(record, dict):
+                record["state"] = "terminal"
+                details[f"{field}_job_id"] = record.get("job_id")
+        finalization["active_job"] = None
+        finalization["successor_job"] = None
+        finalization["successor_retirement"] = None
+        _append_finalization_history(
+            finalization,
+            event="chain_reset_for_retry",
+            details=details,
+            now=now,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="autonomous_finalizer_chain_reset",
+            details=details,
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+
+
+def _commit_autonomous_finalization_complete(
+    state_dir: Path, *, now: float
+) -> dict[str, Any]:
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        marker_path = (
+            Path(str(finalization["output_root"])) / FINAL_COMPLETE_FILENAME
+        )
+        if finalization["state"] == "complete":
+            verified = _verify_final_complete(
+                Path(str(finalization["output_root"])), control=control
+            )
+            if (
+                finalization["completion_marker"]["sha256"]
+                != sha256_file(marker_path)
+                or finalization["completion_marker"]["final_id"]
+                != verified["final_id"]
+            ):
+                raise ControlError(
+                    "completed finalization control binding drifted"
+                )
+            return copy.deepcopy(finalization)
+        if finalization["state"] not in ACTIVE_FINALIZATION_STATES:
+            raise ControllerFenced(
+                "finalization completion commit is no longer authorized"
+            )
+        _autonomous_finalizer_completion_binding(control)
+        verified = _verify_final_complete(
+            Path(str(finalization["output_root"])), control=control
+        )
+        finalization["state"] = "complete"
+        finalization["completion_marker"] = {
+            "path": str(marker_path.resolve()),
+            "sha256": sha256_file(marker_path),
+            "final_id": str(verified["final_id"]),
+        }
+        finalization["last_error"] = None
+        _append_finalization_history(
+            finalization,
+            event="complete",
+            details={
+                "final_id": verified["final_id"],
+                "successor_retirement_receipt_id": finalization[
+                    "successor_retirement"
+                ]["receipt_id"],
+            },
+            now=now,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="autonomous_finalization_complete",
+            details={
+                "intent_id": finalization["intent_id"],
+                "final_id": verified["final_id"],
+                "successor_retirement_receipt_id": finalization[
+                    "successor_retirement"
+                ]["receipt_id"],
+            },
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+        return copy.deepcopy(finalization)
+
+
+def _finalization_error_is_deterministic(exc: BaseException) -> bool:
+    if isinstance(exc, (ImmutablePinError, ReadinessError, GenerationCatalogError)):
+        return True
+    message = str(exc).lower()
+    transient_fragments = {
+        "scheduler",
+        "squeue",
+        "sacct",
+        "timeout",
+        "timed out",
+        "active cell locks",
+        "fleet retirement pending",
+        "visibility grace",
+        "temporarily",
+        "connection",
+        "node",
+    }
+    if any(fragment in message for fragment in transient_fragments):
+        return False
+    deterministic_fragments = {
+        "semantic",
+        "acceptance",
+        "corrupt",
+        "malformed",
+        "duplicate",
+        "unexpected",
+        "untrusted",
+        "protocol",
+        "contract",
+        "checksum drift",
+        "schema",
+    }
+    return any(fragment in message for fragment in deterministic_fragments)
+
+
+def reconcile_autonomous_finalization(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Idempotently ensure one active finalizer and one after-any successor."""
+
+    timestamp = snapshot.captured_at if now is None else float(now)
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise SchedulerAmbiguity(
+            "finalizer reconciliation requires complete scheduler truth"
+        )
+    current = load_control(state_dir, verify_files=True)
+    finalization = current["finalization"]
+    if finalization["state"] == "complete":
+        publisher_id = finalization["active_job"]["job_id"]
+        active_finalizers = _finalizer_namespace_active_job_ids(snapshot)
+        unexpected = sorted(
+            set(active_finalizers) - {publisher_id}, key=int
+        )
+        successor_id = finalization["successor_job"]["job_id"]
+        if successor_id in active_finalizers or unexpected:
+            raise SchedulerAmbiguity(
+                "completed finalization has an active retired or foreign "
+                f"finalizer: successor={successor_id in active_finalizers}, "
+                f"unexpected={unexpected}"
+            )
+        if publisher_id in active_finalizers:
+            _finalizer_scheduler_observation(
+                snapshot,
+                _finalizer_job_identity(finalization["active_job"]),
+                require_active=True,
+                context="completed publisher",
+            )
+        return _commit_autonomous_finalization_complete(
+            state_dir, now=timestamp
+        )
+    if finalization["state"] in {"idle", "blocked"}:
+        return copy.deepcopy(finalization)
+    active = finalization.get("active_job")
+    successor = finalization.get("successor_job")
+    active_live = (
+        [
+            job
+            for job in _finalizer_scheduler_matches(snapshot, active)
+            if job.active
+        ]
+        if isinstance(active, Mapping)
+        else []
+    )
+    successor_live = (
+        [
+            job
+            for job in _finalizer_scheduler_matches(snapshot, successor)
+            if job.active
+        ]
+        if isinstance(successor, Mapping)
+        else []
+    )
+    if len(active_live) > 1 or len(successor_live) > 1:
+        raise SchedulerAmbiguity("duplicate autonomous finalizer jobs are live")
+    if active_live:
+        _finalizer_scheduler_observation(
+            snapshot,
+            _finalizer_job_identity(active),
+            require_active=True,
+            context="active",
+        )
+    if successor_live:
+        _finalizer_scheduler_observation(
+            snapshot,
+            _finalizer_job_identity(successor),
+            require_active=True,
+            context="successor",
+        )
+    expected_live_ids = {
+        str(record["job_id"])
+        for record in (active, successor)
+        if isinstance(record, Mapping) and record.get("job_id") is not None
+    }
+    unexpected_live = sorted(
+        set(_finalizer_namespace_active_job_ids(snapshot)) - expected_live_ids,
+        key=int,
+    )
+    if unexpected_live:
+        raise SchedulerAmbiguity(
+            f"unmapped autonomous finalizer jobs are live: {unexpected_live}"
+        )
+    retirement = finalization.get("successor_retirement")
+    if isinstance(retirement, Mapping):
+        _, receipt = _verify_successor_retirement_artifacts(
+            current, retirement
+        )
+        marker_path = (
+            Path(str(finalization["output_root"])) / FINAL_COMPLETE_FILENAME
+        )
+        if receipt is not None and marker_path.exists():
+            successor_id = str(successor["job_id"])
+            if successor_live or successor_id in _finalizer_namespace_active_job_ids(
+                snapshot
+            ):
+                raise SchedulerAmbiguity(
+                    "cannot adopt FINAL_COMPLETE while its retired successor is "
+                    "active"
+                )
+            return _commit_autonomous_finalization_complete(
+                state_dir, now=timestamp
+            )
+        if active_live:
+            # The publisher still owns the transaction.  Reconciliation must not
+            # resurrect a successor after its marker-last retirement begins.
+            return copy.deepcopy(finalization)
+        if successor_live:
+            _promote_finalizer_successor(
+                state_dir,
+                job_id=successor_live[0].job_id,
+                attempt=int(successor["attempt"]),
+                now=timestamp,
+            )
+            active = load_control(state_dir)["finalization"]["active_job"]
+            successor = None
+            active_live = successor_live
+            successor_live = []
+        else:
+            _reset_finalizer_chain_for_retry(
+                state_dir,
+                reason=(
+                    "retirement_complete_without_marker"
+                    if receipt is not None
+                    else "retirement_publisher_and_successor_terminal"
+                ),
+                now=timestamp,
+            )
+            latest = load_control(state_dir)["finalization"]
+            active = latest["active_job"]
+            successor = latest["successor_job"]
+            active_live = []
+            successor_live = []
+    if not active_live and successor_live:
+        _promote_finalizer_successor(
+            state_dir,
+            job_id=successor_live[0].job_id,
+            attempt=int(successor["attempt"]),
+            now=timestamp,
+        )
+        active = load_control(state_dir)["finalization"]["active_job"]
+        successor = None
+        active_live = successor_live
+        successor_live = []
+    if not active_live:
+        latest = load_control(state_dir)["finalization"]
+        if latest.get("active_job") is not None:
+            _reset_finalizer_chain_for_retry(
+                state_dir,
+                reason="recorded_finalizer_chain_is_terminal",
+                now=timestamp,
+            )
+            latest = load_control(state_dir)["finalization"]
+        attempt = int(latest["next_attempt"])
+        active = _submit_finalizer_job(
+            state_dir,
+            field="active_job",
+            attempt=attempt,
+            dependency_job_id=None,
+            snapshot=snapshot,
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+        with control_lock(state_dir):
+            updated = load_control(state_dir)
+            updated["finalization"]["next_attempt"] = attempt + 1
+            _save_control(state_dir, updated, now=timestamp)
+        successor = None
+    if not successor_live and successor is None:
+        latest = load_control(state_dir)["finalization"]
+        active = latest["active_job"]
+        attempt = int(latest["next_attempt"])
+        _submit_finalizer_job(
+            state_dir,
+            field="successor_job",
+            attempt=attempt,
+            dependency_job_id=str(active["job_id"]),
+            snapshot=snapshot,
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+        with control_lock(state_dir):
+            updated = load_control(state_dir)
+            updated["finalization"]["next_attempt"] = attempt + 1
+            _save_control(state_dir, updated, now=timestamp)
+    return copy.deepcopy(load_control(state_dir)["finalization"])
+
+
+def run_autonomous_finalizer_worker(
+    state_dir: Path,
+    *,
+    intent_id: str,
+    attempt: int,
+    job_id: str | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    finalize_runner: Callable[..., Mapping[str, Any]] | None = None,
+    now: float | None = None,
+) -> int:
+    """Advance one resumable finalization attempt and preserve its successor."""
+
+    timestamp = time.time() if now is None else float(now)
+    slurm_job_id = job_id or os.environ.get("SLURM_JOB_ID", "")
+    if not slurm_job_id.isdigit():
+        raise ControllerFenced("finalizer worker requires a numeric SLURM_JOB_ID")
+    current = load_control(state_dir, verify_files=True)
+    if current["finalization"].get("intent_id") != intent_id:
+        raise ControllerFenced("finalizer intent ID no longer owns control state")
+    read_scheduler = scheduler_reader or (
+        lambda: query_scheduler(tolerate_errors=False)
+    )
+    if current["finalization"]["state"] == "complete":
+        active = current["finalization"].get("active_job")
+        if (
+            not isinstance(active, Mapping)
+            or active.get("job_id") != slurm_job_id
+            or active.get("attempt") != attempt
+        ):
+            raise ControllerFenced(
+                "completed finalization only accepts its exact publisher replay"
+            )
+        reconcile_autonomous_finalization(
+            state_dir,
+            snapshot=read_scheduler(),
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+        return 0
+    publisher_record = _promote_finalizer_successor(
+        state_dir, job_id=slurm_job_id, attempt=attempt, now=timestamp
+    )
+    snapshot = read_scheduler()
+    try:
+        reconcile_autonomous_finalization(
+            state_dir,
+            snapshot=snapshot,
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            finalization = control["finalization"]
+            finalization["attempts"] = int(finalization["attempts"]) + 1
+            finalization["state"] = (
+                "draining"
+                if control["desired_state"] != "paused"
+                or control.get("drain_requested") is not True
+                else "validating"
+            )
+            finalization["last_error"] = None
+            _append_finalization_history(
+                finalization,
+                event="attempt_started",
+                details={"attempt": attempt, "job_id": slurm_job_id},
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+        runner = finalize_runner or finalize_sweep
+        result = runner(
+            state_dir,
+            output_root=Path(
+                load_control(state_dir)["finalization"]["output_root"]
+            ),
+            scheduler_reader=read_scheduler,
+            cancel_runner=cancel_runner,
+            publisher_finalizer=publisher_record,
+            now=timestamp,
+        )
+        if result.get("complete") is not True:
+            with control_lock(state_dir):
+                control = load_control(state_dir)
+                finalization = control["finalization"]
+                finalization["state"] = (
+                    "retiring_fleet"
+                    if result.get("phase") == "fleet_retirement_pending"
+                    else "snapshotting"
+                )
+                _append_finalization_history(
+                    finalization,
+                    event="attempt_pending",
+                    details={"attempt": attempt, "result": dict(result)},
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+            return 75
+        _commit_autonomous_finalization_complete(state_dir, now=timestamp)
+        return 0
+    except Exception as exc:
+        deterministic = _finalization_error_is_deterministic(exc)
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            finalization = control["finalization"]
+            finalization["last_error"] = {
+                "kind": type(exc).__name__,
+                "message": str(exc)[:2000],
+                "transient": not deterministic,
+                "at": utc_timestamp(timestamp),
+                "timestamp": timestamp,
+            }
+            if deterministic:
+                finalization["state"] = "blocked"
+            _append_finalization_history(
+                finalization,
+                event="blocked" if deterministic else "attempt_failed_transient",
+                details={"attempt": attempt, "error": str(exc)[:2000]},
+                now=timestamp,
+            )
+            append_transition(
+                state_dir,
+                control,
+                event=(
+                    "autonomous_finalization_blocked"
+                    if deterministic
+                    else "autonomous_finalization_retryable"
+                ),
+                details={"attempt": attempt, "error": str(exc)[:2000]},
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+        record_alert(
+            state_dir,
+            kind="finalization-failure",
+            severity="critical",
+            message=f"{type(exc).__name__}: {exc}",
+            dedupe_key=(
+                "finalization:blocked"
+                if deterministic
+                else "finalization:execution"
+            ),
+            send_email=True,
+            now=timestamp,
+        )
+        return 2 if deterministic else 75
+
+
 def set_admission_ceiling(
     state_dir: Path, *, ceiling: int, now: float | None = None
 ) -> dict[str, Any]:
     if ceiling not in ADMISSION_RAMP_STAGES:
-        raise ControlError("schema-5 admission ceiling must be 24, 96, 192, or 384")
+        raise ControlError(
+            "schema-5 admission ceiling must be one of the closed rollout stages "
+            f"{ADMISSION_RAMP_STAGES}"
+        )
     timestamp = time.time() if now is None else float(now)
     with control_lock(state_dir):
         control = load_control(state_dir)
@@ -5243,6 +17870,166 @@ def _active_critical_alerts(control: Mapping[str, Any]) -> list[str]:
         if isinstance(alert, dict)
         and alert.get("resolved_at") is None
         and alert.get("severity") == "critical"
+    )
+
+
+def _active_critical_alerts_from_journal(state_dir: Path) -> list[str]:
+    """Recover critical alert facts durable ahead of ``control.json``.
+
+    Alert raises are fsynced before the control replacement.  A process death in that
+    window must be admission-safe even though the in-memory hold never reached
+    ``control.json``.  Resolution records close the exact alert ID; email journal rows
+    do not affect alert liveness.
+    """
+
+    states: dict[str, dict[str, Any]] = {}
+    common = {"at", "timestamp", "action", "alert_id"}
+    for record in _read_jsonl_locked(
+        state_dir / ALERT_JOURNAL, missing_ok=True
+    ):
+        action = record.get("action")
+        if (
+            not isinstance(record.get("at"), str)
+            or not record["at"]
+            or not isinstance(record.get("timestamp"), (int, float))
+            or isinstance(record.get("timestamp"), bool)
+            or not math.isfinite(float(record["timestamp"]))
+            or float(record["timestamp"]) < 0
+            or not isinstance(record.get("alert_id"), str)
+            or not record["alert_id"]
+        ):
+            raise ControlError("alert journal contains invalid common fields")
+        alert_id = str(record["alert_id"])
+        if action == "raised":
+            dedupe_key = record.get("dedupe_key")
+            severity = record.get("severity")
+            if (
+                set(record)
+                != common
+                | {
+                    "kind",
+                    "severity",
+                    "message",
+                    "dedupe_key",
+                    "occurrences",
+                }
+                or not isinstance(dedupe_key, str)
+                or not dedupe_key
+                or not isinstance(record.get("kind"), str)
+                or not record["kind"]
+                or not isinstance(record.get("message"), str)
+                or not record["message"]
+                or severity not in {"warning", "critical"}
+                or not isinstance(record.get("occurrences"), int)
+                or isinstance(record.get("occurrences"), bool)
+                or record["occurrences"] < 1
+            ):
+                raise ControlError("alert journal contains an invalid raise record")
+            prior = states.get(alert_id)
+            if prior is None:
+                states[alert_id] = {
+                    "dedupe_key": dedupe_key,
+                    "kind": record["kind"],
+                    "severity": severity,
+                    "occurrences": record["occurrences"],
+                    "active": True,
+                    "last_attempt": 0,
+                }
+            elif (
+                prior["dedupe_key"] != dedupe_key
+                or prior["kind"] != record["kind"]
+                or prior["severity"] != severity
+                or prior["active"] is not True
+                or record["occurrences"] != prior["occurrences"] + 1
+            ):
+                raise ControlError(
+                    "alert journal duplicate raise changes alert identity"
+                )
+            else:
+                prior["occurrences"] = record["occurrences"]
+        elif action == "resolved":
+            if set(record) != common | {"dedupe_key"}:
+                raise ControlError(
+                    "alert journal contains an invalid resolution record"
+                )
+            prior = states.get(alert_id)
+            dedupe_key = record.get("dedupe_key")
+            if (
+                prior is None
+                or not isinstance(dedupe_key, str)
+                or dedupe_key != prior["dedupe_key"]
+            ):
+                raise ControlError(
+                    "alert journal resolution does not match a raised alert"
+                )
+            # A retry after journal-ahead/control-behind recovery can allocate a new
+            # alert ID for the same dedupe key.  Resolving that durable incident closes
+            # every earlier active ID for the key, while later raises remain ordered
+            # after this row and become active again.
+            for state in states.values():
+                if state["dedupe_key"] == dedupe_key:
+                    state["active"] = False
+        elif action == "email_attempt_started":
+            if (
+                set(record) != common | {"attempt", "intent_token"}
+                or alert_id not in states
+                or not isinstance(record.get("attempt"), int)
+                or isinstance(record.get("attempt"), bool)
+                or record["attempt"] != states[alert_id]["last_attempt"] + 1
+                or re.fullmatch(r"[0-9a-f]{32}", str(record.get("intent_token", "")))
+                is None
+            ):
+                raise ControlError(
+                    "alert journal contains an invalid email-attempt record"
+                )
+            states[alert_id]["last_attempt"] = record["attempt"]
+        elif action in {"email_delivered", "email_retry_scheduled"}:
+            if (
+                set(record)
+                != common
+                | {
+                    "attempt",
+                    "delivered",
+                    "error",
+                    "next_retry_timestamp",
+                }
+                or alert_id not in states
+                or record.get("attempt") != states[alert_id]["last_attempt"]
+                or not isinstance(record.get("delivered"), bool)
+                or (
+                    record.get("error") is not None
+                    and not isinstance(record.get("error"), str)
+                )
+            ):
+                raise ControlError(
+                    "alert journal contains an invalid email-result record"
+                )
+            retry_at = record.get("next_retry_timestamp")
+            if action == "email_delivered":
+                if record["delivered"] is not True or retry_at is not None:
+                    raise ControlError(
+                        "alert journal delivered email result is inconsistent"
+                    )
+            elif (
+                record["delivered"] is not False
+                or not isinstance(retry_at, (int, float))
+                or isinstance(retry_at, bool)
+                or not math.isfinite(float(retry_at))
+                or float(retry_at) < float(record["timestamp"])
+            ):
+                raise ControlError(
+                    "alert journal retry email result is inconsistent"
+                )
+        else:
+            raise ControlError(
+                f"alert journal contains unknown action {action!r}"
+            )
+    return sorted(
+        {
+            state["dedupe_key"]
+            for state in states.values()
+            if state["active"] is True and state["severity"] == "critical"
+        }
     )
 
 
@@ -5307,6 +18094,7 @@ def _read_admission_ramp_evidence(
         "critical_finding_keys",
         "promotion_blocking_finding_keys",
         "run_validated_qids",
+        "run_useful_qids",
     }
     if not isinstance(observation, dict) or set(observation) != expected_fields:
         raise ControlError("admission ramp observation fields are not exact")
@@ -5353,6 +18141,7 @@ def _read_admission_ramp_evidence(
         if (
             observation.get("semantic_integrity_clean") is not None
             or observation.get("run_validated_qids") is not None
+            or observation.get("run_useful_qids") is not None
         ):
             raise ControlError("health ramp evidence must not claim semantic progress")
     else:
@@ -5360,22 +18149,57 @@ def _read_admission_ramp_evidence(
         runs = semantic.get("runs") if isinstance(semantic, dict) else None
         if not isinstance(runs, dict) or set(runs) != set(REQUIRED_RUNS):
             raise ControlError("semantic ramp evidence does not cover all production runs")
-        qids: dict[str, int] = {}
+        validated_qids: dict[str, int] = {}
+        useful_qids: dict[str, int] = {}
         for run_id in REQUIRED_RUNS:
             outcomes = (
                 runs[run_id].get("outcomes")
                 if isinstance(runs[run_id], dict)
                 else None
             )
-            value = outcomes.get("validated_qids") if isinstance(outcomes, dict) else None
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise ControlError(f"semantic ramp evidence lacks QIDs for {run_id}")
-            qids[run_id] = value
-        if not _valid_run_qid_map(qids) or observation.get("run_validated_qids") != qids:
+            validated = (
+                outcomes.get("validated_qids")
+                if isinstance(outcomes, dict)
+                else None
+            )
+            useful = (
+                outcomes.get("useful_qids")
+                if isinstance(outcomes, dict)
+                else None
+            )
+            if (
+                not isinstance(validated, int)
+                or isinstance(validated, bool)
+                or not isinstance(useful, int)
+                or isinstance(useful, bool)
+            ):
+                raise ControlError(
+                    f"semantic ramp evidence lacks trusted/useful QIDs for {run_id}"
+                )
+            validated_qids[run_id] = validated
+            useful_qids[run_id] = useful
+        if (
+            not _valid_run_qid_map(validated_qids)
+            or observation.get("run_validated_qids") != validated_qids
+        ):
             raise ControlError("semantic ramp per-run validated-QID evidence is invalid")
+        if (
+            not _valid_run_qid_map(useful_qids)
+            or observation.get("run_useful_qids") != useful_qids
+            or any(
+                useful_qids[run_id] > validated_qids[run_id]
+                for run_id in REQUIRED_RUNS
+            )
+        ):
+            raise ControlError("semantic ramp per-run useful-QID evidence is invalid")
         total = semantic.get("outcomes", {}).get("validated_qids")
-        if total != sum(qids.values()):
+        if total != sum(validated_qids.values()):
             raise ControlError("semantic ramp aggregate QIDs disagree with its run totals")
+        useful_total = semantic.get("outcomes", {}).get("useful_qids")
+        if useful_total != sum(useful_qids.values()):
+            raise ControlError(
+                "semantic ramp aggregate useful QIDs disagree with its run totals"
+            )
         if not isinstance(observation.get("semantic_integrity_clean"), bool):
             raise ControlError("semantic ramp integrity evidence must be boolean")
     return report, observation, observed_sha256
@@ -5394,6 +18218,3156 @@ def _ramp_observation_record(
         "run_validated_qids": copy.deepcopy(
             observation.get("run_validated_qids")
         ),
+        "run_useful_qids": copy.deepcopy(observation.get("run_useful_qids")),
+    }
+
+
+def _read_sealed_capacity_json(
+    state_dir: Path,
+    path_value: str | Path,
+    expected_sha256: str,
+    *,
+    description: str,
+) -> tuple[Path, dict[str, Any], str]:
+    path = Path(path_value).expanduser().resolve()
+    root = (state_dir.expanduser().resolve() / "capacity-transitions").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ControlError(
+            f"{description} must be under {root}, found {path}"
+        ) from exc
+    if (
+        Path(path_value).is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+    ):
+        raise ControlError(
+            f"{description} must be a sealed, single-link regular file"
+        )
+    if _SHA256_RE.fullmatch(str(expected_sha256)) is None:
+        raise ControlError(f"{description} SHA-256 is invalid")
+    try:
+        payload = path.read_bytes()
+        observed_sha256 = hashlib.sha256(payload).hexdigest()
+        value = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ControlError(f"cannot read {description} {path}: {exc}") from exc
+    if observed_sha256 != expected_sha256:
+        raise ControlError(
+            f"{description} hash mismatch: expected {expected_sha256}, "
+            f"observed {observed_sha256}"
+        )
+    if not isinstance(value, dict):
+        raise ControlError(f"{description} must be a JSON object")
+    return path, value, observed_sha256
+
+
+def _read_client_capacity_authorization(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    evidence_path: Path,
+    expected_sha256: str,
+    *,
+    attested_timestamp: float,
+) -> dict[str, Any]:
+    """Verify a sealed higher-stage client-placement capacity generation.
+
+    This is deliberately stronger than a self-asserted ``passed`` marker.  The
+    authorization binds three other immutable artifacts: complete scheduler
+    placement/headroom truth, a no-requeue client canary, and post-transition
+    readiness/reconciliation.  All four files are re-hashed before every promotion.
+    """
+
+    path, report, observed_sha256 = _read_sealed_capacity_json(
+        state_dir,
+        evidence_path,
+        expected_sha256,
+        description="client-capacity authorization",
+    )
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "control_immutable_sha256",
+        "capacity_generation",
+        "capacity_contract_sha256",
+        "authorized_cell_ceiling",
+        "partition",
+        "preempt_mode",
+        "nonpreemptible_client_slots",
+        "cpu_limit",
+        "memory_limit_mib",
+        "max_submit_jobs",
+        "qos_limit",
+        "reserve_jobs",
+        "cell_cpus",
+        "cell_memory_mib",
+        "scheduler_evidence",
+        "canary_evidence",
+        "accepted_submission_evidence",
+        "readiness_evidence",
+        "captured_timestamp",
+    }
+    if set(report) != required:
+        raise ControlError("client-capacity authorization fields are not exact")
+    generation = report.get("capacity_generation")
+    authorized_ceiling = report.get("authorized_cell_ceiling")
+    capacity = control.get("capacity")
+    contract = (
+        capacity.get("current_contract")
+        if isinstance(capacity, Mapping)
+        else None
+    )
+    history = capacity.get("history") if isinstance(capacity, Mapping) else None
+    active_transition = (
+        capacity.get("active_transition")
+        if isinstance(capacity, Mapping)
+        else None
+    )
+    completed_generation = bool(
+        isinstance(history, list)
+        and history
+        and history[-1].get("to_generation") == generation
+        and history[-1].get("phase") == "completed"
+    )
+    readiness_pending_generation = bool(
+        isinstance(active_transition, Mapping)
+        and active_transition.get("phase") == "readiness_pending"
+        and active_transition.get("to_generation") == generation
+    )
+    generation_transition = (
+        active_transition
+        if readiness_pending_generation
+        else history[-1]
+        if completed_generation
+        else None
+    )
+    # The authorization is necessarily captured while the transition is in
+    # ``readiness_pending`` so it can gate transition completion.  Completion later
+    # copies that same fleet-launch boundary into history and adds a newer
+    # ``completed_timestamp``.  Comparing against the latter would make immutable
+    # evidence retroactively invalid as a consequence of the very completion it
+    # authorized.
+    generation_ready_timestamp = (
+        generation_transition.get("fleet_launch_completed_timestamp")
+        if isinstance(generation_transition, Mapping)
+        else None
+    )
+    if (
+        report.get("schema_version")
+        != CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION
+        or report.get("protocol") != CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL
+        or report.get("passed") is not True
+        or report.get("control_immutable_sha256")
+        != control.get("immutable_sha256")
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 2
+        or generation != (
+            capacity.get("current_generation")
+            if isinstance(capacity, Mapping)
+            else None
+        )
+        or not isinstance(contract, Mapping)
+        or report.get("capacity_contract_sha256") != contract.get("sha256")
+        or authorized_ceiling not in {192, 384}
+        or report.get("partition") == PRODUCTION_CONTROLLER_PARTITION
+        or not isinstance(report.get("partition"), str)
+        or not report["partition"]
+        or report.get("preempt_mode") != "OFF"
+        or report.get("qos_limit") != DEFAULT_ADMISSION["qos_limit"]
+        or report.get("reserve_jobs") != DEFAULT_ADMISSION["reserve"]
+        or report.get("cell_cpus") != DEFAULT_ADMISSION["cell_cpus"]
+        or report.get("cell_memory_mib") != 4096
+        or not isinstance(report.get("nonpreemptible_client_slots"), int)
+        or isinstance(report.get("nonpreemptible_client_slots"), bool)
+        or report["nonpreemptible_client_slots"] < authorized_ceiling
+        or not isinstance(report.get("cpu_limit"), int)
+        or isinstance(report.get("cpu_limit"), bool)
+        or report["cpu_limit"] < authorized_ceiling
+        or not isinstance(report.get("memory_limit_mib"), int)
+        or isinstance(report.get("memory_limit_mib"), bool)
+        or report["memory_limit_mib"] < authorized_ceiling * 4096
+        or not isinstance(report.get("max_submit_jobs"), int)
+        or isinstance(report.get("max_submit_jobs"), bool)
+        or report["max_submit_jobs"]
+        < authorized_ceiling + DEFAULT_ADMISSION["reserve"]
+        or not isinstance(report.get("captured_timestamp"), (int, float))
+        or isinstance(report.get("captured_timestamp"), bool)
+        or not (completed_generation or readiness_pending_generation)
+        or not isinstance(generation_ready_timestamp, (int, float))
+        or isinstance(generation_ready_timestamp, bool)
+        or float(report["captured_timestamp"])
+        < float(generation_ready_timestamp)
+        or not isinstance(generation_transition, Mapping)
+        or not isinstance(generation_transition.get("transition_id"), str)
+        or not generation_transition.get("transition_id")
+    ):
+        raise ControlError(
+            "client-capacity authorization is not bound to one completed, current "
+            "non-preemptible capacity generation"
+        )
+
+    evidence_reports: dict[str, tuple[Path, dict[str, Any], str]] = {}
+    for name, field in (
+        ("scheduler", "scheduler_evidence"),
+        ("canary", "canary_evidence"),
+        ("accepted_submission", "accepted_submission_evidence"),
+        ("readiness", "readiness_evidence"),
+    ):
+        reference = report.get(field)
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"path", "sha256"}
+            or not isinstance(reference.get("path"), str)
+            or _SHA256_RE.fullmatch(str(reference.get("sha256", ""))) is None
+        ):
+            raise ControlError(
+                f"client-capacity {name} evidence reference is invalid"
+            )
+        evidence_reports[name] = _read_sealed_capacity_json(
+            state_dir,
+            reference["path"],
+            reference["sha256"],
+            description=f"client-capacity {name} evidence",
+        )
+
+    scheduler_report = evidence_reports["scheduler"][1]
+    placement = scheduler_report.get("client_placement")
+    raw_scheduler_contract = scheduler_report.get(
+        "raw_client_capacity_contract"
+    )
+    expected_placement = {
+        "capacity_generation": generation,
+        "partition": report["partition"],
+        "preempt_mode": "OFF",
+        "nonpreemptible_client_slots": report["nonpreemptible_client_slots"],
+        "cpu_limit": report["cpu_limit"],
+        "memory_limit_mib": report["memory_limit_mib"],
+        "max_submit_jobs": report["max_submit_jobs"],
+        "qos_limit": report["qos_limit"],
+        "reserve_jobs": report["reserve_jobs"],
+    }
+    if (
+        set(scheduler_report)
+        != {"passed", "client_placement", "raw_client_capacity_contract"}
+        or
+        scheduler_report.get("passed") is not True
+        or placement != expected_placement
+        or not isinstance(raw_scheduler_contract, Mapping)
+    ):
+        raise ControlError(
+            "client-capacity scheduler evidence does not prove exact placement "
+            "and resource headroom"
+        )
+    try:
+        raw_scheduler_summary = (
+            scheduler_safety.validate_client_capacity_contract(
+                raw_scheduler_contract,
+                expected_partition=str(report["partition"]),
+                expected_cpu_limit=int(report["cpu_limit"]),
+                expected_memory_limit_mib=int(report["memory_limit_mib"]),
+                expected_max_submit_jobs=int(report["max_submit_jobs"]),
+            )
+        )
+    except scheduler_safety.SchedulerSafetyError as exc:
+        raise ControlError(
+            "client-capacity scheduler evidence contains an invalid raw "
+            f"contract: {exc}"
+        ) from exc
+    if (
+        raw_scheduler_summary["partition"] != report["partition"]
+        or raw_scheduler_contract.get("captured_timestamp")
+        != report["captured_timestamp"]
+    ):
+        raise ControlError(
+            "client-capacity authorization capture timestamp is not the "
+            "referenced apply-time scheduler capture"
+        )
+    canary_report = evidence_reports["canary"][1]
+    accepted_submission_report = evidence_reports["accepted_submission"][1]
+    accepted_submission_path = evidence_reports["accepted_submission"][0]
+    accepted_submission_intent = _load_sealed_builder_json(
+        accepted_submission_path.parent / CLIENT_CAPACITY_SUBMISSION_INTENT,
+        description="client-capacity submission intent",
+    )
+    (
+        verified_accepted_path,
+        verified_accepted_report,
+        verified_accepted_sha256,
+    ) = _load_client_capacity_submission_accepted(
+        accepted_submission_path.parent,
+        submission_intent=accepted_submission_intent,
+    )
+    if (
+        canary_report.get("passed") is not True
+        or canary_report.get("capacity_generation") != generation
+        or canary_report.get("authorized_cell_ceiling") != authorized_ceiling
+        or canary_report.get("partition") != report["partition"]
+        or canary_report.get("preempt_mode") != "OFF"
+        or canary_report.get("no_requeue") is not True
+        or canary_report.get("cell_cpus") != 1
+        or canary_report.get("cell_memory_mib") != 4096
+        or accepted_submission_report.get("passed") is not True
+        or accepted_submission_report.get("protocol")
+        != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+        or accepted_submission_report.get("job_id")
+        != canary_report.get("job_id")
+        or accepted_submission_report.get("capacity_generation")
+        != generation
+        or accepted_submission_report.get("target_ceiling")
+        != authorized_ceiling
+        or accepted_submission_report.get("partition") != report["partition"]
+        or accepted_submission_report.get("sbatch_path")
+        != canary_report.get("sbatch_path")
+        or accepted_submission_report.get("sbatch_sha256")
+        != canary_report.get("sbatch_sha256")
+        or verified_accepted_path != accepted_submission_path
+        or verified_accepted_report != accepted_submission_report
+        or verified_accepted_sha256
+        != evidence_reports["accepted_submission"][2]
+    ):
+        raise ControlError(
+            "client-capacity canary evidence is incomplete or inconsistent"
+        )
+    readiness_report = evidence_reports["readiness"][1]
+    readiness_fields = {
+        "passed",
+        "capacity_generation",
+        "scheduler_reconciliation_passed",
+        "fleet_readiness_passed",
+        "client_canary_passed",
+        "control_immutable_sha256",
+        "rollout_generation",
+        "transition_id",
+        "fleet_evidence",
+        "fleet_evidence_sha256",
+        "smoke_evidence",
+        "smoke_evidence_sha256",
+        "scheduler_reconciliation_evidence",
+        "scheduler_reconciliation_evidence_sha256",
+    }
+    if (
+        set(readiness_report) != readiness_fields
+        or
+        readiness_report.get("passed") is not True
+        or readiness_report.get("capacity_generation") != generation
+        or readiness_report.get("scheduler_reconciliation_passed") is not True
+        or readiness_report.get("fleet_readiness_passed") is not True
+        or readiness_report.get("client_canary_passed") is not True
+        or readiness_report.get("control_immutable_sha256")
+        != control.get("immutable_sha256")
+        or readiness_report.get("rollout_generation")
+        != control.get("rollout_generation")
+        or readiness_report.get("transition_id")
+        != generation_transition.get("transition_id")
+    ):
+        raise ControlError(
+            "client-capacity readiness evidence is not bound to the current "
+            "control, rollout, and capacity transition"
+        )
+    readiness = control.get("readiness")
+    if not isinstance(readiness, Mapping):
+        raise ControlError("client-capacity readiness gate state is missing")
+    gate_reference_fields = {
+        "fleet": ("fleet_evidence", "fleet_evidence_sha256"),
+        "smoke_runs": ("smoke_evidence", "smoke_evidence_sha256"),
+        "scheduler_reconciliation": (
+            "scheduler_reconciliation_evidence",
+            "scheduler_reconciliation_evidence_sha256",
+        ),
+    }
+    for gate, (path_field, sha_field) in gate_reference_fields.items():
+        gate_record = readiness.get(gate)
+        report_gate_path = readiness_report.get(path_field)
+        report_gate_sha = readiness_report.get(sha_field)
+        if (
+            not isinstance(gate_record, Mapping)
+            or gate_record.get("passed") is not True
+            or gate_record.get("capacity_generation") != generation
+            or not isinstance(gate_record.get("evidence"), str)
+            or _SHA256_RE.fullmatch(str(gate_record.get("sha256", "")))
+            is None
+            or not isinstance(report_gate_path, str)
+            or _SHA256_RE.fullmatch(str(report_gate_sha or "")) is None
+        ):
+            raise ControlError(
+                f"client-capacity current {gate} readiness record is invalid"
+            )
+        current_gate_path = Path(
+            str(gate_record["evidence"])
+        ).expanduser().resolve()
+        referenced_gate_path = Path(report_gate_path).expanduser().resolve()
+        if (
+            referenced_gate_path != current_gate_path
+            or report_gate_sha != gate_record["sha256"]
+            or current_gate_path.is_symlink()
+            or not current_gate_path.is_file()
+            or current_gate_path.stat().st_nlink != 1
+            or sha256_file(current_gate_path) != report_gate_sha
+        ):
+            raise ControlError(
+                f"client-capacity readiness evidence does not rehash the "
+                f"exact current {gate} gate"
+            )
+
+    record = {
+        "capacity_generation": generation,
+        "authorized_cell_ceiling": authorized_ceiling,
+        "path": str(path),
+        "sha256": observed_sha256,
+        "control_immutable_sha256": str(report["control_immutable_sha256"]),
+        "capacity_contract_sha256": str(report["capacity_contract_sha256"]),
+        "partition": str(report["partition"]),
+        "preempt_mode": "OFF",
+        "nonpreemptible_client_slots": int(
+            report["nonpreemptible_client_slots"]
+        ),
+        "cpu_limit": int(report["cpu_limit"]),
+        "memory_limit_mib": int(report["memory_limit_mib"]),
+        "max_submit_jobs": int(report["max_submit_jobs"]),
+        "scheduler_evidence_sha256": evidence_reports["scheduler"][2],
+        "canary_evidence_sha256": evidence_reports["canary"][2],
+        "accepted_submission_evidence_sha256": evidence_reports[
+            "accepted_submission"
+        ][2],
+        "readiness_evidence_sha256": evidence_reports["readiness"][2],
+        "captured_timestamp": float(report["captured_timestamp"]),
+        "attested_at": utc_timestamp(attested_timestamp),
+        "attested_timestamp": float(attested_timestamp),
+    }
+    _validate_client_capacity_authorization_record(record)
+    return record
+
+
+def _verified_client_capacity_authorization(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    target_ceiling: int,
+    attested_timestamp: float,
+) -> dict[str, Any] | None:
+    if target_ceiling <= PRODUCTION_NONPREEMPTIBLE_CELL_CAP:
+        return None
+    candidates = [
+        record
+        for record in control["admission_ramp"]["client_capacity_authorizations"]
+        if record["capacity_generation"]
+        == control["capacity"]["current_generation"]
+        and record["authorized_cell_ceiling"] >= target_ceiling
+    ]
+    for record in reversed(candidates):
+        verified = _read_client_capacity_authorization(
+            state_dir,
+            control,
+            Path(record["path"]),
+            str(record["sha256"]),
+            attested_timestamp=float(record["attested_timestamp"]),
+        )
+        if verified != record:
+            raise ControlError(
+                "stored client-capacity authorization differs from sealed evidence"
+            )
+        return copy.deepcopy(record)
+    return None
+
+
+def _client_capacity_contract_summary(
+    control: Mapping[str, Any],
+    *,
+    target_ceiling: int,
+    state_dir: Path | None = None,
+    verify_files: bool,
+) -> dict[str, Any]:
+    """Return the exact client placement/resource contract for one staged ceiling."""
+    if (
+        not isinstance(target_ceiling, int)
+        or isinstance(target_ceiling, bool)
+        or target_ceiling < 1
+        or target_ceiling > PRODUCTION_DESIGN_CELL_CAP
+    ):
+        raise ControlError(
+            f"client ceiling {target_ceiling!r} is outside the protected "
+            f"1..{PRODUCTION_DESIGN_CELL_CAP} production design"
+        )
+    immutable = control.get("immutable")
+    if not isinstance(immutable, Mapping):
+        raise ControlError("protected client capacity lacks immutable pins")
+    summary = {
+        "partition": str(immutable["protected_client_partition"]),
+        "qos": str(immutable["protected_client_qos"]),
+        "preempt_mode": "OFF",
+        "cpu_limit": int(immutable["protected_client_cpus"]),
+        "memory_limit_mib": int(
+            immutable["protected_client_memory_mib"]
+        ),
+        "max_submit_jobs": int(
+            immutable["protected_client_submit_headroom"]
+        ),
+        "reserve_jobs": int(
+            immutable["protected_client_reserve_jobs"]
+        ),
+        "nonpreemptible_client_slots": int(
+            immutable["protected_client_slots"]
+        ),
+        "authorized_cell_ceiling": PRODUCTION_DESIGN_CELL_CAP,
+        "capacity_generation": int(
+            control["capacity"]["current_generation"]
+        ),
+        "authorization_sha256": str(
+            immutable["protected_capacity_marker_sha256"]
+        ),
+    }
+    if (
+        summary["nonpreemptible_client_slots"] < target_ceiling
+        or summary["cpu_limit"] < target_ceiling
+        or summary["memory_limit_mib"] < target_ceiling * 4096
+        or summary["reserve_jobs"] < int(DEFAULT_ADMISSION["reserve"])
+        or summary["max_submit_jobs"]
+        < target_ceiling + int(DEFAULT_ADMISSION["reserve"])
+    ):
+        raise ControlError(
+            "immutable protected client capacity cannot sustain the requested "
+            "production ceiling"
+        )
+    if verify_files:
+        if state_dir is None:
+            raise ControlError(
+                "protected client-capacity verification requires the control "
+                "state root"
+            )
+        try:
+            contract = protected_capacity.load_contract(
+                immutable["protected_capacity_marker_path"],
+                expected_release_git_commit=str(immutable["git_commit"]),
+                expected_marker_id=str(
+                    immutable["protected_capacity_marker_id"]
+                ),
+                expected_sha256=str(
+                    immutable["protected_capacity_marker_sha256"]
+                ),
+            )
+            placement = protected_capacity.authorize_client(
+                contract,
+                partition=summary["partition"],
+                qos=summary["qos"],
+                required_slots=PRODUCTION_DESIGN_CELL_CAP,
+                required_reserve_jobs=int(DEFAULT_ADMISSION["reserve"]),
+            )
+        except protected_capacity.ProtectedCapacityError as exc:
+            raise ControlError(
+                f"sealed protected client capacity is invalid: {exc}"
+            ) from exc
+        expected_capacity = {
+            "slots": summary["nonpreemptible_client_slots"],
+            "cpus": summary["cpu_limit"],
+            "memory_mib": summary["memory_limit_mib"],
+            "reserve_jobs": summary["reserve_jobs"],
+            "submit_headroom": summary["max_submit_jobs"],
+        }
+        if dict(placement.capacity) != expected_capacity:
+            raise ControlError(
+                "sealed protected client capacity differs from immutable pins"
+            )
+    return summary
+
+
+def _client_capacity_build_transition(
+    control: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    capacity = control.get("capacity")
+    if not isinstance(capacity, Mapping):
+        raise ControlError("client-capacity build lacks capacity state")
+    generation = capacity.get("current_generation")
+    if not isinstance(generation, int) or generation < 2:
+        raise ControlError(
+            "higher client capacity requires a published capacity generation "
+            "after generation one"
+        )
+    active = capacity.get("active_transition")
+    if (
+        isinstance(active, Mapping)
+        and active.get("phase") == "readiness_pending"
+        and active.get("to_generation") == generation
+    ):
+        return active
+    history = capacity.get("history")
+    if (
+        isinstance(history, list)
+        and history
+        and isinstance(history[-1], Mapping)
+        and history[-1].get("phase") == "completed"
+        and history[-1].get("to_generation") == generation
+    ):
+        return history[-1]
+    raise ControlError(
+        "client-capacity build requires the current readiness-pending or completed "
+        "capacity generation"
+    )
+
+
+def _client_capacity_build_root(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    target_ceiling: int,
+) -> tuple[Path, Mapping[str, Any]]:
+    transition = _client_capacity_build_transition(control)
+    transition_id = transition.get("transition_id")
+    if not isinstance(transition_id, str) or not transition_id:
+        raise ControlError("capacity generation lacks its transition identity")
+    root = (
+        state_dir.expanduser().resolve()
+        / "capacity-transitions"
+        / transition_id
+        / f"client-capacity-{target_ceiling}"
+    )
+    return root, transition
+
+
+def _load_sealed_builder_json(path: Path, *, description: str) -> dict[str, Any]:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+    ):
+        raise ControlError(
+            f"{description} must be a sealed, single-link regular file: {path}"
+        )
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ControlError(f"cannot read {description} {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ControlError(f"{description} must be a JSON object")
+    return value
+
+
+def _write_sealed_builder_json(
+    path: Path, payload: Mapping[str, Any], *, description: str
+) -> None:
+    if path.exists() or path.is_symlink():
+        existing = _load_sealed_builder_json(path, description=description)
+        if existing != dict(payload):
+            raise ControlError(f"{description} conflicts with its durable preimage")
+        return
+    _atomic_write_json(path, payload)
+    path.chmod(0o444)
+
+
+def _client_capacity_canary_sbatch(
+    *,
+    partition: str,
+    target_ceiling: int,
+    capacity_generation: int,
+    intent_token: str,
+    output_path: Path,
+) -> str:
+    comment = (
+        "asys-s5-client-capacity:"
+        f"generation={capacity_generation}:target={target_ceiling}:"
+        f"intent={intent_token}"
+    )
+    return "\n".join(
+        (
+            "#!/bin/bash",
+            f"#SBATCH --job-name=asys-s5-client-cap-g{capacity_generation}-{target_ceiling}",
+            f"#SBATCH --comment={comment}",
+            f"#SBATCH --partition={partition}",
+            "#SBATCH --cpus-per-task=1",
+            "#SBATCH --mem=4G",
+            "#SBATCH --time=00:10:00",
+            "#SBATCH --no-requeue",
+            f"#SBATCH --output={output_path}",
+            "",
+            "set -euo pipefail",
+            "/bin/true",
+            "",
+        )
+    )
+
+
+def _client_capacity_canary_job_name(
+    *, capacity_generation: int, target_ceiling: int
+) -> str:
+    return f"asys-s5-client-cap-g{capacity_generation}-{target_ceiling}"
+
+
+def _client_capacity_canary_comment(
+    *,
+    capacity_generation: int,
+    target_ceiling: int,
+    intent_token: str,
+) -> str:
+    return (
+        "asys-s5-client-capacity:"
+        f"generation={capacity_generation}:target={target_ceiling}:"
+        f"intent={intent_token}"
+    )
+
+
+def _client_capacity_submission_argv(
+    *, sbatch_path: Path, job_comment: str
+) -> list[str]:
+    return [
+        "sbatch",
+        "--parsable",
+        f"--comment={job_comment}",
+        str(sbatch_path.resolve()),
+    ]
+
+
+def _client_capacity_command_matches(
+    command: str,
+    *,
+    sbatch_path: Path,
+    submit_argv: Sequence[str],
+) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if len(tokens) == 1:
+        try:
+            return Path(tokens[0]).expanduser().resolve() == sbatch_path.resolve()
+        except (OSError, RuntimeError):
+            return False
+    return (
+        len(tokens) == len(submit_argv)
+        and Path(tokens[0]).name == "sbatch"
+        and tokens[1:] == list(submit_argv)[1:]
+    )
+
+
+def _client_capacity_submission_scheduler_snapshot(
+    *,
+    scheduler_user: str,
+    job_name: str,
+    job_comment: str,
+    sbatch_path: Path,
+    submit_argv: Sequence[str],
+    runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+    now: float,
+) -> tuple[
+    SchedulerSnapshot,
+    list[SchedulerJob],
+    list[str],
+    dict[str, dict[str, Any]],
+]:
+    """Capture complete, name-scoped squeue+sacct truth for one canary intent."""
+
+    if not scheduler_user or any(
+        character in scheduler_user for character in ("\x00", "\n", "\r")
+    ):
+        raise ControlError("client-capacity scheduler user is unsafe")
+    raw: dict[str, dict[str, Any]] = {}
+
+    def scoped_runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        command = list(argv)
+        if command[0] not in {"squeue", "sacct"}:
+            raise SchedulerAmbiguity(
+                "client-capacity scheduler reconciliation invoked an unexpected "
+                f"command: {command!r}"
+            )
+        command.extend(["--name", job_name])
+        try:
+            process = runner(command)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SchedulerAmbiguity(
+                f"client-capacity {command[0]} query failed: {exc}"
+            ) from exc
+        raw[command[0]] = {
+            "argv": command,
+            "returncode": int(process.returncode),
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "stdout_sha256": hashlib.sha256(
+                process.stdout.encode("utf-8")
+            ).hexdigest(),
+            "stderr_sha256": hashlib.sha256(
+                process.stderr.encode("utf-8")
+            ).hexdigest(),
+        }
+        return process
+
+    try:
+        snapshot = query_scheduler(
+            runner=scoped_runner,
+            user=scheduler_user,
+            now=now,
+            tolerate_errors=False,
+        )
+    except (ControlError, SchedulerAmbiguity) as exc:
+        raise SchedulerAmbiguity(
+            f"client-capacity submission requires complete squeue+sacct truth: {exc}"
+        ) from exc
+    if (
+        not snapshot.squeue_ok
+        or not snapshot.sacct_ok
+        or set(raw) != {"squeue", "sacct"}
+    ):
+        raise SchedulerAmbiguity(
+            "client-capacity submission requires complete squeue+sacct truth"
+        )
+
+    source_candidates: dict[str, list[SchedulerJob]] = {}
+    for source in ("squeue", "sacct"):
+        rows = [
+            job
+            for job in parse_scheduler_rows(raw[source]["stdout"], source=source)
+            if not (source == "sacct" and "." in job.job_id)
+        ]
+        near = [
+            job
+            for job in rows
+            if job.job_name == job_name
+            or job.comment == job_comment
+            or job_comment in job.command
+        ]
+        for job in near:
+            if (
+                job.job_name != job_name
+                or job.comment != job_comment
+                or not job.job_id.isdigit()
+                or not _client_capacity_command_matches(
+                    job.command,
+                    sbatch_path=sbatch_path,
+                    submit_argv=submit_argv,
+                )
+            ):
+                raise SchedulerAmbiguity(
+                    "client-capacity canary scheduler identity is foreign or "
+                    f"drifted: job_id={job.job_id!r} source={source!r}"
+                )
+        if len({job.job_id for job in near}) > 1:
+            raise SchedulerAmbiguity(
+                f"client-capacity canary intent maps to multiple {source} jobs"
+            )
+        source_candidates[source] = near
+        raw[source]["candidate_job_ids"] = [job.job_id for job in near]
+    candidate_ids = {
+        job.job_id
+        for rows in source_candidates.values()
+        for job in rows
+    }
+    if len(candidate_ids) > 1:
+        raise SchedulerAmbiguity(
+            "client-capacity canary intent maps to multiple scheduler jobs: "
+            + ", ".join(sorted(candidate_ids))
+        )
+    candidates = [
+        job for job in snapshot.jobs if job.job_id in candidate_ids
+    ]
+    if len(candidates) != len(candidate_ids):
+        raise SchedulerAmbiguity(
+            "client-capacity joined scheduler truth lost an exact candidate"
+        )
+    candidate_sources = [
+        source for source, rows in source_candidates.items() if rows
+    ]
+    return snapshot, candidates, candidate_sources, raw
+
+
+def _client_capacity_submission_attempts(
+    submission_root: Path,
+    *,
+    submission_intent: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    attempts_root = (
+        submission_root / CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY
+    )
+    if not attempts_root.exists():
+        return []
+    if attempts_root.is_symlink() or not attempts_root.is_dir():
+        raise ControlError(
+            "client-capacity submission attempts root is missing or unsafe"
+        )
+    directories = sorted(attempts_root.iterdir(), key=lambda path: path.name)
+    if any(
+        path.is_symlink()
+        or not path.is_dir()
+        or re.fullmatch(r"[0-9]{6}", path.name) is None
+        for path in directories
+    ):
+        raise ControlError(
+            "client-capacity submission attempts contain an unsafe entry"
+        )
+    attempts: list[dict[str, Any]] = []
+    for ordinal, directory in enumerate(directories, start=1):
+        if directory.name != f"{ordinal:06d}":
+            raise ControlError(
+                "client-capacity submission attempt ordinals are not contiguous"
+            )
+        intent_path = directory / "ATTEMPT_INTENT.json"
+        if not intent_path.exists() and not intent_path.is_symlink():
+            if ordinal == len(directories) and not any(directory.iterdir()):
+                # ``mkdir`` and the marker-first atomic intent publication are two
+                # filesystem boundaries.  A kill between them leaves a harmless,
+                # empty ordinal shell that the next replay completes in place.
+                continue
+            raise ControlError(
+                f"client-capacity submission attempt {ordinal} lacks its intent"
+            )
+        unexpected = {
+            path.name
+            for path in directory.iterdir()
+        } - {
+            "ATTEMPT_INTENT.json",
+            "SBATCH_RESULT.json",
+            "RETRY_AUTHORIZATION.json",
+            "observations",
+        }
+        observations_path = directory / "observations"
+        if unexpected or (
+            observations_path.exists()
+            and (
+                observations_path.is_symlink()
+                or not observations_path.is_dir()
+            )
+        ):
+            raise ControlError(
+                f"client-capacity submission attempt {ordinal} contains "
+                "unexpected or unsafe entries"
+            )
+        attempt = _load_sealed_builder_json(
+            intent_path,
+            description=f"client-capacity submission attempt {ordinal} intent",
+        )
+        expected_fields = {
+            "schema_version",
+            "protocol",
+            "attempt",
+            "submission_intent_sha256",
+            "control_immutable_sha256",
+            "capacity_generation",
+            "rollout_generation",
+            "transition_id",
+            "partition",
+            "target_ceiling",
+            "intent_token",
+            "job_name",
+            "job_comment",
+            "sbatch_path",
+            "sbatch_sha256",
+            "submit_argv",
+            "retry_authorization",
+            "created_at",
+            "created_timestamp",
+        }
+        if (
+            set(attempt) != expected_fields
+            or attempt.get("schema_version") != 1
+            or attempt.get("protocol") != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+            or attempt.get("attempt") != ordinal
+            or attempt.get("submission_intent_sha256")
+            != sha256_file(
+                submission_root / CLIENT_CAPACITY_SUBMISSION_INTENT
+            )
+            or any(
+                attempt.get(field) != submission_intent.get(field)
+                for field in (
+                    "control_immutable_sha256",
+                    "capacity_generation",
+                    "rollout_generation",
+                    "transition_id",
+                    "partition",
+                    "target_ceiling",
+                    "intent_token",
+                    "job_name",
+                    "job_comment",
+                    "sbatch_path",
+                    "sbatch_sha256",
+                    "submit_argv",
+                )
+            )
+            or (
+                ordinal == 1
+                and attempt.get("retry_authorization") is not None
+            )
+            or (
+                ordinal > 1
+                and (
+                    not isinstance(attempt.get("retry_authorization"), dict)
+                    or set(attempt["retry_authorization"])
+                    != {"path", "sha256"}
+                )
+            )
+        ):
+            raise ControlError(
+                f"client-capacity submission attempt {ordinal} intent drifted"
+            )
+        result_path = directory / "SBATCH_RESULT.json"
+        result = (
+            _load_sealed_builder_json(
+                result_path,
+                description=(
+                    f"client-capacity submission attempt {ordinal} result"
+                ),
+            )
+            if result_path.exists() or result_path.is_symlink()
+            else None
+        )
+        if result is not None:
+            required_result = {
+                "schema_version",
+                "protocol",
+                "attempt",
+                "attempt_intent_sha256",
+                "returncode",
+                "stdout",
+                "stderr",
+                "stdout_sha256",
+                "stderr_sha256",
+                "job_id",
+                "outcome",
+                "completed_at",
+                "completed_timestamp",
+            }
+            if (
+                set(result) != required_result
+                or result.get("schema_version") != 1
+                or result.get("protocol")
+                != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+                or result.get("attempt") != ordinal
+                or result.get("attempt_intent_sha256")
+                != sha256_file(intent_path)
+                or not isinstance(result.get("returncode"), int)
+                or not isinstance(result.get("stdout"), str)
+                or not isinstance(result.get("stderr"), str)
+                or hashlib.sha256(
+                    result.get("stdout", "").encode("utf-8")
+                ).hexdigest()
+                != result.get("stdout_sha256")
+                or hashlib.sha256(
+                    result.get("stderr", "").encode("utf-8")
+                ).hexdigest()
+                != result.get("stderr_sha256")
+                or result.get("outcome")
+                not in {"accepted_stdout", "rejected", "ambiguous"}
+                or (
+                    result.get("outcome") == "accepted_stdout"
+                    and result.get("returncode") != 0
+                )
+                or (
+                    result.get("outcome") == "rejected"
+                    and result.get("returncode") == 0
+                )
+                or (
+                    result.get("outcome") == "accepted_stdout"
+                    and (
+                        not isinstance(result.get("job_id"), str)
+                        or not result["job_id"].isdigit()
+                        or result["stdout"].strip().split(";", 1)[0]
+                        != result["job_id"]
+                    )
+                )
+                or (
+                    result.get("outcome") != "accepted_stdout"
+                    and result.get("job_id") is not None
+                )
+            ):
+                raise ControlError(
+                    f"client-capacity submission attempt {ordinal} result drifted"
+                )
+        attempts.append(
+            {
+                "ordinal": ordinal,
+                "directory": directory,
+                "intent_path": intent_path,
+                "intent": attempt,
+                "result_path": result_path,
+                "result": result,
+            }
+        )
+        if ordinal > 1:
+            retry_reference = attempt["retry_authorization"]
+            retry_path = (
+                attempts[-2]["directory"] / "RETRY_AUTHORIZATION.json"
+            ).resolve()
+            if retry_reference != {
+                "path": str(retry_path),
+                "sha256": (
+                    sha256_file(retry_path)
+                    if retry_path.is_file() and not retry_path.is_symlink()
+                    else ""
+                ),
+            }:
+                raise ControlError(
+                    f"client-capacity submission attempt {ordinal} retry "
+                    "authorization reference drifted"
+                )
+            _load_client_capacity_retry_authorization(
+                retry_path,
+                previous_attempt=attempts[-2],
+                to_attempt=ordinal,
+            )
+    return attempts
+
+
+def _record_client_capacity_submission_observation(
+    attempt: Mapping[str, Any],
+    *,
+    raw: Mapping[str, Mapping[str, Any]],
+    candidates: Sequence[SchedulerJob],
+    candidate_sources: Sequence[str],
+    now: float,
+) -> dict[str, Any]:
+    directory = Path(attempt["directory"])
+    observations_root = directory / "observations"
+    observations_root.mkdir(parents=True, exist_ok=True)
+    existing = sorted(observations_root.iterdir(), key=lambda path: path.name)
+    if any(
+        path.is_symlink()
+        or not path.is_dir()
+        or re.fullmatch(r"[0-9]{6}", path.name) is None
+        for path in existing
+    ):
+        raise ControlError(
+            "client-capacity submission observations contain an unsafe entry"
+        )
+    expected_names = [
+        f"{index:06d}" for index in range(1, len(existing) + 1)
+    ]
+    if [path.name for path in existing] != expected_names:
+        raise ControlError(
+            "client-capacity submission observation ordinals are not contiguous"
+        )
+    for path in existing:
+        unexpected = {
+            child.name for child in path.iterdir()
+        } - {
+            "SQUEUE_OBSERVATION.json",
+            "SACCT_OBSERVATION.json",
+            "OBSERVATION_COMPLETE.json",
+        }
+        if unexpected:
+            raise ControlError(
+                "client-capacity submission observation contains unexpected entries"
+            )
+    if existing:
+        partial_root = existing[-1]
+        partial_complete = partial_root / "OBSERVATION_COMPLETE.json"
+        if not partial_complete.exists() and not partial_complete.is_symlink():
+            partial_sources: dict[str, tuple[Path, dict[str, Any]]] = {}
+            for source, filename in (
+                ("squeue", "SQUEUE_OBSERVATION.json"),
+                ("sacct", "SACCT_OBSERVATION.json"),
+            ):
+                source_path = partial_root / filename
+                if not source_path.exists() and not source_path.is_symlink():
+                    continue
+                source_payload = _load_sealed_builder_json(
+                    source_path,
+                    description=(
+                        f"partial client-capacity {source} submission observation"
+                    ),
+                )
+                if (
+                    source_payload.get("schema_version") != 1
+                    or source_payload.get("protocol")
+                    != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+                    or source_payload.get("attempt") != attempt["ordinal"]
+                    or source_payload.get("observation") != len(existing)
+                    or source_payload.get("source") != source
+                    or source_payload.get("complete") is not True
+                    or source_payload.get("returncode") != 0
+                    or not isinstance(
+                        source_payload.get("captured_timestamp"), (int, float)
+                    )
+                    or isinstance(
+                        source_payload.get("captured_timestamp"), bool
+                    )
+                    or not isinstance(
+                        source_payload.get("candidate_job_ids"), list
+                    )
+                    or not isinstance(source_payload.get("stdout"), str)
+                    or not isinstance(source_payload.get("stderr"), str)
+                    or any(
+                        not isinstance(job_id, str) or not job_id.isdigit()
+                        for job_id in source_payload.get(
+                            "candidate_job_ids", []
+                        )
+                    )
+                    or hashlib.sha256(
+                        source_payload.get("stdout", "").encode("utf-8")
+                    ).hexdigest()
+                    != source_payload.get("stdout_sha256")
+                    or hashlib.sha256(
+                        source_payload.get("stderr", "").encode("utf-8")
+                    ).hexdigest()
+                    != source_payload.get("stderr_sha256")
+                ):
+                    raise ControlError(
+                        "partial client-capacity submission observation drifted"
+                    )
+                partial_sources[source] = (source_path, source_payload)
+            partial_candidate_ids = sorted(
+                {
+                    job_id
+                    for _path, payload in partial_sources.values()
+                    for job_id in payload["candidate_job_ids"]
+                }
+            )
+            if len(partial_sources) == 2:
+                timestamps = {
+                    float(payload["captured_timestamp"])
+                    for _path, payload in partial_sources.values()
+                }
+                captured_at = {
+                    payload.get("captured_at")
+                    for _path, payload in partial_sources.values()
+                }
+                if (
+                    len(timestamps) != 1
+                    or len(captured_at) != 1
+                    or len(partial_candidate_ids) > 1
+                ):
+                    raise SchedulerAmbiguity(
+                        "partial client-capacity scheduler source observations "
+                        "cannot be joined unambiguously"
+                    )
+                recovered = {
+                    "schema_version": 1,
+                    "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+                    "attempt": int(attempt["ordinal"]),
+                    "observation": len(existing),
+                    "complete": True,
+                    "captured_at": next(iter(captured_at)),
+                    "captured_timestamp": next(iter(timestamps)),
+                    "candidate_job_ids": partial_candidate_ids,
+                    "candidate_sources": sorted(
+                        source
+                        for source, (_path, payload) in partial_sources.items()
+                        if payload["candidate_job_ids"]
+                    ),
+                    "squeue": {
+                        "path": str(partial_sources["squeue"][0].resolve()),
+                        "sha256": sha256_file(partial_sources["squeue"][0]),
+                    },
+                    "sacct": {
+                        "path": str(partial_sources["sacct"][0].resolve()),
+                        "sha256": sha256_file(partial_sources["sacct"][0]),
+                    },
+                }
+                _write_sealed_builder_json(
+                    partial_complete,
+                    recovered,
+                    description=(
+                        "recovered client-capacity submission observation "
+                        "completion"
+                    ),
+                )
+                verified = _load_client_capacity_submission_observation(
+                    partial_complete,
+                    attempt_ordinal=int(attempt["ordinal"]),
+                )
+                return {
+                    "path": str(partial_complete.resolve()),
+                    "sha256": sha256_file(partial_complete),
+                    "payload": verified,
+                }
+            if partial_candidate_ids:
+                raise SchedulerVisibilityPending(
+                    "a partial durable client-capacity observation contains an "
+                    "exact candidate; retry is forbidden until reconciled"
+                )
+    ordinal = len(existing) + 1
+    observation_root = observations_root / f"{ordinal:06d}"
+    observation_root.mkdir()
+    source_references: dict[str, dict[str, str]] = {}
+    for source, filename in (
+        ("squeue", "SQUEUE_OBSERVATION.json"),
+        ("sacct", "SACCT_OBSERVATION.json"),
+    ):
+        source_payload = {
+            "schema_version": 1,
+            "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+            "attempt": int(attempt["ordinal"]),
+            "observation": ordinal,
+            "source": source,
+            "complete": True,
+            "captured_at": utc_timestamp(now),
+            "captured_timestamp": float(now),
+            **dict(raw[source]),
+        }
+        source_path = observation_root / filename
+        _write_sealed_builder_json(
+            source_path,
+            source_payload,
+            description=f"client-capacity {source} submission observation",
+        )
+        source_references[source] = {
+            "path": str(source_path.resolve()),
+            "sha256": sha256_file(source_path),
+        }
+    complete = {
+        "schema_version": 1,
+        "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "attempt": int(attempt["ordinal"]),
+        "observation": ordinal,
+        "complete": True,
+        "captured_at": utc_timestamp(now),
+        "captured_timestamp": float(now),
+        "candidate_job_ids": [job.job_id for job in candidates],
+        "candidate_sources": sorted(set(candidate_sources)),
+        "squeue": source_references["squeue"],
+        "sacct": source_references["sacct"],
+    }
+    complete_path = observation_root / "OBSERVATION_COMPLETE.json"
+    _write_sealed_builder_json(
+        complete_path,
+        complete,
+        description="client-capacity submission observation completion",
+    )
+    return {
+        "path": str(complete_path.resolve()),
+        "sha256": sha256_file(complete_path),
+        "payload": complete,
+    }
+
+
+def _load_client_capacity_submission_observation(
+    marker: Path,
+    *,
+    attempt_ordinal: int,
+) -> dict[str, Any]:
+    payload = _load_sealed_builder_json(
+        marker,
+        description="client-capacity submission observation completion",
+    )
+    required = {
+        "schema_version",
+        "protocol",
+        "attempt",
+        "observation",
+        "complete",
+        "captured_at",
+        "captured_timestamp",
+        "candidate_job_ids",
+        "candidate_sources",
+        "squeue",
+        "sacct",
+    }
+    if (
+        set(payload) != required
+        or payload.get("schema_version") != 1
+        or payload.get("protocol") != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+        or payload.get("attempt") != attempt_ordinal
+        or not isinstance(payload.get("observation"), int)
+        or isinstance(payload.get("observation"), bool)
+        or payload["observation"] < 1
+        or marker.parent.name != f"{payload['observation']:06d}"
+        or payload.get("complete") is not True
+        or not isinstance(payload.get("captured_at"), str)
+        or not isinstance(payload.get("captured_timestamp"), (int, float))
+        or isinstance(payload.get("captured_timestamp"), bool)
+        or not isinstance(payload.get("candidate_job_ids"), list)
+        or any(
+            not isinstance(job_id, str) or not job_id.isdigit()
+            for job_id in payload.get("candidate_job_ids", [])
+        )
+        or len(payload.get("candidate_job_ids", []))
+        != len(set(payload.get("candidate_job_ids", [])))
+        or not isinstance(payload.get("candidate_sources"), list)
+        or payload.get("candidate_sources")
+        != sorted(set(payload.get("candidate_sources", [])))
+        or any(
+            source not in {"squeue", "sacct"}
+            for source in payload.get("candidate_sources", [])
+        )
+    ):
+        raise ControlError(
+            "client-capacity submission observation completion drifted"
+        )
+    source_job_ids: dict[str, list[str]] = {}
+    for source, filename in (
+        ("squeue", "SQUEUE_OBSERVATION.json"),
+        ("sacct", "SACCT_OBSERVATION.json"),
+    ):
+        reference = payload.get(source)
+        source_path = marker.parent / filename
+        if (
+            not isinstance(reference, dict)
+            or reference
+            != {
+                "path": str(source_path.resolve()),
+                "sha256": (
+                    sha256_file(source_path)
+                    if source_path.is_file() and not source_path.is_symlink()
+                    else ""
+                ),
+            }
+        ):
+            raise ControlError(
+                f"client-capacity submission {source} observation reference drifted"
+            )
+        source_payload = _load_sealed_builder_json(
+            source_path,
+            description=f"client-capacity submission {source} observation",
+        )
+        source_required = {
+            "schema_version",
+            "protocol",
+            "attempt",
+            "observation",
+            "source",
+            "complete",
+            "captured_at",
+            "captured_timestamp",
+            "argv",
+            "returncode",
+            "stdout",
+            "stderr",
+            "stdout_sha256",
+            "stderr_sha256",
+            "candidate_job_ids",
+        }
+        if (
+            set(source_payload) != source_required
+            or source_payload.get("schema_version") != 1
+            or source_payload.get("protocol")
+            != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+            or source_payload.get("attempt") != attempt_ordinal
+            or source_payload.get("observation") != payload["observation"]
+            or source_payload.get("source") != source
+            or source_payload.get("complete") is not True
+            or source_payload.get("captured_timestamp")
+            != payload["captured_timestamp"]
+            or source_payload.get("captured_at") != payload["captured_at"]
+            or source_payload.get("returncode") != 0
+            or not isinstance(source_payload.get("argv"), list)
+            or not source_payload["argv"]
+            or source_payload["argv"][0] != source
+            or not isinstance(source_payload.get("stdout"), str)
+            or not isinstance(source_payload.get("stderr"), str)
+            or hashlib.sha256(
+                source_payload.get("stdout", "").encode("utf-8")
+            ).hexdigest()
+            != source_payload.get("stdout_sha256")
+            or hashlib.sha256(
+                source_payload.get("stderr", "").encode("utf-8")
+            ).hexdigest()
+            != source_payload.get("stderr_sha256")
+            or not isinstance(source_payload.get("candidate_job_ids"), list)
+            or any(
+                not isinstance(job_id, str) or not job_id.isdigit()
+                for job_id in source_payload.get("candidate_job_ids", [])
+            )
+        ):
+            raise ControlError(
+                f"client-capacity submission {source} observation drifted"
+            )
+        source_job_ids[source] = list(source_payload["candidate_job_ids"])
+    observed_ids = sorted(
+        {
+            job_id
+            for job_ids in source_job_ids.values()
+            for job_id in job_ids
+        }
+    )
+    observed_sources = sorted(
+        source for source, job_ids in source_job_ids.items() if job_ids
+    )
+    if (
+        observed_ids != payload["candidate_job_ids"]
+        or observed_sources != payload["candidate_sources"]
+    ):
+        raise ControlError(
+            "client-capacity submission observation source join drifted"
+        )
+    return payload
+
+
+def _load_client_capacity_retry_authorization(
+    path: Path,
+    *,
+    previous_attempt: Mapping[str, Any],
+    to_attempt: int,
+) -> dict[str, Any]:
+    authorization = _load_sealed_builder_json(
+        path,
+        description="client-capacity retry authorization",
+    )
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "from_attempt",
+        "to_attempt",
+        "submission_intent_sha256",
+        "previous_attempt_intent",
+        "previous_result",
+        "absence_observations",
+        "minimum_absence_seconds",
+        "absence_interval_seconds",
+        "authorized_at",
+        "authorized_timestamp",
+    }
+    previous_result = previous_attempt.get("result")
+    expected_result_reference = (
+        {
+            "path": str(previous_attempt["result_path"].resolve()),
+            "sha256": sha256_file(previous_attempt["result_path"]),
+        }
+        if previous_result is not None
+        else None
+    )
+    if (
+        set(authorization) != required
+        or authorization.get("schema_version") != 1
+        or authorization.get("protocol")
+        != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+        or authorization.get("passed") is not True
+        or authorization.get("from_attempt") != previous_attempt["ordinal"]
+        or authorization.get("to_attempt") != to_attempt
+        or authorization.get("submission_intent_sha256")
+        != sha256_file(
+            Path(previous_attempt["directory"]).parent.parent
+            / CLIENT_CAPACITY_SUBMISSION_INTENT
+        )
+        or authorization.get("previous_attempt_intent")
+        != {
+            "path": str(previous_attempt["intent_path"].resolve()),
+            "sha256": sha256_file(previous_attempt["intent_path"]),
+        }
+        or authorization.get("previous_result")
+        != expected_result_reference
+        or not isinstance(authorization.get("absence_observations"), list)
+        or len(authorization["absence_observations"]) != 2
+        or authorization.get("minimum_absence_seconds")
+        != CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS
+        or not isinstance(
+            authorization.get("absence_interval_seconds"), (int, float)
+        )
+        or isinstance(
+            authorization.get("absence_interval_seconds"), bool
+        )
+        or not isinstance(
+            authorization.get("authorized_timestamp"), (int, float)
+        )
+        or isinstance(authorization.get("authorized_timestamp"), bool)
+        or not isinstance(authorization.get("authorized_at"), str)
+        or (
+            isinstance(previous_result, Mapping)
+            and previous_result.get("outcome") == "accepted_stdout"
+        )
+    ):
+        raise ControlError("client-capacity retry authorization drifted")
+
+    observations: list[dict[str, Any]] = []
+    observation_paths: list[Path] = []
+    expected_root = (
+        Path(previous_attempt["directory"]).resolve() / "observations"
+    )
+    if any(
+        record["payload"].get("candidate_job_ids")
+        for record in _client_capacity_submission_observations(
+            previous_attempt
+        )
+    ):
+        raise ControlError(
+            "client-capacity retry is forbidden after any exact candidate "
+            "observation"
+        )
+    for reference in authorization["absence_observations"]:
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"path", "sha256", "captured_timestamp"}
+            or not isinstance(reference.get("path"), str)
+            or _SHA256_RE.fullmatch(str(reference.get("sha256", ""))) is None
+            or not isinstance(reference.get("captured_timestamp"), (int, float))
+            or isinstance(reference.get("captured_timestamp"), bool)
+        ):
+            raise ControlError(
+                "client-capacity retry absence reference drifted"
+            )
+        observation_path = Path(reference["path"]).expanduser().resolve()
+        if (
+            not observation_path.is_relative_to(expected_root)
+            or observation_path.name != "OBSERVATION_COMPLETE.json"
+            or observation_path.is_symlink()
+            or not observation_path.is_file()
+            or observation_path.stat().st_nlink != 1
+            or observation_path.stat().st_mode & 0o222
+            or sha256_file(observation_path) != reference["sha256"]
+        ):
+            raise ControlError(
+                "client-capacity retry absence reference drifted"
+            )
+        observation = _load_client_capacity_submission_observation(
+            observation_path,
+            attempt_ordinal=int(previous_attempt["ordinal"]),
+        )
+        if (
+            observation.get("candidate_job_ids") != []
+            or observation.get("captured_timestamp")
+            != reference["captured_timestamp"]
+        ):
+            raise ControlError(
+                "client-capacity retry observation is not a complete absence"
+            )
+        observation_paths.append(observation_path)
+        observations.append(observation)
+    if observation_paths[0] == observation_paths[1]:
+        raise ControlError(
+            "client-capacity retry repeats one absence observation"
+        )
+    first_timestamp = float(observations[0]["captured_timestamp"])
+    second_timestamp = float(observations[1]["captured_timestamp"])
+    lower_bound = float(previous_attempt["intent"]["created_timestamp"])
+    if previous_result is not None:
+        lower_bound = max(
+            lower_bound,
+            float(previous_result["completed_timestamp"]),
+        )
+    interval = second_timestamp - first_timestamp
+    if (
+        first_timestamp < lower_bound
+        or second_timestamp
+        < lower_bound + CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS
+        or interval < CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS
+        or float(authorization["absence_interval_seconds"]) != interval
+        or float(authorization["authorized_timestamp"]) < second_timestamp
+    ):
+        raise ControlError(
+            "client-capacity retry absence interval is insufficient or drifted"
+        )
+    return authorization
+
+
+def _publish_client_capacity_retry_authorization(
+    previous_attempt: Mapping[str, Any],
+    *,
+    to_attempt: int,
+    submission_intent_path: Path,
+    absence_observations: Sequence[Mapping[str, Any]],
+    now: float,
+) -> dict[str, str]:
+    if len(absence_observations) < 2:
+        raise ControlError(
+            "client-capacity retry lacks two absence observations"
+        )
+    selected = list(absence_observations[-2:])
+    references = [
+        {
+            "path": str(Path(record["path"]).resolve()),
+            "sha256": str(record["sha256"]),
+            "captured_timestamp": float(
+                record["payload"]["captured_timestamp"]
+            ),
+        }
+        for record in selected
+    ]
+    previous_result = previous_attempt.get("result")
+    authorization_path = (
+        Path(previous_attempt["directory"]) / "RETRY_AUTHORIZATION.json"
+    )
+    payload = {
+        "schema_version": 1,
+        "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "passed": True,
+        "from_attempt": int(previous_attempt["ordinal"]),
+        "to_attempt": int(to_attempt),
+        "submission_intent_sha256": sha256_file(submission_intent_path),
+        "previous_attempt_intent": {
+            "path": str(previous_attempt["intent_path"].resolve()),
+            "sha256": sha256_file(previous_attempt["intent_path"]),
+        },
+        "previous_result": (
+            {
+                "path": str(previous_attempt["result_path"].resolve()),
+                "sha256": sha256_file(previous_attempt["result_path"]),
+            }
+            if previous_result is not None
+            else None
+        ),
+        "absence_observations": references,
+        "minimum_absence_seconds": CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS,
+        "absence_interval_seconds": (
+            references[1]["captured_timestamp"]
+            - references[0]["captured_timestamp"]
+        ),
+        "authorized_at": utc_timestamp(now),
+        "authorized_timestamp": float(now),
+    }
+    if authorization_path.exists() or authorization_path.is_symlink():
+        _load_client_capacity_retry_authorization(
+            authorization_path,
+            previous_attempt=previous_attempt,
+            to_attempt=to_attempt,
+        )
+    else:
+        _write_sealed_builder_json(
+            authorization_path,
+            payload,
+            description="client-capacity retry authorization",
+        )
+        _load_client_capacity_retry_authorization(
+            authorization_path,
+            previous_attempt=previous_attempt,
+            to_attempt=to_attempt,
+        )
+    return {
+        "path": str(authorization_path.resolve()),
+        "sha256": sha256_file(authorization_path),
+    }
+
+
+def _client_capacity_submission_observations(
+    attempt: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    observations_root = Path(attempt["directory"]) / "observations"
+    if not observations_root.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for directory in sorted(observations_root.iterdir(), key=lambda path: path.name):
+        if directory.is_symlink() or not directory.is_dir():
+            raise ControlError(
+                "client-capacity submission observation directory is unsafe"
+            )
+        marker = directory / "OBSERVATION_COMPLETE.json"
+        if not marker.exists() and not marker.is_symlink():
+            # A source observation may have been fsynced immediately before a
+            # process kill.  It is sealed history but not an absence proof because
+            # the marker-last join was never published.
+            continue
+        payload = _load_client_capacity_submission_observation(
+            marker,
+            attempt_ordinal=int(attempt["ordinal"]),
+        )
+        records.append(
+            {
+                "path": str(marker.resolve()),
+                "sha256": sha256_file(marker),
+                "payload": payload,
+            }
+        )
+    return records
+
+
+def _client_capacity_absence_observations(
+    attempt: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in _client_capacity_submission_observations(attempt)
+        if record["payload"].get("candidate_job_ids") == []
+    ]
+
+
+def _load_client_capacity_submission_accepted(
+    submission_root: Path,
+    *,
+    submission_intent: Mapping[str, Any],
+) -> tuple[Path, dict[str, Any], str]:
+    path = submission_root / CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    accepted = _load_sealed_builder_json(
+        path, description="client-capacity accepted submission"
+    )
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "job_id",
+        "job_name",
+        "job_comment",
+        "scheduler_user",
+        "control_immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "transition_id",
+        "partition",
+        "target_ceiling",
+        "intent_token",
+        "sbatch_path",
+        "sbatch_sha256",
+        "submit_argv",
+        "submission_intent",
+        "attempt",
+        "scheduler_observation",
+        "scheduler_sources",
+        "accepted_at",
+        "accepted_timestamp",
+    }
+    if (
+        set(accepted) != required
+        or accepted.get("schema_version") != 1
+        or accepted.get("protocol") != CLIENT_CAPACITY_SUBMISSION_PROTOCOL
+        or accepted.get("passed") is not True
+        or not isinstance(accepted.get("job_id"), str)
+        or not accepted["job_id"].isdigit()
+        or any(
+            accepted.get(field) != submission_intent.get(field)
+            for field in (
+                "job_name",
+                "job_comment",
+                "scheduler_user",
+                "control_immutable_sha256",
+                "capacity_generation",
+                "rollout_generation",
+                "transition_id",
+                "partition",
+                "target_ceiling",
+                "intent_token",
+                "sbatch_path",
+                "sbatch_sha256",
+                "submit_argv",
+            )
+        )
+        or accepted.get("submission_intent")
+        != {
+            "path": str(
+                (submission_root / CLIENT_CAPACITY_SUBMISSION_INTENT).resolve()
+            ),
+            "sha256": sha256_file(
+                submission_root / CLIENT_CAPACITY_SUBMISSION_INTENT
+            ),
+        }
+        or not isinstance(accepted.get("attempt"), dict)
+        or set(accepted["attempt"])
+        != {"ordinal", "intent_path", "intent_sha256", "result_path", "result_sha256"}
+        or not isinstance(accepted.get("scheduler_observation"), dict)
+        or set(accepted["scheduler_observation"]) != {"path", "sha256"}
+        or not isinstance(accepted.get("scheduler_sources"), list)
+        or not accepted["scheduler_sources"]
+        or any(
+            source not in {"squeue", "sacct"}
+            for source in accepted["scheduler_sources"]
+        )
+    ):
+        raise ControlError("client-capacity accepted submission drifted")
+    attempts = _client_capacity_submission_attempts(
+        submission_root,
+        submission_intent=submission_intent,
+    )
+    attempt_reference = accepted["attempt"]
+    attempt_ordinal = attempt_reference.get("ordinal")
+    if (
+        not isinstance(attempt_ordinal, int)
+        or isinstance(attempt_ordinal, bool)
+        or attempt_ordinal < 1
+        or attempt_ordinal > len(attempts)
+    ):
+        raise ControlError("client-capacity accepted attempt reference drifted")
+    canonical_attempt = attempts[attempt_ordinal - 1]
+    expected_attempt_reference = {
+        "ordinal": attempt_ordinal,
+        "intent_path": str(canonical_attempt["intent_path"].resolve()),
+        "intent_sha256": sha256_file(canonical_attempt["intent_path"]),
+        "result_path": (
+            str(canonical_attempt["result_path"].resolve())
+            if canonical_attempt["result"] is not None
+            else None
+        ),
+        "result_sha256": (
+            sha256_file(canonical_attempt["result_path"])
+            if canonical_attempt["result"] is not None
+            else None
+        ),
+    }
+    if attempt_reference != expected_attempt_reference:
+        raise ControlError("client-capacity accepted attempt reference drifted")
+    for path_field, sha_field in (
+        ("intent_path", "intent_sha256"),
+        ("result_path", "result_sha256"),
+    ):
+        raw_path = attempt_reference.get(path_field)
+        raw_sha = attempt_reference.get(sha_field)
+        if raw_path is None and raw_sha is None and path_field == "result_path":
+            continue
+        if not isinstance(raw_path, str) or _SHA256_RE.fullmatch(
+            str(raw_sha or "")
+        ) is None:
+            raise ControlError("client-capacity accepted attempt reference drifted")
+        reference_path = Path(raw_path).expanduser().resolve()
+        if (
+            reference_path.is_symlink()
+            or not reference_path.is_file()
+            or reference_path.stat().st_nlink != 1
+            or reference_path.stat().st_mode & 0o222
+            or sha256_file(reference_path) != raw_sha
+        ):
+            raise ControlError("client-capacity accepted attempt reference drifted")
+    observation_reference = accepted["scheduler_observation"]
+    observation_path = Path(
+        observation_reference["path"]
+    ).expanduser().resolve()
+    expected_observations_root = (
+        Path(canonical_attempt["directory"]).resolve() / "observations"
+    )
+    if (
+        not observation_path.is_relative_to(expected_observations_root)
+        or observation_path.name != "OBSERVATION_COMPLETE.json"
+        or observation_path.is_symlink()
+        or not observation_path.is_file()
+        or observation_path.stat().st_nlink != 1
+        or observation_path.stat().st_mode & 0o222
+        or sha256_file(observation_path) != observation_reference["sha256"]
+    ):
+        raise ControlError(
+            "client-capacity accepted scheduler_observation drifted"
+        )
+    observation = _load_client_capacity_submission_observation(
+        observation_path,
+        attempt_ordinal=attempt_ordinal,
+    )
+    if (
+        observation.get("candidate_job_ids") != [accepted["job_id"]]
+        or observation.get("candidate_sources")
+        != accepted["scheduler_sources"]
+    ):
+        raise ControlError(
+            "client-capacity accepted scheduler observation drifted"
+        )
+    return path, accepted, sha256_file(path)
+
+
+def _publish_client_capacity_submission_accepted(
+    *,
+    submission_root: Path,
+    submission_intent_path: Path,
+    submission_intent: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    observation: Mapping[str, Any],
+    job_id: str,
+    now: float,
+) -> dict[str, Any]:
+    result = attempt["result"]
+    if (
+        not job_id.isdigit()
+        or observation["payload"].get("candidate_job_ids") != [job_id]
+        or not observation["payload"].get("candidate_sources")
+        or (
+            isinstance(result, Mapping)
+            and result.get("outcome") == "accepted_stdout"
+            and result.get("job_id") != job_id
+        )
+    ):
+        raise SchedulerAmbiguity(
+            "client-capacity accepted candidate conflicts with its durable "
+            "attempt or scheduler observation"
+        )
+    attempt_reference = {
+        "ordinal": attempt["ordinal"],
+        "intent_path": str(attempt["intent_path"].resolve()),
+        "intent_sha256": sha256_file(attempt["intent_path"]),
+        "result_path": (
+            str(attempt["result_path"].resolve())
+            if result is not None
+            else None
+        ),
+        "result_sha256": (
+            sha256_file(attempt["result_path"])
+            if result is not None
+            else None
+        ),
+    }
+    accepted_path = submission_root / CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+    accepted = {
+        "schema_version": 1,
+        "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+        "passed": True,
+        "job_id": job_id,
+        "job_name": submission_intent["job_name"],
+        "job_comment": submission_intent["job_comment"],
+        "scheduler_user": submission_intent["scheduler_user"],
+        "control_immutable_sha256": submission_intent[
+            "control_immutable_sha256"
+        ],
+        "capacity_generation": submission_intent["capacity_generation"],
+        "rollout_generation": submission_intent["rollout_generation"],
+        "transition_id": submission_intent["transition_id"],
+        "partition": submission_intent["partition"],
+        "target_ceiling": submission_intent["target_ceiling"],
+        "intent_token": submission_intent["intent_token"],
+        "sbatch_path": submission_intent["sbatch_path"],
+        "sbatch_sha256": submission_intent["sbatch_sha256"],
+        "submit_argv": submission_intent["submit_argv"],
+        "submission_intent": {
+            "path": str(submission_intent_path.resolve()),
+            "sha256": sha256_file(submission_intent_path),
+        },
+        "attempt": attempt_reference,
+        "scheduler_observation": {
+            "path": observation["path"],
+            "sha256": observation["sha256"],
+        },
+        "scheduler_sources": list(
+            observation["payload"]["candidate_sources"]
+        ),
+        "accepted_at": utc_timestamp(now),
+        "accepted_timestamp": float(now),
+    }
+    _write_sealed_builder_json(
+        accepted_path,
+        accepted,
+        description="client-capacity accepted submission",
+    )
+    _load_client_capacity_submission_accepted(
+        submission_root,
+        submission_intent=submission_intent,
+    )
+    return {
+        "action": "submit",
+        "state": "adopted",
+        "job_id": job_id,
+        "accepted_submission": str(accepted_path.resolve()),
+        "accepted_submission_sha256": sha256_file(accepted_path),
+    }
+
+
+def _submit_client_capacity_canary(
+    *,
+    root: Path,
+    control: Mapping[str, Any],
+    transition: Mapping[str, Any],
+    partition: str,
+    target_ceiling: int,
+    intent_token: str,
+    sbatch_path: Path,
+    sbatch_sha256: str,
+    scheduler_user: str,
+    scheduler_runner: Callable[
+        [Sequence[str]], subprocess.CompletedProcess[str]
+    ],
+    submit_runner: Callable[
+        [Sequence[str]], subprocess.CompletedProcess[str]
+    ],
+    now: float,
+) -> dict[str, Any]:
+    """Submit or adopt one exact canary after a marker-first scheduler transaction."""
+
+    submission_root = root / CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+    submission_root.mkdir(parents=True, exist_ok=True)
+    with _file_lock(submission_root / ".lock"):
+        unexpected_submission_entries = {
+            path.name for path in submission_root.iterdir()
+        } - {
+            ".lock",
+            CLIENT_CAPACITY_SUBMISSION_INTENT,
+            CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY,
+            CLIENT_CAPACITY_SUBMISSION_ACCEPTED,
+        }
+        if unexpected_submission_entries:
+            raise ControlError(
+                "client-capacity submission root contains unexpected entries"
+            )
+        job_name = _client_capacity_canary_job_name(
+            capacity_generation=int(control["capacity"]["current_generation"]),
+            target_ceiling=target_ceiling,
+        )
+        job_comment = _client_capacity_canary_comment(
+            capacity_generation=int(control["capacity"]["current_generation"]),
+            target_ceiling=target_ceiling,
+            intent_token=intent_token,
+        )
+        submit_argv = _client_capacity_submission_argv(
+            sbatch_path=sbatch_path,
+            job_comment=job_comment,
+        )
+        submission_intent_path = (
+            submission_root / CLIENT_CAPACITY_SUBMISSION_INTENT
+        )
+        proposed_intent = {
+            "schema_version": 1,
+            "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+            "scheduler_user": scheduler_user,
+            "control_immutable_sha256": control["immutable_sha256"],
+            "capacity_generation": int(
+                control["capacity"]["current_generation"]
+            ),
+            "rollout_generation": control["rollout_generation"],
+            "transition_id": transition["transition_id"],
+            "partition": partition,
+            "target_ceiling": target_ceiling,
+            "intent_token": intent_token,
+            "job_name": job_name,
+            "job_comment": job_comment,
+            "sbatch_path": str(sbatch_path.resolve()),
+            "sbatch_sha256": sbatch_sha256,
+            "submit_argv": submit_argv,
+            "created_at": utc_timestamp(now),
+            "created_timestamp": float(now),
+        }
+        if submission_intent_path.exists() or submission_intent_path.is_symlink():
+            submission_intent = _load_sealed_builder_json(
+                submission_intent_path,
+                description="client-capacity submission intent",
+            )
+            stable = set(proposed_intent) - {"created_at", "created_timestamp"}
+            if (
+                set(submission_intent) != set(proposed_intent)
+                or any(
+                    submission_intent.get(field) != proposed_intent[field]
+                    for field in stable
+                )
+            ):
+                raise ControlError("client-capacity submission intent drifted")
+        else:
+            _write_sealed_builder_json(
+                submission_intent_path,
+                proposed_intent,
+                description="client-capacity submission intent",
+            )
+            submission_intent = proposed_intent
+
+        accepted_path = submission_root / CLIENT_CAPACITY_SUBMISSION_ACCEPTED
+        if accepted_path.exists() or accepted_path.is_symlink():
+            path, accepted, accepted_sha = (
+                _load_client_capacity_submission_accepted(
+                    submission_root,
+                    submission_intent=submission_intent,
+                )
+            )
+            return {
+                "action": "submit",
+                "state": "already_submitted",
+                "job_id": accepted["job_id"],
+                "accepted_submission": str(path.resolve()),
+                "accepted_submission_sha256": accepted_sha,
+            }
+
+        attempts = _client_capacity_submission_attempts(
+            submission_root,
+            submission_intent=submission_intent,
+        )
+        _snapshot, candidates, candidate_sources, raw = (
+            _client_capacity_submission_scheduler_snapshot(
+                scheduler_user=scheduler_user,
+                job_name=job_name,
+                job_comment=job_comment,
+                sbatch_path=sbatch_path,
+                submit_argv=submit_argv,
+                runner=scheduler_runner,
+                now=now,
+            )
+        )
+        if candidates and not attempts:
+            raise SchedulerAmbiguity(
+                "client-capacity canary appeared without a marker-first attempt"
+            )
+
+        observation: dict[str, Any] | None = None
+        if attempts:
+            observation = _record_client_capacity_submission_observation(
+                attempts[-1],
+                raw=raw,
+                candidates=candidates,
+                candidate_sources=candidate_sources,
+                now=now,
+            )
+        if candidates:
+            assert observation is not None
+            return _publish_client_capacity_submission_accepted(
+                submission_root=submission_root,
+                submission_intent_path=submission_intent_path,
+                submission_intent=submission_intent,
+                attempt=attempts[-1],
+                observation=observation,
+                job_id=candidates[0].job_id,
+                now=now,
+            )
+
+        previous = attempts[-1] if attempts else None
+        if previous is not None:
+            historical_candidates = [
+                record
+                for record in _client_capacity_submission_observations(
+                    previous
+                )
+                if record["payload"].get("candidate_job_ids")
+            ]
+            historical_job_ids = {
+                job_id
+                for record in historical_candidates
+                for job_id in record["payload"]["candidate_job_ids"]
+            }
+            if len(historical_job_ids) > 1:
+                raise SchedulerAmbiguity(
+                    "client-capacity attempt history contains multiple exact "
+                    "candidate job IDs"
+                )
+            if historical_candidates:
+                historical_job_id = next(iter(historical_job_ids))
+                matching = [
+                    record
+                    for record in historical_candidates
+                    if record["payload"]["candidate_job_ids"]
+                    == [historical_job_id]
+                ]
+                return _publish_client_capacity_submission_accepted(
+                    submission_root=submission_root,
+                    submission_intent_path=submission_intent_path,
+                    submission_intent=submission_intent,
+                    attempt=previous,
+                    observation=matching[0],
+                    job_id=historical_job_id,
+                    now=now,
+                )
+            result = previous["result"]
+            accepted_stdout = (
+                isinstance(result, Mapping)
+                and result.get("outcome") == "accepted_stdout"
+            )
+            ambiguous = result is None or (
+                isinstance(result, Mapping)
+                and result.get("outcome") == "ambiguous"
+            )
+            if accepted_stdout:
+                return {
+                    "action": "submit",
+                    "state": "submission_pending",
+                    "job_id": result["job_id"],
+                    "reason": "accepted sbatch job is not yet visible",
+                }
+            if ambiguous or (
+                isinstance(result, Mapping)
+                and result.get("outcome") == "rejected"
+            ):
+                absences = _client_capacity_absence_observations(previous)
+                enough_absence = (
+                    len(absences) >= 2
+                    and float(
+                        absences[-1]["payload"]["captured_timestamp"]
+                    )
+                    - float(
+                        absences[-2]["payload"]["captured_timestamp"]
+                    )
+                    >= CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS
+                    and float(
+                        absences[-1]["payload"]["captured_timestamp"]
+                    )
+                    >= float(previous["intent"]["created_timestamp"])
+                    + CLIENT_CAPACITY_SUBMISSION_ABSENCE_SECONDS
+                )
+                if not enough_absence:
+                    return {
+                        "action": "submit",
+                        "state": "submission_pending",
+                        "job_id": None,
+                        "reason": (
+                            "ambiguous or rejected sbatch attempt requires two "
+                            "complete absence observations at least 60 seconds apart"
+                        ),
+                    }
+
+        retry_authorization = (
+            _publish_client_capacity_retry_authorization(
+                previous,
+                to_attempt=len(attempts) + 1,
+                submission_intent_path=submission_intent_path,
+                absence_observations=absences,
+                now=now,
+            )
+            if previous is not None
+            else None
+        )
+        attempts_root = (
+            submission_root / CLIENT_CAPACITY_SUBMISSION_ATTEMPTS_DIRECTORY
+        )
+        attempts_root.mkdir(parents=True, exist_ok=True)
+        ordinal = len(attempts) + 1
+        attempt_root = attempts_root / f"{ordinal:06d}"
+        if attempt_root.exists():
+            if (
+                attempt_root.is_symlink()
+                or not attempt_root.is_dir()
+                or any(attempt_root.iterdir())
+            ):
+                raise ControlError(
+                    "client-capacity empty attempt-shell recovery is unsafe"
+                )
+        else:
+            attempt_root.mkdir()
+        attempt_intent_path = attempt_root / "ATTEMPT_INTENT.json"
+        attempt_intent = {
+            "schema_version": 1,
+            "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+            "attempt": ordinal,
+            "submission_intent_sha256": sha256_file(submission_intent_path),
+            "control_immutable_sha256": submission_intent[
+                "control_immutable_sha256"
+            ],
+            "capacity_generation": submission_intent["capacity_generation"],
+            "rollout_generation": submission_intent["rollout_generation"],
+            "transition_id": submission_intent["transition_id"],
+            "partition": submission_intent["partition"],
+            "target_ceiling": submission_intent["target_ceiling"],
+            "intent_token": submission_intent["intent_token"],
+            "job_name": submission_intent["job_name"],
+            "job_comment": submission_intent["job_comment"],
+            "sbatch_path": submission_intent["sbatch_path"],
+            "sbatch_sha256": submission_intent["sbatch_sha256"],
+            "submit_argv": submission_intent["submit_argv"],
+            "retry_authorization": retry_authorization,
+            "created_at": utc_timestamp(now),
+            "created_timestamp": float(now),
+        }
+        _write_sealed_builder_json(
+            attempt_intent_path,
+            attempt_intent,
+            description=f"client-capacity submission attempt {ordinal} intent",
+        )
+        try:
+            process = submit_runner(submit_argv)
+            returncode = int(process.returncode)
+            stdout = process.stdout
+            stderr = process.stderr
+            raw_job_id = stdout.strip().split(";", 1)[0]
+            if returncode == 0 and raw_job_id.isdigit():
+                outcome = "accepted_stdout"
+                job_id: str | None = raw_job_id
+            elif returncode != 0:
+                outcome = "rejected"
+                job_id = None
+            else:
+                outcome = "ambiguous"
+                job_id = None
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            returncode = -1
+            stdout = ""
+            stderr = f"{type(exc).__name__}: {exc}"
+            outcome = "ambiguous"
+            job_id = None
+        result_path = attempt_root / "SBATCH_RESULT.json"
+        result = {
+            "schema_version": 1,
+            "protocol": CLIENT_CAPACITY_SUBMISSION_PROTOCOL,
+            "attempt": ordinal,
+            "attempt_intent_sha256": sha256_file(attempt_intent_path),
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+            "job_id": job_id,
+            "outcome": outcome,
+            "completed_at": utc_timestamp(now),
+            "completed_timestamp": float(now),
+        }
+        _write_sealed_builder_json(
+            result_path,
+            result,
+            description=f"client-capacity submission attempt {ordinal} result",
+        )
+        if outcome == "rejected":
+            return {
+                "action": "submit",
+                "state": "submission_pending",
+                "job_id": None,
+                "reason": "sbatch rejected; retry requires two clean absence observations",
+                "returncode": returncode,
+            }
+        return {
+            "action": "submit",
+            "state": "submission_pending",
+            "job_id": job_id,
+            "reason": "sbatch crossed; replay will adopt through scheduler truth",
+        }
+
+
+def _capture_client_capacity_canary(
+    *,
+    job_id: str,
+    partition: str,
+    target_ceiling: int,
+    capacity_generation: int,
+    sbatch_path: Path,
+    sbatch_sha256: str,
+    expected_job_comment: str,
+    expected_submit_argv: Sequence[str],
+    runner: Callable[
+        [Sequence[str]], subprocess.CompletedProcess[str]
+    ],
+) -> dict[str, Any]:
+    if not job_id.isdigit():
+        raise ControlError("client-capacity canary job ID must be numeric")
+    argv = [
+        "sacct",
+        "-X",
+        "-nP",
+        "-j",
+        job_id,
+        "--format=JobIDRaw,State,Partition,ReqCPUS,ReqMem,ExitCode,SubmitLine",
+    ]
+    process = runner(argv)
+    if process.returncode != 0:
+        raise ControlError(
+            "client-capacity canary sacct query failed: "
+            + process.stderr.strip()[:500]
+        )
+    rows = [row for row in process.stdout.splitlines() if row.strip()]
+    if len(rows) != 1:
+        raise ControlError(
+            "client-capacity canary must have exactly one sacct allocation row"
+        )
+    fields = rows[0].split("|", 6)
+    if len(fields) != 7:
+        raise ControlError("client-capacity canary sacct fields are malformed")
+    observed_job, state, observed_partition, cpus, memory, exit_code, submit_line = (
+        field.strip() for field in fields
+    )
+    try:
+        submit_tokens = shlex.split(submit_line)
+    except ValueError as exc:
+        raise ControlError("client-capacity canary SubmitLine is malformed") from exc
+    submitted_paths = [
+        Path(token).expanduser().resolve()
+        for token in submit_tokens[1:]
+        if not token.startswith("-")
+    ]
+    if (
+        observed_job != job_id
+        or state.split("+", 1)[0] != "COMPLETED"
+        or observed_partition != partition
+        or cpus != "1"
+        or scheduler_safety._parse_memory_mib(  # noqa: SLF001
+            memory, field="client-capacity canary ReqMem"
+        )
+        != 4096
+        or exit_code != "0:0"
+        or not submit_tokens
+        or Path(submit_tokens[0]).name != "sbatch"
+        or _submit_line_comment(submit_line, source="sacct")
+        != expected_job_comment
+        or submit_tokens[1:] != list(expected_submit_argv)[1:]
+        or submitted_paths != [sbatch_path.resolve()]
+        or sha256_file(sbatch_path) != sbatch_sha256
+        or "#SBATCH --no-requeue"
+        not in sbatch_path.read_text(encoding="utf-8").splitlines()
+    ):
+        raise ControlError(
+            "client-capacity canary does not prove the exact completed "
+            "1-CPU/4-GiB/no-requeue placement"
+        )
+    return {
+        "passed": True,
+        "capacity_generation": capacity_generation,
+        "authorized_cell_ceiling": target_ceiling,
+        "partition": partition,
+        "preempt_mode": "OFF",
+        "no_requeue": True,
+        "cell_cpus": 1,
+        "cell_memory_mib": 4096,
+        "job_id": job_id,
+        "sbatch_path": str(sbatch_path.resolve()),
+        "sbatch_sha256": sbatch_sha256,
+        "sacct_argv": argv,
+        "sacct_raw_output": process.stdout,
+        "sacct_raw_output_sha256": hashlib.sha256(
+            process.stdout.encode("utf-8")
+        ).hexdigest(),
+        "submit_line": submit_line,
+    }
+
+
+def build_client_capacity_generation(
+    state_dir: Path,
+    *,
+    action: str,
+    partition: str,
+    target_ceiling: int,
+    scheduler_runner: Callable[..., subprocess.CompletedProcess[str]]
+    | None = None,
+    submission_scheduler_runner: Callable[
+        [Sequence[str]], subprocess.CompletedProcess[str]
+    ]
+    | None = None,
+    submit_runner: Callable[
+        [Sequence[str]], subprocess.CompletedProcess[str]
+    ]
+    | None = None,
+    scheduler_user: str | None = None,
+    command_runner: Callable[
+        [Sequence[str]], subprocess.CompletedProcess[str]
+    ]
+    | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Build marker-last client capacity through one recoverable canary submission."""
+
+    if action not in {"dry-run", "prepare", "submit", "apply"}:
+        raise ControlError(
+            "build-client-capacity action must be dry-run, prepare, submit, or apply"
+        )
+    if target_ceiling not in {192, 384}:
+        raise ControlError("client-capacity target must be 192 or 384")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", partition or "") is None:
+        raise ControlError("client-capacity partition identity is unsafe")
+    timestamp = time.time() if now is None else float(now)
+    command = command_runner or _run_subprocess
+    with capacity_transition_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        root, transition = _client_capacity_build_root(
+            state_dir, control, target_ceiling=target_ceiling
+        )
+        generation = int(control["capacity"]["current_generation"])
+        if (
+            control.get("desired_state") != "paused"
+            or control.get("drain_requested") is not True
+        ):
+            raise ControlError(
+                "client-capacity evidence must be built while production is paused "
+                "and drained"
+            )
+        live_capacity = (
+            scheduler_safety.capture_observed_client_capacity_contract(
+                partition=partition,
+                runner=scheduler_runner,
+                captured_timestamp=timestamp,
+            )
+        )
+        live_summary = scheduler_safety.validate_client_capacity_contract(
+            live_capacity,
+            expected_partition=partition,
+            expected_cpu_limit=int(live_capacity["qos"]["cpu_limit"]),
+            expected_memory_limit_mib=int(
+                live_capacity["qos"]["memory_limit_mib"]
+            ),
+            expected_max_submit_jobs=int(
+                live_capacity["qos"]["max_submit_jobs"]
+            ),
+        )
+        slots = min(
+            int(live_summary["cpu_limit"]),
+            int(live_summary["memory_limit_mib"]) // 4096,
+            int(live_summary["max_submit_jobs"])
+            - int(DEFAULT_ADMISSION["reserve"]),
+        )
+        if slots < target_ceiling:
+            raise ControlError(
+                f"candidate client placement proves only {slots} slots, below "
+                f"target {target_ceiling}"
+            )
+        marker_path = root / CLIENT_CAPACITY_COMPLETE
+        if marker_path.exists():
+            marker_sha = sha256_file(marker_path)
+            record = _read_client_capacity_authorization(
+                state_dir,
+                control,
+                marker_path,
+                marker_sha,
+                attested_timestamp=timestamp,
+            )
+            return {
+                "action": action,
+                "state": "already_complete",
+                "authorization": str(marker_path.resolve()),
+                "sha256": marker_sha,
+                "record": record,
+            }
+        scheduler_preflight_path = (
+            root / CLIENT_CAPACITY_SCHEDULER_PREFLIGHT_EVIDENCE
+        )
+        if action in {"submit", "apply"} and not scheduler_preflight_path.is_file():
+            raise ControlError(
+                f"build-client-capacity {action} requires a completed prepare "
+                "scheduler preflight"
+            )
+
+        intent_token = hashlib.sha256(
+            canonical_json(
+                {
+                    "protocol": CLIENT_CAPACITY_BUILD_PROTOCOL,
+                    "immutable_sha256": control["immutable_sha256"],
+                    "capacity_generation": generation,
+                    "rollout_generation": control["rollout_generation"],
+                    "transition_id": transition["transition_id"],
+                    "partition": partition,
+                    "target_ceiling": target_ceiling,
+                }
+            )
+        ).hexdigest()[:32]
+        sbatch_path = root / CLIENT_CAPACITY_CANARY_SBATCH
+        canary_output = root / "client_capacity_canary_%j.out"
+        sbatch_payload = _client_capacity_canary_sbatch(
+            partition=partition,
+            target_ceiling=target_ceiling,
+            capacity_generation=generation,
+            intent_token=intent_token,
+            output_path=canary_output,
+        )
+        sbatch_sha = hashlib.sha256(sbatch_payload.encode("utf-8")).hexdigest()
+        intent_path = root / CLIENT_CAPACITY_BUILD_INTENT
+        intent = {
+            "schema_version": 1,
+            "protocol": CLIENT_CAPACITY_BUILD_PROTOCOL,
+            "intent_token": intent_token,
+            "control_immutable_sha256": control["immutable_sha256"],
+            "capacity_generation": generation,
+            "rollout_generation": control["rollout_generation"],
+            "transition_id": transition["transition_id"],
+            "partition": partition,
+            "target_ceiling": target_ceiling,
+            "sbatch_path": str(sbatch_path.resolve()),
+            "sbatch_sha256": sbatch_sha,
+            "created_at": utc_timestamp(timestamp),
+            "created_timestamp": timestamp,
+        }
+        if action == "dry-run":
+            return {
+                "action": action,
+                "would_change": True,
+                "intent": intent,
+                "live_client_capacity": live_summary,
+                "nonpreemptible_client_slots": slots,
+                "next_action": "prepare",
+            }
+
+        root.mkdir(parents=True, exist_ok=True)
+        if intent_path.exists():
+            stored_intent = _load_sealed_builder_json(
+                intent_path, description="client-capacity build intent"
+            )
+            stable_fields = set(intent) - {"created_at", "created_timestamp"}
+            if any(stored_intent.get(key) != intent[key] for key in stable_fields):
+                raise ControlError(
+                    "client-capacity build intent conflicts with this generation"
+                )
+            intent = stored_intent
+        else:
+            _write_sealed_builder_json(
+                intent_path,
+                intent,
+                description="client-capacity build intent",
+            )
+        if sbatch_path.exists():
+            if (
+                sbatch_path.is_symlink()
+                or sbatch_path.stat().st_mode & 0o222
+                or sbatch_path.read_text(encoding="utf-8") != sbatch_payload
+                or sha256_file(sbatch_path) != sbatch_sha
+            ):
+                raise ControlError("client-capacity canary sbatch drifted")
+        else:
+            io.atomic_write_text(sbatch_path, sbatch_payload)
+            sbatch_path.chmod(0o444)
+
+        scheduler_payload = {
+            "passed": True,
+            "client_placement": {
+                "capacity_generation": generation,
+                "partition": partition,
+                "preempt_mode": "OFF",
+                "nonpreemptible_client_slots": slots,
+                "cpu_limit": int(live_summary["cpu_limit"]),
+                "memory_limit_mib": int(live_summary["memory_limit_mib"]),
+                "max_submit_jobs": int(live_summary["max_submit_jobs"]),
+                "qos_limit": int(DEFAULT_ADMISSION["qos_limit"]),
+                "reserve_jobs": int(DEFAULT_ADMISSION["reserve"]),
+            },
+            "raw_client_capacity_contract": live_capacity,
+        }
+        stable_scheduler_fields = (
+            "partition",
+            "cpu_limit",
+            "memory_limit_mib",
+            "max_submit_jobs",
+            "scheduler_policy_contract_id",
+        )
+
+        def validate_stored_scheduler(
+            stored_scheduler: Mapping[str, Any], *, description: str
+        ) -> Mapping[str, Any]:
+            if set(stored_scheduler) != {
+                "passed",
+                "client_placement",
+                "raw_client_capacity_contract",
+            }:
+                raise ControlError(f"{description} fields are not exact")
+            stored_raw = stored_scheduler.get(
+                "raw_client_capacity_contract"
+            )
+            if not isinstance(stored_raw, Mapping):
+                raise ControlError(f"{description} is malformed")
+            try:
+                stored_summary = (
+                    scheduler_safety.validate_client_capacity_contract(
+                        stored_raw,
+                        expected_partition=partition,
+                        expected_cpu_limit=int(live_summary["cpu_limit"]),
+                        expected_memory_limit_mib=int(
+                            live_summary["memory_limit_mib"]
+                        ),
+                        expected_max_submit_jobs=int(
+                            live_summary["max_submit_jobs"]
+                        ),
+                    )
+                )
+            except scheduler_safety.SchedulerSafetyError as exc:
+                raise ControlError(
+                    f"{description} raw contract is invalid: {exc}"
+                ) from exc
+            if (
+                stored_scheduler.get("passed") is not True
+                or stored_scheduler.get("client_placement")
+                != scheduler_payload["client_placement"]
+                or any(
+                    stored_summary[field] != live_summary[field]
+                    for field in stable_scheduler_fields
+                )
+            ):
+                raise ControlError(f"{description} drifted")
+            return stored_raw
+
+        if scheduler_preflight_path.exists():
+            preflight_scheduler = _load_sealed_builder_json(
+                scheduler_preflight_path,
+                description="client-capacity scheduler preflight",
+            )
+            validate_stored_scheduler(
+                preflight_scheduler,
+                description="stored client-capacity scheduler preflight",
+            )
+        elif action == "prepare":
+            _write_sealed_builder_json(
+                scheduler_preflight_path,
+                scheduler_payload,
+                description="client-capacity scheduler preflight",
+            )
+        else:
+            # The check above deliberately rejects apply-before-prepare. Keep this
+            # branch explicit so a later refactor cannot turn apply into an implicit
+            # mutable preflight.
+            raise ControlError(
+                "client-capacity scheduler preflight disappeared before apply"
+            )
+
+        if action == "prepare":
+            return {
+                "action": action,
+                "state": "canary_prepared",
+                "intent": str(intent_path.resolve()),
+                "intent_sha256": sha256_file(intent_path),
+                "scheduler_preflight": str(
+                    scheduler_preflight_path.resolve()
+                ),
+                "scheduler_preflight_sha256": sha256_file(
+                    scheduler_preflight_path
+                ),
+                "sbatch": str(sbatch_path.resolve()),
+                "sbatch_sha256": sbatch_sha,
+                "next_action": "submit",
+            }
+
+        if action == "submit":
+            canary_scheduler = (
+                submission_scheduler_runner or _run_subprocess
+            )
+            canary_submitter = submit_runner or _run_subprocess
+            operating_system_user = pwd.getpwuid(os.getuid()).pw_name
+            if (
+                scheduler_user is not None
+                and scheduler_user != operating_system_user
+                and (
+                    submission_scheduler_runner is None
+                    or submit_runner is None
+                )
+            ):
+                raise ControlError(
+                    "client-capacity scheduler account override is permitted "
+                    "only at an injected test boundary"
+                )
+            effective_scheduler_user = (
+                scheduler_user or operating_system_user
+            )
+            if re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_.-]*[$]?",
+                effective_scheduler_user,
+            ) is None:
+                raise ControlError(
+                    "client-capacity scheduler account identity is unsafe"
+                )
+            return _submit_client_capacity_canary(
+                root=root,
+                control=control,
+                transition=transition,
+                partition=partition,
+                target_ceiling=target_ceiling,
+                intent_token=intent_token,
+                sbatch_path=sbatch_path,
+                sbatch_sha256=sbatch_sha,
+                scheduler_user=effective_scheduler_user,
+                scheduler_runner=canary_scheduler,
+                submit_runner=canary_submitter,
+                now=timestamp,
+            )
+
+        # Apply recaptures the live scheduler/QOS contract and publishes that
+        # apply-time observation as the canonical evidence. The prepare capture is
+        # retained separately as immutable preflight history.
+        scheduler_path = root / CLIENT_CAPACITY_SCHEDULER_EVIDENCE
+        if scheduler_path.exists():
+            stored_scheduler = _load_sealed_builder_json(
+                scheduler_path, description="client-capacity scheduler evidence"
+            )
+            canonical_scheduler_contract = validate_stored_scheduler(
+                stored_scheduler,
+                description="stored client-capacity scheduler evidence",
+            )
+        else:
+            _write_sealed_builder_json(
+                scheduler_path,
+                scheduler_payload,
+                description="client-capacity scheduler evidence",
+            )
+            canonical_scheduler_contract = live_capacity
+        submission_root = root / CLIENT_CAPACITY_SUBMISSION_DIRECTORY
+        submission_intent = _load_sealed_builder_json(
+            submission_root / CLIENT_CAPACITY_SUBMISSION_INTENT,
+            description="client-capacity submission intent",
+        )
+        (
+            accepted_submission_path,
+            accepted_submission,
+            accepted_submission_sha256,
+        ) = _load_client_capacity_submission_accepted(
+            submission_root,
+            submission_intent=submission_intent,
+        )
+        canary_job_id = accepted_submission["job_id"]
+
+        if (
+            isinstance(control["capacity"].get("active_transition"), Mapping)
+            and control["capacity"]["active_transition"].get("phase")
+            == "readiness_pending"
+        ):
+            validate_capacity_readiness_pending_state(
+                control, require_fleet_gate=True, verify_files=True
+            )
+            _capacity_gates_are_fresh(
+                control, control["capacity"]["active_transition"]
+            )
+        validate_readiness(
+            control,
+            state_dir=state_dir,
+            verify_files=True,
+            now=timestamp,
+        )
+        canary_payload = _capture_client_capacity_canary(
+            job_id=str(canary_job_id),
+            partition=partition,
+            target_ceiling=target_ceiling,
+            capacity_generation=generation,
+            sbatch_path=sbatch_path,
+            sbatch_sha256=sbatch_sha,
+            expected_job_comment=accepted_submission["job_comment"],
+            expected_submit_argv=accepted_submission["submit_argv"],
+            runner=command,
+        )
+        canary_path = root / CLIENT_CAPACITY_CANARY_EVIDENCE
+        _write_sealed_builder_json(
+            canary_path,
+            canary_payload,
+            description="client-capacity canary evidence",
+        )
+        readiness_payload = {
+            "passed": True,
+            "capacity_generation": generation,
+            "scheduler_reconciliation_passed": True,
+            "fleet_readiness_passed": True,
+            "client_canary_passed": True,
+            "control_immutable_sha256": control["immutable_sha256"],
+            "rollout_generation": control["rollout_generation"],
+            "transition_id": transition["transition_id"],
+            "fleet_evidence": control["readiness"]["fleet"].get("evidence"),
+            "fleet_evidence_sha256": control["readiness"]["fleet"].get("sha256"),
+            "smoke_evidence": control["readiness"]["smoke_runs"].get("evidence"),
+            "smoke_evidence_sha256": control["readiness"]["smoke_runs"].get("sha256"),
+            "scheduler_reconciliation_evidence": control["readiness"][
+                "scheduler_reconciliation"
+            ].get("evidence"),
+            "scheduler_reconciliation_evidence_sha256": control["readiness"][
+                "scheduler_reconciliation"
+            ].get("sha256"),
+        }
+        readiness_path = root / CLIENT_CAPACITY_READINESS_EVIDENCE
+        _write_sealed_builder_json(
+            readiness_path,
+            readiness_payload,
+            description="client-capacity readiness evidence",
+        )
+        contract = control["capacity"].get("current_contract")
+        if not isinstance(contract, Mapping):
+            raise ControlError(
+                "higher client-capacity build lacks the current capacity contract"
+            )
+        authorization = {
+            "schema_version": CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION,
+            "protocol": CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL,
+            "passed": True,
+            "control_immutable_sha256": control["immutable_sha256"],
+            "capacity_generation": generation,
+            "capacity_contract_sha256": contract["sha256"],
+            "authorized_cell_ceiling": target_ceiling,
+            "partition": partition,
+            "preempt_mode": "OFF",
+            "nonpreemptible_client_slots": slots,
+            "cpu_limit": int(live_summary["cpu_limit"]),
+            "memory_limit_mib": int(live_summary["memory_limit_mib"]),
+            "max_submit_jobs": int(live_summary["max_submit_jobs"]),
+            "qos_limit": int(DEFAULT_ADMISSION["qos_limit"]),
+            "reserve_jobs": int(DEFAULT_ADMISSION["reserve"]),
+            "cell_cpus": int(DEFAULT_ADMISSION["cell_cpus"]),
+            "cell_memory_mib": 4096,
+            "scheduler_evidence": {
+                "path": str(scheduler_path.resolve()),
+                "sha256": sha256_file(scheduler_path),
+            },
+            "canary_evidence": {
+                "path": str(canary_path.resolve()),
+                "sha256": sha256_file(canary_path),
+            },
+            "accepted_submission_evidence": {
+                "path": str(accepted_submission_path.resolve()),
+                "sha256": accepted_submission_sha256,
+            },
+            "readiness_evidence": {
+                "path": str(readiness_path.resolve()),
+                "sha256": sha256_file(readiness_path),
+            },
+            "captured_timestamp": float(
+                canonical_scheduler_contract["captured_timestamp"]
+            ),
+        }
+        _write_sealed_builder_json(
+            marker_path,
+            authorization,
+            description="client-capacity complete marker",
+        )
+        marker_sha = sha256_file(marker_path)
+        _read_client_capacity_authorization(
+            state_dir,
+            control,
+            marker_path,
+            marker_sha,
+            attested_timestamp=timestamp,
+        )
+        return {
+            "action": action,
+            "state": "complete",
+            "authorization": str(marker_path.resolve()),
+            "sha256": marker_sha,
+            "submit_command": None,
+        }
+
+
+def attest_client_capacity_generation(
+    state_dir: Path,
+    *,
+    evidence_path: Path,
+    expected_sha256: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Attach one sealed higher-stage placement generation without clearing its hold."""
+
+    timestamp = time.time() if now is None else float(now)
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        active_transition = control["capacity"].get("active_transition")
+        if active_transition is not None and (
+            not isinstance(active_transition, Mapping)
+            or active_transition.get("phase") != "readiness_pending"
+        ):
+            raise ControlError(
+                "client capacity can be attested only after transition fleet "
+                "publication and readiness"
+            )
+        record = _read_client_capacity_authorization(
+            state_dir,
+            control,
+            evidence_path,
+            expected_sha256,
+            attested_timestamp=timestamp,
+        )
+        existing = next(
+            (
+                item
+                for item in control["admission_ramp"][
+                    "client_capacity_authorizations"
+                ]
+                if item["capacity_generation"] == record["capacity_generation"]
+                and item["sha256"] == record["sha256"]
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing != record:
+                raise ControlError(
+                    "client-capacity attestation is not idempotent"
+                )
+            return control
+        control["admission_ramp"]["client_capacity_authorizations"].append(
+            record
+        )
+        gate = control["admission_ramp"].get("capacity_gate")
+        if (
+            isinstance(gate, dict)
+            and gate["capacity_generation"] == record["capacity_generation"]
+            and record["authorized_cell_ceiling"] >= gate["target_ceiling"]
+        ):
+            control["admission_ramp"]["capacity_gate"] = None
+        _reset_admission_ramp(
+            state_dir,
+            control,
+            reason="client_capacity_generation_attested",
+            now=timestamp,
+            clear_last_observation=True,
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="client_capacity_generation_attested",
+            details={
+                "capacity_generation": record["capacity_generation"],
+                "authorized_cell_ceiling": record[
+                    "authorized_cell_ceiling"
+                ],
+                "path": record["path"],
+                "sha256": record["sha256"],
+            },
+            now=timestamp,
+        )
+        _save_control(state_dir, control, now=timestamp)
+        return copy.deepcopy(control)
+
+
+def _request_client_capacity_transition_locked(
+    state_dir: Path,
+    control: dict[str, Any],
+    *,
+    from_ceiling: int,
+    target_ceiling: int,
+    now: float,
+) -> None:
+    """Persist the fail-closed capacity gate while the control lock is held."""
+
+    ramp = control["admission_ramp"]
+    existing_gate = ramp.get("capacity_gate")
+    if existing_gate is not None:
+        if (
+            existing_gate.get("from_ceiling") != from_ceiling
+            or existing_gate.get("target_ceiling") != target_ceiling
+        ):
+            raise ControlError(
+                "another client-capacity transition request is unresolved"
+            )
+    else:
+        _reset_admission_ramp(
+            state_dir,
+            control,
+            reason="client_capacity_generation_required",
+            now=now,
+        )
+        gate = {
+            "state": "capacity_transition_required",
+            "from_ceiling": int(from_ceiling),
+            "target_ceiling": int(target_ceiling),
+            "capacity_generation": int(
+                control["capacity"]["current_generation"]
+            ),
+            "control_immutable_sha256": str(control["immutable_sha256"]),
+            "requested_at": utc_timestamp(now),
+            "requested_timestamp": float(now),
+            "reason": "sealed_client_capacity_authorization_missing",
+        }
+        ramp["capacity_gate"] = gate
+        append_transition(
+            state_dir,
+            control,
+            event="client_capacity_transition_required",
+            details=copy.deepcopy(gate),
+            now=now,
+        )
+
+    dedupe_key = "monitor:capacity-gate"
+    active_alert = next(
+        (
+            alert
+            for alert in reversed(control["alerts"])
+            if alert.get("dedupe_key") == dedupe_key
+            and alert.get("resolved_at") is None
+        ),
+        None,
+    )
+    if active_alert is None:
+        message = (
+            f"admission stage {target_ceiling} requires a sealed non-preemptible "
+            "client-placement capacity generation; the current protected-capacity "
+            f"contract is authorized only through {PRODUCTION_NONPREEMPTIBLE_CELL_CAP}"
+        )
+        email = _new_alert_email_state()
+        email.update(
+            {
+                "requested": True,
+                "next_retry_at": utc_timestamp(now),
+                "next_retry_timestamp": float(now),
+            }
+        )
+        alert = {
+            "alert_id": uuid.uuid4().hex,
+            "kind": "client-capacity-generation",
+            "severity": "critical",
+            "message": message,
+            "dedupe_key": dedupe_key,
+            "first_at": utc_timestamp(now),
+            "first_timestamp": float(now),
+            "last_at": utc_timestamp(now),
+            "last_timestamp": float(now),
+            "occurrences": 1,
+            "resolved_at": None,
+            "email": email,
+        }
+        control["alerts"].append(alert)
+        _append_jsonl(
+            state_dir / ALERT_JOURNAL,
+            {
+                "at": utc_timestamp(now),
+                "timestamp": float(now),
+                "action": "raised",
+                "alert_id": alert["alert_id"],
+                "kind": alert["kind"],
+                "severity": alert["severity"],
+                "message": alert["message"],
+                "dedupe_key": alert["dedupe_key"],
+                "occurrences": 1,
+            },
+        )
+        append_transition(
+            state_dir,
+            control,
+            event="alert_raised",
+            details={
+                "alert_id": alert["alert_id"],
+                "kind": alert["kind"],
+                "severity": "critical",
+                "dedupe_key": dedupe_key,
+            },
+            now=now,
+        )
+    _update_admission_safety_hold_locked(
+        state_dir,
+        control,
+        active_critical_keys=(dedupe_key,),
+        clean_poll=False,
+        semantic_scan_clean=None,
+        timestamp=now,
+    )
+    ramp["last_action"] = {
+        "action": "capacity_gate_held",
+        "reason": "sealed_client_capacity_authorization_missing",
+        "at": utc_timestamp(now),
+        "timestamp": float(now),
+        "current_ceiling": int(from_ceiling),
+        "required_ceiling": int(target_ceiling),
+        "capacity_generation": int(
+            control["capacity"]["current_generation"]
+        ),
+        "base_nonpreemptible_cap": PRODUCTION_NONPREEMPTIBLE_CELL_CAP,
+        "effective_ceiling": 0,
     }
 
 
@@ -5406,9 +21380,20 @@ def _start_admission_ramp_window(
     epoch: Mapping[str, Any],
     now: float,
 ) -> None:
-    qids = observation.get("run_validated_qids")
-    if not _valid_run_qid_map(qids):
-        raise ControlError("a ramp window can start only from complete per-run QID evidence")
+    validated_qids = observation.get("run_validated_qids")
+    useful_qids = observation.get("run_useful_qids")
+    if (
+        not _valid_run_qid_map(validated_qids)
+        or not _valid_run_qid_map(useful_qids)
+        or any(
+            useful_qids[run_id] > validated_qids[run_id]
+            for run_id in REQUIRED_RUNS
+        )
+    ):
+        raise ControlError(
+            "a ramp window can start only from complete trusted/useful per-run "
+            "QID evidence"
+        )
     ramp["window"] = {
         "rollout_generation": int(control["rollout_generation"]),
         "fleet_generation": str(observation["fleet_generation"]),
@@ -5416,8 +21401,10 @@ def _start_admission_ramp_window(
         "ceiling": int(control["admission"]["current_ceiling"]),
         "started_at": utc_timestamp(now),
         "started_timestamp": now,
-        "baseline_run_validated_qids": copy.deepcopy(qids),
-        "latest_run_validated_qids": copy.deepcopy(qids),
+        "baseline_run_validated_qids": copy.deepcopy(validated_qids),
+        "latest_run_validated_qids": copy.deepcopy(validated_qids),
+        "baseline_run_useful_qids": copy.deepcopy(useful_qids),
+        "latest_run_useful_qids": copy.deepcopy(useful_qids),
         "observations": [copy.deepcopy(dict(record))],
     }
 
@@ -5447,6 +21434,8 @@ def _verify_admission_ramp_window_evidence(
             or observation["cadence"] != record["cadence"]
             or observation.get("run_validated_qids")
             != record.get("run_validated_qids")
+            or observation.get("run_useful_qids")
+            != record.get("run_useful_qids")
         ):
             raise ControlError("admission ramp evidence chain record drifted")
     return sha256_value(observations)
@@ -5455,14 +21444,14 @@ def _verify_admission_ramp_window_evidence(
 def record_successful_poll(
     state_dir: Path,
     *,
-    validated_qids: int,
+    useful_qids: int,
     fleet_generation: str,
     strata_with_throughput: int | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Append generation-scoped throughput accounting after a successful live poll."""
-    if validated_qids < 0:
-        raise ControlError("validated_qids must be non-negative")
+    if useful_qids < 0:
+        raise ControlError("useful_qids must be non-negative")
     if not fleet_generation:
         raise ControlError("fleet_generation must be non-empty")
     timestamp = time.time() if now is None else float(now)
@@ -5521,14 +21510,14 @@ def record_successful_poll(
                 now=timestamp,
             )
         samples = open_epoch["samples"]
-        if samples and validated_qids < samples[-1]["validated_qids"]:
+        if samples and useful_qids < samples[-1]["useful_qids"]:
             raise ControlError(
-                "validated QID total regressed within one throughput epoch"
+                "useful QID total regressed within one throughput epoch"
             )
         sample: dict[str, Any] = {
             "at": utc_timestamp(timestamp),
             "timestamp": timestamp,
-            "validated_qids": validated_qids,
+            "useful_qids": useful_qids,
         }
         if strata_with_throughput is not None:
             if strata_with_throughput < 0:
@@ -5541,7 +21530,7 @@ def record_successful_poll(
             event="successful_production_poll",
             details={
                 "epoch": open_epoch["epoch"],
-                "validated_qids": validated_qids,
+                "useful_qids": useful_qids,
             },
             now=timestamp,
         )
@@ -5640,6 +21629,10 @@ def record_admission_ramp_observation(
         critical_evidence = list(observation["critical_finding_keys"])
         blocking_evidence = list(observation["promotion_blocking_finding_keys"])
         active_blocking = _active_ramp_blocking_alerts(control)
+        blocking_requires_base_stage = bool(
+            (set(blocking_evidence) | set(active_blocking))
+            - CLIENT_CAPACITY_GATE_ALERT_KEYS
+        )
         semantic_clean = observation.get("semantic_integrity_clean")
         evidence_clean = bool(
             observation.get("production_health_clean") is True
@@ -5691,13 +21684,18 @@ def record_admission_ramp_observation(
                         else "unclean_monitor_observation"
                     ),
                     now=timestamp,
-                    ceiling=(24 if blocking_evidence or active_blocking else None),
+                    ceiling=(
+                        24
+                        if blocking_requires_base_stage
+                        else None
+                    ),
                 )
                 window = None
 
         if not clean:
             if (
                 (blocking_evidence or active_blocking)
+                and blocking_requires_base_stage
                 and control["admission"]["current_ceiling"] != 24
             ):
                 _reset_admission_ramp(
@@ -5770,6 +21768,9 @@ def record_admission_ramp_observation(
                     "baseline_run_validated_qids": observation[
                         "run_validated_qids"
                     ],
+                    "baseline_run_useful_qids": observation[
+                        "run_useful_qids"
+                    ],
                     "evidence_sha256": observed_sha256,
                 },
                 now=timestamp,
@@ -5786,10 +21787,13 @@ def record_admission_ramp_observation(
         window = ramp["window"]
         window["observations"].append(record)
         if observation["cadence"] in {"semantic", "daily"}:
-            qids = observation["run_validated_qids"]
-            assert _valid_run_qid_map(qids)
+            validated_qids = observation["run_validated_qids"]
+            useful_qids = observation["run_useful_qids"]
+            assert _valid_run_qid_map(validated_qids)
+            assert _valid_run_qid_map(useful_qids)
             if any(
-                qids[run_id] < window["latest_run_validated_qids"][run_id]
+                validated_qids[run_id]
+                < window["latest_run_validated_qids"][run_id]
                 for run_id in REQUIRED_RUNS
             ):
                 _reset_admission_ramp(
@@ -5800,7 +21804,20 @@ def record_admission_ramp_observation(
                 )
                 _save_control(state_dir, control, now=timestamp)
                 return control
-            window["latest_run_validated_qids"] = copy.deepcopy(qids)
+            if any(
+                useful_qids[run_id] < window["latest_run_useful_qids"][run_id]
+                for run_id in REQUIRED_RUNS
+            ):
+                _reset_admission_ramp(
+                    state_dir,
+                    control,
+                    reason="per_run_useful_qid_regression",
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+                return control
+            window["latest_run_validated_qids"] = copy.deepcopy(validated_qids)
+            window["latest_run_useful_qids"] = copy.deepcopy(useful_qids)
 
         ceiling = int(control["admission"]["current_ceiling"])
         requirement = ADMISSION_RAMP_REQUIREMENTS.get(ceiling)
@@ -5815,8 +21832,8 @@ def record_admission_ramp_observation(
             return control
         elapsed = timestamp - float(window["started_timestamp"])
         all_runs_progressed = all(
-            window["latest_run_validated_qids"][run_id]
-            > window["baseline_run_validated_qids"][run_id]
+            window["latest_run_useful_qids"][run_id]
+            > window["baseline_run_useful_qids"][run_id]
             for run_id in REQUIRED_RUNS
         )
         all_run_progress_required = ceiling == 24
@@ -5847,6 +21864,28 @@ def record_admission_ramp_observation(
         )
         validate_readiness(control, state_dir=state_dir, verify_files=True)
         next_ceiling = int(requirement["next_ceiling"])
+        client_capacity_authorization = (
+            _verified_client_capacity_authorization(
+                state_dir,
+                control,
+                target_ceiling=next_ceiling,
+                attested_timestamp=timestamp,
+            )
+        )
+        if (
+            next_ceiling > PRODUCTION_NONPREEMPTIBLE_CELL_CAP
+            and client_capacity_authorization is None
+        ):
+            _request_client_capacity_transition_locked(
+                state_dir,
+                control,
+                from_ceiling=ceiling,
+                target_ceiling=next_ceiling,
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+            return copy.deepcopy(control)
+        ramp["capacity_gate"] = None
         promotion = {
             "from_ceiling": ceiling,
             "to_ceiling": next_ceiling,
@@ -5865,11 +21904,28 @@ def record_admission_ramp_observation(
             "final_run_validated_qids": copy.deepcopy(
                 window["latest_run_validated_qids"]
             ),
+            "baseline_run_useful_qids": copy.deepcopy(
+                window["baseline_run_useful_qids"]
+            ),
+            "final_run_useful_qids": copy.deepcopy(
+                window["latest_run_useful_qids"]
+            ),
             "observations": copy.deepcopy(window["observations"]),
             "evidence_sha256": evidence_chain_sha256,
+            "capacity_generation": int(
+                control["capacity"]["current_generation"]
+            ),
+            "client_capacity_authorization_sha256": (
+                client_capacity_authorization["sha256"]
+                if client_capacity_authorization is not None
+                else control["immutable"][
+                    "protected_capacity_marker_sha256"
+                ]
+            ),
         }
         ramp["promotions"].append(promotion)
         control["admission"]["current_ceiling"] = next_ceiling
+        control["admission_safety_hold"]["configured_ceiling"] = next_ceiling
         ramp["current_ceiling"] = next_ceiling
         if next_ceiling == ADMISSION_RAMP_STAGES[-1]:
             ramp["window"] = None
@@ -5889,6 +21945,10 @@ def record_admission_ramp_observation(
             "previous_ceiling": ceiling,
             "current_ceiling": next_ceiling,
             "evidence_sha256": promotion["evidence_sha256"],
+            "capacity_generation": promotion["capacity_generation"],
+            "client_capacity_authorization_sha256": promotion[
+                "client_capacity_authorization_sha256"
+            ],
         }
         append_transition(
             state_dir,
@@ -5902,6 +21962,10 @@ def record_admission_ramp_observation(
                 "throughput_epoch": epoch["epoch"],
                 "clean_seconds": elapsed,
                 "evidence_sha256": promotion["evidence_sha256"],
+                "capacity_generation": promotion["capacity_generation"],
+                "client_capacity_authorization_sha256": promotion[
+                    "client_capacity_authorization_sha256"
+                ],
             },
             now=timestamp,
         )
@@ -5957,7 +22021,7 @@ def _submit_line_dependency(command: str, *, source: str) -> str | None:
     return _submit_line_option(command, source=source, option="dependency")
 
 
-_SACCT_JOB_ID_RAW_RE = re.compile(
+_SACCT_JOB_ID_RE = re.compile(
     r"[0-9]+(?:[_+][0-9]+)?(?:\.[A-Za-z0-9_-]+)?"
 )
 
@@ -5969,10 +22033,13 @@ def _scheduler_physical_records(
 
     ``sacct -P`` does not escape newlines in its last field. Historical ``srun`` and
     ``sbatch --wrap`` commands can therefore occupy several physical output lines.
-    JobIDRaw is scheduler-owned and gives an unambiguous start marker; continuation
-    text is retained byte-for-byte (apart from ``splitlines`` newline normalization).
-    Live squeue rows use a final Dependency field and are one physical line on this
-    cluster, so they remain strict one-line records.
+    The logical ``JobID`` is scheduler-owned and gives an unambiguous start marker
+    while preserving the ``array_job_id_task_id`` identity emitted by ``squeue %i``.
+    ``JobIDRaw`` cannot be used here: Slurm assigns a different raw allocation ID to
+    most running array elements, which would split one array intent into unrelated
+    jobs. Continuation text is retained byte-for-byte (apart from ``splitlines``
+    newline normalization). Live squeue rows use a final Dependency field and are one
+    physical line on this cluster, so they remain strict one-line records.
     """
 
     if source != "sacct":
@@ -5982,7 +22049,7 @@ def _scheduler_physical_records(
         candidate = physical_line.split("|", 4)
         starts_record = (
             len(candidate) == 5
-            and _SACCT_JOB_ID_RAW_RE.fullmatch(candidate[0].strip()) is not None
+            and _SACCT_JOB_ID_RE.fullmatch(candidate[0].strip()) is not None
             and bool(candidate[1].strip())
             and bool(candidate[2].strip())
         )
@@ -6083,7 +22150,7 @@ def query_scheduler(
     now: float | None = None,
     tolerate_errors: bool = False,
 ) -> SchedulerSnapshot:
-    """Join live ``squeue`` and accounting ``sacct`` truth by exact raw job ID."""
+    """Join live ``squeue`` and accounting ``sacct`` truth by logical job ID."""
     invoke = runner or _run_subprocess
     scheduler_user = user or os.environ.get("USER")
     if not scheduler_user:
@@ -6112,7 +22179,7 @@ def query_scheduler(
                 "-P",
                 "-S",
                 time.strftime("%Y-%m-%d", time.localtime(timestamp - 7 * 86_400)),
-                "--format=JobIDRaw,JobName,State,Comment,SubmitLine",
+                "--format=JobID,JobName,State,Comment,SubmitLine",
             ],
         ),
     )
@@ -6258,6 +22325,7 @@ def build_reconciliation_report(
         and job.token not in referenced_tokens
     ]
     missing_referenced: list[str] = []
+    identity_mismatches: list[dict[str, str]] = []
     by_id = {job.job_id: job for job in snapshot.jobs}
     for job_id in referenced_ids:
         record = by_id.get(job_id)
@@ -6276,6 +22344,23 @@ def build_reconciliation_report(
                 continue
             matches = all_by_token.get(str(expected.get("job_token", "")), [])
             live_matches = [job for job in matches if job.active]
+            recorded_job_id = str(expected.get("job_id", ""))
+            same_id = by_id.get(recorded_job_id)
+            if (
+                recorded_job_id
+                and same_id is not None
+                and same_id.active
+                and same_id.token != expected.get("job_token")
+            ):
+                identity_mismatches.append(
+                    {
+                        "role": role,
+                        "field": field,
+                        "job_id": recorded_job_id,
+                        "expected_token": str(expected.get("job_token", "")),
+                        "observed_comment": same_id.comment,
+                    }
+                )
             role_summary[field] = {
                 "recorded_job_id": expected.get("job_id"),
                 "intent_token": expected.get("intent_token"),
@@ -6294,6 +22379,8 @@ def build_reconciliation_report(
         errors.append("unmappable active schema-5 jobs")
     if malformed:
         errors.append("malformed schema-5 scheduler tokens")
+    if identity_mismatches:
+        errors.append("recorded controller job IDs have scheduler token mismatches")
     report = {
         "schema_version": 1,
         "gate": "scheduler_reconciliation",
@@ -6393,6 +22480,16 @@ def reconcile_control(
             "attested_at": utc_timestamp(timestamp),
             "attested_timestamp": timestamp,
         }
+        active_capacity = control["capacity"].get("active_transition")
+        if (
+            isinstance(active_capacity, dict)
+            and active_capacity.get("phase") == "readiness_pending"
+            and "scheduler_reconciliation"
+            in active_capacity.get("invalidated_readiness", [])
+        ):
+            control["readiness"]["scheduler_reconciliation"][
+                "capacity_generation"
+            ] = int(active_capacity["to_generation"])
         append_transition(
             state_dir,
             control,
@@ -6409,15 +22506,87 @@ def reconcile_control(
 
 
 def _controller_resource(control: Mapping[str, Any], role: str) -> dict[str, str]:
-    resources = control["immutable"].get("controller_resources", {})
-    role_resources = resources.get(role, {}) if isinstance(resources, dict) else {}
+    _validate_role(role)
     return {
-        "partition": str(
-            role_resources.get("partition", "mit_preemptable,mit_normal,mit_normal_gpu")
-        ),
-        "memory": str(role_resources.get("memory", "4G")),
-        "time_limit": str(role_resources.get("time_limit", "12:00:00")),
+        # Controllers never issue scientific model requests.  Their durable successor
+        # and cross-supervisor takeover protocols make preemption recoverable, while
+        # placing either controller on the protected scientific-client placement would
+        # silently consume capacity reserved for the 384 non-preemptible cell clients.
+        "partition": PRODUCTION_CONTROLLER_PARTITION,
+        "memory": "4G",
+        "time_limit": "12:00:00",
     }
+
+
+def validate_live_controller_placement(
+    *,
+    job_id: str,
+    role: str,
+    generation: int,
+    intent_token: str,
+    runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, str]:
+    """Verify the allocation landed on the controller-only partition.
+
+    Rendering a single-partition directive is necessary but not sufficient evidence
+    for the protected 384-client resource budget.  Reparse the live Slurm record
+    before a controller may claim its role or launch a managed plane.  The
+    controller's own preemption is recoverable through its exact successor/takeover
+    state; it must never consume the protected scientific-client CPU or memory.
+    """
+
+    _validate_role(role)
+    if not isinstance(job_id, str) or not job_id.isdigit():
+        raise ControllerFenced("controller placement requires an exact numeric job ID")
+    expected_comment = job_token(role, generation, intent_token)
+    argv = ["scontrol", "show", "job", "-o", job_id]
+    invoke = runner or _run_subprocess
+    try:
+        process = invoke(argv)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ControllerFenced(
+            f"cannot verify live controller placement for {job_id}: {exc}"
+        ) from exc
+    if process.returncode != 0:
+        raise ControllerFenced(
+            "live controller placement query failed "
+            f"rc={process.returncode}: {process.stderr.strip()[:500]}"
+        )
+    lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ControllerFenced(
+            "live controller placement query must return exactly one record"
+        )
+    try:
+        tokens = shlex.split(lines[0], posix=True)
+    except (TypeError, ValueError) as exc:
+        raise ControllerFenced(
+            f"cannot parse live controller placement for {job_id}: {exc}"
+        ) from exc
+    fields: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        if not key or key in fields:
+            raise ControllerFenced(
+                f"live controller placement has duplicate field {key!r}"
+            )
+        fields[key] = value.strip('"')
+    if (
+        fields.get("JobId") != job_id
+        or fields.get("Partition") != PRODUCTION_CONTROLLER_PARTITION
+        or fields.get("Requeue") != "0"
+        or fields.get("Comment") != expected_comment
+        or normalize_scheduler_state(fields.get("JobState", ""))
+        not in ACTIVE_SCHEDULER_STATES
+    ):
+        raise ControllerFenced(
+            "controller scheduler placement/provenance drifted: "
+            f"job={job_id}, role={role}, partition={fields.get('Partition')!r}, "
+            f"requeue={fields.get('Requeue')!r}, state={fields.get('JobState')!r}"
+        )
+    return fields
 
 
 def _runtime_environment_pins(control: Mapping[str, Any]) -> dict[str, dict[str, str]]:
@@ -7015,6 +23184,64 @@ def _await_runtime_lease_refresh_with_heartbeats(
             )
 
 
+def fleet_scheduler_policy_binding(
+    control: Mapping[str, Any],
+    *,
+    require_attested: bool,
+) -> dict[str, Any] | None:
+    """Return the stable scheduler contract sealed by fleet readiness.
+
+    The timestamp-addressed scheduler evidence and policy instance are retained for
+    audit, while long-running supervisors compare only ``policy_contract_id``.  This
+    allows a fresh capture each tick without treating its timestamp as policy drift.
+    """
+
+    gate = control.get("readiness", {}).get("fleet")
+    if not isinstance(gate, Mapping) or gate.get("passed") is not True:
+        if require_attested:
+            raise ReadinessError(
+                "production requires attested fleet scheduler policy"
+            )
+        return None
+    fields = {
+        "scheduler_safety_evidence_id",
+        "scheduler_safety_policy_id",
+        "scheduler_safety_policy_contract_id",
+        "transport_uncertainty_binding_sha256",
+        "transport_censor_protocol_version",
+        "transport_censor_protocol_hash",
+    }
+    if any(field not in gate for field in fields):
+        raise ReadinessError(
+            "fleet readiness lacks its scheduler/transport binding"
+        )
+    for field in (
+        "scheduler_safety_evidence_id",
+        "scheduler_safety_policy_id",
+        "scheduler_safety_policy_contract_id",
+        "transport_uncertainty_binding_sha256",
+        "transport_censor_protocol_hash",
+    ):
+        if _SHA256_RE.fullmatch(str(gate.get(field, ""))) is None:
+            raise ReadinessError(
+                f"fleet readiness has invalid {field}"
+            )
+    immutable = control["immutable"]
+    transport = immutable["transport_uncertainty_binding"]
+    if (
+        gate["transport_uncertainty_binding_sha256"]
+        != immutable["transport_uncertainty_binding_sha256"]
+        or gate["transport_censor_protocol_version"]
+        != transport["transport_censor_protocol_version"]
+        or gate["transport_censor_protocol_hash"]
+        != transport["transport_censor_protocol_hash"]
+    ):
+        raise ReadinessError(
+            "fleet readiness transport binding differs from immutable release"
+        )
+    return {field: gate[field] for field in sorted(fields)}
+
+
 def production_environment(
     control: Mapping[str, Any], *, run_id: str | None = None
 ) -> dict[str, str]:
@@ -7025,6 +23252,7 @@ def production_environment(
     multi-run arrays must instead be split by run so every worker receives one policy.
     """
     immutable = control["immutable"]
+    fleet = effective_fleet_contract_binding(control, verify_files=True)
     attestation = (
         validate_runtime_integrity_attestation(control, verify_metadata=False)
         if int(control.get("rollout_generation", 0)) >= 1
@@ -7032,8 +23260,56 @@ def production_environment(
     )
     environment = {
         "ASYS_RELEASE_ID": str(immutable["release_id"]),
+        "ASYS_RELEASE_GIT_COMMIT": str(immutable["git_commit"]),
+        "ASYS_PROTECTED_CAPACITY_MARKER": str(
+            immutable["protected_capacity_marker_path"]
+        ),
+        "ASYS_PROTECTED_CAPACITY_MARKER_SHA256": str(
+            immutable["protected_capacity_marker_sha256"]
+        ),
+        "ASYS_PROTECTED_CAPACITY_MARKER_ID": str(
+            immutable["protected_capacity_marker_id"]
+        ),
+        "ASYS_TRANSPORT_CENSOR_PROTOCOL_VERSION": str(
+            immutable["transport_uncertainty_binding"][
+                "transport_censor_protocol_version"
+            ]
+        ),
+        "ASYS_TRANSPORT_CENSOR_PROTOCOL_HASH": str(
+            immutable["transport_uncertainty_binding"][
+                "transport_censor_protocol_hash"
+            ]
+        ),
+        "ASYS_TRANSPORT_UNCERTAINTY_BINDING_SHA256": str(
+            immutable["transport_uncertainty_binding_sha256"]
+        ),
+        "ASYS_CHECKPOINT_SCHEMA_VERSION": str(
+            immutable["transport_uncertainty_binding"][
+                "checkpoint_schema_version"
+            ]
+        ),
+        "ASYS_ARTIFACT_SCHEMA_VERSION": str(
+            immutable["transport_uncertainty_binding"][
+                "artifact_schema_version"
+            ]
+        ),
+        "ASYS_SELF_CONSISTENCY_PROTOCOL_VERSION": str(
+            immutable["transport_uncertainty_binding"][
+                "self_consistency_protocol_version"
+            ]
+        ),
+        "ASYS_SELF_CONSISTENCY_PROTOCOL_HASH": str(
+            immutable["transport_uncertainty_binding"][
+                "self_consistency_protocol_hash"
+            ]
+        ),
         "ASYS_MODEL_CONTRACT_SHA256": str(immutable["model_contract_sha256"]),
-        "ASYS_FLEET_CONTRACT_SHA256": str(immutable["fleet_contract_sha256"]),
+        "ASYS_FLEET_CONTRACT_SHA256": str(fleet["sha256"]),
+        "ASYS_FLEET_CONTRACT_PATH": str(fleet["path"]),
+        "ASYS_RELEASE_FLEET_CONTRACT_SHA256": str(
+            immutable["fleet_contract_sha256"]
+        ),
+        "ASYS_CAPACITY_GENERATION": str(fleet["capacity_generation"]),
         "ASYS_HARNESS_ENVIRONMENT_SHA256": str(immutable["harness_environment_sha256"]),
         "ASYS_SERVING_ENVIRONMENT_SHA256": str(immutable["serving_environment_sha256"]),
         "ASYS_ROLLOUT_GENERATION": str(control["rollout_generation"]),
@@ -7042,6 +23318,25 @@ def production_environment(
         "TRANSFORMERS_OFFLINE": "1",
         "HF_DATASETS_OFFLINE": "1",
     }
+    scheduler_binding = fleet_scheduler_policy_binding(
+        control, require_attested=False
+    )
+    if scheduler_binding is not None:
+        environment.update(
+            {
+                "ASYS_SCHEDULER_POLICY_CONTRACT_ID": str(
+                    scheduler_binding[
+                        "scheduler_safety_policy_contract_id"
+                    ]
+                ),
+                "ASYS_SCHEDULER_SAFETY_EVIDENCE_ID": str(
+                    scheduler_binding["scheduler_safety_evidence_id"]
+                ),
+                "ASYS_SCHEDULER_SAFETY_POLICY_ID": str(
+                    scheduler_binding["scheduler_safety_policy_id"]
+                ),
+            }
+        )
     if attestation is not None:
         environment.update(
             {
@@ -7063,11 +23358,28 @@ def _require_production_running(control: Mapping[str, Any]) -> None:
 
     if control.get("desired_state") != "running" or control.get("drain_requested"):
         raise ControlError("schema-5 admission is disabled by desired state")
+    if control.get("finalization", {}).get("state") in ACTIVE_FINALIZATION_STATES:
+        raise ControlError("schema-5 admission is disabled by autonomous finalization")
     intent = control.get("resume_intent")
     if not isinstance(intent, dict) or intent.get("state") != "complete":
         raise ControlError(
             "schema-5 admission is disabled by incomplete resume transaction"
         )
+    try:
+        _validate_production_authorization_state(
+            control,
+            state_dir=(
+                Path(str(control["immutable"]["results_root"]))
+                / CONTROL_STATE_DIRNAME
+            ),
+            require_passed=True,
+            verify_files=False,
+        )
+        _validate_resume_production_authorizations(control)
+    except ReadinessError as exc:
+        raise ControlError(
+            f"schema-5 admission is disabled by production authorization: {exc}"
+        ) from exc
     controller_ids = intent.get("controller_job_ids")
     if (
         not isinstance(controller_ids, dict)
@@ -7182,11 +23494,80 @@ def admission_contract_from_state(state_dir: Path) -> dict[str, Any]:
     control = load_control(state_dir, verify_files=True)
     _require_production_running(control)
     validate_readiness(control, state_dir=state_dir, verify_files=True)
+    admission = copy.deepcopy(control["admission"])
+    configured_ceiling = int(admission["current_ceiling"])
+    safety_hold = copy.deepcopy(control["admission_safety_hold"])
+    active_critical_alerts = sorted(
+        set(_active_critical_alerts(control))
+        | set(_active_critical_alerts_from_journal(state_dir))
+    )
+    admission["configured_ceiling"] = configured_ceiling
+    admission["current_ceiling"] = (
+        0
+        if (
+            safety_hold["active"]
+            or active_critical_alerts
+            or control["finalization"]["state"] in ACTIVE_FINALIZATION_STATES
+        )
+        else configured_ceiling
+    )
+    client_capacity = _client_capacity_contract_summary(
+        control,
+        target_ceiling=configured_ceiling,
+        state_dir=state_dir,
+        verify_files=True,
+    )
+    try:
+        capacity_contract = protected_capacity.load_contract(
+            control["immutable"]["protected_capacity_marker_path"],
+            expected_release_git_commit=str(control["immutable"]["git_commit"]),
+            expected_marker_id=str(
+                control["immutable"]["protected_capacity_marker_id"]
+            ),
+            expected_sha256=str(
+                control["immutable"]["protected_capacity_marker_sha256"]
+            ),
+        )
+        protected_capacity.authorize_client(
+            capacity_contract,
+            partition=str(client_capacity["partition"]),
+            qos=str(client_capacity["qos"]),
+            required_slots=configured_ceiling,
+            required_reserve_jobs=int(admission["reserve"]),
+        )
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ControlError(
+            f"scientific client placement is outside protected capacity: {exc}"
+        ) from exc
     return {
-        **copy.deepcopy(control["admission"]),
+        **admission,
+        "client_capacity": client_capacity,
+        "safety_hold": safety_hold,
+        "safety_hold_drain": copy.deepcopy(
+            control.get("safety_hold_drain_intent")
+        ),
+        "active_critical_alerts": active_critical_alerts,
+        "capacity_generation": int(control["capacity"]["current_generation"]),
         "rollout_generation": control["rollout_generation"],
         "immutable_sha256": control["immutable_sha256"],
+        "protected_capacity": {
+            "path": str(capacity_contract.path),
+            "sha256": capacity_contract.sha256,
+            "marker_id": capacity_contract.marker_id,
+        },
     }
+
+
+def client_capacity_contract_from_state(state_dir: Path) -> dict[str, Any]:
+    """Reverify and expose the placement/TRES authority for the configured stage."""
+
+    control = load_control(state_dir, verify_files=True)
+    return _client_capacity_contract_summary(
+        control,
+        target_ceiling=int(control["admission"]["current_ceiling"]),
+        state_dir=state_dir,
+        verify_files=True,
+    )
 
 
 def validate_production_batch_sbatch(
@@ -7211,6 +23592,31 @@ def validate_production_batch_sbatch(
         raise ControlError(
             "rendered production cell batch weakens required Slurm contract; missing "
             + ", ".join(missing)
+        )
+    partitions = [
+        line for line in stripped_lines if line.startswith("#SBATCH --partition=")
+    ]
+    configured_ceiling = int(control["admission"]["current_ceiling"])
+    client_capacity = _client_capacity_contract_summary(
+        control,
+        target_ceiling=configured_ceiling,
+        verify_files=False,
+    )
+    expected_partition = str(client_capacity["partition"])
+    if partitions != [f"#SBATCH --partition={expected_partition}"]:
+        raise ControlError(
+            "rendered production cell batch must use exactly one non-preemptible "
+            f"{expected_partition} partition directive authorized for ceiling "
+            f"{configured_ceiling}"
+        )
+    qoses = [
+        line for line in stripped_lines if line.startswith("#SBATCH --qos=")
+    ]
+    expected_qos = str(client_capacity["qos"])
+    if qoses != [f"#SBATCH --qos={expected_qos}"]:
+        raise ControlError(
+            "rendered production cell batch must use exactly one protected "
+            f"{expected_qos} QOS directive"
         )
     manifest_hash_arguments = [
         line
@@ -7337,6 +23743,7 @@ def validate_controller_generation_sbatch(
 
     _validate_role(role)
     immutable = control["immutable"]
+    fleet = effective_fleet_contract_binding(control, verify_files=True)
     release_worktree = Path(str(immutable["release_worktree"])).resolve()
     python_path = (
         Path(str(immutable["harness_environment_prefix"])).resolve() / "bin" / "python"
@@ -7344,6 +23751,7 @@ def validate_controller_generation_sbatch(
     control_script = release_worktree / "slurm" / "schema5_control.py"
     exact_lines = {
         "#SBATCH --no-requeue",
+        f"#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}",
         "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV",
         "export PYTHONDONTWRITEBYTECODE=1",
         "export PYTHONNOUSERSITE=1",
@@ -7362,9 +23770,16 @@ def validate_controller_generation_sbatch(
         ),
         (
             'export ASYS_FLEET_CONTRACT_SHA256="'
+            + str(fleet["sha256"])
+            + '"'
+        ),
+        f'export ASYS_FLEET_CONTRACT_PATH="{fleet["path"]}"',
+        (
+            'export ASYS_RELEASE_FLEET_CONTRACT_SHA256="'
             + str(immutable["fleet_contract_sha256"])
             + '"'
         ),
+        f'export ASYS_CAPACITY_GENERATION="{fleet["capacity_generation"]}"',
         (
             'export ASYS_HARNESS_ENVIRONMENT_SHA256="'
             + str(immutable["harness_environment_sha256"])
@@ -7394,11 +23809,41 @@ def validate_controller_generation_sbatch(
             "rendered controller generation lacks the immutable runtime contract: "
             + ", ".join(missing)
         )
+    partition_directives = [
+        line
+        for line in ordered_stripped_lines
+        if line.startswith("#SBATCH --partition=")
+    ]
+    if partition_directives != [
+        f"#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}"
+    ]:
+        raise ControlError(
+            "rendered production controller must use exactly one "
+            f"{PRODUCTION_CONTROLLER_PARTITION} partition directive"
+        )
     for variable, expected_line in (
         ("HF_HOME", f'export HF_HOME="{Path(str(immutable["hf_home"])).resolve()}"'),
         (
             "ASYS_RELEASE_WORKTREE",
             f'export ASYS_RELEASE_WORKTREE="{release_worktree}"',
+        ),
+        (
+            "ASYS_FLEET_CONTRACT_SHA256",
+            f'export ASYS_FLEET_CONTRACT_SHA256="{fleet["sha256"]}"',
+        ),
+        (
+            "ASYS_FLEET_CONTRACT_PATH",
+            f'export ASYS_FLEET_CONTRACT_PATH="{fleet["path"]}"',
+        ),
+        (
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256",
+            'export ASYS_RELEASE_FLEET_CONTRACT_SHA256="'
+            + str(immutable["fleet_contract_sha256"])
+            + '"',
+        ),
+        (
+            "ASYS_CAPACITY_GENERATION",
+            f'export ASYS_CAPACITY_GENERATION="{fleet["capacity_generation"]}"',
         ),
     ):
         assignments = [
@@ -7500,6 +23945,11 @@ def render_generation_sbatch(
         "RELEASE_WORKTREE": str(release_worktree),
         "MODEL_CONTRACT_SHA256": provenance["ASYS_MODEL_CONTRACT_SHA256"],
         "FLEET_CONTRACT_SHA256": provenance["ASYS_FLEET_CONTRACT_SHA256"],
+        "FLEET_CONTRACT_PATH": provenance["ASYS_FLEET_CONTRACT_PATH"],
+        "RELEASE_FLEET_CONTRACT_SHA256": provenance[
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256"
+        ],
+        "CAPACITY_GENERATION": provenance["ASYS_CAPACITY_GENERATION"],
         "HARNESS_ENVIRONMENT_SHA256": provenance["ASYS_HARNESS_ENVIRONMENT_SHA256"],
         "SERVING_ENVIRONMENT_SHA256": provenance["ASYS_SERVING_ENVIRONMENT_SHA256"],
         "ROLLOUT_GENERATION": provenance["ASYS_ROLLOUT_GENERATION"],
@@ -7562,6 +24012,23 @@ def _submit_argv(
 
 def _find_intent_jobs(snapshot: SchedulerSnapshot, token: str) -> list[SchedulerJob]:
     return [job for job in snapshot.jobs if job.token == token]
+
+
+def _exact_live_controller_job(
+    snapshot: SchedulerSnapshot, record: Mapping[str, Any]
+) -> SchedulerJob | None:
+    """Resolve one durable controller record through exact scheduler fencing."""
+
+    job_id = str(record.get("job_id", ""))
+    token = str(record.get("job_token", ""))
+    if not job_id or not token:
+        return None
+    matches = [
+        job for job in snapshot.jobs if job.active and job.token == token
+    ]
+    if len(matches) != 1 or matches[0].job_id != job_id:
+        return None
+    return matches[0]
 
 
 def submit_controller_intent(
@@ -7879,6 +24346,629 @@ def drill_submission_boundary_lock(state_dir: Path) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def external_watchdog_drill_lock(state_dir: Path) -> Iterator[None]:
+    """Serialize the sealed external-watchdog drill transaction."""
+
+    with _file_lock(
+        state_dir / "locks" / "external-watchdog-drill.lock",
+        nonblocking=True,
+    ):
+        yield
+
+
+def _external_watchdog_drill_root(state_dir: Path) -> Path:
+    return state_dir / EXTERNAL_WATCHDOG_DRILL_DIRNAME
+
+
+def _external_watchdog_drill_intent_path(state_dir: Path) -> Path:
+    return (
+        _external_watchdog_drill_root(state_dir)
+        / EXTERNAL_WATCHDOG_DRILL_INTENT_FILENAME
+    )
+
+
+def _external_watchdog_drill_state_path(state_dir: Path) -> Path:
+    return (
+        _external_watchdog_drill_root(state_dir)
+        / EXTERNAL_WATCHDOG_DRILL_STATE_FILENAME
+    )
+
+
+def _watchdog_canonical_json(value: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def _watchdog_self_hash(value: Mapping[str, Any], field: str) -> str:
+    identity = dict(value)
+    identity.pop(field, None)
+    return hashlib.sha256(_watchdog_canonical_json(identity)).hexdigest()
+
+
+def _read_stable_json(
+    path: Path,
+    *,
+    description: str,
+    require_read_only: bool,
+) -> tuple[dict[str, Any], bytes]:
+    """Read one canonical path through a stable no-follow descriptor."""
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if any(character in str(lexical) for character in ("\x00", "\n", "\r")):
+        raise ControlError(f"{description} path is unsafe")
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ControlError(f"{description} is unavailable: {exc}") from exc
+    if resolved != lexical:
+        raise ControlError(f"{description} traverses a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lexical, flags)
+    try:
+        before = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            chunks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    current = lexical.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or identity(before) != identity(after)
+        or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino)
+        or (require_read_only and stat.S_IMODE(before.st_mode) & 0o222)
+        or before.st_nlink != 1
+    ):
+        raise ControlError(f"{description} is mutable or changed while being read")
+    raw = b"".join(chunks)
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ControlError(f"{description} duplicates JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                ControlError(f"{description} contains non-finite {token}")
+            ),
+        )
+    except ControlError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ControlError(f"{description} is invalid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ControlError(f"{description} must contain one JSON object")
+    return value, raw
+
+
+def _publish_sealed_json_once(
+    path: Path, value: Mapping[str, Any], *, description: str
+) -> tuple[Path, str]:
+    """Publish one immutable canonical JSON inode without replacing a prior value."""
+
+    path = Path(os.path.abspath(os.fspath(path.expanduser())))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.resolve(strict=True) != path.parent:
+        raise ControlError(f"{description} parent traverses a symlink")
+    payload = _watchdog_canonical_json(value)
+    lock_descriptor = os.open(
+        path.parent / f".{path.name}.publish.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+
+        def interrupted_bytes(candidate: Path) -> tuple[bytes, os.stat_result]:
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ControlError(
+                    f"{description} has an unsafe interrupted publication"
+                )
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(candidate, flags)
+            try:
+                before = os.fstat(fd)
+                chunks: list[bytes] = []
+                while block := os.read(fd, 1024 * 1024):
+                    chunks.append(block)
+                after = os.fstat(fd)
+            finally:
+                os.close(fd)
+            current = candidate.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_mode,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                )
+                != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_mode,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                )
+                or (current.st_dev, current.st_ino)
+                != (after.st_dev, after.st_ino)
+                or stat.S_IMODE(before.st_mode) & 0o222
+            ):
+                raise ControlError(
+                    f"{description} interrupted publication changed"
+                )
+            return b"".join(chunks), after
+
+        target_stat = (
+            path.stat(follow_symlinks=False)
+            if path.exists() and not path.is_symlink()
+            else None
+        )
+        if path.is_symlink():
+            raise ControlError(f"{description} target is symlinked")
+        exact_candidates: list[Path] = []
+        for candidate in sorted(
+            child
+            for child in path.parent.iterdir()
+            if child.name.startswith(f".{path.name}.")
+            and child.name.endswith(".publishing")
+        ):
+            candidate_raw, candidate_stat = interrupted_bytes(candidate)
+            if target_stat is not None and (
+                candidate_stat.st_dev,
+                candidate_stat.st_ino,
+            ) == (target_stat.st_dev, target_stat.st_ino):
+                candidate.unlink()
+            elif candidate_raw == payload:
+                exact_candidates.append(candidate)
+            else:
+                raise ControlError(
+                    f"{description} has a conflicting interrupted publication"
+                )
+        if not path.exists() and exact_candidates:
+            survivor = exact_candidates.pop(0)
+            os.link(survivor, path, follow_symlinks=False)
+            survivor.unlink()
+        for candidate in exact_candidates:
+            candidate.unlink()
+        if path.exists():
+            existing, existing_raw = _read_stable_json(
+                path, description=description, require_read_only=True
+            )
+            if existing != dict(value) or existing_raw != payload:
+                raise ControlError(
+                    f"{description} already exists with conflicting bytes"
+                )
+        else:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".publishing",
+            )
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.chmod(0o444)
+                os.link(temporary, path, follow_symlinks=False)
+                temporary.unlink()
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+        directory = os.open(
+            path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+def _validate_watchdog_deployment_evidence(
+    value: Mapping[str, Any],
+    *,
+    control: Mapping[str, Any],
+) -> None:
+    immutable = control.get("immutable")
+    if not isinstance(immutable, Mapping):
+        raise ControlError(
+            "external-watchdog deployment cannot bind a missing immutable release"
+        )
+    try:
+        capacity_contract = protected_capacity.load_contract(
+            immutable["protected_capacity_marker_path"],
+            expected_release_git_commit=str(immutable["git_commit"]),
+            expected_marker_id=str(
+                immutable["protected_capacity_marker_id"]
+            ),
+            expected_sha256=str(
+                immutable["protected_capacity_marker_sha256"]
+            ),
+        )
+    except (
+        KeyError,
+        protected_capacity.ProtectedCapacityError,
+    ) as exc:
+        raise ControlError(
+            "external-watchdog deployment cannot verify the release tag object"
+        ) from exc
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "release_id",
+        "release_tag",
+        "release_git_commit",
+        "release_tag_object",
+        "chain_namespace",
+        "deployment_id",
+        "watchdog_code_sha256",
+        "immutable_release_sha256",
+        "control_sha256",
+        "liveness_email",
+        "forced_command_only",
+        "timer_seconds",
+        "systemd_service_loaded",
+        "systemd_timer_active",
+        "systemd_timer_enabled",
+        "evidence_id",
+    }
+    if (
+        set(value) != required
+        or value.get("schema_version") != 1
+        or value.get("protocol")
+        != "schema5-external-watchdog-deployment-evidence-v1"
+        or value.get("passed") is not True
+        or value.get("release_id") != PRODUCTION_RELEASE_ID
+        or value.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
+        or value.get("release_git_commit") != control["immutable"]["git_commit"]
+        or value.get("release_tag_object")
+        != capacity_contract.release_tag_object
+        or value.get("chain_namespace") != "schema5-v1.2-r2"
+        or value.get("control_sha256") != control["immutable_sha256"]
+        or value.get("liveness_email") != control["alert_email"]
+        or value.get("forced_command_only") is not True
+        or value.get("timer_seconds") != 300
+        or value.get("systemd_service_loaded") is not True
+        or value.get("systemd_timer_active") is not True
+        or value.get("systemd_timer_enabled") is not True
+        or any(
+            _SHA256_RE.fullmatch(str(value.get(field, ""))) is None
+            for field in (
+                "deployment_id",
+                "watchdog_code_sha256",
+                "immutable_release_sha256",
+                "control_sha256",
+                "evidence_id",
+            )
+        )
+        or value.get("evidence_id")
+        != _watchdog_self_hash(value, "evidence_id")
+    ):
+        raise ControlError(
+            "external-watchdog deployment evidence is not bound to paused control"
+        )
+
+
+def _validate_external_watchdog_intent(value: Mapping[str, Any]) -> None:
+    required = {
+        "schema_version",
+        "protocol",
+        "intent_id",
+        "drill_id",
+        "immutable_sha256",
+        "deployment",
+        "baseline",
+        "baseline_sha256",
+        "namespace",
+        "created_at",
+        "created_timestamp",
+        "expires_at",
+        "expires_timestamp",
+        "maximum_recovery_seconds",
+    }
+    namespace = value.get("namespace")
+    deployment = value.get("deployment")
+    if (
+        set(value) != required
+        or value.get("schema_version") != 1
+        or value.get("protocol") != EXTERNAL_WATCHDOG_DRILL_PROTOCOL
+        or _SHA256_RE.fullmatch(str(value.get("intent_id", ""))) is None
+        or value.get("intent_id") != _watchdog_self_hash(value, "intent_id")
+        or not isinstance(value.get("drill_id"), str)
+        or not value["drill_id"]
+        or _SHA256_RE.fullmatch(str(value.get("immutable_sha256", ""))) is None
+        or not isinstance(deployment, dict)
+        or set(deployment)
+        != {
+            "path",
+            "sha256",
+            "evidence_id",
+            "deployment_id",
+            "watchdog_code_sha256",
+            "immutable_release_sha256",
+            "control_sha256",
+            "release_git_commit",
+            "release_tag_object",
+        }
+        or not Path(str(deployment.get("path", ""))).is_absolute()
+        or any(
+            _SHA256_RE.fullmatch(str(deployment.get(field, ""))) is None
+            for field in (
+                "sha256",
+                "evidence_id",
+                "deployment_id",
+                "watchdog_code_sha256",
+                "immutable_release_sha256",
+                "control_sha256",
+            )
+        )
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(deployment.get("release_git_commit", ""))
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(deployment.get("release_tag_object", ""))
+        )
+        is None
+        or not isinstance(value.get("baseline"), dict)
+        or value.get("baseline_sha256") != sha256_value(value["baseline"])
+        or not isinstance(namespace, list)
+        or len(namespace) != 4
+        or not isinstance(value.get("created_timestamp"), (int, float))
+        or isinstance(value.get("created_timestamp"), bool)
+        or not isinstance(value.get("expires_timestamp"), (int, float))
+        or isinstance(value.get("expires_timestamp"), bool)
+        or not float(value["created_timestamp"])
+        < float(value["expires_timestamp"])
+        or value.get("maximum_recovery_seconds")
+        != EXTERNAL_WATCHDOG_DRILL_MAX_RECOVERY_SECONDS
+    ):
+        raise ControlError("external-watchdog drill intent is malformed")
+    if (
+        deployment["control_sha256"] != value["immutable_sha256"]
+        or value["baseline"].get("immutable_sha256")
+        != value["immutable_sha256"]
+    ):
+        raise ControlError(
+            "external-watchdog drill intent identities do not agree"
+        )
+    identities: set[tuple[str, str]] = set()
+    job_ids: set[str] = set()
+    for record in namespace:
+        parsed_token = (
+            parse_drill_job_token(str(record.get("job_token", "")))
+            if isinstance(record, dict)
+            else None
+        )
+        if (
+            not isinstance(record, dict)
+            or set(record)
+            != {
+                "role",
+                "target",
+                "job_id",
+                "job_token",
+                "sbatch_path",
+                "dependency_job_id",
+            }
+            or record.get("role") not in ROLE_NAMES
+            or record.get("target") not in {"active", "successor"}
+            or not str(record.get("job_id", "")).isdigit()
+            or not isinstance(record.get("job_token"), str)
+            or parsed_token is None
+            or parsed_token.get("drill") != value["drill_id"]
+            or parsed_token.get("role") != record.get("role")
+            or not Path(str(record.get("sbatch_path", ""))).is_absolute()
+            or (
+                record["target"] == "active"
+                and record.get("dependency_job_id") is not None
+            )
+            or (
+                record["target"] == "successor"
+                and not str(record.get("dependency_job_id", "")).isdigit()
+            )
+        ):
+            raise ControlError(
+                "external-watchdog drill namespace record is malformed"
+            )
+        identities.add((str(record["role"]), str(record["target"])))
+        job_ids.add(str(record["job_id"]))
+    if identities != {
+        (role, target)
+        for role in ROLE_NAMES
+        for target in ("active", "successor")
+    } or len(job_ids) != 4:
+        raise ControlError(
+            "external-watchdog drill namespace is incomplete or duplicated"
+        )
+    by_identity = {
+        (str(record["role"]), str(record["target"])): record
+        for record in namespace
+    }
+    if any(
+        str(by_identity[(role, "successor")]["dependency_job_id"])
+        != str(by_identity[(role, "active")]["job_id"])
+        for role in ROLE_NAMES
+    ):
+        raise ControlError(
+            "external-watchdog successors do not bind their exact active parents"
+        )
+
+
+def _validate_external_watchdog_state(
+    value: Mapping[str, Any], *, intent: Mapping[str, Any]
+) -> None:
+    required = {
+        "schema_version",
+        "protocol",
+        "intent_id",
+        "phase",
+        "revision",
+        "cancellation_started_at",
+        "cancellation_started_timestamp",
+        "cancellation_results",
+        "observations",
+        "repair_attempts",
+        "recovery",
+        "completion_evidence",
+        "last_error",
+    }
+    if (
+        set(value) != required
+        or value.get("schema_version") != 1
+        or value.get("protocol") != EXTERNAL_WATCHDOG_DRILL_STATE_PROTOCOL
+        or value.get("intent_id") != intent["intent_id"]
+        or value.get("phase")
+        not in {
+            "armed",
+            "cancelling",
+            "cancelled",
+            "recovering",
+            "recovered",
+            "complete",
+            "expired",
+        }
+        or not isinstance(value.get("revision"), int)
+        or isinstance(value.get("revision"), bool)
+        or value["revision"] < 0
+        or not isinstance(value.get("cancellation_results"), dict)
+        or not isinstance(value.get("observations"), list)
+        or not isinstance(value.get("repair_attempts"), int)
+        or isinstance(value.get("repair_attempts"), bool)
+        or value["repair_attempts"] < 0
+    ):
+        raise ControlError("external-watchdog drill state is malformed")
+    for key, result in value["cancellation_results"].items():
+        if (
+            not isinstance(key, str)
+            or not key.isdigit()
+            or not isinstance(result, dict)
+            or result.get("job_id") != key
+            or result.get("state")
+            not in {"accepted", "cancelled_reconciled_terminal"}
+        ):
+            raise ControlError(
+                "external-watchdog cancellation result is malformed"
+            )
+    previous_timestamp: float | None = None
+    for observation in value["observations"]:
+        if (
+            not isinstance(observation, dict)
+            or set(observation)
+            != {
+                "schema_version",
+                "intent_id",
+                "captured_at",
+                "captured_timestamp",
+                "namespace_absent",
+                "scheduler_sha256",
+                "observation_id",
+            }
+            or observation.get("schema_version") != 1
+            or observation.get("intent_id") != intent["intent_id"]
+            or observation.get("namespace_absent") is not True
+            or not isinstance(observation.get("captured_timestamp"), (int, float))
+            or isinstance(observation.get("captured_timestamp"), bool)
+            or _SHA256_RE.fullmatch(
+                str(observation.get("scheduler_sha256", ""))
+            )
+            is None
+            or observation.get("observation_id")
+            != _watchdog_self_hash(observation, "observation_id")
+        ):
+            raise ControlError(
+                "external-watchdog scheduler observation is malformed"
+            )
+        observed = float(observation["captured_timestamp"])
+        if previous_timestamp is not None and observed <= previous_timestamp:
+            raise ControlError(
+                "external-watchdog observations are not strictly ordered"
+            )
+        previous_timestamp = observed
+
+
+def _load_external_watchdog_drill(
+    state_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    intent_path = _external_watchdog_drill_intent_path(state_dir)
+    state_path = _external_watchdog_drill_state_path(state_dir)
+    if not intent_path.exists() and not intent_path.is_symlink():
+        if state_path.exists() or state_path.is_symlink():
+            raise ControlError(
+                "external-watchdog drill state exists without marker-first intent"
+            )
+        return None
+    intent, _ = _read_stable_json(
+        intent_path,
+        description="external-watchdog drill intent",
+        require_read_only=True,
+    )
+    _validate_external_watchdog_intent(intent)
+    state, _ = _read_stable_json(
+        state_path,
+        description="external-watchdog drill state",
+        require_read_only=False,
+    )
+    _validate_external_watchdog_state(state, intent=intent)
+    return intent, state
+
+
+def _external_watchdog_fences_drill_claims(state_dir: Path) -> bool:
+    """Fail closed while the exact four-job namespace is frozen/cancelled."""
+
+    intent_path = _external_watchdog_drill_intent_path(state_dir)
+    state_path = _external_watchdog_drill_state_path(state_dir)
+    if not intent_path.exists() and not intent_path.is_symlink():
+        return False
+    if not state_path.exists() and not state_path.is_symlink():
+        return True
+    loaded = _load_external_watchdog_drill(state_dir)
+    if loaded is None:  # pragma: no cover - guarded by the marker check above.
+        return False
+    return loaded[1]["phase"] in {"armed", "cancelling", "cancelled"}
+
+
+def _save_external_watchdog_state(
+    state_dir: Path, value: MutableMapping[str, Any], *, intent: Mapping[str, Any]
+) -> None:
+    value["revision"] = int(value.get("revision", -1)) + 1
+    _validate_external_watchdog_state(value, intent=intent)
+    _atomic_write_json(_external_watchdog_drill_state_path(state_dir), value)
+
+
 def _append_drill_event(
     state_dir: Path,
     state: MutableMapping[str, Any],
@@ -8087,7 +25177,7 @@ def _render_drill_sbatch(
             "#!/bin/bash",
             f"#SBATCH --job-name=asys-s5-drill-{short}-{generation:06d}",
             f"#SBATCH --comment={token}",
-            "#SBATCH --partition=mit_preemptable,mit_normal,mit_normal_gpu",
+            f"#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}",
             "#SBATCH --cpus-per-task=1",
             "#SBATCH --mem=4G",
             "#SBATCH --time=01:00:00",
@@ -8346,6 +25436,10 @@ def _submit_drill_intent_inside_boundary(
         _assert_drill_control_paused(
             state_dir, expected_immutable_sha256=state["immutable_sha256"]
         )
+        if _external_watchdog_fences_drill_claims(state_dir):
+            raise ControllerFenced(
+                "external-watchdog drill froze this exact controller namespace"
+            )
         if state["phase"] != "running":
             raise ControlError("controller-drill submission is disabled while stopping")
         row = state["roles"][role]
@@ -8496,6 +25590,10 @@ def _submit_drill_intent_inside_boundary(
         _assert_drill_control_paused(
             state_dir, expected_immutable_sha256=state["immutable_sha256"]
         )
+        if _external_watchdog_fences_drill_claims(state_dir):
+            raise ControllerFenced(
+                "external-watchdog drill froze this exact controller namespace"
+            )
         row = state["roles"][role]
         current = row.get("submission_intent")
         if (
@@ -8742,6 +25840,10 @@ def claim_drill_controller(
         _assert_drill_control_paused(
             state_dir, expected_immutable_sha256=state["immutable_sha256"]
         )
+        if _external_watchdog_fences_drill_claims(state_dir):
+            raise ControllerFenced(
+                "external-watchdog drill froze this exact controller namespace"
+            )
         if state["drill_id"] != drill_id or state["phase"] != "running":
             raise ControllerFenced("controller drill is not accepting claims")
         row = state["roles"][role]
@@ -9093,6 +26195,691 @@ def controller_drill_status(
         "ready_for_kill": not errors and ready,
         "completed": completed,
     }
+
+
+def _assert_external_watchdog_drill_guard(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    expected_baseline: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Prove that the isolated watchdog drill cannot mutate production state."""
+
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise SchedulerAmbiguity(
+            "external-watchdog drill requires complete, unambiguous squeue+sacct truth"
+        )
+    control = _assert_drill_control_paused(state_dir)
+    production_jobs = [
+        job.job_id for job in _scoped_control_jobs(snapshot) if job.active
+    ]
+    cell_jobs = [
+        job.job_id
+        for job in snapshot.jobs
+        if job.active and _cell_job(job.job_name)
+    ]
+    if production_jobs or cell_jobs:
+        raise SchedulerAmbiguity(
+            "external-watchdog drill requires zero production controllers and cells: "
+            f"controllers={production_jobs}, cells={cell_jobs}"
+        )
+    baseline = controller_drill_baseline(state_dir, control)
+    if expected_baseline is not None and baseline != dict(expected_baseline):
+        raise ControlError(
+            "external-watchdog drill production baseline changed while armed"
+        )
+    return control, baseline
+
+
+def _external_watchdog_namespace_records(
+    state_dir: Path, *, snapshot: SchedulerSnapshot
+) -> list[dict[str, Any]]:
+    state = load_drill_state(state_dir)
+    records: list[dict[str, Any]] = []
+    for role in ROLE_NAMES:
+        row = state["roles"][role]
+        for target in ("active", "successor"):
+            record = row.get(target)
+            if not isinstance(record, dict) or not record.get("job_id"):
+                raise SchedulerAmbiguity(
+                    f"watchdog drill requires an exact {role} {target} job"
+                )
+            dependency = (
+                str(record["dependency_job_id"])
+                if record.get("dependency_job_id") is not None
+                else None
+            )
+            _unique_exact_drill_job(
+                snapshot,
+                job_id=str(record["job_id"]),
+                job_token=str(record["job_token"]),
+                sbatch_path=str(record["sbatch_path"]),
+                require_active=True,
+                expected_dependency_job_id=dependency,
+            )
+            records.append(
+                {
+                    "role": role,
+                    "target": target,
+                    "job_id": str(record["job_id"]),
+                    "job_token": str(record["job_token"]),
+                    "sbatch_path": str(Path(record["sbatch_path"]).resolve()),
+                    "dependency_job_id": dependency,
+                }
+            )
+    if len({record["job_id"] for record in records}) != 4:
+        raise SchedulerAmbiguity(
+            "external-watchdog drill namespace does not contain four unique jobs"
+        )
+    return records
+
+
+def arm_external_watchdog_drill(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    deployment_evidence_path: Path,
+    expires_seconds: float = EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Seal an expiring, paused, admission-zero exact cancellation intent."""
+
+    timestamp = snapshot.captured_at if now is None else float(now)
+    expiry = float(expires_seconds)
+    if not 120.0 <= expiry <= EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS:
+        raise ControlError("external-watchdog drill expiry must be 120..3600 seconds")
+    with external_watchdog_drill_lock(state_dir), drill_submission_boundary_lock(
+        state_dir
+    ):
+        control, baseline = _assert_external_watchdog_drill_guard(
+            state_dir, snapshot=snapshot
+        )
+        status = controller_drill_status(
+            state_dir, snapshot=snapshot, now=timestamp
+        )
+        if not status["ready_for_kill"]:
+            raise SchedulerAmbiguity(
+                "external-watchdog drill can arm only over a globally ready "
+                "controller-drill namespace: "
+                + "; ".join(status["errors"])
+            )
+        deployment_path = Path(
+            os.path.abspath(os.fspath(deployment_evidence_path.expanduser()))
+        )
+        deployment, deployment_raw = _read_stable_json(
+            deployment_path,
+            description="external-watchdog deployment evidence",
+            require_read_only=True,
+        )
+        _validate_watchdog_deployment_evidence(deployment, control=control)
+        namespace = _external_watchdog_namespace_records(
+            state_dir, snapshot=snapshot
+        )
+        intent: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_DRILL_PROTOCOL,
+            "drill_id": status["drill_id"],
+            "immutable_sha256": control["immutable_sha256"],
+            "deployment": {
+                "path": str(deployment_path),
+                "sha256": hashlib.sha256(deployment_raw).hexdigest(),
+                "evidence_id": deployment["evidence_id"],
+                "deployment_id": deployment["deployment_id"],
+                "watchdog_code_sha256": deployment["watchdog_code_sha256"],
+                "immutable_release_sha256": deployment[
+                    "immutable_release_sha256"
+                ],
+                "control_sha256": deployment["control_sha256"],
+                "release_git_commit": deployment["release_git_commit"],
+                "release_tag_object": deployment["release_tag_object"],
+            },
+            "baseline": baseline,
+            "baseline_sha256": sha256_value(baseline),
+            "namespace": namespace,
+            "created_at": utc_timestamp(timestamp),
+            "created_timestamp": timestamp,
+            "expires_at": utc_timestamp(timestamp + expiry),
+            "expires_timestamp": timestamp + expiry,
+            "maximum_recovery_seconds": (
+                EXTERNAL_WATCHDOG_DRILL_MAX_RECOVERY_SECONDS
+            ),
+        }
+        intent["intent_id"] = _watchdog_self_hash(intent, "intent_id")
+        intent_path = _external_watchdog_drill_intent_path(state_dir)
+        if intent_path.exists() or intent_path.is_symlink():
+            existing, _ = _read_stable_json(
+                intent_path,
+                description="external-watchdog drill intent",
+                require_read_only=True,
+            )
+            _validate_external_watchdog_intent(existing)
+            if (
+                existing["drill_id"] != intent["drill_id"]
+                or existing["immutable_sha256"] != intent["immutable_sha256"]
+                or existing["deployment"] != intent["deployment"]
+                or existing["baseline"] != intent["baseline"]
+                or existing["namespace"] != intent["namespace"]
+            ):
+                raise ControlError(
+                    "another sealed external-watchdog drill intent already exists"
+                )
+            intent = existing
+        else:
+            _publish_sealed_json_once(
+                intent_path,
+                intent,
+                description="external-watchdog drill intent",
+            )
+        state_path = _external_watchdog_drill_state_path(state_dir)
+        if state_path.exists() or state_path.is_symlink():
+            loaded = _load_external_watchdog_drill(state_dir)
+            assert loaded is not None
+            _, state = loaded
+            return {
+                "intent": intent,
+                "state": state,
+                "idempotent": True,
+            }
+        state: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_DRILL_STATE_PROTOCOL,
+            "intent_id": intent["intent_id"],
+            "phase": "armed",
+            "revision": 0,
+            "cancellation_started_at": None,
+            "cancellation_started_timestamp": None,
+            "cancellation_results": {},
+            "observations": [],
+            "repair_attempts": 0,
+            "recovery": None,
+            "completion_evidence": None,
+            "last_error": None,
+        }
+        _validate_external_watchdog_state(state, intent=intent)
+        _atomic_write_json(state_path, state)
+        return {"intent": intent, "state": state, "idempotent": False}
+
+
+def _reconcile_external_watchdog_cancellation(
+    state_dir: Path,
+    *,
+    intent: Mapping[str, Any],
+    state: MutableMapping[str, Any],
+    snapshot: SchedulerSnapshot,
+    now: float,
+) -> bool:
+    """Close accepted cancellation records only from complete terminal truth."""
+
+    all_cancelled = True
+    for record in intent["namespace"]:
+        job = _unique_exact_drill_job(
+            snapshot,
+            job_id=str(record["job_id"]),
+            job_token=str(record["job_token"]),
+            sbatch_path=str(record["sbatch_path"]),
+            require_active=None,
+            expected_dependency_job_id=(
+                str(record["dependency_job_id"])
+                if record["dependency_job_id"] is not None
+                else None
+            ),
+        )
+        terminal = normalize_scheduler_state(job.state)
+        if job.active:
+            all_cancelled = False
+            continue
+        if terminal != "CANCELLED":
+            raise SchedulerAmbiguity(
+                f"watchdog drill target {job.job_id} terminated as {terminal}, "
+                "not CANCELLED"
+            )
+        state["cancellation_results"][job.job_id] = {
+            "job_id": job.job_id,
+            "state": "cancelled_reconciled_terminal",
+            "scheduler_state": terminal,
+            "reconciled_at": utc_timestamp(now),
+            "reconciled_timestamp": now,
+        }
+    if all_cancelled and state["phase"] in {"armed", "cancelling"}:
+        state["phase"] = "cancelled"
+        _save_external_watchdog_state(state_dir, state, intent=intent)
+    return all_cancelled
+
+
+def cancel_external_watchdog_drill_namespace(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Persist the four exact targets, then cancel only that sealed namespace."""
+
+    timestamp = snapshot.captured_at if now is None else float(now)
+    runner = cancel_runner or _run_subprocess
+    with external_watchdog_drill_lock(state_dir), drill_submission_boundary_lock(
+        state_dir
+    ):
+        loaded = _load_external_watchdog_drill(state_dir)
+        if loaded is None:
+            raise ControlError("external-watchdog drill has not been armed")
+        intent, state = loaded
+        if timestamp >= float(intent["expires_timestamp"]):
+            state["phase"] = "expired"
+            _save_external_watchdog_state(state_dir, state, intent=intent)
+            raise ControlError("external-watchdog drill intent expired before cancellation")
+        _assert_external_watchdog_drill_guard(
+            state_dir,
+            snapshot=snapshot,
+            expected_baseline=intent["baseline"],
+        )
+        if state["phase"] in {"cancelled", "recovering", "recovered", "complete"}:
+            return {"intent_id": intent["intent_id"], "state": state}
+        if state["phase"] not in {"armed", "cancelling"}:
+            raise ControlError(
+                f"external-watchdog drill cannot cancel from phase {state['phase']}"
+            )
+        if state["phase"] == "armed":
+            state["phase"] = "cancelling"
+            state["cancellation_started_at"] = utc_timestamp(timestamp)
+            state["cancellation_started_timestamp"] = timestamp
+            _save_external_watchdog_state(state_dir, state, intent=intent)
+        for record in intent["namespace"]:
+            job = _unique_exact_drill_job(
+                snapshot,
+                job_id=str(record["job_id"]),
+                job_token=str(record["job_token"]),
+                sbatch_path=str(record["sbatch_path"]),
+                require_active=None,
+                expected_dependency_job_id=(
+                    str(record["dependency_job_id"])
+                    if record["dependency_job_id"] is not None
+                    else None
+                ),
+            )
+            terminal = normalize_scheduler_state(job.state)
+            if not job.active:
+                if terminal != "CANCELLED":
+                    raise SchedulerAmbiguity(
+                        f"watchdog drill target {job.job_id} is terminal {terminal}"
+                    )
+                state["cancellation_results"][job.job_id] = {
+                    "job_id": job.job_id,
+                    "state": "cancelled_reconciled_terminal",
+                    "scheduler_state": terminal,
+                    "reconciled_at": utc_timestamp(timestamp),
+                    "reconciled_timestamp": timestamp,
+                }
+                _save_external_watchdog_state(state_dir, state, intent=intent)
+                continue
+            prior = state["cancellation_results"].get(job.job_id)
+            if isinstance(prior, dict) and prior.get("state") == "accepted":
+                continue
+            proc = runner(["scancel", job.job_id])
+            result = {
+                "job_id": job.job_id,
+                "state": "accepted",
+                "returncode": int(proc.returncode),
+                "stderr": proc.stderr[-500:],
+                "accepted_at": utc_timestamp(timestamp),
+                "accepted_timestamp": timestamp,
+            }
+            if proc.returncode != 0:
+                state["last_error"] = (
+                    f"scancel {job.job_id} failed rc={proc.returncode}: "
+                    f"{proc.stderr[-500:]}"
+                )
+                _save_external_watchdog_state(state_dir, state, intent=intent)
+                raise ControlError(state["last_error"])
+            state["cancellation_results"][job.job_id] = result
+            _save_external_watchdog_state(state_dir, state, intent=intent)
+        _reconcile_external_watchdog_cancellation(
+            state_dir,
+            intent=intent,
+            state=state,
+            snapshot=snapshot,
+            now=timestamp,
+        )
+        return {"intent_id": intent["intent_id"], "state": state}
+
+
+def _external_watchdog_role_status(
+    state_dir: Path, *, snapshot: SchedulerSnapshot, now: float
+) -> dict[str, Any]:
+    """Project the isolated drill chains into the ordinary watchdog role schema."""
+
+    drill = load_drill_state(state_dir)
+    jobs_by_id = {job.job_id: job for job in snapshot.jobs}
+    result: dict[str, Any] = {}
+    for role in ROLE_NAMES:
+        row = drill["roles"][role]
+        active = row.get("active") if isinstance(row.get("active"), dict) else {}
+        successor = (
+            row.get("successor")
+            if isinstance(row.get("successor"), dict)
+            else {}
+        )
+        active_job = jobs_by_id.get(str(active.get("job_id", "")))
+        successor_job = jobs_by_id.get(str(successor.get("job_id", "")))
+        heartbeat = row.get("heartbeat")
+        result[role] = {
+            "recorded_active_job_id": active.get("job_id"),
+            "live_active": bool(active_job is not None and active_job.active),
+            "active_identity_mismatch": bool(
+                active_job is not None
+                and active_job.active
+                and active_job.comment != active.get("job_token")
+            ),
+            "scheduler_state": (
+                active_job.state if active_job is not None else None
+            ),
+            "recorded_successor_job_id": successor.get("job_id"),
+            "successor_live": bool(
+                successor_job is not None and successor_job.active
+            ),
+            "successor_identity_mismatch": bool(
+                successor_job is not None
+                and successor_job.active
+                and successor_job.comment != successor.get("job_token")
+            ),
+            "successor_scheduler_state": (
+                successor_job.state if successor_job is not None else None
+            ),
+            "heartbeat": copy.deepcopy(heartbeat),
+            "heartbeat_age_seconds": (
+                now - float(heartbeat["timestamp"])
+                if isinstance(heartbeat, dict)
+                and isinstance(heartbeat.get("timestamp"), (int, float))
+                else None
+            ),
+            "heartbeat_stale": (
+                not isinstance(heartbeat, dict)
+                or not isinstance(heartbeat.get("timestamp"), (int, float))
+                or now - float(heartbeat["timestamp"])
+                > STALE_HEARTBEAT_SECONDS
+            ),
+        }
+    return result
+
+
+def external_watchdog_drill_status(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    record_observation: bool,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Return the forced-command status, recording only proven absent cuts."""
+
+    timestamp = snapshot.captured_at if now is None else float(now)
+    report = live_status(state_dir, snapshot=snapshot, now=timestamp)
+    with external_watchdog_drill_lock(state_dir):
+        loaded = _load_external_watchdog_drill(state_dir)
+        if loaded is None:
+            return report
+        intent, state = loaded
+        if timestamp >= float(intent["expires_timestamp"]) and state["phase"] not in {
+            "complete",
+            "expired",
+        }:
+            state["phase"] = "expired"
+            _save_external_watchdog_state(state_dir, state, intent=intent)
+        if state["phase"] in {"complete", "expired"}:
+            return report
+        _, baseline = _assert_external_watchdog_drill_guard(
+            state_dir,
+            snapshot=snapshot,
+            expected_baseline=intent["baseline"],
+        )
+        namespace_absent = _reconcile_external_watchdog_cancellation(
+            state_dir,
+            intent=intent,
+            state=state,
+            snapshot=snapshot,
+            now=timestamp,
+        )
+        roles = _external_watchdog_role_status(
+            state_dir, snapshot=snapshot, now=timestamp
+        )
+        chains_absent = all(
+            not row["live_active"] and not row["successor_live"]
+            for row in roles.values()
+        )
+        if (
+            record_observation
+            and state["phase"] in {"cancelled", "recovering"}
+            and namespace_absent
+            and chains_absent
+            and (
+                not state["observations"]
+                or float(state["observations"][-1]["captured_timestamp"])
+                < timestamp
+            )
+        ):
+            scheduler_identity = {
+                "captured_timestamp": timestamp,
+                "jobs": [
+                    {
+                        "job_id": job.job_id,
+                        "state": normalize_scheduler_state(job.state),
+                        "comment": job.comment,
+                    }
+                    for job in sorted(snapshot.jobs, key=lambda item: item.job_id)
+                    if job.comment.startswith(DRILL_TOKEN_PREFIX)
+                ],
+            }
+            observation: dict[str, Any] = {
+                "schema_version": 1,
+                "intent_id": intent["intent_id"],
+                "captured_at": utc_timestamp(timestamp),
+                "captured_timestamp": timestamp,
+                "namespace_absent": True,
+                "scheduler_sha256": sha256_value(scheduler_identity),
+            }
+            observation["observation_id"] = _watchdog_self_hash(
+                observation, "observation_id"
+            )
+            state["observations"].append(observation)
+            _save_external_watchdog_state(state_dir, state, intent=intent)
+        report["controllers"] = roles
+        report["effective_admission_ceiling"] = 0
+        report["watchdog_drill"] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_DRILL_PROTOCOL,
+            "active": True,
+            "intent_id": intent["intent_id"],
+            "drill_id": intent["drill_id"],
+            "phase": state["phase"],
+            "created_timestamp": intent["created_timestamp"],
+            "expires_timestamp": intent["expires_timestamp"],
+            "maximum_recovery_seconds": intent["maximum_recovery_seconds"],
+            "admission_zero": True,
+            "production_baseline_unchanged": (
+                baseline == intent["baseline"]
+            ),
+            "namespace_job_ids": [
+                record["job_id"] for record in intent["namespace"]
+            ],
+        }
+        return report
+
+
+def repair_external_watchdog_drill(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Route forced ``repair-chain`` only to the sealed paused drill namespace."""
+
+    timestamp = snapshot.captured_at if now is None else float(now)
+    with external_watchdog_drill_lock(state_dir):
+        loaded = _load_external_watchdog_drill(state_dir)
+        if loaded is None:
+            raise ControlError("no active external-watchdog drill intent")
+        intent, state = loaded
+        if timestamp >= float(intent["expires_timestamp"]):
+            state["phase"] = "expired"
+            _save_external_watchdog_state(state_dir, state, intent=intent)
+            raise ControlError("external-watchdog drill intent expired")
+        _assert_external_watchdog_drill_guard(
+            state_dir,
+            snapshot=snapshot,
+            expected_baseline=intent["baseline"],
+        )
+        if state["phase"] not in {"cancelled", "recovering", "recovered"}:
+            raise ControlError(
+                f"watchdog repair is fenced in phase {state['phase']}"
+            )
+        observations = state["observations"]
+        if (
+            len(observations) < 2
+            or float(observations[-1]["captured_timestamp"])
+            - float(observations[-2]["captured_timestamp"])
+            < 60.0
+        ):
+            raise ControlError(
+                "watchdog repair requires two persisted absent observations "
+                "at least 60 seconds apart"
+            )
+        if state["phase"] == "recovered":
+            return {
+                "desired_state": "paused",
+                "watchdog_drill": "recovered",
+                "submitted": [],
+            }
+        state["phase"] = "recovering"
+        state["repair_attempts"] = int(state["repair_attempts"]) + 1
+        _save_external_watchdog_state(state_dir, state, intent=intent)
+        submitted: list[dict[str, Any]] = []
+        for role in ROLE_NAMES:
+            record = submit_drill_intent(
+                state_dir,
+                role=role,
+                target="active",
+                dependency_job_id=None,
+                scheduler=snapshot,
+                submit_runner=submit_runner,
+                now=timestamp,
+            )
+            submitted.append({"role": role, "job_id": record["job_id"]})
+        return {
+            "desired_state": "paused",
+            "watchdog_drill": "recovering",
+            "intent_id": intent["intent_id"],
+            "submitted": submitted,
+        }
+
+
+def complete_external_watchdog_drill(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    output_path: Path,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Seal bounded duplicate-free recovery evidence without finishing the base drill."""
+
+    timestamp = snapshot.captured_at if now is None else float(now)
+    with external_watchdog_drill_lock(state_dir):
+        loaded = _load_external_watchdog_drill(state_dir)
+        if loaded is None:
+            raise ControlError("external-watchdog drill has not been armed")
+        intent, state = loaded
+        _assert_external_watchdog_drill_guard(
+            state_dir,
+            snapshot=snapshot,
+            expected_baseline=intent["baseline"],
+        )
+        status = controller_drill_status(
+            state_dir, snapshot=snapshot, now=timestamp
+        )
+        if not status["ready_for_kill"]:
+            raise SchedulerAmbiguity(
+                "external-watchdog recovery is not globally ready: "
+                + "; ".join(status["errors"])
+            )
+        current = _external_watchdog_namespace_records(
+            state_dir, snapshot=snapshot
+        )
+        original_ids = {record["job_id"] for record in intent["namespace"]}
+        current_ids = {record["job_id"] for record in current}
+        if original_ids & current_ids or len(current_ids) != 4:
+            raise SchedulerAmbiguity(
+                "external-watchdog recovery did not create one new four-job namespace"
+            )
+        started = state.get("cancellation_started_timestamp")
+        if not isinstance(started, (int, float)) or isinstance(started, bool):
+            raise ControlError(
+                "external-watchdog drill lacks a persisted cancellation start"
+            )
+        recovery_seconds = timestamp - float(started)
+        if not 0 <= recovery_seconds <= EXTERNAL_WATCHDOG_DRILL_MAX_RECOVERY_SECONDS:
+            raise ControlError(
+                "external-watchdog namespace recovery exceeded 15 minutes"
+            )
+        if (
+            len(state["observations"]) < 2
+            or float(state["observations"][-1]["captured_timestamp"])
+            - float(state["observations"][-2]["captured_timestamp"])
+            < 60.0
+        ):
+            raise ControlError(
+                "external-watchdog completion lacks two independent observations"
+            )
+        deployment = intent["deployment"]
+        evidence: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_DRILL_EVIDENCE_PROTOCOL,
+            "passed": True,
+            "release_id": PRODUCTION_RELEASE_ID,
+            "release_tag": PRODUCTION_OPERATIONAL_TAG,
+            "release_git_commit": deployment["release_git_commit"],
+            "release_tag_object": deployment["release_tag_object"],
+            "chain_namespace": "schema5-v1.2-r2",
+            "deployment_id": deployment["deployment_id"],
+            "watchdog_code_sha256": deployment["watchdog_code_sha256"],
+            "immutable_release_sha256": deployment[
+                "immutable_release_sha256"
+            ],
+            "control_sha256": deployment["control_sha256"],
+            "scheduler_observations": [
+                float(item["captured_timestamp"])
+                for item in state["observations"][-2:]
+            ],
+            "namespace_cancellation_recovery_seconds": recovery_seconds,
+            "duplicate_jobs": 0,
+            "duplicate_admission_intents": 0,
+            "fairness_mutations": 0,
+        }
+        evidence["evidence_id"] = _watchdog_self_hash(
+            evidence, "evidence_id"
+        )
+        sealed_path, sealed_sha256 = _publish_sealed_json_once(
+            output_path,
+            evidence,
+            description="external-watchdog drill evidence",
+        )
+        state["phase"] = "complete"
+        state["recovery"] = {
+            "completed_at": utc_timestamp(timestamp),
+            "completed_timestamp": timestamp,
+            "recovery_seconds": recovery_seconds,
+            "original_job_ids": sorted(original_ids),
+            "recovered_job_ids": sorted(current_ids),
+        }
+        state["completion_evidence"] = {
+            "path": str(sealed_path),
+            "sha256": sealed_sha256,
+            "evidence_id": evidence["evidence_id"],
+        }
+        _save_external_watchdog_state(state_dir, state, intent=intent)
+        return evidence
 
 
 def kill_drill_controller(
@@ -10102,6 +27889,625 @@ def finish_controller_drill(
     return marker
 
 
+def _update_admission_safety_hold_locked(
+    state_dir: Path,
+    control: dict[str, Any],
+    *,
+    active_critical_keys: Sequence[str],
+    clean_poll: bool,
+    semantic_scan_clean: bool | None,
+    timestamp: float,
+) -> bool:
+    """Mutate one loaded control record while both admission/control locks are held.
+
+    Keeping this primitive lock-free lets critical-alert persistence and ceiling-zero
+    fencing share one uninterrupted admission boundary.  Callers must save ``control``
+    when the return value is true.
+    """
+
+    requested = {
+        str(key) for key in active_critical_keys if isinstance(key, str) and key
+    }
+    requested.update(_active_critical_alerts(control))
+    existing_hold = control["admission_safety_hold"]
+    if existing_hold["active"] and existing_hold["mode"] == "operator":
+        # An operator transaction and monitor incident are two independent fences.
+        # Keep incident reasons layered on the operator hold until their *own*
+        # transient/integrity clearing contract has run; merely resolving the live
+        # alert must never let capacity completion erase the incident.
+        capacity_reasons = sorted(
+            reason
+            for reason in existing_hold["reasons"]
+            if reason.startswith("capacity-transition:")
+        )
+        if len(capacity_reasons) != 1:
+            raise ControlError("operator capacity hold lost its unique transaction cause")
+        observed = sorted(requested)
+        prior_incidents = sorted(
+            reason
+            for reason in existing_hold["reasons"]
+            if not reason.startswith("capacity-transition:")
+        )
+        epoch_closed = False
+        if observed:
+            # Throughput acceptance is based on continuous clean operation.  A
+            # critical incident invalidates the active measurement interval, while
+            # ordinary controller successors never call this path.
+            epoch_closed = _close_open_epoch(
+                control, reason="admission_safety_hold", now=timestamp
+            )
+        before = copy.deepcopy(existing_hold)
+        if observed:
+            incident_reasons = observed
+            existing_hold["consecutive_clean_polls"] = 0
+            existing_hold["semantic_clean_after_activation"] = False
+            existing_hold["acknowledged_at"] = None
+            existing_hold["acknowledged_timestamp"] = None
+        else:
+            incident_reasons = prior_incidents
+            if semantic_scan_clean is True and incident_reasons:
+                existing_hold["semantic_clean_after_activation"] = True
+            if clean_poll and incident_reasons:
+                existing_hold["consecutive_clean_polls"] = (
+                    int(existing_hold["consecutive_clean_polls"]) + 1
+                )
+            transient = [
+                reason
+                for reason in incident_reasons
+                if reason not in SCIENTIFIC_INTEGRITY_ALERT_KEYS
+            ]
+            if (
+                transient
+                and existing_hold["consecutive_clean_polls"]
+                >= ADMISSION_SAFETY_HOLD_CLEAR_POLLS
+            ):
+                incident_reasons = [
+                    reason
+                    for reason in incident_reasons
+                    if reason in SCIENTIFIC_INTEGRITY_ALERT_KEYS
+                ]
+                existing_hold["consecutive_clean_polls"] = 0
+        existing_hold["reasons"] = sorted(
+            [*capacity_reasons, *incident_reasons]
+        )
+        existing_hold["updated_at"] = utc_timestamp(timestamp)
+        existing_hold["updated_timestamp"] = timestamp
+        changed = existing_hold != before or epoch_closed
+        if changed:
+            existing_hold["history"].append(
+                {
+                    "event": "updated",
+                    "mode": "operator",
+                    "reasons": list(existing_hold["reasons"]),
+                    "at": utc_timestamp(timestamp),
+                    "timestamp": timestamp,
+                }
+            )
+            append_transition(
+                state_dir,
+                control,
+                event="admission_safety_hold_updated",
+                details={
+                    "active": True,
+                    "mode": "operator",
+                    "reasons": list(existing_hold["reasons"]),
+                    "consecutive_clean_polls": existing_hold[
+                        "consecutive_clean_polls"
+                    ],
+                    "effective_ceiling": 0,
+                },
+                now=timestamp,
+            )
+        return changed
+    reasons = sorted(requested)
+    hold = existing_hold
+    # The 48-hour gate is a continuous-clean-operation contract.  Persistently close
+    # its active epoch at the same transaction boundary that drops admission to zero.
+    # A later successful production poll opens a new epoch; controller successors
+    # alone do not reset it.
+    changed = bool(
+        reasons
+        and _close_open_epoch(
+            control, reason="admission_safety_hold", now=timestamp
+        )
+    )
+    event: str | None = None
+    if reasons:
+        mode = (
+            "integrity"
+            if set(reasons) & SCIENTIFIC_INTEGRITY_ALERT_KEYS
+            else "transient"
+        )
+        if hold["active"] and hold["mode"] in {"integrity", "operator"}:
+            mode = str(hold["mode"])
+        if not hold["active"]:
+            hold["active"] = True
+            hold["activated_at"] = utc_timestamp(timestamp)
+            hold["activated_timestamp"] = timestamp
+            event = "activated"
+            changed = True
+        elif hold["reasons"] != reasons or hold["mode"] != mode:
+            event = "updated"
+            changed = True
+        elif (
+            hold["consecutive_clean_polls"] != 0
+            or hold["semantic_clean_after_activation"] is True
+        ):
+            event = "updated"
+            changed = True
+        hold["mode"] = mode
+        hold["reasons"] = reasons
+        hold["consecutive_clean_polls"] = 0
+        # Any newly observed critical finding invalidates a prior clean scan;
+        # integrity acknowledgement must always follow the latest incident.
+        hold["semantic_clean_after_activation"] = False
+        hold["updated_at"] = utc_timestamp(timestamp)
+        hold["updated_timestamp"] = timestamp
+        hold["acknowledged_at"] = None
+        hold["acknowledged_timestamp"] = None
+    elif hold["active"]:
+        if semantic_scan_clean is True:
+            if not hold["semantic_clean_after_activation"]:
+                changed = True
+            hold["semantic_clean_after_activation"] = True
+        if clean_poll:
+            hold["consecutive_clean_polls"] = (
+                int(hold["consecutive_clean_polls"]) + 1
+            )
+            changed = True
+        hold["updated_at"] = utc_timestamp(timestamp)
+        hold["updated_timestamp"] = timestamp
+        if (
+            hold["mode"] == "transient"
+            and hold["consecutive_clean_polls"]
+            >= ADMISSION_SAFETY_HOLD_CLEAR_POLLS
+        ):
+            previous_reasons = list(hold["reasons"])
+            hold["history"].append(
+                {
+                    "event": "cleared",
+                    "mode": "transient",
+                    "reasons": previous_reasons,
+                    "at": utc_timestamp(timestamp),
+                    "timestamp": timestamp,
+                    "clear_reason": "two_clean_health_polls",
+                }
+            )
+            hold.update(
+                {
+                    "active": False,
+                    "mode": None,
+                    "reasons": [],
+                    "consecutive_clean_polls": 0,
+                    "semantic_clean_after_activation": False,
+                    "activated_at": None,
+                    "activated_timestamp": None,
+                    "acknowledged_at": None,
+                    "acknowledged_timestamp": None,
+                }
+            )
+            event = "cleared"
+    if event in {"activated", "updated"}:
+        hold["history"].append(
+            {
+                "event": event,
+                "mode": hold["mode"],
+                "reasons": list(hold["reasons"]),
+                "at": utc_timestamp(timestamp),
+                "timestamp": timestamp,
+            }
+        )
+    if changed or event is not None:
+        append_transition(
+            state_dir,
+            control,
+            event=f"admission_safety_hold_{event or 'observed'}",
+            details={
+                "active": hold["active"],
+                "mode": hold["mode"],
+                "reasons": list(hold["reasons"]),
+                "consecutive_clean_polls": hold[
+                    "consecutive_clean_polls"
+                ],
+                "effective_ceiling": 0 if hold["active"] else hold[
+                    "configured_ceiling"
+                ],
+            },
+            now=timestamp,
+        )
+    return changed or event is not None
+
+
+def update_admission_safety_hold(
+    state_dir: Path,
+    *,
+    active_critical_keys: Sequence[str] = (),
+    clean_poll: bool = False,
+    semantic_scan_clean: bool | None = None,
+    scheduler: SchedulerSnapshot | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    signal_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Transactionally fence cell admission from durable monitor truth.
+
+    The staged ramp ceiling remains intact as ``configured_ceiling`` so a transient
+    incident cannot silently promote or demote the scientific rollout.  The public
+    dispatcher contract exposes an effective ceiling of zero while this record is
+    active.  Two distinct clean polls clear transient holds; integrity holds require a
+    clean semantic scan followed by the explicit :func:`acknowledge_admission_hold`.
+    """
+
+    timestamp = time.time() if now is None else float(now)
+    if scheduler is not None and scheduler_reader is not None:
+        raise ControlError(
+            "safety-hold update accepts scheduler or scheduler_reader, not both"
+        )
+    with admission_boundary_lock(state_dir):
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            was_active = bool(control["admission_safety_hold"]["active"])
+            changed = _update_admission_safety_hold_locked(
+                state_dir,
+                control,
+                active_critical_keys=active_critical_keys,
+                clean_poll=clean_poll,
+                semantic_scan_clean=semantic_scan_clean,
+                timestamp=timestamp,
+            )
+            if changed:
+                _save_control(state_dir, control, now=timestamp)
+            is_active = bool(control["admission_safety_hold"]["active"])
+        if is_active and (
+            not was_active
+            or not isinstance(
+                control.get("safety_hold_drain_intent"), dict
+            )
+            or control["safety_hold_drain_intent"].get("state") != "complete"
+        ):
+            control = _ensure_safety_hold_cell_drain_locked(
+                state_dir,
+                scheduler=scheduler,
+                scheduler_reader=scheduler_reader,
+                signal_runner=signal_runner,
+                now=timestamp,
+            )
+        return copy.deepcopy(control)
+
+
+def acknowledge_admission_hold(
+    state_dir: Path, *, note: str, now: float | None = None
+) -> dict[str, Any]:
+    """Explicitly release a semantically-cleared scientific-integrity hold."""
+
+    if not isinstance(note, str) or not note.strip():
+        raise ControlError("ack-hold requires a non-empty operator note")
+    timestamp = time.time() if now is None else float(now)
+    with admission_boundary_lock(state_dir):
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            hold = control["admission_safety_hold"]
+            layered_operator_integrity = bool(
+                hold["active"]
+                and hold["mode"] == "operator"
+                and set(hold["reasons"]) & SCIENTIFIC_INTEGRITY_ALERT_KEYS
+            )
+            if (
+                not hold["active"]
+                or (
+                    hold["mode"] != "integrity"
+                    and not layered_operator_integrity
+                )
+            ):
+                raise ControlError("there is no active scientific-integrity hold")
+            capacity_remediation = sorted(
+                set(hold["reasons"]) & CAPACITY_REMEDIATION_ALERT_KEYS
+            )
+            if capacity_remediation:
+                raise ControlError(
+                    "capacity-gate hold requires the controlled capacity-transition "
+                    "workflow and cannot be released by ack-hold: "
+                    + ", ".join(capacity_remediation)
+                )
+            active_critical = _active_critical_alerts(control)
+            if active_critical:
+                raise ControlError(
+                    "cannot acknowledge hold with unresolved critical alerts: "
+                    + ", ".join(active_critical)
+                )
+            if hold["semantic_clean_after_activation"] is not True:
+                raise ControlError(
+                    "cannot acknowledge hold before a clean post-incident semantic scan"
+                )
+            previous_reasons = list(hold["reasons"])
+            if layered_operator_integrity:
+                remaining = [
+                    reason
+                    for reason in hold["reasons"]
+                    if reason not in SCIENTIFIC_INTEGRITY_ALERT_KEYS
+                ]
+                if not any(
+                    reason.startswith("capacity-transition:")
+                    for reason in remaining
+                ):
+                    raise ControlError(
+                        "layered integrity acknowledgement lost capacity cause"
+                    )
+                hold["history"].append(
+                    {
+                        "event": "updated",
+                        "mode": "operator",
+                        "reasons": remaining,
+                        "at": utc_timestamp(timestamp),
+                        "timestamp": timestamp,
+                        "clear_reason": "explicit_layered_integrity_acknowledgement",
+                        "operator_note": note.strip()[:2000],
+                    }
+                )
+                hold.update(
+                    {
+                        "reasons": remaining,
+                        "consecutive_clean_polls": 0,
+                        "semantic_clean_after_activation": False,
+                        "updated_at": utc_timestamp(timestamp),
+                        "updated_timestamp": timestamp,
+                        "acknowledged_at": utc_timestamp(timestamp),
+                        "acknowledged_timestamp": timestamp,
+                    }
+                )
+                append_transition(
+                    state_dir,
+                    control,
+                    event="admission_safety_hold_acknowledged",
+                    details={
+                        "previous_reasons": previous_reasons,
+                        "remaining_operator_reasons": remaining,
+                        "operator_note": note.strip()[:2000],
+                    },
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+                return copy.deepcopy(control)
+            hold["history"].append(
+                {
+                    "event": "cleared",
+                    "mode": "integrity",
+                    "reasons": previous_reasons,
+                    "at": utc_timestamp(timestamp),
+                    "timestamp": timestamp,
+                    "clear_reason": "explicit_operator_acknowledgement",
+                    "operator_note": note.strip()[:2000],
+                }
+            )
+            hold.update(
+                {
+                    "active": False,
+                    "mode": None,
+                    "reasons": [],
+                    "consecutive_clean_polls": 0,
+                    "semantic_clean_after_activation": False,
+                    "activated_at": None,
+                    "activated_timestamp": None,
+                    "updated_at": utc_timestamp(timestamp),
+                    "updated_timestamp": timestamp,
+                    "acknowledged_at": utc_timestamp(timestamp),
+                    "acknowledged_timestamp": timestamp,
+                }
+            )
+            append_transition(
+                state_dir,
+                control,
+                event="admission_safety_hold_acknowledged",
+                details={
+                    "previous_reasons": previous_reasons,
+                    "operator_note": note.strip()[:2000],
+                    "effective_ceiling": hold["configured_ceiling"],
+                },
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+            return copy.deepcopy(control)
+
+
+def _new_alert_email_state() -> dict[str, Any]:
+    return {
+        "requested": False,
+        "attempted": False,
+        "delivered": False,
+        "attempt_count": 0,
+        "attempted_at": None,
+        "attempted_timestamp": None,
+        "delivered_at": None,
+        "delivered_timestamp": None,
+        "next_retry_at": None,
+        "next_retry_timestamp": None,
+        "in_flight_token": None,
+        "error": None,
+    }
+
+
+def _attempt_alert_email(
+    state_dir: Path,
+    *,
+    alert_id: str,
+    mail_runner: (
+        Callable[[Sequence[str], str], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+) -> bool:
+    """Deliver one alert from a persisted intent and durably schedule failures."""
+
+    timestamp = time.time() if now is None else float(now)
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        match = next(
+            (row for row in control["alerts"] if row.get("alert_id") == alert_id),
+            None,
+        )
+        if match is None:
+            raise ControlError(f"unknown alert email target {alert_id!r}")
+        email_state = match.get("email")
+        if not isinstance(email_state, dict):
+            email_state = _new_alert_email_state()
+            match["email"] = email_state
+        if (
+            match.get("resolved_at") is not None
+            or email_state.get("requested") is not True
+            or email_state.get("delivered") is True
+        ):
+            return bool(email_state.get("delivered"))
+        next_retry = email_state.get("next_retry_timestamp")
+        if isinstance(next_retry, (int, float)) and timestamp < float(next_retry):
+            return False
+        in_flight = email_state.get("in_flight_token")
+        last_attempt = email_state.get("attempted_timestamp")
+        if (
+            isinstance(in_flight, str)
+            and in_flight
+            and isinstance(last_attempt, (int, float))
+            and timestamp - float(last_attempt) < 300.0
+        ):
+            return False
+        token = uuid.uuid4().hex
+        attempt_count = int(email_state.get("attempt_count", 0)) + 1
+        email_state.update(
+            {
+                "attempted": True,
+                "attempt_count": attempt_count,
+                "attempted_at": utc_timestamp(timestamp),
+                "attempted_timestamp": timestamp,
+                "in_flight_token": token,
+                "error": None,
+            }
+        )
+        _append_jsonl(
+            state_dir / ALERT_JOURNAL,
+            {
+                "at": utc_timestamp(timestamp),
+                "timestamp": timestamp,
+                "action": "email_attempt_started",
+                "alert_id": alert_id,
+                "attempt": attempt_count,
+                "intent_token": token,
+            },
+        )
+        _save_control(state_dir, control, now=timestamp)
+        recipient = str(control["alert_email"])
+        severity = str(match["severity"])
+        kind = str(match["kind"])
+        message = str(match["message"])
+
+    subject = f"[agents-scaling:{severity}] {kind}"
+    body = (
+        f"Schema-5 sweep alert\n\nKind: {kind}\nSeverity: {severity}\n"
+        f"Time: {utc_timestamp(timestamp)}\nState: {state_dir}\n\n{message}\n"
+    )
+    delivered = False
+    error: str | None = None
+    try:
+        if mail_runner is not None:
+            proc = mail_runner(["mail", "-s", subject, recipient], body)
+        else:
+            proc = subprocess.run(
+                ["mail", "-s", subject, recipient],
+                input=body,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30.0,
+            )
+        delivered = proc.returncode == 0
+        error = None if delivered else proc.stderr.strip()[:500]
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"[:500]
+
+    completed = time.time() if now is None else timestamp
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        match = next(
+            row for row in control["alerts"] if row.get("alert_id") == alert_id
+        )
+        email_state = match["email"]
+        if email_state.get("in_flight_token") != token:
+            raise ControlError("alert email delivery intent was superseded")
+        email_state["in_flight_token"] = None
+        email_state["error"] = error
+        if delivered:
+            email_state["delivered"] = True
+            email_state["delivered_at"] = utc_timestamp(completed)
+            email_state["delivered_timestamp"] = completed
+            email_state["next_retry_at"] = None
+            email_state["next_retry_timestamp"] = None
+        else:
+            delay = EMAIL_RETRY_DELAYS_SECONDS[
+                min(attempt_count - 1, len(EMAIL_RETRY_DELAYS_SECONDS) - 1)
+            ]
+            retry_at = completed + delay
+            email_state["next_retry_at"] = utc_timestamp(retry_at)
+            email_state["next_retry_timestamp"] = retry_at
+        _append_jsonl(
+            state_dir / ALERT_JOURNAL,
+            {
+                "at": utc_timestamp(completed),
+                "timestamp": completed,
+                "action": "email_delivered" if delivered else "email_retry_scheduled",
+                "alert_id": alert_id,
+                "attempt": attempt_count,
+                "delivered": delivered,
+                "error": error,
+                "next_retry_timestamp": email_state["next_retry_timestamp"],
+            },
+        )
+        _save_control(state_dir, control, now=completed)
+    return delivered
+
+
+def retry_pending_alert_emails(
+    state_dir: Path,
+    *,
+    mail_runner: (
+        Callable[[Sequence[str], str], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    now: float | None = None,
+    maximum_attempts: int | None = None,
+) -> dict[str, Any]:
+    """Retry all eligible unresolved alerts; only confirmed delivery deduplicates."""
+
+    timestamp = time.time() if now is None else float(now)
+    control = load_control(state_dir)
+    eligible: list[str] = []
+    for alert in control["alerts"]:
+        email = alert.get("email")
+        if (
+            alert.get("resolved_at") is not None
+            or not isinstance(email, dict)
+            or email.get("requested") is not True
+            or email.get("delivered") is True
+            or (
+                maximum_attempts is not None
+                and int(email.get("attempt_count", 0)) >= maximum_attempts
+            )
+        ):
+            continue
+        next_retry = email.get("next_retry_timestamp")
+        if next_retry is None or timestamp >= float(next_retry):
+            eligible.append(str(alert["alert_id"]))
+    delivered: list[str] = []
+    attempted: list[str] = []
+    for alert_id in eligible:
+        attempted.append(alert_id)
+        if _attempt_alert_email(
+            state_dir,
+            alert_id=alert_id,
+            mail_runner=mail_runner,
+            now=timestamp,
+        ):
+            delivered.append(alert_id)
+    return {"attempted": attempted, "delivered": delivered}
+
+
 def record_alert(
     state_dir: Path,
     *,
@@ -10113,6 +28519,11 @@ def record_alert(
     mail_runner: (
         Callable[[Sequence[str], str], subprocess.CompletedProcess[str]] | None
     ) = None,
+    scheduler: SchedulerSnapshot | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    signal_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Persist a deduplicated alert before attempting best-effort email delivery."""
@@ -10120,105 +28531,123 @@ def record_alert(
         raise ControlError("alert severity must be warning or critical")
     if not kind or not message or not dedupe_key:
         raise ControlError("alert kind, message, and dedupe key must be non-empty")
+    if scheduler is not None and scheduler_reader is not None:
+        raise ControlError("critical alert accepts scheduler or scheduler_reader, not both")
     timestamp = time.time() if now is None else float(now)
-    with control_lock(state_dir):
-        control = load_control(state_dir)
-        active = next(
-            (
-                alert
-                for alert in reversed(control["alerts"])
-                if alert.get("dedupe_key") == dedupe_key
-                and alert.get("resolved_at") is None
-            ),
-            None,
-        )
-        if active is None:
-            payload: dict[str, Any] = {
-                "alert_id": uuid.uuid4().hex,
+    # A critical alert is itself a fail-closed admission fact.  Persist it while
+    # owning the same cross-node boundary as cell sbatch so a new array cannot slip
+    # between detection and the durable hold update below.
+    boundary = (
+        admission_boundary_lock(state_dir)
+        if severity == "critical"
+        else nullcontext()
+    )
+    drain_error: Exception | None = None
+    with boundary:
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            active = next(
+                (
+                    alert
+                    for alert in reversed(control["alerts"])
+                    if alert.get("dedupe_key") == dedupe_key
+                    and alert.get("resolved_at") is None
+                ),
+                None,
+            )
+            if active is None:
+                payload: dict[str, Any] = {
+                    "alert_id": uuid.uuid4().hex,
+                    "kind": kind,
+                    "severity": severity,
+                    "message": message,
+                    "dedupe_key": dedupe_key,
+                    "first_at": utc_timestamp(timestamp),
+                    "first_timestamp": timestamp,
+                    "last_at": utc_timestamp(timestamp),
+                    "last_timestamp": timestamp,
+                    "occurrences": 1,
+                    "resolved_at": None,
+                    "email": _new_alert_email_state(),
+                }
+                control["alerts"].append(payload)
+            else:
+                if (
+                    active.get("kind") != kind
+                    or active.get("severity") != severity
+                ):
+                    raise ControlError(
+                        "active alert dedupe key cannot change kind or severity"
+                    )
+                active["occurrences"] = int(active.get("occurrences", 1)) + 1
+                active["last_at"] = utc_timestamp(timestamp)
+                active["last_timestamp"] = timestamp
+                active["message"] = message
+                payload = active
+            if send_email and payload["email"].get("delivered") is not True:
+                payload["email"]["requested"] = True
+                if payload["email"].get("next_retry_timestamp") is None:
+                    payload["email"]["next_retry_at"] = utc_timestamp(timestamp)
+                    payload["email"]["next_retry_timestamp"] = timestamp
+            journal_record = {
+                "at": utc_timestamp(timestamp),
+                "timestamp": timestamp,
+                "action": "raised",
+                "alert_id": payload["alert_id"],
                 "kind": kind,
                 "severity": severity,
                 "message": message,
                 "dedupe_key": dedupe_key,
-                "first_at": utc_timestamp(timestamp),
-                "first_timestamp": timestamp,
-                "last_at": utc_timestamp(timestamp),
-                "last_timestamp": timestamp,
-                "occurrences": 1,
-                "resolved_at": None,
-                "email": {"attempted": False, "delivered": False},
+                "occurrences": payload["occurrences"],
             }
-            control["alerts"].append(payload)
-        else:
-            active["occurrences"] = int(active.get("occurrences", 1)) + 1
-            active["last_at"] = utc_timestamp(timestamp)
-            active["last_timestamp"] = timestamp
-            active["message"] = message
-            payload = active
-        journal_record = {
-            "at": utc_timestamp(timestamp),
-            "timestamp": timestamp,
-            "action": "raised",
-            "alert_id": payload["alert_id"],
-            "kind": kind,
-            "severity": severity,
-            "message": message,
-            "dedupe_key": dedupe_key,
-            "occurrences": payload["occurrences"],
-        }
-        _append_jsonl(state_dir / ALERT_JOURNAL, journal_record)
-        append_transition(
+            _append_jsonl(state_dir / ALERT_JOURNAL, journal_record)
+            append_transition(
+                state_dir,
+                control,
+                event="alert_raised",
+                details={
+                    "alert_id": payload["alert_id"],
+                    "kind": kind,
+                    "severity": severity,
+                    "dedupe_key": dedupe_key,
+                },
+                now=timestamp,
+            )
+            if severity == "critical":
+                _update_admission_safety_hold_locked(
+                    state_dir,
+                    control,
+                    active_critical_keys=(dedupe_key,),
+                    clean_poll=False,
+                    semantic_scan_clean=None,
+                    timestamp=timestamp,
+                )
+            _save_control(state_dir, control, now=timestamp)
+            alert_id = str(payload["alert_id"])
+        if severity == "critical":
+            try:
+                _ensure_safety_hold_cell_drain_locked(
+                    state_dir,
+                    scheduler=scheduler,
+                    scheduler_reader=scheduler_reader,
+                    signal_runner=signal_runner,
+                    now=timestamp,
+                )
+            except Exception as exc:
+                # The critical alert and ceiling-zero hold are already durable.  Finish
+                # best-effort alert delivery after releasing the admission boundary,
+                # then surface the drain failure so the controller cannot report a
+                # healthy monitor cycle.
+                drain_error = exc
+    if send_email:
+        _attempt_alert_email(
             state_dir,
-            control,
-            event="alert_raised",
-            details={
-                "alert_id": payload["alert_id"],
-                "kind": kind,
-                "severity": severity,
-                "dedupe_key": dedupe_key,
-            },
+            alert_id=alert_id,
+            mail_runner=mail_runner,
             now=timestamp,
         )
-        _save_control(state_dir, control, now=timestamp)
-        alert_id = str(payload["alert_id"])
-        email = str(control["alert_email"])
-
-    if send_email:
-        subject = f"[agents-scaling:{severity}] {kind}"
-        body = (
-            f"Schema-5 sweep alert\n\nKind: {kind}\nSeverity: {severity}\n"
-            f"Time: {utc_timestamp(timestamp)}\nState: {state_dir}\n\n{message}\n"
-        )
-        delivered = False
-        error: str | None = None
-        if mail_runner is not None:
-            proc = mail_runner(["mail", "-s", subject, email], body)
-            delivered = proc.returncode == 0
-            error = None if delivered else proc.stderr.strip()[:500]
-        else:
-            try:
-                proc = subprocess.run(
-                    ["mail", "-s", subject, email],
-                    input=body,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                delivered = proc.returncode == 0
-                error = None if delivered else proc.stderr.strip()[:500]
-            except OSError as exc:
-                error = str(exc)
-        with control_lock(state_dir):
-            control = load_control(state_dir)
-            match = next(
-                alert for alert in control["alerts"] if alert["alert_id"] == alert_id
-            )
-            match["email"] = {
-                "attempted": True,
-                "delivered": delivered,
-                "attempted_at": utc_timestamp(),
-                "error": error,
-            }
-            _save_control(state_dir, control, now=time.time())
+    if drain_error is not None:
+        raise drain_error
     return next(
         alert
         for alert in load_control(state_dir)["alerts"]
@@ -10316,16 +28745,34 @@ def live_status(
         successor = (
             state.get("successor") if isinstance(state.get("successor"), dict) else {}
         )
-        active_job = jobs_by_id.get(str(active.get("job_id", "")))
-        successor_job = jobs_by_id.get(str(successor.get("job_id", "")))
+        active_id_job = jobs_by_id.get(str(active.get("job_id", "")))
+        successor_id_job = jobs_by_id.get(str(successor.get("job_id", "")))
+        active_job = _exact_live_controller_job(snapshot, active)
+        successor_job = _exact_live_controller_job(snapshot, successor)
         age = controller_liveness_age(state, timestamp)
         roles[role] = {
             "recorded_active_job_id": active.get("job_id"),
-            "live_active": bool(active_job and active_job.active),
-            "scheduler_state": active_job.state if active_job else None,
+            "live_active": active_job is not None,
+            "active_identity_mismatch": bool(
+                active_id_job is not None
+                and active_id_job.active
+                and active_job is None
+            ),
+            "scheduler_state": (
+                active_id_job.state if active_id_job is not None else None
+            ),
             "recorded_successor_job_id": successor.get("job_id"),
-            "successor_live": bool(successor_job and successor_job.active),
-            "successor_scheduler_state": successor_job.state if successor_job else None,
+            "successor_live": successor_job is not None,
+            "successor_identity_mismatch": bool(
+                successor_id_job is not None
+                and successor_id_job.active
+                and successor_job is None
+            ),
+            "successor_scheduler_state": (
+                successor_id_job.state
+                if successor_id_job is not None
+                else None
+            ),
             "heartbeat": state.get("heartbeat"),
             "heartbeat_age_seconds": age,
             "heartbeat_stale": age is None or age > STALE_HEARTBEAT_SECONDS,
@@ -10352,24 +28799,80 @@ def live_status(
     active_alerts = [
         alert for alert in control["alerts"] if alert.get("resolved_at") is None
     ]
-    controllers_healthy = control["desired_state"] == "paused" or all(
-        not role["heartbeat_stale"] and role["live_active"] for role in roles.values()
+    active_critical_keys = sorted(
+        set(_active_critical_alerts(control))
+        | set(_active_critical_alerts_from_journal(state_dir))
+    )
+    controller_identity_mismatch = any(
+        role["active_identity_mismatch"]
+        or role["successor_identity_mismatch"]
+        for role in roles.values()
+    )
+    controllers_healthy = (
+        (
+            control["desired_state"] == "paused"
+            or all(
+                not role["heartbeat_stale"] and role["live_active"]
+                for role in roles.values()
+            )
+        )
+        and not controller_identity_mismatch
     )
     healthy = (
         snapshot.squeue_ok
         and snapshot.sacct_ok
         and not snapshot.errors
         and controllers_healthy
-        and not any(alert.get("severity") == "critical" for alert in active_alerts)
+        and not active_critical_keys
     )
+    configured_ceiling = int(control["admission"]["current_ceiling"])
+    stage_entries = [
+        float(row["timestamp"])
+        for row in control["admission_ramp"].get("promotions", [])
+        if isinstance(row, dict)
+        and row.get("to_ceiling") == configured_ceiling
+        and isinstance(row.get("timestamp"), (int, float))
+    ]
+    if stage_entries:
+        admission_stage_started_timestamp: float | None = max(stage_entries)
+    else:
+        resume = control.get("resume_intent")
+        value = (
+            resume.get("completed_timestamp")
+            if isinstance(resume, dict)
+            else None
+        )
+        admission_stage_started_timestamp = (
+            float(value) if isinstance(value, (int, float)) else None
+        )
     return {
         "schema_version": 1,
         "captured_at": utc_timestamp(timestamp),
+        "captured_timestamp": timestamp,
+        "release_id": control["immutable"]["release_id"],
+        "git_commit": control["immutable"]["git_commit"],
+        "immutable_sha256": control["immutable_sha256"],
         "desired_state": control["desired_state"],
         "drain_requested": control["drain_requested"],
         "rollout_generation": control["rollout_generation"],
         "admission": copy.deepcopy(control["admission"]),
+        "admission_safety_hold": copy.deepcopy(
+            control["admission_safety_hold"]
+        ),
+        "safety_hold_drain_intent": copy.deepcopy(
+            control.get("safety_hold_drain_intent")
+        ),
+        "effective_admission_ceiling": (
+            0
+            if control["desired_state"] != "running"
+            or control["admission_safety_hold"]["active"]
+            or active_critical_keys
+            or control["finalization"]["state"] in ACTIVE_FINALIZATION_STATES
+            else int(control["admission"]["current_ceiling"])
+        ),
+        "admission_stage_started_timestamp": admission_stage_started_timestamp,
         "admission_ramp": copy.deepcopy(control["admission_ramp"]),
+        "capacity": copy.deepcopy(control["capacity"]),
         "healthy": healthy,
         "scheduler": {
             "squeue_ok": snapshot.squeue_ok,
@@ -10396,6 +28899,7 @@ def live_status(
                 for cadence, row in control["monitoring"]["cadences"].items()
             },
         },
+        "finalization": copy.deepcopy(control["finalization"]),
         "dispatcher_cache": cached,
         "readiness": copy.deepcopy(control["readiness"]),
         "open_throughput_epoch": (
@@ -10411,15 +28915,20 @@ def live_status(
 def _role_has_live_chain(
     control: Mapping[str, Any], role: str, snapshot: SchedulerSnapshot
 ) -> bool:
-    active_ids = snapshot.active_job_ids
     state = control["controllers"][role]
     for field in ("active", "successor", "submission_intent"):
         record = state.get(field)
-        if isinstance(record, dict) and str(record.get("job_id", "")) in active_ids:
+        if isinstance(record, dict) and _exact_live_controller_job(
+            snapshot, record
+        ) is not None:
             return True
         if isinstance(record, dict) and record.get("state") == "submitting":
             matches = _find_intent_jobs(snapshot, str(record.get("job_token", "")))
-            if any(job.active for job in matches):
+            active = [job for job in matches if job.active]
+            if len(active) == 1 and (
+                not record.get("job_id")
+                or active[0].job_id == str(record["job_id"])
+            ):
                 return True
     return False
 
@@ -10491,10 +29000,9 @@ def trigger_stale_takeover(
     )
     refreshed = load_control(state_dir)
     successor = refreshed["controllers"][role].get("successor")
-    if isinstance(successor, dict) and any(
-        job.job_id == str(successor.get("job_id")) and job.active
-        for job in remaining.jobs
-    ):
+    if isinstance(successor, dict) and _exact_live_controller_job(
+        remaining, successor
+    ) is not None:
         return {
             "role": role,
             "action": "released_recorded_successor",
@@ -10735,9 +29243,13 @@ def _ensure_own_successor(
         return None
     successor = control["controllers"][role].get("successor")
     if isinstance(successor, dict) and successor.get("job_id"):
-        if any(
-            job.job_id == str(successor["job_id"]) and job.active
-            for job in snapshot.jobs
+        if (
+            _exact_live_own_successor_job(
+                snapshot,
+                successor=successor,
+                parent_job_id=job_id,
+            )
+            is not None
         ):
             return successor
     return submit_controller_intent(
@@ -10747,6 +29259,32 @@ def _ensure_own_successor(
         dependency_job_id=job_id,
         scheduler=snapshot,
     )
+
+
+def _exact_live_own_successor_job(
+    snapshot: SchedulerSnapshot,
+    *,
+    successor: Mapping[str, Any],
+    parent_job_id: str,
+) -> SchedulerJob | None:
+    """Bind one live successor to its exact immutable script and afterany parent."""
+
+    job = _exact_live_controller_job(snapshot, successor)
+    if job is None:
+        return None
+    sbatch_path = str(
+        Path(str(successor.get("sbatch_path", ""))).expanduser().resolve()
+    )
+    if not _command_binds_exact_sbatch(job.command, sbatch_path):
+        raise SchedulerAmbiguity(
+            f"controller successor {job.job_id} does not bind its immutable sbatch"
+        )
+    if not _dependency_binds_exact_afterany(job.dependency, parent_job_id):
+        raise SchedulerAmbiguity(
+            f"controller successor {job.job_id} does not bind exact afterany parent "
+            f"{parent_job_id}"
+        )
+    return job
 
 
 def _signal_process_group(child: subprocess.Popen[Any], sig: signal.Signals) -> None:
@@ -10764,6 +29302,9 @@ class _ManagedMonitorProcess:
     attempt_id: str
     process: subprocess.Popen[Any]
     output: TextIO
+    started_timestamp: float
+    timeout_seconds: float
+    termination_started_timestamp: float | None = None
 
 
 def _validate_monitor_cadence(cadence: str) -> None:
@@ -10895,6 +29436,13 @@ def begin_monitor_attempt(
             "controller_intent_token": str(controller_intent_token),
             "controller_job_id": str(controller_job_id),
             "log_path": str(log_path),
+            "timeout_seconds": MONITOR_DEADLINE_SECONDS[cadence],
+            "deadline_at": utc_timestamp(
+                timestamp + MONITOR_DEADLINE_SECONDS[cadence]
+            ),
+            "deadline_timestamp": (
+                timestamp + MONITOR_DEADLINE_SECONDS[cadence]
+            ),
         }
         row["active_attempt"] = attempt
         row["last_attempt_at"] = utc_timestamp(timestamp)
@@ -11097,6 +29645,8 @@ def _start_monitor_process(
             attempt_id=str(attempt["attempt_id"]),
             process=process,
             output=output,
+            started_timestamp=float(attempt["started_timestamp"]),
+            timeout_seconds=float(attempt["timeout_seconds"]),
         )
     except Exception as exc:
         if output is not None:
@@ -11128,24 +29678,70 @@ def _service_schema5_monitors(
     controller_job_id: str,
     now: float,
     popen_factory: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
+    alert_mail_runner: (
+        Callable[[Sequence[str], str], subprocess.CompletedProcess[str]] | None
+    ) = None,
 ) -> None:
     """Poll and launch monitors; all per-cadence errors are controller-safe."""
+
+    # Email delivery is owned by the long-lived dispatcher supervisor, not by a
+    # successful monitor subprocess.  This keeps persisted alert intents live when
+    # every monitor repeatedly fails before it can publish a report.  The durable
+    # in-flight token and retry timestamp fence concurrent monitor/controller calls.
+    try:
+        retry_pending_alert_emails(
+            state_dir,
+            mail_runner=alert_mail_runner,
+            now=now,
+        )
+    except Exception as exc:
+        print(
+            f"[schema5-control] pending alert email retry failed safely: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     for cadence, managed in list(processes.items()):
         try:
             returncode = managed.process.poll()
             if returncode is None:
+                elapsed = max(0.0, now - managed.started_timestamp)
+                if elapsed >= managed.timeout_seconds:
+                    if managed.termination_started_timestamp is None:
+                        _signal_process_group(managed.process, signal.SIGTERM)
+                        managed.termination_started_timestamp = now
+                        managed.output.write(
+                            "\n[schema5-control] monitor deadline exceeded; "
+                            f"sent TERM after {elapsed:.1f}s\n"
+                        )
+                        managed.output.flush()
+                    elif (
+                        now - managed.termination_started_timestamp
+                        >= MONITOR_TERMINATE_GRACE_SECONDS
+                    ):
+                        _signal_process_group(managed.process, signal.SIGKILL)
+                        managed.output.write(
+                            "[schema5-control] monitor ignored TERM; sent KILL\n"
+                        )
+                        managed.output.flush()
                 continue
             managed.output.close()
+            timed_out = managed.termination_started_timestamp is not None
             row = complete_monitor_attempt(
                 state_dir,
                 cadence=cadence,
                 attempt_id=managed.attempt_id,
                 returncode=int(returncode),
+                error=(
+                    f"{cadence} monitor exceeded its "
+                    f"{managed.timeout_seconds:.0f}s execution deadline"
+                    if timed_out
+                    else None
+                ),
                 now=now,
             )
             processes.pop(cadence, None)
-            if returncode in MONITOR_SUCCESS_RETURN_CODES:
+            if returncode in MONITOR_SUCCESS_RETURN_CODES and not timed_out:
                 resolve_alert(
                     state_dir,
                     dedupe_key=f"{MONITOR_FAILURE_ALERT_PREFIX}:{cadence}",
@@ -11157,6 +29753,7 @@ def _service_schema5_monitors(
                     cadence=cadence,
                     message=(
                         f"{cadence} monitor exited with code {returncode}; "
+                        f"timed_out={timed_out}; "
                         f"log={managed.output.name}; failures={row['consecutive_failures']}"
                     ),
                     now=now,
@@ -11285,6 +29882,12 @@ def supervise(
     try:
         with role_singleton_lock(state_dir, role):
             initial_snapshot = query_scheduler(tolerate_errors=True)
+            validate_live_controller_placement(
+                job_id=job_id,
+                role=role,
+                generation=generation,
+                intent_token=intent_token,
+            )
             claim_controller(
                 state_dir,
                 role=role,
@@ -11362,17 +29965,103 @@ def supervise(
                     )
                     wait_heartbeat = time.time()
                 time.sleep(min(1.0, heartbeat_interval))
-            # Queue exactly one afterany successor before starting the managed plane.  A
-            # transient submission failure is retried on every heartbeat below.
-            try:
-                _ensure_own_successor(
-                    state_dir, role=role, job_id=job_id, snapshot=initial_snapshot
+            # A preemptible controller is safe only after its exact afterany successor
+            # is durably accepted *and* visible with the frozen script, parent edge,
+            # controller-only partition, and Requeue=0.  Never start the dispatcher or
+            # fleet plane in the sbatch/visibility gap.  Heartbeats and integrity
+            # leases continue while transient scheduler failures are retried.
+            successor_wait_heartbeat = 0.0
+            while True:
+                waiting_control = load_control(state_dir)
+                if stop_requested or waiting_control["desired_state"] == "paused":
+                    returncode = 0
+                    exit_reason = (
+                        "desired_state_paused"
+                        if waiting_control["desired_state"] == "paused"
+                        else "signal"
+                    )
+                    return returncode
+                successor_now = time.time()
+                successor_snapshot = query_scheduler(
+                    tolerate_errors=True,
+                    now=successor_now,
                 )
-            except (ControlError, OSError) as exc:
-                print(
-                    f"[schema5-control] successor retry required: {exc}",
-                    file=sys.stderr,
-                )
+                verified_successor: dict[str, Any] | None = None
+                try:
+                    candidate = _ensure_own_successor(
+                        state_dir,
+                        role=role,
+                        job_id=job_id,
+                        snapshot=successor_snapshot,
+                    )
+                    if isinstance(candidate, dict):
+                        successor_job = _exact_live_own_successor_job(
+                            successor_snapshot,
+                            successor=candidate,
+                            parent_job_id=job_id,
+                        )
+                        if successor_job is not None:
+                            validate_live_controller_placement(
+                                job_id=str(candidate["job_id"]),
+                                role=role,
+                                generation=int(candidate["generation"]),
+                                intent_token=str(candidate["intent_token"]),
+                            )
+                            verified_successor = candidate
+                except (ControlError, OSError) as exc:
+                    print(
+                        f"[schema5-control] successor retry required for {role}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                if verified_successor is not None:
+                    break
+                if successor_now - successor_wait_heartbeat >= heartbeat_interval:
+                    heartbeat_controller(
+                        state_dir,
+                        role=role,
+                        generation=generation,
+                        intent_token=intent_token,
+                        job_id=job_id,
+                        now=successor_now,
+                    )
+                    runtime_refresh = _start_runtime_lease_refresh(
+                        state_dir, waiting_control
+                    )
+                    _await_runtime_lease_refresh_with_heartbeats(
+                        runtime_refresh,
+                        state_dir=state_dir,
+                        role=role,
+                        generation=generation,
+                        intent_token=intent_token,
+                        job_id=job_id,
+                        heartbeat_interval=heartbeat_interval,
+                    )
+                    runtime_refresh = None
+                    validate_runtime_integrity_attestation(
+                        waiting_control,
+                        verify_metadata=True,
+                    )
+                    snapshot_refresh = _start_snapshot_lease_refresh(
+                        state_dir, waiting_control
+                    )
+                    _await_snapshot_lease_refresh_with_heartbeats(
+                        snapshot_refresh,
+                        state_dir=state_dir,
+                        role=role,
+                        generation=generation,
+                        intent_token=intent_token,
+                        job_id=job_id,
+                        heartbeat_interval=heartbeat_interval,
+                    )
+                    snapshot_refresh = None
+                    validate_snapshot_integrity_attestation(
+                        waiting_control,
+                        state_dir=state_dir,
+                        verify_lease=True,
+                    )
+                    successor_wait_heartbeat = time.time()
+                time.sleep(min(1.0, heartbeat_interval))
 
             control = load_control(state_dir, verify_files=True)
             # This is the last gate before either managed plane executes.  One
@@ -11417,7 +30106,11 @@ def supervise(
                 if role == "dispatcher"
                 else "fleet_supervisor_command"
             )
-            command = list(control["immutable"][command_field])
+            command = (
+                list(control["immutable"][command_field])
+                if role == "dispatcher"
+                else effective_fleet_supervisor_command(control)
+            )
             environment = os.environ.copy()
             environment.update(production_environment(control))
             environment["ASYS_SCHEMA5_CONTROL"] = str(_state_path(state_dir).resolve())
@@ -11720,10 +30413,55 @@ def build_immutable_pins(
             f"Hugging Face home is missing or symlinked: {raw_hf_home}"
         )
     resolved_hf_home = raw_hf_home.resolve()
+    protected_capacity_marker_path = protected_capacity.canonical_marker_path(
+        results_root
+    )
+    try:
+        protected_capacity_contract = protected_capacity.load_contract(
+            protected_capacity_marker_path,
+            expected_release_git_commit=str(fragment["git_commit"]),
+        )
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ImmutablePinError(
+            f"protected scientific capacity is not ready: {exc}"
+        ) from exc
+    qualifying_client_placements = []
+    for placement in protected_capacity_contract.client_placements:
+        try:
+            protected_capacity.authorize_client(
+                protected_capacity_contract,
+                partition=placement.partition,
+                qos=placement.qos,
+                required_slots=PRODUCTION_DESIGN_CELL_CAP,
+                required_reserve_jobs=64,
+            )
+        except protected_capacity.ProtectedCapacityError:
+            continue
+        qualifying_client_placements.append(placement)
+    if len(qualifying_client_placements) != 1:
+        raise ImmutablePinError(
+            "protected capacity must identify exactly one scientific client "
+            "placement that authorizes 384 cells plus the 64-job reserve"
+        )
+    protected_client_placement = qualifying_client_placements[0]
     server_pool_root = results_root / "server_pools" / "schema5-v1"
     if server_pool_root.is_symlink() or not server_pool_root.is_dir():
         raise ImmutablePinError(
             f"canonical schema-5 server pool is missing or symlinked: {server_pool_root}"
+        )
+    try:
+        stale_pool_entries = sorted(path.name for path in server_pool_root.iterdir())
+    except OSError as exc:
+        raise ImmutablePinError(
+            f"cannot inspect canonical schema-5 server pool: {server_pool_root}: {exc}"
+        ) from exc
+    if stale_pool_entries:
+        preview = ", ".join(stale_pool_entries[:8])
+        if len(stale_pool_entries) > 8:
+            preview += f", ... ({len(stale_pool_entries)} entries total)"
+        raise ImmutablePinError(
+            "canonical schema-5 server pool must be empty before v1.2 pin "
+            f"publication; stale entries found in {server_pool_root}: {preview}"
         )
 
     runs: list[dict[str, Any]] = []
@@ -11833,6 +30571,30 @@ def build_immutable_pins(
         **copy.deepcopy(fragment),
         "release_bundle_root": str(bundle),
         "release_bundle_id": str(marker["release_bundle_id"]),
+        "protected_capacity_marker_path": str(
+            protected_capacity_contract.path
+        ),
+        "protected_capacity_marker_sha256": (
+            protected_capacity_contract.sha256
+        ),
+        "protected_capacity_marker_id": protected_capacity_contract.marker_id,
+        "protected_client_partition": protected_client_placement.partition,
+        "protected_client_qos": protected_client_placement.qos,
+        "protected_client_slots": int(
+            protected_client_placement.capacity["slots"]
+        ),
+        "protected_client_cpus": int(
+            protected_client_placement.capacity["cpus"]
+        ),
+        "protected_client_memory_mib": int(
+            protected_client_placement.capacity["memory_mib"]
+        ),
+        "protected_client_reserve_jobs": int(
+            protected_client_placement.capacity["reserve_jobs"]
+        ),
+        "protected_client_submit_headroom": int(
+            protected_client_placement.capacity["submit_headroom"]
+        ),
         "hf_home": str(resolved_hf_home),
         "results_root": str(results_root),
         "server_pool_root": str(server_pool_root),
@@ -11931,6 +30693,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("resume", help="fail closed, then set desired_state=running")
 
+    generation_catalog = subparsers.add_parser(
+        "refresh-generation-catalog",
+        help=(
+            "seal and verify the exact endpoint-generation authority for the "
+            "current or fenced next rollout"
+        ),
+    )
+    generation_catalog.add_argument("--rollout-generation", type=int)
+
     pause = subparsers.add_parser("pause", help="pause admission and gracefully drain")
     pause.add_argument("--drain", action="store_true", required=True)
 
@@ -11947,20 +30718,88 @@ def _build_parser() -> argparse.ArgumentParser:
     attest = subparsers.add_parser(
         "attest", help="attach checksummed readiness evidence"
     )
-    attest.add_argument("--gate", required=True, choices=REQUIRED_GATES[:-1])
-    attest.add_argument("--evidence", type=Path, required=True)
+    attest.add_argument(
+        "--gate",
+        required=True,
+        choices=(*REQUIRED_GATES[:-1], *PRODUCTION_AUTHORIZATION_GATES),
+    )
+    attest.add_argument("--evidence", type=Path)
     attest.add_argument("--sha256")
+    attest.add_argument("--chain-manifest", type=Path)
 
     ceiling = subparsers.add_parser(
         "set-ceiling",
         help="hold or reduce staged admission (monitor evidence alone may raise it)",
     )
-    ceiling.add_argument("--value", type=int, required=True, choices=(24, 96, 192, 384))
+    ceiling.add_argument(
+        "--value", type=int, required=True, choices=ADMISSION_RAMP_STAGES
+    )
+
+    acknowledge = subparsers.add_parser(
+        "ack-hold",
+        help="release a semantically-cleared scientific-integrity admission hold",
+    )
+    acknowledge.add_argument("--note", required=True)
+
+    client_capacity = subparsers.add_parser(
+        "attest-client-capacity",
+        help=(
+            "attach a sealed non-preemptible client placement/canary/readiness "
+            "capacity generation"
+        ),
+    )
+    client_capacity.add_argument("--evidence", type=Path, required=True)
+    client_capacity.add_argument("--sha256", required=True)
+
+    build_client_capacity = subparsers.add_parser(
+        "build-client-capacity",
+        help=(
+            "capture and seal a candidate non-preemptible client placement; "
+            "submit transactionally submits or adopts its exact canary"
+        ),
+    )
+    build_client_capacity.add_argument(
+        "action", choices=("dry-run", "prepare", "submit", "apply")
+    )
+    build_client_capacity.add_argument("--partition", required=True)
+    build_client_capacity.add_argument(
+        "--target-ceiling", type=int, required=True, choices=(192, 384)
+    )
+
+    capacity = subparsers.add_parser(
+        "capacity-transition",
+        help="retire and publish one checksummed fleet/capacity generation",
+    )
+    capacity.add_argument(
+        "action",
+        nargs="?",
+        default="dry-run",
+        choices=("status", "dry-run", "apply", "complete"),
+    )
+    capacity.add_argument("--fleet-contract", type=Path)
+    capacity.add_argument("--fleet-contract-sha256")
+
+    finalize = subparsers.add_parser(
+        "finalize",
+        help="drain, validate, snapshot, and publish FINAL_COMPLETE marker-last",
+    )
+    finalize.add_argument("--output-root", type=Path)
+
+    subparsers.add_parser(
+        "finalizer-reconcile",
+        help="idempotently restore the active autonomous finalizer successor chain",
+    )
+
+    finalizer_worker = subparsers.add_parser(
+        "finalizer-worker", help=argparse.SUPPRESS
+    )
+    finalizer_worker.add_argument("--intent-id", required=True)
+    finalizer_worker.add_argument("--attempt", type=int, required=True)
 
     poll = subparsers.add_parser(
         "record-poll", help="append one successful generation-scoped throughput sample"
     )
-    poll.add_argument("--validated-qids", type=int, required=True)
+    poll.add_argument("--useful-qids", type=int, required=True)
     poll.add_argument("--fleet-generation", required=True)
     poll.add_argument("--strata-with-throughput", type=int)
 
@@ -11971,6 +30810,21 @@ def _build_parser() -> argparse.ArgumentParser:
     drill.add_argument("--role", choices=ROLE_NAMES)
     drill.add_argument("--live", action="store_true")
     drill.add_argument("--timeout", type=float, default=900.0)
+
+    watchdog_drill = subparsers.add_parser(
+        "watchdog-drill",
+        help="manage the sealed paused external-watchdog cancellation drill",
+    )
+    watchdog_drill.add_argument(
+        "action", choices=("arm", "cancel", "status", "finish")
+    )
+    watchdog_drill.add_argument("--deployment-evidence", type=Path)
+    watchdog_drill.add_argument("--output", type=Path)
+    watchdog_drill.add_argument(
+        "--expires-seconds",
+        type=float,
+        default=EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS,
+    )
 
     worker = subparsers.add_parser("supervise", help=argparse.SUPPRESS)
     worker.add_argument("--role", required=True, choices=ROLE_NAMES)
@@ -12049,6 +30903,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        if args.command == "refresh-generation-catalog":
+            catalog = refresh_trusted_generation_catalog(
+                state_dir,
+                target_rollout_generation=args.rollout_generation,
+            )
+            print(
+                json.dumps(
+                    {
+                        "catalog_id": catalog.catalog_id,
+                        "marker_path": str(catalog.marker_path),
+                        "marker_sha256": catalog.marker_sha256,
+                        "inventory_sha256": catalog.inventory_sha256,
+                        "catalog_payload_sha256": catalog.catalog_sha256,
+                        "allowed_generation_tuple_count": len(
+                            catalog.allowed_generation_tuples
+                        ),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if args.command == "pause":
             control = pause_control(
                 state_dir,
@@ -12067,13 +30943,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if args.command == "status":
-            report = live_status(
-                state_dir, snapshot=_scheduler_for_cli(tolerate_errors=True)
+            snapshot = _scheduler_for_cli(tolerate_errors=True)
+            drill = _load_external_watchdog_drill(state_dir)
+            report = (
+                external_watchdog_drill_status(
+                    state_dir,
+                    snapshot=snapshot,
+                    record_observation=True,
+                )
+                if drill is not None
+                and drill[1]["phase"] not in {"complete", "expired"}
+                else live_status(state_dir, snapshot=snapshot)
             )
             print(json.dumps(report, indent=2, sort_keys=True))
             return 0 if report["healthy"] else 1
         if args.command == "repair-chain":
             snapshot = _scheduler_for_cli()
+            drill = _load_external_watchdog_drill(state_dir)
+            if (
+                drill is not None
+                and drill[1]["phase"] not in {"complete", "expired"}
+            ):
+                if args.dry_run:
+                    result = {
+                        "dry_run": True,
+                        "desired_state": "paused",
+                        "watchdog_drill": drill[1]["phase"],
+                        "would_submit": list(ROLE_NAMES),
+                        "intent_id": drill[0]["intent_id"],
+                    }
+                else:
+                    result = repair_external_watchdog_drill(
+                        state_dir, snapshot=snapshot
+                    )
+                print(json.dumps(result, indent=2, sort_keys=True))
+                return 0
             control = load_control(state_dir, verify_files=True)
             provisional = build_reconciliation_report(
                 control, snapshot, all_jobs=True, no_admit=True
@@ -12099,6 +31003,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 gate=args.gate,
                 evidence_path=args.evidence,
                 expected_sha256=args.sha256,
+                chain_manifest=args.chain_manifest,
             )
             print(json.dumps(control["readiness"][args.gate], indent=2, sort_keys=True))
             return 0
@@ -12106,10 +31011,100 @@ def main(argv: Sequence[str] | None = None) -> int:
             control = set_admission_ceiling(state_dir, ceiling=args.value)
             print(json.dumps(control["admission"], indent=2, sort_keys=True))
             return 0
+        if args.command == "ack-hold":
+            control = acknowledge_admission_hold(state_dir, note=args.note)
+            print(
+                json.dumps(
+                    control["admission_safety_hold"], indent=2, sort_keys=True
+                )
+            )
+            return 0
+        if args.command == "attest-client-capacity":
+            control = attest_client_capacity_generation(
+                state_dir,
+                evidence_path=args.evidence,
+                expected_sha256=args.sha256,
+            )
+            print(
+                json.dumps(
+                    {
+                        "capacity_gate": control["admission_ramp"][
+                            "capacity_gate"
+                        ],
+                        "authorization": control["admission_ramp"][
+                            "client_capacity_authorizations"
+                        ][-1],
+                        "admission_safety_hold": control[
+                            "admission_safety_hold"
+                        ],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "build-client-capacity":
+            result = build_client_capacity_generation(
+                state_dir,
+                action=args.action,
+                partition=args.partition,
+                target_ceiling=args.target_ceiling,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.command == "capacity-transition":
+            result = capacity_transition(
+                state_dir,
+                action=args.action,
+                fleet_contract_path=args.fleet_contract,
+                fleet_contract_sha256=args.fleet_contract_sha256,
+                scheduler_reader=lambda: _scheduler_for_cli(
+                    tolerate_errors=False
+                ),
+                resume_callback=(
+                    (lambda path: resume_control(path))
+                    if args.action == "complete"
+                    else None
+                ),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.command == "finalize":
+            result = finalize_sweep(
+                state_dir,
+                output_root=args.output_root,
+                scheduler_reader=lambda: _scheduler_for_cli(
+                    tolerate_errors=False
+                ),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.command == "finalizer-reconcile":
+            drill = _load_external_watchdog_drill(state_dir)
+            if (
+                drill is not None
+                and drill[1]["phase"] not in {"complete", "expired"}
+            ):
+                raise ControlError(
+                    "finalizer reconciliation is fenced by the active "
+                    "external-watchdog drill"
+                )
+            result = reconcile_autonomous_finalization(
+                state_dir,
+                snapshot=_scheduler_for_cli(tolerate_errors=False),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.command == "finalizer-worker":
+            return run_autonomous_finalizer_worker(
+                state_dir,
+                intent_id=args.intent_id,
+                attempt=args.attempt,
+            )
         if args.command == "record-poll":
             control = record_successful_poll(
                 state_dir,
-                validated_qids=args.validated_qids,
+                useful_qids=args.useful_qids,
                 fleet_generation=args.fleet_generation,
                 strata_with_throughput=args.strata_with_throughput,
             )
@@ -12166,6 +31161,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(result, indent=2, sort_keys=True))
                 return 0
             raise AssertionError(f"unhandled drill action {args.action}")
+        if args.command == "watchdog-drill":
+            snapshot = _scheduler_for_cli(tolerate_errors=False)
+            if args.action == "arm":
+                if args.deployment_evidence is None:
+                    raise ControlError(
+                        "watchdog-drill arm requires --deployment-evidence"
+                    )
+                result = arm_external_watchdog_drill(
+                    state_dir,
+                    snapshot=snapshot,
+                    deployment_evidence_path=args.deployment_evidence,
+                    expires_seconds=args.expires_seconds,
+                )
+            elif args.action == "cancel":
+                result = cancel_external_watchdog_drill_namespace(
+                    state_dir, snapshot=snapshot
+                )
+            elif args.action == "status":
+                result = external_watchdog_drill_status(
+                    state_dir,
+                    snapshot=snapshot,
+                    record_observation=False,
+                )
+            elif args.action == "finish":
+                if args.output is None:
+                    raise ControlError(
+                        "watchdog-drill finish requires --output"
+                    )
+                result = complete_external_watchdog_drill(
+                    state_dir,
+                    snapshot=snapshot,
+                    output_path=args.output,
+                )
+            else:  # pragma: no cover
+                raise AssertionError(args.action)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
         if args.command == "supervise":
             return supervise(
                 state_dir,

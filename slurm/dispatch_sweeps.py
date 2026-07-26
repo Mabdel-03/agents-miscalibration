@@ -27,13 +27,14 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
 import time
 import uuid
 import stat
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
@@ -65,10 +66,12 @@ from agents_scaling.experiment.completion import (
 )
 from agents_scaling.experiment.manifest import ManifestSnapshot, load_manifest
 from agents_scaling.serving import healthcheck
+from agents_scaling.serving import protected_capacity, scheduler_safety
 from agents_scaling.serving.registry import (
     ServerEntry,
     active_slurm_allocations,
     entry_has_current_provenance,
+    endpoint_history_for_entry,
     endpoint_instance_id,
     server_pool_id,
     server_pool_generation,
@@ -96,6 +99,16 @@ CELL_CPUS_DEFAULT = 1
 CELL_MEM_DEFAULT = "4G"
 CELL_TIME_DEFAULT = "12:00:00"
 CELL_JOB_PREFIXES = ("asys-cells", "asys-dispatch-")
+AUTHORITATIVE_SCHEMA5_RUN_IDS = frozenset(
+    {
+        "full_sweep_schema5_v1",
+        "full_sweep_agent_counts_schema5_v1",
+        "full_sweep_agent_count_7_schema5_v1",
+    }
+)
+QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL = (
+    "schema5-v1.2-r2-throughput-qualification-execution-authority-v1"
+)
 ELIGIBLE_STATES = {
     CompletionState.MISSING.value,
     CompletionState.PARTIAL.value,
@@ -104,8 +117,15 @@ ELIGIBLE_STATES = {
 PRODUCTION_ENVIRONMENT_KEYS = frozenset(
     {
         "ASYS_RELEASE_ID",
+        "ASYS_RELEASE_GIT_COMMIT",
+        "ASYS_PROTECTED_CAPACITY_MARKER",
+        "ASYS_PROTECTED_CAPACITY_MARKER_SHA256",
+        "ASYS_PROTECTED_CAPACITY_MARKER_ID",
         "ASYS_MODEL_CONTRACT_SHA256",
         "ASYS_FLEET_CONTRACT_SHA256",
+        "ASYS_FLEET_CONTRACT_PATH",
+        "ASYS_RELEASE_FLEET_CONTRACT_SHA256",
+        "ASYS_CAPACITY_GENERATION",
         "ASYS_HARNESS_ENVIRONMENT_SHA256",
         "ASYS_SERVING_ENVIRONMENT_SHA256",
         "ASYS_ROLLOUT_GENERATION",
@@ -190,6 +210,18 @@ class QueueRow:
 
 
 @dataclass(frozen=True)
+class StableAdmissionOccupancy:
+    """One target-usage capture bracketed by stable global scheduler truth."""
+
+    scheduler_snapshot: Any
+    rows: tuple[QueueRow, ...]
+    usage: dict[str, Any]
+    usage_summary: dict[str, Any]
+    live_job_ids: tuple[str, ...]
+    attempts: int
+
+
+@dataclass(frozen=True)
 class RunSpec:
     run_id: str
     run_root: Path
@@ -205,6 +237,18 @@ class RunSpec:
 class CapacitySnapshot:
     live_servers: dict[ProfileKey, int]
     server_pool_generation: dict[ProfileKey, str]
+
+
+@dataclass(frozen=True)
+class QualificationExecutionAuthority:
+    """One sealed, self-hashed qualification-only cell execution boundary."""
+
+    path: Path
+    sha256: str
+    authority_id: str
+    payload: dict[str, Any]
+    runtime_environment: dict[str, str]
+    execution: dict[str, str]
 
 
 @dataclass
@@ -590,6 +634,55 @@ def _empty_ledger(now: float | None = None) -> dict[str, Any]:
     }
 
 
+LEDGER_MAPPING_FIELDS = (
+    "runs",
+    "jobs",
+    "intents",
+    "cells",
+    "fairness",
+    "validation_fairness",
+)
+LEDGER_RECORD_MAPPING_FIELDS = ("runs", "jobs", "intents", "cells")
+
+
+def validate_ledger_structure(
+    value: Any, *, source: str = "dispatcher ledger"
+) -> dict[str, Any]:
+    """Return the production-normalized ledger or reject it fail closed.
+
+    This is deliberately shared with the production monitor.  A merely fresh JSON
+    object is not scheduler truth: every consumer must agree on the schema and the
+    mapping fields whose contents drive admission and health decisions.
+    """
+
+    if not isinstance(value, dict):
+        raise DispatcherError(f"{source} must be a JSON object")
+    if value.get("schema_version") != LEDGER_SCHEMA_VERSION:
+        raise DispatcherError(
+            f"unsupported dispatcher ledger schema in {source}: "
+            f"{value.get('schema_version')!r}"
+        )
+    normalized = dict(value)
+    # These two fields were introduced after the first schema-1 ledger was emitted.
+    # Production loading has always upgraded their absence in memory; the monitor
+    # must use exactly the same compatibility boundary.
+    normalized.setdefault("intents", {})
+    normalized.setdefault("validation_fairness", {"next_run_id": None})
+    for field in LEDGER_MAPPING_FIELDS:
+        if not isinstance(normalized.get(field), dict):
+            raise DispatcherError(
+                f"dispatcher ledger field {field!r} in {source} must be an object"
+            )
+    for field in LEDGER_RECORD_MAPPING_FIELDS:
+        for key, record in normalized[field].items():
+            if not isinstance(key, str) or not isinstance(record, dict):
+                raise DispatcherError(
+                    f"dispatcher ledger {field} record {key!r} in {source} "
+                    "must be an object under a string key"
+                )
+    return normalized
+
+
 def _load_ledger(path: Path) -> dict[str, Any]:
     if not path.exists():
         return _empty_ledger()
@@ -597,23 +690,7 @@ def _load_ledger(path: Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise DispatcherError(f"cannot read dispatcher ledger {path}: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != LEDGER_SCHEMA_VERSION:
-        raise DispatcherError(
-            f"unsupported dispatcher ledger schema in {path}: {value.get('schema_version')!r}"
-        )
-    value.setdefault("intents", {})
-    value.setdefault("validation_fairness", {"next_run_id": None})
-    for field in (
-        "runs",
-        "jobs",
-        "intents",
-        "cells",
-        "fairness",
-        "validation_fairness",
-    ):
-        if not isinstance(value.get(field), dict):
-            raise DispatcherError(f"dispatcher ledger field {field!r} must be an object")
-    return value
+    return validate_ledger_structure(value, source=str(path))
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -871,6 +948,110 @@ def _queue_rows_from_scheduler_snapshot(snapshot: Any) -> list[QueueRow]:
     return rows
 
 
+def _complete_scheduler_rows(
+    snapshot: Any,
+    *,
+    observation: str,
+) -> tuple[tuple[QueueRow, ...], tuple[str, ...]]:
+    """Extract one complete, expanded, logical-ID squeue observation."""
+
+    if (
+        getattr(snapshot, "squeue_ok", False) is not True
+        or getattr(snapshot, "sacct_ok", False) is not True
+        or tuple(getattr(snapshot, "errors", ()))
+    ):
+        raise DispatcherError(
+            f"{observation} lacks complete squeue+sacct scheduler truth"
+        )
+    rows = tuple(_queue_rows_from_scheduler_snapshot(snapshot))
+    live_ids = tuple(sorted(row.job_id for row in rows))
+    if len(live_ids) != len(set(live_ids)):
+        raise DispatcherError(
+            f"{observation} repeats a live logical Slurm job element"
+        )
+    return rows, live_ids
+
+
+def _capture_stable_admission_occupancy(
+    *,
+    user: str,
+    partition: str,
+    max_attempts: int = 2,
+    scheduler_reader: Any | None = None,
+    usage_reader: Any | None = None,
+) -> StableAdmissionOccupancy:
+    """Bracket target TRES usage with identical global logical job-element IDs.
+
+    The partition usage query and the global squeue+sacct join are separate Slurm
+    RPCs.  A job admitted between them could otherwise be charged to only the global
+    submit count or only the target CPU/memory envelope.  Two complete scheduler
+    snapshots surrounding the usage capture close that skew.  Churn is retried once
+    and then fails the admission boundary closed; the next dispatcher poll may retry.
+    """
+
+    if (
+        not isinstance(max_attempts, int)
+        or isinstance(max_attempts, bool)
+        or max_attempts < 1
+    ):
+        raise DispatcherError("stable occupancy max_attempts must be positive")
+    if scheduler_reader is None:
+        from slurm.schema5_control import query_scheduler
+
+        scheduler_reader = lambda: query_scheduler(tolerate_errors=False)
+    if usage_reader is None:
+        usage_reader = lambda: scheduler_safety.capture_user_partition_usage(
+            user=user,
+            partition=partition,
+        )
+
+    last_churn = "unknown scheduler churn"
+    for attempt in range(1, max_attempts + 1):
+        first = scheduler_reader()
+        _first_rows, first_ids = _complete_scheduler_rows(
+            first,
+            observation=f"stable occupancy attempt {attempt} first observation",
+        )
+        usage = usage_reader()
+        try:
+            usage_summary = scheduler_safety.validate_user_partition_usage(
+                usage
+            )
+        except scheduler_safety.SchedulerSafetyError as exc:
+            raise DispatcherError(
+                f"stable occupancy target usage is invalid: {exc}"
+            ) from exc
+        second = scheduler_reader()
+        second_rows, second_ids = _complete_scheduler_rows(
+            second,
+            observation=f"stable occupancy attempt {attempt} second observation",
+        )
+        usage_ids = {
+            str(row["job_id"]) for row in usage_summary["jobs"]
+        }
+        stable_ids = set(second_ids)
+        added = sorted(stable_ids - set(first_ids))
+        removed = sorted(set(first_ids) - stable_ids)
+        usage_only = sorted(usage_ids - stable_ids)
+        if not added and not removed and not usage_only:
+            return StableAdmissionOccupancy(
+                scheduler_snapshot=second,
+                rows=second_rows,
+                usage=dict(usage),
+                usage_summary=dict(usage_summary),
+                live_job_ids=second_ids,
+                attempts=attempt,
+            )
+        last_churn = (
+            f"added={added[:8]}, removed={removed[:8]}, "
+            f"target_usage_only={usage_only[:8]}"
+        )
+    raise DispatcherError(
+        "scheduler occupancy changed across the target-usage admission "
+        f"observation after {max_attempts} attempts: {last_churn}"
+    )
+
+
 def _command_binds_exact_sbatch(command: str, expected_path: str) -> bool:
     try:
         expected = str(Path(expected_path).expanduser().resolve())
@@ -907,6 +1088,42 @@ def _intent_visibility_started_at(intent: Mapping[str, Any]) -> float | None:
     ):
         return None
     return float(value)
+
+
+def _invisible_reservation_count(
+    ledger: Mapping[str, Any],
+    *,
+    now: float,
+    exclude_intent_ids: frozenset[str] = frozenset(),
+) -> int:
+    """Count scheduler-invisible cell tasks once at an admission boundary."""
+
+    job_reservations = sum(
+        int(record.get("task_count", len(record.get("tasks", []))))
+        for record in ledger.get("jobs", {}).values()
+        if isinstance(record, Mapping)
+        and record.get("state") == "visibility_grace"
+    )
+    intent_reservations = 0
+    for intent_id, intent in ledger.get("intents", {}).items():
+        if (
+            intent_id in exclude_intent_ids
+            or not isinstance(intent, Mapping)
+            or intent.get("state") not in {"prepared", "submitting"}
+        ):
+            continue
+        visibility_started_at = _intent_visibility_started_at(intent)
+        if (
+            visibility_started_at is not None
+            and now - visibility_started_at < 300.0
+        ):
+            tasks = intent.get("tasks", [])
+            if not isinstance(tasks, list):
+                raise DispatcherError(
+                    f"invisible intent {intent_id} has an invalid task payload"
+                )
+            intent_reservations += len(tasks)
+    return job_reservations + intent_reservations
 
 
 def _reconcile_schema5_intents(
@@ -1113,6 +1330,14 @@ def _task_from_candidate(candidate: Candidate) -> dict[str, Any]:
 
 
 def _candidate_from_task(task: Mapping[str, Any], specs: Mapping[str, RunSpec]) -> Candidate | None:
+    """Reconstruct a task only when every immutable field matches current pins.
+
+    Persisted job/intent payloads are untrusted recovery inputs.  In particular they
+    must not redirect result writes or endpoint lookup, understate fan-out, or smuggle
+    a stale runtime generation merely because their run/index/cell tuple is valid.
+    Rebuild the sole canonical payload from the frozen RunSpec and compare it exactly.
+    """
+
     run_id = str(task.get("run_id", ""))
     spec = specs.get(run_id)
     if spec is None:
@@ -1134,26 +1359,22 @@ def _candidate_from_task(task: Mapping[str, Any], specs: Mapping[str, RunSpec]) 
     if task.get("benchmark_contracts_sha256") != contract_sha256:
         return None
     profile = serving_profile_for_cell(cell).registry_key
-    return Candidate(
+    candidate = Candidate(
         run_id=run_id,
         run_root=str(spec.run_root),
         source_index=index,
         cell=cell,
         manifest_sha256=spec.manifest.sha256,
-        server_pool_arg=(
-            None if task.get("server_pool_id") is None else str(task.get("server_pool_id"))
-        ),
-        server_pool_root=str(task.get("server_pool_root", spec.server_pool_root)),
+        server_pool_arg=spec.server_pool_arg,
+        server_pool_root=str(spec.server_pool_root),
         serving_profile=profile,
         fanout_cost=fanout_cost(cell),
         benchmark_contracts_sha256=contract_sha256,
-        runtime_environment=tuple(
-            sorted(
-                (str(key), str(value))
-                for key, value in dict(task.get("runtime_environment", {})).items()
-            )
-        ),
+        runtime_environment=spec.runtime_environment,
     )
+    if dict(task) != _task_from_candidate(candidate):
+        return None
+    return candidate
 
 
 def _active_cells(
@@ -1164,6 +1385,7 @@ def _active_cells(
     now: float,
     visibility_grace_s: float = 300.0,
     schema5_strict: bool = False,
+    trusted_cell_bindings: dict[str, dict[str, str]] | None = None,
 ) -> tuple[
     dict[tuple[str, str], Candidate],
     dict[ProfileKey, int],
@@ -1351,6 +1573,17 @@ def _active_cells(
                         mapped = True
             if not mapped and is_cell_job_name(row.job_name):
                 unmappable.append(f"{row.job_id} ({row.job_name}): invalid ledger task mapping")
+            elif mapped and schema5_strict and trusted_cell_bindings is not None:
+                binding = {
+                    "job_name": row.job_name,
+                    "comment": row.comment,
+                }
+                prior = trusted_cell_bindings.setdefault(row.job_id, binding)
+                if prior != binding:
+                    unmappable.append(
+                        f"{row.job_id} ({row.job_name}): scheduler identity has "
+                        "conflicting trusted client provenance"
+                    )
             continue
 
         # Legacy arrays used their run's canonical cells.json index directly.  Exact
@@ -1469,6 +1702,80 @@ def _registered_endpoints(
         except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
     return [endpoints[key] for key in sorted(endpoints)]
+
+
+def _trusted_server_scheduler_bindings(
+    specs: Sequence[RunSpec],
+    *,
+    expected_fleet_sha256: str,
+    frozen_fleet: FrozenFleetContract | None,
+    scheduler_rows: Sequence[QueueRow],
+) -> dict[str, dict[str, str]]:
+    """Classify only servers with an immutable job/name/comment preimage."""
+
+    if re.fullmatch(r"[0-9a-f]{64}", expected_fleet_sha256 or "") is None:
+        raise DispatcherError("trusted server classification lacks a fleet hash")
+    live_by_id: dict[str, QueueRow] = {}
+    for row in scheduler_rows:
+        if row.job_id in live_by_id:
+            raise DispatcherError(
+                f"scheduler repeats live job identity {row.job_id}"
+            )
+        live_by_id[row.job_id] = row
+    keys = sorted(
+        {
+            (
+                str(spec.server_pool_root.resolve()),
+                serving_profile_for_cell(cell).registry_key,
+            )
+            for spec in specs
+            for cell in spec.manifest.cells
+        }
+    )
+    bindings: dict[str, dict[str, str]] = {}
+    try:
+        for pool_text, profile in keys:
+            pool_root = Path(pool_text)
+            for entry in _registered_endpoints(
+                pool_root,
+                profile,
+                frozen_fleet=frozen_fleet,
+            ):
+                if (
+                    entry.fleet_contract_sha256 != expected_fleet_sha256
+                    or not str(entry.slurm_job_id or "").isdigit()
+                ):
+                    continue
+                history = endpoint_history_for_entry(pool_root, entry)
+                if history is None:
+                    continue
+                row = live_by_id.get(str(entry.slurm_job_id))
+                if row is None:
+                    continue
+                binding = {
+                    "job_name": str(history.binding["scheduler_job_name"]),
+                    "comment": str(history.binding["scheduler_comment"]),
+                }
+                if (
+                    row.job_name != binding["job_name"]
+                    or row.comment != binding["comment"]
+                    or not _command_binds_exact_sbatch(
+                        row.command,
+                        str(history.binding["local_script_path"]),
+                    )
+                ):
+                    continue
+                job_id = str(entry.slurm_job_id)
+                prior = bindings.setdefault(job_id, binding)
+                if prior != binding:
+                    raise DispatcherError(
+                        f"server job {job_id} has conflicting immutable provenance"
+                    )
+    except (OSError, TypeError, ValueError, FleetContractError) as exc:
+        raise DispatcherError(
+            f"cannot classify protected server allocations: {exc}"
+        ) from exc
+    return bindings
 
 
 def discover_capacity(
@@ -1957,6 +2264,7 @@ def _render_batch_sbatch(
     *,
     n_tasks: int,
     partition: str,
+    qos: str | None = None,
     time_limit: str,
     memory: str,
     log_dir: Path,
@@ -1964,15 +2272,27 @@ def _render_batch_sbatch(
     batch_id: str | None = None,
     batch_manifest_sha256: str = "0" * 64,
     control_state_dir: Path | None = None,
+    qualification_execution: Mapping[str, str] | None = None,
 ) -> str:
     if not 1 <= n_tasks <= MAX_BATCH_DEFAULT:
         raise ValueError(f"microbatch size must be in [1, {MAX_BATCH_DEFAULT}]")
+    if control_state_dir is not None and qualification_execution is not None:
+        raise DispatcherError(
+            "production control and qualification execution authorities are "
+            "mutually exclusive"
+        )
     production_execution: dict[str, str] | None = None
     if control_state_dir is not None:
         from slurm.schema5_control import production_cell_execution_from_state
 
         production_execution = production_cell_execution_from_state(control_state_dir)
-        template_path = Path(production_execution["batch_template"])
+    pinned_execution: Mapping[str, str] | None = (
+        production_execution
+        if production_execution is not None
+        else qualification_execution
+    )
+    if pinned_execution is not None:
+        template_path = Path(pinned_execution["batch_template"])
         runtime_setup = "\n".join(
             (
                 "# Schema-5 cells never source common.sh or activate an ambient env.",
@@ -1985,23 +2305,23 @@ def _render_batch_sbatch(
                 "export HF_DATASETS_OFFLINE=1",
                 (
                     'export HF_HOME="'
-                    + production_execution["hf_home"]
+                    + pinned_execution["hf_home"]
                     + '"'
                 ),
                 (
                     'export ASYS_RELEASE_WORKTREE="'
-                    + production_execution["release_worktree"]
+                    + pinned_execution["release_worktree"]
                     + '"'
                 ),
             )
         )
-        python_command = shlex.quote(production_execution["python"])
-        dispatch_script = shlex.quote(production_execution["dispatcher_script"])
+        python_command = shlex.quote(pinned_execution["python"])
+        dispatch_script = shlex.quote(pinned_execution["dispatcher_script"])
         runtime_arguments = (
             " \\\n  --expected-release-root "
-            + shlex.quote(production_execution["release_worktree"])
+            + shlex.quote(pinned_execution["release_worktree"])
             + " \\\n  --expected-harness-prefix "
-            + shlex.quote(production_execution["harness_prefix"])
+            + shlex.quote(pinned_execution["harness_prefix"])
         )
     else:
         # Explicit legacy compatibility: old, non-control dispatchers still activate
@@ -2019,11 +2339,15 @@ def _render_batch_sbatch(
         dispatch_script = shlex.quote(str(REPO / "slurm" / "dispatch_sweeps.py"))
         runtime_arguments = ""
 
+    effective_qos = partition if qos is None else qos
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", effective_qos) is None:
+        raise ValueError(f"invalid Slurm QOS {effective_qos!r}")
     text = template_path.read_text(encoding="utf-8")
     replacements = {
         "BATCH_TAG": batch_tag,
         "BATCH_ID": batch_id or batch_tag,
         "PARTITION": partition,
+        "QOS": effective_qos,
         "CPUS": str(CELL_CPUS_DEFAULT),
         "MEM": memory,
         "TIME": time_limit,
@@ -2056,10 +2380,12 @@ def _write_batch(
     selected: Sequence[Candidate],
     *,
     partition: str,
+    qos: str | None = None,
     time_limit: str,
     memory: str,
     now: float,
     control_state_dir: Path | None = None,
+    qualification_execution: Mapping[str, str] | None = None,
 ) -> tuple[str, Path, Path, dict[str, Any]]:
     batch_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime(now))}-{uuid.uuid4().hex[:10]}"
     batch_dir = state_dir / "batches"
@@ -2080,6 +2406,7 @@ def _write_batch(
         manifest_path,
         n_tasks=len(selected),
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         memory=memory,
         log_dir=log_dir,
@@ -2087,6 +2414,7 @@ def _write_batch(
         batch_id=batch_id,
         batch_manifest_sha256=manifest_sha256,
         control_state_dir=control_state_dir,
+        qualification_execution=qualification_execution,
     )
     io.atomic_write_text(sbatch_path, sbatch_text)
     # These generation/intent-addressed files are the recovery authority on both sides
@@ -2220,6 +2548,108 @@ def _profile_headroom(
     }
 
 
+DISPATCHER_SCHEDULER_AMBIGUITY_ALERT = "dispatcher:scheduler-ambiguity"
+
+
+def _dispatcher_safety_findings(
+    *,
+    state_counts: Mapping[str, Mapping[str, int]],
+    validation_errors: Sequence[str],
+    unmappable_jobs: Sequence[str],
+) -> list[dict[str, str]]:
+    """Translate admission-visible integrity failures into durable alert facts."""
+
+    totals: Counter[str] = Counter()
+    for run_counts in state_counts.values():
+        if not isinstance(run_counts, Mapping):
+            continue
+        for state, count in run_counts.items():
+            try:
+                totals[str(state)] += int(count)
+            except (TypeError, ValueError):
+                # The ledger/schema validator protects persisted structure.  A corrupt
+                # per-run count is still an integrity finding and cannot be ignored.
+                totals["validation_error"] += 1
+    corrupt = totals[CompletionState.CORRUPT.value]
+    validation = max(totals["validation_error"], len(validation_errors))
+    findings: list[dict[str, str]] = []
+    if corrupt or validation:
+        examples = "; ".join(str(item) for item in validation_errors[:3])
+        suffix = f"; examples: {examples}" if examples else ""
+        findings.append(
+            {
+                "dedupe_key": "monitor:corrupt",
+                # Match the semantic monitor's ownership identity so the same durable
+                # incident can be refreshed and later resolved without a kind clash.
+                "kind": "corrupt-artifacts",
+                "message": (
+                    "dispatcher observed admission-visible corrupt/validation-error "
+                    f"cells: corrupt={corrupt}, validation_error={validation}{suffix}"
+                ),
+            }
+        )
+    permanent = totals[CompletionState.PERMANENT.value]
+    if permanent:
+        findings.append(
+            {
+                "dedupe_key": "monitor:permanent",
+                "kind": "permanent-failures",
+                "message": (
+                    "dispatcher observed admission-visible permanent cells: "
+                    f"permanent={permanent}"
+                ),
+            }
+        )
+    if unmappable_jobs:
+        findings.append(
+            {
+                "dedupe_key": DISPATCHER_SCHEDULER_AMBIGUITY_ALERT,
+                "kind": "dispatcher-scheduler-ambiguity",
+                "message": (
+                    "active or historical schema-5 cell jobs could not be mapped to "
+                    "one immutable admission intent: "
+                    + "; ".join(str(item) for item in unmappable_jobs[:10])
+                ),
+            }
+        )
+    return findings
+
+
+def _persist_dispatcher_safety_findings(
+    state_dir: Path,
+    *,
+    findings: Sequence[Mapping[str, str]],
+    now: float,
+) -> None:
+    """Fence admission transactionally before the dispatcher can plan an array.
+
+    Critical ``record_alert`` owns the same cross-node admission boundary as sbatch
+    submission.  Any persistence or delivery-path exception propagates so the poll
+    fails closed.  Artifact alerts are resolved only by monitor-owned semantic/health
+    reconciliation; this dispatcher exclusively resolves its scheduler ambiguity.
+    """
+
+    from slurm.schema5_control import record_alert, resolve_alert
+
+    keys = {str(finding["dedupe_key"]) for finding in findings}
+    for finding in findings:
+        record_alert(
+            state_dir,
+            kind=str(finding["kind"]),
+            severity="critical",
+            message=str(finding["message"]),
+            dedupe_key=str(finding["dedupe_key"]),
+            send_email=True,
+            now=now,
+        )
+    if DISPATCHER_SCHEDULER_AMBIGUITY_ALERT not in keys:
+        resolve_alert(
+            state_dir,
+            dedupe_key=DISPATCHER_SCHEDULER_AMBIGUITY_ALERT,
+            now=now,
+        )
+
+
 def _dispatch_poll(
     args: argparse.Namespace,
     specs: Sequence[RunSpec],
@@ -2232,10 +2662,28 @@ def _dispatch_poll(
     production_fleet: FrozenFleetContract | None = None
     production_code_version: str | None = None
     production_model_contract_path: str | None = None
+    production_client_capacity: dict[str, Any] | None = None
+    production_partition_usage: dict[str, Any] | None = None
+    control: dict[str, Any] | None = None
+    production_capacity_contract: (
+        protected_capacity.ProtectedCapacityContract | None
+    ) = None
+    qualification_capacity_contract: (
+        protected_capacity.ProtectedCapacityContract | None
+    ) = None
+    qualification_client_placement = None
+    qualification_client_capacity: dict[str, Any] | None = None
+    qualification_partition_usage: dict[str, Any] | None = None
+    qualification_execution_authority: (
+        QualificationExecutionAuthority | None
+    ) = None
+    qualification_execution_binding: dict[str, Any] | None = None
+    protected_task_headroom: int | None = None
     control_state_dir = getattr(args, "control_state_dir", None)
     if control_state_dir is not None:
         from slurm.schema5_control import (
             admission_contract_from_state,
+            effective_fleet_contract_binding,
             load_control,
             production_environment_from_state,
         )
@@ -2243,6 +2691,16 @@ def _dispatch_poll(
         production_contract = admission_contract_from_state(control_state_dir)
         control = load_control(control_state_dir, verify_files=True)
         immutable = control["immutable"]
+        protected_ref = production_contract["protected_capacity"]
+        production_capacity_contract = protected_capacity.load_contract(
+            protected_ref["path"],
+            expected_release_git_commit=str(immutable["git_commit"]),
+            expected_marker_id=str(protected_ref["marker_id"]),
+            expected_sha256=str(protected_ref["sha256"]),
+        )
+        fleet_binding = effective_fleet_contract_binding(
+            control, verify_files=True
+        )
         production_code_version = (
             str(immutable["git_commit"])
             + "+source."
@@ -2268,9 +2726,10 @@ def _dispatch_poll(
                 expected_sha256=immutable["model_contract_sha256"],
             )
             production_fleet = load_fleet_contract(
-                immutable["fleet_contract_path"],
+                fleet_binding["path"],
                 model_contracts=model_contracts,
-                expected_sha256=immutable["fleet_contract_sha256"],
+                expected_sha256=fleet_binding["sha256"],
+                allow_capacity_layout=True,
             )
             production_fleet.verify_pool_root(expected_pool_root)
         except (FleetContractError, ModelContractError, OSError, ValueError) as exc:
@@ -2307,6 +2766,183 @@ def _dispatch_poll(
             )
             for spec in specs
         )
+    qualification_values = {
+        "path": getattr(args, "protected_capacity_marker", None),
+        "sha256": getattr(args, "protected_capacity_marker_sha256", None),
+        "marker_id": getattr(args, "protected_capacity_marker_id", None),
+        "release_git_commit": getattr(
+            args, "protected_capacity_release_git_commit", None
+        ),
+    }
+    qualification_execution_path = getattr(
+        args, "qualification_execution_authority", None
+    )
+    has_qualification_capacity = any(qualification_values.values())
+    authoritative_runs = sorted(
+        {
+            spec.run_id
+            for spec in specs
+            if spec.run_id in AUTHORITATIVE_SCHEMA5_RUN_IDS
+        }
+    )
+    has_complete_qualification_authority = bool(
+        qualification_execution_path
+        and all(qualification_values.values())
+    )
+    if (
+        authoritative_runs
+        and control_state_dir is None
+        and not has_complete_qualification_authority
+    ):
+        raise DispatcherError(
+            "authoritative schema-5 runs require --control-state-dir or the "
+            "complete isolated qualification authority before admission: "
+            f"{authoritative_runs}"
+        )
+    if bool(qualification_execution_path) != has_qualification_capacity:
+        raise DispatcherError(
+            "qualification execution and protected-capacity authorities must "
+            "be supplied together"
+        )
+    if has_qualification_capacity:
+        if production_contract is not None:
+            raise DispatcherError(
+                "qualification authorities cannot be combined with production "
+                "--control-state-dir"
+            )
+        missing = [
+            field for field, value in qualification_values.items() if not value
+        ]
+        if missing:
+            raise DispatcherError(
+                "qualification protected-capacity authority is all-or-none; "
+                f"missing {missing}"
+            )
+        qualification_qos = getattr(args, "cell_qos", None)
+        if not qualification_qos:
+            raise DispatcherError(
+                "protected qualification requires explicit --cell-qos"
+            )
+        if args.qos_limit - args.reserve != 384:
+            raise DispatcherError(
+                "protected qualification must reserve 64 of 448 jobs, leaving "
+                "exactly 384 scientific-client slots"
+            )
+        try:
+            qualification_capacity_contract = protected_capacity.load_contract(
+                qualification_values["path"],
+                expected_release_git_commit=str(
+                    qualification_values["release_git_commit"]
+                ),
+                expected_marker_id=str(qualification_values["marker_id"]),
+                expected_sha256=str(qualification_values["sha256"]),
+            )
+            qualification_client_placement = protected_capacity.authorize_client(
+                qualification_capacity_contract,
+                partition=str(args.cell_partition),
+                qos=str(qualification_qos),
+                required_slots=384,
+                required_reserve_jobs=64,
+            )
+            protected_capacity.verify_live_placements(
+                qualification_capacity_contract,
+                role="client",
+                placements=[
+                    (str(args.cell_partition), str(qualification_qos))
+                ],
+                required_time_limits_seconds={
+                    str(args.cell_partition): (
+                        scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                    )
+                },
+            )
+            qualification_client_capacity = (
+                protected_capacity.capture_live_client_capacity(
+                    qualification_capacity_contract,
+                    partition=str(args.cell_partition),
+                    qos=str(qualification_qos),
+                    required_time_limit_seconds=(
+                        scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                    ),
+                    captured_timestamp=now,
+                )
+            )
+            qualification_execution_authority = (
+                load_qualification_execution_authority(
+                    str(qualification_execution_path)
+                )
+            )
+        except (
+            DispatcherError,
+            scheduler_safety.SchedulerSafetyError,
+            protected_capacity.ProtectedCapacityError,
+        ) as exc:
+            raise DispatcherError(
+                f"protected qualification placement failed closed: {exc}"
+            ) from exc
+        if len(specs) != 1:
+            raise DispatcherError(
+                "qualification execution authority permits exactly one isolated run"
+            )
+        qualification_spec = specs[0]
+        authority_payload = qualification_execution_authority.payload
+        protected_binding = authority_payload["protected_capacity"]
+        authority_mismatches = {
+            field: (expected, observed)
+            for field, expected, observed in (
+                (
+                    "run_id",
+                    qualification_spec.run_id,
+                    authority_payload["run_id"],
+                ),
+                (
+                    "run_root",
+                    str(qualification_spec.run_root.resolve()),
+                    str(Path(str(authority_payload["run_root"])).resolve()),
+                ),
+                (
+                    "release_git_commit",
+                    str(qualification_values["release_git_commit"]),
+                    authority_payload["release_git_commit"],
+                ),
+                (
+                    "protected_capacity_path",
+                    str(qualification_capacity_contract.path),
+                    protected_binding["path"],
+                ),
+                (
+                    "protected_capacity_sha256",
+                    qualification_capacity_contract.sha256,
+                    protected_binding["sha256"],
+                ),
+                (
+                    "protected_capacity_marker_id",
+                    qualification_capacity_contract.marker_id,
+                    protected_binding["marker_id"],
+                ),
+            )
+            if expected != observed
+        }
+        if authority_mismatches:
+            raise DispatcherError(
+                "qualification execution authority differs from its isolated "
+                f"run/capacity pins: {authority_mismatches}"
+            )
+        specs = (
+            replace(
+                qualification_spec,
+                runtime_environment=tuple(
+                    sorted(
+                        qualification_execution_authority.runtime_environment.items()
+                    )
+                ),
+            ),
+        )
+        qualification_execution_binding = (
+            _qualification_execution_authority_binding(
+                qualification_execution_authority
+            )
+        )
     for spec in specs:
         if spec.question_catalog is None:
             raise DispatcherError(
@@ -2319,6 +2955,42 @@ def _dispatch_poll(
                 f"run {spec.run_id!r} benchmark Question contract verification failed: {exc}"
             ) from exc
     work = copy.deepcopy(ledger)
+    if qualification_capacity_contract is not None:
+        authority = {
+            "path": str(qualification_capacity_contract.path),
+            "sha256": qualification_capacity_contract.sha256,
+            "marker_id": qualification_capacity_contract.marker_id,
+            "release_git_commit": (
+                qualification_capacity_contract.release_git_commit
+            ),
+            "partition": str(args.cell_partition),
+            "qos": str(args.cell_qos),
+            "authorized_cell_slots": 384,
+            "reserve_jobs": 64,
+        }
+        existing_authority = work.get("protected_capacity_authority")
+        if existing_authority is not None and existing_authority != authority:
+            raise DispatcherError(
+                "dispatcher ledger is bound to a different protected-capacity "
+                "qualification authority"
+            )
+        work["protected_capacity_authority"] = authority
+        assert qualification_execution_binding is not None
+        existing_execution_authority = work.get(
+            "qualification_execution_authority"
+        )
+        if (
+            existing_execution_authority is not None
+            and existing_execution_authority
+            != qualification_execution_binding
+        ):
+            raise DispatcherError(
+                "dispatcher ledger is bound to a different qualification "
+                "execution authority"
+            )
+        work["qualification_execution_authority"] = copy.deepcopy(
+            qualification_execution_binding
+        )
     if not dry_run and "throughput_observation_started_at" not in work:
         # This is the post-remediation throughput epoch, distinct from ``created_at``
         # on a preserved ledger that may predate a long pause.  It is established only
@@ -2330,17 +3002,65 @@ def _dispatch_poll(
 
     scheduler_reconcile_warnings: list[str] = []
     scheduler_reconcile_errors: list[str] = []
-    if production_contract is not None:
+    protected_admission = (
+        production_contract is not None
+        or qualification_capacity_contract is not None
+    )
+    if protected_admission:
         if args.assume_total_jobs is not None or args.assume_cell_jobs is not None:
             raise DispatcherError(
-                "schema-5 production cannot replace scheduler authority with assumed counts"
+                "protected schema-5 admission cannot replace scheduler authority "
+                "with assumed counts"
             )
-        from slurm.schema5_control import query_scheduler
-
-        scheduler_snapshot = query_scheduler(now=now, tolerate_errors=False)
-        if not scheduler_snapshot.squeue_ok or not scheduler_snapshot.sacct_ok:
-            raise DispatcherError("schema-5 admission requires both squeue and sacct truth")
-        rows = _queue_rows_from_scheduler_snapshot(scheduler_snapshot)
+        if production_contract is not None:
+            scheduler_user = os.environ.get("USER", "")
+            client_contract = production_contract.get("client_capacity")
+            if not isinstance(client_contract, Mapping):
+                raise DispatcherError(
+                    "schema-5 admission contract lacks client-capacity authority"
+                )
+            try:
+                assert production_capacity_contract is not None
+                production_client_capacity = (
+                    protected_capacity.capture_live_client_capacity(
+                        production_capacity_contract,
+                        partition=str(client_contract["partition"]),
+                        qos=str(client_contract["qos"]),
+                        required_time_limit_seconds=(
+                            scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                        ),
+                        captured_timestamp=now,
+                    )
+                )
+            except (
+                scheduler_safety.SchedulerSafetyError,
+                protected_capacity.ProtectedCapacityError,
+            ) as exc:
+                raise DispatcherError(
+                    f"schema-5 client QOS/TRES authority failed closed: {exc}"
+                ) from exc
+            occupancy_partition = str(client_contract["partition"])
+        else:
+            scheduler_user = os.environ.get("USER", "")
+            occupancy_partition = str(args.cell_partition)
+        try:
+            initial_occupancy = _capture_stable_admission_occupancy(
+                user=scheduler_user,
+                partition=occupancy_partition,
+            )
+        except (
+            DispatcherError,
+            scheduler_safety.SchedulerSafetyError,
+        ) as exc:
+            raise DispatcherError(
+                f"schema-5 stable scheduler occupancy failed closed: {exc}"
+            ) from exc
+        scheduler_snapshot = initial_occupancy.scheduler_snapshot
+        rows = list(initial_occupancy.rows)
+        if production_contract is not None:
+            production_partition_usage = initial_occupancy.usage
+        else:
+            qualification_partition_usage = initial_occupancy.usage
         scheduler_reconcile_warnings, scheduler_reconcile_errors = (
             _reconcile_schema5_intents(
                 work,
@@ -2355,31 +3075,25 @@ def _dispatch_poll(
             else _query_squeue()
         )
     total_jobs = len(rows) if args.assume_total_jobs is None else args.assume_total_jobs
-    active_cell_jobs = (
-        sum(is_cell_job_name(row.job_name) for row in rows)
-        if args.assume_cell_jobs is None
-        else args.assume_cell_jobs
-    )
+    trusted_cell_bindings: dict[str, dict[str, str]] = {}
     active, active_task_load, join_warnings, unmappable_jobs = _active_cells(
         rows,
         work,
         specs,
         now=now,
-        schema5_strict=production_contract is not None,
+        schema5_strict=protected_admission,
+        trusted_cell_bindings=trusted_cell_bindings,
+    )
+    active_cell_jobs = (
+        len(trusted_cell_bindings)
+        if args.assume_cell_jobs is None
+        else args.assume_cell_jobs
     )
     join_warnings = scheduler_reconcile_warnings + join_warnings
     unmappable_jobs = scheduler_reconcile_errors + unmappable_jobs
-    invisible_reservations = sum(
-        int(record.get("task_count", len(record.get("tasks", []))))
-        for record in work["jobs"].values()
-        if record.get("state") == "visibility_grace"
-    ) + sum(
-        len(intent.get("tasks", []))
-        for intent in work.get("intents", {}).values()
-        if intent.get("state") in {"prepared", "submitting"}
-        and (visibility_started_at := _intent_visibility_started_at(intent))
-        is not None
-        and now - visibility_started_at < 300.0
+    invisible_reservations = _invisible_reservation_count(
+        work,
+        now=now,
     )
     total_jobs += invisible_reservations
     active_cell_jobs += invisible_reservations
@@ -2421,6 +3135,139 @@ def _dispatch_poll(
         model_contract_path=production_model_contract_path,
         validation_budget=args.validation_budget,
     )
+    trusted_nonclient_bindings: dict[str, dict[str, str]] = {}
+    if protected_admission:
+        if production_fleet is not None:
+            expected_fleet_sha256 = production_fleet.sha256
+        else:
+            qualification_fleet_hashes = {
+                dict(spec.runtime_environment).get(
+                    "ASYS_FLEET_CONTRACT_SHA256", ""
+                )
+                for spec in specs
+            }
+            if (
+                len(qualification_fleet_hashes) != 1
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    next(iter(qualification_fleet_hashes), ""),
+                )
+                is None
+            ):
+                raise DispatcherError(
+                    "qualification server classification lacks one exact fleet hash"
+                )
+            expected_fleet_sha256 = next(iter(qualification_fleet_hashes))
+        trusted_nonclient_bindings = _trusted_server_scheduler_bindings(
+            specs,
+            expected_fleet_sha256=expected_fleet_sha256,
+            frozen_fleet=production_fleet,
+            scheduler_rows=rows,
+        )
+
+        def capture_protected_boundary(
+            *,
+            partition: str,
+            cpu_limit: int,
+            memory_limit_mib: int,
+            max_submit_jobs: int,
+            reserve_jobs: int,
+            exclude_intent_ids: frozenset[str] = frozenset(),
+        ) -> tuple[
+            StableAdmissionOccupancy,
+            int,
+            int,
+            dict[str, dict[str, str]],
+            dict[str, dict[str, str]],
+        ]:
+            """Recompute one complete protected headroom decision from stable truth."""
+
+            stable = _capture_stable_admission_occupancy(
+                user=os.environ.get("USER", ""),
+                partition=partition,
+            )
+            boundary_work = copy.deepcopy(work)
+            _reconcile_warnings, reconcile_errors = _reconcile_schema5_intents(
+                boundary_work,
+                scheduler_snapshot=stable.scheduler_snapshot,
+                now=time.time(),
+            )
+            fresh_client_bindings: dict[str, dict[str, str]] = {}
+            (
+                _fresh_active,
+                _fresh_load,
+                _fresh_warnings,
+                fresh_unmappable,
+            ) = _active_cells(
+                stable.rows,
+                boundary_work,
+                specs,
+                now=time.time(),
+                schema5_strict=True,
+                trusted_cell_bindings=fresh_client_bindings,
+            )
+            boundary_errors = list(reconcile_errors) + list(fresh_unmappable)
+            if boundary_errors:
+                raise DispatcherError(
+                    "stable admission occupancy contains unmappable scheduler "
+                    "state: "
+                    + "; ".join(boundary_errors[:10])
+                )
+            fresh_nonclient_bindings = _trusted_server_scheduler_bindings(
+                specs,
+                expected_fleet_sha256=expected_fleet_sha256,
+                frozen_fleet=production_fleet,
+                scheduler_rows=stable.rows,
+            )
+            boundary_now = time.time()
+            boundary_invisible = _invisible_reservation_count(
+                boundary_work,
+                now=boundary_now,
+                exclude_intent_ids=exclude_intent_ids,
+            )
+            headroom = scheduler_safety.client_task_headroom(
+                stable.usage,
+                cell_cpus=CELL_CPUS_DEFAULT,
+                cell_memory_mib=4 * 1024,
+                invisible_reserved_tasks=boundary_invisible,
+                cpu_limit=cpu_limit,
+                memory_limit_mib=memory_limit_mib,
+                max_submit_jobs=max_submit_jobs,
+                reserve_jobs=reserve_jobs,
+                cell_ceiling=384,
+                absolute_job_ceiling=448,
+                live_user_job_elements=len(stable.rows),
+                trusted_client_jobs=fresh_client_bindings,
+                trusted_nonclient_jobs=fresh_nonclient_bindings,
+            )
+            active_cells_at_boundary = (
+                len(fresh_client_bindings) + boundary_invisible
+            )
+            return (
+                stable,
+                headroom,
+                active_cells_at_boundary,
+                fresh_client_bindings,
+                fresh_nonclient_bindings,
+            )
+    safety_findings = _dispatcher_safety_findings(
+        state_counts=state_counts,
+        validation_errors=validation_errors,
+        unmappable_jobs=unmappable_jobs,
+    )
+    if production_contract is not None and not dry_run:
+        # This must precede both WDRR planning and the external sbatch boundary.
+        # Persisting a critical alert transactionally drops the effective ceiling to
+        # zero; then refresh the contract so even unrelated pre-existing holds remain
+        # visible to this poll.
+        _persist_dispatcher_safety_findings(
+            control_state_dir,
+            findings=safety_findings,
+            now=now,
+        )
+        from slurm.schema5_control import admission_contract_from_state
+
+        production_contract = admission_contract_from_state(control_state_dir)
     slots = available_cell_slots(
         total_jobs=total_jobs,
         active_cell_jobs=active_cell_jobs,
@@ -2436,6 +3283,67 @@ def _dispatch_poll(
                 int(production_contract["current_ceiling"]) - active_cell_jobs,
             ),
         )
+        assert production_client_capacity is not None
+        assert production_partition_usage is not None
+        client_contract = production_contract["client_capacity"]
+        assert production_capacity_contract is not None
+        protected_capacity.validate_live_client_capacity_evidence(
+            production_capacity_contract,
+            production_client_capacity,
+            partition=str(client_contract["partition"]),
+            qos=str(client_contract["qos"]),
+            required_time_limit_seconds=(
+                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+            ),
+        )
+        protected_task_headroom = scheduler_safety.client_task_headroom(
+            production_partition_usage,
+            cell_cpus=CELL_CPUS_DEFAULT,
+            cell_memory_mib=4 * 1024,
+            invisible_reserved_tasks=invisible_reservations,
+            cpu_limit=int(client_contract["cpu_limit"]),
+            memory_limit_mib=int(client_contract["memory_limit_mib"]),
+            max_submit_jobs=int(client_contract["max_submit_jobs"]),
+            reserve_jobs=int(client_contract["reserve_jobs"]),
+            cell_ceiling=384,
+            absolute_job_ceiling=448,
+            live_user_job_elements=total_jobs - invisible_reservations,
+            trusted_client_jobs=trusted_cell_bindings,
+            trusted_nonclient_jobs=trusted_nonclient_bindings,
+        )
+        slots = min(slots, protected_task_headroom)
+    elif qualification_capacity_contract is not None:
+        assert qualification_client_placement is not None
+        assert qualification_client_capacity is not None
+        assert qualification_partition_usage is not None
+        protected_task_headroom = scheduler_safety.client_task_headroom(
+            qualification_partition_usage,
+            cell_cpus=CELL_CPUS_DEFAULT,
+            cell_memory_mib=4 * 1024,
+            invisible_reserved_tasks=invisible_reservations,
+            cpu_limit=int(
+                qualification_client_placement.capacity["cpus"]
+            ),
+            memory_limit_mib=int(
+                qualification_client_placement.capacity["memory_mib"]
+            ),
+            max_submit_jobs=int(
+                qualification_client_placement.capacity[
+                    "submit_headroom"
+                ]
+            ),
+            reserve_jobs=64,
+            cell_ceiling=384,
+            absolute_job_ceiling=448,
+            live_user_job_elements=total_jobs - invisible_reservations,
+            trusted_client_jobs=trusted_cell_bindings,
+            trusted_nonclient_jobs=trusted_nonclient_bindings,
+        )
+        slots = min(slots, protected_task_headroom)
+    if safety_findings:
+        # Production findings are already durable above.  Preserve fail-closed
+        # behavior in dry-run/non-production simulations without mutating control.
+        slots = 0
     if unmappable_jobs:
         # Fail closed: a cell job that cannot be joined to an immutable manifest may be
         # mutating any candidate.  Advisory locking protects new runners, but legacy
@@ -2482,21 +3390,145 @@ def _dispatch_poll(
                         "schema-5 admission contract changed after planning; "
                         "discarding the stale plan before rendering or sbatch"
                     )
-                if active_cell_jobs + len(selected) > int(
+                # The cross-node admission lock serializes schema-5 dispatchers, but it
+                # cannot prevent the user from submitting an unrelated job to the
+                # currently authorized client partition.
+                # Re-read scheduler-authoritative QOS and TRES immediately before
+                # crossing sbatch; a stale resource plan is discarded, never held.
+                try:
+                    client_contract = fresh_contract["client_capacity"]
+                    assert production_capacity_contract is not None
+                    fresh_client_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            production_capacity_contract,
+                            partition=str(client_contract["partition"]),
+                            qos=str(client_contract["qos"]),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                        )
+                    )
+                    (
+                        fresh_occupancy,
+                        fresh_resource_slots,
+                        fresh_active_cell_jobs,
+                        _fresh_client_bindings,
+                        _fresh_nonclient_bindings,
+                    ) = capture_protected_boundary(
+                        partition=str(client_contract["partition"]),
+                        cpu_limit=int(client_contract["cpu_limit"]),
+                        memory_limit_mib=int(
+                            client_contract["memory_limit_mib"]
+                        ),
+                        max_submit_jobs=int(
+                            client_contract["max_submit_jobs"]
+                        ),
+                        reserve_jobs=int(client_contract["reserve_jobs"]),
+                    )
+                except (
+                    DispatcherError,
+                    scheduler_safety.SchedulerSafetyError,
+                    protected_capacity.ProtectedCapacityError,
+                ) as exc:
+                    raise DispatcherError(
+                        "schema-5 fresh client QOS/TRES authority failed closed "
+                        f"before sbatch: {exc}"
+                    ) from exc
+                if fresh_active_cell_jobs + len(selected) > int(
                     fresh_contract["current_ceiling"]
                 ):
                     raise DispatcherError(
                         "schema-5 selected tasks exceed the freshly fenced cell ceiling"
                     )
+                if len(selected) > fresh_resource_slots:
+                    raise DispatcherError(
+                        "schema-5 selected tasks exceed freshly observed authorized "
+                        f"{client_contract['partition']} "
+                        f"CPU/memory/MaxSubmitJobs headroom: selected={len(selected)}, "
+                        f"headroom={fresh_resource_slots}"
+                    )
+                production_partition_usage = fresh_occupancy.usage
+                production_client_capacity = fresh_client_capacity
+                protected_task_headroom = fresh_resource_slots
+            elif qualification_capacity_contract is not None:
+                assert qualification_client_placement is not None
+                try:
+                    fresh_qualification_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            qualification_capacity_contract,
+                            partition=str(args.cell_partition),
+                            qos=str(args.cell_qos),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                        )
+                    )
+                    (
+                        fresh_qualification_occupancy,
+                        fresh_resource_slots,
+                        _fresh_active_cell_jobs,
+                        _fresh_client_bindings,
+                        _fresh_nonclient_bindings,
+                    ) = capture_protected_boundary(
+                        partition=str(args.cell_partition),
+                        cpu_limit=int(
+                            qualification_client_placement.capacity["cpus"]
+                        ),
+                        memory_limit_mib=int(
+                            qualification_client_placement.capacity[
+                                "memory_mib"
+                            ]
+                        ),
+                        max_submit_jobs=int(
+                            qualification_client_placement.capacity[
+                                "submit_headroom"
+                            ]
+                        ),
+                        reserve_jobs=64,
+                    )
+                except (
+                    DispatcherError,
+                    scheduler_safety.SchedulerSafetyError,
+                    protected_capacity.ProtectedCapacityError,
+                ) as exc:
+                    raise DispatcherError(
+                        "protected qualification fresh client QOS/TRES "
+                        f"authority failed closed before sbatch: {exc}"
+                    ) from exc
+                if len(selected) > fresh_resource_slots:
+                    raise DispatcherError(
+                        "protected qualification selected tasks exceed freshly "
+                        "observed CPU/memory/MaxSubmitJobs headroom: "
+                        f"selected={len(selected)}, headroom={fresh_resource_slots}"
+                    )
+                qualification_client_capacity = fresh_qualification_capacity
+                qualification_partition_usage = (
+                    fresh_qualification_occupancy.usage
+                )
+                protected_task_headroom = fresh_resource_slots
 
             batch_id, manifest_path, sbatch_path, batch = _write_batch(
                 args.state_dir,
                 selected,
-                partition=args.cell_partition,
+                partition=(
+                    str(production_contract["client_capacity"]["partition"])
+                    if production_contract is not None
+                    else args.cell_partition
+                ),
+                qos=(
+                    str(production_contract["client_capacity"]["qos"])
+                    if production_contract is not None
+                    else (getattr(args, "cell_qos", None) or args.cell_partition)
+                ),
                 time_limit=args.cell_time,
                 memory=args.cell_mem,
                 now=now,
                 control_state_dir=control_state_dir,
+                qualification_execution=(
+                    qualification_execution_authority.execution
+                    if qualification_execution_authority is not None
+                    else None
+                ),
             )
             work["intents"][batch_id] = {
                 "state": "prepared",
@@ -2511,11 +3543,219 @@ def _dispatch_poll(
                     "deficits": admission.deficits,
                 },
                 "fairness_committed": False,
+                "protected_capacity_authority": (
+                    copy.deepcopy(work.get("protected_capacity_authority"))
+                    if qualification_capacity_contract is not None
+                    else None
+                ),
+                "qualification_execution_authority": (
+                    copy.deepcopy(
+                        work.get("qualification_execution_authority")
+                    )
+                    if qualification_execution_authority is not None
+                    else None
+                ),
             }
             # Persist the exact task reservation before crossing the external sbatch
             # boundary.  If the process dies after acceptance, the next coordinator
             # joins the array through the intent token and exact immutable sbatch path.
             _atomic_write_json(args.ledger_path, work)
+            if production_contract is not None:
+                try:
+                    protected_ref = production_contract["protected_capacity"]
+                    live_contract = protected_capacity.load_contract(
+                        protected_ref["path"],
+                        expected_release_git_commit=str(
+                            control["immutable"]["git_commit"]
+                        ),
+                        expected_marker_id=str(protected_ref["marker_id"]),
+                        expected_sha256=str(protected_ref["sha256"]),
+                    )
+                    client_contract = production_contract["client_capacity"]
+                    protected_capacity.authorize_client(
+                        live_contract,
+                        partition=str(client_contract["partition"]),
+                        qos=str(client_contract["qos"]),
+                        required_slots=int(
+                            production_contract["configured_ceiling"]
+                        ),
+                        required_reserve_jobs=int(
+                            production_contract["reserve"]
+                        ),
+                    )
+                    fresh_production_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            live_contract,
+                            partition=str(client_contract["partition"]),
+                            qos=str(client_contract["qos"]),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                        )
+                    )
+                    (
+                        fresh_production_occupancy,
+                        fresh_headroom,
+                        fresh_active_cell_jobs,
+                        _fresh_client_bindings,
+                        _fresh_nonclient_bindings,
+                    ) = capture_protected_boundary(
+                        partition=str(client_contract["partition"]),
+                        cpu_limit=int(client_contract["cpu_limit"]),
+                        memory_limit_mib=int(
+                            client_contract["memory_limit_mib"]
+                        ),
+                        max_submit_jobs=int(
+                            client_contract["max_submit_jobs"]
+                        ),
+                        reserve_jobs=int(client_contract["reserve_jobs"]),
+                        exclude_intent_ids=frozenset({batch_id}),
+                    )
+                    if fresh_active_cell_jobs + len(selected) > int(
+                        production_contract["current_ceiling"]
+                    ):
+                        raise scheduler_safety.SchedulerSafetyError(
+                            "scientific client ceiling shrank below the "
+                            "prepared microbatch before sbatch"
+                        )
+                    if len(selected) > fresh_headroom:
+                        raise scheduler_safety.SchedulerSafetyError(
+                            "scientific client headroom shrank below the "
+                            "prepared microbatch before sbatch"
+                        )
+                    production_client_capacity = fresh_production_capacity
+                    production_partition_usage = (
+                        fresh_production_occupancy.usage
+                    )
+                    protected_task_headroom = fresh_headroom
+                except (
+                    KeyError,
+                    DispatcherError,
+                    scheduler_safety.SchedulerSafetyError,
+                    protected_capacity.ProtectedCapacityError,
+                ) as exc:
+                    work["intents"][batch_id].update(
+                        {
+                            "state": "prepared",
+                            "error": (
+                                "protected client placement drifted before sbatch: "
+                                + str(exc)
+                            ),
+                        }
+                    )
+                    _atomic_write_json(args.ledger_path, work)
+                    raise DispatcherError(
+                        "protected client partition/QOS drifted immediately "
+                        f"before sbatch: {exc}"
+                    ) from exc
+            elif qualification_capacity_contract is not None:
+                try:
+                    assert qualification_execution_authority is not None
+                    assert qualification_execution_binding is not None
+                    fresh_execution_authority = (
+                        load_qualification_execution_authority(
+                            str(qualification_execution_path)
+                        )
+                    )
+                    if (
+                        fresh_execution_authority.payload
+                        != qualification_execution_authority.payload
+                        or _qualification_execution_authority_binding(
+                            fresh_execution_authority
+                        )
+                        != qualification_execution_binding
+                    ):
+                        raise DispatcherError(
+                            "qualification execution authority changed after "
+                            "planning"
+                        )
+                    qualification_capacity_contract = (
+                        protected_capacity.load_contract(
+                            qualification_values["path"],
+                            expected_release_git_commit=str(
+                                qualification_values["release_git_commit"]
+                            ),
+                            expected_marker_id=str(
+                                qualification_values["marker_id"]
+                            ),
+                            expected_sha256=str(
+                                qualification_values["sha256"]
+                            ),
+                        )
+                    )
+                    protected_capacity.authorize_client(
+                        qualification_capacity_contract,
+                        partition=str(args.cell_partition),
+                        qos=str(args.cell_qos),
+                        required_slots=384,
+                        required_reserve_jobs=64,
+                    )
+                    fresh_qualification_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            qualification_capacity_contract,
+                            partition=str(args.cell_partition),
+                            qos=str(args.cell_qos),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                        )
+                    )
+                    (
+                        fresh_qualification_occupancy,
+                        fresh_headroom,
+                        _fresh_active_cell_jobs,
+                        _fresh_client_bindings,
+                        _fresh_nonclient_bindings,
+                    ) = capture_protected_boundary(
+                        partition=str(args.cell_partition),
+                        cpu_limit=int(
+                            qualification_client_placement.capacity["cpus"]
+                        ),
+                        memory_limit_mib=int(
+                            qualification_client_placement.capacity[
+                                "memory_mib"
+                            ]
+                        ),
+                        max_submit_jobs=int(
+                            qualification_client_placement.capacity[
+                                "submit_headroom"
+                            ]
+                        ),
+                        reserve_jobs=64,
+                        exclude_intent_ids=frozenset({batch_id}),
+                    )
+                    if len(selected) > fresh_headroom:
+                        raise scheduler_safety.SchedulerSafetyError(
+                            "protected qualification client headroom shrank "
+                            "below the prepared microbatch before sbatch"
+                        )
+                    qualification_client_capacity = (
+                        fresh_qualification_capacity
+                    )
+                    qualification_partition_usage = (
+                        fresh_qualification_occupancy.usage
+                    )
+                    protected_task_headroom = fresh_headroom
+                except (
+                    DispatcherError,
+                    scheduler_safety.SchedulerSafetyError,
+                    protected_capacity.ProtectedCapacityError,
+                ) as exc:
+                    work["intents"][batch_id].update(
+                        {
+                            "state": "prepared",
+                            "error": (
+                                "protected qualification placement drifted "
+                                "before sbatch: "
+                                + str(exc)
+                            ),
+                        }
+                    )
+                    _atomic_write_json(args.ledger_path, work)
+                    raise DispatcherError(
+                        "protected qualification partition/QOS drifted "
+                        f"immediately before sbatch: {exc}"
+                    ) from exc
             work["intents"][batch_id]["state"] = "submitting"
             work["intents"][batch_id]["submit_started_at"] = time.time()
             _atomic_write_json(args.ledger_path, work)
@@ -2568,6 +3808,66 @@ def _dispatch_poll(
         }
 
     backlogged_runs = {candidate.run_id for candidate in candidates}
+    profile_backlog_cells: Counter[ProfileKey] = Counter(
+        candidate.profile_key for candidate in candidates
+    )
+    profile_backlog_work: Counter[ProfileKey] = Counter()
+    for candidate in candidates:
+        profile_backlog_work[candidate.profile_key] += candidate.fanout_cost
+    profile_backlog = [
+        {
+            "server_pool_root": key[0],
+            "serving_profile": key[1],
+            "eligible_cells": profile_backlog_cells[key],
+            "backlog_fanout_work": profile_backlog_work[key],
+            "live_replicas": int(capacity.live_servers.get(key, 0)),
+            "backlog_work_per_replica": (
+                None
+                if int(capacity.live_servers.get(key, 0)) == 0
+                else profile_backlog_work[key]
+                / int(capacity.live_servers[key])
+            ),
+        }
+        for key in sorted(profile_backlog_work)
+    ]
+    if qualification_execution_authority is not None:
+        pressure_history = work.setdefault(
+            "qualification_profile_pressure", {}
+        )
+        if not isinstance(pressure_history, dict):
+            raise DispatcherError(
+                "qualification profile-pressure ledger is malformed"
+            )
+        for row in profile_backlog:
+            if int(row["backlog_fanout_work"]) <= 0:
+                continue
+            pressure_key = _key(
+                (
+                    str(row["server_pool_root"]),
+                    str(row["serving_profile"]),
+                )
+            )
+            candidate_pressure = {
+                **row,
+                "observed_poll": poll_number,
+            }
+            previous = pressure_history.get(pressure_key)
+            replace_pressure = not isinstance(previous, Mapping)
+            if isinstance(previous, Mapping):
+                new_replicas = int(candidate_pressure["live_replicas"])
+                old_replicas = int(previous["live_replicas"])
+                new_work = int(candidate_pressure["backlog_fanout_work"])
+                old_work = int(previous["backlog_fanout_work"])
+                replace_pressure = (
+                    (new_replicas == 0 and old_replicas != 0)
+                    or (
+                        (new_replicas == 0) == (old_replicas == 0)
+                        and new_work * max(1, old_replicas)
+                        > old_work * max(1, new_replicas)
+                    )
+                )
+            if replace_pressure:
+                pressure_history[pressure_key] = candidate_pressure
     admitted_runs = {candidate.run_id for candidate in selected} if (submitted or dry_run) else set()
     updated_runs, starvation = update_starvation_counters(
         work["runs"],
@@ -2587,6 +3887,48 @@ def _dispatch_poll(
             "reserve": args.reserve,
             "available_slots": slots,
             "invisible_reserved_tasks": invisible_reservations,
+            "client_capacity_contract": (
+                None
+                if production_client_capacity is None
+                else {
+                    "evidence_id": production_client_capacity["evidence_id"],
+                    "partition": production_contract["client_capacity"][
+                        "partition"
+                    ],
+                    "qos": production_contract["client_capacity"]["qos"],
+                    "capacity_generation": production_contract[
+                        "client_capacity"
+                    ]["capacity_generation"],
+                    "authorization_sha256": production_contract[
+                        "client_capacity"
+                    ]["authorization_sha256"],
+                    "cpu_limit": production_contract["client_capacity"][
+                        "cpu_limit"
+                    ],
+                    "memory_limit_mib": production_contract[
+                        "client_capacity"
+                    ]["memory_limit_mib"],
+                    "max_submit_jobs": production_contract[
+                        "client_capacity"
+                    ]["max_submit_jobs"],
+                }
+            ),
+            # Retain the historical field name for report readers, but include the
+            # exact dynamic partition identity instead of implying mit_normal.
+            "mit_normal_usage": (
+                None
+                if production_partition_usage is None
+                else {
+                    "evidence_id": production_partition_usage["evidence_id"],
+                    "partition": production_partition_usage["partition"],
+                    "job_count": production_partition_usage["job_count"],
+                    "used_cpus": production_partition_usage["used_cpus"],
+                    "used_memory_mib": production_partition_usage[
+                        "used_memory_mib"
+                    ],
+                    "task_headroom": protected_task_headroom,
+                }
+            ),
         },
         "live_servers": {
             _key(key): value for key, value in sorted(capacity.live_servers.items())
@@ -2597,6 +3939,7 @@ def _dispatch_poll(
         },
         "validation_fairness": copy.deepcopy(work["validation_fairness"]),
         "eligible_cells": len(candidates),
+        "profile_backlog": profile_backlog,
         "state_counts": state_counts,
         "selected": [_task_from_candidate(candidate) for candidate in selected],
         "submission": submission,
@@ -2605,6 +3948,9 @@ def _dispatch_poll(
         "warnings": join_warnings,
         "unmappable_cell_jobs": unmappable_jobs,
         "validation_errors": validation_errors,
+        "safety_alert_keys": [
+            finding["dedupe_key"] for finding in safety_findings
+        ],
     }
     return {"ledger": work, "report": report}
 
@@ -2616,6 +3962,11 @@ def _run_dispatch(args: argparse.Namespace) -> int:
         None
         if args.control_state_dir is None
         else Path(args.control_state_dir).expanduser().resolve()
+    )
+    args.qualification_execution_authority = (
+        None
+        if args.qualification_execution_authority is None
+        else Path(args.qualification_execution_authority).expanduser().resolve()
     )
     specs = load_run_specs(
         args.run,
@@ -2630,10 +3981,13 @@ def _run_dispatch(args: argparse.Namespace) -> int:
     if args.cell_mem not in {"2G", "4G"}:
         raise DispatcherError("--cell-mem must be 2G, or 4G after a MaxRSS pilot")
     if args.control_state_dir is not None and (
-        args.cell_mem != "4G" or args.cell_time != CELL_TIME_DEFAULT
+        args.cell_mem != "4G"
+        or args.cell_time != CELL_TIME_DEFAULT
     ):
         raise DispatcherError(
-            "schema-5 production requires --cell-mem=4G and --cell-time=12:00:00"
+            "schema-5 production requires --cell-mem=4G and "
+            "--cell-time=12:00:00; the cell partition is ignored and derived from "
+            "the reverified control capacity generation"
         )
     args.ledger_path = args.state_dir / "ledger.json"
     if args.dry_run:
@@ -2779,6 +4133,20 @@ def _runtime_environment(task: Mapping[str, Any]) -> dict[str, str]:
         raise DispatcherError("schema-5 rollout generation is not an integer") from exc
     if rollout_generation < 1:
         raise DispatcherError("schema-5 rollout generation must be positive")
+    try:
+        capacity_generation = int(value["ASYS_CAPACITY_GENERATION"])
+    except ValueError as exc:
+        raise DispatcherError("schema-5 capacity generation is not an integer") from exc
+    if capacity_generation < 1:
+        raise DispatcherError("schema-5 capacity generation must be positive")
+    if not Path(value["ASYS_FLEET_CONTRACT_PATH"]).is_absolute():
+        raise DispatcherError("schema-5 fleet contract path must be absolute")
+    for field in (
+        "ASYS_FLEET_CONTRACT_SHA256",
+        "ASYS_RELEASE_FLEET_CONTRACT_SHA256",
+    ):
+        if re.fullmatch(r"[0-9a-f]{64}", value[field]) is None:
+            raise DispatcherError(f"schema-5 {field} is not a lowercase SHA-256")
     return dict(value)
 
 
@@ -2830,7 +4198,14 @@ def build_run_one_command(
             )
         release_root = raw_release_worktree.resolve()
         model_contract_path = release_root / "configs" / "model_contracts.v1.json"
-        fleet_contract_path = release_root / "configs" / "schema5_fleet.v1.json"
+        fleet_contract_path = Path(
+            runtime_environment["ASYS_FLEET_CONTRACT_PATH"]
+        ).expanduser()
+        if not fleet_contract_path.is_absolute():
+            raise DispatcherError(
+                "schema-5 fleet contract path must be absolute"
+            )
+        fleet_contract_path = fleet_contract_path.resolve()
         prompt_root = release_root / "configs" / "prompts"
     elif release_worktree is not None:
         raise DispatcherError(
@@ -2931,6 +4306,366 @@ def _verify_runtime_environment_attestation(
         raise DispatcherError(
             f"schema-5 runtime environment integrity failed: {exc}"
         ) from exc
+
+
+_QUALIFICATION_EXECUTION_AUTHORITY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "protocol",
+        "intent_id",
+        "chain_id",
+        "run_id",
+        "run_root",
+        "release_git_commit",
+        "protected_capacity",
+        "readiness_generation",
+        "execution",
+        "runtime_environment",
+        "authority_id",
+    }
+)
+_QUALIFICATION_EXECUTION_FIELDS = frozenset(
+    {
+        "release_worktree",
+        "harness_prefix",
+        "hf_home",
+        "python",
+        "python_sha256",
+        "dispatcher_script",
+        "dispatcher_script_sha256",
+        "batch_template",
+        "batch_template_sha256",
+    }
+)
+_QUALIFICATION_READINESS_FIELDS = frozenset(
+    {
+        "catalog_id",
+        "marker_path",
+        "marker_sha256",
+        "inventory_sha256",
+        "catalog_payload_sha256",
+        "allowed_generation_tuple_count",
+        "release_fleet_contract_sha256",
+        "fleet_contract_sha256",
+        "capacity_generation",
+        "rollout_generation",
+    }
+)
+
+
+def _qualification_canonical_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(
+            value,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _qualification_runtime_environment_sha256(
+    runtime_environment: Mapping[str, str],
+) -> str:
+    return hashlib.sha256(
+        _qualification_canonical_bytes(dict(runtime_environment))
+    ).hexdigest()
+
+
+def _qualification_execution_authority_binding(
+    authority: QualificationExecutionAuthority,
+) -> dict[str, Any]:
+    return {
+        "path": str(authority.path),
+        "sha256": authority.sha256,
+        "authority_id": authority.authority_id,
+        "intent_id": str(authority.payload["intent_id"]),
+        "chain_id": str(authority.payload["chain_id"]),
+        "run_id": str(authority.payload["run_id"]),
+        "run_root": str(authority.payload["run_root"]),
+        "release_git_commit": str(
+            authority.payload["release_git_commit"]
+        ),
+        "runtime_environment_sha256": (
+            _qualification_runtime_environment_sha256(
+                authority.runtime_environment
+            )
+        ),
+        "release_worktree": authority.execution["release_worktree"],
+        "harness_prefix": authority.execution["harness_prefix"],
+        "python": authority.execution["python"],
+        "dispatcher_script": authority.execution["dispatcher_script"],
+        "batch_template": authority.execution["batch_template"],
+    }
+
+
+def load_qualification_execution_authority(
+    path: str | Path,
+) -> QualificationExecutionAuthority:
+    """Load and revalidate the qualification's immutable cell authority.
+
+    This is deliberately independent of production desired state.  The authority
+    binds one estimand-excluded run to the same schema-5 worker boundary—sealed
+    template, dispatcher, interpreter, release, runtime generation, and live
+    attestation lease—without granting access to any production run or ledger.
+    """
+
+    supplied = Path(path).expanduser()
+    if not supplied.is_absolute():
+        raise DispatcherError(
+            "qualification execution authority path must be absolute"
+        )
+    resolved = supplied.resolve()
+    if (
+        supplied != resolved
+        or supplied.is_symlink()
+        or not supplied.is_file()
+        or stat.S_IMODE(supplied.stat().st_mode) & 0o222
+    ):
+        raise DispatcherError(
+            f"qualification execution authority is unsafe: {supplied}"
+        )
+    raw = supplied.read_bytes()
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DispatcherError(
+                    f"qualification execution authority repeats {key!r}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=reject_duplicates,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                DispatcherError(
+                    "qualification execution authority contains "
+                    f"non-finite JSON number {token!r}"
+                )
+            ),
+        )
+    except DispatcherError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise DispatcherError(
+            f"invalid qualification execution authority {supplied}: {exc}"
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != _QUALIFICATION_EXECUTION_AUTHORITY_FIELDS
+        or value.get("schema_version") != 1
+        or value.get("protocol")
+        != QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL
+        or raw != _qualification_canonical_bytes(value)
+    ):
+        raise DispatcherError(
+            "qualification execution authority schema or canonical bytes drifted"
+        )
+    identity = dict(value)
+    authority_id = identity.pop("authority_id", None)
+    expected_id = hashlib.sha256(
+        _qualification_canonical_bytes(identity)
+    ).hexdigest()
+    if (
+        not isinstance(authority_id, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", authority_id)
+        or authority_id != expected_id
+    ):
+        raise DispatcherError(
+            "qualification execution authority self-hash is invalid"
+        )
+    for field in ("intent_id", "chain_id"):
+        if re.fullmatch(r"[0-9a-f]{64}", str(value.get(field, ""))) is None:
+            raise DispatcherError(
+                f"qualification execution authority has invalid {field}"
+            )
+    run_id = value.get("run_id")
+    raw_run_root = value.get("run_root")
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or not isinstance(raw_run_root, str)
+        or not Path(raw_run_root).is_absolute()
+        or Path(raw_run_root).resolve().name != run_id
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(value.get("release_git_commit", ""))
+        )
+        is None
+    ):
+        raise DispatcherError(
+            "qualification execution authority run/release identity is invalid"
+        )
+    protected = value.get("protected_capacity")
+    if (
+        not isinstance(protected, dict)
+        or set(protected) != {"path", "sha256", "marker_id"}
+        or not isinstance(protected.get("path"), str)
+        or not Path(str(protected["path"])).is_absolute()
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", str(protected.get(field, "")))
+            is None
+            for field in ("sha256", "marker_id")
+        )
+    ):
+        raise DispatcherError(
+            "qualification execution authority protected-capacity binding is invalid"
+        )
+    readiness = value.get("readiness_generation")
+    if (
+        not isinstance(readiness, dict)
+        or set(readiness) != _QUALIFICATION_READINESS_FIELDS
+        or not isinstance(readiness.get("marker_path"), str)
+        or not Path(str(readiness["marker_path"])).is_absolute()
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", str(readiness.get(field, "")))
+            is None
+            for field in (
+                "catalog_id",
+                "marker_sha256",
+                "inventory_sha256",
+                "catalog_payload_sha256",
+                "release_fleet_contract_sha256",
+                "fleet_contract_sha256",
+            )
+        )
+        or any(
+            not isinstance(readiness.get(field), int)
+            or isinstance(readiness.get(field), bool)
+            or int(readiness[field]) < 1
+            for field in (
+                "allowed_generation_tuple_count",
+                "capacity_generation",
+                "rollout_generation",
+            )
+        )
+    ):
+        raise DispatcherError(
+            "qualification execution authority readiness binding is invalid"
+        )
+    execution_value = value.get("execution")
+    if (
+        not isinstance(execution_value, dict)
+        or set(execution_value) != _QUALIFICATION_EXECUTION_FIELDS
+        or any(
+            not isinstance(execution_value.get(field), str)
+            or not execution_value[field]
+            for field in _QUALIFICATION_EXECUTION_FIELDS
+        )
+    ):
+        raise DispatcherError(
+            "qualification execution authority execution pins are invalid"
+        )
+    execution = {
+        field: str(execution_value[field])
+        for field in _QUALIFICATION_EXECUTION_FIELDS
+    }
+    absolute_fields = (
+        "release_worktree",
+        "harness_prefix",
+        "hf_home",
+        "python",
+        "dispatcher_script",
+        "batch_template",
+    )
+    if any(
+        not Path(execution[field]).is_absolute()
+        or Path(execution[field]).resolve() != Path(execution[field])
+        for field in absolute_fields
+    ):
+        raise DispatcherError(
+            "qualification execution authority paths are not canonical absolute paths"
+        )
+    release_root = Path(execution["release_worktree"])
+    harness_prefix = Path(execution["harness_prefix"])
+    expected_paths = {
+        "python": (harness_prefix / "bin" / "python").resolve(),
+        "dispatcher_script": (
+            release_root / "slurm" / "dispatch_sweeps.py"
+        ).resolve(),
+        "batch_template": (
+            release_root / "slurm" / "run_dispatch_batch.sbatch.tmpl"
+        ).resolve(),
+    }
+    for field, expected in expected_paths.items():
+        artifact = Path(execution[field])
+        digest_field = f"{field}_sha256"
+        if (
+            artifact != expected
+            or artifact.is_symlink()
+            or not artifact.is_file()
+            or stat.S_IMODE(artifact.stat().st_mode) & 0o222
+            or re.fullmatch(
+                r"[0-9a-f]{64}", execution[digest_field]
+            )
+            is None
+            or _sealed_artifact_sha256(artifact)
+            != execution[digest_field]
+        ):
+            raise DispatcherError(
+                f"qualification execution artifact drifted: {field}"
+            )
+    runtime_environment = _runtime_environment(value)
+    expected_runtime = {
+        "ASYS_RELEASE_GIT_COMMIT": str(value["release_git_commit"]),
+        "ASYS_PROTECTED_CAPACITY_MARKER": str(protected["path"]),
+        "ASYS_PROTECTED_CAPACITY_MARKER_SHA256": str(protected["sha256"]),
+        "ASYS_PROTECTED_CAPACITY_MARKER_ID": str(protected["marker_id"]),
+        "ASYS_RELEASE_FLEET_CONTRACT_SHA256": str(
+            readiness["release_fleet_contract_sha256"]
+        ),
+        "ASYS_FLEET_CONTRACT_SHA256": str(
+            readiness["fleet_contract_sha256"]
+        ),
+        "ASYS_CAPACITY_GENERATION": str(
+            readiness["capacity_generation"]
+        ),
+        "ASYS_ROLLOUT_GENERATION": str(readiness["rollout_generation"]),
+    }
+    mismatches = {
+        key: (expected, runtime_environment.get(key))
+        for key, expected in expected_runtime.items()
+        if runtime_environment.get(key) != expected
+    }
+    for field in (
+        "ASYS_MODEL_CONTRACT_SHA256",
+        "ASYS_HARNESS_ENVIRONMENT_SHA256",
+        "ASYS_SERVING_ENVIRONMENT_SHA256",
+        "ASYS_IMMUTABLE_PINS_SHA256",
+        "ASYS_RUNTIME_ATTESTATION_SHA256",
+        "ASYS_ARTIFACT_POLICY_SHA256",
+    ):
+        if re.fullmatch(
+            r"[0-9a-f]{64}", runtime_environment[field]
+        ) is None:
+            mismatches[field] = ("lowercase SHA-256", runtime_environment[field])
+    for field in (
+        "ASYS_PROTECTED_CAPACITY_MARKER",
+        "ASYS_FLEET_CONTRACT_PATH",
+        "ASYS_RUNTIME_ATTESTATION",
+        "ASYS_RUNTIME_INTEGRITY_LEASE",
+    ):
+        if not Path(runtime_environment[field]).is_absolute():
+            mismatches[field] = ("absolute path", runtime_environment[field])
+    if mismatches:
+        raise DispatcherError(
+            "qualification execution authority runtime binding drifted: "
+            f"{mismatches}"
+        )
+    _verify_runtime_environment_attestation(runtime_environment)
+    return QualificationExecutionAuthority(
+        path=resolved,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        authority_id=authority_id,
+        payload=copy.deepcopy(value),
+        runtime_environment=runtime_environment,
+        execution=execution,
+    )
 
 
 def _run_task(args: argparse.Namespace) -> int:
@@ -3039,7 +4774,39 @@ def _build_parser() -> argparse.ArgumentParser:
         "--successor-sbatch",
         help="control sbatch to queue afterany once the singleton lock is held",
     )
-    dispatch.add_argument("--cell-partition", default="mit_preemptable")
+    dispatch.add_argument(
+        "--cell-partition",
+        default="mit_normal",
+        help=(
+            "non-production fallback; schema-5 production ignores this value and "
+            "uses the sealed client-capacity generation"
+        ),
+    )
+    dispatch.add_argument(
+        "--cell-qos",
+        default=None,
+        help=(
+            "explicit non-production scientific-client QOS; defaults to "
+            "--cell-partition. Schema-5 production uses sealed capacity authority."
+        ),
+    )
+    dispatch.add_argument(
+        "--protected-capacity-marker",
+        help=(
+            "sealed qualification-only PROTECTED_CAPACITY_COMPLETE.json; "
+            "requires all protected-capacity identity flags and no control state"
+        ),
+    )
+    dispatch.add_argument("--protected-capacity-marker-sha256")
+    dispatch.add_argument("--protected-capacity-marker-id")
+    dispatch.add_argument("--protected-capacity-release-git-commit")
+    dispatch.add_argument(
+        "--qualification-execution-authority",
+        help=(
+            "sealed qualification-only runtime/template/interpreter authority; "
+            "requires the complete protected-capacity authority and no control state"
+        ),
+    )
     dispatch.add_argument("--cell-time", default=CELL_TIME_DEFAULT)
     dispatch.add_argument("--cell-mem", default=CELL_MEM_DEFAULT)
     dispatch.add_argument(

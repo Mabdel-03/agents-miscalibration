@@ -15,6 +15,15 @@ import pytest
 from scripts import render_schema5_recovery_chain as chain
 
 
+@pytest.fixture(autouse=True)
+def _historical_r1_simulation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep historical tests while the public r1 mutation path stays retired."""
+
+    monkeypatch.setattr(
+        chain, "_reject_retired_r1_mutation", lambda _recovery_root: None
+    )
+
+
 def _run(*argv: str, cwd: Path) -> str:
     proc = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
     assert proc.returncode == 0, proc.stderr

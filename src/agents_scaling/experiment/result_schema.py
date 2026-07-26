@@ -24,6 +24,10 @@ from agents_scaling.serving.client import (
     THINKING_BUDGET_PROTOCOL_HASH,
     THINKING_BUDGET_PROTOCOL_VERSION,
 )
+from agents_scaling.experiment.transport_censor import (
+    TRANSPORT_CENSOR_PROTOCOL_HASH,
+    TRANSPORT_CENSOR_PROTOCOL_VERSION,
+)
 
 
 ARTIFACT_SCHEMA_VERSION = 5
@@ -32,6 +36,7 @@ SUPPORTED_ARTIFACT_SCHEMA_VERSIONS = frozenset({4, ARTIFACT_SCHEMA_VERSION})
 TERMINATION_COMPLETED = "completed"
 TERMINATION_LENGTH_CENSORED = "length_censored"
 TERMINATION_PROTOCOL_CENSORED = "protocol_censored"
+TERMINATION_TRANSPORT_CENSORED = "transport_censored"
 SCHEMA_4_TERMINATION_STATUSES = frozenset(
     {TERMINATION_COMPLETED, TERMINATION_LENGTH_CENSORED}
 )
@@ -40,8 +45,21 @@ TERMINATION_STATUSES = frozenset(
         TERMINATION_COMPLETED,
         TERMINATION_LENGTH_CENSORED,
         TERMINATION_PROTOCOL_CENSORED,
+        TERMINATION_TRANSPORT_CENSORED,
     }
 )
+
+_COORDINATE_PROVENANCE_FIELDS = (
+    "capacity_generation",
+    "endpoint_generation",
+    "fleet_contract_sha256",
+    "release_fleet_contract_sha256",
+    "rollout_generation",
+)
+
+
+def _empty_coordinate_provenance_counts() -> dict[str, dict[str, int]]:
+    return {field: {} for field in _COORDINATE_PROVENANCE_FIELDS}
 
 
 def termination_statuses_for_schema(schema_version: int) -> frozenset[str]:
@@ -67,13 +85,13 @@ SELF_CONSISTENCY_PROTOCOL_V1_HASH = hashlib.sha256(
     ).encode("utf-8")
 ).hexdigest()
 
-SELF_CONSISTENCY_PROTOCOL_VERSION = 2
+SELF_CONSISTENCY_PROTOCOL_VERSION = 3
 _SELF_CONSISTENCY_PROTOCOL_V2_SPEC = {
     "version": SELF_CONSISTENCY_PROTOCOL_VERSION,
     "scheduled_seed": "cell.seed + 1000 + sample_index",
     "outcome_contract": (
-        "one completed AgentOutput, one full length censor, or one full protocol "
-        "censor per scheduled sample"
+        "one completed AgentOutput, one full length censor, one full protocol censor, "
+        "or one durable transport censor per scheduled sample"
     ),
     "aggregate_censor_policy": "all confidence/entropy aggregates undefined if any censor",
     "cost_accounting": "auxiliary generation costs separate from topology efficiency",
@@ -128,7 +146,25 @@ class QuestionResult:
     model_revision: str | None = None
     tokenizer_revision: str | None = None
     model_contract_sha256: str | None = None
+    # The effective fleet hash may change only through a controlled capacity
+    # generation. ``release_fleet_contract_sha256`` retains immutable release lineage.
+    fleet_contract_sha256: str | None = None
+    release_fleet_contract_sha256: str | None = None
+    capacity_generation: int | None = None
     endpoint_generation: str | None = None
+    # Exact counts over stochastic coordinates.  Scalar fleet/capacity/rollout fields
+    # are populated only when these counts are homogeneous; a resumed QID may
+    # truthfully span capacity, rollout, and endpoint generations.  The marginal
+    # ``coordinate_provenance_counts`` remain convenient summaries, but cannot by
+    # themselves prove which generation values co-occurred.  Schema-5 production
+    # therefore also retains exact joint identity/count rows over the complete
+    # release/fleet/capacity/rollout/endpoint tuple.
+    coordinate_provenance_counts: dict[str, dict[str, int]] = field(
+        default_factory=_empty_coordinate_provenance_counts
+    )
+    coordinate_provenance_identity_counts: list[dict[str, Any]] = field(
+        default_factory=list
+    )
     effective_context: int | None = None
     rollout_generation: int | None = None
     # A finite model context cannot guarantee that a sampled trajectory emits EOS.
@@ -138,6 +174,10 @@ class QuestionResult:
     # giving the completion contract exactly one truthful record per benchmark QID.
     termination_status: str = TERMINATION_COMPLETED
     censored_generation: dict[str, Any] | None = None
+    # An ambiguous connection/timeout or a restarted pending request is a trusted,
+    # terminal observation but has no model response envelope.  Keep it separate from
+    # ``censored_generation`` so no token provenance is fabricated.
+    transport_censor: dict[str, Any] | None = None
     # Schema 5 preserves every stochastic topology coordinate that completed before a
     # censor terminated the QID.  Completed rows use an empty list.
     observed_topology_coordinates: list[dict[str, Any]] = field(default_factory=list)
@@ -175,8 +215,17 @@ class CellMeta:
     model_revision: str | None = None
     tokenizer_revision: str | None = None
     model_contract_sha256: str | None = None
+    fleet_contract_sha256: str | None = None
+    release_fleet_contract_sha256: str | None = None
+    capacity_generation: int | None = None
     artifact_policy_sha256: str | None = None
     endpoint_generation: str | None = None
+    coordinate_provenance_counts: dict[str, dict[str, int]] = field(
+        default_factory=_empty_coordinate_provenance_counts
+    )
+    coordinate_provenance_identity_counts: list[dict[str, Any]] = field(
+        default_factory=list
+    )
     effective_context: int | None = None
     rollout_generation: int | None = None
     git_commit: str | None = None
@@ -184,6 +233,9 @@ class CellMeta:
     completed_question_count: int = 0
     length_censored_question_count: int = 0
     protocol_censored_question_count: int = 0
+    transport_censored_question_count: int = 0
+    transport_affected_question_count: int = 0
+    transport_censored_coordinate_count: int = 0
     artifact_schema_counts: dict[str, int] = field(default_factory=dict)
     # Exact token-ID means are never pooled with historical whitespace counts.
     # ``mean_reasoning_tokens`` is populated only when every canonical question is
@@ -205,6 +257,8 @@ class CellMeta:
     thinking_budget_protocol_hash: str = THINKING_BUDGET_PROTOCOL_HASH
     generation_censor_protocol_version: int = GENERATION_CENSOR_PROTOCOL_VERSION
     generation_censor_protocol_hash: str = GENERATION_CENSOR_PROTOCOL_HASH
+    transport_censor_protocol_version: int = TRANSPORT_CENSOR_PROTOCOL_VERSION
+    transport_censor_protocol_hash: str = TRANSPORT_CENSOR_PROTOCOL_HASH
     schema_version: int = ARTIFACT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -130,7 +132,126 @@ def _poll_args(tmp_path: Path, run: ds.RunSpec) -> SimpleNamespace:
     )
 
 
+def _qualification_authority(
+    tmp_path: Path,
+    *,
+    run: ds.RunSpec,
+    generation: int = 7,
+) -> tuple[Path, dict[str, str], dict[str, str]]:
+    release = (tmp_path / "sealed-release").resolve()
+    harness = (tmp_path / "sealed-harness").resolve()
+    python = (harness / "bin" / "python").resolve()
+    dispatcher = (release / "slurm" / "dispatch_sweeps.py").resolve()
+    template = (
+        release / "slurm" / "run_dispatch_batch.sbatch.tmpl"
+    ).resolve()
+    python.parent.mkdir(parents=True, exist_ok=True)
+    template.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    dispatcher.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    template.write_text(
+        ds.ARRAY_TEMPLATE.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    python.chmod(0o555)
+    dispatcher.chmod(0o444)
+    template.chmod(0o444)
+    runtime_environment = {
+        key: "x" for key in ds.PRODUCTION_ENVIRONMENT_KEYS
+    }
+    protected_path = (tmp_path / "PROTECTED_CAPACITY_COMPLETE.json").resolve()
+    runtime_environment.update(
+        {
+            "ASYS_RELEASE_GIT_COMMIT": "1" * 40,
+            "ASYS_PROTECTED_CAPACITY_MARKER": str(protected_path),
+            "ASYS_PROTECTED_CAPACITY_MARKER_SHA256": "2" * 64,
+            "ASYS_PROTECTED_CAPACITY_MARKER_ID": "3" * 64,
+            "ASYS_MODEL_CONTRACT_SHA256": "4" * 64,
+            "ASYS_FLEET_CONTRACT_SHA256": "5" * 64,
+            "ASYS_FLEET_CONTRACT_PATH": str(
+                (tmp_path / "effective-fleet.json").resolve()
+            ),
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": "6" * 64,
+            "ASYS_CAPACITY_GENERATION": "2",
+            "ASYS_HARNESS_ENVIRONMENT_SHA256": "7" * 64,
+            "ASYS_SERVING_ENVIRONMENT_SHA256": "8" * 64,
+            "ASYS_ROLLOUT_GENERATION": str(generation),
+            "ASYS_IMMUTABLE_PINS_SHA256": "9" * 64,
+            "ASYS_RUNTIME_ATTESTATION": str(
+                (tmp_path / "attestation.json").resolve()
+            ),
+            "ASYS_RUNTIME_ATTESTATION_SHA256": "a" * 64,
+            "ASYS_RUNTIME_INTEGRITY_LEASE": str(
+                (tmp_path / "lease.json").resolve()
+            ),
+            "ASYS_ARTIFACT_POLICY_SHA256": "b" * 64,
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+        }
+    )
+    execution = {
+        "release_worktree": str(release),
+        "harness_prefix": str(harness),
+        "hf_home": str((tmp_path / "hf").resolve()),
+        "python": str(python),
+        "python_sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+        "dispatcher_script": str(dispatcher),
+        "dispatcher_script_sha256": hashlib.sha256(
+            dispatcher.read_bytes()
+        ).hexdigest(),
+        "batch_template": str(template),
+        "batch_template_sha256": hashlib.sha256(
+            template.read_bytes()
+        ).hexdigest(),
+    }
+    identity = {
+        "schema_version": 1,
+        "protocol": ds.QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL,
+        "intent_id": "c" * 64,
+        "chain_id": "d" * 64,
+        "run_id": run.run_id,
+        "run_root": str(run.run_root.resolve()),
+        "release_git_commit": "1" * 40,
+        "protected_capacity": {
+            "path": str(protected_path),
+            "sha256": "2" * 64,
+            "marker_id": "3" * 64,
+        },
+        "readiness_generation": {
+            "catalog_id": "e" * 64,
+            "marker_path": str((tmp_path / "catalog.json").resolve()),
+            "marker_sha256": "f" * 64,
+            "inventory_sha256": "0" * 64,
+            "catalog_payload_sha256": "1" * 64,
+            "allowed_generation_tuple_count": 24,
+            "release_fleet_contract_sha256": "6" * 64,
+            "fleet_contract_sha256": "5" * 64,
+            "capacity_generation": 2,
+            "rollout_generation": generation,
+        },
+        "execution": execution,
+        "runtime_environment": runtime_environment,
+    }
+    payload = {
+        **identity,
+        "authority_id": hashlib.sha256(
+            ds._qualification_canonical_bytes(identity)
+        ).hexdigest(),
+    }
+    authority_path = (tmp_path / "QUALIFICATION_EXECUTION_AUTHORITY.json").resolve()
+    authority_path.write_bytes(ds._qualification_canonical_bytes(payload))
+    authority_path.chmod(0o444)
+    return authority_path, runtime_environment, execution
+
+
 def test_global_qos_reserve_and_absolute_gate():
+    # Initial production occupancy: 22 logical serving jobs plus both controller
+    # chains. The inclusive reserve still permits a full 24-cell stage-18 microbatch.
+    assert ds.available_cell_slots(total_jobs=24, active_cell_jobs=0) == 24
+    # The held recovery DAG/sentinel jobs also count globally; they do not consume
+    # client CPU/memory and still leave the first qualification microbatch intact.
+    assert ds.available_cell_slots(total_jobs=65, active_cell_jobs=0) == 24
     assert ds.available_cell_slots(total_jobs=64, active_cell_jobs=0) == 24
     assert ds.available_cell_slots(total_jobs=430, active_cell_jobs=370) == 14
     assert ds.available_cell_slots(total_jobs=400, active_cell_jobs=384) == 0
@@ -381,6 +502,123 @@ def test_unmappable_cell_job_fails_closed_in_poll(tmp_path, monkeypatch):
     assert outcome["report"]["unmappable_cell_jobs"]
 
 
+@pytest.mark.parametrize("run_id", sorted(ds.AUTHORITATIVE_SCHEMA5_RUN_IDS))
+def test_authoritative_schema5_run_rejects_uncontrolled_admission_before_intent(
+    tmp_path, monkeypatch, run_id
+):
+    run = _run(tmp_path, run_id, [_cell(0)])
+    args = _poll_args(tmp_path, run)
+    ledger = ds._empty_ledger()
+    before = copy.deepcopy(ledger)
+    monkeypatch.setattr(
+        ds,
+        "_submit_sbatch",
+        lambda _path: pytest.fail("sbatch called without production authority"),
+    )
+
+    with pytest.raises(
+        ds.DispatcherError,
+        match="authoritative schema-5 runs require --control-state-dir",
+    ):
+        ds._dispatch_poll(args, [run], ledger, dry_run=False)
+
+    assert ledger == before
+    assert not args.state_dir.exists()
+
+
+def test_corrupt_or_permanent_state_fails_closed_before_sbatch(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "run", [_cell(0)])
+    args = _poll_args(tmp_path, run)
+    candidate = _candidate(
+        run.run_id,
+        0,
+        pool=str(run.server_pool_root),
+    )
+    candidate = ds.Candidate(
+        run_id=candidate.run_id,
+        run_root=str(run.run_root),
+        source_index=candidate.source_index,
+        cell=run.manifest.cells[0],
+        manifest_sha256=run.manifest.sha256,
+        server_pool_arg=run.server_pool_arg,
+        server_pool_root=str(run.server_pool_root),
+        serving_profile=candidate.serving_profile,
+        fanout_cost=candidate.fanout_cost,
+        benchmark_contracts_sha256=_SIDECAR_SHA256,
+    )
+    monkeypatch.setattr(
+        ds,
+        "_scan_candidates",
+        lambda *_a, **_kw: (
+            [candidate],
+            {"run": {"corrupt": 1, "permanent": 1}},
+            {},
+            ["cell failed semantic validation"],
+        ),
+    )
+    monkeypatch.setattr(
+        ds, "_submit_sbatch", lambda _path: pytest.fail("sbatch called")
+    )
+
+    outcome = ds._dispatch_poll(
+        args, [run], ds._empty_ledger(), dry_run=False
+    )
+
+    assert outcome["report"]["selected"] == []
+    assert outcome["report"]["qos"]["available_slots"] == 0
+    assert outcome["report"]["safety_alert_keys"] == [
+        "monitor:corrupt",
+        "monitor:permanent",
+    ]
+
+
+def test_dispatcher_safety_alerts_are_persisted_critical_and_fail_closed(
+    tmp_path, monkeypatch
+):
+    calls = []
+    resolved = []
+    findings = ds._dispatcher_safety_findings(
+        state_counts={"run": {"validation_error": 1}},
+        validation_errors=["bad metadata"],
+        unmappable_jobs=["job 123 has no intent"],
+    )
+
+    def record(_state_dir, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(control, "record_alert", record)
+    monkeypatch.setattr(
+        control,
+        "resolve_alert",
+        lambda _state_dir, **kwargs: resolved.append(kwargs["dedupe_key"]),
+    )
+    ds._persist_dispatcher_safety_findings(
+        tmp_path,
+        findings=findings,
+        now=100.0,
+    )
+    assert {call["dedupe_key"] for call in calls} == {
+        "monitor:corrupt",
+        ds.DISPATCHER_SCHEDULER_AMBIGUITY_ALERT,
+    }
+    assert all(call["severity"] == "critical" for call in calls)
+    assert all(call["send_email"] is True for call in calls)
+    assert resolved == []
+
+    def cannot_persist(*_args, **_kwargs):
+        raise control.ControlError("control journal unavailable")
+
+    monkeypatch.setattr(control, "record_alert", cannot_persist)
+    with pytest.raises(control.ControlError, match="journal unavailable"):
+        ds._persist_dispatcher_safety_findings(
+            tmp_path,
+            findings=findings,
+            now=101.0,
+        )
+
+
 def test_dispatcher_orphan_is_recovered_from_batch_command(tmp_path):
     run = _run(tmp_path, "run", [_cell(0)])
     candidate = ds.Candidate(
@@ -625,6 +863,88 @@ def test_schema5_capacity_counts_only_exact_frozen_pool_replica(tmp_path, monkey
     assert wrong_logical_replica.live_servers[key] == 0
 
 
+def test_server_resource_exemption_requires_sealed_endpoint_history(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "run", [_cell(0)])
+    fleet_sha256 = "f" * 64
+    entry = SimpleNamespace(
+        fleet_contract_sha256=fleet_sha256,
+        slurm_job_id="123",
+    )
+    script_path = (tmp_path / "fleet.sbatch").resolve()
+    script_path.write_text("#!/bin/bash\n", encoding="utf-8")
+    scheduler_row = ds.QueueRow(
+        "123",
+        None,
+        "123",
+        "asys-s5-serve-8B-r00",
+        "RUNNING",
+        f"sbatch {script_path}",
+        (
+            "asys-s5-fleet:pool=schema5-v1;profile=8B;"
+            "replica=8B-r00;generation=1;"
+            f"intent={'a' * 32};fleet={fleet_sha256}"
+        ),
+    )
+    monkeypatch.setattr(
+        ds,
+        "_registered_endpoints",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        ds,
+        "endpoint_history_for_entry",
+        lambda *_args, **_kwargs: None,
+    )
+    assert ds._trusted_server_scheduler_bindings(
+        [run],
+        expected_fleet_sha256=fleet_sha256,
+        frozen_fleet=None,
+        scheduler_rows=[scheduler_row],
+    ) == {}
+
+    history = SimpleNamespace(
+        binding={
+            "scheduler_job_name": "asys-s5-serve-8B-r00",
+            "scheduler_comment": scheduler_row.comment,
+            "local_script_path": str(script_path),
+        }
+    )
+    monkeypatch.setattr(
+        ds,
+        "endpoint_history_for_entry",
+        lambda *_args, **_kwargs: history,
+    )
+    assert ds._trusted_server_scheduler_bindings(
+        [run],
+        expected_fleet_sha256=fleet_sha256,
+        frozen_fleet=None,
+        scheduler_rows=[scheduler_row],
+    ) == {
+        "123": {
+            "job_name": history.binding["scheduler_job_name"],
+            "comment": history.binding["scheduler_comment"],
+        }
+    }
+    assert ds._trusted_server_scheduler_bindings(
+        [run],
+        expected_fleet_sha256=fleet_sha256,
+        frozen_fleet=None,
+        scheduler_rows=[
+            ds.QueueRow(
+                scheduler_row.array_job_id,
+                scheduler_row.array_task_id,
+                scheduler_row.job_id,
+                scheduler_row.job_name,
+                scheduler_row.state,
+                str(tmp_path / "different.sbatch"),
+                scheduler_row.comment,
+            )
+        ],
+    ) == {}
+
+
 def test_pre_submit_intent_reserves_tasks_during_visibility_window(tmp_path):
     run = _run(tmp_path, "run", [_cell(0)])
     candidate = ds.Candidate(
@@ -641,6 +961,169 @@ def test_pre_submit_intent_reserves_tasks_during_visibility_window(tmp_path):
     assert ("run", candidate.cell_id) in active
     assert load[candidate.profile_key] == 1
     assert unmappable == []
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("run_root", "/redirected/results"),
+        ("config_hash", "0" * 64),
+        ("manifest_sha256", "1" * 64),
+        ("benchmark_contracts_sha256", "2" * 64),
+        ("model_size", "32B"),
+        ("serving_profile", "32B-long"),
+        ("fanout_cost", 99),
+        ("server_pool_id", "foreign-pool"),
+        ("server_run_id", "/foreign/pool"),
+        ("server_pool_root", "/foreign/pool"),
+        ("runtime_environment", {"ASYS_RELEASE_ID": "foreign-release"}),
+    ],
+)
+def test_persisted_task_requires_exact_run_and_control_identity(
+    tmp_path, field, replacement
+):
+    base = _run(tmp_path, "run", [_cell(0)])
+    pool = tmp_path / "canonical-pool"
+    run = ds.RunSpec(
+        base.run_id,
+        base.run_root,
+        base.manifest,
+        "canonical-pool",
+        pool,
+        base.weight,
+        base.question_catalog,
+        (("ASYS_RELEASE_ID", "schema5-v1.2"), ("ASYS_ROLLOUT_GENERATION", "7")),
+    )
+    candidate = ds.Candidate(
+        run_id=run.run_id,
+        run_root=str(run.run_root),
+        source_index=0,
+        cell=run.manifest.cells[0],
+        manifest_sha256=run.manifest.sha256,
+        server_pool_arg=run.server_pool_arg,
+        server_pool_root=str(run.server_pool_root),
+        serving_profile="8B",
+        fanout_cost=1,
+        benchmark_contracts_sha256=_SIDECAR_SHA256,
+        runtime_environment=run.runtime_environment,
+    )
+    canonical = ds._task_from_candidate(candidate)
+    assert ds._candidate_from_task(canonical, {run.run_id: run}) == candidate
+
+    corrupted = dict(canonical)
+    corrupted[field] = replacement
+    assert ds._candidate_from_task(corrupted, {run.run_id: run}) is None
+
+
+def test_pre_submit_intent_with_corrupt_identity_is_unmappable(tmp_path):
+    run = _run(tmp_path, "run", [_cell(0)])
+    candidate = ds.Candidate(
+        "run",
+        str(run.run_root),
+        0,
+        run.manifest.cells[0],
+        run.manifest.sha256,
+        None,
+        str(run.run_root),
+        "8B",
+        1,
+        _SIDECAR_SHA256,
+    )
+    corrupted = ds._task_from_candidate(candidate)
+    corrupted["fanout_cost"] = 0
+    corrupted["server_pool_root"] = str(tmp_path / "foreign-pool")
+    ledger = ds._empty_ledger(now=10.0)
+    ledger["intents"]["batch"] = {
+        "state": "prepared",
+        "created_at": 10.0,
+        "tasks": [corrupted],
+    }
+
+    active, load, _, unmappable = ds._active_cells(
+        [],
+        ledger,
+        [run],
+        now=20.0,
+        visibility_grace_s=30.0,
+        schema5_strict=True,
+    )
+
+    assert active == {}
+    assert load == {}
+    assert unmappable == [
+        "intent batch: task does not match a registered manifest"
+    ]
+
+
+def test_active_schema5_job_with_corrupt_task_identity_is_unmappable(tmp_path):
+    run = _run(tmp_path, "run", [_cell(0)])
+    candidate = ds.Candidate(
+        "run",
+        str(run.run_root),
+        0,
+        run.manifest.cells[0],
+        run.manifest.sha256,
+        None,
+        str(run.run_root),
+        "8B",
+        1,
+        _SIDECAR_SHA256,
+    )
+    batch_id, manifest_path, sbatch_path, batch = ds._write_batch(
+        tmp_path / "state",
+        [candidate],
+        partition="mit_preemptable",
+        time_limit="12:00:00",
+        memory="4G",
+        now=10.0,
+    )
+    ledger = ds._empty_ledger(now=10.0)
+    ledger["intents"][batch_id] = {
+        "state": "prepared",
+        "created_at": 10.0,
+        "batch_manifest": str(manifest_path),
+        "batch_manifest_sha256": ds._sealed_artifact_sha256(manifest_path),
+        "sbatch_path": str(sbatch_path),
+        "sbatch_sha256": ds._sealed_artifact_sha256(sbatch_path),
+        "tasks": json.loads(json.dumps(batch["tasks"])),
+        "fairness_after": {"cursor": 0, "deficits": {}},
+        "fairness_committed": False,
+    }
+    ds._record_submission(
+        ledger,
+        job_id="321",
+        batch_id=batch_id,
+        manifest_path=manifest_path,
+        sbatch_path=sbatch_path,
+        batch=batch,
+        now=11.0,
+    )
+    ledger["jobs"]["321"]["tasks"][0]["runtime_environment"] = {
+        "ASYS_RELEASE_ID": "attacker-controlled"
+    }
+    row = ds.QueueRow(
+        "321",
+        0,
+        "321_0",
+        f"asys-dispatch-{batch_id[-10:]}",
+        "RUNNING",
+        str(sbatch_path),
+        f"asys-schema5-intent:{batch_id}",
+    )
+
+    active, load, _, unmappable = ds._active_cells(
+        [row],
+        ledger,
+        [run],
+        now=20.0,
+        schema5_strict=True,
+    )
+
+    assert active == {}
+    assert load == {}
+    assert unmappable == [
+        f"321_0 (asys-dispatch-{batch_id[-10:]}): invalid ledger task mapping"
+    ]
 
 
 def test_incremental_validation_cache_never_rescans_unchanged_jsonl(
@@ -1096,7 +1579,7 @@ def test_schema5_microbatch_uses_only_pinned_release_and_harness(
     text = ds._render_batch_sbatch(
         tmp_path / "batch.json",
         n_tasks=2,
-        partition="mit_preemptable",
+        partition="mit_normal",
         time_limit="12:00:00",
         memory="4G",
         log_dir=tmp_path,
@@ -1120,6 +1603,112 @@ def test_schema5_microbatch_uses_only_pinned_release_and_harness(
     assert validated["task_count"] == 2
 
 
+def test_qualification_authority_pins_batch_task_argv_and_exact_generation(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "qualification", [_cell(0)])
+    authority_path, runtime_environment, execution = (
+        _qualification_authority(tmp_path, run=run, generation=7)
+    )
+    lease_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        ds.runtime_integrity,
+        "verify_generation_lease",
+        lambda **kwargs: lease_calls.append(kwargs) or {},
+    )
+
+    authority = ds.load_qualification_execution_authority(authority_path)
+    assert authority.runtime_environment == runtime_environment
+    assert authority.execution == execution
+    assert lease_calls[-1]["generation"] == 7
+    assert lease_calls[-1]["lease_path"] == Path(
+        runtime_environment["ASYS_RUNTIME_INTEGRITY_LEASE"]
+    )
+    assert lease_calls[-1]["attestation_path"] == Path(
+        runtime_environment["ASYS_RUNTIME_ATTESTATION"]
+    )
+
+    text = ds._render_batch_sbatch(
+        tmp_path / "batch.json",
+        n_tasks=1,
+        partition="ou_bcs_normal",
+        qos="normal",
+        time_limit="12:00:00",
+        memory="4G",
+        log_dir=tmp_path,
+        batch_tag="qual",
+        qualification_execution=authority.execution,
+    )
+    assert (
+        f"exec {execution['python']} -u "
+        f"{execution['dispatcher_script']} run-task"
+    ) in text
+    assert (
+        f"--expected-release-root {execution['release_worktree']}"
+        in text
+    )
+    assert (
+        f"--expected-harness-prefix {execution['harness_prefix']}"
+        in text
+    )
+    assert "#SBATCH --partition=ou_bcs_normal" in text
+    assert "#SBATCH --qos=normal" in text
+    assert "mamba activate" not in text
+    assert f'source "{ds.REPO}/slurm/common.sh"' not in text
+
+    candidate = ds.Candidate(
+        run.run_id,
+        str(run.run_root),
+        0,
+        run.manifest.cells[0],
+        run.manifest.sha256,
+        None,
+        str(run.run_root),
+        "8B",
+        1,
+        _SIDECAR_SHA256,
+        tuple(sorted(runtime_environment.items())),
+    )
+    task = ds._task_from_candidate(candidate)
+    batch = tmp_path / "sealed-task.json"
+    batch.write_text(
+        json.dumps({"schema_version": 1, "tasks": [task]}),
+        encoding="utf-8",
+    )
+    batch_sha256 = ds._seal_dispatch_artifact(batch)
+    loaded_task = ds._load_batch_task(
+        batch, 0, expected_sha256=batch_sha256
+    )
+    monkeypatch.setattr(
+        ds,
+        "load_frozen_benchmark_contracts",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            sidecar_sha256=_SIDECAR_SHA256
+        ),
+    )
+    command = ds.build_run_one_command(
+        loaded_task,
+        release_worktree=execution["release_worktree"],
+    )
+    assert command[1] == "-I"
+    assert command[command.index("--release-worktree") + 1] == execution[
+        "release_worktree"
+    ]
+    assert command[command.index("--model-contract") + 1] == str(
+        Path(execution["release_worktree"])
+        / "configs"
+        / "model_contracts.v1.json"
+    )
+    assert command[command.index("--fleet-contract") + 1] == (
+        runtime_environment["ASYS_FLEET_CONTRACT_PATH"]
+    )
+    assert command[command.index("--prompt-root") + 1] == str(
+        Path(execution["release_worktree"]) / "configs" / "prompts"
+    )
+    ds._verify_runtime_environment_attestation(runtime_environment)
+    assert lease_calls[-1]["generation"] == 7
+
+
 def test_production_dispatcher_parsers_default_to_four_gb_after_pilot():
     dispatch_args = ds._build_parser().parse_args(
         ["dispatch", "--run", "placeholder"]
@@ -1129,6 +1718,10 @@ def test_production_dispatcher_parsers_default_to_four_gb_after_pilot():
     assert ds.CELL_MEM_DEFAULT == "4G"
     assert dispatch_args.cell_mem == "4G"
     assert launcher_args.cell_mem == "4G"
+    assert dispatch_args.cell_partition == "mit_normal"
+    assert launcher_args.cell_partition == "mit_normal"
+    assert dispatch_args.cell_time == "12:00:00"
+    assert launcher_args.cell_time == "12:00:00"
 
 
 def test_batch_worker_verifies_manifest_and_passes_explicit_server_pool(
@@ -1139,6 +1732,14 @@ def test_batch_worker_verifies_manifest_and_passes_explicit_server_pool(
     runtime_environment.update(
         {
             "ASYS_ROLLOUT_GENERATION": "1",
+            "ASYS_CAPACITY_GENERATION": "1",
+            "ASYS_FLEET_CONTRACT_PATH": str(
+                Path(__file__).resolve().parents[1]
+                / "configs"
+                / "schema5_fleet.v1.json"
+            ),
+            "ASYS_FLEET_CONTRACT_SHA256": "f" * 64,
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": "f" * 64,
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
             "HF_DATASETS_OFFLINE": "1",
@@ -1316,6 +1917,150 @@ def test_submit_sbatch_binds_cli_intent_and_requires_numeric_job_id(
         ds._submit_sbatch(path)
 
 
+def _stable_scheduler_snapshot(*job_ids):
+    return SimpleNamespace(
+        jobs=tuple(
+            SimpleNamespace(
+                job_id=job_id,
+                job_name="unrelated-target-job",
+                state="RUNNING",
+                comment="unrelated",
+                command="",
+                source="squeue",
+                active=True,
+            )
+            for job_id in job_ids
+        ),
+        squeue_ok=True,
+        sacct_ok=True,
+        errors=(),
+    )
+
+
+def test_stable_occupancy_retries_churn_then_accepts_logical_elements(
+    monkeypatch,
+):
+    snapshots = iter(
+        (
+            _stable_scheduler_snapshot(),
+            _stable_scheduler_snapshot("500_0"),
+            _stable_scheduler_snapshot("500_0"),
+            _stable_scheduler_snapshot("500_0"),
+        )
+    )
+    usages = iter(
+        (
+            {"jobs": [{"job_id": "500_0"}]},
+            {"jobs": [{"job_id": "500_0"}]},
+        )
+    )
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "validate_user_partition_usage",
+        lambda usage: usage,
+    )
+
+    stable = ds._capture_stable_admission_occupancy(
+        user="tester",
+        partition="ou_bcs_normal",
+        scheduler_reader=lambda: next(snapshots),
+        usage_reader=lambda: next(usages),
+    )
+
+    assert stable.attempts == 2
+    assert stable.live_job_ids == ("500_0",)
+    assert [row.job_id for row in stable.rows] == ["500_0"]
+
+
+@pytest.mark.parametrize(
+    ("snapshots", "usage"),
+    (
+        (
+            (
+                _stable_scheduler_snapshot(),
+                _stable_scheduler_snapshot("600_0"),
+                _stable_scheduler_snapshot(),
+                _stable_scheduler_snapshot("600_0"),
+            ),
+            {"jobs": [{"job_id": "600_0"}]},
+        ),
+        (
+            (
+                _stable_scheduler_snapshot("700_0"),
+                _stable_scheduler_snapshot(),
+                _stable_scheduler_snapshot("700_0"),
+                _stable_scheduler_snapshot(),
+            ),
+            {"jobs": []},
+        ),
+        (
+            (
+                _stable_scheduler_snapshot(),
+                _stable_scheduler_snapshot(),
+                _stable_scheduler_snapshot(),
+                _stable_scheduler_snapshot(),
+            ),
+            {"jobs": [{"job_id": "800_0"}]},
+        ),
+    ),
+    ids=("target-appears", "target-disappears", "target-transient"),
+)
+def test_stable_occupancy_fails_closed_on_persistent_between_read_churn(
+    monkeypatch,
+    snapshots,
+    usage,
+):
+    observations = iter(snapshots)
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "validate_user_partition_usage",
+        lambda value: value,
+    )
+
+    with pytest.raises(ds.DispatcherError, match="occupancy changed"):
+        ds._capture_stable_admission_occupancy(
+            user="tester",
+            partition="ou_bcs_normal",
+            scheduler_reader=lambda: next(observations),
+            usage_reader=lambda: usage,
+        )
+
+
+def test_post_intent_occupancy_excludes_current_batch_exactly_once():
+    ledger = ds._empty_ledger()
+    ledger["jobs"]["100"] = {
+        "state": "visibility_grace",
+        "task_count": 2,
+        "tasks": [{}, {}],
+    }
+    ledger["intents"] = {
+        "other": {
+            "state": "prepared",
+            "created_at": 990.0,
+            "tasks": [{}, {}, {}],
+        },
+        "current": {
+            "state": "prepared",
+            "created_at": 995.0,
+            "tasks": [{}, {}, {}, {}],
+        },
+        "old": {
+            "state": "prepared",
+            "created_at": 1.0,
+            "tasks": [{}] * 100,
+        },
+    }
+
+    assert ds._invisible_reservation_count(ledger, now=1_000.0) == 9
+    # At the post-intent boundary, the current four tasks are compared with the
+    # returned headroom.  Excluding that intent here charges them once, not twice.
+    assert ds._invisible_reservation_count(
+        ledger,
+        now=1_000.0,
+        exclude_intent_ids=frozenset({"current"}),
+    ) == 5
+
+
 def test_submitting_intent_is_durable_before_sbatch_and_fairness_commits_once(
     tmp_path, monkeypatch
 ):
@@ -1351,6 +2096,360 @@ def test_submitting_intent_is_durable_before_sbatch_and_fairness_commits_once(
     assert outcome["ledger"]["fairness"] == committed
 
 
+def test_production_recaptures_stable_occupancy_after_durable_intent(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "production", [_cell(0)])
+    args = _poll_args(tmp_path, run)
+    args.control_state_dir = tmp_path / "control"
+    args.control_state_dir.mkdir()
+    args.cell_partition = "ou_bcs_normal"
+    args.cell_qos = "normal"
+    args.cell_mem = "4G"
+    args.cell_time = "12:00:00"
+    args.assume_total_jobs = None
+    args.assume_cell_jobs = None
+    fleet_sha256 = "f" * 64
+    protected_ref = {
+        "path": str(tmp_path / "PROTECTED_CAPACITY_COMPLETE.json"),
+        "sha256": "a" * 64,
+        "marker_id": "b" * 64,
+    }
+    admission = {
+        "qos_limit": 448,
+        "reserve": 64,
+        "max_batch": 24,
+        "cell_cpus": 1,
+        "cell_memory": "4G",
+        "effective_cell_time": "12:00:00",
+        "current_ceiling": 24,
+        "configured_ceiling": 24,
+        "client_capacity": {
+            "partition": "ou_bcs_normal",
+            "qos": "normal",
+            "cpu_limit": 384,
+            "memory_limit_mib": 384 * 4_096,
+            "max_submit_jobs": 448,
+            "reserve_jobs": 64,
+            "capacity_generation": 1,
+            "authorization_sha256": "c" * 64,
+        },
+        "protected_capacity": protected_ref,
+    }
+    control_payload = {
+        "immutable": {
+            "git_commit": "1" * 40,
+            "source_tree_sha256": "2" * 64,
+            "model_contract_path": str(tmp_path / "models.json"),
+            "model_contract_sha256": "3" * 64,
+            "server_pool_root": str(run.server_pool_root),
+        }
+    }
+    runtime_environment = {
+        key: "x" for key in ds.PRODUCTION_ENVIRONMENT_KEYS
+    }
+    runtime_environment.update(
+        {
+            "ASYS_FLEET_CONTRACT_SHA256": fleet_sha256,
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": fleet_sha256,
+            "ASYS_CAPACITY_GENERATION": "1",
+            "ASYS_ROLLOUT_GENERATION": "1",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+        }
+    )
+    execution = {
+        "batch_template": str(ds.ARRAY_TEMPLATE),
+        "hf_home": str(tmp_path / "hf"),
+        "release_worktree": str(Path(__file__).resolve().parents[1]),
+        "python": sys.executable,
+        "dispatcher_script": str(
+            Path(__file__).resolve().parents[1]
+            / "slurm"
+            / "dispatch_sweeps.py"
+        ),
+        "harness_prefix": str(tmp_path / "harness"),
+    }
+    capacity_contract = SimpleNamespace(
+        path=Path(protected_ref["path"]),
+        sha256=protected_ref["sha256"],
+        marker_id=protected_ref["marker_id"],
+    )
+    fleet = SimpleNamespace(
+        sha256=fleet_sha256,
+        verify_pool_root=lambda _root: None,
+    )
+    monkeypatch.setattr(
+        control,
+        "admission_contract_from_state",
+        lambda _state_dir: copy.deepcopy(admission),
+    )
+    monkeypatch.setattr(
+        control,
+        "load_control",
+        lambda *_args, **_kwargs: control_payload,
+    )
+    monkeypatch.setattr(
+        control,
+        "effective_fleet_contract_binding",
+        lambda *_args, **_kwargs: {
+            "path": str(tmp_path / "fleet.json"),
+            "sha256": fleet_sha256,
+        },
+    )
+    monkeypatch.setattr(
+        control,
+        "production_environment_from_state",
+        lambda *_args, **_kwargs: dict(runtime_environment),
+    )
+    monkeypatch.setattr(
+        control,
+        "production_cell_execution_from_state",
+        lambda *_args, **_kwargs: execution,
+    )
+    monkeypatch.setattr(
+        control,
+        "validate_production_batch_sbatch",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        control,
+        "admission_boundary_lock",
+        lambda _state_dir: ds.nullcontext(),
+    )
+    monkeypatch.setattr(
+        control,
+        "query_scheduler",
+        lambda **_kwargs: _stable_scheduler_snapshot(),
+    )
+    monkeypatch.setattr(ds, "load_model_contracts", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        ds,
+        "load_fleet_contract",
+        lambda *_args, **_kwargs: fleet,
+    )
+    monkeypatch.setattr(
+        ds,
+        "discover_capacity",
+        lambda *_args, **_kwargs: ds.CapacitySnapshot(
+            {(str(run.server_pool_root), "8B"): 1},
+            {(str(run.server_pool_root), "8B"): "generation"},
+        ),
+    )
+    monkeypatch.setattr(
+        ds,
+        "_trusted_server_scheduler_bindings",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        ds,
+        "_persist_dispatcher_safety_findings",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "load_contract",
+        lambda *_args, **_kwargs: capacity_contract,
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "authorize_client",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "capture_live_client_capacity",
+        lambda *_args, **_kwargs: {"evidence_id": "9" * 64},
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "validate_live_client_capacity_evidence",
+        lambda *_args, **_kwargs: {},
+    )
+    usage_calls = 0
+
+    def capture_usage(**_kwargs):
+        nonlocal usage_calls
+        usage_calls += 1
+        return {"capture": usage_calls}
+
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "capture_user_partition_usage",
+        capture_usage,
+    )
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "validate_user_partition_usage",
+        lambda _usage: {
+            "jobs": [],
+            "job_count": 0,
+            "used_cpus": 0,
+            "used_memory_mib": 0,
+        },
+    )
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "client_task_headroom",
+        lambda usage, **_kwargs: 24 if usage["capture"] <= 2 else 0,
+    )
+    monkeypatch.setattr(
+        ds,
+        "_submit_sbatch",
+        lambda _path: pytest.fail(
+            "sbatch crossed stale production occupancy"
+        ),
+    )
+
+    with pytest.raises(ds.DispatcherError, match="headroom shrank"):
+        ds._dispatch_poll(args, [run], ds._empty_ledger(), dry_run=False)
+
+    assert usage_calls == 3
+    persisted = ds._load_ledger(args.ledger_path)
+    intent = next(iter(persisted["intents"].values()))
+    assert intent["state"] == "prepared"
+    assert "headroom shrank" in intent["error"]
+
+
+def test_protected_qualification_recaptures_unrelated_usage_before_sbatch(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "qualification", [_cell(0)])
+    args = _poll_args(tmp_path, run)
+    args.control_state_dir = None
+    args.cell_partition = "ou_bcs_normal"
+    args.cell_qos = "normal"
+    args.cell_mem = "4G"
+    args.cell_time = "12:00:00"
+    args.assume_total_jobs = None
+    args.assume_cell_jobs = None
+    authority_path, runtime_environment, _execution = _qualification_authority(
+        tmp_path, run=run
+    )
+    payload = json.loads(authority_path.read_text(encoding="utf-8"))
+    protected_ref = payload["protected_capacity"]
+    args.protected_capacity_marker = protected_ref["path"]
+    args.protected_capacity_marker_sha256 = protected_ref["sha256"]
+    args.protected_capacity_marker_id = protected_ref["marker_id"]
+    args.protected_capacity_release_git_commit = payload[
+        "release_git_commit"
+    ]
+    args.qualification_execution_authority = authority_path
+    contract = SimpleNamespace(
+        path=Path(protected_ref["path"]),
+        sha256=protected_ref["sha256"],
+        marker_id=protected_ref["marker_id"],
+        release_git_commit=payload["release_git_commit"],
+    )
+    placement = SimpleNamespace(
+        partition="ou_bcs_normal",
+        qos="normal",
+        capacity={
+            "slots": 384,
+            "cpus": 384,
+            "memory_mib": 384 * 4_096,
+            "reserve_jobs": 64,
+            "submit_headroom": 448,
+        },
+    )
+    monkeypatch.setattr(
+        ds.runtime_integrity,
+        "verify_generation_lease",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "load_contract",
+        lambda *_args, **_kwargs: contract,
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "authorize_client",
+        lambda *_args, **_kwargs: placement,
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "verify_live_placements",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "capture_live_client_capacity",
+        lambda *_args, **_kwargs: {"evidence_id": "9" * 64},
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
+        "validate_live_client_capacity_evidence",
+        lambda *_args, **_kwargs: {
+            "evidence_id": "9" * 64,
+            "partition": "ou_bcs_normal",
+            "qos": "normal",
+            "cpu_limit": 384,
+            "memory_limit_mib": 384 * 4_096,
+            "max_submit_jobs": 448,
+        },
+    )
+    usage_calls = 0
+
+    def capture_usage(**_kwargs):
+        nonlocal usage_calls
+        usage_calls += 1
+        return {"capture": usage_calls}
+
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "capture_user_partition_usage",
+        capture_usage,
+    )
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "validate_user_partition_usage",
+        lambda _usage: {
+            "jobs": [],
+            "job_count": 0,
+            "used_cpus": 0,
+            "used_memory_mib": 0,
+        },
+    )
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "client_task_headroom",
+        lambda usage, **_kwargs: 24 if usage["capture"] <= 2 else 0,
+    )
+    monkeypatch.setattr(
+        control,
+        "query_scheduler",
+        lambda **_kwargs: SimpleNamespace(
+            jobs=(),
+            squeue_ok=True,
+            sacct_ok=True,
+        ),
+    )
+    monkeypatch.setattr(
+        ds,
+        "_submit_sbatch",
+        lambda _path: pytest.fail(
+            "sbatch crossed a stale protected-partition usage snapshot"
+        ),
+    )
+
+    with pytest.raises(ds.DispatcherError, match="headroom shrank"):
+        ds._dispatch_poll(
+            args, [run], ds._empty_ledger(), dry_run=False
+        )
+    assert usage_calls == 3
+    persisted = ds._load_ledger(args.ledger_path)
+    intent = next(iter(persisted["intents"].values()))
+    assert intent["state"] == "prepared"
+    assert "headroom shrank" in intent["error"]
+    assert (
+        intent["qualification_execution_authority"]
+        == persisted["qualification_execution_authority"]
+    )
+    assert intent["tasks"][0]["runtime_environment"] == runtime_environment
+
+
 def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_once(
     tmp_path
 ):
@@ -1376,18 +2475,23 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
         "fairness_committed": False,
     }
 
-    def job(job_id):
+    def job(job_id, *, source="squeue"):
         return SimpleNamespace(
             job_id=job_id,
             job_name=f"asys-dispatch-{batch_id[-10:]}",
             state="RUNNING",
             comment=f"asys-schema5-intent:{batch_id}",
             command=f"sbatch {sbatch}",
-            source="squeue",
+            source=source,
             active=True,
         )
 
-    snapshot = SimpleNamespace(jobs=(job("321_0"), job("321_1")))
+    # Real `sacct --array` may expose a consolidated parent in addition to the
+    # logical task identities from `squeue -r`.  All three rows must commit one
+    # base-array intent, never three jobs or an ambiguity.
+    snapshot = SimpleNamespace(
+        jobs=(job("321", source="sacct"), job("321_0"), job("321_1"))
+    )
     warnings, errors = ds._reconcile_schema5_intents(
         ledger, scheduler_snapshot=snapshot, now=20.0
     )
@@ -1560,6 +2664,10 @@ def test_schema5_task_runtime_environment_rejects_missing_or_untrusted_keys():
     environment.update(
         {
             "ASYS_ROLLOUT_GENERATION": "1",
+            "ASYS_CAPACITY_GENERATION": "1",
+            "ASYS_FLEET_CONTRACT_PATH": "/sealed/schema5_fleet.v1.json",
+            "ASYS_FLEET_CONTRACT_SHA256": "f" * 64,
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": "f" * 64,
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
             "HF_DATASETS_OFFLINE": "1",
@@ -1581,6 +2689,10 @@ def test_schema5_task_refuses_to_start_without_execution_path_pins(tmp_path):
     environment.update(
         {
             "ASYS_ROLLOUT_GENERATION": "1",
+            "ASYS_CAPACITY_GENERATION": "1",
+            "ASYS_FLEET_CONTRACT_PATH": "/sealed/schema5_fleet.v1.json",
+            "ASYS_FLEET_CONTRACT_SHA256": "f" * 64,
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": "f" * 64,
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
             "HF_DATASETS_OFFLINE": "1",

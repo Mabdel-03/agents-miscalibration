@@ -106,6 +106,10 @@ class AgentOutput:
     generation_phase_requested_max_tokens: list[int] = field(default_factory=list)
     generation_phase_prompt_token_id_hashes: list[str] = field(default_factory=list)
     generation_phase_completion_token_id_hashes: list[str] = field(default_factory=list)
+    # The deterministic forced-option probe is a separate HTTP response from the
+    # stochastic chat generation.  Its process identity is scientifically relevant
+    # because ``option_logprobs`` drives calibration analyses.
+    calibration_endpoint_generation: str | None = None
     endpoint_generation: str | None = None
     reasoning_start_token_index: int | None = None
     reasoning_end_token_index: int | None = None
@@ -156,6 +160,7 @@ class AgentOutput:
             "generation_phase_requested_max_tokens": self.generation_phase_requested_max_tokens,
             "generation_phase_prompt_token_id_hashes": self.generation_phase_prompt_token_id_hashes,
             "generation_phase_completion_token_id_hashes": self.generation_phase_completion_token_id_hashes,
+            "calibration_endpoint_generation": self.calibration_endpoint_generation,
             "endpoint_generation": self.endpoint_generation,
             "reasoning_start_token_index": self.reasoning_start_token_index,
             "reasoning_end_token_index": self.reasoning_end_token_index,
@@ -183,6 +188,7 @@ class SelfConsistencySample:
     termination_status: str
     agent_output: AgentOutput | None = None
     censored_generation: dict | None = None
+    transport_censor: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -195,6 +201,7 @@ class SelfConsistencySample:
                 else None
             ),
             "censored_generation": self.censored_generation,
+            "transport_censor": self.transport_censor,
         }
 
 
@@ -351,6 +358,11 @@ class Agent:
             generation_phase_requested_max_tokens=res.generation_phase_requested_max_tokens,
             generation_phase_prompt_token_id_hashes=res.generation_phase_prompt_token_id_hashes,
             generation_phase_completion_token_id_hashes=res.generation_phase_completion_token_id_hashes,
+            calibration_endpoint_generation=(
+                option_scores.endpoint_generation
+                if option_scores is not None
+                else None
+            ),
             endpoint_generation=res.endpoint_generation,
             reasoning_start_token_index=res.reasoning_start_token_index,
             reasoning_end_token_index=res.reasoning_end_token_index,

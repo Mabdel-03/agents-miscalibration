@@ -16,6 +16,16 @@ from scripts import render_schema5_recovery_chain as chain
 
 
 COMMIT = "1" * 40
+REAL_R1_MUTATION_REJECTION = chain._reject_retired_r1_mutation
+
+
+@pytest.fixture(autouse=True)
+def _historical_r1_simulation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise frozen r1 mechanics without reopening production entrypoints."""
+
+    monkeypatch.setattr(
+        chain, "_reject_retired_r1_mutation", lambda _recovery_root: None
+    )
 
 
 def _make_paths(tmp_path: Path) -> chain.RecoveryPaths:
@@ -170,6 +180,64 @@ class FakeSlurm:
 
 def _read(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _publish_r1_failure_envelope(recovery_root: Path) -> Path:
+    path = recovery_root / chain.R1_FAILURE_ENVELOPE_NAME
+    path.write_text(
+        json.dumps(
+            {
+                "protocol": "schema5-recovery-chain-failure-v1",
+                "classification": "requires_superseding_release",
+                "retry_same_generation": False,
+                "superseded_by": "sweep-recovery-schema5-v1.2",
+                "failure_id": "a" * 64,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o444)
+    return path
+
+
+def test_r1_is_permanently_blocked_on_fresh_and_evidenced_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        chain, "_reject_retired_r1_mutation", REAL_R1_MUTATION_REJECTION
+    )
+    fresh = _make_paths(tmp_path / "fresh")
+    monkeypatch.setattr(
+        chain,
+        "verify_release_tag",
+        lambda _repository: pytest.fail("retired render must fail before Git access"),
+    )
+    with pytest.raises(chain.ChainError, match="permanently disabled"):
+        chain.render_chain(fresh, slurm_user="tester")
+
+    _publish_r1_failure_envelope(fresh.recovery_root)
+    with pytest.raises(chain.ChainError, match="permanently disabled"):
+        chain.render_chain(fresh, slurm_user="tester")
+
+    rendered = _make_paths(tmp_path / "rendered")
+    with monkeypatch.context() as historical:
+        historical.setattr(
+            chain, "_reject_retired_r1_mutation", lambda _root: None
+        )
+        historical.setattr(
+            chain,
+            "verify_release_tag",
+            lambda _repository: {
+                "release_tag": chain.RELEASE_TAG,
+                "git_commit": COMMIT,
+            },
+        )
+        chain.render_chain(rendered, slurm_user="tester", apply=True)
+    with pytest.raises(chain.ChainError, match="permanently disabled"):
+        chain.submit_chain(rendered.chain_manifest)
+    with pytest.raises(chain.ChainError, match="permanently disabled"):
+        chain.repair_chain(rendered.chain_manifest)
 
 
 def test_render_dry_run_is_read_only_and_reports_fences(

@@ -30,6 +30,7 @@ import time
 from contextlib import contextmanager
 import math
 from typing import Any, Iterator, Mapping, Sequence
+from urllib.parse import urlsplit
 
 
 ATTESTATION_SCHEMA_VERSION = 1
@@ -41,6 +42,12 @@ LEASE_TTL_SECONDS = 420.0
 LEASE_CLOCK_SKEW_SECONDS = 30.0
 _CHUNK_SIZE = 8 * 1024 * 1024
 _SHA256_LENGTH = 64
+_SCHEMA3_RELEASE_IDS = {"sweep-recovery-schema5-v1.2"}
+_REQUIRED_OFFLINE_ENVIRONMENT = {
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+}
 
 
 class RuntimeIntegrityError(RuntimeError):
@@ -337,6 +344,204 @@ def _read_json_object(path: Path, *, description: str) -> tuple[dict[str, Any], 
     return value, raw
 
 
+def _require_absolute_provenance_path(value: Any, *, description: str) -> str:
+    """Validate a recorded path without dereferencing the historical source."""
+
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        raise RuntimeIntegrityError(f"{description} must be an absolute recorded path")
+    return value
+
+
+def _validate_schema3_locks(locks: Mapping[str, Any], *, role: str) -> None:
+    if set(locks) != {"conda_explicit", "pip_freeze_all"}:
+        raise RuntimeIntegrityError(
+            f"{role} schema-3 environment locks have the wrong fields"
+        )
+    conda_lock = locks.get("conda_explicit")
+    pip_lock = locks.get("pip_freeze_all")
+    if (
+        not isinstance(conda_lock, list)
+        or len(conda_lock) < 2
+        or conda_lock[0] != "@EXPLICIT"
+        or not isinstance(pip_lock, list)
+        or not all(isinstance(row, str) and row for row in pip_lock)
+    ):
+        raise RuntimeIntegrityError(
+            f"{role} schema-3 environment locks are malformed"
+        )
+    for artifact in conda_lock[1:]:
+        if not isinstance(artifact, str):
+            raise RuntimeIntegrityError(
+                f"{role} schema-3 Conda lock contains a non-string artifact"
+            )
+        url, separator, digest = artifact.rpartition("#")
+        parsed = urlsplit(url)
+        if (
+            not separator
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise RuntimeIntegrityError(
+                f"{role} schema-3 Conda lock artifact is malformed"
+            )
+        _validate_sha(digest, description=f"{role} Conda artifact digest")
+
+
+def _validate_schema3_environment_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    role: str,
+    inventory: Mapping[str, Any],
+) -> str:
+    """Validate v1.2 provenance using only manifest and installed-prefix bytes.
+
+    Recorded seed, policy, incident, package-cache, and Conda-tool paths are
+    historical provenance.  Runtime verification deliberately validates their
+    content addresses without dereferencing them, so a sealed production release
+    remains independently verifiable after mutable build inputs disappear.
+    """
+
+    required_fields = {
+        "schema_version",
+        "release_id",
+        "role",
+        "prefix",
+        "sealed_read_only",
+        "offline_environment",
+        "conda_creation_tool",
+        "environment_seed",
+        "ownership_policy",
+        "integrity_normalization_policy",
+        "normalization_receipt",
+        "conda_package_cache_sha256",
+        "runtime",
+        "locks",
+        "release_package",
+        "installed_files",
+        "directory_inventory",
+        "environment_content_sha256",
+    }
+    if set(manifest) != required_fields:
+        raise RuntimeIntegrityError(
+            f"{role} schema-3 environment manifest has the wrong fields"
+        )
+    if manifest.get("offline_environment") != _REQUIRED_OFFLINE_ENVIRONMENT:
+        raise RuntimeIntegrityError(
+            f"{role} schema-3 offline environment contract is invalid"
+        )
+
+    locks = manifest.get("locks")
+    runtime = manifest.get("runtime")
+    conda_tool = manifest.get("conda_creation_tool")
+    seed = manifest.get("environment_seed")
+    policy = manifest.get("ownership_policy")
+    integrity_policy = manifest.get("integrity_normalization_policy")
+    normalization = manifest.get("normalization_receipt")
+    installed = manifest.get("installed_files")
+    if (
+        not isinstance(locks, dict)
+        or not isinstance(runtime, dict)
+        or not isinstance(conda_tool, dict)
+        or set(conda_tool) != {"path", "sha256"}
+        or not isinstance(seed, dict)
+        or set(seed)
+        != {
+            "capture_id",
+            "capture_marker_sha256",
+            "prefix",
+            "normalized_content_inventory_sha256",
+        }
+        or not isinstance(policy, dict)
+        or set(policy) != {"path", "sha256"}
+        or not isinstance(integrity_policy, dict)
+        or set(integrity_policy) != {"path", "sha256"}
+        or not isinstance(normalization, dict)
+        or set(normalization) != {"id"}
+        or not isinstance(installed, dict)
+        or set(installed)
+        != {"inventory_sha256", "entry_count", "file_count", "total_file_bytes"}
+    ):
+        raise RuntimeIntegrityError(
+            f"{role} schema-3 environment provenance is malformed"
+        )
+
+    _validate_schema3_locks(locks, role=role)
+    _require_absolute_provenance_path(
+        conda_tool.get("path"), description=f"{role} Conda creation tool"
+    )
+    _require_absolute_provenance_path(
+        seed.get("prefix"), description=f"{role} normalized seed"
+    )
+    _require_absolute_provenance_path(
+        policy.get("path"), description=f"{role} ownership policy"
+    )
+    _require_absolute_provenance_path(
+        integrity_policy.get("path"),
+        description=f"{role} integrity-normalization policy",
+    )
+    for value, description in (
+        (conda_tool.get("sha256"), f"{role} Conda creation-tool digest"),
+        (seed.get("capture_id"), f"{role} environment capture ID"),
+        (
+            seed.get("capture_marker_sha256"),
+            f"{role} environment capture marker digest",
+        ),
+        (
+            seed.get("normalized_content_inventory_sha256"),
+            f"{role} normalized seed inventory digest",
+        ),
+        (policy.get("sha256"), f"{role} ownership-policy digest"),
+        (
+            integrity_policy.get("sha256"),
+            f"{role} integrity-normalization-policy digest",
+        ),
+        (normalization.get("id"), f"{role} normalization receipt ID"),
+        (
+            manifest.get("conda_package_cache_sha256"),
+            f"{role} Conda package-cache digest",
+        ),
+    ):
+        _validate_sha(value, description=description)
+
+    expected_installed = {
+        "inventory_sha256": inventory["inventory_sha256"],
+        "entry_count": inventory["entry_count"],
+        "file_count": inventory["file_count"],
+        "total_file_bytes": inventory["total_file_bytes"],
+    }
+    if installed != expected_installed:
+        raise RuntimeIntegrityError(
+            f"{role} installed-file provenance does not match the live inventory"
+        )
+
+    expected_content = sha256_bytes(
+        canonical_bytes(
+            {
+                "runtime": runtime,
+                "locks": locks,
+                "release_package": manifest.get("release_package"),
+                "environment_seed": seed,
+                "ownership_policy": policy,
+                "integrity_normalization_policy": integrity_policy,
+                "normalization_receipt": normalization,
+                "conda_creation_tool": conda_tool,
+                "conda_package_cache_sha256": manifest[
+                    "conda_package_cache_sha256"
+                ],
+                "inventory_sha256": inventory["inventory_sha256"],
+            }
+        )
+    )
+    _validate_sha(
+        manifest.get("environment_content_sha256"),
+        description=f"{role} environment content identity",
+    )
+    return expected_content
+
+
 def verify_environment_manifest_live(
     *,
     role: str,
@@ -360,8 +565,9 @@ def verify_environment_manifest_live(
     except (OSError, RuntimeError) as exc:
         raise RuntimeIntegrityError(f"invalid {role} manifest prefix: {exc}") from exc
     expected_inventory = manifest.get("directory_inventory")
+    schema_version = manifest.get("schema_version")
     if (
-        manifest.get("schema_version") != 1
+        schema_version not in {1, 3}
         or manifest.get("release_id") != release_id
         or manifest.get("role") != role
         or manifest_prefix != resolved
@@ -369,6 +575,10 @@ def verify_environment_manifest_live(
         or not isinstance(expected_inventory, dict)
     ):
         raise RuntimeIntegrityError(f"{role} environment manifest identity is invalid")
+    if release_id in _SCHEMA3_RELEASE_IDS and schema_version != 3:
+        raise RuntimeIntegrityError(
+            f"{role} environment manifest schema downgrade is forbidden for {release_id}"
+        )
     inventory, metadata = directory_inventory_with_metadata(resolved)
     if inventory != expected_inventory:
         raise RuntimeIntegrityError(
@@ -378,16 +588,23 @@ def verify_environment_manifest_live(
     runtime = manifest.get("runtime")
     if not isinstance(locks, dict) or not isinstance(runtime, dict):
         raise RuntimeIntegrityError(f"{role} environment manifest lacks frozen runtime/locks")
-    expected_content = sha256_bytes(
-        canonical_bytes(
-            {
-                "runtime": runtime,
-                "locks": locks,
-                "release_package": manifest.get("release_package"),
-                "inventory_sha256": inventory["inventory_sha256"],
-            }
+    if schema_version == 3:
+        expected_content = _validate_schema3_environment_manifest(
+            manifest,
+            role=role,
+            inventory=inventory,
         )
-    )
+    else:
+        expected_content = sha256_bytes(
+            canonical_bytes(
+                {
+                    "runtime": runtime,
+                    "locks": locks,
+                    "release_package": manifest.get("release_package"),
+                    "inventory_sha256": inventory["inventory_sha256"],
+                }
+            )
+        )
     if manifest.get("environment_content_sha256") != expected_content:
         raise RuntimeIntegrityError(f"{role} environment content identity is invalid")
     return {

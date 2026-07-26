@@ -1,0 +1,297 @@
+{
+  "normalizations": [
+    {
+      "archive_filename": "pip-26.1.1.RECORD",
+      "normalization_id": "pip-26.1.1-installer-launcher-record-v1",
+      "normalized_record_sha256": "aaf8210b28c26dadec47702f3e44b2e1400ced83e64897b0a5aca1569ca279c9",
+      "project": "pip",
+      "record_relative_path": "lib/python3.11/site-packages/pip-26.1.1.dist-info/RECORD",
+      "role_source_file_contracts": {
+        "harness": [
+          {
+            "path": "bin/pip",
+            "sha256": "7fdc9703c72a1c52a6405113f69200397493093224d809bc2bc20eb0a31ab93d",
+            "size": 266,
+            "state": "regular_file"
+          },
+          {
+            "path": "bin/pip3",
+            "sha256": "7fdc9703c72a1c52a6405113f69200397493093224d809bc2bc20eb0a31ab93d",
+            "size": 266,
+            "state": "regular_file"
+          },
+          {
+            "path": "bin/pip3.12",
+            "state": "missing"
+          }
+        ],
+        "serving": [
+          {
+            "path": "bin/pip",
+            "sha256": "3fd080396bfe13b2d05c4d08cf733dcd1b6f20afe8007472bd5031240819eac4",
+            "size": 267,
+            "state": "regular_file"
+          },
+          {
+            "path": "bin/pip3",
+            "sha256": "3fd080396bfe13b2d05c4d08cf733dcd1b6f20afe8007472bd5031240819eac4",
+            "size": 267,
+            "state": "regular_file"
+          },
+          {
+            "path": "bin/pip3.12",
+            "state": "missing"
+          }
+        ]
+      },
+      "roles": {
+        "harness": {
+          "source_record_policy": "exact_preimage_if_present"
+        },
+        "serving": {
+          "source_record_policy": "exact_preimage_if_present"
+        }
+      },
+      "row_mutations": [
+        {
+          "after": null,
+          "before": {
+            "hash": "sha256=jcrTAfiJHhhSWpU5AOpV6lUqNtGjmITeEbp0ENYkUM4",
+            "path": "../../../bin/pip",
+            "size": "452"
+          }
+        },
+        {
+          "after": null,
+          "before": {
+            "hash": "sha256=jcrTAfiJHhhSWpU5AOpV6lUqNtGjmITeEbp0ENYkUM4",
+            "path": "../../../bin/pip3",
+            "size": "452"
+          }
+        },
+        {
+          "after": null,
+          "before": {
+            "hash": "sha256=jcrTAfiJHhhSWpU5AOpV6lUqNtGjmITeEbp0ENYkUM4",
+            "path": "../../../bin/pip3.12",
+            "size": "452"
+          }
+        },
+        {
+          "after": {
+            "hash": "sha256=0O3uFfkbQG8_mXJuROuZC-bjT9A0W1K5EMVo4O72oqg",
+            "path": "pip-26.1.1.dist-info/INSTALLER",
+            "size": "5"
+          },
+          "before": {
+            "hash": "sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg",
+            "path": "pip-26.1.1.dist-info/INSTALLER",
+            "size": "4"
+          }
+        }
+      ],
+      "source_file_contracts": [
+        {
+          "path": "lib/python3.11/site-packages/pip-26.1.1.dist-info/INSTALLER",
+          "sha256": "d0edee15f91b406f3f99726e44eb990be6e34fd0345b52b910c568e0eef6a2a8",
+          "size": 5
+        }
+      ],
+      "source_record_sha256": "e68380131f84450f99331db9b0e2b0158570d029838f5a485461d48c5e14bfc1",
+      "version": "26.1.1"
+    },
+    {
+      "archive_filename": "packaging-26.2.RECORD",
+      "conda_ownership_contract": {
+        "artifact_sha256": "3906abfb6511a3bb309e39b9b1b7bc38f50a723971de2395489fd1f379255890",
+        "build": "pyhc364b38_0",
+        "name": "packaging",
+        "owned_path": "lib/python3.11/site-packages/packaging-26.2.dist-info/INSTALLER",
+        "owned_path_sha256": "bc33022edcb7639ff53355b4e91dade50a0bbf0299efeb6171d1ec0ba5029cfc",
+        "owned_path_size": 6,
+        "record_relative_path": "conda-meta/packaging-26.2-pyhc364b38_0.json",
+        "record_sha256": "0516ee64f77f9be64499d8c6a70d19343d0f67b0c4557ffef9f8ad67c5104af9",
+        "version": "26.2"
+      },
+      "normalization_id": "packaging-26.2-conda-installer-record-v1",
+      "normalized_record_sha256": "6096a53c376d8018db14fc7bf4590af42ae7b623fb41b34e39e1e13feb0ce189",
+      "project": "packaging",
+      "record_relative_path": "lib/python3.11/site-packages/packaging-26.2.dist-info/RECORD",
+      "roles": {
+        "harness": {
+          "source_record_policy": "exact_preimage_if_present"
+        },
+        "serving": {
+          "source_record_policy": "exact_preimage_if_present"
+        }
+      },
+      "row_mutations": [
+        {
+          "after": {
+            "hash": "sha256=vDMCLty3Y5_1M1W06R2t5QoLvwKZ7-thcdHsC6UCnPw",
+            "path": "packaging-26.2.dist-info/INSTALLER",
+            "size": "6"
+          },
+          "before": {
+            "hash": "sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg",
+            "path": "packaging-26.2.dist-info/INSTALLER",
+            "size": "4"
+          }
+        }
+      ],
+      "source_file_contracts": [
+        {
+          "path": "lib/python3.11/site-packages/packaging-26.2.dist-info/INSTALLER",
+          "sha256": "bc33022edcb7639ff53355b4e91dade50a0bbf0299efeb6171d1ec0ba5029cfc",
+          "size": 6
+        }
+      ],
+      "source_record_sha256": "8548d2f3e6235e855b663e76d84d204b39e659080f49c80f64ec443e70363c88",
+      "version": "26.2"
+    },
+    {
+      "archive_filename": "numpy-2.3.5.RECORD",
+      "conda_project_must_be_absent": true,
+      "normalization_id": "numpy-2.3.5-generated-bytecode-record-v1",
+      "normalized_record_sha256": "c158387d76fd0e171de51b32e6f93fbc6ec40befded5a31a39d6a277f5100187",
+      "project": "numpy",
+      "record_relative_path": "lib/python3.11/site-packages/numpy-2.3.5.dist-info/RECORD",
+      "required_retained_rows": [
+        {
+          "hash": "",
+          "path": "numpy/distutils/__pycache__/conv_template.cpython-311.pyc",
+          "size": ""
+        }
+      ],
+      "roles": {
+        "harness": {
+          "source_record_policy": "forbidden"
+        },
+        "serving": {
+          "source_record_policy": "exact_preimage_if_present"
+        }
+      },
+      "row_mutations": [
+        {
+          "after": null,
+          "before": {
+            "hash": "sha256=NFEZ0m-9VfGQd3RoQVwBa58vLywoDgL5M0wkhyoXXZA",
+            "path": "numpy/distutils/__pycache__/conv_template.cpython-311.pyc",
+            "size": "14213"
+          }
+        }
+      ],
+      "source_file_contracts": [
+        {
+          "path": "lib/python3.11/site-packages/numpy/distutils/__pycache__/conv_template.cpython-311.pyc",
+          "sha256": "2b335020e752cb92d33a0815021de7abaed05dbe17cd5a030f74901928a0d3a7",
+          "size": 14231
+        }
+      ],
+      "source_record_sha256": "1eec6aacf144409153747b04654267736487be2e9a1b6308c35e70b0bea723f5",
+      "version": "2.3.5"
+    },
+    {
+      "archive_filename": "wheel-0.47.0.RECORD",
+      "normalization_id": "wheel-0.47.0-entrypoint-record-v1",
+      "normalized_record_sha256": "8b1b67026b906c13c35dc60bfad877586cb7c7d73731f1c251448ba68a21f90e",
+      "project": "wheel",
+      "record_relative_path": "lib/python3.11/site-packages/wheel-0.47.0.dist-info/RECORD",
+      "role_source_file_contracts": {
+        "harness": [
+          {
+            "path": "bin/wheel",
+            "sha256": "7be5d1b161aee81be45b31a881659117dc050bb43f5ea59a0e55d58eb864d482",
+            "size": 259,
+            "state": "regular_file"
+          }
+        ],
+        "serving": [
+          {
+            "path": "bin/wheel",
+            "sha256": "d129df8046bf96037b9223e709e00a083c69228560421697fa0858e186856bc7",
+            "size": 260,
+            "state": "regular_file"
+          }
+        ]
+      },
+      "roles": {
+        "harness": {
+          "source_record_policy": "exact_preimage_if_present"
+        },
+        "serving": {
+          "source_record_policy": "exact_preimage_if_present"
+        }
+      },
+      "row_mutations": [
+        {
+          "after": null,
+          "before": {
+            "hash": "sha256=9qA3eYHsaprwr4O2kOsCypQyT04JTVNUQuMy7i4XhvU",
+            "path": "../../../bin/wheel",
+            "size": "497"
+          }
+        }
+      ],
+      "source_record_sha256": "2f377d007e8575dcbf5aeab3bfa316c17d581fc056f3bbab7c6eea406c1f605b",
+      "version": "0.47.0"
+    },
+    {
+      "archive_filename": "torch_c_dlpack_ext-0.1.5.RECORD",
+      "normalization_id": "torch-c-dlpack-ext-0.1.5-shared-owner-record-v1",
+      "normalized_record_sha256": "5f6e642b3bf84eaee6c86cb9de3aa0a6b570347abfe3f1fb0c6248afe607f36f",
+      "other_owner_contract": {
+        "project": "flashinfer-python",
+        "record_relative_path": "lib/python3.11/site-packages/flashinfer_python-0.6.8.post1.dist-info/RECORD",
+        "record_sha256": "9a08dbf109e448dafd950cfc18256560f004677f2a6fa834c04bd0b919116155",
+        "retained_row": {
+          "hash": "sha256=0DS7CRZ-adSPYf-93zoPLk9rQjPnbyleqhGzisU1tlc",
+          "path": "build_backend.py",
+          "size": "5797"
+        },
+        "version": "0.6.8.post1"
+      },
+      "project": "torch-c-dlpack-ext",
+      "record_relative_path": "lib/python3.11/site-packages/torch_c_dlpack_ext-0.1.5.dist-info/RECORD",
+      "roles": {
+        "harness": {
+          "source_record_policy": "forbidden"
+        },
+        "serving": {
+          "source_record_policy": "exact_preimage_if_present"
+        }
+      },
+      "row_mutations": [
+        {
+          "after": null,
+          "before": {
+            "hash": "",
+            "path": "__pycache__/build_backend.cpython-311.pyc",
+            "size": ""
+          }
+        },
+        {
+          "after": null,
+          "before": {
+            "hash": "sha256=WUgBRce7i-K7htTdoJJ2OVPSLVUAVv8Dv-cEta8gT4k",
+            "path": "build_backend.py",
+            "size": "3802"
+          }
+        }
+      ],
+      "source_file_contracts": [
+        {
+          "path": "lib/python3.11/site-packages/build_backend.py",
+          "sha256": "d034bb09167e69d48f61ffbddf3a0f2e4f6b4233e76f295eaa11b38ac535b657",
+          "size": 5797
+        }
+      ],
+      "source_record_sha256": "b12cd31544b3e333e4d8196afd31383f3aef633ab8669cbf62704420de716655",
+      "version": "0.1.5"
+    }
+  ],
+  "policy_id": "schema5-environment-integrity-normalization-v1",
+  "release_id": "sweep-recovery-schema5-v1.2",
+  "require_pip_record_hashes": true,
+  "schema_version": 1
+}

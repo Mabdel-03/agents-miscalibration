@@ -27,10 +27,17 @@ REQUIRED_METADATA_FIELDS = (
     "model_revision",
     "tokenizer_revision",
     "model_contract_sha256",
+    "fleet_contract_sha256",
+    "release_fleet_contract_sha256",
+    "capacity_generation",
+    "coordinate_provenance_counts",
+    "coordinate_provenance_identity_counts",
     "serving_profile",
     "endpoint_generation",
     "effective_context",
     "rollout_generation",
+    "transport_censor_protocol_version",
+    "transport_censor_protocol_hash",
 )
 
 _ROOT_FIELDS = frozenset(

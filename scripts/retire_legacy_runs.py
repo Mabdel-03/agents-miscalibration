@@ -20,13 +20,15 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 from typing import Any, Iterable, Mapping
 
-try:
-    from scripts.create_recovery_snapshot import verify_snapshot
-except ModuleNotFoundError:  # direct execution
-    from create_recovery_snapshot import verify_snapshot  # type: ignore[no-redef]
+REPO = Path(__file__).resolve().parent.parent
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from scripts.create_recovery_snapshot import verify_snapshot  # noqa: E402
 
 
 LEGACY_ROOT_NAMES = (

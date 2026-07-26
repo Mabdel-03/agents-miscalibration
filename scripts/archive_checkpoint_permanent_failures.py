@@ -41,7 +41,7 @@ from agents_scaling.experiment.completion import (  # noqa: E402
 from agents_scaling.experiment.manifest import load_manifest  # noqa: E402
 from agents_scaling.experiment.qid_checkpoint import (  # noqa: E402
     CHECKPOINT_DIRECTORY,
-    CHECKPOINT_SCHEMA_VERSION,
+    LEGACY_CHECKPOINT_SCHEMA_VERSION as CHECKPOINT_SCHEMA_VERSION,
 )
 
 

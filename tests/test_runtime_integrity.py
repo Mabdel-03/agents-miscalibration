@@ -15,7 +15,11 @@ from agents_scaling.experiment import run_one
 from agents_scaling.experiment.qid_checkpoint import CoordinateAdmissionClosed
 
 
+# Most tests below exercise the backward-compatible schema-1 verifier.  Keep their
+# synthetic release on the retired protocol; v1.2 has dedicated schema-3 fixtures
+# and must never accept a schema downgrade.
 RELEASE_ID = "sweep-recovery-schema5-v1.1"
+RELEASE_ID_V12 = "sweep-recovery-schema5-v1.2"
 RELEASE_BUNDLE_ID = "a" * 64
 IMMUTABLE_PINS_SHA256 = "b" * 64
 
@@ -70,6 +74,200 @@ def _environment(tmp_path: Path, role: str) -> dict[str, str]:
         "manifest_sha256": hashlib.sha256(raw).hexdigest(),
         "nested_file": str(package),
     }
+
+
+def _schema3_environment(tmp_path: Path, role: str) -> dict[str, str]:
+    environment = _environment(tmp_path, role)
+    manifest_path = Path(environment["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    inventory = manifest["directory_inventory"]
+    locks = {
+        "conda_explicit": [
+            "@EXPLICIT",
+            f"https://repo.example.invalid/{role}-runtime.conda#{'1' * 64}",
+        ],
+        "pip_freeze_all": [f"{role}-runtime==1.0.0"],
+    }
+    provenance = {
+        "conda_creation_tool": {
+            "path": f"/sealed/build-tools/{role}/conda",
+            "sha256": "2" * 64,
+        },
+        "environment_seed": {
+            "capture_id": "3" * 64,
+            "capture_marker_sha256": "4" * 64,
+            "prefix": f"/retired/build-inputs/{role}-seed",
+            "normalized_content_inventory_sha256": "5" * 64,
+        },
+        "ownership_policy": {
+            "path": "/retired/build-inputs/environment_ownership_policy.v1.json",
+            "sha256": "6" * 64,
+        },
+        "integrity_normalization_policy": {
+            "path": (
+                "/retired/build-inputs/"
+                "environment_integrity_normalization_policy.v1.json"
+            ),
+            "sha256": "9" * 64,
+        },
+        "normalization_receipt": {"id": "7" * 64},
+        "conda_package_cache_sha256": "8" * 64,
+    }
+    manifest.update(
+        {
+            "schema_version": 3,
+            "release_id": RELEASE_ID_V12,
+            "offline_environment": {
+                "HF_DATASETS_OFFLINE": "1",
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+            },
+            **provenance,
+            "locks": locks,
+            "installed_files": {
+                "inventory_sha256": inventory["inventory_sha256"],
+                "entry_count": inventory["entry_count"],
+                "file_count": inventory["file_count"],
+                "total_file_bytes": inventory["total_file_bytes"],
+            },
+        }
+    )
+    manifest["environment_content_sha256"] = hashlib.sha256(
+        integrity.canonical_bytes(
+            {
+                "runtime": manifest["runtime"],
+                "locks": locks,
+                "release_package": manifest["release_package"],
+                "environment_seed": provenance["environment_seed"],
+                "ownership_policy": provenance["ownership_policy"],
+                "integrity_normalization_policy": provenance[
+                    "integrity_normalization_policy"
+                ],
+                "normalization_receipt": provenance["normalization_receipt"],
+                "conda_creation_tool": provenance["conda_creation_tool"],
+                "conda_package_cache_sha256": provenance[
+                    "conda_package_cache_sha256"
+                ],
+                "inventory_sha256": inventory["inventory_sha256"],
+            }
+        )
+    ).hexdigest()
+    raw = (json.dumps(manifest, sort_keys=True) + "\n").encode()
+    manifest_path.write_bytes(raw)
+    environment["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+    return environment
+
+
+def _rewrite_environment_manifest(
+    environment: dict[str, str], transform
+) -> dict[str, object]:
+    path = Path(environment["manifest_path"])
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    transform(manifest)
+    raw = (json.dumps(manifest, sort_keys=True) + "\n").encode()
+    path.write_bytes(raw)
+    environment["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+    return manifest
+
+
+def test_schema3_manifest_verifies_without_mutable_build_inputs(tmp_path):
+    environment = _schema3_environment(tmp_path, "harness")
+
+    observed = integrity.verify_environment_manifest_live(
+        role="harness",
+        prefix=Path(environment["prefix"]),
+        manifest_path=Path(environment["manifest_path"]),
+        expected_manifest_sha256=environment["manifest_sha256"],
+        release_id=RELEASE_ID_V12,
+    )
+
+    assert observed["manifest_sha256"] == environment["manifest_sha256"]
+    # None of these recorded provenance paths exists.  Successful verification proves
+    # runtime validation does not dereference mutable or retired build inputs.
+    manifest = json.loads(Path(environment["manifest_path"]).read_text(encoding="utf-8"))
+    assert not Path(manifest["environment_seed"]["prefix"]).exists()
+    assert not Path(manifest["ownership_policy"]["path"]).exists()
+    assert not Path(manifest["integrity_normalization_policy"]["path"]).exists()
+    assert not Path(manifest["conda_creation_tool"]["path"]).exists()
+
+
+def test_schema3_manifest_rejects_schema_downgrade(tmp_path):
+    environment = _environment(tmp_path, "harness")
+    _rewrite_environment_manifest(
+        environment,
+        lambda manifest: manifest.__setitem__("release_id", RELEASE_ID_V12),
+    )
+
+    with pytest.raises(integrity.RuntimeIntegrityError, match="schema downgrade"):
+        integrity.verify_environment_manifest_live(
+            role="harness",
+            prefix=Path(environment["prefix"]),
+            manifest_path=Path(environment["manifest_path"]),
+            expected_manifest_sha256=environment["manifest_sha256"],
+            release_id=RELEASE_ID_V12,
+        )
+
+
+@pytest.mark.parametrize(
+    ("transform", "match"),
+    [
+        (
+            lambda manifest: manifest["environment_seed"].__setitem__(
+                "capture_id", "not-a-digest"
+            ),
+            "environment capture ID",
+        ),
+        (
+            lambda manifest: manifest["ownership_policy"].__setitem__(
+                "path", "relative/policy.json"
+            ),
+            "ownership policy must be an absolute",
+        ),
+        (
+            lambda manifest: manifest[
+                "integrity_normalization_policy"
+            ].__setitem__("path", "relative/integrity-policy.json"),
+            "integrity-normalization policy must be an absolute",
+        ),
+        (
+            lambda manifest: manifest["installed_files"].__setitem__(
+                "file_count", manifest["installed_files"]["file_count"] + 1
+            ),
+            "installed-file provenance",
+        ),
+    ],
+)
+def test_schema3_manifest_rejects_malformed_provenance(tmp_path, transform, match):
+    environment = _schema3_environment(tmp_path, "serving")
+    _rewrite_environment_manifest(environment, transform)
+
+    with pytest.raises(integrity.RuntimeIntegrityError, match=match):
+        integrity.verify_environment_manifest_live(
+            role="serving",
+            prefix=Path(environment["prefix"]),
+            manifest_path=Path(environment["manifest_path"]),
+            expected_manifest_sha256=environment["manifest_sha256"],
+            release_id=RELEASE_ID_V12,
+        )
+
+
+def test_schema3_manifest_content_identity_binds_valid_provenance(tmp_path):
+    environment = _schema3_environment(tmp_path, "serving")
+    _rewrite_environment_manifest(
+        environment,
+        lambda manifest: manifest["environment_seed"].__setitem__(
+            "capture_id", "9" * 64
+        ),
+    )
+
+    with pytest.raises(integrity.RuntimeIntegrityError, match="content identity"):
+        integrity.verify_environment_manifest_live(
+            role="serving",
+            prefix=Path(environment["prefix"]),
+            manifest_path=Path(environment["manifest_path"]),
+            expected_manifest_sha256=environment["manifest_sha256"],
+            release_id=RELEASE_ID_V12,
+        )
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, dict[str, dict[str, str]]]:

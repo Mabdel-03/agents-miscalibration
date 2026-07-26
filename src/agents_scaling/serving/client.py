@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +26,9 @@ from typing import Any
 import backoff
 from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
 
+from agents_scaling.experiment.transport_censor import (
+    STOCHASTIC_CHAT_SDK_MAX_RETRIES,
+)
 from agents_scaling.serving.context import (
     CONTEXT_RESERVE_TOKENS,
     ChatTemplateTokenizer,
@@ -517,6 +521,8 @@ class OptionScores:
     raw_logprobs: dict[str, float]
     # the full raw top-logprob list at the answer position (for auditing / fallback)
     raw_top: list[dict[str, Any]] = field(default_factory=list)
+    # Exact serving process that returned this independent calibration probe.
+    endpoint_generation: str | None = None
 
     @property
     def argmax(self) -> str:
@@ -570,6 +576,10 @@ class LogprobClient:
         self.last_context_preflight: ContextPreflight | None = None
         self.last_context_preflights: list[ContextPreflight] = []
         self.last_context_capacity_envelope: ContextPreflight | None = None
+        self._endpoint_lock = threading.RLock()
+        self._base_url = str(base_url)
+        self._api_key = api_key
+        self._request_timeout = request_timeout
         # Keep each client call to one visible transport attempt. Connection recovery
         # happens above this client under the same checkpoint coordinate and seed;
         # successfully returned outcomes are journaled before control leaves the proxy.
@@ -578,8 +588,58 @@ class LogprobClient:
             base_url=base_url,
             api_key=api_key,
             timeout=request_timeout,
-            max_retries=0,
+            max_retries=STOCHASTIC_CHAT_SDK_MAX_RETRIES,
         )
+
+    @property
+    def base_url(self) -> str:
+        """Return the endpoint paired with :attr:`endpoint_generation`."""
+
+        with self._endpoint_lock:
+            return self._base_url
+
+    def refresh_endpoint(
+        self,
+        *,
+        base_url: str,
+        endpoint_generation: str,
+    ) -> bool:
+        """Atomically replace one coordinate client's transport identity.
+
+        Production workers call this only at the checkpoint's missing-coordinate
+        admission boundary.  Constructing the replacement transport first means an
+        invalid URL cannot partially mutate the live client; the lock then publishes
+        the URL, transport object, and process-generation provenance as one local
+        state transition.
+        """
+
+        if not isinstance(base_url, str) or not base_url:
+            raise ValueError("base_url must be non-empty text")
+        if not isinstance(endpoint_generation, str) or not endpoint_generation:
+            raise ValueError("endpoint_generation must be non-empty text")
+        with self._endpoint_lock:
+            if endpoint_generation == self.endpoint_generation:
+                if base_url != self._base_url:
+                    raise ValueError(
+                        "one endpoint_generation cannot identify two base URLs"
+                    )
+                return False
+            replacement = OpenAI(
+                base_url=base_url,
+                api_key=self._api_key,
+                timeout=self._request_timeout,
+                max_retries=STOCHASTIC_CHAT_SDK_MAX_RETRIES,
+            )
+            self._client = replacement
+            self._base_url = base_url
+            self.endpoint_generation = endpoint_generation
+            return True
+
+    def _endpoint_snapshot(self) -> tuple[Any, str | None]:
+        """Snapshot the transport/provenance pair used by one request."""
+
+        with self._endpoint_lock:
+            return self._client, self.endpoint_generation
 
     def _protocol_tokenizer(self) -> Any:
         tokenizer = self._context_tokenizer
@@ -1012,6 +1072,7 @@ class LogprobClient:
             raise ThinkingBudgetProtocolError(
                 "exact generation requires an explicit serving profile"
             )
+        transport_client, endpoint_generation = self._endpoint_snapshot()
 
         messages = build_chat_messages(system, user)
         if temperature is None:
@@ -1098,7 +1159,7 @@ class LogprobClient:
         self.last_context_preflight = capacity_envelope
         self.last_context_preflights = [capacity_envelope]
 
-        resp = self._client.chat.completions.create(
+        resp = transport_client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=temperature,
@@ -1213,7 +1274,7 @@ class LogprobClient:
                     prompt_think_end_positions=local_prompt_end_positions,
                     completion_think_start_positions=completion_start_positions,
                     completion_think_end_positions=completion_end_positions,
-                    endpoint_generation=self.endpoint_generation,
+                    endpoint_generation=endpoint_generation,
                 )
 
         if violation_codes:
@@ -1237,7 +1298,7 @@ class LogprobClient:
                 prompt_think_end_positions=local_prompt_end_positions,
                 completion_think_start_positions=completion_start_positions,
                 completion_think_end_positions=completion_end_positions,
-                endpoint_generation=self.endpoint_generation,
+                endpoint_generation=endpoint_generation,
             )
 
         if not isinstance(parsed_content, str) or (
@@ -1298,7 +1359,7 @@ class LogprobClient:
             generation_phase_completion_token_id_hashes=[
                 token_ids_sha256(completion_ids)
             ],
-            endpoint_generation=self.endpoint_generation,
+            endpoint_generation=endpoint_generation,
             reasoning_start_token_index=start_index,
             reasoning_end_token_index=end_index,
             # These are completion-only generated-delimiter counts. End count includes
@@ -1335,7 +1396,8 @@ class LogprobClient:
                 reserve_tokens=self._context_reserve_tokens,
             )
 
-        resp = self._client.completions.create(
+        transport_client, endpoint_generation = self._endpoint_snapshot()
+        resp = transport_client.completions.create(
             model=self.model,
             prompt=prompt,
             max_tokens=1,
@@ -1396,4 +1458,9 @@ class LogprobClient:
             probs = {opt: 1.0 / n for opt in option_letters}
         else:
             probs = {opt: v / total for opt, v in unnorm.items()}
-        return OptionScores(probs=probs, raw_logprobs=raw_logprobs, raw_top=raw_top)
+        return OptionScores(
+            probs=probs,
+            raw_logprobs=raw_logprobs,
+            raw_top=raw_top,
+            endpoint_generation=endpoint_generation,
+        )

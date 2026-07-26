@@ -21,7 +21,7 @@ from agents_scaling.serving.profiles import SERVING_PROFILES
 
 
 FLEET_ID = "schema5-v1"
-RELEASE_ID = "sweep-recovery-schema5-v1.1"
+RELEASE_ID = "sweep-recovery-schema5-v1.2"
 EXPECTED_COUNTS = {
     "0.6B": 2,
     "1.7B": 2,
@@ -79,6 +79,7 @@ class FleetReplica:
     replica_index: int
     scheduler_job_name: str
     partition: str
+    qos: str | None
     gpu_type: str
     time_limit: str
     cpus_per_task: int
@@ -181,6 +182,7 @@ def load_fleet_contract(
     *,
     model_contracts: FrozenModelContracts,
     expected_sha256: str | None = None,
+    allow_capacity_layout: bool = False,
 ) -> FrozenFleetContract:
     fleet_path = (
         default_fleet_contract_path() if path is None else Path(path).expanduser().resolve()
@@ -217,10 +219,22 @@ def load_fleet_contract(
         or payload["fleet_id"] != FLEET_ID
         or payload["release_id"] != RELEASE_ID
         or payload["model_contract_sha256"] != model_contracts.sha256
-        or payload["logical_replica_count"] != 22
-        or payload["allocated_gpu_count"] != 24
     ):
-        raise FleetContractError("fleet release/model/cardinality identity drifted")
+        raise FleetContractError("fleet release/model identity drifted")
+    if (
+        type(payload["logical_replica_count"]) is not int
+        or payload["logical_replica_count"] < 1
+        or type(payload["allocated_gpu_count"]) is not int
+        or payload["allocated_gpu_count"] < 1
+        or (
+            not allow_capacity_layout
+            and (
+                payload["logical_replica_count"] != 22
+                or payload["allocated_gpu_count"] != 24
+            )
+        )
+    ):
+        raise FleetContractError("fleet aggregate cardinality is invalid")
     if payload["offline_environment"] != {
         "HF_DATASETS_OFFLINE": "1",
         "HF_HUB_OFFLINE": "1",
@@ -272,7 +286,14 @@ def load_fleet_contract(
         if set(raw_profile) != set(exact_profile) | {"replicas"}:
             raise FleetContractError(f"fleet profile fields drifted for {profile.name}")
         raw_replicas = raw_profile["replicas"]
-        if not isinstance(raw_replicas, list) or len(raw_replicas) != EXPECTED_COUNTS[profile.name]:
+        if (
+            not isinstance(raw_replicas, list)
+            or len(raw_replicas) < EXPECTED_COUNTS[profile.name]
+            or (
+                not allow_capacity_layout
+                and len(raw_replicas) != EXPECTED_COUNTS[profile.name]
+            )
+        ):
             raise FleetContractError(f"wrong replica count for {profile.name}")
         parsed: list[FleetReplica] = []
         required_replica = {
@@ -281,26 +302,30 @@ def load_fleet_contract(
             "replica_index",
             "scheduler_job_name",
             "partition",
+            "qos",
             "gpu_type",
             "time_limit",
             "cpus_per_task",
             "memory",
         }
+        legacy_replica_fields = required_replica - {"qos"}
         for raw in raw_replicas:
-            if not isinstance(raw, dict) or set(raw) != required_replica:
+            if (
+                not isinstance(raw, dict)
+                or frozenset(raw)
+                not in {
+                    frozenset(required_replica),
+                    frozenset(legacy_replica_fields),
+                }
+            ):
                 raise FleetContractError(f"replica fields drifted for {profile.name}")
             index = raw["replica_index"]
             replica = FleetReplica(
                 serving_profile=profile.name,
                 model_size=profile.model_size,
                 gpus_per_replica=profile.tp_size,
-                **raw,
-            )
-            expected_partition = (
-                "ou_bcs_normal"
-                if profile.name == "14B-long"
-                or (profile.name == "32B-long" and index == 0)
-                else "ou_bcs_low"
+                qos=raw.get("qos"),
+                **{key: value for key, value in raw.items() if key != "qos"},
             )
             if (
                 raw["pool_id"] != FLEET_ID
@@ -309,7 +334,19 @@ def load_fleet_contract(
                 or raw["replica_id"] != expected_replica_id(profile.name, index)
                 or raw["scheduler_job_name"]
                 != expected_scheduler_job_name(profile.name, index)
-                or raw["partition"] != expected_partition
+                or not isinstance(raw["partition"], str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", raw["partition"])
+                is None
+                or (
+                    "qos" in raw
+                    and (
+                        not isinstance(raw["qos"], str)
+                        or re.fullmatch(
+                            r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", raw["qos"]
+                        )
+                        is None
+                    )
+                )
                 or raw["gpu_type"] != "a100"
                 or raw["time_limit"] != "1-00:00:00"
                 or raw["cpus_per_task"] != profile.tp_size * 8
@@ -327,7 +364,16 @@ def load_fleet_contract(
         all_replicas.extend(parsed)
     if set(by_profile) != set(EXPECTED_COUNTS):
         raise FleetContractError("fleet profile set is incomplete")
-    if len(all_replicas) != 22 or sum(item.gpus_per_replica for item in all_replicas) != 24:
+    expected_logical = len(all_replicas)
+    expected_gpus = sum(item.gpus_per_replica for item in all_replicas)
+    if (
+        payload["logical_replica_count"] != expected_logical
+        or payload["allocated_gpu_count"] != expected_gpus
+        or (
+            not allow_capacity_layout
+            and (expected_logical != 22 or expected_gpus != 24)
+        )
+    ):
         raise FleetContractError("fleet aggregate cardinality drifted")
     return FrozenFleetContract(
         path=fleet_path,

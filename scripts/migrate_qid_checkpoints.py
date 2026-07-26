@@ -59,7 +59,8 @@ from agents_scaling.experiment.manifest import (  # noqa: E402
 )
 from agents_scaling.experiment.qid_checkpoint import (  # noqa: E402
     CHECKPOINT_DIRECTORY,
-    CHECKPOINT_SCHEMA_VERSION,
+    CHECKPOINT_SCHEMA_VERSION as EXECUTABLE_CHECKPOINT_SCHEMA_VERSION,
+    LEGACY_CHECKPOINT_SCHEMA_VERSION as CHECKPOINT_SCHEMA_VERSION,
     QIDCheckpoint,
     checkpoint_path,
 )
@@ -108,6 +109,26 @@ _SOURCE_ROOT_FIELDS = frozenset(
         "created_at",
         "updated_at",
         "integrity_sha256",
+    }
+)
+_TARGET_ROOT_FIELDS = _SOURCE_ROOT_FIELDS | {"migration_history"}
+_LEGACY_COORDINATE_FIELDS = frozenset(
+    {"request", "outcome", "observed_at", "producer_wall_ms"}
+)
+_LEGACY_TOPOLOGY_OUTCOME_FIELDS = frozenset(
+    {"termination_status", "agent_output", "censored_generation"}
+)
+_LEGACY_SELF_CONSISTENCY_OUTCOME_FIELDS = _LEGACY_TOPOLOGY_OUTCOME_FIELDS | {
+    "sample_index",
+    "seed",
+}
+_LEGACY_TERMINAL_FIELDS = frozenset(
+    {
+        "termination_status",
+        "topology_result",
+        "censored_generation",
+        "wall_ms",
+        "observed_at",
     }
 )
 _IDENTITY_FIELDS = frozenset(
@@ -541,7 +562,11 @@ def _validate_candidate(
     validation_root = staging_root / "candidate" / evidence_id
     target_path = checkpoint_path(validation_root, question.qid)
     target_text = _json_text(target_payload)
-    io.atomic_write_text(target_path, target_text)
+    projection = _schema2_executable_validation_projection(
+        target_payload,
+        evidence_id=evidence_id,
+    )
+    io.atomic_write_text(target_path, _json_text(projection))
     reopened = QIDCheckpoint(
         validation_root,
         cell,
@@ -553,6 +578,116 @@ def _validate_candidate(
     if reopened.identity != target_payload["identity"]:
         raise MigrationError("schema-2 candidate failed exact identity validation")
     return target_text
+
+
+def _schema2_executable_validation_projection(
+    payload: Mapping[str, Any],
+    *,
+    evidence_id: str,
+) -> dict[str, Any]:
+    """Project sealed schema-2 evidence into a disposable schema-3 validator input.
+
+    Schema 2 intentionally remains non-executable after the no-redraw journal upgrade.
+    The legacy migrator still has to validate all preserved requests, outcomes, censors,
+    terminals, and migration history.  Build a validation-only schema-3 copy with
+    deterministic synthetic attempt records; never write those inferred records into
+    the historical checkpoint or claim that they were observed at runtime.
+    """
+
+    if not isinstance(payload, Mapping) or set(payload) != _TARGET_ROOT_FIELDS:
+        raise MigrationError("schema-2 checkpoint has the wrong root fields")
+    if payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+        raise MigrationError("checkpoint is not exact sealed schema 2")
+    if (
+        not _is_sha256(payload.get("integrity_sha256"))
+        or payload["integrity_sha256"] != _integrity_sha256(payload)
+    ):
+        raise MigrationError("schema-2 checkpoint failed integrity validation")
+    if not _is_sha256(evidence_id):
+        raise MigrationError("schema-2 validation evidence ID is invalid")
+    _finite_nonnegative(payload.get("created_at"), "schema-2 checkpoint.created_at")
+    _finite_nonnegative(payload.get("updated_at"), "schema-2 checkpoint.updated_at")
+    coordinates = payload.get("coordinates")
+    if not isinstance(coordinates, Mapping):
+        raise MigrationError("schema-2 checkpoint coordinates must be an object")
+
+    projection = copy.deepcopy(dict(payload))
+    projection["schema_version"] = EXECUTABLE_CHECKPOINT_SCHEMA_VERSION
+    projection["pending_attempts"] = {}
+    for ordinal, (key, coordinate) in enumerate(
+        sorted(projection["coordinates"].items())
+    ):
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(coordinate, dict)
+            or set(coordinate) != _LEGACY_COORDINATE_FIELDS
+        ):
+            raise MigrationError(
+                f"schema-2 checkpoint coordinate {key!r} has the wrong fields"
+            )
+        request = coordinate.get("request")
+        outcome = coordinate.get("outcome")
+        role = request.get("generation_role") if isinstance(request, dict) else None
+        expected_outcome_fields = (
+            _LEGACY_TOPOLOGY_OUTCOME_FIELDS
+            if role == "topology"
+            else _LEGACY_SELF_CONSISTENCY_OUTCOME_FIELDS
+            if role == "self_consistency"
+            else None
+        )
+        if (
+            expected_outcome_fields is None
+            or not isinstance(outcome, dict)
+            or set(outcome) != expected_outcome_fields
+        ):
+            raise MigrationError(
+                f"schema-2 checkpoint coordinate {key!r} has an invalid outcome shape"
+            )
+        _finite_nonnegative(
+            coordinate.get("observed_at"),
+            f"schema-2 checkpoint coordinate {key!r}.observed_at",
+        )
+        _finite_nonnegative(
+            coordinate.get("producer_wall_ms"),
+            f"schema-2 checkpoint coordinate {key!r}.producer_wall_ms",
+        )
+        output = outcome.get("agent_output")
+        if isinstance(output, dict):
+            # This provenance field was added with schema 3.  A null value is used
+            # only inside the disposable validator projection; the sealed schema-2
+            # bytes retain the exact historical AgentOutput.
+            output.setdefault("calibration_endpoint_generation", None)
+        outcome["transport_censor"] = None
+        coordinate["attempt"] = {
+            "attempt_id": hashlib.sha256(
+                f"{evidence_id}:{ordinal}:{key}".encode("utf-8")
+            ).hexdigest()[:32],
+            "coordinate_key": key,
+            "request_sha256": _canonical_sha256(request),
+            "endpoint_generation": "sealed-schema2-validation-only",
+            "started_at": max(
+                float(coordinate["observed_at"])
+                - float(coordinate["producer_wall_ms"]) / 1000.0,
+                1e-9,
+            ),
+        }
+
+    terminal = projection.get("topology_terminal")
+    if terminal is not None:
+        if not isinstance(terminal, dict) or set(terminal) != _LEGACY_TERMINAL_FIELDS:
+            raise MigrationError("schema-2 checkpoint terminal has the wrong fields")
+        result = terminal.get("topology_result")
+        if isinstance(result, dict):
+            per_agent = result.get("per_agent")
+            if isinstance(per_agent, list):
+                for output in per_agent:
+                    if isinstance(output, dict):
+                        output.setdefault("calibration_endpoint_generation", None)
+        terminal["transport_censor"] = None
+
+    projection["integrity_sha256"] = _integrity_sha256(projection)
+    return projection
 
 
 def _new_incident(
@@ -825,7 +960,16 @@ def _validate_current_checkpoint(
         raise MigrationError(f"current checkpoint filename does not match QID: {path}")
     validation_root = staging_root / "current" / cell.cell_id / path.stem
     validation_path = checkpoint_path(validation_root, qid)
-    io.atomic_write_text(validation_path, source_text)
+    projection = _schema2_executable_validation_projection(
+        payload,
+        evidence_id=_canonical_sha256(
+            {
+                "checkpoint_path": str(path),
+                "checkpoint_sha256": _bytes_sha256(source_text.encode("utf-8")),
+            }
+        ),
+    )
+    io.atomic_write_text(validation_path, _json_text(projection))
     QIDCheckpoint(
         validation_root,
         cell,

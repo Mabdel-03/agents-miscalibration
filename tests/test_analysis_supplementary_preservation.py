@@ -117,12 +117,18 @@ def test_supplementary_preserves_partial_states_but_excludes_cell_aggregate(stat
         ingest.SUPPLEMENTARY_MODE, state
     ) == (True, False)
     assert ingest._manifested_ingest_decision(
-        ingest.PRIMARY_MODE, state
-    ) == (False, False)
+        ingest.INTERIM_SCHEMA5_MODE, state
+    ) == (True, False)
+    with pytest.raises(ingest.PrimarySchema5IncompleteError):
+        ingest._manifested_ingest_decision(ingest.PRIMARY_MODE, state)
 
 
 def test_only_complete_cells_are_aggregate_eligible_in_both_modes():
-    for mode in (ingest.PRIMARY_MODE, ingest.SUPPLEMENTARY_MODE):
+    for mode in (
+        ingest.PRIMARY_MODE,
+        ingest.INTERIM_SCHEMA5_MODE,
+        ingest.SUPPLEMENTARY_MODE,
+    ):
         assert ingest._manifested_ingest_decision(mode, "complete") == (True, True)
     with pytest.raises(ingest.SupplementaryIntegrityError, match="zero unresolved corrupt"):
         ingest._manifested_ingest_decision(ingest.SUPPLEMENTARY_MODE, "corrupt")

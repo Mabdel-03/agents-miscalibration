@@ -129,6 +129,21 @@ def main() -> None:
         help="exact frozen serving-fleet contract byte hash",
     )
     ap.add_argument(
+        "--release-fleet-contract-sha256",
+        default=os.environ.get("ASYS_RELEASE_FLEET_CONTRACT_SHA256"),
+        help="immutable release-bundle fleet hash retained as capacity lineage",
+    )
+    ap.add_argument(
+        "--capacity-generation",
+        type=int,
+        default=(
+            int(os.environ["ASYS_CAPACITY_GENERATION"])
+            if os.environ.get("ASYS_CAPACITY_GENERATION")
+            else None
+        ),
+        help="positive controlled fleet/capacity generation",
+    )
+    ap.add_argument(
         "--rollout-generation",
         type=int,
         default=(
@@ -154,6 +169,8 @@ def main() -> None:
         "tokenizer_revision": args.tokenizer_revision,
         "model_contract_sha256": args.model_contract_sha256,
         "fleet_contract_sha256": args.fleet_contract_sha256,
+        "release_fleet_contract_sha256": args.release_fleet_contract_sha256,
+        "capacity_generation": args.capacity_generation,
         "rollout_generation": args.rollout_generation,
     }
     run_root = io.results_root() / args.run_id
@@ -193,12 +210,10 @@ def main() -> None:
         release_worktree = args.release_worktree.resolve()
         expected_resources = {
             "model_contract": release_worktree / "configs" / "model_contracts.v1.json",
-            "fleet_contract": release_worktree / "configs" / "schema5_fleet.v1.json",
             "prompt_root": release_worktree / "configs" / "prompts",
         }
         observed_resources = {
             "model_contract": args.model_contract.resolve(),
-            "fleet_contract": args.fleet_contract.resolve(),
             "prompt_root": args.prompt_root.resolve(),
         }
         drifted_resources = [
@@ -211,6 +226,8 @@ def main() -> None:
                 "schema-5 runtime resources are outside the immutable release layout: "
                 + ", ".join(drifted_resources)
             )
+        if not args.fleet_contract.is_absolute():
+            ap.error("schema-5 fleet contract must be an absolute control-pinned path")
         if args.release_worktree.is_symlink() or not release_worktree.is_dir():
             ap.error("schema-5 release worktree is missing or symlinked")
         for name in ("model_contract", "fleet_contract"):
@@ -258,6 +275,16 @@ def main() -> None:
             ap.error(
                 "authoritative schema-5 worker is missing fleet_contract_sha256"
             )
+        if not args.release_fleet_contract_sha256:
+            ap.error(
+                "authoritative schema-5 worker is missing "
+                "release_fleet_contract_sha256"
+            )
+        if (
+            not isinstance(args.capacity_generation, int)
+            or args.capacity_generation < 1
+        ):
+            ap.error("capacity_generation must be a positive integer")
         for field, expected_value in expected.items():
             observed = observed_provenance[field]
             if observed is not None and observed != expected_value:
@@ -272,6 +299,8 @@ def main() -> None:
         runtime_provenance = Schema5RuntimeProvenance(
             **expected,
             fleet_contract_sha256=args.fleet_contract_sha256,
+            release_fleet_contract_sha256=args.release_fleet_contract_sha256,
+            capacity_generation=args.capacity_generation,
             rollout_generation=args.rollout_generation,
             release_worktree=str(release_worktree),
             model_contract_path=str(args.model_contract.resolve()),

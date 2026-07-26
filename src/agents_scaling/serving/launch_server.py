@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
@@ -253,12 +254,16 @@ def render_sbatch(
     harness_environment_hash: str | None = None,
     fleet_contract_path: str | None = None,
     fleet_contract_sha256: str | None = None,
+    release_fleet_contract_sha256: str | None = None,
+    capacity_generation: int | None = None,
     hf_home: str | None = None,
     runtime_attestation: str | None = None,
     runtime_attestation_sha256: str | None = None,
     runtime_integrity_lease: str | None = None,
     immutable_pins_sha256: str | None = None,
     rollout_generation: int | None = None,
+    standby: bool = False,
+    qos: str | None = None,
 ) -> str:
     profile = _resolve_profile(model_size, serving_profile)
     canonical_run_root = str(Path(run_root).expanduser().resolve())
@@ -305,6 +310,17 @@ def render_sbatch(
     fleet_contract_sha256 = fleet_contract_sha256 or os.environ.get(
         "ASYS_FLEET_CONTRACT_SHA256"
     )
+    release_fleet_contract_sha256 = (
+        release_fleet_contract_sha256
+        or os.environ.get("ASYS_RELEASE_FLEET_CONTRACT_SHA256")
+    )
+    if capacity_generation is None:
+        raw_capacity_generation = os.environ.get("ASYS_CAPACITY_GENERATION")
+        capacity_generation = (
+            None
+            if raw_capacity_generation is None
+            else int(raw_capacity_generation)
+        )
     hf_home = hf_home or os.environ.get("HF_HOME") or (
         "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface"
     )
@@ -333,6 +349,8 @@ def render_sbatch(
         "harness_environment_hash": harness_environment_hash,
         "fleet_contract_path": fleet_contract_path,
         "fleet_contract_sha256": fleet_contract_sha256,
+        "release_fleet_contract_sha256": release_fleet_contract_sha256,
+        "capacity_generation": capacity_generation,
         "runtime_attestation": runtime_attestation,
         "runtime_attestation_sha256": runtime_attestation_sha256,
         "runtime_integrity_lease": runtime_integrity_lease,
@@ -376,6 +394,17 @@ def render_sbatch(
             or rollout_generation < 1
         ):
             raise ValueError("schema-5 server rendering requires a positive rollout generation")
+        if (
+            not isinstance(capacity_generation, int)
+            or isinstance(capacity_generation, bool)
+            or capacity_generation < 1
+            or not isinstance(release_fleet_contract_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", release_fleet_contract_sha256) is None
+        ):
+            raise ValueError(
+                "schema-5 server rendering requires exact release-fleet and "
+                "capacity-generation lineage"
+            )
         try:
             runtime_integrity.verify_generation_lease(
                 lease_path=Path(str(runtime_integrity_lease)),
@@ -454,15 +483,23 @@ def render_sbatch(
             str(resolved_fleet_contract),
             model_contracts=contracts,
             expected_sha256=str(fleet_contract_sha256),
+            allow_capacity_layout=True,
         )
         fleet.verify_pool_root(canonical_run_root)
         replica_contract = fleet.for_replica(profile.name, replica)
-        observed_placement = (partition, gpu_type, time_limit)
+        effective_qos = replica_contract.qos if qos is None else qos
+        observed_placement = (partition, effective_qos, gpu_type, time_limit)
         expected_placement = (
             replica_contract.partition,
+            replica_contract.qos,
             replica_contract.gpu_type,
             replica_contract.time_limit,
         )
+        if replica_contract.qos is None:
+            raise FleetContractError(
+                f"production replica {replica_contract.replica_id} has no explicit "
+                "protected QOS placement"
+            )
         if observed_placement != expected_placement:
             raise FleetContractError(
                 f"placement drift for {profile.name} replica {replica}: expected "
@@ -473,6 +510,7 @@ def render_sbatch(
         replica_id: str | int = replica_contract.replica_id
         cpus = replica_contract.cpus_per_task
         mem = replica_contract.memory
+        qos = effective_qos
     else:
         job_name = registry.serving_job_name(canonical_run_root, profile.name)
         pool_id = registry.server_pool_id(canonical_run_root)
@@ -487,6 +525,10 @@ def render_sbatch(
         "REPLICA_ID": str(replica_id),
         "REPLICA_INDEX": str(replica),
         "FLEET_CONTRACT_SHA256": fleet_contract_sha256 or "",
+        "RELEASE_FLEET_CONTRACT_SHA256": (
+            release_fleet_contract_sha256 or ""
+        ),
+        "CAPACITY_GENERATION": str(capacity_generation or 0),
         "RELEASE_WORKTREE": (
             "" if resolved_release_worktree is None else str(resolved_release_worktree)
         ),
@@ -531,6 +573,7 @@ def render_sbatch(
         "TP_SIZE": str(profile.tp_size),
         "MAX_MODEL_LEN": str(profile.max_model_len),
         "PARTITION": partition,
+        "QOS_LINE": "" if qos is None else f"#SBATCH --qos={qos}\n",
         "GPU_TYPE": gpu_type,
         "CPUS": str(cpus),
         "MEM": mem,
@@ -538,6 +581,7 @@ def render_sbatch(
         "PORT": str(port),
         "RUN_ROOT": canonical_run_root,
         "LOG_DIR": log_dir,
+        "STANDBY_LINE": "  --standby \\\n" if standby else "",
     }
     for k, v in repl.items():
         text = text.replace("{" + k + "}", v)
@@ -656,9 +700,13 @@ def _register_role(
     model_contract_path: str | None = None,
     fleet_contract_path: str | None = None,
     fleet_contract_sha256: str | None = None,
+    release_fleet_contract_sha256: str | None = None,
+    capacity_generation: int | None = None,
+    rollout_generation: int | None = None,
     expected_server_pool_id: str | None = None,
     replica_id: str | None = None,
     replica_index: int | None = None,
+    standby: bool = False,
 ) -> None:
     """Run inside the serving job: wait for vLLM, then publish literal launch facts.
 
@@ -744,6 +792,20 @@ def _register_role(
         )
     ):
         raise ValueError("schema-5 serving registration requires a fleet-contract SHA-256")
+    if is_schema5_registration and (
+        not isinstance(release_fleet_contract_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", release_fleet_contract_sha256) is None
+        or not isinstance(capacity_generation, int)
+        or isinstance(capacity_generation, bool)
+        or capacity_generation < 1
+        or not isinstance(rollout_generation, int)
+        or isinstance(rollout_generation, bool)
+        or rollout_generation < 1
+    ):
+        raise ValueError(
+            "schema-5 serving registration requires exact release-fleet, "
+            "capacity, and rollout generations"
+        )
     if (
         expected_server_pool_id is not None
         and expected_server_pool_id != observed_pool_id
@@ -773,6 +835,7 @@ def _register_role(
             resolved_fleet_contract,
             model_contracts=contracts,
             expected_sha256=fleet_contract_sha256,
+            allow_capacity_layout=True,
         )
         fleet.verify_pool_root(run_root)
         replica_contract = fleet.for_replica(profile.name, resolved_replica_index)
@@ -810,6 +873,10 @@ def _register_role(
         expected_server_pool_id=observed_pool_id,
         replica_id=resolved_replica_id,
         replica_index=resolved_replica_index,
+        release_fleet_contract_sha256=release_fleet_contract_sha256,
+        capacity_generation=capacity_generation,
+        rollout_generation=rollout_generation,
+        standby=standby,
     )
     print(f"[register] {profile.name} ready at {entry.base_url}")
 
@@ -817,6 +884,11 @@ def _register_role(
 def main() -> None:
     ap = argparse.ArgumentParser(description="Launch or register a vLLM server.")
     ap.add_argument("--register", action="store_true", help="run inside the serving job")
+    ap.add_argument(
+        "--standby",
+        action="store_true",
+        help="register below the transactional standby namespace until promoted",
+    )
     ap.add_argument("--model-size", required=True)
     ap.add_argument(
         "--profile",
@@ -884,6 +956,28 @@ def main() -> None:
         "--fleet-contract-sha256",
         default=os.environ.get("ASYS_FLEET_CONTRACT_SHA256"),
     )
+    ap.add_argument(
+        "--release-fleet-contract-sha256",
+        default=os.environ.get("ASYS_RELEASE_FLEET_CONTRACT_SHA256"),
+    )
+    ap.add_argument(
+        "--capacity-generation",
+        type=int,
+        default=(
+            None
+            if os.environ.get("ASYS_CAPACITY_GENERATION") is None
+            else int(os.environ["ASYS_CAPACITY_GENERATION"])
+        ),
+    )
+    ap.add_argument(
+        "--rollout-generation",
+        type=int,
+        default=(
+            None
+            if os.environ.get("ASYS_ROLLOUT_GENERATION") is None
+            else int(os.environ["ASYS_ROLLOUT_GENERATION"])
+        ),
+    )
     ap.add_argument("--hf-home", default=os.environ.get("HF_HOME"))
     ap.add_argument(
         "--served-model-name",
@@ -937,9 +1031,13 @@ def main() -> None:
             model_contract_path=args.model_contract,
             fleet_contract_path=args.fleet_contract,
             fleet_contract_sha256=args.fleet_contract_sha256,
+            release_fleet_contract_sha256=args.release_fleet_contract_sha256,
+            capacity_generation=args.capacity_generation,
+            rollout_generation=args.rollout_generation,
             expected_server_pool_id=args.expected_server_pool_id,
             replica_id=args.replica_id,
             replica_index=args.replica_index,
+            standby=args.standby,
         )
     else:
         submit(

@@ -41,6 +41,7 @@ RELEASE_ID = "sweep-recovery-schema5-v1.1"
 RELEASE_TAG = "sweep-recovery-schema5-v1.1-r1"
 CHAIN_NAMESPACE = "schema5-v1.1-r1"
 CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
+R1_FAILURE_ENVELOPE_NAME = "FAILED_RECOVERY_CHAIN_SCHEMA5_V1_1_R1.json"
 SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_1_R1.submission.json"
 SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_1_R1_SUBMISSION.json"
 REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_1_r1"
@@ -298,6 +299,39 @@ def _read_json(path: Path, *, description: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ChainError(f"{description} is not one JSON object: {path}")
     return value
+
+
+def _reject_retired_r1_mutation(recovery_root: Path) -> None:
+    """Unconditionally reject mutation by the retired r1 protocol.
+
+    Historical verification and quarantine inspection remain available, but the
+    superseding release must never render, submit, or repair r1—even on a fresh or
+    incorrectly selected recovery root without the historical failure envelope.  If
+    the envelope exists, validate it before reporting permanent retirement so corrupt
+    forensic evidence is not silently ignored.
+    """
+
+    envelope_path = recovery_root / R1_FAILURE_ENVELOPE_NAME
+    if envelope_path.exists() or envelope_path.is_symlink():
+        envelope = _read_json(
+            envelope_path, description="retired r1 failure envelope"
+        )
+        if (
+            stat.S_IMODE(envelope_path.stat().st_mode) & 0o222
+            or envelope.get("protocol") != "schema5-recovery-chain-failure-v1"
+            or envelope.get("classification") != "requires_superseding_release"
+            or envelope.get("retry_same_generation") is not False
+            or envelope.get("superseded_by") != "sweep-recovery-schema5-v1.2"
+            or _SHA256.fullmatch(str(envelope.get("failure_id", ""))) is None
+        ):
+            raise ChainError(
+                "r1 mutation is blocked because its failure envelope is unsafe "
+                "or invalid"
+            )
+    raise ChainError(
+        "schema5-v1.1-r1 is retired and requires the superseding v1.2 release; "
+        "render, submit, and repair are permanently disabled on every recovery root"
+    )
 
 
 def _absolute(path: Path, *, description: str) -> Path:
@@ -1308,6 +1342,7 @@ def render_chain(
     slurm_user: str | None = None,
     apply: bool = False,
 ) -> dict[str, Any]:
+    _reject_retired_r1_mutation(paths.recovery_root)
     if partition != "mit_normal":
         raise ChainError(
             "durable recovery wrappers require the non-preempting mit_normal partition"
@@ -2177,6 +2212,7 @@ def submit_chain(
     now: float | None = None,
 ) -> dict[str, Any]:
     manifest_path = _lexical_absolute(manifest_path)
+    _reject_retired_r1_mutation(manifest_path.parent)
     verified = verify_chain(manifest_path)
     manifest = _read_json(manifest_path, description="recovery-chain manifest")
     jobs = manifest["jobs"]
@@ -2756,6 +2792,7 @@ def repair_chain(
     """Resubmit only the non-completed DAG suffix under a new durable generation."""
 
     manifest_path = _lexical_absolute(manifest_path)
+    _reject_retired_r1_mutation(manifest_path.parent)
     verify_chain(manifest_path)
     manifest = _read_json(manifest_path, description="recovery-chain manifest")
     runner = (

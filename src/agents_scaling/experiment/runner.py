@@ -10,6 +10,7 @@ prompt token count + quality scores + git commit) into the cell directory.
 
 from __future__ import annotations
 
+import hashlib
 import signal
 import threading
 import time
@@ -38,20 +39,27 @@ from agents_scaling.experiment.artifact_policy import (
     load_artifact_policy,
 )
 from agents_scaling.experiment.completion import (
+    aggregate_coordinate_provenance_identity_counts,
+    aggregate_coordinate_provenance_counts,
     CellLockUnavailable,
     CompletionState,
     ExperimentConfigurationError,
     canonicalize_results,
     cell_lock,
     clear_failure,
+    expected_result_coordinate_count,
     get_completion_status,
+    marginalize_coordinate_provenance_identity_counts,
     quarantine_failure,
     quarantine_metadata,
     reasoning_token_summary,
+    result_coordinate_endpoint_counts,
+    singleton_coordinate_provenance,
     summarize_endpoint_generation,
     record_failure,
     summarize_serving_provenance,
     validate_completion_payload,
+    visible_endpoint_counts_are_bounded,
 )
 from agents_scaling.experiment.result_schema import (
     SELF_CONSISTENCY_PROTOCOL_HASH,
@@ -59,6 +67,7 @@ from agents_scaling.experiment.result_schema import (
     TERMINATION_COMPLETED,
     TERMINATION_LENGTH_CENSORED,
     TERMINATION_PROTOCOL_CENSORED,
+    TERMINATION_TRANSPORT_CENSORED,
     CellMeta,
     QuestionResult,
 )
@@ -69,6 +78,7 @@ from agents_scaling.experiment.qid_checkpoint import (
     QIDCheckpoint,
     remove_qid_checkpoint,
 )
+from agents_scaling.experiment.transport_censor import TransportCensorError
 from agents_scaling.experiment.manifest import ManifestSnapshot, load_manifest
 from agents_scaling.models import get_model
 from agents_scaling.prompts.prompt_quality import score_prompt_quality
@@ -88,8 +98,10 @@ from agents_scaling.serving.profiles import (
 from agents_scaling.serving.registry import (
     ServerEntry,
     entry_matches_frozen_provenance,
+    endpoint_history_for_entry,
     endpoint_instance_id,
     list_live_servers,
+    read_promoted_entry,
     server_pool_id,
     server_pool_generation,
     wait_for_server,
@@ -118,6 +130,8 @@ class Schema5RuntimeProvenance:
     tokenizer_revision: str
     model_contract_sha256: str
     fleet_contract_sha256: str
+    release_fleet_contract_sha256: str
+    capacity_generation: int
     rollout_generation: int
     release_worktree: str
     model_contract_path: str
@@ -132,6 +146,10 @@ class _ResolvedProductionProvenance:
     fleet: FrozenFleetContract
     runtime: Schema5RuntimeProvenance
     tokenizer_id: str
+
+
+class EndpointPointerUnavailableError(RuntimeError):
+    """A promoted logical-replica pointer is temporarily unavailable."""
 
 
 @dataclass
@@ -197,6 +215,63 @@ def worker_drain_signals(
     finally:
         if installed:
             signal.signal(usr1, previous)
+
+
+def _validate_runtime_fleet_lineage(
+    *,
+    runtime: Schema5RuntimeProvenance,
+    release_worktree: Path,
+    model_contracts: FrozenModelContracts,
+) -> FrozenFleetContract:
+    """Bind worker-supplied generation flags to the immutable release fleet."""
+
+    if (
+        type(runtime.capacity_generation) is not int
+        or runtime.capacity_generation < 1
+    ):
+        raise ExperimentConfigurationError(
+            "capacity_generation must be a positive integer"
+        )
+    release_fleet_sha256 = runtime.release_fleet_contract_sha256
+    if (
+        not isinstance(release_fleet_sha256, str)
+        or len(release_fleet_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in release_fleet_sha256
+        )
+    ):
+        raise ExperimentConfigurationError(
+            "release_fleet_contract_sha256 must be a lowercase SHA-256"
+        )
+    release_fleet_path = release_worktree / "configs" / "schema5_fleet.v1.json"
+    if (
+        release_fleet_path.is_symlink()
+        or not release_fleet_path.is_file()
+        or hashlib.sha256(release_fleet_path.read_bytes()).hexdigest()
+        != release_fleet_sha256
+    ):
+        raise ExperimentConfigurationError(
+            "dispatcher release-fleet pin does not match the immutable release worktree"
+        )
+    try:
+        release_fleet = load_fleet_contract(
+            release_fleet_path,
+            model_contracts=model_contracts,
+            expected_sha256=release_fleet_sha256,
+        )
+    except FleetContractError as exc:
+        raise ExperimentConfigurationError(
+            f"immutable release fleet failed closed: {exc}"
+        ) from exc
+    if (
+        runtime.capacity_generation == 1
+        and runtime.fleet_contract_sha256 != release_fleet_sha256
+    ):
+        raise ExperimentConfigurationError(
+            "capacity generation 1 must use the immutable release fleet"
+        )
+    return release_fleet
 
 
 def _resolve_production_provenance(
@@ -269,9 +344,6 @@ def _resolve_production_provenance(
         "model_contract_path": release_worktree
         / "configs"
         / "model_contracts.v1.json",
-        "fleet_contract_path": release_worktree
-        / "configs"
-        / "schema5_fleet.v1.json",
         "prompt_root": release_worktree / "configs" / "prompts",
     }
     for field_name, expected_path in expected_resources.items():
@@ -280,10 +352,24 @@ def _resolve_production_provenance(
             raise ExperimentConfigurationError(
                 f"dispatcher {field_name} is outside the immutable release layout"
             )
+    raw_fleet_contract = Path(runtime.fleet_contract_path).expanduser()
+    if (
+        not raw_fleet_contract.is_absolute()
+        or raw_fleet_contract.is_symlink()
+        or not raw_fleet_contract.is_file()
+    ):
+        raise ExperimentConfigurationError(
+            "dispatcher fleet_contract_path is not an absolute regular file"
+        )
     try:
         contracts = load_model_contracts(
             runtime.model_contract_path,
             expected_sha256=policy.accepted_model_contract_sha256
+        )
+        release_fleet = _validate_runtime_fleet_lineage(
+            runtime=runtime,
+            release_worktree=release_worktree,
+            model_contracts=contracts,
         )
         identity = contracts.verify_identity(
             size=cell.model_size,
@@ -296,10 +382,33 @@ def _resolve_production_provenance(
             runtime.fleet_contract_path,
             model_contracts=contracts,
             expected_sha256=runtime.fleet_contract_sha256,
+            allow_capacity_layout=True,
         )
         if fleet.release_id != policy.release.release_id:
             raise FleetContractError(
                 "fleet release ID does not match the authoritative run policy"
+            )
+        if (
+            fleet.release_id != release_fleet.release_id
+            or fleet.fleet_id != release_fleet.fleet_id
+            or fleet.root_suffix != release_fleet.root_suffix
+        ):
+            raise FleetContractError(
+                "effective capacity fleet lineage differs from the immutable release fleet"
+            )
+        exposed_capacity = getattr(fleet, "capacity_generation", None)
+        exposed_release_fleet = getattr(
+            fleet, "release_fleet_contract_sha256", None
+        )
+        if (
+            exposed_capacity is not None
+            and exposed_capacity != runtime.capacity_generation
+        ) or (
+            exposed_release_fleet is not None
+            and exposed_release_fleet != runtime.release_fleet_contract_sha256
+        ):
+            raise FleetContractError(
+                "effective capacity fleet generation/lineage differs from runtime pins"
             )
     except (ModelContractError, FleetContractError) as exc:
         raise ExperimentConfigurationError(
@@ -339,20 +448,148 @@ def _entry_matches_production(
             and entry.replica_id == replica.replica_id
             and entry.port == _port_for(profile_name, replica.replica_index)
         )
-    except (FleetContractError, KeyError, TypeError, ValueError):
+        promoted = read_promoted_entry(
+            server_root,
+            profile_name,
+            replica.replica_id,
+        )
+        history = endpoint_history_for_entry(server_root, entry)
+        expected_generation = endpoint_instance_id(entry)
+        expected_history_tuple = (
+            runtime.release_fleet_contract_sha256,
+            runtime.fleet_contract_sha256,
+            runtime.capacity_generation,
+            runtime.rollout_generation,
+            expected_generation,
+        )
+    except (
+        AttributeError,
+        FleetContractError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+    ):
         return False
-    return exact_replica and entry_matches_frozen_provenance(
-        entry,
-        profile_name,
-        release_id=runtime.release_id,
-        environment_hash=runtime.serving_environment_hash,
-        model_revision=runtime.model_revision,
-        tokenizer_id=production.tokenizer_id,
-        tokenizer_revision=runtime.tokenizer_revision,
-        model_contract_sha256=runtime.model_contract_sha256,
-        fleet_contract_sha256=runtime.fleet_contract_sha256,
-        expected_server_pool_id=server_pool_id(server_root),
+    return bool(
+        exact_replica
+        and promoted == entry
+        and history is not None
+        and history.allowed_generation_tuple == expected_history_tuple
+        and history.endpoint_instance_id == expected_generation
+        and entry_matches_frozen_provenance(
+            entry,
+            profile_name,
+            release_id=runtime.release_id,
+            environment_hash=runtime.serving_environment_hash,
+            model_revision=runtime.model_revision,
+            tokenizer_id=production.tokenizer_id,
+            tokenizer_revision=runtime.tokenizer_revision,
+            model_contract_sha256=runtime.model_contract_sha256,
+            fleet_contract_sha256=runtime.fleet_contract_sha256,
+            expected_server_pool_id=server_pool_id(server_root),
+        )
     )
+
+
+@dataclass
+class _PromotedEndpointBinding:
+    """One worker client's fixed logical-replica discovery pointer.
+
+    Capacity/fleet supervision replaces this pointer atomically after the replacement
+    endpoint has passed readiness.  Every genuinely missing coordinate re-reads it;
+    checkpoint replay never invokes :meth:`refresh`.
+    """
+
+    server_root: Path
+    profile_name: str
+    replica_id: str
+    production: _ResolvedProductionProvenance
+    client: LogprobClient
+    current_entry: ServerEntry
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    def refresh(self) -> None:
+        with self._lock:
+            try:
+                promoted = read_promoted_entry(
+                    self.server_root,
+                    self.profile_name,
+                    self.replica_id,
+                )
+            except (OSError, ValueError) as exc:
+                raise ExperimentConfigurationError(
+                    "schema-5 promoted endpoint pointer is untrusted for "
+                    f"{self.replica_id!r}: {exc}"
+                ) from exc
+            if promoted is None:
+                raise EndpointPointerUnavailableError(
+                    "schema-5 promoted endpoint pointer is missing for "
+                    f"{self.replica_id!r}"
+                )
+            if not _entry_matches_production(
+                promoted,
+                self.profile_name,
+                self.production,
+                server_root=self.server_root,
+            ):
+                raise ExperimentConfigurationError(
+                    "schema-5 promoted endpoint pointer does not match frozen "
+                    f"provenance for {self.replica_id!r}"
+                )
+            generation = endpoint_instance_id(promoted)
+            try:
+                self.client.refresh_endpoint(
+                    base_url=promoted.base_url,
+                    endpoint_generation=generation,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ExperimentConfigurationError(
+                    "schema-5 promoted endpoint could not be installed atomically "
+                    f"for {self.replica_id!r}: {exc}"
+                ) from exc
+            self.current_entry = promoted
+
+
+def _promoted_endpoint_bindings(
+    agents: list[Agent],
+    *,
+    entry: ServerEntry | None,
+    server_root: Path,
+    profile_name: str,
+    production: _ResolvedProductionProvenance | None,
+) -> list[_PromotedEndpointBinding | None]:
+    """Bind every production agent/client to one fixed promoted pointer."""
+
+    if not agents:
+        return []
+    if production is None:
+        return [None for _agent in agents]
+    if (
+        entry is None
+        or not isinstance(entry.replica_id, str)
+        or not entry.replica_id
+        or not _entry_matches_production(
+            entry,
+            profile_name,
+            production,
+            server_root=server_root,
+        )
+    ):
+        raise ExperimentConfigurationError(
+            "schema-5 coordinate routing requires one exact promoted replica identity"
+        )
+    return [
+        _PromotedEndpointBinding(
+            server_root=server_root,
+            profile_name=profile_name,
+            replica_id=entry.replica_id,
+            production=production,
+            client=agent.client,
+            current_entry=entry,
+        )
+        for agent in agents
+    ]
 
 
 def _build_agents(
@@ -594,11 +831,181 @@ def _length_censored_record(
             model_revision=runtime.model_revision,
             tokenizer_revision=runtime.tokenizer_revision,
             model_contract_sha256=runtime.model_contract_sha256,
+            fleet_contract_sha256=runtime.fleet_contract_sha256,
+            release_fleet_contract_sha256=runtime.release_fleet_contract_sha256,
+            capacity_generation=runtime.capacity_generation,
             effective_context=int(profile_meta["effective_context_limit"]),
             rollout_generation=runtime.rollout_generation,
         )
         record["endpoint_generation"] = summarize_endpoint_generation([record])
     return record
+
+
+def _transport_censored_record(
+    *,
+    cell: ExperimentCell,
+    question: Any,
+    error: TransportCensorError,
+    wall_ms: float,
+    profile_meta: dict[str, Any],
+    benchmark_contract_sha256: str,
+    observed_topology_coordinates: list[dict[str, Any]],
+    production: _ResolvedProductionProvenance | None = None,
+) -> dict[str, Any]:
+    """Materialize one no-redraw infrastructure censor as a trusted schema-5 row."""
+
+    coordinates = list(observed_topology_coordinates)
+    prompt_tokens = 0
+    completion_tokens = 0
+    reasoning_tokens = 0
+    rounds: set[int] = set()
+    for entry in coordinates:
+        request = entry.get("request") if isinstance(entry, dict) else None
+        outcome = entry.get("outcome") if isinstance(entry, dict) else None
+        if isinstance(request, dict) and isinstance(request.get("round"), int):
+            rounds.add(int(request["round"]))
+        if not isinstance(outcome, dict):
+            continue
+        output = outcome.get("agent_output")
+        generation_censor = outcome.get("censored_generation")
+        if isinstance(output, dict):
+            prompt_tokens += int(output.get("prompt_tokens", 0))
+            completion_tokens += int(output.get("completion_tokens", 0))
+            reasoning_tokens += int(output.get("reasoning_tokens", 0))
+        elif isinstance(generation_censor, dict):
+            prompt_tokens += int(generation_censor.get("prompt_tokens", 0))
+            completion_tokens += int(generation_censor.get("completion_tokens", 0))
+            reasoning_tokens += _censored_reasoning_tokens(
+                generation_censor,
+                thinking_enabled=cell.reasoning_level.enable_thinking,
+            )
+
+    record = QuestionResult(
+        cell_id=cell.cell_id,
+        qid=question.qid,
+        benchmark=question.benchmark,
+        question_sha256=canonical_question_sha256(question),
+        benchmark_contract_sha256=benchmark_contract_sha256,
+        model_size=cell.model_size,
+        topology=cell.topology.value,
+        context_share_level=cell.context_share_level.value,
+        prompt_complexity_level=cell.prompt_complexity_level,
+        reasoning_level=cell.reasoning_level.value,
+        final_answer=None,
+        answer_key=question.answer_key,
+        correct=False,
+        per_agent=[],
+        system_conf={},
+        self_consistency={},
+        efficiency_raw={
+            "n_turns": len(coordinates),
+            "n_messages": _observed_topology_message_count(cell, coordinates),
+            "n_rounds": len(rounds),
+            "n_agents": (
+                1 if cell.topology.value == "single_agent" else cell.n_agents
+            ),
+            "total_prompt_tokens": prompt_tokens,
+            "total_completion_tokens": completion_tokens,
+            "total_reasoning_tokens": reasoning_tokens,
+            "wall_ms": wall_ms,
+        },
+        timestamp=time.time(),
+        serving_profile=str(profile_meta["serving_profile"]),
+        effective_context_limit=int(profile_meta["effective_context_limit"]),
+        tensor_parallel_size=int(profile_meta["tensor_parallel_size"]),
+        termination_status=TERMINATION_TRANSPORT_CENSORED,
+        censored_generation=None,
+        transport_censor=error.to_transport_censor(),
+        observed_topology_coordinates=coordinates,
+    ).to_dict()
+    if production is not None:
+        runtime = production.runtime
+        record.update(
+            release_id=runtime.release_id,
+            environment_hash=runtime.environment_hash,
+            model_revision=runtime.model_revision,
+            tokenizer_revision=runtime.tokenizer_revision,
+            model_contract_sha256=runtime.model_contract_sha256,
+            fleet_contract_sha256=runtime.fleet_contract_sha256,
+            release_fleet_contract_sha256=runtime.release_fleet_contract_sha256,
+            capacity_generation=runtime.capacity_generation,
+            effective_context=int(profile_meta["effective_context_limit"]),
+            rollout_generation=runtime.rollout_generation,
+        )
+        record["endpoint_generation"] = summarize_endpoint_generation([record])
+    return record
+
+
+def _apply_coordinate_runtime_provenance(
+    record: dict[str, Any],
+    *,
+    checkpoint: QIDCheckpoint,
+    production: _ResolvedProductionProvenance,
+) -> None:
+    """Bind a QID row to every retained stochastic coordinate generation."""
+
+    runtime = production.runtime
+    identity_counts = (
+        checkpoint.coordinate_runtime_provenance_identity_counts(
+            require_complete=True
+        )
+    )
+    counts = marginalize_coordinate_provenance_identity_counts(
+        identity_counts
+    )
+    checkpoint_marginals = checkpoint.coordinate_runtime_provenance_counts(
+        require_complete=True
+    )
+    if checkpoint_marginals != counts:
+        raise ExperimentConfigurationError(
+            "checkpoint coordinate provenance marginals do not derive from "
+            "joint identities"
+        )
+    if (
+        sum(counts["endpoint_generation"].values())
+        != expected_result_coordinate_count(record)
+    ):
+        raise ExperimentConfigurationError(
+            "retained coordinate count differs from the QID execution structure"
+        )
+    release_counts = counts["release_fleet_contract_sha256"]
+    if set(release_counts) != {runtime.release_fleet_contract_sha256}:
+        raise ExperimentConfigurationError(
+            "retained coordinate release-fleet lineage differs from the "
+            "authoritative runtime"
+        )
+    endpoint_values = counts["endpoint_generation"]
+    visible_endpoints = result_coordinate_endpoint_counts(record)
+    expected_endpoint = (
+        next(iter(endpoint_values)) if len(endpoint_values) == 1 else "mixed"
+    )
+    if not visible_endpoint_counts_are_bounded(
+        endpoint_values, visible_endpoints
+    ):
+        raise ExperimentConfigurationError(
+            "visible QID endpoint outcomes exceed retained coordinate provenance"
+        )
+    fleet = singleton_coordinate_provenance(
+        counts, "fleet_contract_sha256"
+    )
+    capacity = singleton_coordinate_provenance(
+        counts, "capacity_generation"
+    )
+    rollout = singleton_coordinate_provenance(counts, "rollout_generation")
+    record.update(
+        release_id=runtime.release_id,
+        environment_hash=runtime.environment_hash,
+        model_revision=runtime.model_revision,
+        tokenizer_revision=runtime.tokenizer_revision,
+        model_contract_sha256=runtime.model_contract_sha256,
+        fleet_contract_sha256=fleet,
+        release_fleet_contract_sha256=runtime.release_fleet_contract_sha256,
+        capacity_generation=(None if capacity is None else int(capacity)),
+        endpoint_generation=expected_endpoint,
+        coordinate_provenance_counts=counts,
+        coordinate_provenance_identity_counts=identity_counts,
+        rollout_generation=(None if rollout is None else int(rollout)),
+    )
 
 
 def _censored_reasoning_tokens(
@@ -692,7 +1099,12 @@ def _self_consistency_payload(
         for outcome in outcomes
         if outcome.termination_status == TERMINATION_PROTOCOL_CENSORED
     ]
-    censored = length_censored + protocol_censored
+    transport_censored = [
+        outcome
+        for outcome in outcomes
+        if outcome.termination_status == TERMINATION_TRANSPORT_CENSORED
+    ]
+    censored = length_censored + protocol_censored + transport_censored
     has_censor = bool(censored)
     if has_censor:
         majority = None
@@ -728,6 +1140,8 @@ def _self_consistency_payload(
                 outcome.censored_generation,
                 thinking_enabled=cell.reasoning_level.enable_thinking,
             )
+        # A transport censor has no trusted response envelope, so its request consumes
+        # wall time but contributes no fabricated prompt/completion token count.
 
     return {
         "protocol_version": SELF_CONSISTENCY_PROTOCOL_VERSION,
@@ -736,6 +1150,7 @@ def _self_consistency_payload(
         "completed_sample_count": len(completed),
         "length_censored_sample_count": len(length_censored),
         "protocol_censored_sample_count": len(protocol_censored),
+        "transport_censored_sample_count": len(transport_censored),
         "samples": [outcome.to_dict() for outcome in outcomes],
         "majority": majority,
         "self_consistency_conf": consistency,
@@ -746,12 +1161,42 @@ def _self_consistency_payload(
             "completed_samples": len(completed),
             "length_censored_samples": len(length_censored),
             "protocol_censored_samples": len(protocol_censored),
+            "transport_censored_samples": len(transport_censored),
             "total_prompt_tokens": prompt_tokens,
             "total_completion_tokens": completion_tokens,
             "total_reasoning_tokens": reasoning_tokens,
             "wall_ms": wall_ms,
         },
     }
+
+
+def _transport_censored_coordinate_count(
+    records: list[dict[str, Any]],
+) -> int:
+    """Count every retained ambiguous stochastic coordinate exactly once."""
+
+    total = 0
+    for record in records:
+        coordinates = record.get("observed_topology_coordinates")
+        if isinstance(coordinates, list):
+            total += sum(
+                isinstance(entry, dict)
+                and isinstance(entry.get("outcome"), dict)
+                and entry["outcome"].get("termination_status")
+                == TERMINATION_TRANSPORT_CENSORED
+                for entry in coordinates
+            )
+        self_consistency = record.get("self_consistency")
+        if isinstance(self_consistency, dict):
+            samples = self_consistency.get("samples")
+            if isinstance(samples, list):
+                total += sum(
+                    isinstance(sample, dict)
+                    and sample.get("termination_status")
+                    == TERMINATION_TRANSPORT_CENSORED
+                    for sample in samples
+                )
+    return total
 
 
 def _publish_qid_record(
@@ -1186,6 +1631,11 @@ def _run_cell_locked(
         meta.model_revision = runtime.model_revision
         meta.tokenizer_revision = runtime.tokenizer_revision
         meta.model_contract_sha256 = runtime.model_contract_sha256
+        meta.fleet_contract_sha256 = runtime.fleet_contract_sha256
+        meta.release_fleet_contract_sha256 = (
+            runtime.release_fleet_contract_sha256
+        )
+        meta.capacity_generation = runtime.capacity_generation
         meta.artifact_policy_sha256 = runtime.artifact_policy_sha256
         meta.effective_context = int(profile_meta["effective_context_limit"])
         meta.rollout_generation = runtime.rollout_generation
@@ -1205,6 +1655,13 @@ def _run_cell_locked(
         if missing_questions
         else []
     )
+    endpoint_bindings = _promoted_endpoint_bindings(
+        agents,
+        entry=entry,
+        server_root=server_root,
+        profile_name=profile.registry_key,
+        production=production,
+    )
     conn_errors = _connection_errors()
     max_endpoint_fails_per_q = 4
 
@@ -1222,10 +1679,27 @@ def _run_cell_locked(
             code_version=code_version,
             serving_profile=profile,
             benchmark_contract_sha256=benchmark_contract_sha256,
+            runtime_provenance=(
+                None
+                if production is None
+                else {
+                    "fleet_contract_sha256": (
+                        production.runtime.fleet_contract_sha256
+                    ),
+                    "release_fleet_contract_sha256": (
+                        production.runtime.release_fleet_contract_sha256
+                    ),
+                    "capacity_generation": (
+                        production.runtime.capacity_generation
+                    ),
+                    "rollout_generation": production.runtime.rollout_generation,
+                }
+            ),
         )
         tried: set[tuple[str, int]] = set()
         tr = None
         censored_error: GenerationTruncationError | None = None
+        transport_error: TransportCensorError | None = None
         sc: dict = {}
         wall_ms = 0.0
         fails = 0
@@ -1234,6 +1708,7 @@ def _run_cell_locked(
             wall_ms = terminal.wall_ms
             tr = terminal.topology_result
             censored_error = terminal.censored_error
+            transport_error = terminal.transport_error
         else:
             # A prior process may already have committed part of this topology.  Start
             # from its durable, concurrency-aware critical-path lower bound instead of
@@ -1250,6 +1725,11 @@ def _run_cell_locked(
                         checkpoint,
                         agent_id=f"agent{index}",
                         admit_coordinate=drain.admit_coordinate,
+                        prepare_coordinate=(
+                            None
+                            if endpoint_bindings[index] is None
+                            else endpoint_bindings[index].refresh
+                        ),
                     )
                     for index, agent in enumerate(agents)
                 ]
@@ -1282,6 +1762,17 @@ def _run_cell_locked(
                     censored_error = exc
                     checkpoint.record_topology_censor(exc, wall_ms=wall_ms)
                     break
+                except TransportCensorError as exc:
+                    # The coordinate intent/outcome is already fsynced.  Record only
+                    # the deterministic map-order topology terminal; never select a
+                    # replacement endpoint for this stochastic coordinate.
+                    wall_ms += (time.monotonic() - attempt_started) * 1000.0
+                    transport_error = exc
+                    checkpoint.record_topology_transport_censor(
+                        exc,
+                        wall_ms=wall_ms,
+                    )
+                    break
                 except conn_errors as exc:
                     # Preserve time already spent in failed endpoint attempts.  A
                     # replayed checkpoint coordinate is fast, but the earlier retained
@@ -1290,10 +1781,23 @@ def _run_cell_locked(
                     wall_ms += (time.monotonic() - attempt_started) * 1000.0
                     fails += 1
                     assert entry is not None
-                    tried.add((entry.host, entry.port))
+                    failed_entries = [
+                        binding.current_entry
+                        for binding in endpoint_bindings
+                        if binding is not None
+                    ] or [entry]
+                    tried.update(
+                        (failed.host, failed.port) for failed in failed_entries
+                    )
+                    failed_label = ",".join(
+                        sorted(
+                            f"{failed.host}:{failed.port}"
+                            for failed in failed_entries
+                        )
+                    )
                     print(
                         f"[run_cell] {cell.cell_id} q={q.qid}: endpoint "
-                        f"{entry.host}:{entry.port} failed ({type(exc).__name__}); "
+                        f"{failed_label} failed ({type(exc).__name__}); "
                         "trying the next validated endpoint"
                     )
                     nxt = _pick_endpoint(
@@ -1316,20 +1820,45 @@ def _run_cell_locked(
                         endpoint_generation=endpoint_instance_id(entry),
                         system_prompt=system_prompt,
                     )
+                    endpoint_bindings = _promoted_endpoint_bindings(
+                        agents,
+                        entry=entry,
+                        server_root=server_root,
+                        profile_name=profile.registry_key,
+                        production=production,
+                    )
 
-        if censored_error is not None:
-            record = _length_censored_record(
-                cell=cell,
-                question=q,
-                error=censored_error,
-                wall_ms=wall_ms,
-                profile_meta=dict(profile_meta),
-                benchmark_contract_sha256=benchmark_contract_sha256,
-                observed_topology_coordinates=(
-                    checkpoint.observed_topology_coordinates()
-                ),
-                production=production,
+        if censored_error is not None or transport_error is not None:
+            observed_coordinates = checkpoint.observed_topology_coordinates()
+            record = (
+                _length_censored_record(
+                    cell=cell,
+                    question=q,
+                    error=censored_error,
+                    wall_ms=wall_ms,
+                    profile_meta=dict(profile_meta),
+                    benchmark_contract_sha256=benchmark_contract_sha256,
+                    observed_topology_coordinates=observed_coordinates,
+                    production=production,
+                )
+                if censored_error is not None
+                else _transport_censored_record(
+                    cell=cell,
+                    question=q,
+                    error=transport_error,
+                    wall_ms=wall_ms,
+                    profile_meta=dict(profile_meta),
+                    benchmark_contract_sha256=benchmark_contract_sha256,
+                    observed_topology_coordinates=observed_coordinates,
+                    production=production,
+                )
             )
+            if production is not None:
+                _apply_coordinate_runtime_provenance(
+                    record,
+                    checkpoint=checkpoint,
+                    production=production,
+                )
             _publish_qid_record(
                 cell=cell,
                 cdir=cdir,
@@ -1365,6 +1894,11 @@ def _run_cell_locked(
                                 checkpoint,
                                 agent_id="agent0",
                                 admit_coordinate=drain.admit_coordinate,
+                                prepare_coordinate=(
+                                    None
+                                    if endpoint_bindings[0] is None
+                                    else endpoint_bindings[0].refresh
+                                ),
                             ).sample_one(
                                 q,
                                 sample_index=sample_index,
@@ -1375,11 +1909,16 @@ def _run_cell_locked(
                     except conn_errors as exc:
                         sample_fails += 1
                         assert entry is not None
-                        sample_tried.add((entry.host, entry.port))
+                        failed_entry = (
+                            endpoint_bindings[0].current_entry
+                            if endpoint_bindings[0] is not None
+                            else entry
+                        )
+                        sample_tried.add((failed_entry.host, failed_entry.port))
                         print(
                             f"[run_cell] {cell.cell_id} q={q.qid} "
                             f"aux_sample={sample_index}: endpoint "
-                            f"{entry.host}:{entry.port} failed "
+                            f"{failed_entry.host}:{failed_entry.port} failed "
                             f"({type(exc).__name__}); retrying only this auxiliary "
                             "coordinate"
                         )
@@ -1402,6 +1941,13 @@ def _run_cell_locked(
                             context_tokenizer=context_tokenizer,
                             endpoint_generation=endpoint_instance_id(entry),
                             system_prompt=system_prompt,
+                        )
+                        endpoint_bindings = _promoted_endpoint_bindings(
+                            agents,
+                            entry=entry,
+                            server_root=server_root,
+                            profile_name=profile.registry_key,
+                            production=production,
                         )
             sc = _self_consistency_payload(
                 cell=cell,
@@ -1445,6 +1991,7 @@ def _run_cell_locked(
             tensor_parallel_size=int(profile_meta["tensor_parallel_size"]),
             termination_status=TERMINATION_COMPLETED,
             censored_generation=None,
+            transport_censor=None,
             observed_topology_coordinates=[],
         ).to_dict()
         if production is not None:
@@ -1455,10 +2002,20 @@ def _run_cell_locked(
                 model_revision=runtime.model_revision,
                 tokenizer_revision=runtime.tokenizer_revision,
                 model_contract_sha256=runtime.model_contract_sha256,
+                fleet_contract_sha256=runtime.fleet_contract_sha256,
+                release_fleet_contract_sha256=(
+                    runtime.release_fleet_contract_sha256
+                ),
+                capacity_generation=runtime.capacity_generation,
                 effective_context=int(profile_meta["effective_context_limit"]),
                 rollout_generation=runtime.rollout_generation,
             )
             record["endpoint_generation"] = summarize_endpoint_generation([record])
+            _apply_coordinate_runtime_provenance(
+                record,
+                checkpoint=checkpoint,
+                production=production,
+            )
         _publish_qid_record(
             cell=cell,
             cdir=cdir,
@@ -1505,6 +2062,17 @@ def _run_cell_locked(
         record.get("termination_status") == TERMINATION_PROTOCOL_CENSORED
         for record in records
     )
+    meta.transport_censored_question_count = sum(
+        record.get("termination_status") == TERMINATION_TRANSPORT_CENSORED
+        for record in records
+    )
+    meta.transport_affected_question_count = sum(
+        _transport_censored_coordinate_count([record]) > 0
+        for record in records
+    )
+    meta.transport_censored_coordinate_count = (
+        _transport_censored_coordinate_count(records)
+    )
     schema_counts: dict[str, int] = {}
     for record in records:
         schema = str(record.get("schema_version", "legacy"))
@@ -1529,7 +2097,35 @@ def _run_cell_locked(
         "serving_profile_inferred_counts"
     ]
     if production is not None:
-        meta.endpoint_generation = summarize_endpoint_generation(records)
+        coordinate_identities = (
+            aggregate_coordinate_provenance_identity_counts(records)
+        )
+        coordinate_counts = marginalize_coordinate_provenance_identity_counts(
+            coordinate_identities
+        )
+        if aggregate_coordinate_provenance_counts(records) != coordinate_counts:
+            raise ExperimentConfigurationError(
+                "cell coordinate provenance marginals do not derive from "
+                "joint identities"
+            )
+        meta.coordinate_provenance_identity_counts = coordinate_identities
+        meta.coordinate_provenance_counts = coordinate_counts
+        meta.fleet_contract_sha256 = singleton_coordinate_provenance(
+            coordinate_counts, "fleet_contract_sha256"
+        )
+        capacity = singleton_coordinate_provenance(
+            coordinate_counts, "capacity_generation"
+        )
+        meta.capacity_generation = None if capacity is None else int(capacity)
+        rollout = singleton_coordinate_provenance(
+            coordinate_counts, "rollout_generation"
+        )
+        meta.rollout_generation = None if rollout is None else int(rollout)
+        meta.endpoint_generation = (
+            next(iter(coordinate_counts["endpoint_generation"]))
+            if len(coordinate_counts["endpoint_generation"]) == 1
+            else "mixed"
+        )
         meta.effective_context = meta.effective_context_limit
     meta.finished_at = time.time()
     meta_payload = meta.to_dict()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +31,7 @@ from agents_scaling.benchmarks.contracts import (
 from agents_scaling.benchmarks.schema import AnswerType, Question
 from agents_scaling.config import ExperimentCell
 from agents_scaling.experiment import completion, io, runner
+from agents_scaling.experiment.manifest import ManifestSnapshot
 from agents_scaling.experiment.result_schema import (
     ARTIFACT_SCHEMA_VERSION,
     SELF_CONSISTENCY_PROTOCOL_HASH,
@@ -36,6 +39,12 @@ from agents_scaling.experiment.result_schema import (
     TERMINATION_COMPLETED,
     TERMINATION_LENGTH_CENSORED,
     TERMINATION_PROTOCOL_CENSORED,
+    TERMINATION_TRANSPORT_CENSORED,
+)
+from agents_scaling.experiment.transport_censor import (
+    TRANSPORT_CENSOR_PROTOCOL_HASH,
+    TRANSPORT_CENSOR_PROTOCOL_VERSION,
+    canonical_sha256,
 )
 from agents_scaling.experiment.completion import (
     CellLockUnavailable,
@@ -53,6 +62,7 @@ from agents_scaling.experiment.completion import (
     validate_completion_payload,
 )
 from agents_scaling.models import get_model
+from agents_scaling.serving.model_contracts import load_model_contracts
 from agents_scaling.serving.registry import ServerEntry
 from agents_scaling.serving.context import ContextCapacityError, ContextPreflight
 from agents_scaling.serving.client import (
@@ -71,6 +81,7 @@ from agents_scaling.serving.client import (
     QWEN_THINK_END_TOKEN_ID,
     token_ids_sha256,
 )
+from scripts import clone_schema5_manifests as clone
 
 
 # Most fixtures below intentionally use synthetic q1/q2 identifiers and exercise the
@@ -260,6 +271,7 @@ def _record(
                 generation_phase_requested_max_tokens=[requested_max],
                 generation_phase_prompt_token_id_hashes=["0" * 64],
                 generation_phase_completion_token_id_hashes=["1" * 64],
+                calibration_endpoint_generation="test-calibration-endpoint-generation",
                 endpoint_generation="test-endpoint-generation",
                 reasoning_start_token_index=(
                     2 if cell.reasoning_level.enable_thinking else None
@@ -345,8 +357,28 @@ def _record(
             serving_profile=cell.model_size,
             effective_context_limit=get_model(cell.model_size).max_model_len,
             tensor_parallel_size=get_model(cell.model_size).tp_size,
+            release_id=None,
+            environment_hash=None,
+            model_revision=None,
+            tokenizer_revision=None,
+            model_contract_sha256=None,
+            fleet_contract_sha256=None,
+            release_fleet_contract_sha256=None,
+            capacity_generation=None,
+            endpoint_generation=None,
+            coordinate_provenance_counts={
+                "capacity_generation": {},
+                "endpoint_generation": {},
+                "fleet_contract_sha256": {},
+                "release_fleet_contract_sha256": {},
+                "rollout_generation": {},
+            },
+            coordinate_provenance_identity_counts=[],
+            effective_context=None,
+            rollout_generation=None,
             termination_status=TERMINATION_COMPLETED,
             censored_generation=None,
+            transport_censor=None,
             observed_topology_coordinates=[],
         )
     return record
@@ -389,9 +421,33 @@ def _current_meta(cell: ExperimentCell, mean: float | None = None):
         "tensor_parallel_size": profile.tp_size,
         "serving_profile_counts": {cell.model_size: 2},
         "serving_profile_inferred_counts": {},
+        "release_id": None,
+        "environment_hash": None,
+        "serving_environment_hash": None,
+        "model_revision": None,
+        "tokenizer_revision": None,
+        "model_contract_sha256": None,
+        "fleet_contract_sha256": None,
+        "release_fleet_contract_sha256": None,
+        "capacity_generation": None,
+        "artifact_policy_sha256": None,
+        "endpoint_generation": None,
+        "coordinate_provenance_counts": {
+            "capacity_generation": {},
+            "endpoint_generation": {},
+            "fleet_contract_sha256": {},
+            "release_fleet_contract_sha256": {},
+            "rollout_generation": {},
+        },
+        "coordinate_provenance_identity_counts": [],
+        "effective_context": None,
+        "rollout_generation": None,
         "completed_question_count": 2,
         "length_censored_question_count": 0,
         "protocol_censored_question_count": 0,
+        "transport_censored_question_count": 0,
+        "transport_affected_question_count": 0,
+        "transport_censored_coordinate_count": 0,
         "artifact_schema_counts": {str(ARTIFACT_SCHEMA_VERSION): 2},
         "mean_reasoning_tokens": exact_mean,
         "mean_reasoning_tokens_exact": exact_mean,
@@ -406,6 +462,8 @@ def _current_meta(cell: ExperimentCell, mean: float | None = None):
         "thinking_budget_protocol_hash": THINKING_BUDGET_PROTOCOL_HASH,
         "generation_censor_protocol_version": GENERATION_CENSOR_PROTOCOL_VERSION,
         "generation_censor_protocol_hash": GENERATION_CENSOR_PROTOCOL_HASH,
+        "transport_censor_protocol_version": TRANSPORT_CENSOR_PROTOCOL_VERSION,
+        "transport_censor_protocol_hash": TRANSPORT_CENSOR_PROTOCOL_HASH,
         "git_commit": "v2-code-version",
     }
 
@@ -442,6 +500,23 @@ def _full_envelope_censor(
         round_idx=0,
         generation_role="topology",
     )
+    request = {
+        "generation_role": "topology",
+        "qid": question.qid,
+        "agent_id": "agent0",
+        "round": 0,
+        "seed": cell.seed,
+        "sample_index": None,
+        "peer_context": {
+            "sha256": (
+                "e3b0c44298fc1c149afbf4c8996fb924"
+                "27ae41e4649b934ca495991b7852b855"
+            ),
+            "utf8_bytes": 0,
+        },
+        "max_tokens": 4096,
+        "elicit_cot": True,
+    }
     record = runner._length_censored_record(
         cell=cell,
         question=question,
@@ -458,27 +533,19 @@ def _full_envelope_censor(
         observed_topology_coordinates=[
             {
                 "coordinate_key": "topology:agent0:0",
-                "request": {
-                    "generation_role": "topology",
-                    "qid": question.qid,
-                    "agent_id": "agent0",
-                    "round": 0,
-                    "seed": cell.seed,
-                    "sample_index": None,
-                    "peer_context": {
-                        "sha256": (
-                            "e3b0c44298fc1c149afbf4c8996fb924"
-                            "27ae41e4649b934ca495991b7852b855"
-                        ),
-                        "utf8_bytes": 0,
-                    },
-                    "max_tokens": 4096,
-                    "elicit_cot": True,
+                "request": request,
+                "attempt": {
+                    "attempt_id": "0" * 32,
+                    "coordinate_key": "topology:agent0:0",
+                    "request_sha256": canonical_sha256(request),
+                    "endpoint_generation": "test-endpoint-generation",
+                    "started_at": 99.0,
                 },
                 "outcome": {
                     "termination_status": TERMINATION_LENGTH_CENSORED,
                     "agent_output": None,
                     "censored_generation": error.to_censored_generation(),
+                    "transport_censor": None,
                 },
                 "observed_at": 100.0,
                 "producer_wall_ms": 5.0,
@@ -521,6 +588,23 @@ def _protocol_censor(
         generation_role="topology",
     )
     coordinate_censor = error.to_censored_generation()
+    request = {
+        "generation_role": "topology",
+        "qid": question.qid,
+        "agent_id": "agent0",
+        "round": 0,
+        "seed": cell.seed,
+        "sample_index": None,
+        "peer_context": {
+            "sha256": (
+                "e3b0c44298fc1c149afbf4c8996fb924"
+                "27ae41e4649b934ca495991b7852b855"
+            ),
+            "utf8_bytes": 0,
+        },
+        "max_tokens": 4096,
+        "elicit_cot": True,
+    }
     record = runner._length_censored_record(
         cell=cell,
         question=question,
@@ -537,27 +621,19 @@ def _protocol_censor(
         observed_topology_coordinates=[
             {
                 "coordinate_key": "topology:agent0:0",
-                "request": {
-                    "generation_role": "topology",
-                    "qid": question.qid,
-                    "agent_id": "agent0",
-                    "round": 0,
-                    "seed": cell.seed,
-                    "sample_index": None,
-                    "peer_context": {
-                        "sha256": (
-                            "e3b0c44298fc1c149afbf4c8996fb924"
-                            "27ae41e4649b934ca495991b7852b855"
-                        ),
-                        "utf8_bytes": 0,
-                    },
-                    "max_tokens": 4096,
-                    "elicit_cot": True,
+                "request": request,
+                "attempt": {
+                    "attempt_id": "1" * 32,
+                    "coordinate_key": "topology:agent0:0",
+                    "request_sha256": canonical_sha256(request),
+                    "endpoint_generation": "test-endpoint-generation",
+                    "started_at": 100.0,
                 },
                 "outcome": {
                     "termination_status": TERMINATION_PROTOCOL_CENSORED,
                     "agent_output": None,
                     "censored_generation": coordinate_censor,
+                    "transport_censor": None,
                 },
                 "observed_at": 101.0,
                 "producer_wall_ms": 5.0,
@@ -611,6 +687,7 @@ def _self_consistency_payload_for_test(
                     "termination_status": TERMINATION_LENGTH_CENSORED,
                     "agent_output": None,
                     "censored_generation": censor,
+                    "transport_censor": None,
                 }
             )
             total_prompt += censor["prompt_tokens"]
@@ -625,6 +702,7 @@ def _self_consistency_payload_for_test(
                     "termination_status": TERMINATION_COMPLETED,
                     "agent_output": output,
                     "censored_generation": None,
+                    "transport_censor": None,
                 }
             )
             total_prompt += output["prompt_tokens"]
@@ -638,6 +716,7 @@ def _self_consistency_payload_for_test(
         "completed_sample_count": cell.n_samples - censored_count,
         "length_censored_sample_count": censored_count,
         "protocol_censored_sample_count": 0,
+        "transport_censored_sample_count": 0,
         "samples": outcomes,
         "majority": None if censored_count else "A",
         "self_consistency_conf": None if censored_count else 1.0,
@@ -648,6 +727,7 @@ def _self_consistency_payload_for_test(
             "completed_samples": cell.n_samples - censored_count,
             "length_censored_samples": censored_count,
             "protocol_censored_samples": 0,
+            "transport_censored_samples": 0,
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
             "total_reasoning_tokens": total_reasoning,
@@ -684,6 +764,7 @@ def _current_agent_output(cell: ExperimentCell, seed: int) -> AgentOutput:
         generation_phase_prompt_token_id_hashes=["0" * 64],
         generation_phase_completion_token_id_hashes=["1" * 64],
         endpoint_generation="test-endpoint-generation",
+        calibration_endpoint_generation="test-calibration-endpoint-generation",
     )
 
 
@@ -692,6 +773,7 @@ class _NoopScoringClient:
         return OptionScores(
             probs={letter: 1.0 / len(option_letters) for letter in option_letters},
             raw_logprobs={letter: -1.0 for letter in option_letters},
+            endpoint_generation="test-calibration-endpoint-generation",
         )
 
 
@@ -2056,9 +2138,17 @@ def test_schema5_accepts_complete_concurrent_wave_with_multiple_censors():
             "termination_status": TERMINATION_PROTOCOL_CENSORED,
             "agent_output": None,
             "censored_generation": protocol_error.to_censored_generation(),
+            "transport_censor": None,
         },
         "observed_at": 102.0,
         "producer_wall_ms": 6.0,
+    }
+    protocol_coordinate["attempt"] = {
+        "attempt_id": "2" * 32,
+        "coordinate_key": protocol_coordinate["coordinate_key"],
+        "request_sha256": canonical_sha256(protocol_coordinate["request"]),
+        "endpoint_generation": "test-endpoint-generation",
+        "started_at": 101.0,
     }
     censored = runner._length_censored_record(
         cell=cell,
@@ -2166,6 +2256,85 @@ def test_schema5_snapshot_request_and_outcome_are_exactly_bound(cell, mutation):
     assert any(expected in error for error in errors), errors
 
 
+@pytest.mark.parametrize("artifact", ["result", "meta"])
+def test_schema5_rejects_unexpected_root_fields(cell, artifact):
+    records = [
+        _record(cell, "q1", current=True),
+        _record(cell, "q2", current=True),
+    ]
+    meta = _current_meta(cell)
+    if artifact == "result":
+        records[0]["invented_root_field"] = {"untrusted": True}
+    else:
+        meta["invented_root_field"] = {"untrusted": True}
+
+    errors = validate_completion_payload(
+        cell,
+        ("q1", "q2"),
+        records,
+        meta,
+        expected_questions=_truth_questions(cell),
+    )
+
+    expected = (
+        "schema-5 question result has the wrong root fields"
+        if artifact == "result"
+        else "schema-5 meta has the wrong root fields"
+    )
+    assert any(expected in error for error in errors), errors
+
+
+def test_trusted_generation_catalog_binds_joint_and_calibration_identities():
+    release = "a" * 64
+    fleet = "b" * 64
+    generated = (release, fleet, 1, 2, "chat-endpoint")
+    calibrated = (release, fleet, 1, 2, "calibration-endpoint")
+    row = {
+        "coordinate_provenance_identity_counts": [
+            {
+                "release_fleet_contract_sha256": release,
+                "fleet_contract_sha256": fleet,
+                "capacity_generation": 1,
+                "rollout_generation": 2,
+                "endpoint_generation": "chat-endpoint",
+                "count": 1,
+            }
+        ],
+        "per_agent": [
+            {
+                "endpoint_generation": "chat-endpoint",
+                "calibration_endpoint_generation": "calibration-endpoint",
+            }
+        ],
+    }
+
+    assert completion.trusted_generation_catalog_errors(
+        [row], {generated, calibrated}
+    ) == ()
+    missing = completion.trusted_generation_catalog_errors(
+        [row], {generated}
+    )
+    assert any("calibration endpoint" in error for error in missing)
+    wrong_generation = completion.trusted_generation_catalog_errors(
+        [row],
+        {
+            generated,
+            (release, fleet, 2, 3, "calibration-endpoint"),
+        },
+    )
+    assert any(
+        "0 exact trusted generation bindings" in error
+        for error in wrong_generation
+    )
+    unknown_coordinate = completion.trusted_generation_catalog_errors(
+        [row], {calibrated}
+    )
+    assert any(
+        "stochastic coordinate identities" in error
+        for error in unknown_coordinate
+    )
+
+
 def test_premature_reasoning_eos_is_not_counted_as_reasoning():
     cell = ExperimentCell(
         model_size="0.6B",
@@ -2242,9 +2411,14 @@ def test_schema4_completed_artifacts_remain_valid_under_schema5_reader(cell):
     meta["schema_version"] = 4
     for field in (
         "generation_censor_protocol_version",
-        "generation_censor_protocol_hash",
-        "protocol_censored_question_count",
-        "artifact_schema_counts",
+            "generation_censor_protocol_hash",
+            "protocol_censored_question_count",
+            "transport_censored_question_count",
+            "transport_affected_question_count",
+            "transport_censored_coordinate_count",
+            "transport_censor_protocol_version",
+            "transport_censor_protocol_hash",
+            "artifact_schema_counts",
     ):
         meta.pop(field)
 
@@ -2265,9 +2439,14 @@ def test_schema4_rejects_protocol_censored_status(cell):
     meta["schema_version"] = 4
     for field in (
         "generation_censor_protocol_version",
-        "generation_censor_protocol_hash",
-        "protocol_censored_question_count",
-        "artifact_schema_counts",
+            "generation_censor_protocol_hash",
+            "protocol_censored_question_count",
+            "transport_censored_question_count",
+            "transport_affected_question_count",
+            "transport_censored_coordinate_count",
+            "transport_censor_protocol_version",
+            "transport_censor_protocol_hash",
+            "artifact_schema_counts",
     ):
         meta.pop(field)
 
@@ -2284,7 +2463,7 @@ def test_schema4_rejects_protocol_censored_status(cell):
         for error in errors
     )
     assert any(
-        "schema-4 meta cannot certify protocol-censored results" in error
+        "schema-4 meta cannot certify protocol/transport-censored results" in error
         for error in errors
     )
 
@@ -2423,6 +2602,9 @@ def test_runner_keeps_primary_when_auxiliary_censors_and_runs_later_samples(
     seen_samples = []
 
     class FakeAgent:
+        agent_id = "agent0"
+        endpoint_generation = "test-endpoint-generation"
+
         def prepare_calibration(self, _question):
             return None
 
@@ -2515,6 +2697,11 @@ def test_runner_score_probe_failure_cannot_resample_primary_chat(
     class FakeClient:
         def __init__(self, endpoint: str):
             self.endpoint = endpoint
+            self.endpoint_generation = (
+                "server-1@node1:8000#10.000000"
+                if "node1" in endpoint
+                else "server-2@node2:8001#11.000000"
+            )
 
         def score_options(self, prompt, option_letters):
             probe_attempts.append(self.endpoint)
@@ -2523,6 +2710,7 @@ def test_runner_score_probe_failure_cannot_resample_primary_chat(
             return OptionScores(
                 probs={"A": 0.8, "B": 0.2},
                 raw_logprobs={"A": -0.1, "B": -1.5},
+                endpoint_generation="server-2@node2:8001#11.000000",
             )
 
         def chat(self, **kwargs):
@@ -2720,6 +2908,7 @@ def test_runner_retains_one_censor_without_retry_or_failure(
 
     class _CensoringAgent:
         agent_id = "agent0"
+        endpoint_generation = "test-endpoint-generation"
 
         def prepare_calibration(self, _question):
             return None
@@ -2812,6 +3001,7 @@ def test_runner_repairs_resume_and_recomputes_full_mean(tmp_path, monkeypatch, c
         generation_phase_prompt_token_id_hashes=["0" * 64],
         generation_phase_completion_token_id_hashes=["1" * 64],
         endpoint_generation="test-endpoint-generation",
+        calibration_endpoint_generation="test-calibration-endpoint-generation",
     )
     topology_result = TopologyResult(
         final_answer="A",
@@ -2854,6 +3044,278 @@ def test_runner_repairs_resume_and_recomputes_full_mean(tmp_path, monkeypatch, c
         cell, cdir, expected_qids=("q1", "q2")
     ).status is CompletionState.COMPLETE
     assert not (cdir / "failure.json").exists()
+
+
+def test_authoritative_partial_cell_completes_across_capacity_and_rollout_generations(
+    tmp_path,
+):
+    cell = ExperimentCell(
+        model_size="0.6B",
+        context_share_level="artifact_only",
+        prompt_complexity_level=0,
+        reasoning_level="off",
+        topology="independent",
+        benchmark="gpqa",
+        n_agents=2,
+        n_samples=1,
+        n_questions=2,
+        seed=7,
+    )
+    questions = _truth_questions(cell)
+    run_root = tmp_path / "full_sweep_schema5_v1"
+    cdir = run_root / "cells" / cell.cell_id
+    cdir.mkdir(parents=True)
+    manifest_sha = "a" * 64
+    benchmark_sidecar_sha = "b" * 64
+    manifest = ManifestSnapshot(
+        path=run_root / "cells.json",
+        cells=(cell,),
+        sha256=manifest_sha,
+    )
+    contract = build_question_contract(
+        BenchmarkContractKey.from_cell(cell), questions
+    )
+
+    class VerifiedContracts:
+        path = run_root / "benchmark_contracts.v1.json"
+        sidecar_sha256 = benchmark_sidecar_sha
+
+        @staticmethod
+        def verify_questions(observed_cell, observed_questions):
+            assert observed_cell == cell
+            assert tuple(observed_questions) == questions
+            return dict(contract)
+
+    verified_contracts = VerifiedContracts()
+    models = load_model_contracts()
+    pins = clone.ReleasePins(
+        release_id="sweep-recovery-schema5-v1.2",
+        git_commit="c" * 40,
+        source_tree_sha256="d" * 64,
+        harness_sha256="e" * 64,
+        serving_sha256="f" * 64,
+    )
+    policy_payload = clone._policy(
+        run_id=run_root.name,
+        manifest_sha256=manifest_sha,
+        benchmark_sha256=benchmark_sidecar_sha,
+        model_contracts=models,
+        pins=pins,
+    )
+    policy_bytes = clone._json_bytes(policy_payload)
+    (run_root / clone.POLICY_FILENAME).write_bytes(policy_bytes)
+    (run_root / clone.POLICY_CHECKSUM_FILENAME).write_text(
+        f"{hashlib.sha256(policy_bytes).hexdigest()}  "
+        f"{clone.POLICY_FILENAME}\n",
+        encoding="utf-8",
+    )
+    policy = completion.load_artifact_policy(run_root, required=True)
+    assert policy is not None
+    model_identity = models.for_size(cell.model_size)
+    base_fleet_hash = "1" * 64
+    g1_fleet_hash = "2" * 64
+    g2_fleet_hash = "3" * 64
+
+    def production_fixed(record: dict) -> dict:
+        for output in record["per_agent"]:
+            output["option_logprobs"] = {"A": 1.0, "B": 0.0}
+        record.update(
+            release_id=pins.release_id,
+            environment_hash=pins.harness_sha256,
+            model_revision=model_identity.model_revision,
+            tokenizer_revision=model_identity.tokenizer_revision,
+            model_contract_sha256=models.sha256,
+            release_fleet_contract_sha256=base_fleet_hash,
+            effective_context=record["effective_context_limit"],
+        )
+        return record
+
+    q1 = production_fixed(_record(cell, "q1", current=True))
+    for output in q1["per_agent"]:
+        output["endpoint_generation"] = "endpoint-g1"
+    q1.update(
+        fleet_contract_sha256=g1_fleet_hash,
+        capacity_generation=1,
+        rollout_generation=1,
+        endpoint_generation="endpoint-g1",
+        coordinate_provenance_counts={
+            "capacity_generation": {"1": 2},
+            "endpoint_generation": {"endpoint-g1": 2},
+            "fleet_contract_sha256": {g1_fleet_hash: 2},
+            "release_fleet_contract_sha256": {base_fleet_hash: 2},
+            "rollout_generation": {"1": 2},
+        },
+        coordinate_provenance_identity_counts=[
+            {
+                "release_fleet_contract_sha256": base_fleet_hash,
+                "fleet_contract_sha256": g1_fleet_hash,
+                "capacity_generation": 1,
+                "rollout_generation": 1,
+                "endpoint_generation": "endpoint-g1",
+                "count": 2,
+            }
+        ],
+    )
+    io.write_jsonl(cdir / "results.jsonl", [q1])
+    partial = _scientific_get_completion_status(
+        cell,
+        cdir,
+        expected_qids=("q1", "q2"),
+        expected_questions=questions,
+        verified_benchmark_contracts=verified_contracts,
+        verified_manifest=manifest,
+        model_contract_path=models.path,
+        check_active=False,
+    )
+    assert partial.status is CompletionState.PARTIAL
+    assert partial.valid_count == 1
+    assert partial.missing_qids == ("q2",)
+    retained_q1 = json.loads(json.dumps(q1, sort_keys=True))
+
+    # Q2 represents a QID whose first independent-agent coordinate was retained under
+    # g1 before USR1 and whose missing sibling completed under the g2 overlay.
+    q2 = production_fixed(_record(cell, "q2", current=True))
+    q2["per_agent"][0]["endpoint_generation"] = "endpoint-g1"
+    q2["per_agent"][1]["endpoint_generation"] = "endpoint-g2"
+    q2.update(
+        fleet_contract_sha256=None,
+        capacity_generation=None,
+        rollout_generation=None,
+        endpoint_generation="mixed",
+        coordinate_provenance_counts={
+            "capacity_generation": {"1": 1, "2": 1},
+            "endpoint_generation": {"endpoint-g1": 1, "endpoint-g2": 1},
+            "fleet_contract_sha256": {
+                g1_fleet_hash: 1,
+                g2_fleet_hash: 1,
+            },
+            "release_fleet_contract_sha256": {base_fleet_hash: 2},
+            "rollout_generation": {"1": 1, "2": 1},
+        },
+        coordinate_provenance_identity_counts=[
+            {
+                "release_fleet_contract_sha256": base_fleet_hash,
+                "fleet_contract_sha256": g1_fleet_hash,
+                "capacity_generation": 1,
+                "rollout_generation": 1,
+                "endpoint_generation": "endpoint-g1",
+                "count": 1,
+            },
+            {
+                "release_fleet_contract_sha256": base_fleet_hash,
+                "fleet_contract_sha256": g2_fleet_hash,
+                "capacity_generation": 2,
+                "rollout_generation": 2,
+                "endpoint_generation": "endpoint-g2",
+                "count": 1,
+            },
+        ],
+    )
+    io.write_jsonl(cdir / "results.jsonl", [q1, q1, q2])
+    with cell_lock(cdir):
+        repaired = _scientific_canonicalize_results(
+            cell,
+            cdir,
+            expected_qids=("q1", "q2"),
+            expected_questions=questions,
+            verified_benchmark_contracts=verified_contracts,
+            verified_manifest=manifest,
+            write=True,
+        )
+    assert repaired.duplicate_qids == ("q1",)
+    assert [row["qid"] for row in repaired.records] == ["q1", "q2"]
+    assert repaired.records[0] == retained_q1
+
+    meta = _current_meta(cell)
+    aggregate = completion.aggregate_coordinate_provenance_counts(
+        repaired.records
+    )
+    aggregate_identities = (
+        completion.aggregate_coordinate_provenance_identity_counts(
+            repaired.records
+        )
+    )
+    meta.update(
+        release_id=pins.release_id,
+        environment_hash=pins.harness_sha256,
+        serving_environment_hash=pins.serving_sha256,
+        model_revision=model_identity.model_revision,
+        tokenizer_revision=model_identity.tokenizer_revision,
+        model_contract_sha256=models.sha256,
+        fleet_contract_sha256=None,
+        release_fleet_contract_sha256=base_fleet_hash,
+        capacity_generation=None,
+        artifact_policy_sha256=policy.file_sha256,
+        endpoint_generation="mixed",
+        coordinate_provenance_counts=aggregate,
+        coordinate_provenance_identity_counts=aggregate_identities,
+        effective_context=get_model(cell.model_size).max_model_len,
+        rollout_generation=None,
+        git_commit=pins.git_commit,
+    )
+    io.write_json(cdir / "meta.json", meta)
+    complete = _scientific_get_completion_status(
+        cell,
+        cdir,
+        expected_qids=("q1", "q2"),
+        expected_questions=questions,
+        verified_benchmark_contracts=verified_contracts,
+        verified_manifest=manifest,
+        model_contract_path=models.path,
+        check_active=False,
+    )
+    assert complete.status is CompletionState.COMPLETE
+    assert complete.valid_count == complete.expected_count == 2
+    assert complete.missing_qids == ()
+    trusted_tuples = {
+        (base_fleet_hash, g1_fleet_hash, 1, 1, "endpoint-g1"),
+        (base_fleet_hash, g2_fleet_hash, 2, 2, "endpoint-g2"),
+        (
+            base_fleet_hash,
+            g1_fleet_hash,
+            1,
+            1,
+            "test-calibration-endpoint-generation",
+        ),
+    }
+    trusted = _scientific_get_completion_status(
+        cell,
+        cdir,
+        expected_qids=("q1", "q2"),
+        expected_questions=questions,
+        verified_benchmark_contracts=verified_contracts,
+        verified_manifest=manifest,
+        model_contract_path=models.path,
+        trusted_generation_tuples=trusted_tuples,
+        check_active=False,
+    )
+    assert trusted.status is CompletionState.COMPLETE
+    untrusted_calibration = _scientific_get_completion_status(
+        cell,
+        cdir,
+        expected_qids=("q1", "q2"),
+        expected_questions=questions,
+        verified_benchmark_contracts=verified_contracts,
+        verified_manifest=manifest,
+        model_contract_path=models.path,
+        trusted_generation_tuples={
+            identity
+            for identity in trusted_tuples
+            if identity[4] != "test-calibration-endpoint-generation"
+        },
+        check_active=False,
+    )
+    assert untrusted_calibration.status is CompletionState.CORRUPT
+    assert any(
+        "calibration endpoint" in error
+        for error in untrusted_calibration.errors
+    )
+    final_rows = [
+        json.loads(line)
+        for line in (cdir / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(final_rows) == len({row["qid"] for row in final_rows}) == 2
+    assert final_rows[0] == retained_q1
 
 
 def test_runner_quarantines_legacy_bad_meta_without_needing_endpoint(
@@ -3020,6 +3482,9 @@ def test_partial_legacy_32b_resume_reports_mixed_profile_counts(tmp_path, monkey
                 )
             ),
             peer_context_block_token_counts=([10, 10] if round_idx > 0 else []),
+            calibration_endpoint_generation=(
+                "test-calibration-endpoint-generation"
+            ),
         )
         for round_idx in range(2)
         for agent_id in range(3)

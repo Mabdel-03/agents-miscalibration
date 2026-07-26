@@ -185,6 +185,7 @@ class StubAgentClient:
         return OptionScores(
             probs={letter: 1.0 / len(option_letters) for letter in option_letters},
             raw_logprobs={letter: -1.0 for letter in option_letters},
+            endpoint_generation="calibration-endpoint-generation",
         )
 
 
@@ -215,6 +216,7 @@ class ProbeFailsOnceClient(StubAgentClient):
         return OptionScores(
             probs={"A": 0.75, "B": 0.25},
             raw_logprobs={"A": -0.1, "B": -1.2},
+            endpoint_generation="recovered-calibration-endpoint-generation",
         )
 
 
@@ -255,6 +257,10 @@ def test_failed_option_probe_never_issues_or_reissues_primary_chat():
     assert client.events == [("score", 1)]
     output = agent.answer(_question(), seed=7)
     assert output.answer_choice == "A"
+    assert (
+        output.calibration_endpoint_generation
+        == "recovered-calibration-endpoint-generation"
+    )
     assert client.events == [("score", 1), ("score", 2), ("chat", 7)]
 
     # Successful question-only probes are cached across auxiliary generations.

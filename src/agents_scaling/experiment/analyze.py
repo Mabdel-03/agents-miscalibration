@@ -31,6 +31,7 @@ from agents_scaling.experiment.result_schema import (
     TERMINATION_COMPLETED,
     TERMINATION_LENGTH_CENSORED,
     TERMINATION_PROTOCOL_CENSORED,
+    TERMINATION_TRANSPORT_CENSORED,
 )
 from agents_scaling.serving.profiles import serving_profile_for_cell
 from agents_scaling.models import get_model
@@ -117,14 +118,33 @@ def _censor_accounting(rows: list[dict]) -> dict[str, Any]:
         row.get("termination_status") == TERMINATION_PROTOCOL_CENSORED
         for row in rows
     )
+    n_transport = sum(
+        row.get("termination_status") == TERMINATION_TRANSPORT_CENSORED
+        for row in rows
+    )
 
     auxiliary_samples = 0
     auxiliary_completed = 0
     auxiliary_length = 0
     auxiliary_protocol = 0
+    auxiliary_transport = 0
+    topology_transport_coordinates = 0
+    transport_affected_questions = 0
     for row in rows:
+        row_transport_coordinates = 0
+        coordinates = row.get("observed_topology_coordinates")
+        if isinstance(coordinates, list):
+            row_transport_coordinates = sum(
+                isinstance(entry, dict)
+                and isinstance(entry.get("outcome"), dict)
+                and entry["outcome"].get("termination_status")
+                == TERMINATION_TRANSPORT_CENSORED
+                for entry in coordinates
+            )
+            topology_transport_coordinates += row_transport_coordinates
         value = row.get("self_consistency") or {}
         if not isinstance(value, dict) or not value:
+            transport_affected_questions += int(row_transport_coordinates > 0)
             continue
         samples = value.get("samples")
         legacy_sample_count = len(samples) if isinstance(samples, list) else 0
@@ -137,36 +157,61 @@ def _censor_accounting(rows: list[dict]) -> dict[str, Any]:
         protocol_count = _nonnegative_count(
             value.get("protocol_censored_sample_count")
         )
+        transport_count = _nonnegative_count(
+            value.get("transport_censored_sample_count")
+        )
         completed_count = _nonnegative_count(
             value.get("completed_sample_count"),
-            fallback=max(0, sample_count - length_count - protocol_count),
+            fallback=max(
+                0,
+                sample_count - length_count - protocol_count - transport_count,
+            ),
         )
         auxiliary_samples += sample_count
         auxiliary_completed += completed_count
         auxiliary_length += length_count
         auxiliary_protocol += protocol_count
+        auxiliary_transport += transport_count
+        transport_affected_questions += int(
+            row_transport_coordinates > 0 or transport_count > 0
+        )
 
-    top_level_any = n_length + n_protocol
-    auxiliary_any = auxiliary_length + auxiliary_protocol
+    top_level_any = n_length + n_protocol + n_transport
+    auxiliary_any = auxiliary_length + auxiliary_protocol + auxiliary_transport
     all_generation_outcomes = n_questions + auxiliary_samples
     return {
         "n_questions": n_questions,
         "n_completed_questions": n_completed,
         "n_length_censored_questions": n_length,
         "n_protocol_censored_questions": n_protocol,
+        "n_transport_censored_questions": n_transport,
+        "n_transport_affected_questions": transport_affected_questions,
         "length_censor_rate": n_length / n_questions if n_questions else 0.0,
         "protocol_censor_rate": n_protocol / n_questions if n_questions else 0.0,
+        "transport_censor_rate": (
+            n_transport / n_questions if n_questions else 0.0
+        ),
         # Compatibility: ``any_censor_rate`` has always meant top-level QIDs only.
         "any_censor_rate": top_level_any / n_questions if n_questions else 0.0,
         "n_auxiliary_samples": auxiliary_samples,
         "n_auxiliary_completed_samples": auxiliary_completed,
         "n_auxiliary_length_censors": auxiliary_length,
         "n_auxiliary_protocol_censors": auxiliary_protocol,
+        "n_auxiliary_transport_censors": auxiliary_transport,
+        "n_topology_transport_censored_coordinates": (
+            topology_transport_coordinates
+        ),
+        "n_transport_censored_coordinates": (
+            topology_transport_coordinates + auxiliary_transport
+        ),
         "auxiliary_length_censor_rate": (
             auxiliary_length / auxiliary_samples if auxiliary_samples else None
         ),
         "auxiliary_protocol_censor_rate": (
             auxiliary_protocol / auxiliary_samples if auxiliary_samples else None
+        ),
+        "auxiliary_transport_censor_rate": (
+            auxiliary_transport / auxiliary_samples if auxiliary_samples else None
         ),
         "auxiliary_any_censor_rate": (
             auxiliary_any / auxiliary_samples if auxiliary_samples else None
@@ -178,6 +223,11 @@ def _censor_accounting(rows: list[dict]) -> dict[str, Any]:
         ),
         "all_generation_protocol_censor_rate": (
             (n_protocol + auxiliary_protocol) / all_generation_outcomes
+            if all_generation_outcomes
+            else 0.0
+        ),
+        "all_generation_transport_censor_rate": (
+            (n_transport + auxiliary_transport) / all_generation_outcomes
             if all_generation_outcomes
             else 0.0
         ),
@@ -237,7 +287,15 @@ def aggregate_run(run_id: str) -> list[dict[str, Any]]:
         n_protocol_censored = censor_accounting[
             "n_protocol_censored_questions"
         ]
-        n_any_censored = n_censored + n_protocol_censored
+        n_transport_censored = censor_accounting[
+            "n_transport_censored_questions"
+        ]
+        n_transport_affected = censor_accounting[
+            "n_transport_affected_questions"
+        ]
+        n_any_censored = (
+            n_censored + n_protocol_censored + n_transport_censored
+        )
         acc = sum(1 for r in rows if r["correct"]) / n if n else 0.0
         # Topology efficiency is undefined for a trajectory censored before the system
         # produced an answer.  Keep the consumed censor tokens in the raw row, but never
@@ -385,8 +443,10 @@ def aggregate_run(run_id: str) -> list[dict[str, Any]]:
             base is None
             or rec["n_length_censored_questions"]
             or rec["n_protocol_censored_questions"]
+            or rec["n_transport_affected_questions"]
             or base["n_length_censored_questions"]
             or base["n_protocol_censored_questions"]
+            or base["n_transport_affected_questions"]
         ):
             # Missing baselines and censored trajectories both make the coordination
             # efficiency ratio non-comparable; the censor rate remains explicit above.

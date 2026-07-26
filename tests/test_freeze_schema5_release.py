@@ -25,8 +25,8 @@ _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE = (
 
 
 def test_operational_retry_tag_is_distinct_from_stable_release_id() -> None:
-    assert freeze.RELEASE_ID == "sweep-recovery-schema5-v1.1"
-    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.1-r1"
+    assert freeze.RELEASE_ID == "sweep-recovery-schema5-v1.2"
+    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r2"
     assert materialize.RELEASE_ID == freeze.RELEASE_ID
     assert materialize.REQUIRED_TAG == freeze.REQUIRED_GIT_TAG
     assert freeze.REQUIRED_GIT_TAG != freeze.RELEASE_ID
@@ -52,6 +52,7 @@ def _stub_materialization_binding(monkeypatch):
             ],
             "paths": {
                 "source_repository": str(mutable_source_root),
+                "environment_capture_root": str(root / "environment-capture"),
                 "release_worktree": str(release_worktree),
                 "source_harness_prefix": str(harness_prefix) + ".source",
                 "source_serving_prefix": str(serving_prefix) + ".source",
@@ -62,8 +63,38 @@ def _stub_materialization_binding(monkeypatch):
                 "worktree": {"record_sha256": "1" * 64},
                 "harness_clone": {"record_sha256": "2" * 64},
                 "serving_clone": {"record_sha256": "3" * 64},
-                "harness_package": {"record_sha256": "4" * 64},
+                "package_cache": {"record_sha256": "4" * 64},
+                "harness_package": {"record_sha256": "5" * 64},
             },
+            "environment_capture": {
+                "capture_id": "6" * 64,
+                "capture_marker_sha256": "7" * 64,
+                "seed_prefixes": {
+                    "harness": str(harness_prefix) + ".seed",
+                    "serving": str(serving_prefix) + ".seed",
+                },
+                "ownership_policy_path": str(root / "environment-capture/policy.json"),
+                "ownership_policy_sha256": "8" * 64,
+                "integrity_normalization_policy_path": str(
+                    root / "environment-capture/integrity-policy.json"
+                ),
+                "integrity_normalization_policy_sha256": "f" * 64,
+                "stage_records": {
+                    "harness": {
+                        "normalization_receipt_id": "9" * 64,
+                        "normalized_content_inventory_sha256": "a" * 64,
+                    },
+                    "serving": {
+                        "normalization_receipt_id": "b" * 64,
+                        "normalized_content_inventory_sha256": "c" * 64,
+                    },
+                },
+            },
+            "conda_creation_tool": {
+                "path": str(root / "creation-conda"),
+                "sha256": "d" * 64,
+            },
+            "conda_package_cache_sha256": "e" * 64,
         }
 
     monkeypatch.setattr(freeze, "_verified_materialization_binding", binding)
@@ -104,6 +135,18 @@ def _tagged_worktree(tmp_path: Path) -> Path:
         "schema5_fleet.v1.sha256",
     ):
         shutil.copy2(REPO / "configs" / filename, configs / filename)
+    fleet_path = configs / "schema5_fleet.v1.json"
+    fleet_payload = json.loads(fleet_path.read_text(encoding="utf-8"))
+    fleet_payload["release_id"] = freeze.RELEASE_ID
+    fleet_path.write_text(
+        json.dumps(fleet_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    fleet_path.with_suffix(".sha256").write_text(
+        f"{hashlib.sha256(fleet_path.read_bytes()).hexdigest()}  "
+        f"{fleet_path.name}\n",
+        encoding="utf-8",
+    )
     _run("git", "add", "source.txt", "pyproject.toml", "src", "configs", cwd=worktree)
     _run("git", "commit", "-q", "-m", "release", cwd=worktree)
     _run("git", "tag", freeze.REQUIRED_GIT_TAG, cwd=worktree)
@@ -208,24 +251,6 @@ def _fake_environment(
     return prefix
 
 
-def _fake_conda(tmp_path: Path) -> Path:
-    conda = tmp_path / "conda"
-    conda.write_text(
-        "\n".join(
-            (
-                "#!/bin/sh",
-                "printf '%s\\n' '@EXPLICIT' \\",
-                "  'https://conda.example.invalid/linux-64/python-3.11.13-h1.conda#0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \\",
-                "  'https://conda.example.invalid/noarch/pip-25.1-pyhd8ed1ab_0.conda#abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789'",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
-    conda.chmod(0o755)
-    return conda
-
-
 def _inputs(tmp_path: Path) -> dict:
     worktree = _tagged_worktree(tmp_path)
     return {
@@ -236,8 +261,202 @@ def _inputs(tmp_path: Path) -> dict:
         "serving_prefix": _fake_environment(tmp_path, "serving", serving=True),
         "model_contract_path": worktree / "configs" / "model_contracts.v1.json",
         "fleet_contract_path": worktree / "configs" / "schema5_fleet.v1.json",
-        "conda_executable": _fake_conda(tmp_path),
     }
+
+
+def _v12_materialization_evidence(root: Path) -> tuple[dict, dict, str]:
+    environment_capture = {
+        "capture_id": "6" * 64,
+        "capture_marker_sha256": "7" * 64,
+        "seed_prefixes": {
+            "harness": str(root / "environment-capture/seeds/harness"),
+            "serving": str(root / "environment-capture/seeds/serving"),
+        },
+        "ownership_policy_path": str(root / "environment-capture/policy.json"),
+        "ownership_policy_sha256": "8" * 64,
+        "integrity_normalization_policy_path": str(
+            root / "environment-capture/integrity-policy.json"
+        ),
+        "integrity_normalization_policy_sha256": "f" * 64,
+        "stage_records": {
+            "harness": {
+                "normalization_receipt_id": "9" * 64,
+                "normalized_content_inventory_sha256": "a" * 64,
+            },
+            "serving": {
+                "normalization_receipt_id": "b" * 64,
+                "normalized_content_inventory_sha256": "c" * 64,
+            },
+        },
+    }
+    conda_creation_tool = {
+        "path": str(root / "creation-conda"),
+        "sha256": "d" * 64,
+    }
+    return environment_capture, conda_creation_tool, "e" * 64
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "capture_id",
+        "capture_marker_sha256",
+        "normalized_content_inventory_sha256",
+        "ownership_policy_sha256",
+        "integrity_normalization_policy_sha256",
+        "normalization_receipt_id",
+        "conda_creation_tool_sha256",
+        "conda_package_cache_sha256",
+    ),
+)
+def test_environment_manifest_rejects_self_consistent_upstream_substitution(
+    tmp_path, monkeypatch, field
+):
+    inputs = _inputs(tmp_path)
+    prefix = inputs["harness_prefix"]
+    git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
+    root = tmp_path / "materialization"
+    capture_binding, conda_tool, cache_sha = _v12_materialization_evidence(
+        root
+    )
+    binding = {
+        "paths": {"harness_prefix": str(prefix)},
+        "environment_capture": capture_binding,
+        "conda_creation_tool": conda_tool,
+        "conda_package_cache_sha256": cache_sha,
+    }
+    inventory = {
+        "inventory_sha256": "1" * 64,
+        "entry_count": 3,
+        "file_count": 2,
+        "directory_count": 1,
+        "symlink_count": 0,
+        "total_file_bytes": 7,
+        "entries": [],
+    }
+    release_package = {"name": "agents_scaling", "editable": False}
+    payload = {
+        "schema_version": freeze.ENVIRONMENT_SCHEMA_VERSION,
+        "release_id": freeze.RELEASE_ID,
+        "role": "harness",
+        "prefix": str(prefix),
+        "sealed_read_only": False,
+        "offline_environment": dict(freeze.REQUIRED_OFFLINE_ENVIRONMENT),
+        "conda_creation_tool": dict(conda_tool),
+        "environment_seed": {
+            "capture_id": capture_binding["capture_id"],
+            "capture_marker_sha256": capture_binding[
+                "capture_marker_sha256"
+            ],
+            "prefix": capture_binding["seed_prefixes"]["harness"],
+            "normalized_content_inventory_sha256": capture_binding[
+                "stage_records"
+            ]["harness"]["normalized_content_inventory_sha256"],
+        },
+        "ownership_policy": {
+            "path": capture_binding["ownership_policy_path"],
+            "sha256": capture_binding["ownership_policy_sha256"],
+        },
+        "integrity_normalization_policy": {
+            "path": capture_binding[
+                "integrity_normalization_policy_path"
+            ],
+            "sha256": capture_binding[
+                "integrity_normalization_policy_sha256"
+            ],
+        },
+        "normalization_receipt": {
+            "id": capture_binding["stage_records"]["harness"][
+                "normalization_receipt_id"
+            ]
+        },
+        "conda_package_cache_sha256": cache_sha,
+        "runtime": {},
+        "locks": {"conda_explicit": [], "pip_freeze_all": []},
+        "release_package": release_package,
+        "installed_files": {
+            "inventory_sha256": inventory["inventory_sha256"],
+            "entry_count": inventory["entry_count"],
+            "file_count": inventory["file_count"],
+            "total_file_bytes": inventory["total_file_bytes"],
+        },
+        "directory_inventory": inventory,
+    }
+
+    def content_sha():
+        return freeze._sha256_bytes(
+            freeze._canonical_bytes(
+                {
+                    "runtime": payload["runtime"],
+                    "locks": payload["locks"],
+                    "release_package": payload["release_package"],
+                    "environment_seed": payload["environment_seed"],
+                    "ownership_policy": payload["ownership_policy"],
+                    "integrity_normalization_policy": payload[
+                        "integrity_normalization_policy"
+                    ],
+                    "normalization_receipt": payload[
+                        "normalization_receipt"
+                    ],
+                    "conda_creation_tool": payload[
+                        "conda_creation_tool"
+                    ],
+                    "conda_package_cache_sha256": payload[
+                        "conda_package_cache_sha256"
+                    ],
+                    "inventory_sha256": inventory["inventory_sha256"],
+                }
+            )
+        )
+
+    payload["environment_content_sha256"] = content_sha()
+    monkeypatch.setattr(freeze, "_conda_lock_from_records", lambda path: [])
+    monkeypatch.setattr(
+        freeze,
+        "_pip_lock_material",
+        lambda *args, **kwargs: ([], release_package),
+    )
+    monkeypatch.setattr(freeze, "_collect_runtime", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        freeze, "directory_inventory", lambda path: dict(inventory)
+    )
+    freeze._verify_manifest_environment(
+        payload,
+        path=tmp_path / "harness.manifest.json",
+        release_worktree=inputs["release_worktree"],
+        git_identity=git_identity,
+        materialization_binding=binding,
+    )
+
+    if field in {
+        "capture_id",
+        "capture_marker_sha256",
+        "normalized_content_inventory_sha256",
+    }:
+        payload["environment_seed"][field] = "f" * 64
+    elif field == "ownership_policy_sha256":
+        payload["ownership_policy"]["sha256"] = "f" * 64
+    elif field == "integrity_normalization_policy_sha256":
+        payload["integrity_normalization_policy"]["sha256"] = "e" * 64
+    elif field == "normalization_receipt_id":
+        payload["normalization_receipt"]["id"] = "f" * 64
+    elif field == "conda_creation_tool_sha256":
+        payload["conda_creation_tool"]["sha256"] = "f" * 64
+    else:
+        payload["conda_package_cache_sha256"] = "f" * 64
+    payload["environment_content_sha256"] = content_sha()
+
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="not bound to the sealed materialization evidence",
+    ):
+        freeze._verify_manifest_environment(
+            payload,
+            path=tmp_path / "harness.manifest.json",
+            release_worktree=inputs["release_worktree"],
+            git_identity=git_identity,
+            materialization_binding=binding,
+        )
 
 
 def _install_real_materialization_evidence(
@@ -259,6 +478,7 @@ def _install_real_materialization_evidence(
     git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
     paths = {
         "source_repository": str(source_repository),
+        "environment_capture_root": str(root / "environment-capture"),
         "release_worktree": str(inputs["release_worktree"]),
         "source_harness_prefix": str(source_harness),
         "source_serving_prefix": str(source_serving),
@@ -266,12 +486,19 @@ def _install_real_materialization_evidence(
         "serving_prefix": str(inputs["serving_prefix"]),
     }
     stage_records = {}
+    environment_capture, conda_creation_tool, package_cache_sha256 = (
+        _v12_materialization_evidence(root)
+    )
     for name, filename in materialize.STAGE_FILENAMES.items():
         stage_payload = {
             "schema_version": materialize.SCHEMA_VERSION,
             "release_id": freeze.RELEASE_ID,
             "stage": name,
         }
+        if name == "package_cache":
+            stage_payload["content_inventory"] = {
+                "content_inventory_sha256": package_cache_sha256
+            }
         stage_payload["record_sha256"] = hashlib.sha256(
             materialize._json_bytes(stage_payload)
         ).hexdigest()
@@ -291,7 +518,10 @@ def _install_real_materialization_evidence(
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": paths,
         "complete": True,
+        "publication_protocol": "stage_records_fsync_marker_last",
         "stage_records": stage_records,
+        "environment_capture": environment_capture,
+        "conda_creation_tool": conda_creation_tool,
     }
     marker["materialization_id"] = hashlib.sha256(
         materialize._json_bytes(marker)
@@ -306,6 +536,9 @@ def _install_real_materialization_evidence(
         "tag_commit": git_identity["git_commit"],
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": paths,
+        "environment_capture": environment_capture,
+        "conda_creation_tool": conda_creation_tool,
+        "conda_package_cache_sha256": package_cache_sha256,
     }
     monkeypatch.setattr(materialize, "verify_materialization", lambda path: dict(report))
     monkeypatch.setattr(
@@ -317,6 +550,99 @@ def _install_real_materialization_evidence(
         _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE,
     )
     return source_repository, source_harness, source_serving
+
+
+def _publish_bundle_consumable_by_schema5_control(
+    tmp_path: Path, monkeypatch
+) -> tuple[Path, dict, dict]:
+    """Publish real freezer bytes and derive only the control-plane envelope.
+
+    ``build_immutable_pins`` additionally requires all 22,680 cloned run entries and
+    the complete production controller scripts.  Those are orthogonal to the release
+    producer/consumer contract exercised here, so this fixture calls the exact sealed
+    release-bundle validator that ``build_immutable_pins`` reaches.
+    """
+
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "materialization" / "identity"
+    _install_real_materialization_evidence(tmp_path, output, inputs, monkeypatch)
+    created = freeze.create_release_bundle(
+        output,
+        apply=True,
+        seal_worktree=True,
+        seal_environments=True,
+        seal_output_root=True,
+        **inputs,
+    )
+    identity = json.loads(
+        (output / freeze.RELEASE_IDENTITY_FILENAME).read_text(encoding="utf-8")
+    )
+    marker = json.loads(
+        (output / freeze.COMPLETE_MARKER_FILENAME).read_text(encoding="utf-8")
+    )
+    pins = {
+        **identity["control_pin_fragment"],
+        "release_bundle_root": str(output),
+        "release_bundle_id": marker["release_bundle_id"],
+    }
+    assert created["release_bundle_id"] == marker["release_bundle_id"]
+    return output, identity, pins
+
+
+def _republish_mutated_bundle_for_negative_test(
+    output: Path, identity: dict
+) -> dict:
+    """Re-address an intentionally corrupted bundle so validation reaches its cause."""
+
+    output.chmod(0o755)
+    for role, filename in (
+        ("harness", freeze.HARNESS_MANIFEST_FILENAME),
+        ("serving", freeze.SERVING_MANIFEST_FILENAME),
+    ):
+        manifest_path = output / filename
+        digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        identity["environments"][role]["manifest_sha256"] = digest
+        identity["control_pin_fragment"][f"{role}_environment_sha256"] = digest
+
+    identity_path = output / freeze.RELEASE_IDENTITY_FILENAME
+    identity_path.chmod(0o644)
+    identity_path.write_bytes(freeze._json_bytes(identity))
+
+    primary_names = (
+        freeze.HARNESS_MANIFEST_FILENAME,
+        freeze.SERVING_MANIFEST_FILENAME,
+        freeze.RELEASE_IDENTITY_FILENAME,
+    )
+    for filename in primary_names:
+        path = output / filename
+        checksum = output / (filename + freeze.CHECKSUM_SUFFIX)
+        checksum.chmod(0o644)
+        checksum.write_bytes(
+            freeze._checksum_bytes(filename, path.read_bytes())
+        )
+
+    marker_path = output / freeze.COMPLETE_MARKER_FILENAME
+    marker_path.chmod(0o644)
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["artifacts"] = {
+        path.name: {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size": path.stat().st_size,
+        }
+        for path in sorted(output.iterdir())
+        if path.name != freeze.COMPLETE_MARKER_FILENAME
+    }
+    marker.pop("release_bundle_id", None)
+    marker["release_bundle_id"] = schema5_control.sha256_value(marker)
+    marker_path.write_bytes(freeze._json_bytes(marker))
+    for path in output.iterdir():
+        path.chmod(0o444)
+    output.chmod(0o555)
+    return {
+        **identity["control_pin_fragment"],
+        "release_bundle_root": str(output),
+        "release_bundle_id": marker["release_bundle_id"],
+    }
 
 
 def test_checked_in_fleet_is_exactly_22_replicas_and_24_gpus():
@@ -448,6 +774,7 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
     git_identity = freeze.verify_clean_exact_tag(inputs["release_worktree"])
     paths = {
         "source_repository": str(inputs["release_worktree"]),
+        "environment_capture_root": str(root / "environment-capture"),
         "release_worktree": str(inputs["release_worktree"]),
         "source_harness_prefix": str(tmp_path / "source-harness"),
         "source_serving_prefix": str(tmp_path / "source-serving"),
@@ -455,12 +782,19 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         "serving_prefix": str(inputs["serving_prefix"]),
     }
     stage_records = {}
+    environment_capture, conda_creation_tool, package_cache_sha256 = (
+        _v12_materialization_evidence(root)
+    )
     for name, filename in materialize.STAGE_FILENAMES.items():
         stage_payload = {
             "schema_version": materialize.SCHEMA_VERSION,
             "release_id": freeze.RELEASE_ID,
             "stage": name,
         }
+        if name == "package_cache":
+            stage_payload["content_inventory"] = {
+                "content_inventory_sha256": package_cache_sha256
+            }
         stage_payload["record_sha256"] = hashlib.sha256(
             materialize._json_bytes(stage_payload)
         ).hexdigest()
@@ -481,6 +815,8 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         "paths": paths,
         "complete": True,
         "stage_records": stage_records,
+        "environment_capture": environment_capture,
+        "conda_creation_tool": conda_creation_tool,
     }
     marker["materialization_id"] = hashlib.sha256(
         materialize._json_bytes(marker)
@@ -494,6 +830,9 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         "tag_commit": git_identity["git_commit"],
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": paths,
+        "environment_capture": environment_capture,
+        "conda_creation_tool": conda_creation_tool,
+        "conda_package_cache_sha256": package_cache_sha256,
     }
     monkeypatch.setattr(materialize, "verify_materialization", lambda path: dict(report))
 
@@ -615,6 +954,122 @@ def test_dry_run_is_read_only_then_marker_last_bundle_is_idempotent(tmp_path):
     assert again["release_bundle_id"] == created["release_bundle_id"]
 
 
+def test_schema5_control_consumes_exact_v12_freezer_output(
+    tmp_path, monkeypatch
+):
+    output, identity, pins = _publish_bundle_consumable_by_schema5_control(
+        tmp_path, monkeypatch
+    )
+
+    # This is the same deep release-bundle boundary called by prepare-pins and every
+    # file-verified immutable control load.  The consumer receives the producer's
+    # exact control_pin_fragment rather than a hand-reconstructed schema fixture.
+    schema5_control._validate_release_bundle(pins)
+
+    assert identity["schema_version"] == 4
+    assert identity["transport_uncertainty"]["binding"] == (
+        schema5_control.scheduler_safety.expected_transport_uncertainty_binding()
+    )
+    assert identity["transport_uncertainty"]["binding_sha256"] == (
+        pins["transport_uncertainty_binding_sha256"]
+    )
+    assert identity["transport_uncertainty"]["source_tree_sha256"] == (
+        pins["source_tree_sha256"]
+    )
+    assert identity["materialization"]["schema_version"] == 4
+    assert {
+        json.loads(
+            (output / filename).read_text(encoding="utf-8")
+        )["schema_version"]
+        for filename in (
+            freeze.HARNESS_MANIFEST_FILENAME,
+            freeze.SERVING_MANIFEST_FILENAME,
+        )
+    } == {3}
+
+    downgraded = dict(pins)
+    downgraded["release_id"] = "sweep-recovery-schema5-v1.1"
+    with pytest.raises(
+        schema5_control.ImmutablePinError,
+        match="release completion marker identity is invalid",
+    ):
+        schema5_control._validate_release_bundle(downgraded)
+
+
+def test_schema5_control_rejects_environment_schema1_freezer_downgrade(
+    tmp_path, monkeypatch
+):
+    output, identity, _ = _publish_bundle_consumable_by_schema5_control(
+        tmp_path, monkeypatch
+    )
+    manifest_path = output / freeze.HARNESS_MANIFEST_FILENAME
+    output.chmod(0o755)
+    manifest_path.chmod(0o644)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 1
+    manifest_path.write_bytes(freeze._json_bytes(manifest))
+    pins = _republish_mutated_bundle_for_negative_test(output, identity)
+
+    with pytest.raises(
+        schema5_control.ImmutablePinError,
+        match="harness environment manifest is not sealed schema 3",
+    ):
+        schema5_control._validate_release_bundle(pins)
+
+
+def test_schema5_control_rejects_materialization_schema2_freezer_downgrade(
+    tmp_path, monkeypatch
+):
+    output, identity, _ = _publish_bundle_consumable_by_schema5_control(
+        tmp_path, monkeypatch
+    )
+    marker_path = output.parent / freeze.MATERIALIZATION_COMPLETE_FILENAME
+    marker_path.chmod(0o644)
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["schema_version"] = 2
+    marker.pop("materialization_id")
+    marker["materialization_id"] = hashlib.sha256(
+        materialize._json_bytes(marker)
+    ).hexdigest()
+    marker_path.write_bytes(materialize._json_bytes(marker))
+    marker_path.chmod(0o444)
+    identity["materialization"]["schema_version"] = 2
+    identity["materialization"]["materialization_id"] = marker[
+        "materialization_id"
+    ]
+    identity["materialization"]["marker_sha256"] = hashlib.sha256(
+        marker_path.read_bytes()
+    ).hexdigest()
+    pins = _republish_mutated_bundle_for_negative_test(output, identity)
+
+    with pytest.raises(
+        schema5_control.ImmutablePinError,
+        match="release materialization binding is invalid",
+    ):
+        schema5_control._validate_release_bundle(pins)
+
+
+def test_schema5_control_rejects_environment_seed_provenance_drift(
+    tmp_path, monkeypatch
+):
+    output, identity, _ = _publish_bundle_consumable_by_schema5_control(
+        tmp_path, monkeypatch
+    )
+    manifest_path = output / freeze.HARNESS_MANIFEST_FILENAME
+    output.chmod(0o755)
+    manifest_path.chmod(0o644)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["environment_seed"]["capture_id"] = "f" * 64
+    manifest_path.write_bytes(freeze._json_bytes(manifest))
+    pins = _republish_mutated_bundle_for_negative_test(output, identity)
+
+    with pytest.raises(
+        schema5_control.ImmutablePinError,
+        match="environment manifest content identity is invalid",
+    ):
+        schema5_control._validate_release_bundle(pins)
+
+
 def test_completed_bundle_recovers_interrupted_output_root_seal(
     tmp_path, monkeypatch
 ):
@@ -673,15 +1128,36 @@ def test_completed_bundle_rejects_incompatible_retroactive_seals(tmp_path):
         )
 
 
-def test_creation_rejects_conda_tool_and_record_lock_disagreement(tmp_path):
+def test_creation_uses_direct_conda_meta_lock_without_external_conda_query(
+    tmp_path, monkeypatch
+):
     inputs = _inputs(tmp_path)
     record_path = inputs["harness_prefix"] / "conda-meta" / "pip-25.1-test.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["sha256"] = "f" * 64
     record_path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    real_run = freeze._run
 
-    with pytest.raises(freeze.ReleaseFreezeError, match="records disagree"):
-        freeze.create_release_bundle(tmp_path / "release-root", **inputs)
+    def reject_conda_lock_query(argv, **kwargs):
+        assert not (
+            "list" in argv and "--explicit" in argv
+        ), "release freezing must never invoke `conda list --explicit`"
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(freeze, "_run", reject_conda_lock_query)
+
+    output = tmp_path / "release-root"
+    freeze.create_release_bundle(output, apply=True, **inputs)
+    manifest = json.loads(
+        (output / freeze.HARNESS_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert any(
+        row.endswith("#" + "f" * 64)
+        for row in manifest["locks"]["conda_explicit"]
+    )
+    assert manifest["conda_creation_tool"]["sha256"] == "d" * 64
+    assert not hasattr(freeze, "_conda_lock")
+    assert not hasattr(freeze, "_resolve_conda_executable")
 
 
 def test_live_environment_or_source_drift_is_rejected_after_publication(tmp_path):
@@ -759,19 +1235,16 @@ def test_sealed_release_verification_is_self_contained_after_sources_disappear(
 
     # The external creation tool, all mutable materialization sources, and Git's
     # repository metadata are deliberately unavailable during the future audit.
-    conda_tool_sha256 = hashlib.sha256(
-        inputs["conda_executable"].read_bytes()
-    ).hexdigest()
     for filename in (
         freeze.HARNESS_MANIFEST_FILENAME,
         freeze.SERVING_MANIFEST_FILENAME,
     ):
         manifest = json.loads((output / filename).read_text(encoding="utf-8"))
-        assert manifest["conda_lock_tool"] == {
-            "path": str(inputs["conda_executable"].resolve()),
-            "sha256": conda_tool_sha256,
+        assert manifest["conda_creation_tool"] == {
+            "path": str(output.parent / "creation-conda"),
+            "sha256": "d" * 64,
         }
-    inputs["conda_executable"].unlink()
+        assert manifest["conda_package_cache_sha256"] == "e" * 64
     for source in mutable_sources:
         shutil.rmtree(source)
     worktree = inputs["release_worktree"]
@@ -783,7 +1256,6 @@ def test_sealed_release_verification_is_self_contained_after_sources_disappear(
     worktree.chmod(0o755)
     shutil.rmtree(git_metadata)
     freeze._seal_tree_read_only(worktree)
-    assert not inputs["conda_executable"].exists()
     assert all(not source.exists() for source in mutable_sources)
     assert not git_metadata.exists()
 

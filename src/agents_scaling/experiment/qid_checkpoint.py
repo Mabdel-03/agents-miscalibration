@@ -24,9 +24,12 @@ import math
 import re
 import threading
 import time
+import uuid
 from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Callable, Mapping, TypeVar
+
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from agents_scaling.agents.base_agent import (
     Agent,
@@ -55,6 +58,20 @@ from agents_scaling.experiment.result_schema import (
     TERMINATION_COMPLETED,
     TERMINATION_LENGTH_CENSORED,
     TERMINATION_PROTOCOL_CENSORED,
+    TERMINATION_TRANSPORT_CENSORED,
+)
+from agents_scaling.experiment.transport_censor import (
+    TRANSPORT_CENSOR_CLASS_CONNECTION,
+    TRANSPORT_CENSOR_CLASS_INTERRUPTED,
+    TRANSPORT_CENSOR_CLASS_PRODUCER_EXCEPTION,
+    TRANSPORT_CENSOR_CLASS_STATUS,
+    TRANSPORT_CENSOR_CLASS_TIMEOUT,
+    TRANSPORT_CENSOR_PROTOCOL_HASH,
+    TRANSPORT_CENSOR_PROTOCOL_VERSION,
+    TransportCensorError,
+    build_transport_censor,
+    validate_attempt,
+    validate_transport_censor,
 )
 from agents_scaling.serving.client import (
     ANSWER_GENERATION_TOKEN_ALLOWANCE,
@@ -71,7 +88,10 @@ from agents_scaling.serving.client import (
 from agents_scaling.serving.context import CONTEXT_RESERVE_TOKENS
 from agents_scaling.serving.profiles import ServingProfile
 
-CHECKPOINT_SCHEMA_VERSION = 2
+# Schema 2 is the sealed legacy/r1 journal contract.  Production schema 5 starts from
+# schema 3, whose pending-attempt map closes the process-loss redraw window.
+LEGACY_CHECKPOINT_SCHEMA_VERSION = 2
+CHECKPOINT_SCHEMA_VERSION = 3
 CHECKPOINT_DIRECTORY = ".qid_checkpoints"
 
 _T = TypeVar("_T")
@@ -82,6 +102,7 @@ _ROOT_FIELDS = frozenset(
         "schema_version",
         "identity",
         "coordinates",
+        "pending_attempts",
         "topology_terminal",
         "created_at",
         "updated_at",
@@ -107,6 +128,42 @@ _CHECKPOINT_SCHEMA_MIGRATION_TYPE = "qid_checkpoint_schema_1_to_2"
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _AGENT_ID_RE = re.compile(r"agent(\d+)")
 _PEER_CONTEXT_IDENTITY_FIELDS = frozenset({"sha256", "utf8_bytes"})
+_COORDINATE_RUNTIME_PROVENANCE_FIELDS = frozenset(
+    {
+        "fleet_contract_sha256",
+        "release_fleet_contract_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "endpoint_generation",
+    }
+)
+_COORDINATE_RUNTIME_IDENTITY_FIELDS = (
+    "release_fleet_contract_sha256",
+    "fleet_contract_sha256",
+    "capacity_generation",
+    "rollout_generation",
+    "endpoint_generation",
+)
+_COORDINATE_ENTRY_FIELDS = frozenset(
+    {
+        "request",
+        "attempt",
+        "outcome",
+        "observed_at",
+        "producer_wall_ms",
+        "runtime_provenance",
+    }
+)
+_LEGACY_COORDINATE_ENTRY_FIELDS = _COORDINATE_ENTRY_FIELDS - {
+    "runtime_provenance"
+}
+_PENDING_ATTEMPT_ENTRY_FIELDS = frozenset(
+    {
+        "request",
+        "attempt",
+        "runtime_provenance",
+    }
+)
 _TOPOLOGY_REQUEST_FIELDS = frozenset(
     {
         "generation_role",
@@ -655,11 +712,13 @@ class TopologyTerminal:
         wall_ms: float,
         topology_result: TopologyResult | None = None,
         censored_error: GenerationTruncationError | None = None,
+        transport_error: TransportCensorError | None = None,
     ) -> None:
         self.termination_status = termination_status
         self.wall_ms = wall_ms
         self.topology_result = topology_result
         self.censored_error = censored_error
+        self.transport_error = transport_error
 
 
 class QIDCheckpoint:
@@ -674,6 +733,7 @@ class QIDCheckpoint:
         code_version: str | None,
         serving_profile: ServingProfile,
         benchmark_contract_sha256: str,
+        runtime_provenance: Mapping[str, Any] | None = None,
     ) -> None:
         self.path = checkpoint_path(cell_directory, question.qid)
         self._cell = cell
@@ -686,6 +746,10 @@ class QIDCheckpoint:
                 "benchmark_contract_sha256 must be a lowercase SHA-256"
             )
         question_payload = canonical_question_payload(question)
+        self._runtime_provenance = self._validate_runtime_provenance(
+            runtime_provenance,
+            require_endpoint=False,
+        )
         self.identity: dict[str, Any] = {
             "cell_id": cell.cell_id,
             "cell_config": cell.to_dict(),
@@ -709,6 +773,10 @@ class QIDCheckpoint:
                     SELF_CONSISTENCY_PROTOCOL_VERSION
                 ),
                 "self_consistency_protocol_hash": SELF_CONSISTENCY_PROTOCOL_HASH,
+                "transport_censor_protocol_version": (
+                    TRANSPORT_CENSOR_PROTOCOL_VERSION
+                ),
+                "transport_censor_protocol_hash": TRANSPORT_CENSOR_PROTOCOL_HASH,
             },
         }
         _canonical_bytes(self.identity)
@@ -717,6 +785,56 @@ class QIDCheckpoint:
         self._fatal: CheckpointError | None = None
         self._legacy_migration_cutoff: float | None = None
         self._payload = self._load_or_initialize()
+
+    @staticmethod
+    def _validate_runtime_provenance(
+        value: Mapping[str, Any] | None,
+        *,
+        require_endpoint: bool,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        expected_fields = (
+            _COORDINATE_RUNTIME_PROVENANCE_FIELDS
+            if require_endpoint
+            else _COORDINATE_RUNTIME_PROVENANCE_FIELDS - {"endpoint_generation"}
+        )
+        if not isinstance(value, Mapping) or set(value) != expected_fields:
+            raise CheckpointCorruptionError(
+                "coordinate runtime provenance has the wrong fields"
+            )
+        result = dict(value)
+        for field in (
+            "fleet_contract_sha256",
+            "release_fleet_contract_sha256",
+        ):
+            field_value = result.get(field)
+            if (
+                not isinstance(field_value, str)
+                or re.fullmatch(r"[0-9a-f]{64}", field_value) is None
+            ):
+                raise CheckpointCorruptionError(
+                    f"coordinate runtime provenance {field} must be a SHA-256"
+                )
+        for field in ("capacity_generation", "rollout_generation"):
+            field_value = result.get(field)
+            if (
+                not isinstance(field_value, int)
+                or isinstance(field_value, bool)
+                or field_value < 1
+            ):
+                raise CheckpointCorruptionError(
+                    f"coordinate runtime provenance {field} must be positive"
+                )
+        if require_endpoint and (
+            not isinstance(result.get("endpoint_generation"), str)
+            or not result["endpoint_generation"]
+            or result["endpoint_generation"] == "mixed"
+        ):
+            raise CheckpointCorruptionError(
+                "coordinate runtime provenance endpoint_generation must be exact"
+            )
+        return result
 
     def assert_question(self, question: Question) -> None:
         """Reject proxy misuse with a different question before any replay/inference."""
@@ -732,6 +850,7 @@ class QIDCheckpoint:
             "schema_version": CHECKPOINT_SCHEMA_VERSION,
             "identity": copy.deepcopy(self.identity),
             "coordinates": {},
+            "pending_attempts": {},
             "topology_terminal": None,
             "created_at": now,
             "updated_at": now,
@@ -760,6 +879,16 @@ class QIDCheckpoint:
             raise CheckpointCorruptionError(
                 f"cannot parse durable QID checkpoint {self.path}: {exc}"
             ) from exc
+        if (
+            isinstance(value, dict)
+            and value.get("schema_version") == LEGACY_CHECKPOINT_SCHEMA_VERSION
+        ):
+            raise CheckpointCorruptionError(
+                f"legacy QID checkpoint schema {LEGACY_CHECKPOINT_SCHEMA_VERSION} "
+                "is sealed evidence and cannot be executed by the schema-3 no-redraw "
+                "runtime; authoritative schema-5 runs require a fresh schema-3 "
+                "checkpoint"
+            )
         if not isinstance(value, dict) or set(value) != _ROOT_FIELDS:
             raise CheckpointCorruptionError(
                 f"durable QID checkpoint {self.path} has the wrong root schema"
@@ -787,10 +916,145 @@ class QIDCheckpoint:
             raise CheckpointCorruptionError("checkpoint.coordinates must be an object")
         for key, entry in value["coordinates"].items():
             self._validate_coordinate_entry(key, entry)
+        pending = value.get("pending_attempts")
+        if not isinstance(pending, dict):
+            raise CheckpointCorruptionError(
+                "checkpoint.pending_attempts must be an object"
+            )
+        for key, entry in pending.items():
+            self._validate_pending_attempt_entry(key, entry)
+            if key in value["coordinates"]:
+                raise CheckpointCorruptionError(
+                    f"checkpoint coordinate {key!r} is both pending and terminal"
+                )
         terminal = value.get("topology_terminal")
         if terminal is not None:
             self._decode_terminal(terminal, coordinates=value["coordinates"])
+        if pending:
+            # A durable intent with no terminal outcome means the prior interpreter
+            # disappeared after admission.  Whether the server sampled is unknowable;
+            # atomically retain one censor before exposing the journal to callers.
+            candidate = copy.deepcopy(value)
+            for key in sorted(tuple(candidate["pending_attempts"])):
+                self._finalize_pending_candidate(
+                    candidate,
+                    key,
+                    classification=TRANSPORT_CENSOR_CLASS_INTERRUPTED,
+                    censored_at=time.time(),
+                    error=None,
+                )
+            self._write_candidate(candidate)
+            value = candidate
         return value
+
+    def _validate_pending_attempt_entry(self, key: Any, entry: Any) -> None:
+        if not isinstance(key, str) or not key:
+            raise CheckpointCorruptionError(
+                "pending coordinate key must be non-empty text"
+            )
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != _PENDING_ATTEMPT_ENTRY_FIELDS
+        ):
+            raise CheckpointCorruptionError(
+                f"pending coordinate {key!r} has the wrong fields"
+            )
+        request = self._validate_request(entry["request"])
+        if key != _coordinate_key_from_request(request):
+            raise CheckpointCorruptionError(
+                f"pending coordinate {key!r} does not match request semantics"
+            )
+        try:
+            validate_attempt(entry["attempt"], coordinate_key=key, request=request)
+        except ValueError as exc:
+            raise CheckpointCorruptionError(
+                f"pending coordinate {key!r} has an invalid attempt: {exc}"
+            ) from exc
+        provenance = entry["runtime_provenance"]
+        if provenance is not None:
+            validated = self._validate_runtime_provenance(
+                provenance,
+                require_endpoint=True,
+            )
+            assert validated is not None
+            if (
+                validated["endpoint_generation"]
+                != entry["attempt"]["endpoint_generation"]
+            ):
+                raise CheckpointCorruptionError(
+                    f"pending coordinate {key!r} endpoint provenance disagrees "
+                    "with its attempt"
+                )
+
+    @staticmethod
+    def _transport_outcome(
+        request: Mapping[str, Any],
+        censor: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        common = {
+            "termination_status": TERMINATION_TRANSPORT_CENSORED,
+            "agent_output": None,
+            "censored_generation": None,
+            "transport_censor": copy.deepcopy(dict(censor)),
+        }
+        if request.get("generation_role") == "self_consistency":
+            return {
+                "sample_index": request.get("sample_index"),
+                "seed": request.get("seed"),
+                **common,
+            }
+        return common
+
+    def _finalize_pending_candidate(
+        self,
+        candidate: dict[str, Any],
+        key: str,
+        *,
+        classification: str,
+        censored_at: float,
+        error: BaseException | None,
+    ) -> dict[str, Any]:
+        pending = candidate["pending_attempts"].get(key)
+        if pending is None:
+            raise CheckpointIdentityError(
+                f"pending coordinate {key!r} is unavailable for finalization"
+            )
+        request = pending["request"]
+        try:
+            censor = build_transport_censor(
+                request=request,
+                attempt=pending["attempt"],
+                classification=classification,
+                censored_at=censored_at,
+                error=error,
+            )
+        except ValueError as exc:
+            raise CheckpointCorruptionError(
+                f"could not construct transport censor for {key!r}: {exc}"
+            ) from exc
+        outcome = self._transport_outcome(request, censor)
+        entry: dict[str, Any] = {
+            "request": copy.deepcopy(request),
+            "attempt": copy.deepcopy(pending["attempt"]),
+            "outcome": outcome,
+            "observed_at": float(censor["censored_at"]),
+            "producer_wall_ms": max(
+                0.0,
+                (
+                    float(censor["censored_at"])
+                    - float(censor["attempt_started_at"])
+                )
+                * 1000.0,
+            ),
+        }
+        if pending["runtime_provenance"] is not None:
+            entry["runtime_provenance"] = copy.deepcopy(
+                pending["runtime_provenance"]
+            )
+        self._validate_coordinate_entry(key, entry)
+        candidate["coordinates"][key] = entry
+        del candidate["pending_attempts"][key]
+        return copy.deepcopy(outcome)
 
     def _validate_migration_history(self, history: Any) -> None:
         """Validate the one registered schema transition without permitting growth."""
@@ -815,7 +1079,7 @@ class QIDCheckpoint:
             "migration_schema_version": 1,
             "migration_type": _CHECKPOINT_SCHEMA_MIGRATION_TYPE,
             "source_checkpoint_schema_version": 1,
-            "target_checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "target_checkpoint_schema_version": LEGACY_CHECKPOINT_SCHEMA_VERSION,
             "migrator_code_version": self.identity["code_version"],
         }
         for field, expected_value in expected.items():
@@ -1049,12 +1313,11 @@ class QIDCheckpoint:
     def _validate_coordinate_entry(self, key: Any, entry: Any) -> None:
         if not isinstance(key, str) or not key:
             raise CheckpointCorruptionError("coordinate key must be non-empty text")
-        if not isinstance(entry, dict) or set(entry) != {
-            "request",
-            "outcome",
-            "observed_at",
-            "producer_wall_ms",
-        }:
+        if (
+            not isinstance(entry, dict)
+            or set(entry)
+            not in {_COORDINATE_ENTRY_FIELDS, _LEGACY_COORDINATE_ENTRY_FIELDS}
+        ):
             raise CheckpointCorruptionError(
                 f"checkpoint coordinate {key!r} has the wrong fields"
             )
@@ -1063,6 +1326,16 @@ class QIDCheckpoint:
             raise CheckpointCorruptionError(
                 f"checkpoint coordinate {key!r} does not match its request semantics"
             )
+        try:
+            attempt = validate_attempt(
+                entry["attempt"],
+                coordinate_key=key,
+                request=request,
+            )
+        except ValueError as exc:
+            raise CheckpointCorruptionError(
+                f"checkpoint coordinate {key!r} has an invalid attempt: {exc}"
+            ) from exc
         _finite_nonnegative(entry["observed_at"], f"coordinate {key}.observed_at")
         _finite_nonnegative(
             entry["producer_wall_ms"], f"coordinate {key}.producer_wall_ms"
@@ -1077,6 +1350,57 @@ class QIDCheckpoint:
             entry["outcome"],
             allow_legacy_peer_audit=allow_legacy_peer_audit,
         )
+        if (
+            entry["outcome"].get("termination_status")
+            == TERMINATION_TRANSPORT_CENSORED
+        ):
+            try:
+                validate_transport_censor(
+                    entry["outcome"].get("transport_censor"),
+                    request=request,
+                    attempt=attempt,
+                )
+            except ValueError as exc:
+                raise CheckpointCorruptionError(
+                    f"checkpoint coordinate {key!r} has an invalid transport "
+                    f"censor: {exc}"
+                ) from exc
+        if "runtime_provenance" in entry:
+            provenance = self._validate_runtime_provenance(
+                entry["runtime_provenance"],
+                require_endpoint=True,
+            )
+            assert provenance is not None
+            if provenance["endpoint_generation"] != self._outcome_endpoint_generation(
+                entry["outcome"]
+            ):
+                raise CheckpointCorruptionError(
+                    f"checkpoint coordinate {key!r} runtime endpoint does not "
+                    "match its observed outcome"
+                )
+            if provenance["endpoint_generation"] != attempt["endpoint_generation"]:
+                raise CheckpointCorruptionError(
+                    f"checkpoint coordinate {key!r} runtime endpoint does not "
+                    "match its durable attempt"
+                )
+
+    @staticmethod
+    def _outcome_endpoint_generation(outcome: Mapping[str, Any]) -> str:
+        payload = outcome.get("agent_output")
+        if payload is None:
+            payload = outcome.get("censored_generation")
+        if payload is None:
+            payload = outcome.get("transport_censor")
+        endpoint = (
+            payload.get("endpoint_generation")
+            if isinstance(payload, Mapping)
+            else None
+        )
+        if not isinstance(endpoint, str) or not endpoint or endpoint == "mixed":
+            raise CheckpointCorruptionError(
+                "coordinate outcome lacks one exact endpoint generation"
+            )
+        return endpoint
 
     def _validate_agent_peer_audit(
         self,
@@ -1200,13 +1524,17 @@ class QIDCheckpoint:
                 "termination_status",
                 "agent_output",
                 "censored_generation",
+                "transport_censor",
             }:
                 raise CheckpointCorruptionError(
                     "topology coordinate outcome has the wrong fields"
                 )
             status = outcome["termination_status"]
             if status == TERMINATION_COMPLETED:
-                if outcome["censored_generation"] is not None:
+                if (
+                    outcome["censored_generation"] is not None
+                    or outcome["transport_censor"] is not None
+                ):
                     raise CheckpointCorruptionError(
                         "completed topology coordinate contains a censor"
                     )
@@ -1224,7 +1552,10 @@ class QIDCheckpoint:
                 TERMINATION_LENGTH_CENSORED,
                 TERMINATION_PROTOCOL_CENSORED,
             }:
-                if outcome["agent_output"] is not None:
+                if (
+                    outcome["agent_output"] is not None
+                    or outcome["transport_censor"] is not None
+                ):
                     raise CheckpointCorruptionError(
                         "censored topology coordinate contains AgentOutput"
                     )
@@ -1247,6 +1578,24 @@ class QIDCheckpoint:
                         "topology coordinate status does not match censor reason"
                     )
                 self._validate_censor_annotations(outcome["censored_generation"])
+            elif status == TERMINATION_TRANSPORT_CENSORED:
+                if (
+                    outcome["agent_output"] is not None
+                    or outcome["censored_generation"] is not None
+                ):
+                    raise CheckpointCorruptionError(
+                        "transport-censored topology coordinate contains a model "
+                        "response outcome"
+                    )
+                try:
+                    validate_transport_censor(
+                        outcome["transport_censor"],
+                        request=request,
+                    )
+                except ValueError as exc:
+                    raise CheckpointCorruptionError(
+                        f"invalid topology transport censor: {exc}"
+                    ) from exc
             else:
                 raise CheckpointCorruptionError(
                     f"invalid topology coordinate status {status!r}"
@@ -1259,6 +1608,7 @@ class QIDCheckpoint:
                 "termination_status",
                 "agent_output",
                 "censored_generation",
+                "transport_censor",
             }:
                 raise CheckpointCorruptionError(
                     "self-consistency outcome has the wrong fields"
@@ -1273,7 +1623,10 @@ class QIDCheckpoint:
                 )
             status = outcome["termination_status"]
             if status == TERMINATION_COMPLETED:
-                if outcome["censored_generation"] is not None:
+                if (
+                    outcome["censored_generation"] is not None
+                    or outcome["transport_censor"] is not None
+                ):
                     raise CheckpointCorruptionError(
                         "completed self-consistency outcome contains a censor"
                     )
@@ -1291,7 +1644,10 @@ class QIDCheckpoint:
                 TERMINATION_LENGTH_CENSORED,
                 TERMINATION_PROTOCOL_CENSORED,
             }:
-                if outcome["agent_output"] is not None:
+                if (
+                    outcome["agent_output"] is not None
+                    or outcome["transport_censor"] is not None
+                ):
                     raise CheckpointCorruptionError(
                         "censored self-consistency outcome contains AgentOutput"
                     )
@@ -1314,6 +1670,24 @@ class QIDCheckpoint:
                         "self-consistency status does not match censor reason"
                     )
                 self._validate_censor_annotations(outcome["censored_generation"])
+            elif status == TERMINATION_TRANSPORT_CENSORED:
+                if (
+                    outcome["agent_output"] is not None
+                    or outcome["censored_generation"] is not None
+                ):
+                    raise CheckpointCorruptionError(
+                        "transport-censored self-consistency coordinate contains "
+                        "a model response outcome"
+                    )
+                try:
+                    validate_transport_censor(
+                        outcome["transport_censor"],
+                        request=request,
+                    )
+                except ValueError as exc:
+                    raise CheckpointCorruptionError(
+                        f"invalid self-consistency transport censor: {exc}"
+                    ) from exc
             else:
                 raise CheckpointCorruptionError(
                     f"invalid self-consistency status {status!r}"
@@ -1339,14 +1713,14 @@ class QIDCheckpoint:
         producer: Callable[[], dict[str, Any]],
         *,
         admit_producer: Callable[[], None] | None = None,
+        attempt_endpoint_generation: Callable[[], str] | None = None,
     ) -> dict[str, Any]:
         """Produce once or replay one exact coordinate, synchronized across siblings.
 
-        ``admit_producer`` runs only for a genuinely missing coordinate, immediately
-        before that coordinate becomes in-flight.  A graceful-drain callback can reject
-        new work without obstructing exact replay.  Once admitted, the producer is
-        always allowed to return and its observation is atomically persisted even if a
-        drain signal arrives while the request is in flight.
+        ``admit_producer`` runs only for a genuinely missing coordinate.  After it
+        refreshes routing, an exact request/endpoint/attempt intent is fsynced before
+        ``producer`` can touch HTTP.  A durable pending intent is never sampled again:
+        a transport exception or restart becomes one trusted transport censor.
         """
 
         # Preserve the stronger identity-drift diagnostic for a slot already observed;
@@ -1393,12 +1767,81 @@ class QIDCheckpoint:
                     self._fatal = exc
                     raise
                 return copy.deepcopy(existing["outcome"])
+            pending = self._payload["pending_attempts"].get(key)
+            if pending is not None:
+                if pending["request"] != request:
+                    raise CheckpointIdentityError(
+                        f"coordinate {key!r} has a pending attempt under a different "
+                        "request identity"
+                    )
+                candidate = copy.deepcopy(self._payload)
+                outcome = self._finalize_pending_candidate(
+                    candidate,
+                    key,
+                    classification=TRANSPORT_CENSOR_CLASS_INTERRUPTED,
+                    censored_at=time.time(),
+                    error=None,
+                )
+                self._write_candidate(candidate)
+                self._payload = candidate
+                return outcome
             if admit_producer is not None:
                 # Keep this check inside the same condition critical section as the
                 # transition to ``_inflight``.  That makes admission a single local
                 # boundary: no cooperating sibling can create the coordinate between
                 # the drain decision and producer ownership.
                 admit_producer()
+            if attempt_endpoint_generation is None:
+                raise CheckpointIdentityError(
+                    "missing endpoint-generation supplier for stochastic attempt"
+                )
+            try:
+                endpoint_generation = attempt_endpoint_generation()
+            except Exception as exc:
+                raise CheckpointIdentityError(
+                    "could not bind the stochastic attempt to an endpoint generation"
+                ) from exc
+            if (
+                not isinstance(endpoint_generation, str)
+                or not endpoint_generation
+                or endpoint_generation == "mixed"
+            ):
+                raise CheckpointIdentityError(
+                    "stochastic attempt endpoint generation must be exact"
+                )
+            attempt = {
+                "attempt_id": uuid.uuid4().hex,
+                "coordinate_key": key,
+                "request_sha256": _sha256(request),
+                "endpoint_generation": endpoint_generation,
+                "started_at": time.time(),
+            }
+            try:
+                validate_attempt(attempt, coordinate_key=key, request=request)
+            except ValueError as exc:
+                raise CheckpointCorruptionError(
+                    f"could not construct stochastic attempt intent: {exc}"
+                ) from exc
+            runtime_provenance = (
+                None
+                if self._runtime_provenance is None
+                else {
+                    **self._runtime_provenance,
+                    "endpoint_generation": endpoint_generation,
+                }
+            )
+            candidate = copy.deepcopy(self._payload)
+            candidate["pending_attempts"][key] = {
+                "request": copy.deepcopy(request),
+                "attempt": copy.deepcopy(attempt),
+                "runtime_provenance": runtime_provenance,
+            }
+            try:
+                self._write_candidate(candidate)
+            except CheckpointError as exc:
+                self._fatal = exc
+                raise
+            self._payload = candidate
             self._inflight.add(key)
 
         started = time.monotonic()
@@ -1409,10 +1852,14 @@ class QIDCheckpoint:
             self._validate_outcome(request, outcome)
             entry = {
                 "request": request,
+                "attempt": copy.deepcopy(attempt),
                 "outcome": copy.deepcopy(outcome),
                 "observed_at": time.time(),
                 "producer_wall_ms": (time.monotonic() - started) * 1000.0,
             }
+            if self._runtime_provenance is not None:
+                entry["runtime_provenance"] = copy.deepcopy(runtime_provenance)
+            self._validate_coordinate_entry(key, entry)
             with self._condition:
                 candidate = copy.deepcopy(self._payload)
                 existing = candidate["coordinates"].get(key)
@@ -1423,9 +1870,36 @@ class QIDCheckpoint:
                         )
                 else:
                     candidate["coordinates"][key] = entry
+                    del candidate["pending_attempts"][key]
                     self._write_candidate(candidate)
                     self._payload = candidate
                 return copy.deepcopy(outcome)
+        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+            classification = (
+                TRANSPORT_CENSOR_CLASS_TIMEOUT
+                if isinstance(exc, APITimeoutError)
+                else (
+                    TRANSPORT_CENSOR_CLASS_CONNECTION
+                    if isinstance(exc, APIConnectionError)
+                    else TRANSPORT_CENSOR_CLASS_STATUS
+                )
+            )
+            with self._condition:
+                candidate = copy.deepcopy(self._payload)
+                outcome = self._finalize_pending_candidate(
+                    candidate,
+                    key,
+                    classification=classification,
+                    censored_at=time.time(),
+                    error=exc,
+                )
+                try:
+                    self._write_candidate(candidate)
+                except CheckpointError as persist_error:
+                    self._fatal = persist_error
+                    raise
+                self._payload = candidate
+                return outcome
         except CheckpointError as exc:
             # In particular, never let a duplicate waiter reissue an observation after
             # its producer returned but the atomic checkpoint write failed.
@@ -1433,13 +1907,51 @@ class QIDCheckpoint:
             raise
         except (TypeError, ValueError, OverflowError, RecursionError) as exc:
             if not observation_returned:
-                raise
+                with self._condition:
+                    candidate = copy.deepcopy(self._payload)
+                    outcome = self._finalize_pending_candidate(
+                        candidate,
+                        key,
+                        classification=(
+                            TRANSPORT_CENSOR_CLASS_PRODUCER_EXCEPTION
+                        ),
+                        censored_at=time.time(),
+                        error=exc,
+                    )
+                    try:
+                        self._write_candidate(candidate)
+                    except CheckpointError as persist_error:
+                        self._fatal = persist_error
+                        raise
+                    self._payload = candidate
+                    return outcome
             wrapped = CheckpointCorruptionError(
                 "observed coordinate could not satisfy the durable JSON contract: "
                 f"{exc}"
             )
             self._latch_fatal(wrapped)
             raise wrapped from exc
+        except Exception as exc:
+            # Once the intent exists, an arbitrary producer exception cannot prove
+            # that inference never began.  Retain one conservative censor immediately.
+            # BaseException subclasses (SIGINT/SystemExit/interpreter loss) leave the
+            # intent pending so restart performs the same conversion.
+            with self._condition:
+                candidate = copy.deepcopy(self._payload)
+                outcome = self._finalize_pending_candidate(
+                    candidate,
+                    key,
+                    classification=TRANSPORT_CENSOR_CLASS_PRODUCER_EXCEPTION,
+                    censored_at=time.time(),
+                    error=exc,
+                )
+                try:
+                    self._write_candidate(candidate)
+                except CheckpointError as persist_error:
+                    self._fatal = persist_error
+                    raise
+                self._payload = candidate
+                return outcome
         finally:
             with self._condition:
                 self._inflight.discard(key)
@@ -1450,6 +1962,7 @@ class QIDCheckpoint:
         censor: Mapping[str, Any],
         *,
         coordinates: Mapping[str, Any],
+        transport: bool = False,
     ) -> None:
         observed: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for entry in coordinates.values():
@@ -1457,12 +1970,24 @@ class QIDCheckpoint:
             outcome = entry["outcome"]
             if request.get("generation_role") != "topology":
                 continue
-            if outcome.get("termination_status") not in {
-                TERMINATION_LENGTH_CENSORED,
-                TERMINATION_PROTOCOL_CENSORED,
-            }:
+            allowed = (
+                {TERMINATION_TRANSPORT_CENSORED}
+                if transport
+                else {
+                    TERMINATION_LENGTH_CENSORED,
+                    TERMINATION_PROTOCOL_CENSORED,
+                }
+            )
+            if outcome.get("termination_status") not in allowed:
                 continue
-            observed.append((request, outcome["censored_generation"]))
+            observed.append(
+                (
+                    request,
+                    outcome[
+                        "transport_censor" if transport else "censored_generation"
+                    ],
+                )
+            )
         exact_matches = [
             request for request, payload in observed if payload == censor
         ]
@@ -1518,6 +2043,7 @@ class QIDCheckpoint:
             "termination_status",
             "topology_result",
             "censored_generation",
+            "transport_censor",
             "wall_ms",
             "observed_at",
         }:
@@ -1527,7 +2053,10 @@ class QIDCheckpoint:
         status = terminal["termination_status"]
         question = self.identity["question"]
         if status == TERMINATION_COMPLETED:
-            if terminal["censored_generation"] is not None:
+            if (
+                terminal["censored_generation"] is not None
+                or terminal["transport_censor"] is not None
+            ):
                 raise CheckpointCorruptionError(
                     "completed topology terminal contains a censor"
                 )
@@ -1541,7 +2070,10 @@ class QIDCheckpoint:
             TERMINATION_LENGTH_CENSORED,
             TERMINATION_PROTOCOL_CENSORED,
         }:
-            if terminal["topology_result"] is not None:
+            if (
+                terminal["topology_result"] is not None
+                or terminal["transport_censor"] is not None
+            ):
                 raise CheckpointCorruptionError(
                     "censored topology terminal contains TopologyResult"
                 )
@@ -1580,6 +2112,40 @@ class QIDCheckpoint:
             return TopologyTerminal(
                 termination_status=status,
                 censored_error=error,
+                wall_ms=wall_ms,
+            )
+        if status == TERMINATION_TRANSPORT_CENSORED:
+            if (
+                terminal["topology_result"] is not None
+                or terminal["censored_generation"] is not None
+            ):
+                raise CheckpointCorruptionError(
+                    "transport-censored topology terminal contains a model outcome"
+                )
+            try:
+                censor = validate_transport_censor(
+                    terminal["transport_censor"]
+                )
+            except ValueError as exc:
+                raise CheckpointCorruptionError(
+                    f"invalid topology transport terminal: {exc}"
+                ) from exc
+            if censor["qid"] != question["qid"]:
+                raise CheckpointCorruptionError(
+                    "topology transport terminal QID does not match identity"
+                )
+            self._validate_terminal_censor_binding(
+                censor,
+                coordinates=(
+                    self._payload["coordinates"]
+                    if coordinates is None
+                    else coordinates
+                ),
+                transport=True,
+            )
+            return TopologyTerminal(
+                termination_status=status,
+                transport_error=TransportCensorError(censor),
                 wall_ms=wall_ms,
             )
         raise CheckpointCorruptionError(f"invalid topology terminal status {status!r}")
@@ -1625,6 +2191,7 @@ class QIDCheckpoint:
                 "termination_status": TERMINATION_COMPLETED,
                 "topology_result": _topology_result_payload(result),
                 "censored_generation": None,
+                "transport_censor": None,
                 "wall_ms": _finite_nonnegative(wall_ms, "terminal.wall_ms"),
                 "observed_at": time.time(),
             }
@@ -1646,6 +2213,7 @@ class QIDCheckpoint:
                 "termination_status": status,
                 "topology_result": None,
                 "censored_generation": error.to_censored_generation(),
+                "transport_censor": None,
                 "wall_ms": _finite_nonnegative(wall_ms, "terminal.wall_ms"),
                 "observed_at": time.time(),
             }
@@ -1656,6 +2224,32 @@ class QIDCheckpoint:
         except (TypeError, ValueError, OverflowError, RecursionError) as exc:
             wrapped = CheckpointCorruptionError(
                 f"observed topology censor is not durable canonical JSON: {exc}"
+            )
+            self._latch_fatal(wrapped)
+            raise wrapped from exc
+
+    def record_topology_transport_censor(
+        self, error: TransportCensorError, *, wall_ms: float
+    ) -> None:
+        """Persist the map-order ambiguous transport attempt as the QID terminal."""
+
+        try:
+            terminal = {
+                "termination_status": TERMINATION_TRANSPORT_CENSORED,
+                "topology_result": None,
+                "censored_generation": None,
+                "transport_censor": error.to_transport_censor(),
+                "wall_ms": _finite_nonnegative(wall_ms, "terminal.wall_ms"),
+                "observed_at": time.time(),
+            }
+            self._record_terminal(terminal)
+        except CheckpointError as exc:
+            self._latch_fatal(exc)
+            raise
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            wrapped = CheckpointCorruptionError(
+                f"observed topology transport censor is not durable canonical JSON: "
+                f"{exc}"
             )
             self._latch_fatal(wrapped)
             raise wrapped from exc
@@ -1760,6 +2354,77 @@ class QIDCheckpoint:
                 observed.append({"coordinate_key": key, **copy.deepcopy(entry)})
             return observed
 
+    def coordinate_runtime_provenance_counts(
+        self, *, require_complete: bool = False
+    ) -> dict[str, dict[str, int]]:
+        """Return exact per-coordinate serving-generation counts.
+
+        Runtime provenance is deliberately outside checkpoint identity: retained
+        coordinates replay across a controlled fleet or rollout generation, while every
+        newly sampled coordinate records the generation that actually produced it.
+        """
+
+        fields = tuple(sorted(_COORDINATE_RUNTIME_PROVENANCE_FIELDS))
+        counts: dict[str, dict[str, int]] = {field: {} for field in fields}
+        identities = self.coordinate_runtime_provenance_identity_counts(
+            require_complete=require_complete
+        )
+        for identity in identities:
+            count = int(identity["count"])
+            for field in fields:
+                value = str(identity[field])
+                counts[field][value] = counts[field].get(value, 0) + count
+        return {
+            field: {
+                value: counts[field][value] for value in sorted(counts[field])
+            }
+            for field in fields
+        }
+
+    def coordinate_runtime_provenance_identity_counts(
+        self, *, require_complete: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return exact joint serving identities for every retained coordinate.
+
+        Separate marginal histograms cannot prove which fleet, capacity, rollout, and
+        endpoint values co-occurred.  This joint representation is the authoritative
+        schema-5 lineage input; marginal counts are derived from it.
+        """
+
+        counts: dict[tuple[Any, ...], int] = {}
+        with self._condition:
+            for key in sorted(self._payload["coordinates"]):
+                entry = self._payload["coordinates"][key]
+                provenance = entry.get("runtime_provenance")
+                if provenance is None:
+                    if require_complete:
+                        raise CheckpointCorruptionError(
+                            f"checkpoint coordinate {key!r} lacks runtime provenance"
+                        )
+                    continue
+                validated = self._validate_runtime_provenance(
+                    provenance, require_endpoint=True
+                )
+                assert validated is not None
+                identity = tuple(
+                    validated[field]
+                    for field in _COORDINATE_RUNTIME_IDENTITY_FIELDS
+                )
+                counts[identity] = counts.get(identity, 0) + 1
+        result: list[dict[str, Any]] = []
+        for identity in sorted(counts):
+            row = {
+                field: value
+                for field, value in zip(
+                    _COORDINATE_RUNTIME_IDENTITY_FIELDS,
+                    identity,
+                    strict=True,
+                )
+            }
+            row["count"] = counts[identity]
+            result.append(row)
+        return result
+
     def topology_producer_wall_ms(self) -> float:
         """Return total producer time across all durable topology observations.
 
@@ -1840,9 +2505,10 @@ class QIDCheckpoint:
         """Delete only after the caller has fsynced the canonical QID result row."""
 
         with self._condition:
-            if self._inflight:
+            if self._inflight or self._payload["pending_attempts"]:
                 raise CheckpointPersistenceError(
-                    "cannot delete a QID checkpoint while coordinates are in flight"
+                    "cannot delete a QID checkpoint while coordinates are in flight "
+                    "or have pending stochastic intents"
                 )
             io.remove_file(self.path)
 
@@ -1867,6 +2533,7 @@ class CheckpointingAgent:
         *,
         agent_id: str | None = None,
         admit_coordinate: Callable[[], None] | None = None,
+        prepare_coordinate: Callable[[], None] | None = None,
     ) -> None:
         self._agent = agent
         self._checkpoint = checkpoint
@@ -1877,6 +2544,7 @@ class CheckpointingAgent:
             raise TypeError("checkpointed agent requires a non-empty agent_id")
         self._agent_id = resolved_agent_id
         self._admit_coordinate = admit_coordinate
+        self._prepare_coordinate = prepare_coordinate
 
     @property
     def agent_id(self) -> str:
@@ -1886,9 +2554,46 @@ class CheckpointingAgent:
         return getattr(self._agent, name)
 
     def prepare_calibration(self, question: Question) -> Any:
+        # The forced-option probe is a real endpoint request even though it is
+        # deterministic rather than a stochastic coordinate.  Refresh the promoted
+        # pointer before asking the underlying agent to consult/fill its cache.  The
+        # second drain check closes the same signal window as topology admission.  A
+        # cache hit may perform an unnecessary read-only refresh, which is preferable
+        # to ever issuing an uncached probe to a retired process.
+        self._admit_missing_coordinate()
+        return self._agent.prepare_calibration(question)
+
+    def _admit_missing_coordinate(self) -> None:
+        """Refresh routing only for a coordinate proven absent by the journal.
+
+        :meth:`QIDCheckpoint.execute_coordinate` invokes this callback while holding
+        producer-ownership synchronization and skips it entirely on replay.  The second
+        admission check closes the signal window introduced by the pointer read/client
+        refresh: a drain arriving during that filesystem operation prevents the
+        coordinate from becoming in-flight.
+        """
+
         if self._admit_coordinate is not None:
             self._admit_coordinate()
-        return self._agent.prepare_calibration(question)
+        if self._prepare_coordinate is not None:
+            self._prepare_coordinate()
+        if self._admit_coordinate is not None:
+            self._admit_coordinate()
+
+    def _attempt_endpoint_generation(self) -> str:
+        """Return the exact endpoint that the next stochastic HTTP call will use."""
+
+        client = getattr(self._agent, "client", None)
+        value = getattr(client, "endpoint_generation", None)
+        if value is None:
+            # Test doubles and narrow adapters may expose the same frozen identity
+            # directly.  Production Agent objects always use ``agent.client``.
+            value = getattr(self._agent, "endpoint_generation", None)
+        if not isinstance(value, str) or not value or value == "mixed":
+            raise CheckpointIdentityError(
+                "checkpointed stochastic agent lacks an exact endpoint generation"
+            )
+        return value
 
     @staticmethod
     def _coordinate_key(request: Mapping[str, Any]) -> str:
@@ -2092,19 +2797,32 @@ class CheckpointingAgent:
                     ),
                     "agent_output": None,
                     "censored_generation": exc.to_censored_generation(),
+                    "transport_censor": None,
                 }
             output = self._attach_peer_context_audit(output, rendered)
             return {
                 "termination_status": TERMINATION_COMPLETED,
                 "agent_output": _agent_output_payload(output),
                 "censored_generation": None,
+                "transport_censor": None,
             }
+
+        def admit_stochastic_coordinate() -> None:
+            # The MCQ option probe is deterministic and therefore remains safely
+            # retryable.  Force it to complete before the durable stochastic intent:
+            # on a resumed topology the underlying Agent cache is cold even when the
+            # primary terminal is already journaled, and allowing the defensive probe
+            # inside ``Agent.answer`` would otherwise misclassify a probe-only
+            # connection failure as an ambiguous model draw.
+            self._admit_missing_coordinate()
+            self._agent.prepare_calibration(question)
 
         outcome = self._checkpoint.execute_coordinate(
             key,
             request,
             produce,
-            admit_producer=self._admit_coordinate,
+            admit_producer=admit_stochastic_coordinate,
+            attempt_endpoint_generation=self._attempt_endpoint_generation,
         )
         if outcome["termination_status"] == TERMINATION_COMPLETED:
             outcome = self._checkpoint.upgrade_legacy_peer_audit(
@@ -2119,6 +2837,8 @@ class CheckpointingAgent:
             )
             self._assert_output_matches_peer_context_audit(output, rendered)
             return output
+        if outcome["termination_status"] == TERMINATION_TRANSPORT_CENSORED:
+            raise TransportCensorError(outcome["transport_censor"])
         raise self._checkpoint._decode_censor(
             outcome["censored_generation"],
             qid=question.qid,
@@ -2190,13 +2910,22 @@ class CheckpointingAgent:
                     else None
                 ),
                 "censored_generation": copy.deepcopy(sample.censored_generation),
+                "transport_censor": copy.deepcopy(sample.transport_censor),
             }
+
+        def admit_stochastic_coordinate() -> None:
+            # As for topology answers, a cold post-restart calibration cache must be
+            # filled before the stochastic intent is fsynced.  Only the subsequent
+            # seeded chat belongs to the one-attempt no-redraw protocol.
+            self._admit_missing_coordinate()
+            self._agent.prepare_calibration(question)
 
         outcome = self._checkpoint.execute_coordinate(
             key,
             request,
             produce,
-            admit_producer=self._admit_coordinate,
+            admit_producer=admit_stochastic_coordinate,
+            attempt_endpoint_generation=self._attempt_endpoint_generation,
         )
         if outcome["termination_status"] == TERMINATION_COMPLETED:
             output = _agent_output_from_payload(
@@ -2210,6 +2939,17 @@ class CheckpointingAgent:
                 seed=seed,
                 termination_status=TERMINATION_COMPLETED,
                 agent_output=output,
+            )
+        if outcome["termination_status"] == TERMINATION_TRANSPORT_CENSORED:
+            censor = validate_transport_censor(
+                outcome["transport_censor"],
+                request=request,
+            )
+            return SelfConsistencySample(
+                sample_index=sample_index,
+                seed=seed,
+                termination_status=TERMINATION_TRANSPORT_CENSORED,
+                transport_censor=censor,
             )
         # Reconstruct before returning so hashes, coordinates, and every censor field
         # are validated rather than trusting a dictionary merely covered by integrity.

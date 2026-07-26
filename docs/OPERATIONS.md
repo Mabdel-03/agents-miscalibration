@@ -4,7 +4,7 @@
 > scratch defaults, `meta.json` completion shortcut, and legacy keepalive commands below
 > describe the retired v1 system or local development. Do not use them to start or resume
 > an authoritative sweep. Use
-> [SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md) for the homogeneous schema-5
+> [SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md) for the homogeneous schema-5
 > run, whose control state is `.dispatcher-schema5-v1` and whose only accepted code and
 > environments come from the sealed release bundle.
 

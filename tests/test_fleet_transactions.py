@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,57 @@ def _prepare(directory, ledger, *, now=1.0):
     )
 
 
+def _committed_handoff(directory, ledger, *, allocated_gpus=1):
+    primary = _prepare(directory, ledger, now=1.0)
+    primary.update(
+        {
+            "state": "committed",
+            "job_id": "700",
+            "submitted_at": 1.0,
+            "committed_at": 2.0,
+            "last_seen_at": 50.0,
+            "allocated_gpus": allocated_gpus,
+            "scheduler_start_at": 0.0,
+            "scheduler_end_at": 86_400.0,
+            "scheduler_time_limit_seconds": 86_400,
+        }
+    )
+    tx.save_ledger(directory, ledger, now=2.0)
+    standby = tx.prepare_attempt(
+        directory,
+        ledger,
+        replica_id=REPLICA_ID,
+        profile=PROFILE,
+        pool_id=POOL_ID,
+        fleet_sha256=FLEET_SHA256,
+        rollout_generation=GENERATION,
+        sbatch_text="#!/bin/bash\n#SBATCH --no-requeue\n--standby\n",
+        now=3.0,
+        token_factory=lambda: "2" * 32,
+        launch_kind="handoff",
+        predecessor_job_id="700",
+        predecessor_end_at=86_400.0,
+        predecessor_attempt=primary,
+        allocated_gpus=allocated_gpus,
+    )
+    standby.update(
+        {
+            "state": "committed",
+            "job_id": "701",
+            "submitted_at": 3.0,
+            "committed_at": 4.0,
+            "last_seen_at": 50.0,
+            "last_ready_probe_at": 50.0,
+            "ready_probe_count": 1,
+            "scheduler_start_at": 3.0,
+            "scheduler_end_at": 86_403.0,
+            "scheduler_time_limit_seconds": 86_400,
+        }
+    )
+    tx.save_ledger(directory, ledger, now=50.0)
+    return primary, standby
+
+
 def test_pre_sbatch_intent_and_script_are_durable_and_immutable(tmp_path):
     _root, lock, directory, ledger = _open_state(tmp_path)
     try:
@@ -70,6 +122,53 @@ def test_pre_sbatch_intent_and_script_are_durable_and_immutable(tmp_path):
         assert not path.stat().st_mode & 0o222
         persisted = json.loads(tx.ledger_path(directory, GENERATION).read_text())
         assert persisted["replicas"][REPLICA_ID]["attempts"][0] == attempt
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_endpoint_admission_exports_only_exact_committed_ledger_attempt(tmp_path):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        attempt.update(
+            {
+                "state": "committed",
+                "job_id": "4242",
+                "submitted_at": 1.5,
+                "committed_at": 2.0,
+            }
+        )
+        tx.save_ledger(directory, ledger, now=2.0)
+        binding = tx.committed_endpoint_admission(
+            directory,
+            ledger,
+            replica_id=REPLICA_ID,
+            attempt=attempt,
+            slurm_job_id="4242",
+        )
+        assert binding.intent_token == "1" * 32
+        assert binding.rollout_generation == GENERATION
+        assert binding.sbatch_sha256 == hashlib.sha256(
+            binding.sbatch_path.read_bytes()
+        ).hexdigest()
+        with pytest.raises(
+            tx.FleetTransactionError, match="one exact ledger attempt"
+        ):
+            tx.committed_endpoint_admission(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=dict(attempt),
+                slurm_job_id="4242",
+            )
+        with pytest.raises(tx.FleetTransactionError, match="not committed"):
+            tx.committed_endpoint_admission(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                slurm_job_id="9999",
+            )
     finally:
         lock.__exit__(None, None, None)
 
@@ -151,7 +250,7 @@ def test_successful_submission_records_exact_job_once(tmp_path):
         lock.__exit__(None, None, None)
 
 
-def test_joined_scheduler_uses_sacct_to_recover_absent_from_squeue():
+def test_joined_scheduler_uses_sacct_to_recover_terminal_history():
     token = "1" * 32
     comment = tx.intent_comment(
         pool_id=POOL_ID,
@@ -163,7 +262,7 @@ def test_joined_scheduler_uses_sacct_to_recover_absent_from_squeue():
     )
     path = f"/pool/.fleet-transactions-v1/sbatch/g000007/{REPLICA_ID}.{token}.sbatch"
     accounting = (
-        f"4242|asys-s5-serve-8b-s-r00|PENDING|ou_bcs_low|(null)|"
+        f"4242|asys-s5-serve-8b-s-r00|COMPLETED|ou_bcs_low|(null)|"
         f"sbatch --comment={comment} {path}|\n"
     )
     calls = []
@@ -176,6 +275,153 @@ def test_joined_scheduler_uses_sacct_to_recover_absent_from_squeue():
     assert calls == ["sacct", "squeue"]
     assert snapshot.sacct_ok and snapshot.squeue_ok
     assert [(row.job_id, row.source) for row in snapshot.rows] == [("4242", "sacct")]
+
+
+def test_scheduler_argv_matches_cluster_supported_fields_exactly():
+    calls = []
+
+    def runner(argv, **_kwargs):
+        calls.append(argv)
+        return _process()
+
+    tx.query_scheduler(runner=runner, user="scientist", now=1_700_000_000.0)
+    assert calls[0][0:4] == ["sacct", "-X", "-u", "scientist"]
+    assert calls[0].count("-u") == 1
+    assert calls[0][-1] == (
+        "--format=JobIDRaw,JobName,State,Partition,NodeList,SubmitLine,"
+        "Comment,Start,End,TimelimitRaw"
+    )
+    assert "Dependency" not in calls[0][-1]
+    assert calls[1] == [
+        "squeue",
+        "-u",
+        "scientist",
+        "-h",
+        "-r",
+        "-o",
+        "%i|%j|%T|%P|%N|%o|%k|%S|%e|%l|%E",
+    ]
+
+
+def test_scheduler_cluster_time_units_timezone_and_cross_source_agree():
+    token = "1" * 32
+    comment = tx.intent_comment(
+        pool_id=POOL_ID,
+        profile=PROFILE,
+        replica_id=REPLICA_ID,
+        rollout_generation=GENERATION,
+        intent_token=token,
+        fleet_sha256=FLEET_SHA256,
+    )
+    path = f"/pool/.fleet-transactions-v1/sbatch/g000007/{REPLICA_ID}.{token}.sbatch"
+    submit = f"sbatch --comment={comment} {path}"
+    sacct = (
+        f"4242|asys-s5-serve-8b-s-r00|RUNNING|ou_bcs_low|node1|{submit}||"
+        "2026-01-01T12:00:00-05:00|Unknown|1440\n"
+    )
+    squeue = (
+        f"4242|asys-s5-serve-8b-s-r00|RUNNING|ou_bcs_low|node1|{submit}|"
+        f"{comment}|2026-01-01T17:00:00Z|2026-01-02T17:00:00Z|"
+        "1-00:00:00|(null)\n"
+    )
+
+    def runner(argv, **_kwargs):
+        return _process(stdout=sacct if argv[0] == "sacct" else squeue)
+
+    [row] = tx.query_scheduler(
+        runner=runner, user="scientist", now=1_767_290_400.0
+    ).rows
+    assert row.start_timestamp == 1_767_286_800.0
+    assert row.end_timestamp == row.start_timestamp + 86_400
+    assert row.time_limit_seconds == 86_400
+    assert row.dependency == ""
+
+    parsed = tx._parse_rows(  # noqa: SLF001 - source-unit contract regression
+        (
+            f"4243|asys-s5-serve-8b-s-r00|COMPLETED|ou_bcs_low|node1|"
+            f"{submit}||2026-01-01T12:00:00-05:00|"
+            "2026-01-08T12:00:00-05:00|10080\n"
+        ),
+        source="sacct",
+    )
+    assert parsed[0].time_limit_seconds == 7 * 86_400
+
+
+@pytest.mark.parametrize(
+    ("sacct_start", "sacct_limit", "squeue_start", "squeue_limit", "message"),
+    [
+        (
+            "2026-01-01T12:00:00Z",
+            "1440",
+            "2026-01-01T12:00:03Z",
+            "1-00:00:00",
+            "start_timestamp conflict",
+        ),
+        (
+            "2026-01-01T12:00:00Z",
+            "60",
+            "2026-01-01T12:00:00Z",
+            "2:00:00",
+            "time limit conflict",
+        ),
+    ],
+)
+def test_scheduler_rejects_cross_source_timing_drift(
+    sacct_start, sacct_limit, squeue_start, squeue_limit, message
+):
+    token = "1" * 32
+    comment = tx.intent_comment(
+        pool_id=POOL_ID,
+        profile=PROFILE,
+        replica_id=REPLICA_ID,
+        rollout_generation=GENERATION,
+        intent_token=token,
+        fleet_sha256=FLEET_SHA256,
+    )
+    path = f"/pool/{REPLICA_ID}.{token}.sbatch"
+    submit = f"sbatch --comment={comment} {path}"
+    sacct = (
+        f"4242|asys-s5-serve-8b-s-r00|RUNNING|p|node1|{submit}||"
+        f"{sacct_start}|Unknown|{sacct_limit}\n"
+    )
+    squeue = (
+        f"4242|asys-s5-serve-8b-s-r00|RUNNING|p|node1|{submit}|{comment}|"
+        f"{squeue_start}|2026-01-02T12:00:00Z|{squeue_limit}|(null)\n"
+    )
+
+    with pytest.raises(tx.FleetTransactionError, match=message):
+        tx.query_scheduler(
+            runner=lambda argv, **_kwargs: _process(
+                stdout=sacct if argv[0] == "sacct" else squeue
+            ),
+            user="scientist",
+            now=1_767_290_400.0,
+        )
+
+
+def test_scheduler_rejects_active_dependency_from_squeue():
+    token = "1" * 32
+    comment = tx.intent_comment(
+        pool_id=POOL_ID,
+        profile=PROFILE,
+        replica_id=REPLICA_ID,
+        rollout_generation=GENERATION,
+        intent_token=token,
+        fleet_sha256=FLEET_SHA256,
+    )
+    submit = f"sbatch --comment={comment} /pool/job.sbatch"
+    squeue = (
+        f"4242|asys-s5-serve-8b-s-r00|PENDING|p|(null)|{submit}|{comment}|"
+        "2026-01-01T12:00:00Z|2026-01-02T12:00:00Z|1-00:00:00|afterok:7\n"
+    )
+    with pytest.raises(tx.FleetTransactionError, match="unexpected dependency"):
+        tx.query_scheduler(
+            runner=lambda argv, **_kwargs: _process(
+                stdout="" if argv[0] == "sacct" else squeue
+            ),
+            user="scientist",
+            now=1_767_290_400.0,
+        )
 
 
 def test_joined_scheduler_recovers_blank_sacct_comment_and_agrees_with_squeue():
@@ -300,6 +546,128 @@ def test_scheduler_join_ignores_unrelated_array_and_step_rows():
 
     snapshot = tx.query_scheduler(runner=runner, user="scientist", now=1000.0)
     assert snapshot.rows == ()
+
+
+def test_read_only_reconciliation_binds_transaction_comment_ledger_and_script(
+    tmp_path,
+):
+    root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        row = tx.SchedulerRow(
+            "4242",
+            "asys-s5-serve-8b-s-r00",
+            "RUNNING",
+            "ou_bcs_low",
+            "node001",
+            f"sbatch --comment={attempt['scheduler_comment']} "
+            f"{attempt['sbatch_path']}",
+            attempt["scheduler_comment"],
+            "squeue",
+        )
+        reconciled = tx.reconcile_scheduler_rows(
+            [row],
+            [ledger],
+            pool_id=POOL_ID,
+            fleet_sha256=FLEET_SHA256,
+            replica_profiles={REPLICA_ID: PROFILE},
+            replica_job_names={REPLICA_ID: "asys-s5-serve-8b-s-r00"},
+        )
+        [allocation] = reconciled.active_allocations
+        assert allocation.replica_id == REPLICA_ID
+        assert allocation.attempt["intent_token"] == "1" * 32
+        assert allocation.ledger_generation == GENERATION
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_read_only_reconciliation_rejects_duplicate_and_unknown_active_jobs(
+    tmp_path,
+):
+    root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        row = tx.SchedulerRow(
+            "4242",
+            "asys-s5-serve-8b-s-r00",
+            "PENDING",
+            "ou_bcs_low",
+            "(null)",
+            attempt["sbatch_path"],
+            attempt["scheduler_comment"],
+        )
+        kwargs = {
+            "pool_id": POOL_ID,
+            "fleet_sha256": FLEET_SHA256,
+            "replica_profiles": {REPLICA_ID: PROFILE},
+            "replica_job_names": {REPLICA_ID: "asys-s5-serve-8b-s-r00"},
+        }
+        with pytest.raises(tx.FleetTransactionError, match="duplicate fleet jobs"):
+            tx.reconcile_scheduler_rows(
+                [row, replace(row, job_id="4243")],
+                [ledger],
+                **kwargs,
+            )
+        unknown = tx.SchedulerRow(
+            "4244",
+            row.job_name,
+            "RUNNING",
+            row.partition,
+            "node001",
+            "/foreign.sbatch",
+            tx.intent_comment(
+                pool_id=POOL_ID,
+                profile=PROFILE,
+                replica_id=REPLICA_ID,
+                rollout_generation=GENERATION,
+                intent_token="2" * 32,
+                fleet_sha256=FLEET_SHA256,
+            ),
+        )
+        with pytest.raises(tx.FleetTransactionError, match="unknown fleet intent"):
+            tx.reconcile_scheduler_rows([unknown], [ledger], **kwargs)
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_generation_ledger_read_is_non_mutating_and_fails_on_writer_intent(
+    tmp_path,
+):
+    root, lock, directory, _ledger = _open_state(tmp_path)
+    lock.__exit__(None, None, None)
+    before = {
+        path: path.read_bytes()
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    with tx.read_transaction_lock(root) as read_directory:
+        ledgers = tx.read_generation_ledgers(
+            read_directory,
+            pool_root=root,
+            pool_id=POOL_ID,
+            fleet_sha256=FLEET_SHA256,
+            current_generation=GENERATION,
+            replica_ids=[REPLICA_ID],
+        )
+    assert len(ledgers) == 1
+    assert {
+        path: path.read_bytes()
+        for path in directory.rglob("*")
+        if path.is_file()
+    } == before
+
+    marker = directory / tx.SAVE_INTENT_FILENAME
+    marker.write_text("writer-owned\n", encoding="utf-8")
+    with tx.read_transaction_lock(root) as read_directory:
+        with pytest.raises(tx.FleetTransactionError, match="publication is in progress"):
+            tx.read_generation_ledgers(
+                read_directory,
+                pool_root=root,
+                pool_id=POOL_ID,
+                fleet_sha256=FLEET_SHA256,
+                current_generation=GENERATION,
+                replica_ids=[REPLICA_ID],
+            )
 
 
 def test_ledger_rejects_external_sbatch_path_and_comment_drift(tmp_path):
@@ -459,3 +827,68 @@ def test_health_monitor_never_recovers_writer_save_intent(tmp_path):
         assert marker.read_bytes() == before
     finally:
         lock.__exit__(None, None, None)
+
+
+def test_health_summary_accepts_valid_handoff_and_flags_critical_lead(tmp_path):
+    root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        _primary, _standby = _committed_handoff(directory, ledger)
+    finally:
+        lock.__exit__(None, None, None)
+    healthy = tx.read_health_summary(root, now=50.0)
+    assert healthy["handoff_overlap_gpus"] == 1
+    assert healthy["handoff_violations"] == []
+    assert healthy["active_handoffs"][0]["job_id"] == "701"
+
+    critical = tx.read_health_summary(root, now=85_000.0)
+    assert {
+        row["kind"] for row in critical["handoff_violations"]
+    } == {"handoff_critical_lead", "handoff_scheduler_stale"}
+
+
+def test_health_summary_flags_overlap_budget_and_missing_promoted_pointer(
+    tmp_path,
+):
+    root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        primary, standby = _committed_handoff(
+            directory, ledger, allocated_gpus=5
+        )
+    finally:
+        lock.__exit__(None, None, None)
+    over_budget = tx.read_health_summary(root, now=50.0)
+    assert over_budget["handoff_overlap_gpus"] == 5
+    assert "handoff_overlap_budget_exceeded" in {
+        row["kind"] for row in over_budget["handoff_violations"]
+    }
+
+    with tx.transaction_lock(root) as directory:
+        material = tx.load_or_create_ledger(
+            directory,
+            pool_root=root,
+            pool_id=POOL_ID,
+            fleet_sha256=FLEET_SHA256,
+            rollout_generation=GENERATION,
+            replica_ids=[REPLICA_ID],
+            now=60.0,
+        )
+        primary, standby = material["replicas"][REPLICA_ID]["attempts"]
+        primary.update(
+            {
+                "state": "terminal",
+                "terminal_at": 60.0,
+                "lifecycle": "retiring",
+            }
+        )
+        standby.update(
+            {
+                "lifecycle": "promoted",
+                "ready_probe_count": 2,
+                "promoted_at": 60.0,
+            }
+        )
+        tx.save_ledger(directory, material, now=60.0)
+    missing_pointer = tx.read_health_summary(root, now=61.0)
+    assert "invalid_promoted_pointer" in {
+        row["kind"] for row in missing_pointer["handoff_violations"]
+    }
