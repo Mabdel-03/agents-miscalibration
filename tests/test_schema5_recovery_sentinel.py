@@ -60,7 +60,7 @@ def _verified(tmp_path: Path) -> dict[str, Any]:
             }
         )
     manifest = {
-        "protocol": sentinel.R2_PROTOCOL,
+        "protocol": sentinel.R3_PROTOCOL,
         "chain_id": "a" * 64,
         "slurm_user": "tester",
         "jobs": jobs,
@@ -72,7 +72,7 @@ def _verified(tmp_path: Path) -> dict[str, Any]:
     receipt_path.chmod(0o444)
     return {
         "schema_version": 1,
-        "chain_protocol": sentinel.R2_PROTOCOL,
+        "chain_protocol": sentinel.R3_PROTOCOL,
         "renderer": "render_schema5_recovery_chain_v12",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sentinel._sha256(manifest_path),
@@ -130,7 +130,7 @@ def _failfast_verified(tmp_path: Path) -> dict[str, Any]:
         for index, row in enumerate(jobs)
     ]
     manifest = {
-        "protocol": sentinel.R2_PROTOCOL,
+        "protocol": sentinel.R3_PROTOCOL,
         "chain_id": "c" * 64,
         "slurm_user": "tester",
         "jobs": jobs,
@@ -142,7 +142,7 @@ def _failfast_verified(tmp_path: Path) -> dict[str, Any]:
     receipt_path.chmod(0o444)
     return {
         "schema_version": 1,
-        "chain_protocol": sentinel.R2_PROTOCOL,
+        "chain_protocol": sentinel.R3_PROTOCOL,
         "renderer": "render_schema5_recovery_chain_v12",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sentinel._sha256(manifest_path),
@@ -605,6 +605,12 @@ def _capacity_receipt(
             "submission_attempts": 1,
             "sbatch_path": row["local_script_path"],
             "sbatch_sha256": row["local_script_sha256"],
+            "submission_transport": (
+                readiness.fleet_tx.STDIN_EXACT_SUBMISSION_TRANSPORT
+            ),
+            "submission_argv_sha256": readiness.fleet_tx.submission_argv_sha256(
+                row["comment"]
+            ),
             "scheduler_comment": row["comment"],
             "job_id": row["job_id"],
             "submitted_at": 34_002.0,
@@ -904,7 +910,7 @@ def _capacity_receipt(
         "schema_version": 1,
         "protocol": sentinel.CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL,
         "passed": True,
-        "chain_protocol": sentinel.R2_PROTOCOL,
+        "chain_protocol": sentinel.R3_PROTOCOL,
         "chain_id": verified["manifest"]["chain_id"],
         "chain_generation": 0,
         "manifest": verified["manifest_path"],
@@ -2536,15 +2542,58 @@ def test_exit76_requires_exact_sealed_current_failure_preimage(
         "capacity_generation": 1,
         "trusted_generation_catalog_id": readiness_generation["catalog_id"],
     }
+    failure_reason = "qualification throughput is below threshold"
+    observation_path = (
+        attempt_root / "observations" / "OBSERVATION_000000.json"
+    )
+    observation_path.parent.mkdir()
+    observation = identified(
+        {
+            "schema_version": 3,
+            "protocol": "test-qualification-observation-v3",
+        },
+        "observation_id",
+    )
+    observation_path.write_bytes(sentinel._canonical_json(observation))
+    observation_path.chmod(0o444)
+    drain_intent = identified(
+        {
+            "schema_version": (
+                sentinel.QUALIFICATION_FAILURE_SCHEMA_VERSION
+            ),
+            "protocol": sentinel.QUALIFICATION_FAILURE_DRAIN_PROTOCOL,
+            "qualification_intent_id": "7" * 64,
+            "reason": failure_reason,
+            "admission_closed": True,
+            "state": "draining",
+            "requested_at": sentinel._utc(2_000.0),
+            "requested_timestamp": 2_000.0,
+        },
+        "failure_drain_intent_id",
+    )
+    drain_intent_path = (
+        attempt_root / sentinel.QUALIFICATION_FAILURE_DRAIN_NAME
+    )
+    drain_intent_path.write_bytes(
+        sentinel._canonical_json(drain_intent)
+    )
+    drain_intent_path.chmod(0o444)
+    run_member = run_root / "fixture.jsonl"
+    run_member.write_text('{"qid":"fixture"}\n', encoding="utf-8")
+    run_member.chmod(0o444)
+    run_root.chmod(0o555)
+    cycle_inventory = sentinel._qualification_tree_inventory(run_root)
     failure = identified(
         {
-            "schema_version": 1,
+            "schema_version": (
+                sentinel.QUALIFICATION_FAILURE_SCHEMA_VERSION
+            ),
             "protocol": sentinel.QUALIFICATION_FAILURE_PROTOCOL,
             "passed": False,
             "intent_id": "7" * 64,
             "attempt": attempt_binding,
             "readiness_generation": readiness_generation,
-            "reason": "qualification throughput is below threshold",
+            "reason": failure_reason,
             "additive_scaling_requirement": {
                 "serving_profile": "8B",
                 "server_pool_root": str(server_pool_root),
@@ -2558,6 +2607,30 @@ def test_exit76_requires_exact_sealed_current_failure_preimage(
                 "capacity_mutated": False,
             },
             "scheduler_capacity_mutated": False,
+            "failure_drain_intent": {
+                "path": str(drain_intent_path),
+                "sha256": sentinel._sha256(drain_intent_path),
+                "failure_drain_intent_id": drain_intent[
+                    "failure_drain_intent_id"
+                ],
+                "drain_observation": {
+                    "path": str(observation_path),
+                    "sha256": sentinel._sha256(observation_path),
+                    "observation_id": observation["observation_id"],
+                },
+            },
+            "cycle_run_roots": [
+                {
+                    "cycle_index": 0,
+                    "cycle_id": "8" * 64,
+                    "run_id": sentinel.QUALIFICATION_ROOT_NAME,
+                    "semantic_reference": True,
+                    "estimand_excluded": True,
+                    "primary_analysis_eligible": False,
+                    **cycle_inventory,
+                }
+            ],
+            "refill_reconciliations": [],
             "rerun_requirement": "fresh exact additive generation required",
         },
         "failure_id",
@@ -2565,6 +2638,7 @@ def test_exit76_requires_exact_sealed_current_failure_preimage(
     failure_path = attempt_root / sentinel.QUALIFICATION_FAILURE_NAME
     failure_path.write_bytes(sentinel._canonical_json(failure))
     failure_path.chmod(0o444)
+    observation_path.parent.chmod(0o555)
     attempt_root.chmod(0o555)
     run_root.chmod(0o555)
     manifest = {
@@ -2643,6 +2717,29 @@ def test_exit76_requires_exact_sealed_current_failure_preimage(
     invalid = identified(invalid, "failure_id")
     failure_path.write_bytes(sentinel._canonical_json(invalid))
     failure_path.chmod(0o444)
+    attempt_root.chmod(0o555)
+    observed = sentinel._observe_qualification_capacity_failure(
+        verified=verified,
+        jobs=jobs,
+    )
+    assert observed is None
+    rejected = sentinel.classify_recovery_jobs(
+        jobs,
+        qualification_capacity_failure=observed,
+    )
+    assert rejected["classification"] == "requires_superseding_release"
+
+    # A valid, re-sealed failure marker cannot authorize repair if one of
+    # its supposedly immutable scientific cycle roots changed afterward.
+    attempt_root.chmod(0o755)
+    failure_path.chmod(0o644)
+    failure_path.write_bytes(sentinel._canonical_json(failure))
+    failure_path.chmod(0o444)
+    run_root.chmod(0o755)
+    run_member.chmod(0o644)
+    run_member.write_text('{"qid":"drifted"}\n', encoding="utf-8")
+    run_member.chmod(0o444)
+    run_root.chmod(0o555)
     attempt_root.chmod(0o555)
     observed = sentinel._observe_qualification_capacity_failure(
         verified=verified,

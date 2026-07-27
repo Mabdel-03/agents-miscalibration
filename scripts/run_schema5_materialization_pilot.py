@@ -104,20 +104,20 @@ _SETUPTOOLS_82_PATH_RE = re.compile(
 )
 _CHUNK_SIZE = 8 * 1024 * 1024
 SBATCH_TIME_LIMIT = "11:30:00"
-SBATCH_JOB_NAME = "asys-s5-materialization-pilot-r2"
+SBATCH_JOB_NAME = "asys-s5-materialization-pilot-r3"
 _SBATCH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.%/+=:-]+\Z")
-PILOT_QUARANTINE_PROTOCOL = "schema5-v1.2-r2-materialization-pilot-quarantine"
+PILOT_QUARANTINE_PROTOCOL = "schema5-v1.2-r3-materialization-pilot-quarantine"
 PILOT_QUARANTINE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r2-materialization-pilot-quarantine-intent"
+    "schema5-v1.2-r3-materialization-pilot-quarantine-intent"
 )
 SCHEDULER_ATTEMPTS_DIRECTORY = "scheduler_attempts"
 SCHEDULER_INTENT_FILENAME = "SCHEDULER_INTENT.json"
 SCHEDULER_SPOOLED_SCRIPT_FILENAME = "SPOOLED_BATCH_SCRIPT.sbatch"
 SCHEDULER_ACTIVE_FILENAME = "SCHEDULER_ACTIVE.json"
 SCHEDULER_ACCEPTANCE_FILENAME = "PILOT_SCHEDULER_ACCEPTED.json"
-SCHEDULER_INTENT_PROTOCOL = "schema5-v1.2-r2-pilot-scheduler-intent"
-SCHEDULER_ACTIVE_PROTOCOL = "schema5-v1.2-r2-pilot-scheduler-active"
-SCHEDULER_ACCEPTANCE_PROTOCOL = "schema5-v1.2-r2-pilot-scheduler-acceptance"
+SCHEDULER_INTENT_PROTOCOL = "schema5-v1.2-r3-pilot-scheduler-intent"
+SCHEDULER_ACTIVE_PROTOCOL = "schema5-v1.2-r3-pilot-scheduler-active"
+SCHEDULER_ACCEPTANCE_PROTOCOL = "schema5-v1.2-r3-pilot-scheduler-acceptance"
 SUBMISSION_INTENT_FILENAME = "PILOT_SUBMISSION_INTENT.json"
 SUBMISSION_ACCEPTED_FILENAME = "PILOT_SUBMISSION_ACCEPTED.json"
 SUBMISSION_DIRECTORY = "scheduler_submission"
@@ -125,11 +125,11 @@ SUBMISSION_ATTEMPTS_DIRECTORY = "attempts"
 SUBMISSION_ATTEMPT_INTENT_FILENAME = "ATTEMPT_INTENT.json"
 SUBMISSION_RESULT_FILENAME = "SBATCH_RESULT.json"
 SUBMISSION_ABSENT_FILENAME = "NO_ACCEPTED_JOB.json"
-SUBMISSION_INTENT_PROTOCOL = "schema5-v1.2-r2-pilot-submission-intent"
-SUBMISSION_ATTEMPT_PROTOCOL = "schema5-v1.2-r2-pilot-submission-attempt"
-SUBMISSION_RESULT_PROTOCOL = "schema5-v1.2-r2-pilot-submission-result"
-SUBMISSION_ABSENT_PROTOCOL = "schema5-v1.2-r2-pilot-submission-absent"
-SUBMISSION_ACCEPTED_PROTOCOL = "schema5-v1.2-r2-pilot-submission-accepted"
+SUBMISSION_INTENT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-intent"
+SUBMISSION_ATTEMPT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-attempt"
+SUBMISSION_RESULT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-result"
+SUBMISSION_ABSENT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-absent"
+SUBMISSION_ACCEPTED_PROTOCOL = "schema5-v1.2-r3-pilot-submission-accepted"
 DEFAULT_SUBMISSION_VISIBILITY_TIMEOUT = 900.0
 DEFAULT_SUBMISSION_POLL_SECONDS = 2.0
 _SLURM_MEMORY_RE = re.compile(
@@ -255,16 +255,18 @@ def _atomic_write_once(path: Path, payload: bytes) -> None:
     """Publish one immutable artifact, accepting only an exact prior write."""
 
     if path.exists() or path.is_symlink():
+        info = path.stat(follow_symlinks=False)
         if (
             path.is_symlink()
-            or not path.is_file()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o444
             or _sha256_file(path) != _sha256_bytes(payload)
             or path.read_bytes() != payload
         ):
             raise MaterializationPilotError(
                 f"conflicting immutable pilot artifact: {path}"
             )
-        os.chmod(path, 0o444)
         return
     if path.parent.is_symlink():
         raise MaterializationPilotError(
@@ -1071,6 +1073,7 @@ def _sealed_verifier_runtime(layout: Mapping[str, str]) -> dict[str, Any]:
         or not os.access(python, os.X_OK)
         or library.is_symlink()
         or not library.is_dir()
+        or stat.S_IMODE(release_root.stat().st_mode) & 0o222
         or any(
             stat.S_IMODE(path.stat().st_mode) & 0o222
             for path in (prefix, python, library, manifest_path)
@@ -1406,7 +1409,7 @@ def render_materialization_pilot_sbatch(
     }
     launch_binding["launch_id"] = _sha256_bytes(_canonical_bytes(launch_binding))
     comment = (
-        "asys-s5-pilot:r2:"
+        "asys-s5-pilot:r3:"
         f"commit={expected_commit[:12]}:"
         f"launch={launch_binding['launch_id'][:16]}"
     )
@@ -5283,9 +5286,6 @@ def run_materialization_pilot(
             / "configs"
             / "schema5_fleet.v1.json"
         ),
-        # Accepted as immutable creation provenance only; the v1.2 freezer never
-        # invokes Conda or reads a live prefix.
-        "conda_executable": conda,
         "seal_worktree": True,
         "seal_environments": True,
         "seal_output_root": True,
@@ -5518,6 +5518,41 @@ def _verify_materialization_pilot_semantic(
             raise MaterializationPilotError(
                 f"{stage} sealed verification report drifted"
             )
+    capture_report = current_reports["capture"]
+    incident_path = Path(capture_report["reconciliation_incident_path"])
+    incident = _read_json(
+        incident_path,
+        description="pilot-captured Conda reconciliation incident",
+    )
+    reconciliation_incident = {
+        "path": str(incident_path),
+        "sha256": capture_report["reconciliation_incident_sha256"],
+        "incident_id": incident.get("incident_id"),
+        "harness_stale_conda_record_present": incident.get(
+            "harness_stale_conda_record_present"
+        ),
+        "serving_stale_conda_record_present": incident.get(
+            "serving_stale_conda_record_present"
+        ),
+    }
+    if (
+        _SHA256_RE.fullmatch(str(reconciliation_incident["sha256"])) is None
+        or _SHA256_RE.fullmatch(
+            str(reconciliation_incident["incident_id"])
+        )
+        is None
+        or type(
+            reconciliation_incident["harness_stale_conda_record_present"]
+        )
+        is not bool
+        or type(
+            reconciliation_incident["serving_stale_conda_record_present"]
+        )
+        is not bool
+    ):
+        raise MaterializationPilotError(
+            "pilot-captured Conda reconciliation identity is malformed"
+        )
     expected_stage_ids = {
         "capture_id": current_reports["capture"]["capture_id"],
         "materialization_id": current_reports["materialization"][
@@ -5595,6 +5630,7 @@ def _verify_materialization_pilot_semantic(
         ],
         "conda_executable": dict(conda_binding),
         "conda_runtime_toolchain": conda_runtime_binding,
+        "reconciliation_incident": reconciliation_incident,
         "durable_git_release": dict(
             intent["inputs"]["durable_git_release"]
         ),

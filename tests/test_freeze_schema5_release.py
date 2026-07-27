@@ -26,7 +26,7 @@ _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE = (
 
 def test_operational_retry_tag_is_distinct_from_stable_release_id() -> None:
     assert freeze.RELEASE_ID == "sweep-recovery-schema5-v1.2"
-    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r2"
+    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r3"
     assert materialize.RELEASE_ID == freeze.RELEASE_ID
     assert materialize.REQUIRED_TAG == freeze.REQUIRED_GIT_TAG
     assert freeze.REQUIRED_GIT_TAG != freeze.RELEASE_ID
@@ -149,7 +149,15 @@ def _tagged_worktree(tmp_path: Path) -> Path:
     )
     _run("git", "add", "source.txt", "pyproject.toml", "src", "configs", cwd=worktree)
     _run("git", "commit", "-q", "-m", "release", cwd=worktree)
-    _run("git", "tag", freeze.REQUIRED_GIT_TAG, cwd=worktree)
+    _run(
+        "git",
+        "tag",
+        "-a",
+        freeze.REQUIRED_GIT_TAG,
+        "-m",
+        "immutable production release",
+        cwd=worktree,
+    )
     return worktree
 
 
@@ -727,9 +735,88 @@ def test_git_identity_uses_control_plane_tree_hash_and_requires_clean_exact_tag(
     identity = freeze.verify_clean_exact_tag(worktree)
 
     assert identity["git_tag"] == freeze.REQUIRED_GIT_TAG
+    assert identity["git_tag_object"] == _run(
+        "git",
+        "rev-parse",
+        f"refs/tags/{freeze.REQUIRED_GIT_TAG}",
+        cwd=worktree,
+    )
+    assert identity["git_tag_object"] != identity["git_commit"]
     assert identity["source_tree_sha256"] == schema5_control.sha256_tree(worktree)
     (worktree / "untracked.txt").write_text("dirty\n", encoding="utf-8")
     with pytest.raises(freeze.ReleaseFreezeError, match="not clean"):
+        freeze.verify_clean_exact_tag(worktree)
+
+
+def test_git_identity_rejects_source_or_tag_drift_during_tree_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worktree = _tagged_worktree(tmp_path)
+    original_git = freeze._git
+    status_calls = 0
+
+    def drifting_git(root: Path, *arguments: str) -> str:
+        nonlocal status_calls
+        result = original_git(root, *arguments)
+        if arguments[:2] == (
+            "status",
+            "--porcelain=v1",
+        ):
+            status_calls += 1
+            if status_calls == 2:
+                return " M source.txt"
+        return result
+
+    monkeypatch.setattr(freeze, "_git", drifting_git)
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="changed during source hashing",
+    ):
+        freeze.verify_clean_exact_tag(worktree)
+
+
+def test_git_identity_rechecks_influential_ignored_files_after_tree_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worktree = _tagged_worktree(tmp_path)
+    exclude = worktree / ".git" / "info" / "exclude"
+    exclude.write_text(
+        exclude.read_text(encoding="utf-8") + "\nlate-ignored.bin\n",
+        encoding="utf-8",
+    )
+    original_tree_hash = freeze.sha256_tree
+    hash_calls = 0
+
+    def create_ignored_file_after_hash(root: Path) -> str:
+        nonlocal hash_calls
+        digest = original_tree_hash(root)
+        hash_calls += 1
+        if hash_calls == 1:
+            (root / "late-ignored.bin").write_bytes(b"untracked hash input\n")
+        return digest
+
+    monkeypatch.setattr(freeze, "sha256_tree", create_ignored_file_after_hash)
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="changed during source hashing",
+    ):
+        freeze.verify_clean_exact_tag(worktree)
+
+
+def test_git_identity_requires_stable_second_source_tree_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worktree = _tagged_worktree(tmp_path)
+    tree_hashes = iter(("1" * 64, "2" * 64))
+
+    monkeypatch.setattr(freeze, "sha256_tree", lambda _root: next(tree_hashes))
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="not stable across final replay",
+    ):
         freeze.verify_clean_exact_tag(worktree)
 
 
@@ -1160,6 +1247,25 @@ def test_creation_uses_direct_conda_meta_lock_without_external_conda_query(
     assert not hasattr(freeze, "_resolve_conda_executable")
 
 
+def test_release_verifier_rejects_uninventoried_bundle_entry(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    output = tmp_path / "release-root" / "identity"
+    _install_real_materialization_evidence(tmp_path, output, inputs, monkeypatch)
+    freeze.create_release_bundle(output, apply=True, **inputs)
+    unexpected = output / "UNINVENTORIED"
+    unexpected.write_text("not part of the release\n", encoding="utf-8")
+
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="unexpected or missing entries",
+    ):
+        freeze.verify_release_bundle(output)
+
+    assert unexpected.read_text(encoding="utf-8") == "not part of the release\n"
+
+
 def test_live_environment_or_source_drift_is_rejected_after_publication(tmp_path):
     inputs = _inputs(tmp_path)
     output = tmp_path / "release-root"
@@ -1474,4 +1580,43 @@ def test_release_package_import_cannot_escape_harness_prefix(tmp_path, monkeypat
             release_worktree=worktree,
             git_identity=identity,
             require_release_package=True,
+        )
+
+
+def test_release_publication_never_launders_writable_preimage(tmp_path):
+    artifact = tmp_path / "RELEASE_STAGE.json"
+    artifact.write_bytes(b"exact bytes\n")
+    artifact.chmod(0o644)
+
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="conflicting immutable release artifact",
+    ):
+        freeze._atomic_write_exact(artifact, b"exact bytes\n")
+
+    assert artifact.stat().st_mode & 0o222
+
+
+def test_release_bundle_and_inventoried_inputs_must_be_fully_disjoint(tmp_path):
+    worktree = tmp_path / "release" / "worktree"
+    harness = tmp_path / "harness"
+    serving = tmp_path / "serving"
+    for path in (worktree, harness, serving):
+        path.mkdir(parents=True)
+
+    with pytest.raises(freeze.ReleaseFreezeError, match="overlaps"):
+        freeze._verify_nonoverlap(
+            tmp_path / "release",
+            (worktree, harness, serving),
+        )
+
+    nested_harness = worktree / "environment"
+    nested_harness.mkdir()
+    with pytest.raises(
+        freeze.ReleaseFreezeError,
+        match="inventoried release inputs overlap",
+    ):
+        freeze._verify_nonoverlap(
+            tmp_path / "identity",
+            (worktree, nested_harness, serving),
         )

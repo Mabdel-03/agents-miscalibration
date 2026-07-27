@@ -46,13 +46,13 @@ if _BUNDLE_DIRECTORY not in sys.path:
 try:
     from scripts.verify_schema5_recovery_evidence import (
         EvidenceVerificationError,
-        R2_PROTOCOL,
+        R3_PROTOCOL,
         verify_recovery_evidence,
     )
 except ModuleNotFoundError:  # ``python -I /absolute/path/to/this_script.py``
     from verify_schema5_recovery_evidence import (  # type: ignore[no-redef]
         EvidenceVerificationError,
-        R2_PROTOCOL,
+        R3_PROTOCOL,
         verify_recovery_evidence,
     )
 
@@ -61,15 +61,15 @@ SCHEDULER_EVIDENCE_NAME = "SCHEDULER_EVIDENCE.json"
 MAIL_STATE_NAME = "MAIL_DELIVERY.json"
 COMPLETE_MARKER_NAME = "RECOVERY_SENTINEL_COMPLETE.json"
 LOCK_NAME = ".schema5_recovery_sentinel.lock"
-SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r2-recovery-scheduler-evidence"
-MAIL_PROTOCOL = "schema5-v1.2-r2-recovery-sentinel-mail"
-MARKER_PROTOCOL = "schema5-v1.2-r2-recovery-sentinel-outcome"
+SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r3-recovery-scheduler-evidence"
+MAIL_PROTOCOL = "schema5-v1.2-r3-recovery-sentinel-mail"
+MARKER_PROTOCOL = "schema5-v1.2-r3-recovery-sentinel-outcome"
 STAGE_SCHEDULER_EVIDENCE_NAME = "STAGE_SCHEDULER_EVIDENCE.json"
 STAGE_COMPLETE_MARKER_NAME = "STAGE_SENTINEL_COMPLETE.json"
 STAGE_SCHEDULER_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r2-recovery-stage-scheduler-evidence"
+    "schema5-v1.2-r3-recovery-stage-scheduler-evidence"
 )
-STAGE_MARKER_PROTOCOL = "schema5-v1.2-r2-recovery-stage-sentinel-outcome"
+STAGE_MARKER_PROTOCOL = "schema5-v1.2-r3-recovery-stage-sentinel-outcome"
 STAGE_SENTINEL_PREFIX = "stage_failure_sentinel_"
 PRODUCTION_STAGE_NAMES = (
     "source_checkout",
@@ -98,10 +98,10 @@ STAGE_SENTINEL_NAMES = tuple(
     f"{STAGE_SENTINEL_PREFIX}{stage}" for stage in PRODUCTION_STAGE_NAMES
 )
 CAPACITY_TRANSIENT_PROTOCOL = (
-    "schema5-v1.2-r2-fleet-capacity-transient-receipt"
+    "schema5-v1.2-r3-fleet-capacity-transient-receipt"
 )
 CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r2-fleet-capacity-transient-evidence"
+    "schema5-v1.2-r3-fleet-capacity-transient-evidence"
 )
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
 CAPACITY_TRANSIENT_EVIDENCE_NAME = "FLEET_CAPACITY_TRANSIENT_EVIDENCE.json"
@@ -109,29 +109,38 @@ CAPACITY_PREIMAGE_ROOT_NAME = "sealed-preimages"
 CAPACITY_PREIMAGE_MANIFEST_NAME = "PREIMAGE_MANIFEST.json"
 CAPACITY_PREIMAGE_INVENTORY_NAME = "PREIMAGE_INVENTORY.sha256"
 CAPACITY_PREIMAGE_COMPLETE_NAME = "PREIMAGE_ARCHIVE_COMPLETE.json"
-CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r2-capacity-preimage-archive"
+CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r3-capacity-preimage-archive"
 CAPACITY_TRANSIENT_REASONS = frozenset({"Priority", "Resources"})
 CAPACITY_TRANSIENT_EXPECTED_REPLICAS = 22
 CAPACITY_TRANSIENT_EXPECTED_GPUS = 24
 CAPACITY_TRANSIENT_BOUNDARY_SECONDS = 36_000
 CAPACITY_TRANSIENT_BOUNDARY_TOLERANCE_SECONDS = 300
 CAPACITY_TRANSIENT_RELEASE_ID = "sweep-recovery-schema5-v1.2"
+FLEET_STDIN_EXACT_SUBMISSION_TRANSPORT = "stdin_exact_bytes_v1"
 QUALIFICATION_CAPACITY_EXIT_CODE = "76:0"
 QUALIFICATION_ROOT_NAME = "schema5_throughput_qualification_v1"
 QUALIFICATION_CURRENT_NAME = "CURRENT_ATTEMPT.json"
 QUALIFICATION_FAILURE_NAME = "QUALIFICATION_FAILURE.json"
+QUALIFICATION_FAILURE_DRAIN_NAME = (
+    "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
+)
+QUALIFICATION_FAILURE_DRAIN_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-failure-drain-intent-v3"
+)
+QUALIFICATION_REFILL_ROOT_NAME = "refill-reconciliations"
 QUALIFICATION_POINTER_ROOT_NAME = "attempt-pointers"
 QUALIFICATION_ATTEMPT_ROOT_NAME = "attempts"
 QUALIFICATION_RUN_ROOT_NAME = "throughput-qualification-attempts"
 QUALIFICATION_POINTER_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r3-throughput-qualification-attempt-pointer-v1"
 )
 QUALIFICATION_CURRENT_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r3-throughput-qualification-current-attempt-v1"
 )
 QUALIFICATION_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-failure-v1"
+    "schema5-v1.2-r3-throughput-qualification-failure-v3"
 )
+QUALIFICATION_FAILURE_SCHEMA_VERSION = 3
 QUALIFICATION_POINTER_FIELDS = frozenset(
     {
         "schema_version",
@@ -187,8 +196,52 @@ QUALIFICATION_FAILURE_FIELDS = frozenset(
         "additive_scaling_requirement",
         "scheduler_capacity_mutated",
         "rerun_requirement",
+        "failure_drain_intent",
+        "cycle_run_roots",
+        "refill_reconciliations",
         "failure_id",
     }
+)
+QUALIFICATION_FAILURE_DRAIN_BINDING_FIELDS = frozenset(
+    {
+        "path",
+        "sha256",
+        "failure_drain_intent_id",
+        "drain_observation",
+    }
+)
+QUALIFICATION_FAILURE_DRAIN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "protocol",
+        "qualification_intent_id",
+        "reason",
+        "admission_closed",
+        "state",
+        "requested_at",
+        "requested_timestamp",
+        "failure_drain_intent_id",
+    }
+)
+QUALIFICATION_DRAIN_OBSERVATION_FIELDS = frozenset(
+    {"path", "sha256", "observation_id"}
+)
+QUALIFICATION_CYCLE_ROOT_FIELDS = frozenset(
+    {
+        "cycle_index",
+        "cycle_id",
+        "run_id",
+        "semantic_reference",
+        "estimand_excluded",
+        "primary_analysis_eligible",
+        "root",
+        "files",
+        "bytes",
+        "inventory_sha256",
+    }
+)
+QUALIFICATION_REFILL_BINDING_FIELDS = frozenset(
+    {"refill_index", "path", "sha256", "refill_id"}
 )
 QUALIFICATION_SCALING_FIELDS = frozenset(
     {
@@ -282,6 +335,258 @@ def _sha256(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _qualification_tree_inventory(root: Path) -> dict[str, object]:
+    """Recompute the producer's sealed cycle-root content inventory."""
+
+    if (
+        not root.is_absolute()
+        or root.is_symlink()
+        or not root.is_dir()
+        or root.resolve() != root
+        or stat.S_IMODE(root.stat().st_mode) & 0o222
+    ):
+        raise SentinelError("qualification cycle run root is unsafe")
+    files: list[dict[str, object]] = []
+    total_bytes = 0
+    for path in sorted(root.rglob("*")):
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or (
+                not stat.S_ISDIR(metadata.st_mode)
+                and not stat.S_ISREG(metadata.st_mode)
+            )
+            or (
+                stat.S_ISREG(metadata.st_mode)
+                and metadata.st_nlink != 1
+            )
+            or stat.S_IMODE(metadata.st_mode) & 0o222
+        ):
+            raise SentinelError(
+                "qualification cycle run root is not recursively sealed"
+            )
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        relative = path.relative_to(root).as_posix()
+        total_bytes += metadata.st_size
+        files.append(
+            {
+                "path": relative,
+                "size": metadata.st_size,
+                "sha256": _sha256(path),
+            }
+        )
+    return {
+        "root": str(root),
+        "files": len(files),
+        "bytes": total_bytes,
+        "inventory_sha256": _sha256_bytes(_canonical_json(files)),
+    }
+
+
+def _validate_qualification_failure_preimages(
+    *,
+    failure: Mapping[str, Any],
+    attempt_root: Path,
+    results_root: Path,
+) -> None:
+    """Prove every schema-3 failure binding against its sealed backing bytes."""
+
+    drain_binding = failure.get("failure_drain_intent")
+    if (
+        not isinstance(drain_binding, Mapping)
+        or set(drain_binding)
+        != QUALIFICATION_FAILURE_DRAIN_BINDING_FIELDS
+    ):
+        raise SentinelError(
+            "qualification failure-drain binding is malformed"
+        )
+    drain_path = Path(str(drain_binding.get("path", "")))
+    observation = drain_binding.get("drain_observation")
+    if (
+        drain_path != attempt_root / QUALIFICATION_FAILURE_DRAIN_NAME
+        or drain_path.is_symlink()
+        or not drain_path.is_file()
+        or drain_path.lstat().st_nlink != 1
+        or stat.S_IMODE(drain_path.stat().st_mode) & 0o222
+        or _sha256(drain_path) != drain_binding.get("sha256")
+        or not isinstance(observation, Mapping)
+        or set(observation) != QUALIFICATION_DRAIN_OBSERVATION_FIELDS
+    ):
+        raise SentinelError(
+            "qualification failure-drain backing artifact is invalid"
+        )
+    drain = _read_json(
+        drain_path,
+        description="qualification failure-drain intent",
+    )
+    drain_identity = dict(drain)
+    drain_id = drain_identity.pop("failure_drain_intent_id", None)
+    observation_path = Path(str(observation.get("path", "")))
+    try:
+        observation_path.relative_to(attempt_root)
+    except ValueError as exc:
+        raise SentinelError(
+            "qualification failure-drain observation escapes its attempt"
+        ) from exc
+    requested_timestamp = drain.get("requested_timestamp")
+    if (
+        set(drain) != QUALIFICATION_FAILURE_DRAIN_FIELDS
+        or drain.get("schema_version")
+        != QUALIFICATION_FAILURE_SCHEMA_VERSION
+        or drain.get("protocol") != QUALIFICATION_FAILURE_DRAIN_PROTOCOL
+        or drain.get("qualification_intent_id") != failure.get("intent_id")
+        or drain.get("reason") != failure.get("reason")
+        or drain.get("admission_closed") is not True
+        or drain.get("state") != "draining"
+        or not isinstance(requested_timestamp, (int, float))
+        or isinstance(requested_timestamp, bool)
+        or not math.isfinite(float(requested_timestamp))
+        or float(requested_timestamp) <= 0
+        or drain.get("requested_at") != _utc(float(requested_timestamp))
+        or drain_id != _sha256_bytes(_canonical_json(drain_identity))
+        or drain_binding.get("failure_drain_intent_id") != drain_id
+        or not observation_path.is_absolute()
+        or observation_path.resolve() != observation_path
+        or observation_path.is_symlink()
+        or not observation_path.is_file()
+        or observation_path.lstat().st_nlink != 1
+        or stat.S_IMODE(observation_path.stat().st_mode) & 0o222
+        or _sha256(observation_path) != observation.get("sha256")
+    ):
+        raise SentinelError(
+            "qualification failure-drain identity or observation is invalid"
+        )
+    observation_value = _read_json(
+        observation_path,
+        description="qualification failure-drain observation",
+    )
+    observation_identity = dict(observation_value)
+    observation_id = observation_identity.pop("observation_id", None)
+    if (
+        observation_id
+        != _sha256_bytes(_canonical_json(observation_identity))
+        or observation.get("observation_id") != observation_id
+    ):
+        raise SentinelError(
+            "qualification failure-drain observation identity drifted"
+        )
+
+    cycle_roots = failure.get("cycle_run_roots")
+    if not isinstance(cycle_roots, list) or not cycle_roots:
+        raise SentinelError(
+            "qualification failure lacks sealed cycle-root evidence"
+        )
+    seen_cycles: set[tuple[int, str]] = set()
+    seen_roots: set[Path] = set()
+    semantic_reference_count = 0
+    for row in cycle_roots:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != QUALIFICATION_CYCLE_ROOT_FIELDS
+            or not isinstance(row.get("cycle_index"), int)
+            or isinstance(row.get("cycle_index"), bool)
+            or int(row["cycle_index"]) < 0
+            or re.fullmatch(r"[0-9a-f]{64}", str(row.get("cycle_id", "")))
+            is None
+            or not isinstance(row.get("run_id"), str)
+            or not row["run_id"]
+            or not isinstance(row.get("semantic_reference"), bool)
+            or row.get("estimand_excluded") is not True
+            or row.get("primary_analysis_eligible") is not False
+        ):
+            raise SentinelError(
+                "qualification cycle-root binding is malformed"
+            )
+        root = Path(str(row.get("root", "")))
+        if (
+            not root.is_absolute()
+            or root.resolve() != root
+            or root.name != row["run_id"]
+        ):
+            raise SentinelError(
+                "qualification cycle run root is not canonical"
+            )
+        try:
+            root.relative_to(results_root)
+        except ValueError as exc:
+            raise SentinelError(
+                "qualification cycle run root escapes the results hierarchy"
+            ) from exc
+        key = (int(row["cycle_index"]), str(row["cycle_id"]))
+        if key in seen_cycles:
+            raise SentinelError("qualification cycle-root binding is duplicated")
+        seen_cycles.add(key)
+        if root in seen_roots:
+            raise SentinelError(
+                "qualification cycle-root path is bound more than once"
+            )
+        seen_roots.add(root)
+        semantic_reference_count += int(bool(row["semantic_reference"]))
+        observed = _qualification_tree_inventory(root)
+        if {
+            field: row.get(field)
+            for field in ("root", "files", "bytes", "inventory_sha256")
+        } != observed:
+            raise SentinelError(
+                "qualification cycle-root content inventory drifted"
+            )
+    if (
+        sorted(index for index, _cycle_id in seen_cycles)
+        != list(range(len(cycle_roots)))
+        or semantic_reference_count != 1
+        or cycle_roots[0].get("semantic_reference") is not True
+    ):
+        raise SentinelError(
+            "qualification cycle-root sequence or semantic reference drifted"
+        )
+
+    refills = failure.get("refill_reconciliations")
+    if not isinstance(refills, list):
+        raise SentinelError(
+            "qualification refill binding inventory is malformed"
+        )
+    for index, row in enumerate(refills):
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != QUALIFICATION_REFILL_BINDING_FIELDS
+            or row.get("refill_index") != index
+        ):
+            raise SentinelError(
+                "qualification refill binding is malformed"
+            )
+        path = Path(str(row.get("path", "")))
+        expected_path = (
+            attempt_root
+            / QUALIFICATION_REFILL_ROOT_NAME
+            / f"REFILL_{index:06d}.json"
+        )
+        if (
+            path != expected_path
+            or path.is_symlink()
+            or not path.is_file()
+            or path.lstat().st_nlink != 1
+            or stat.S_IMODE(path.stat().st_mode) & 0o222
+            or _sha256(path) != row.get("sha256")
+        ):
+            raise SentinelError(
+                "qualification refill backing artifact is invalid"
+            )
+        refill = _read_json(
+            path,
+            description=f"qualification refill {index}",
+        )
+        refill_identity = dict(refill)
+        refill_id = refill_identity.pop("refill_id", None)
+        if (
+            refill_id != _sha256_bytes(_canonical_json(refill_identity))
+            or row.get("refill_id") != refill_id
+        ):
+            raise SentinelError(
+                "qualification refill backing identity drifted"
+            )
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1922,6 +2227,8 @@ def _validate_capacity_ledger(
         "submission_attempts",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
         "scheduler_comment",
         "job_id",
         "submitted_at",
@@ -2000,6 +2307,20 @@ def _validate_capacity_ledger(
                 or isinstance(attempt.get("allocated_gpus"), bool)
                 or attempt["allocated_gpus"] < 1
                 or not _capacity_hex(attempt.get("sbatch_sha256"), 64)
+                or attempt.get("submission_transport")
+                != FLEET_STDIN_EXACT_SUBMISSION_TRANSPORT
+                or attempt.get("submission_argv_sha256")
+                != hashlib.sha256(
+                    json.dumps(
+                        [
+                            "sbatch",
+                            "--parsable",
+                            f"--comment={attempt.get('scheduler_comment')}",
+                        ],
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                    ).encode("utf-8")
+                ).hexdigest()
                 or not isinstance(attempt.get("sbatch_path"), str)
                 or not Path(attempt["sbatch_path"]).is_absolute()
                 or not isinstance(attempt.get("scheduler_comment"), str)
@@ -2525,7 +2846,7 @@ def _validate_capacity_transient_receipt(
         or evidence.get("schema_version") != 1
         or evidence.get("protocol") != CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL
         or evidence.get("passed") is not True
-        or evidence.get("chain_protocol") != R2_PROTOCOL
+        or evidence.get("chain_protocol") != R3_PROTOCOL
         or evidence.get("chain_id") != manifest["chain_id"]
         or evidence.get("chain_generation") != generation
         or evidence.get("manifest") != verified["manifest_path"]
@@ -3054,7 +3375,8 @@ def _qualification_capacity_failure_binding(
     tp = 2 if profile == "32B-long" else 1
     if (
         set(failure) != QUALIFICATION_FAILURE_FIELDS
-        or failure.get("schema_version") != 1
+        or failure.get("schema_version")
+        != QUALIFICATION_FAILURE_SCHEMA_VERSION
         or failure.get("protocol") != QUALIFICATION_FAILURE_PROTOCOL
         or failure.get("passed") is not False
         or failure_id != _sha256_bytes(_canonical_json(identity))
@@ -3066,6 +3388,9 @@ def _qualification_capacity_failure_binding(
         or "qualification throughput" not in reason
         or "is below" not in reason
         or failure.get("scheduler_capacity_mutated") is not False
+        or not isinstance(failure.get("failure_drain_intent"), Mapping)
+        or not isinstance(failure.get("cycle_run_roots"), list)
+        or not isinstance(failure.get("refill_reconciliations"), list)
         or not isinstance(failure.get("rerun_requirement"), str)
         or not str(failure["rerun_requirement"]).strip()
         or not isinstance(scaling, Mapping)
@@ -3082,6 +3407,11 @@ def _qualification_capacity_failure_binding(
             "qualification failure is not an exact throughput-only "
             "capacity-transition request"
         )
+    _validate_qualification_failure_preimages(
+        failure=failure,
+        attempt_root=attempt_root,
+        results_root=results_root,
+    )
     return {
         "path": str(failure_path),
         "sha256": _sha256(failure_path),
@@ -3588,7 +3918,7 @@ def _validate_stage_scheduler_evidence(
         or evidence.get("schema_version") != 1
         or evidence.get("protocol") != STAGE_SCHEDULER_EVIDENCE_PROTOCOL
         or evidence.get("passed") is not True
-        or evidence.get("chain_protocol") != R2_PROTOCOL
+        or evidence.get("chain_protocol") != R3_PROTOCOL
         or evidence.get("chain_id") != manifest.get("chain_id")
         or evidence.get("manifest") != verified["manifest_path"]
         or evidence.get("manifest_sha256") != verified["manifest_sha256"]
@@ -3667,7 +3997,7 @@ def _validate_scheduler_evidence(
         or evidence["schema_version"] != 1
         or evidence["protocol"] != SCHEDULER_EVIDENCE_PROTOCOL
         or evidence["passed"] is not True
-        or evidence["chain_protocol"] != R2_PROTOCOL
+        or evidence["chain_protocol"] != R3_PROTOCOL
         or evidence["chain_id"] != manifest["chain_id"]
         or evidence["manifest"] != verified["manifest_path"]
         or evidence["manifest_sha256"] != verified["manifest_sha256"]
@@ -4037,7 +4367,7 @@ def _attempt_mail(
             f"{target_stage} {classification}"
         )
         body = (
-            "Schema-5 v1.2-r2 fail-fast stage observation\n\n"
+            "Schema-5 v1.2-r3 fail-fast stage observation\n\n"
             f"Stage: {target_stage}\n"
             f"Classification: {classification}\n"
             f"Target job: {outcome.get('target_job_id')}\n"
@@ -4050,7 +4380,7 @@ def _attempt_mail(
     else:
         subject = f"[agents-scaling:recovery] {classification}"
         body = (
-            "Schema-5 v1.2-r2 recovery-chain outcome\n\n"
+            "Schema-5 v1.2-r3 recovery-chain outcome\n\n"
             f"Classification: {classification}\n"
             f"Chain: {evidence['chain_id']}\n"
             f"Evidence: {path.parent / SCHEDULER_EVIDENCE_NAME}\n"
@@ -4256,7 +4586,7 @@ def _validate_marker(
         or marker["schema_version"] != 1
         or marker["protocol"] != MARKER_PROTOCOL
         or marker["passed"] is not True
-        or marker["chain_protocol"] != R2_PROTOCOL
+        or marker["chain_protocol"] != R3_PROTOCOL
         or marker["chain_id"] != evidence["chain_id"]
         or marker["manifest"] != verified["manifest_path"]
         or marker["manifest_sha256"] != verified["manifest_sha256"]
@@ -4381,7 +4711,7 @@ def _validate_stage_marker(
         or marker.get("schema_version") != 1
         or marker.get("protocol") != STAGE_MARKER_PROTOCOL
         or marker.get("passed") is not True
-        or marker.get("chain_protocol") != R2_PROTOCOL
+        or marker.get("chain_protocol") != R3_PROTOCOL
         or marker.get("chain_id") != evidence["chain_id"]
         or marker.get("manifest") != verified["manifest_path"]
         or marker.get("manifest_sha256") != verified["manifest_sha256"]
@@ -4424,9 +4754,9 @@ def _verified_inputs(
         verified = verify_recovery_evidence(chain_manifest, submission_receipt)
     except EvidenceVerificationError as exc:
         raise SentinelError(str(exc)) from exc
-    if verified["chain_protocol"] != R2_PROTOCOL:
+    if verified["chain_protocol"] != R3_PROTOCOL:
         raise SentinelError(
-            "the afterany recovery sentinel accepts only schema5-v1.2-r2 evidence"
+            "the afterany recovery sentinel accepts only schema5-v1.2-r3 evidence"
         )
     return verified
 
@@ -4599,7 +4929,7 @@ def run_sentinel(
     sleeper: Sleeper | None = None,
     maximum_mail_attempts: int = SYNCHRONOUS_MAIL_ATTEMPT_LIMIT,
 ) -> dict[str, Any]:
-    """Evaluate or durably publish one exact v1.2-r2 recovery-chain outcome."""
+    """Evaluate or durably publish one exact v1.2-r3 recovery-chain outcome."""
 
     if not recipient or any(character in recipient for character in "\r\n"):
         raise SentinelError("mail recipient is empty or unsafe")
@@ -4783,7 +5113,7 @@ def run_sentinel(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate the exact schema-5 v1.2-r2 recovery-chain receipt and publish "
+            "Evaluate the exact schema-5 v1.2-r3 recovery-chain receipt and publish "
             "marker-last immutable outcome evidence."
         )
     )

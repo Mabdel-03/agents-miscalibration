@@ -11,6 +11,11 @@ import subprocess
 import pytest
 
 from scripts import publish_schema5_protected_capacity as capacity
+from scripts import run_schema5_throughput_qualification as qualification
+from agents_scaling.serving.fleet_contract import (
+    expected_replica_id,
+    expected_scheduler_job_name,
+)
 
 COMMIT = "1" * 40
 TAG_OBJECT = "2" * 40
@@ -23,10 +28,14 @@ if not FLEET_RAW.endswith("\n"):
 FLEET_SHA256 = hashlib.sha256(FLEET_RAW.encode("utf-8")).hexdigest()
 
 
-def _fleet_topology() -> list[dict[str, object]]:
-    fleet = json.loads(FLEET_RAW)
+def _fleet_topology(
+    fleet: dict[str, object],
+) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for profile in fleet["profiles"]:
+    profiles = fleet["profiles"]
+    assert isinstance(profiles, list)
+    for profile in profiles:
+        assert isinstance(profile, dict)
         for replica in profile["replicas"]:
             memory = replica["memory"]
             assert memory.endswith("G")
@@ -38,17 +47,173 @@ def _fleet_topology() -> list[dict[str, object]]:
                     "cpus": replica["cpus_per_task"],
                     "memory_mib": int(memory[:-1]) * 1024,
                     "gpus": profile["tensor_parallel_size"],
+                    "time_limit_seconds": 86_400,
                 }
             )
     return rows
 
 
-FLEET_TOPOLOGY = _fleet_topology()
+BASE_FLEET = json.loads(FLEET_RAW)
+FLEET_TOPOLOGY = _fleet_topology(BASE_FLEET)
 FLEET_TOPOLOGY_SHA256 = hashlib.sha256(
     capacity.canonical_bytes(FLEET_TOPOLOGY)
 ).hexdigest()
 BUILDER_SOURCE = "sealed builder source\n"
 PUBLISHER_SOURCE = "sealed publisher source\n"
+CAPACITY_GENERATION = 1
+SOURCE_TREE_SHA256 = "4" * 64
+DISPATCHER_SOURCE_SHA256 = "5" * 64
+QUALIFICATION_RUNNER_SOURCE_SHA256 = "6" * 64
+
+
+def _source_trust_kwargs() -> dict[str, str]:
+    return {
+        "expected_source_tree_sha256": SOURCE_TREE_SHA256,
+        "expected_dispatcher_source_sha256": DISPATCHER_SOURCE_SHA256,
+        "expected_qualification_runner_source_sha256": (
+            QUALIFICATION_RUNNER_SOURCE_SHA256
+        ),
+    }
+
+
+def _write_authority_file(path: Path, raw: bytes) -> Path:
+    if not path.exists():
+        path.write_bytes(raw)
+        path.chmod(0o444)
+    assert path.read_bytes() == raw
+    assert stat.S_IMODE(path.stat().st_mode) == 0o444
+    return path
+
+
+def _capacity_authority(root: Path) -> dict[str, object]:
+    """Create one real solver-certified dynamic fleet authority."""
+
+    base_path = _write_authority_file(
+        root / "schema5_fleet.base.json",
+        FLEET_RAW.encode("utf-8"),
+    )
+    effective = json.loads(FLEET_RAW)
+    additions = {
+        "0.6B": 3,
+        "1.7B": 3,
+        "4B": 3,
+        "8B": 2,
+        "14B": 3,
+        "32B": 4,
+    }
+    for profile in effective["profiles"]:
+        name = profile["serving_profile"]
+        for _ in range(additions.get(name, 0)):
+            index = len(profile["replicas"])
+            replica = dict(profile["replicas"][-1])
+            replica.update(
+                {
+                    "replica_index": index,
+                    "replica_id": expected_replica_id(name, index),
+                    "scheduler_job_name": expected_scheduler_job_name(
+                        name, index
+                    ),
+                }
+            )
+            profile["replicas"].append(replica)
+    effective["logical_replica_count"] = sum(
+        len(profile["replicas"]) for profile in effective["profiles"]
+    )
+    effective["allocated_gpu_count"] = sum(
+        int(profile["tensor_parallel_size"]) * len(profile["replicas"])
+        for profile in effective["profiles"]
+    )
+    effective_raw = capacity.canonical_bytes(effective)
+    effective_path = _write_authority_file(
+        root / "schema5_fleet.capacity-v1.json",
+        effective_raw,
+    )
+    effective_sha256 = hashlib.sha256(effective_raw).hexdigest()
+    base_counts = {
+        profile["serving_profile"]: len(profile["replicas"])
+        for profile in BASE_FLEET["profiles"]
+    }
+    effective_counts = {
+        profile["serving_profile"]: len(profile["replicas"])
+        for profile in effective["profiles"]
+    }
+    certificate = qualification.build_preflight_capacity_certificate(
+        capacity_generation=CAPACITY_GENERATION,
+        release_git_commit=COMMIT,
+        source_tree_sha256=SOURCE_TREE_SHA256,
+        release_fleet_contract_sha256=FLEET_SHA256,
+        base_fleet_contract_sha256=FLEET_SHA256,
+        proposed_effective_fleet_contract_sha256=effective_sha256,
+        additive_overlay_contract_sha256=effective_sha256,
+        base_profile_replicas=base_counts,
+        effective_profile_replicas=effective_counts,
+        dispatcher_source_sha256=DISPATCHER_SOURCE_SHA256,
+        qualification_runner_source_sha256=(
+            QUALIFICATION_RUNNER_SOURCE_SHA256
+        ),
+    )
+    certificate_raw = capacity.canonical_bytes(certificate)
+    certificate_path = _write_authority_file(
+        root / capacity.runtime_capacity.STATIC_FEASIBILITY_FILENAME,
+        certificate_raw,
+    )
+    return {
+        "base_path": base_path,
+        "base_sha256": FLEET_SHA256,
+        "base_raw": FLEET_RAW,
+        "effective": effective,
+        "effective_path": effective_path,
+        "effective_sha256": effective_sha256,
+        "effective_raw": effective_raw.decode("utf-8"),
+        "certificate": certificate,
+        "certificate_path": certificate_path,
+        "certificate_raw": certificate_raw.decode("utf-8"),
+        "certificate_sha256": hashlib.sha256(certificate_raw).hexdigest(),
+    }
+
+
+def _empty_occupancy_preflight() -> dict[str, object]:
+    def observation(observed_at: float) -> dict[str, object]:
+        identity: dict[str, object] = {
+            "observed_at": observed_at,
+            "job_elements": 0,
+            "jobs": [],
+            "squeue_sha256": "1" * 64,
+            "sacct_sha256": "2" * 64,
+        }
+        identity["observation_id"] = hashlib.sha256(
+            capacity.canonical_bytes(identity)
+        ).hexdigest()
+        return identity
+
+    identity = {
+        "protocol": (
+            "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
+        ),
+        "plan_id": "3" * 64,
+        "observation_interval_seconds": 60.0,
+        "scheduler_account": "account",
+        "scientific_qos": "client_science",
+        "association_max_jobs": 427,
+        "qos_max_jobs": None,
+        "effective_max_jobs": 427,
+        "association_max_submit_jobs": 448,
+        "qos_max_submit_jobs": 448,
+        "effective_max_submit_jobs": 448,
+        "existing_job_elements": 0,
+        "existing_association_job_elements": 0,
+        "existing_qos_job_elements": 0,
+        "existing_association_running_job_elements": 0,
+        "existing_qos_running_job_elements": 0,
+        "required_new_running_job_elements": 427,
+        "required_new_job_elements": 448,
+        "first_observation": observation(900.0),
+        "second_observation": observation(960.0),
+    }
+    identity["preflight_id"] = hashlib.sha256(
+        capacity.canonical_bytes(identity)
+    ).hexdigest()
+    return identity
 
 
 def _source(
@@ -90,71 +255,74 @@ def _binding() -> dict[str, object]:
     }
 
 
-def _scheduler_identity() -> dict[str, object]:
+def _scheduler_identity(root: Path) -> dict[str, object]:
+    authority = _capacity_authority(root)
+    effective = authority["effective"]
+    assert isinstance(effective, dict)
+    effective_topology = _fleet_topology(effective)
     active_rows = [
         (
             f"{101 + index}|server_active|RUNNING|gpu_protected|gpu_science|"
             f"1|{row['cpus']}|{row['memory_mib']}|{row['gpus']}|0|"
-            f"{row['shape_id']}|{'a' * 64}"
+            f"86400|{row['shape_id']}|{'a' * 64}"
         )
-        for index, row in enumerate(FLEET_TOPOLOGY)
+        for index, row in enumerate(effective_topology)
     ]
     warm_rows = [
         (
             f"201|server_warm|RUNNING|gpu_protected|gpu_science|"
-            f"1|8|122880|1|0|warm-tp1-00|{'b' * 64}"
+            f"1|8|122880|1|0|86400|warm-tp1-00|{'b' * 64}"
         ),
         (
             f"202|server_warm|RUNNING|gpu_protected|gpu_science|"
-            f"1|8|122880|1|0|warm-tp1-01|{'c' * 64}"
+            f"1|8|122880|1|0|86400|warm-tp1-01|{'c' * 64}"
         ),
         (
             f"203|server_warm|RUNNING|gpu_protected|gpu_science|"
-            f"1|16|245760|2|0|warm-tp2-00|{'d' * 64}"
+            f"1|16|245760|2|0|86400|warm-tp2-00|{'d' * 64}"
         ),
     ]
     client_rows = [
         (
             f"301|client|RUNNING|cpu_protected|client_science|"
-            f"384|384|1572864|0|0|client-000|{'e' * 64}"
+            f"384|384|1572864|0|0|43200|client-000|{'e' * 64}"
         ),
         (
             f"302|reserve|PENDING|cpu_protected|client_science|"
-            f"39|39|39936|0|0|reserve-000|{'f' * 64}"
+            f"21|21|21504|0|0|43200|reserve-000|{'f' * 64}"
         ),
     ]
-    return {
-        "schema_version": capacity.SCHEMA_VERSION,
-        "protocol": capacity.SCHEDULER_EVIDENCE_PROTOCOL,
-        "passed": True,
-        **_binding(),
-        "observed_at": 1_000.0,
-        "preempt_type": "preempt/qos",
-        "capacity_source": capacity.CAPACITY_SOURCE,
-        "scheduler_cluster": "cluster",
-        "scheduler_account": "account",
-        "scheduler_user": "tester",
-        "scheduler_max_submit_jobs": 448,
-        "partition_cpus": 384,
-        "partition_memory_mib": 1_572_864,
-        "partition_gpus": 0,
-        "fleet_contract_sha256": FLEET_SHA256,
-        "active_fleet_topology_sha256": FLEET_TOPOLOGY_SHA256,
-        "builder_source_sha256": hashlib.sha256(
-            BUILDER_SOURCE.encode("utf-8")
-        ).hexdigest(),
-        "publisher_source_sha256": hashlib.sha256(
-            PUBLISHER_SOURCE.encode("utf-8")
-        ).hexdigest(),
-        "expected_total_job_elements": 448,
-        "job_element_accounting": {
-            "cell_job_elements": 384,
-            "active_server_job_elements": 22,
-            "warm_turnover_job_elements": 3,
-            "controller_monitor_other_held_job_elements": 39,
-            "total_non_cell_reserve_job_elements": 64,
-            "total_canary_job_elements": 448,
-        },
+    servers = [
+        {
+            "partition": "gpu_protected",
+            "qos": "gpu_science",
+            "partition_preempt_mode": "OFF",
+            "qos_preempt_mode": "OFF",
+            "base_active_gpus": 24,
+            "reserved_additive_gpus": 18,
+            "effective_active_gpus": 42,
+            "retained_warm_turnover_gpus": 4,
+            "attested_total_gpus": 46,
+            "partition_cpus": 4096,
+            "partition_memory_mib": 33_554_432,
+            "partition_gpus": 64,
+            "partition_nodes": 8,
+        }
+    ]
+    clients = [
+        {
+            "partition": "cpu_protected",
+            "qos": "client_science",
+            "partition_preempt_mode": "OFF",
+            "qos_preempt_mode": "OFF",
+            "slots": 384,
+            "cpus": 384,
+            "memory_mib": 1_572_864,
+            "reserve_jobs": 64,
+            "submit_headroom": 448,
+        }
+    ]
+    source_fields = {
         "scheduler_configuration": _source(
             "scontrol",
             ["PreemptType|preempt/qos"],
@@ -163,27 +331,41 @@ def _scheduler_identity() -> dict[str, object]:
         "partition_configuration": _source(
             "scontrol",
             [
-                "cpu_protected|OFF|UP|43200|384|1572864|0",
-                "gpu_protected|OFF|UP|172800|4096|33554432|64",
+                "cpu_protected|OFF|UP|43200|384|1572864|0|8",
+                "gpu_protected|OFF|UP|172800|4096|33554432|64|8",
             ],
             kind="partitions",
         ),
         "qos_configuration": _source(
             "sacctmgr",
             [
-                "client_science|OFF|-|448",
-                "gpu_science|OFF|-|448",
+                "client_science|OFF|-|448|86400",
+                "gpu_science|OFF|-|448|86400",
             ],
             kind="qos",
         ),
         "association_configuration": _source(
             "sacctmgr",
-            ["cluster|account|tester|client_science,gpu_science|448"],
+            [
+                "cluster|account|tester|client_science,gpu_science|427|448"
+            ],
             kind="associations",
         ),
-        "fleet_contract": _source(
-            "fleet-contract",
-            FLEET_RAW.rstrip("\n").splitlines(),
+        "base_fleet_contract": _source(
+            "base-fleet-contract",
+            str(authority["base_raw"]).rstrip("\n").splitlines(),
+        ),
+        "effective_fleet_contract": _source(
+            "effective-fleet-contract",
+            str(authority["effective_raw"]).rstrip("\n").splitlines(),
+        ),
+        "additive_overlay_contract": _source(
+            "additive-overlay-contract",
+            str(authority["effective_raw"]).rstrip("\n").splitlines(),
+        ),
+        "static_feasibility_certificate_source": _source(
+            "static-feasibility-certificate",
+            str(authority["certificate_raw"]).rstrip("\n").splitlines(),
         ),
         "builder_source": _source(
             "release-source",
@@ -195,29 +377,6 @@ def _scheduler_identity() -> dict[str, object]:
             PUBLISHER_SOURCE.rstrip("\n").splitlines(),
             kind="publisher_source",
         ),
-        "scientific_server_placements": [
-            {
-                "partition": "gpu_protected",
-                "qos": "gpu_science",
-                "partition_preempt_mode": "OFF",
-                "qos_preempt_mode": "OFF",
-                "active_serving_gpus": 24,
-                "warm_headroom_gpus": 4,
-            }
-        ],
-        "scientific_client_placements": [
-            {
-                "partition": "cpu_protected",
-                "qos": "client_science",
-                "partition_preempt_mode": "OFF",
-                "qos_preempt_mode": "OFF",
-                "slots": 384,
-                "cpus": 384,
-                "memory_mib": 1_572_864,
-                "reserve_jobs": 64,
-                "submit_headroom": 448,
-            }
-        ],
         "squeue": _source(
             "squeue",
             [*active_rows, *warm_rows, *client_rows],
@@ -227,11 +386,78 @@ def _scheduler_identity() -> dict[str, object]:
             [*active_rows, *warm_rows, *client_rows],
         ),
     }
+    seed = {
+        **_binding(),
+        "source_tree_sha256": SOURCE_TREE_SHA256,
+        "dispatcher_source_sha256": DISPATCHER_SOURCE_SHA256,
+        "qualification_runner_source_sha256": (
+            QUALIFICATION_RUNNER_SOURCE_SHA256
+        ),
+        "capacity_generation": CAPACITY_GENERATION,
+        "base_fleet_contract_path": str(authority["base_path"]),
+        "base_fleet_contract_sha256": authority["base_sha256"],
+        "effective_fleet_contract_path": str(authority["effective_path"]),
+        "effective_fleet_contract_sha256": authority["effective_sha256"],
+        "additive_overlay_contract_path": str(authority["effective_path"]),
+        "additive_overlay_contract_sha256": authority["effective_sha256"],
+        "static_feasibility_certificate": {
+            "path": str(authority["certificate_path"]),
+            "sha256": authority["certificate_sha256"],
+            "certificate_id": authority["certificate"]["certificate_id"],
+        },
+        "fleet_contract_sha256": authority["effective_sha256"],
+        "active_fleet_topology_sha256": hashlib.sha256(
+            capacity.canonical_bytes(effective_topology)
+        ).hexdigest(),
+        "builder_source_sha256": hashlib.sha256(
+            BUILDER_SOURCE.encode("utf-8")
+        ).hexdigest(),
+        "publisher_source_sha256": hashlib.sha256(
+            PUBLISHER_SOURCE.encode("utf-8")
+        ).hexdigest(),
+        "expected_total_job_elements": 448,
+        "job_element_accounting": {
+            "cell_job_elements": 384,
+            "active_server_job_elements": 40,
+            "warm_turnover_job_elements": 3,
+            "controller_monitor_other_held_job_elements": 21,
+            "total_non_cell_reserve_job_elements": 64,
+            "total_canary_job_elements": 448,
+        },
+        **source_fields,
+    }
+    derived = capacity._derive_capacity_from_raw_sources(
+        seed,
+        servers=servers,
+        clients=clients,
+        expected_source_tree_sha256=SOURCE_TREE_SHA256,
+        expected_dispatcher_source_sha256=DISPATCHER_SOURCE_SHA256,
+        expected_qualification_runner_source_sha256=(
+            QUALIFICATION_RUNNER_SOURCE_SHA256
+        ),
+    )
+    derived_scheduler_fields = {
+        field: value
+        for field, value in derived.items()
+        if field in capacity._SCHEDULER_FIELDS
+    }
+    return {
+        "schema_version": capacity.SCHEMA_VERSION,
+        "protocol": capacity.SCHEDULER_EVIDENCE_PROTOCOL,
+        "passed": True,
+        **_binding(),
+        "observed_at": 1_000.0,
+        **derived_scheduler_fields,
+        **source_fields,
+        "scientific_server_placements": servers,
+        "scientific_client_placements": clients,
+        "occupancy_preflight": _empty_occupancy_preflight(),
+    }
 
 
-def _scheduler() -> dict[str, object]:
+def _scheduler(root: Path) -> dict[str, object]:
     return capacity.with_self_hash(
-        _scheduler_identity(),
+        _scheduler_identity(root),
         identity_field="evidence_id",
     )
 
@@ -292,7 +518,7 @@ def _write_evidence(
     scheduler: dict[str, object] | None = None,
     canary: dict[str, object] | None = None,
 ) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
-    scheduler_value = _scheduler() if scheduler is None else scheduler
+    scheduler_value = _scheduler(root) if scheduler is None else scheduler
     canary_value = _canary(scheduler_value) if canary is None else canary
     scheduler_path = _write_sealed(
         root / "SCHEDULER_EVIDENCE.json",
@@ -320,7 +546,10 @@ def _attest(
             "partition_configuration",
             "qos_configuration",
             "association_configuration",
-            "fleet_contract",
+            "base_fleet_contract",
+            "effective_fleet_contract",
+            "additive_overlay_contract",
+            "static_feasibility_certificate_source",
             "builder_source",
             "publisher_source",
             "squeue",
@@ -341,6 +570,7 @@ def _attest(
         canary_evidence_path=canary_path,
         expected_release_git_commit=COMMIT,
         expected_release_tag_object=TAG_OBJECT,
+        **_source_trust_kwargs(),
         apply=apply,
         runner=runner,
     )
@@ -383,15 +613,21 @@ def test_apply_publishes_only_read_only_marker_last(tmp_path: Path) -> None:
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert set(marker) == capacity._MARKER_FIELDS
     assert marker["protocol"] == capacity.PROTOCOL
-    assert marker["active_gpus"] == 24
+    assert marker["active_gpus"] == 42
     assert marker["warm_headroom_gpus"] == 4
     assert marker["cell_ceiling"] == 384
     assert marker["reserve_jobs"] == 64
     assert marker["submit_headroom"] == 448
     assert marker["cpu"] == 384
     assert marker["memory_mib"] == 1_572_864
-    assert marker["scheduler_evidence_id"] == _scheduler()["evidence_id"]
-    assert marker["canary_id"] == _canary(_scheduler())["canary_id"]
+    assert marker["source_tree_sha256"] == SOURCE_TREE_SHA256
+    assert marker["dispatcher_source_sha256"] == DISPATCHER_SOURCE_SHA256
+    assert (
+        marker["qualification_runner_source_sha256"]
+        == QUALIFICATION_RUNNER_SOURCE_SHA256
+    )
+    assert marker["scheduler_evidence_id"] == _scheduler(evidence_root)["evidence_id"]
+    assert marker["canary_id"] == _canary(_scheduler(evidence_root))["canary_id"]
     assert (
         marker["scheduler_evidence_sha256"]
         == hashlib.sha256(
@@ -405,10 +641,10 @@ def test_apply_publishes_only_read_only_marker_last(tmp_path: Path) -> None:
         ).hexdigest()
     )
     assert marker["scientific_server_placements"] == (
-        _scheduler()["scientific_server_placements"]
+        _scheduler(evidence_root)["scientific_server_placements"]
     )
     assert marker["scientific_client_placements"] == (
-        _scheduler()["scientific_client_placements"]
+        _scheduler(evidence_root)["scientific_client_placements"]
     )
     identity = dict(marker)
     marker_id = identity.pop("marker_id")
@@ -418,6 +654,7 @@ def test_apply_publishes_only_read_only_marker_last(tmp_path: Path) -> None:
             recovery_root,
             expected_release_git_commit=COMMIT,
             expected_release_tag_object=TAG_OBJECT,
+            **_source_trust_kwargs(),
         )
         == marker
     )
@@ -442,6 +679,111 @@ def test_default_is_non_mutating_dry_run(tmp_path: Path) -> None:
     assert not any(recovery_root.iterdir())
 
 
+def test_attest_and_verify_require_all_frozen_source_trust_anchors(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    recovery_root = tmp_path / "recovery"
+    evidence_root.mkdir()
+    recovery_root.mkdir()
+    scheduler_path, canary_path, _, _ = _write_evidence(evidence_root)
+
+    with pytest.raises(
+        capacity.ProtectedCapacityError,
+        match="trust anchors are all required",
+    ):
+        capacity.attest(
+            recovery_root=recovery_root,
+            scheduler_evidence_path=scheduler_path,
+            canary_evidence_path=canary_path,
+            expected_release_git_commit=COMMIT,
+            expected_release_tag_object=TAG_OBJECT,
+        )
+
+    _attest(recovery_root, scheduler_path, canary_path, apply=True)
+    with pytest.raises(
+        capacity.ProtectedCapacityError,
+        match="trust anchors are all required",
+    ):
+        capacity.verify_marker(
+            recovery_root,
+            expected_release_git_commit=COMMIT,
+            expected_release_tag_object=TAG_OBJECT,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "expected_source_tree_sha256",
+        "expected_dispatcher_source_sha256",
+        "expected_qualification_runner_source_sha256",
+    ],
+)
+def test_every_frozen_source_trust_anchor_rejects_drift(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    recovery_root = tmp_path / "recovery"
+    evidence_root.mkdir()
+    recovery_root.mkdir()
+    scheduler_path, canary_path, _, _ = _write_evidence(evidence_root)
+    anchors = _source_trust_kwargs()
+    anchors[field] = "f" * 64
+
+    with pytest.raises(
+        capacity.ProtectedCapacityError,
+        match="source trust anchors differ",
+    ):
+        capacity.attest(
+            recovery_root=recovery_root,
+            scheduler_evidence_path=scheduler_path,
+            canary_evidence_path=canary_path,
+            expected_release_git_commit=COMMIT,
+            expected_release_tag_object=TAG_OBJECT,
+            **anchors,
+        )
+
+
+def test_attest_and_marker_verification_supply_all_source_loader_pins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+    original = capacity.runtime_capacity.load_static_feasibility_certificate
+
+    def load(*args, **kwargs):
+        observed.append(dict(kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        capacity.runtime_capacity,
+        "load_static_feasibility_certificate",
+        load,
+    )
+    evidence_root = tmp_path / "evidence"
+    recovery_root = tmp_path / "recovery"
+    evidence_root.mkdir()
+    recovery_root.mkdir()
+    scheduler_path, canary_path, _, _ = _write_evidence(evidence_root)
+    observed.clear()
+
+    _attest(recovery_root, scheduler_path, canary_path, apply=True)
+
+    assert len(observed) == 2
+    for call in observed:
+        assert call["expected_source_tree_sha256"] == SOURCE_TREE_SHA256
+        assert (
+            call["expected_dispatcher_source_sha256"]
+            == DISPATCHER_SOURCE_SHA256
+        )
+        assert (
+            call["expected_qualification_runner_source_sha256"]
+            == QUALIFICATION_RUNNER_SOURCE_SHA256
+        )
+
+
 def test_higher_scheduler_limit_preserves_exact_448_element_contract(
     tmp_path: Path,
 ) -> None:
@@ -449,21 +791,40 @@ def test_higher_scheduler_limit_preserves_exact_448_element_contract(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     scheduler["scheduler_max_submit_jobs"] = 500
     _replace_source_rows(
         scheduler,
         "qos_configuration",
         [
-            "client_science|OFF|-|500",
-            "gpu_science|OFF|-|500",
+            "client_science|OFF|-|500|86400",
+            "gpu_science|OFF|-|500|86400",
         ],
     )
     _replace_source_rows(
         scheduler,
         "association_configuration",
-        ["cluster|account|tester|client_science,gpu_science|500"],
+        [
+            "cluster|account|tester|client_science,gpu_science|427|500"
+        ],
     )
+    scheduler["scientific_qos_contracts"] = [
+        {
+            **row,
+            "max_submit_jobs_per_user": 500,
+        }
+        for row in scheduler["scientific_qos_contracts"]
+    ]
+    scheduler["occupancy_preflight"][
+        "association_max_submit_jobs"
+    ] = 500
+    scheduler["occupancy_preflight"]["qos_max_submit_jobs"] = 500
+    scheduler["occupancy_preflight"]["effective_max_submit_jobs"] = 500
+    preflight_identity = dict(scheduler["occupancy_preflight"])
+    preflight_identity.pop("preflight_id")
+    scheduler["occupancy_preflight"]["preflight_id"] = hashlib.sha256(
+        capacity.canonical_bytes(preflight_identity)
+    ).hexdigest()
     scheduler = _reseal_scheduler(scheduler)
     scheduler_path, canary_path, _, _ = _write_evidence(
         evidence_root,
@@ -484,8 +845,8 @@ def test_higher_scheduler_limit_preserves_exact_448_element_contract(
     assert marker["submit_headroom"] == 448
 
 
-@pytest.mark.parametrize("residual", [38, 40])
-def test_residual_held_reserve_must_be_exactly_39(
+@pytest.mark.parametrize("residual", [20, 22])
+def test_residual_held_reserve_must_fill_dynamic_64_job_reserve(
     tmp_path: Path,
     residual: int,
 ) -> None:
@@ -493,8 +854,8 @@ def test_residual_held_reserve_must_be_exactly_39(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
-    reserve_total = 22 + 3 + residual
+    scheduler = _scheduler(evidence_root)
+    reserve_total = 40 + 3 + residual
     total = 384 + reserve_total
     accounting = scheduler["job_element_accounting"]
     assert isinstance(accounting, dict)
@@ -513,10 +874,11 @@ def test_residual_held_reserve_must_be_exactly_39(
         raw = source["raw_output"]
         assert isinstance(raw, str)
         changed = raw.replace(
-            "302|reserve|PENDING|cpu_protected|client_science|"
-            "39|39|39936|0|0|reserve-000",
-            "302|reserve|PENDING|cpu_protected|client_science|"
-            f"{residual}|{residual}|{residual * 1024}|0|0|reserve-000",
+                "302|reserve|PENDING|cpu_protected|client_science|"
+                "21|21|21504|0|0|43200|reserve-000",
+                "302|reserve|PENDING|cpu_protected|client_science|"
+                f"{residual}|{residual}|{residual * 1024}|0|0|43200|"
+                "reserve-000",
         )
         assert changed != raw
         _replace_source_rows(
@@ -548,7 +910,7 @@ def test_marker_canonically_sorts_authorized_placements(tmp_path: Path) -> None:
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     server_rows = scheduler["scientific_server_placements"]
     assert isinstance(server_rows, list)
     scheduler["scientific_server_placements"] = [
@@ -557,8 +919,15 @@ def test_marker_canonically_sorts_authorized_placements(tmp_path: Path) -> None:
             "qos": "z_science",
             "partition_preempt_mode": "OFF",
             "qos_preempt_mode": "OFF",
-            "active_serving_gpus": 0,
-            "warm_headroom_gpus": 0,
+            "base_active_gpus": 0,
+            "reserved_additive_gpus": 0,
+            "effective_active_gpus": 0,
+            "retained_warm_turnover_gpus": 0,
+            "attested_total_gpus": 0,
+            "partition_cpus": 512,
+            "partition_memory_mib": 2_097_152,
+            "partition_gpus": 64,
+            "partition_nodes": 4,
         },
         *server_rows,
         {
@@ -566,37 +935,44 @@ def test_marker_canonically_sorts_authorized_placements(tmp_path: Path) -> None:
             "qos": "a_science",
             "partition_preempt_mode": "OFF",
             "qos_preempt_mode": "OFF",
-            "active_serving_gpus": 0,
-            "warm_headroom_gpus": 0,
+            "base_active_gpus": 0,
+            "reserved_additive_gpus": 0,
+            "effective_active_gpus": 0,
+            "retained_warm_turnover_gpus": 0,
+            "attested_total_gpus": 0,
+            "partition_cpus": 512,
+            "partition_memory_mib": 2_097_152,
+            "partition_gpus": 64,
+            "partition_nodes": 4,
         },
     ]
     _replace_source_rows(
         scheduler,
         "partition_configuration",
         [
-            "a_gpu|OFF|UP|172800|512|2097152|64",
-            "cpu_protected|OFF|UP|43200|384|1572864|0",
-            "gpu_protected|OFF|UP|172800|4096|33554432|64",
-            "z_gpu|OFF|UP|172800|512|2097152|64",
+            "a_gpu|OFF|UP|172800|512|2097152|64|4",
+            "cpu_protected|OFF|UP|43200|384|1572864|0|8",
+            "gpu_protected|OFF|UP|172800|4096|33554432|64|8",
+            "z_gpu|OFF|UP|172800|512|2097152|64|4",
         ],
     )
     _replace_source_rows(
         scheduler,
         "qos_configuration",
         [
-            "a_science|OFF|-|448",
-            "client_science|OFF|-|448",
-            "gpu_science|OFF|-|448",
-            "z_science|OFF|-|448",
+            "a_science|OFF|-|448|86400",
+            "client_science|OFF|-|448|86400",
+            "gpu_science|OFF|-|448|86400",
+            "z_science|OFF|-|448|86400",
         ],
     )
     _replace_source_rows(
         scheduler,
         "association_configuration",
-        [
-            "cluster|account|tester|"
-            "a_science,client_science,gpu_science,z_science|448"
-        ],
+            [
+                "cluster|account|tester|"
+                "a_science,client_science,gpu_science,z_science|427|448"
+            ],
     )
     scheduler = _reseal_scheduler(scheduler)
     canary = _canary(scheduler)
@@ -606,18 +982,16 @@ def test_marker_canonically_sorts_authorized_placements(tmp_path: Path) -> None:
         canary=canary,
     )
 
-    marker = _attest(
-        recovery_root,
-        scheduler_path,
-        canary_path,
-        apply=True,
-    )["marker"]
-
-    assert [row["partition"] for row in marker["scientific_server_placements"]] == [
-        "a_gpu",
-        "gpu_protected",
-        "z_gpu",
-    ]
+    with pytest.raises(
+        capacity.ProtectedCapacityError,
+        match="QOS contracts|placement",
+    ):
+        _attest(
+            recovery_root,
+            scheduler_path,
+            canary_path,
+            apply=True,
+        )
 
 
 def test_aggregate_split_client_capacity_is_not_one_usable_placement(
@@ -627,7 +1001,7 @@ def test_aggregate_split_client_capacity_is_not_one_usable_placement(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     scheduler["scientific_client_placements"] = [
         {
             "partition": "client_a",
@@ -703,7 +1077,10 @@ def test_marker_rejects_invalid_source_bindings(
         capacity.ProtectedCapacityError,
         match="placement/capacity/scheduler invariants",
     ):
-        capacity.validate_marker_payload(marker)
+        capacity.validate_marker_payload(
+            marker,
+            **_source_trust_kwargs(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -724,7 +1101,7 @@ def test_every_partition_and_qos_placement_must_be_off(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     rows = scheduler[role]
     assert isinstance(rows, list)
     assert isinstance(rows[0], dict)
@@ -755,15 +1132,15 @@ def test_every_partition_and_qos_placement_must_be_off(
     [
         (
             "scientific_server_placements",
-            "active_serving_gpus",
-            23,
-            "active serving GPUs",
+            "effective_active_gpus",
+            41,
+            "effective active GPUs|placement",
         ),
         (
             "scientific_server_placements",
-            "warm_headroom_gpus",
+            "retained_warm_turnover_gpus",
             3,
-            "warm GPU headroom",
+            "retained warm turnover|placement",
         ),
         (
             "scientific_client_placements",
@@ -808,7 +1185,7 @@ def test_each_capacity_floor_fails_closed(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     rows = scheduler[role]
     assert isinstance(rows, list)
     assert isinstance(rows[0], dict)
@@ -840,7 +1217,7 @@ def test_scheduler_sources_must_be_complete(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     source = scheduler[source_name]
     assert isinstance(source, dict)
     source["complete"] = False
@@ -873,7 +1250,7 @@ def test_canary_must_attest_both_scheduler_sources(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     canary = _canary(scheduler)
     canary[field] = False
     canary = _reseal_canary(canary)
@@ -912,8 +1289,8 @@ def test_scheduler_drift_after_sealing_is_rejected(tmp_path: Path) -> None:
         scheduler,
         "partition_configuration",
         [
-            "cpu_protected|OFF|UP|43200|385|1576960|0",
-            "gpu_protected|OFF|UP|172800|4096|33554432|64",
+            "cpu_protected|OFF|UP|43200|385|1576960|0|8",
+            "gpu_protected|OFF|UP|172800|4096|33554432|64|8",
         ],
     )
     scheduler_path.chmod(0o644)
@@ -1011,7 +1388,7 @@ def test_rehashed_raw_capture_drift_is_rejected(tmp_path: Path) -> None:
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     source = scheduler["sacct"]
     assert isinstance(source, dict)
     source["raw_output"] = f"{source['raw_output']}999|forged|RUNNING\n"
@@ -1040,7 +1417,7 @@ def test_canary_must_bind_exact_scheduler_identity(tmp_path: Path) -> None:
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     canary = _canary(scheduler)
     canary["scheduler_evidence_id"] = "f" * 64
     canary = _reseal_canary(canary)
@@ -1069,7 +1446,7 @@ def test_exact_release_anchor_rejects_consistent_substitution(
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     scheduler["release_git_commit"] = "3" * 40
     scheduler = _reseal_scheduler(scheduler)
     canary = _canary(scheduler)
@@ -1098,7 +1475,7 @@ def test_unknown_fields_fail_closed_even_when_rehashed(tmp_path: Path) -> None:
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     scheduler["escape_hatch"] = True
     scheduler = _reseal_scheduler(scheduler)
     canary = _canary(scheduler)
@@ -1190,7 +1567,7 @@ def test_canary_effective_requeue_must_be_zero(tmp_path: Path) -> None:
     recovery_root = tmp_path / "recovery"
     evidence_root.mkdir()
     recovery_root.mkdir()
-    scheduler = _scheduler()
+    scheduler = _scheduler(evidence_root)
     canary = _canary(scheduler)
     rows = canary["scientific_client_placements"]
     assert isinstance(rows, list)
@@ -1284,7 +1661,10 @@ def test_existing_marker_must_remain_read_only_and_self_hashed(
         capacity.ProtectedCapacityError,
         match="read-only regular file",
     ):
-        capacity.verify_marker(recovery_root)
+        capacity.verify_marker(
+            recovery_root,
+            **_source_trust_kwargs(),
+        )
 
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     marker["active_gpus"] = 25
@@ -1294,7 +1674,10 @@ def test_existing_marker_must_remain_read_only_and_self_hashed(
         capacity.ProtectedCapacityError,
         match="marker self-hash",
     ):
-        capacity.verify_marker(recovery_root)
+        capacity.verify_marker(
+            recovery_root,
+            **_source_trust_kwargs(),
+        )
 
 
 def test_cli_has_no_scheduler_mutation_capability() -> None:
@@ -1303,3 +1686,7 @@ def test_cli_has_no_scheduler_mutation_capability() -> None:
     assert 'add_parser("submit"' not in source
     assert "sbatch" not in source
     assert "scancel" not in source
+
+
+def test_publisher_and_runtime_marker_schemas_are_exactly_identical() -> None:
+    assert capacity._MARKER_FIELDS == capacity.runtime_capacity._MARKER_FIELDS

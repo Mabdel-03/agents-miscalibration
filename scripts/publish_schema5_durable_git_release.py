@@ -25,10 +25,11 @@ from typing import Any, Mapping, Sequence
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r2"
-CHAIN_NAMESPACE = "schema5-v1.2-r2"
-PROTOCOL = "schema5-v1.2-r2-durable-git-release-v1"
-MARKER_NAME = "DURABLE_GIT_RELEASE_COMPLETE.json"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
+CHAIN_NAMESPACE = "schema5-v1.2-r3"
+DURABLE_COMMIT_REF = "refs/heads/schema5-v1.2-r3"
+PROTOCOL = "schema5-v1.2-r3-durable-git-release-v1"
+MARKER_NAME = "DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"
 BUNDLE_DIRECTORY = "git_release"
 BUNDLE_NAME = f"{RELEASE_TAG}.bundle"
 CHECKSUM_NAME = f"{BUNDLE_NAME}.sha256"
@@ -282,7 +283,7 @@ def _local_identity(repository: Path) -> dict[str, str]:
         or status
     ):
         raise DurableGitReleaseError(
-            "release checkout must be clean at the exact annotated r2 tag"
+            "release checkout must be clean at the exact annotated release tag"
         )
     return {
         "release_git_commit": commit,
@@ -300,8 +301,12 @@ def _remote_identity(
     if (
         _REMOTE_NAME.fullmatch(remote) is None
         or _REMOTE_REF.fullmatch(remote_commit_ref) is None
+        or remote_commit_ref != DURABLE_COMMIT_REF
     ):
-        raise DurableGitReleaseError("remote name or commit ref is unsafe")
+        raise DurableGitReleaseError(
+            "remote name is unsafe or durable commit ref is not the exact "
+            f"{DURABLE_COMMIT_REF}"
+        )
     remote_url = _run(
         ["git", "remote", "get-url", remote],
         cwd=repository,
@@ -410,6 +415,7 @@ def _validate_marker_fields(value: Mapping[str, Any]) -> None:
         or value.get("clean_checkout") is not True
         or value.get("annotated_tag") is not True
         or value.get("remote_query_read_only") is not True
+        or value.get("remote_commit_ref") != DURABLE_COMMIT_REF
         or any(
             _OBJECT.fullmatch(str(value.get(field, ""))) is None
             for field in (
@@ -510,13 +516,28 @@ def publish(
     bundle_path = recovery_root / BUNDLE_DIRECTORY / BUNDLE_NAME
     checksum_path = recovery_root / BUNDLE_DIRECTORY / CHECKSUM_NAME
     if marker_path.exists() or marker_path.is_symlink():
+        marker, _marker_raw = _read_canonical_json(
+            marker_path, description="durable Git release marker"
+        )
+        _validate_marker_fields(marker)
         binding = marker_binding(marker_path)
         if (
             binding["release_git_commit"] != local["release_git_commit"]
             or binding["release_tag_object"] != local["release_tag_object"]
+            or any(
+                marker.get(field) != remote_identity.get(field)
+                for field in (
+                    "remote",
+                    "remote_commit_ref",
+                    "remote_commit",
+                    "remote_tag_object",
+                    "remote_peeled_commit",
+                    "remote_url_sha256",
+                )
+            )
         ):
             raise DurableGitReleaseError(
-                "existing durable release belongs to another Git identity"
+                "existing durable release belongs to another local or remote identity"
             )
         return {
             "status": "already_complete",
@@ -545,7 +566,6 @@ def publish(
     if bundle_path.exists() or bundle_path.is_symlink():
         if bundle_path.is_symlink():
             raise DurableGitReleaseError("existing Git bundle is symlinked")
-        bundle_path.chmod(0o444)
     else:
         with tempfile.TemporaryDirectory(
             prefix=".git-release-bundle.", dir=bundle_parent

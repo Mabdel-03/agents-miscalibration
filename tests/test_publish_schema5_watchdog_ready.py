@@ -232,3 +232,51 @@ def test_watchdog_publisher_recovers_linked_temp_and_rejects_symlink_parent(
     alias.symlink_to(real, target_is_directory=True)
     with pytest.raises(publisher.WatchdogEvidenceError, match="symlink"):
         publisher._publish_once(alias / "marker.json", payload)
+
+
+@pytest.mark.parametrize(
+    "name",
+    (publisher.BOOTSTRAP_READY_MARKER, publisher.BOOTSTRAP_ARMED_MARKER),
+)
+def test_bootstrap_marker_publication_recovers_exact_mode_0600_temp(
+    tmp_path,
+    name,
+):
+    target = tmp_path / name
+    payload = {"schema_version": 1, "passed": True, "name": name}
+    interrupted = tmp_path / f".{name}.crashed.publishing"
+    interrupted.write_bytes(publisher._canonical(payload))
+    interrupted.chmod(0o600)
+
+    publisher._publish_once(target, payload)
+
+    assert not interrupted.exists()
+    assert target.read_bytes() == publisher._canonical(payload)
+    assert target.stat().st_mode & 0o777 == 0o444
+    assert target.stat().st_nlink == 1
+
+
+def test_marker_publication_rejects_conflicting_or_overbroad_temp(tmp_path):
+    target = tmp_path / publisher.BOOTSTRAP_ARMED_MARKER
+    payload = {"schema_version": 1, "passed": True}
+    conflicting = (
+        tmp_path
+        / f".{publisher.BOOTSTRAP_ARMED_MARKER}.crashed.publishing"
+    )
+    conflicting.write_bytes(publisher._canonical({"passed": False}))
+    conflicting.chmod(0o600)
+    with pytest.raises(
+        publisher.WatchdogEvidenceError, match="conflicting interrupted"
+    ):
+        publisher._publish_once(target, payload)
+
+    conflicting.unlink()
+    unsafe = (
+        tmp_path / f".{publisher.BOOTSTRAP_ARMED_MARKER}.unsafe.publishing"
+    )
+    unsafe.write_bytes(publisher._canonical(payload))
+    unsafe.chmod(0o640)
+    with pytest.raises(
+        publisher.WatchdogEvidenceError, match="ownership, mode, or link"
+    ):
+        publisher._publish_once(target, payload)

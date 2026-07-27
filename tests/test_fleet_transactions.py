@@ -126,6 +126,54 @@ def test_pre_sbatch_intent_and_script_are_durable_and_immutable(tmp_path):
         lock.__exit__(None, None, None)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    (
+        '{"updated_at":1e9999}',
+        '{"nested":[{"value":-1e9999}]}',
+    ),
+)
+def test_strict_fleet_json_rejects_exponent_overflow(payload):
+    with pytest.raises(tx.FleetTransactionError, match="non-finite JSON"):
+        tx._strict_json_loads(payload, artifact="mutable fleet state")
+
+
+def test_current_index_and_generation_ledger_reject_exponent_overflow(
+    tmp_path,
+):
+    root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        current_path = directory / tx.CURRENT_FILENAME
+        original_current = current_path.read_text(encoding="utf-8")
+        current_payload = original_current.replace(
+            '"updated_at": 1.0', '"updated_at": 1e9999'
+        )
+        current_path.write_text(current_payload, encoding="utf-8")
+        with pytest.raises(tx.FleetTransactionError, match="non-finite JSON"):
+            tx._read_current_index_raw(directory)
+
+        # Restore CURRENT so the independent generation-ledger parse reaches its
+        # own strict numeric boundary.
+        current_path.write_text(original_current, encoding="utf-8")
+        generation_path = tx.ledger_path(directory, GENERATION)
+        generation_payload = generation_path.read_text(
+            encoding="utf-8"
+        ).replace('"updated_at": 1.0', '"updated_at": 1e9999')
+        generation_path.write_text(generation_payload, encoding="utf-8")
+        with pytest.raises(tx.FleetTransactionError, match="non-finite JSON"):
+            tx._read_ledger_file(
+                generation_path,
+                directory=directory,
+                canonical_root=root.resolve(),
+                pool_id=POOL_ID,
+                fleet_sha256=FLEET_SHA256,
+                rollout_generation=GENERATION,
+                replica_ids=[REPLICA_ID],
+            )
+    finally:
+        lock.__exit__(None, None, None)
+
+
 def test_endpoint_admission_exports_only_exact_committed_ledger_attempt(tmp_path):
     _root, lock, directory, ledger = _open_state(tmp_path)
     try:
@@ -217,7 +265,400 @@ def test_crash_after_sbatch_acceptance_remains_adoptable(tmp_path):
         assert durable["submission_attempts"] == 1
         assert calls[0][0][0:2] == ["sbatch", "--parsable"]
         assert calls[0][0][2] == f"--comment={attempt['scheduler_comment']}"
-        assert calls[0][0][-1] == attempt["sbatch_path"]
+        assert calls[0][0] == tx.submission_argv(
+            attempt["scheduler_comment"]
+        )
+        assert calls[0][1]["input"] == Path(
+            attempt["sbatch_path"]
+        ).read_text(encoding="utf-8")
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_ambiguous_submitting_requires_proven_absence_before_retry(tmp_path):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+
+        def ambiguous_transport(*_args, **_kwargs):
+            raise KeyboardInterrupt("lost after invoking sbatch")
+
+        with pytest.raises(KeyboardInterrupt, match="after invoking"):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=2.0,
+                runner=ambiguous_transport,
+            )
+        with pytest.raises(tx.FleetTransactionError, match="state 'submitting'"):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=400.0,
+                runner=lambda *_a, **_k: pytest.fail(
+                    "ambiguous submitting intent must not cross sbatch"
+                ),
+            )
+
+        receipt = tx.record_proven_submission_absence(
+            directory,
+            ledger,
+            replica_id=REPLICA_ID,
+            attempt=attempt,
+            snapshot=tx.SchedulerSnapshot((), 400.0, True, True),
+            now=400.0,
+        )
+        assert len(receipt) == 64
+        assert attempt["state"] == "submission_failed"
+        assert f"absence_receipt_sha256={receipt}" in attempt["last_error"]
+        persisted = json.loads(
+            tx.ledger_path(directory, GENERATION).read_text(encoding="utf-8")
+        )
+        assert (
+            persisted["replicas"][REPLICA_ID]["attempts"][0]["last_error"]
+            == attempt["last_error"]
+        )
+
+        def accepted_retry(argv, **kwargs):
+            if argv[0] == "sbatch":
+                return _process(stdout="4242\n")
+            assert argv[:3] == ["scontrol", "write", "batch_script"]
+            return _process(
+                stdout=Path(attempt["sbatch_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        job_id = tx.submit_attempt(
+            directory,
+            ledger,
+            replica_id=REPLICA_ID,
+            attempt=attempt,
+            now=401.0,
+            runner=accepted_retry,
+        )
+        assert job_id == "4242"
+        assert attempt["submission_attempts"] == 2
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_submission_absence_receipt_replays_after_receipt_before_ledger_crash(
+    tmp_path, monkeypatch
+):
+    root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        with pytest.raises(KeyboardInterrupt):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=2.0,
+                runner=lambda *_a, **_k: (_ for _ in ()).throw(
+                    KeyboardInterrupt("accepted reply lost")
+                ),
+            )
+        real_save = tx.save_ledger
+        with monkeypatch.context() as boundary:
+            boundary.setattr(
+                tx,
+                "save_ledger",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    KeyboardInterrupt("crash after sealed receipt")
+                ),
+            )
+            with pytest.raises(KeyboardInterrupt, match="sealed receipt"):
+                tx.record_proven_submission_absence(
+                    directory,
+                    ledger,
+                    replica_id=REPLICA_ID,
+                    attempt=attempt,
+                    snapshot=tx.SchedulerSnapshot((), 400.0, True, True),
+                    now=400.0,
+                )
+        receipt_path = tx._submission_absence_receipt_path(
+            directory,
+            generation=GENERATION,
+            replica_id=REPLICA_ID,
+            intent_token="1" * 32,
+        )
+        assert receipt_path.is_file()
+        assert receipt_path.stat().st_mode & 0o222 == 0
+
+        # Reopen the still-submitting durable preimage and adopt the exact sealed
+        # orphan receipt.  No second receipt or scheduler submission is created.
+        replayed = tx.load_or_create_ledger(
+            directory,
+            pool_root=root,
+            pool_id=POOL_ID,
+            fleet_sha256=FLEET_SHA256,
+            rollout_generation=GENERATION,
+            replica_ids=[REPLICA_ID],
+            now=401.0,
+        )
+        replay_attempt = replayed["replicas"][REPLICA_ID]["attempts"][0]
+        digest = tx.record_proven_submission_absence(
+            directory,
+            replayed,
+            replica_id=REPLICA_ID,
+            attempt=replay_attempt,
+            snapshot=tx.SchedulerSnapshot((), 401.0, True, True),
+            now=401.0,
+        )
+        assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() == digest
+        assert replay_attempt["state"] == "submission_failed"
+        assert str(receipt_path) in replay_attempt["last_error"]
+        assert tx.save_ledger is real_save
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_submission_absence_receipt_tamper_blocks_retry(tmp_path):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        attempt.update(
+            {
+                "state": "submitting",
+                "submit_started_at": 2.0,
+                "submission_attempts": 1,
+            }
+        )
+        tx.save_ledger(directory, ledger, now=2.0)
+        tx.record_proven_submission_absence(
+            directory,
+            ledger,
+            replica_id=REPLICA_ID,
+            attempt=attempt,
+            snapshot=tx.SchedulerSnapshot((), 400.0, True, True),
+            now=400.0,
+        )
+        receipt_path, _digest = tx._absence_receipt_reference(attempt)
+        receipt_path.chmod(0o644)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["captured_at"] = 399.0
+        receipt_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        receipt_path.chmod(0o444)
+        with pytest.raises(tx.FleetTransactionError, match="receipt hash"):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=401.0,
+                runner=lambda *_a, **_k: pytest.fail(
+                    "tampered absence receipt must not authorize sbatch"
+                ),
+            )
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_submission_absence_receipt_identity_mismatch_is_rejected(tmp_path):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        attempt.update(
+            {
+                "state": "submitting",
+                "submit_started_at": 2.0,
+                "submission_attempts": 1,
+            }
+        )
+        tx.save_ledger(directory, ledger, now=2.0)
+        tx.record_proven_submission_absence(
+            directory,
+            ledger,
+            replica_id=REPLICA_ID,
+            attempt=attempt,
+            snapshot=tx.SchedulerSnapshot((), 400.0, True, True),
+            now=400.0,
+        )
+        receipt_path, _digest = tx._absence_receipt_reference(attempt)
+        receipt_path.chmod(0o644)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        payload["replica_id"] = "foreign-replica"
+        receipt_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        receipt_path.chmod(0o444)
+        forged_digest = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        attempt["last_error"] = (
+            "proven not accepted after complete squeue+sacct visibility grace; "
+            f"absence_receipt_path={receipt_path};"
+            f"absence_receipt_sha256={forged_digest}"
+        )
+        tx.save_ledger(directory, ledger, now=400.0)
+        with pytest.raises(tx.FleetTransactionError, match="identity differs"):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=401.0,
+                runner=lambda *_a, **_k: pytest.fail(
+                    "identity-mismatched receipt must not authorize sbatch"
+                ),
+            )
+    finally:
+        lock.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "match"),
+    (
+        (
+            tx.SchedulerSnapshot((), 400.0, True, False, ("sacct failed",)),
+            r"complete squeue\+sacct",
+        ),
+        (
+            tx.SchedulerSnapshot(
+                (
+                    tx.SchedulerRow(
+                        "4242",
+                        "asys-s5-serve-8b-s-r00",
+                        "RUNNING",
+                        "protected",
+                        "node1",
+                        "sbatch /sealed/job.sbatch",
+                        "placeholder",
+                    ),
+                ),
+                400.0,
+                True,
+                True,
+            ),
+            "found the immutable intent",
+        ),
+    ),
+)
+def test_submission_absence_proof_fails_closed(
+    tmp_path, snapshot, match
+):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        attempt["state"] = "submitting"
+        attempt["submit_started_at"] = 2.0
+        attempt["submission_attempts"] = 1
+        if snapshot.rows:
+            snapshot = replace(
+                snapshot,
+                rows=(
+                    replace(
+                        snapshot.rows[0],
+                        comment=attempt["scheduler_comment"],
+                    ),
+                ),
+            )
+        tx.save_ledger(directory, ledger, now=2.0)
+        with pytest.raises(tx.FleetTransactionError, match=match):
+            tx.record_proven_submission_absence(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                snapshot=snapshot,
+                now=400.0,
+            )
+        assert attempt["state"] == "submitting"
+    finally:
+        lock.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("mutation", ("tamper", "replace"))
+def test_submit_rechecks_sealed_script_after_durable_submitting_save(
+    tmp_path, monkeypatch, mutation
+):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        path = Path(attempt["sbatch_path"])
+        real_save = tx.save_ledger
+        mutated = False
+
+        def save_then_mutate(save_directory, save_ledger, *, now):
+            nonlocal mutated
+            real_save(save_directory, save_ledger, now=now)
+            if attempt["state"] != "submitting" or mutated:
+                return
+            mutated = True
+            if mutation == "tamper":
+                path.chmod(0o644)
+                path.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
+                path.chmod(0o444)
+            else:
+                replacement = path.with_suffix(".replacement")
+                replacement.write_text(
+                    "#!/bin/bash\nexit 98\n", encoding="utf-8"
+                )
+                replacement.chmod(0o444)
+                replacement.replace(path)
+
+        monkeypatch.setattr(tx, "save_ledger", save_then_mutate)
+        with pytest.raises(
+            tx.FleetTransactionError,
+            match="pre-sbatch provenance failure",
+        ):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=2.0,
+                runner=lambda *_a, **_k: pytest.fail(
+                    "drifted artifact must not cross sbatch"
+                ),
+            )
+        assert attempt["state"] == "submission_failed"
+        assert attempt["last_error"].startswith(
+            "pre-sbatch provenance failure:"
+        )
+        persisted = json.loads(
+            tx.ledger_path(directory, GENERATION).read_text(encoding="utf-8")
+        )
+        assert (
+            persisted["replicas"][REPLICA_ID]["attempts"][0]["state"]
+            == "submission_failed"
+        )
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_submit_rejects_parent_symlink_without_canonicalizing_attempt(tmp_path):
+    _root, lock, directory, ledger = _open_state(tmp_path)
+    try:
+        attempt = _prepare(directory, ledger)
+        lexical_path = Path(attempt["sbatch_path"])
+        generation_dir = lexical_path.parent
+        real_generation_dir = generation_dir.with_name(
+            generation_dir.name + "-real"
+        )
+        generation_dir.rename(real_generation_dir)
+        generation_dir.symlink_to(real_generation_dir, target_is_directory=True)
+        assert Path(attempt["sbatch_path"]) == lexical_path
+        with pytest.raises(tx.FleetTransactionError, match="traverses a symlink"):
+            tx.submit_attempt(
+                directory,
+                ledger,
+                replica_id=REPLICA_ID,
+                attempt=attempt,
+                now=2.0,
+                runner=lambda *_a, **_k: pytest.fail(
+                    "symlinked artifact must not cross sbatch"
+                ),
+            )
+        assert attempt["state"] == "prepared"
     finally:
         lock.__exit__(None, None, None)
 
@@ -226,13 +667,23 @@ def test_successful_submission_records_exact_job_once(tmp_path):
     _root, lock, directory, ledger = _open_state(tmp_path)
     try:
         attempt = _prepare(directory, ledger)
+        def accepted(argv, **kwargs):
+            if argv[0] == "sbatch":
+                return _process(stdout="4242;cluster\n")
+            assert argv[:3] == ["scontrol", "write", "batch_script"]
+            return _process(
+                stdout=Path(attempt["sbatch_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+
         job_id = tx.submit_attempt(
             directory,
             ledger,
             replica_id=REPLICA_ID,
             attempt=attempt,
             now=2.0,
-            runner=lambda *_a, **_k: _process(stdout="4242;cluster\n"),
+            runner=accepted,
         )
         assert job_id == "4242"
         assert attempt["state"] == "submitted"
@@ -288,7 +739,7 @@ def test_scheduler_argv_matches_cluster_supported_fields_exactly():
     assert calls[0][0:4] == ["sacct", "-X", "-u", "scientist"]
     assert calls[0].count("-u") == 1
     assert calls[0][-1] == (
-        "--format=JobIDRaw,JobName,State,Partition,NodeList,SubmitLine,"
+        "--format=JobIDRaw,JobName,State,Partition,QOS,NodeList,SubmitLine,"
         "Comment,Start,End,TimelimitRaw"
     )
     assert "Dependency" not in calls[0][-1]
@@ -299,7 +750,7 @@ def test_scheduler_argv_matches_cluster_supported_fields_exactly():
         "-h",
         "-r",
         "-o",
-        "%i|%j|%T|%P|%N|%o|%k|%S|%e|%l|%E",
+        "%i|%j|%T|%P|%q|%N|%o|%k|%S|%e|%l|%E",
     ]
 
 
@@ -560,23 +1011,37 @@ def test_read_only_reconciliation_binds_transaction_comment_ledger_and_script(
             "RUNNING",
             "ou_bcs_low",
             "node001",
-            f"sbatch --comment={attempt['scheduler_comment']} "
-            f"{attempt['sbatch_path']}",
+            " ".join(tx.submission_argv(attempt["scheduler_comment"])),
             attempt["scheduler_comment"],
             "squeue",
+            qos="protected",
         )
+        reconciliation_kwargs = {
+            "pool_id": POOL_ID,
+            "fleet_sha256": FLEET_SHA256,
+            "replica_profiles": {REPLICA_ID: PROFILE},
+            "replica_job_names": {
+                REPLICA_ID: "asys-s5-serve-8b-s-r00"
+            },
+            "replica_qos": {REPLICA_ID: "protected"},
+        }
         reconciled = tx.reconcile_scheduler_rows(
             [row],
             [ledger],
-            pool_id=POOL_ID,
-            fleet_sha256=FLEET_SHA256,
-            replica_profiles={REPLICA_ID: PROFILE},
-            replica_job_names={REPLICA_ID: "asys-s5-serve-8b-s-r00"},
+            **reconciliation_kwargs,
         )
         [allocation] = reconciled.active_allocations
         assert allocation.replica_id == REPLICA_ID
         assert allocation.attempt["intent_token"] == "1" * 32
         assert allocation.ledger_generation == GENERATION
+        with pytest.raises(
+            tx.FleetTransactionError, match="scheduler provenance drift"
+        ):
+            tx.reconcile_scheduler_rows(
+                [replace(row, qos="preemptible")],
+                [ledger],
+                **reconciliation_kwargs,
+            )
     finally:
         lock.__exit__(None, None, None)
 
@@ -593,7 +1058,7 @@ def test_read_only_reconciliation_rejects_duplicate_and_unknown_active_jobs(
             "PENDING",
             "ou_bcs_low",
             "(null)",
-            attempt["sbatch_path"],
+            " ".join(tx.submission_argv(attempt["scheduler_comment"])),
             attempt["scheduler_comment"],
         )
         kwargs = {

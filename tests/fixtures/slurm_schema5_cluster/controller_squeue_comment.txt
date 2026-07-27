@@ -1,1 +1,1 @@
-123|controller|RUNNING|asys-schema5-v1;role=dispatcher;generation=1;intent=intent1|sbatch --parsable --comment=asys-schema5-v1;role=dispatcher;generation=1;intent=intent1 /state/dispatch.sbatch|(null)
+123|controller|RUNNING|controller_cpu|normal|asys-schema5-v1;role=dispatcher;generation=1;intent=intent1|sbatch --parsable --comment=asys-schema5-v1;role=dispatcher;generation=1;intent=intent1 /state/dispatch.sbatch|(null)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render, verify, and transactionally submit the schema-5 v1.2-r2 recovery DAG.
+"""Render, verify, and transactionally submit the schema-5 v1.2-r3 recovery DAG.
 
 The recovery jobs are deliberately generated outside the Git checkout.  A successful
 ``render --apply`` publishes immutable generation-specific sbatch files first and the
@@ -49,23 +49,65 @@ from agents_scaling.serving.generation_catalog import (  # noqa: E402
     TrustedGenerationCatalog,
     validate_trusted_generation_catalog,
 )
+from agents_scaling.serving import protected_capacity  # noqa: E402
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r2"
-CHAIN_NAMESPACE = "schema5-v1.2-r2"
-CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R2.json"
-SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R2.submission.json"
-SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R2_SUBMISSION.json"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
+CHAIN_NAMESPACE = "schema5-v1.2-r3"
+CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R3.json"
+SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.submission.json"
+SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R3_SUBMISSION.json"
 DEPENDENCY_POLICY_CHECKS_ROOT_NAME = "dependency_policy_checks"
 ROOT_RELEASE_INTENT_NAME = "RECOVERY_CHAIN_ROOT_RELEASE_INTENT.json"
 ROOT_RELEASE_COMPLETE_NAME = "RECOVERY_CHAIN_ROOT_RELEASE_COMPLETE.json"
-LAUNCH_COMPLETE_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R2_LAUNCHED.json"
+LAUNCH_COMPLETE_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R3_LAUNCHED.json"
+BOOTSTRAP_WATCHDOG_READY_NAME = (
+    "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_READY.json"
+)
+BOOTSTRAP_WATCHDOG_READY_PROTOCOL = (
+    "schema5-v1.2-r3-bootstrap-watchdog-deployment-ready-v1"
+)
+BOOTSTRAP_WATCHDOG_ARM_INTENT_NAME = (
+    "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARM_INTENT.json"
+)
+BOOTSTRAP_WATCHDOG_ARMED_NAME = (
+    "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARMED.json"
+)
+BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL = (
+    "schema5-v1.2-r3-bootstrap-watchdog-armed-v1"
+)
+BOOTSTRAP_WATCHDOG_HANDOFF_NAME = (
+    "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_HANDOFF_COMPLETE.json"
+)
+BOOTSTRAP_WATCHDOG_HANDOFF_PROTOCOL = (
+    "schema5-v1.2-r3-bootstrap-watchdog-handoff-v1"
+)
+BOOTSTRAP_HEARTBEAT_MAX_AGE_SECONDS = 600
+BOOTSTRAP_OBSERVATIONS_ROOT_NAME = "bootstrap_watchdog_observations"
+BOOTSTRAP_ISOLATED_DRILL_DIRECTORY = "isolated_cancellation_drill"
+BOOTSTRAP_ISOLATED_RENDER_LOCK_NAME = (
+    ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.isolated-drill-render.lock"
+)
+BOOTSTRAP_REPAIR_RESULT_NAME = "BOOTSTRAP_REPAIR_RESULT.json"
+BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE = 78
+BOOTSTRAP_GENERATION_PROVENANCE_NAME = (
+    "BOOTSTRAP_GENERATION_PROVENANCE.json"
+)
+BOOTSTRAP_DESCENDANT_ARM_INTENT_NAME = (
+    "RECOVERY_CHAIN_BOOTSTRAP_DESCENDANT_ARM_INTENT.json"
+)
+BOOTSTRAP_DESCENDANT_ARMED_NAME = (
+    "RECOVERY_CHAIN_BOOTSTRAP_DESCENDANT_ARMED.json"
+)
+BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL = (
+    "schema5-v1.2-r3-bootstrap-descendant-armed-v1"
+)
 SCHEDULER_ACCEPTANCE_COMPLETE_NAME = (
     "RECOVERY_CHAIN_SCHEDULER_ACCEPTANCE_COMPLETE.json"
 )
 SCHEDULER_ACCEPTANCE_PROTOCOL = (
-    "schema5-v1.2-r2-recovery-scheduler-acceptance-v1"
+    "schema5-v1.2-r3-recovery-scheduler-acceptance-v1"
 )
 SCHEDULER_ACCEPTANCE_INTENT_NAME = (
     "RECOVERY_CHAIN_SCHEDULER_ACCEPTANCE_INTENT.json"
@@ -76,23 +118,42 @@ DEPENDENCY_POLICY_CONTRACT = (
     "afterok+per_stage_afterany+aggregate_afterany_sentinel+kill_invalid_depend"
     "+held_root+sealed_dependency_cascade"
 )
-REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_2_r2"
-CAPACITY_TRANSIENT_ROOT_NAME = "fleet_capacity_transients_v1_2_r2"
+REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_2_r3"
+CAPACITY_TRANSIENT_ROOT_NAME = "fleet_capacity_transients_v1_2_r3"
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
 PROTECTED_CAPACITY_MARKER_NAME = "PROTECTED_CAPACITY_COMPLETE.json"
-PROTECTED_CAPACITY_PROTOCOL = "schema5-v1.2-r2-protected-capacity-v2"
-PROTECTED_CAPACITY_SOURCE = (
-    "sealed_protected_canary+partition_inventory+association"
+PROTECTED_CAPACITY_PROTOCOL = protected_capacity.PROTOCOL
+PROTECTED_CAPACITY_SOURCE = protected_capacity.CAPACITY_SOURCE
+PROTECTED_MINIMUM_SCIENTIFIC_WALL_SECONDS = (
+    protected_capacity.MIN_SCIENTIFIC_WALL_SECONDS
 )
+PROTECTED_CLIENT_WALL_SECONDS = protected_capacity.CLIENT_WALL_SECONDS
 DURABLE_GIT_RELEASE_MARKER_NAME = durable_git.MARKER_NAME
 DURABLE_GIT_RELEASE_PROTOCOL = durable_git.PROTOCOL
+SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH = (
+    Path("canary_failures")
+    / "schema5-v1.2-r2"
+    / "CANARY_FAILURE_SEALED.json"
+)
+SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL = (
+    "schema5-v1.2-r2-partial-canary-failure-seal-v1"
+)
+SUPERSEDED_R2_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r2"
+SUPERSEDED_R2_RELEASE_COMMIT = "f06baaad024abb237a077e81edcd49a3c3167f9f"
+SUPERSEDED_R2_RELEASE_TAG_OBJECT = "23b1a6d3d299b941bbd47d5900c8ff8b8ca0c398"
+SUPERSEDED_R2_CANARY_JOB_ID = "18889366"
+SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID = (
+    "7528c410d8a496abfc6051e70454aa4a429b1f9176c408b3fec6128f94f5fa7f"
+)
+SUPERSEDED_R2_CANARY_FAILURE_FILE_COUNT = 18
+SUPERSEDED_R2_CANARY_FAILURE_TOTAL_BYTES = 28_960
 WATCHDOG_READY_MARKER_NAME = "WATCHDOG_READY.json"
-WATCHDOG_READY_PROTOCOL = "schema5-v1.2-r2-external-watchdog-v1"
+WATCHDOG_READY_PROTOCOL = "schema5-v1.2-r3-external-watchdog-v1"
 EXTERNAL_WATCHDOG_DRILL_MARKER_NAME = (
     "EXTERNAL_WATCHDOG_KILL_DRILL_COMPLETE.json"
 )
 EXTERNAL_WATCHDOG_DRILL_PROTOCOL = (
-    "schema5-v1.2-r2-external-watchdog-drill-v1"
+    "schema5-v1.2-r3-external-watchdog-drill-v1"
 )
 THROUGHPUT_QUALIFICATION_ROOT_NAME = (
     "schema5_throughput_qualification_v1"
@@ -101,16 +162,41 @@ THROUGHPUT_QUALIFICATION_MARKER_NAME = (
     "THROUGHPUT_QUALIFICATION_COMPLETE.json"
 )
 THROUGHPUT_QUALIFICATION_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-v1"
+    "schema5-v1.2-r3-throughput-qualification-v3"
+)
+THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION = 3
+THROUGHPUT_QUALIFICATION_PLAN_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-load-plan-v3"
+)
+THROUGHPUT_QUALIFICATION_EVIDENCE_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-evidence-v3"
+)
+THROUGHPUT_QUALIFICATION_SCHEDULER_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-scheduler-v3"
+)
+THROUGHPUT_QUALIFICATION_SEMANTIC_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-semantic-v3"
+)
+THROUGHPUT_QUALIFICATION_OBSERVATION_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-observation-v3"
+)
+THROUGHPUT_QUALIFICATION_WINDOW_INTENT_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-load-window-intent-v3"
+)
+THROUGHPUT_QUALIFICATION_CYCLE_INTENT_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-cycle-intent-v3"
 )
 THROUGHPUT_QUALIFICATION_ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r3-throughput-qualification-attempt-pointer-v1"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_ATTEMPT_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r3-throughput-qualification-current-attempt-v1"
 )
 THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-failure-v1"
+    "schema5-v1.2-r3-throughput-qualification-failure-v3"
+)
+THROUGHPUT_QUALIFICATION_LEGACY_FAILURE_PROTOCOL = (
+    "schema5-v1.2-r3-throughput-qualification-failure-v1"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_ATTEMPT_NAME = "CURRENT_ATTEMPT.json"
 THROUGHPUT_QUALIFICATION_ATTEMPT_DIRECTORY = "attempts"
@@ -122,19 +208,22 @@ THROUGHPUT_QUALIFICATION_FAILURE_NAME = "QUALIFICATION_FAILURE.json"
 THROUGHPUT_QUALIFICATION_CELLS = 768
 THROUGHPUT_QUALIFICATION_QIDS = 15_360
 THROUGHPUT_QUALIFICATION_CEILINGS = (24, 96, 192, 384)
-THROUGHPUT_QUALIFICATION_STEADY_SECONDS = 7_200
+THROUGHPUT_QUALIFICATION_HEALTH_SOAK_SECONDS = 7_200
+THROUGHPUT_QUALIFICATION_MIN_LOADED_OBSERVATIONS = 2
+THROUGHPUT_QUALIFICATION_MAX_OBSERVATION_GAP_SECONDS = 660
 THROUGHPUT_QUALIFICATION_MIN_QIDS_PER_DAY = 201_994
+THROUGHPUT_QUALIFICATION_MIN_EXECUTION_EVENTS = 16_833
 QUARANTINE_ROOT_NAME = "quarantine"
 QUARANTINE_EVIDENCE_ROOT_NAME = "materialization_quarantines"
-RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R2.render.lock"
-SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R2.submit.lock"
+RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.render.lock"
+SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.submit.lock"
 SENTINEL_TOOL_FILENAME = "schema5_recovery_sentinel.py"
 SENTINEL_BOOTSTRAP_ROOT_NAME = "sentinel_bootstraps"
 SENTINEL_BOOTSTRAP_MARKER_NAME = "BOOTSTRAP_COMPLETE.json"
 SENTINEL_BOOTSTRAP_INVENTORY_NAME = "BOOTSTRAP_PAYLOAD.sha256"
-SENTINEL_BOOTSTRAP_PROTOCOL = "schema5-v1.2-r2-sentinel-bootstrap"
-SOURCE_CHECKOUT_SEAL_NAME = "SOURCE_CHECKOUT_SCHEMA5_V1_2_R2_COMPLETE.json"
-SOURCE_CHECKOUT_SEAL_PROTOCOL = "schema5-v1.2-r2-source-checkout-seal-v1"
+SENTINEL_BOOTSTRAP_PROTOCOL = "schema5-v1.2-r3-sentinel-bootstrap"
+SOURCE_CHECKOUT_SEAL_NAME = "SOURCE_CHECKOUT_SCHEMA5_V1_2_R3_COMPLETE.json"
+SOURCE_CHECKOUT_SEAL_PROTOCOL = "schema5-v1.2-r3-source-checkout-seal-v1"
 BUNDLED_TOOL_GIT_PATHS = (
     "scripts/schema5_recovery_sentinel.py",
     "scripts/verify_schema5_recovery_evidence.py",
@@ -168,9 +257,15 @@ PREREQUISITE_CODE_GIT_PATHS = (
 )
 MATERIALIZATION_PILOT_MARKER = "PILOT_COMPLETE.json"
 SLURM_CANARY_MARKER = "CANARY_COMPLETE.json"
-PREREQUISITE_PROTOCOL = "schema5-v1.2-r2-prerequisite-evidence-v4"
+PREREQUISITE_PROTOCOL = "schema5-v1.2-r3-prerequisite-evidence-v6"
+PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256 = (
+    "9f588ce4ffc4aeb5a3ac494a35244604e4eb100a7190b18d9eb3c568468fdb09"
+)
+PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID = (
+    "2abfc4fab5828cd1e965ff822e54e55462b1a6a2b280b7f47eebd90cadcfd872"
+)
 R1_PROTOCOL_VERIFICATION_PROTOCOL = (
-    "schema5-v1.2-r2-native-r1-evidence-verification-v1"
+    "schema5-v1.2-r3-native-r1-evidence-verification-v1"
 )
 R1_CHAIN_PROTOCOL = "schema5-v1.1-r1-recovery-chain"
 R1_EVIDENCE_DISPATCH_PROTOCOL = "schema5-recovery-evidence-protocol-dispatch"
@@ -181,10 +276,10 @@ R1_PROTOCOL_TOOL_GIT_PATHS = (
     R1_NATIVE_RENDERER_GIT_PATH,
     "scripts/render_schema5_recovery_chain_v12.py",
 )
-CHAIN_SCHEMA_VERSION = 9
+CHAIN_SCHEMA_VERSION = 10
 SUBMISSION_SCHEMA_VERSION = 4
 VISIBILITY_GRACE_SECONDS = 300.0
-LAUNCH_GATE_TIMEOUT_SECONDS = 180
+LAUNCH_GATE_TIMEOUT_SECONDS = 1_200
 LEGACY_RUN_IDS = (
     "full_sweep_v1",
     "full_sweep_agent_counts_v1",
@@ -203,19 +298,19 @@ SMOKE_RUN_IDS = (
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r2-smoke-attempt-pointer-v1"
+    "schema5-v1.2-r3-smoke-attempt-pointer-v1"
 )
 SMOKE_CURRENT_SELECTOR_PROTOCOL = (
-    "schema5-v1.2-r2-smoke-current-selector-v1"
+    "schema5-v1.2-r3-smoke-current-selector-v1"
 )
 SMOKE_ATTEMPT_COMPLETE_PROTOCOL = (
-    "schema5-v1.2-r2-smoke-attempt-complete-v1"
+    "schema5-v1.2-r3-smoke-attempt-complete-v1"
 )
 SMOKE_ATTEMPT_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r2-smoke-attempt-failure-v1"
+    "schema5-v1.2-r3-smoke-attempt-failure-v1"
 )
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r2-smoke-attempt-binding-v1"
+    "schema5-v1.2-r3-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -550,6 +645,13 @@ class RecoveryPaths:
         return self.recovery_root / DURABLE_GIT_RELEASE_MARKER_NAME
 
     @property
+    def superseded_r2_canary_failure_marker(self) -> Path:
+        return (
+            self.recovery_root
+            / SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH
+        )
+
+    @property
     def external_watchdog_drill_marker(self) -> Path:
         return self.recovery_root / EXTERNAL_WATCHDOG_DRILL_MARKER_NAME
 
@@ -587,7 +689,7 @@ Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 def _job_comment(chain_id: str, name: str, generation: int) -> str:
     if generation < 0:
         raise ChainError("recovery-chain submission generation cannot be negative")
-    return f"asys:s5-recovery-v1.2-r2:{chain_id}:g{generation:04d}:{name}"
+    return f"asys:s5-recovery-v1.2-r3:{chain_id}:g{generation:04d}:{name}"
 
 
 def _utc_now() -> str:
@@ -603,6 +705,19 @@ def _slurm_timestamp(timestamp: float) -> str:
 def _canonical_json(value: object) -> bytes:
     return (
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def _compact_canonical_json(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
     ).encode("utf-8")
 
 
@@ -856,7 +971,7 @@ def recovery_paths(
         repository=repository,
         results_root=results_root,
         recovery_root=recovery_root,
-        source_checkout=recovery_root / "release_source_checkout_v1_2_r2",
+        source_checkout=recovery_root / "release_source_checkout_v1_2_r3",
         release_root=release,
         worktree=release / "worktree",
         identity=release / "identity",
@@ -898,7 +1013,7 @@ def recovery_paths(
 
 _BOOTSTRAP_RELATIVE_PATH = re.compile(r"[A-Za-z0-9._+@/-]+\Z")
 _PYTHON_STDLIB_DIRECTORY = re.compile(r"python([0-9]+)\.([0-9]+)\Z")
-_BOOTSTRAP_PROBE_TOKEN = "schema5_v1_2_r2_sentinel_bootstrap_ok"
+_BOOTSTRAP_PROBE_TOKEN = "schema5_v1_2_r3_sentinel_bootstrap_ok"
 
 
 def _bootstrap_stdlib_root(paths: RecoveryPaths) -> Path:
@@ -1515,6 +1630,156 @@ def _tagged_file_bytes(repository: Path, commit: str, relative: str) -> bytes:
     return bytes(proc.stdout)
 
 
+def _run_checked_bytes(
+    argv: Sequence[str],
+    *,
+    cwd: Path | None = None,
+) -> bytes:
+    """Run one read-only command without decoding or stripping its output."""
+
+    environment = dict(os.environ)
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        proc = subprocess.run(
+            list(argv),
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+    except OSError as exc:
+        raise ChainError(f"cannot execute {argv[0]}: {exc}") from exc
+    if proc.returncode != 0:
+        raise ChainError(
+            f"command failed ({proc.returncode}): {shlex.join(argv)}: "
+            f"{proc.stderr.decode(errors='replace').strip()[:1000]}"
+        )
+    return bytes(proc.stdout)
+
+
+def _tagged_source_tree_sha256(repository: Path, commit: str) -> str:
+    """Reproduce ``schema5_control.sha256_tree`` from the exact Git tree."""
+
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ChainError(f"invalid tagged Git commit: {commit!r}")
+    tree = _run_checked_bytes(
+        [
+            "git",
+            "ls-tree",
+            "-rz",
+            "--full-tree",
+            "-r",
+            commit,
+        ],
+        cwd=repository,
+    )
+    ignored_names = {".git", ".pytest_cache", "__pycache__"}
+    entries: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for raw_record in tree.split(b"\0"):
+        if not raw_record:
+            continue
+        try:
+            metadata, raw_relative = raw_record.split(b"\t", 1)
+            mode, object_type, raw_object = metadata.split(b" ")
+            relative = raw_relative.decode("utf-8")
+            object_id = raw_object.decode("ascii")
+        except (UnicodeError, ValueError) as exc:
+            raise ChainError(
+                "tagged source tree contains a malformed Git entry"
+            ) from exc
+        relative_path = Path(relative)
+        if (
+            not relative
+            or relative.startswith("/")
+            or ".." in relative_path.parts
+            or relative in seen
+        ):
+            raise ChainError(
+                "tagged source tree contains a duplicate or unsafe path"
+            )
+        seen.add(relative)
+        if (
+            any(part in ignored_names for part in relative_path.parts)
+            or relative_path.suffix == ".pyc"
+        ):
+            continue
+        if (
+            object_type != b"blob"
+            or re.fullmatch(r"[0-9a-f]{40}", object_id) is None
+            or mode not in {b"100644", b"100755", b"120000"}
+        ):
+            raise ChainError(
+                f"tagged source tree has unsupported entry {relative!r}"
+            )
+        blob = _run_checked_bytes(
+            ["git", "cat-file", "blob", object_id],
+            cwd=repository,
+        )
+        if mode == b"120000":
+            try:
+                target = blob.decode("utf-8")
+            except UnicodeError as exc:
+                raise ChainError(
+                    f"tagged source symlink target is not UTF-8: {relative}"
+                ) from exc
+            payload = ("SYMLINK\0" + target).encode("utf-8")
+        else:
+            payload = blob
+        entries.append((relative, payload))
+    entries.sort(key=lambda row: row[0])
+    digest = hashlib.sha256()
+    for relative, payload in entries:
+        relative_bytes = relative.encode("utf-8")
+        digest.update(len(relative_bytes).to_bytes(8, "big"))
+        digest.update(relative_bytes)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def _protected_capacity_release_source_binding(
+    paths: RecoveryPaths,
+    *,
+    git_identity: Mapping[str, str],
+) -> dict[str, str]:
+    """Derive capacity provenance independently from exact tagged bytes."""
+
+    try:
+        commit = str(git_identity["git_commit"])
+        tag_object = str(git_identity["tag_object"])
+    except KeyError as exc:
+        raise ChainError(
+            "release Git identity lacks commit/tag-object authority"
+        ) from exc
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", commit) is None
+        or re.fullmatch(r"[0-9a-f]{40}", tag_object) is None
+    ):
+        raise ChainError("release Git identity is malformed")
+    dispatcher = _tagged_file_bytes(
+        paths.repository,
+        commit,
+        "slurm/dispatch_sweeps.py",
+    )
+    qualification_runner = _tagged_file_bytes(
+        paths.repository,
+        commit,
+        "scripts/run_schema5_throughput_qualification.py",
+    )
+    return {
+        "source_tree_sha256": _tagged_source_tree_sha256(
+            paths.repository, commit
+        ),
+        "dispatcher_source_sha256": hashlib.sha256(
+            dispatcher
+        ).hexdigest(),
+        "qualification_runner_source_sha256": hashlib.sha256(
+            qualification_runner
+        ).hexdigest(),
+    }
+
+
 def verify_release_tag(repository: Path) -> dict[str, str]:
     if not repository.is_dir() or not (repository / ".git").exists():
         raise ChainError(f"source repository is not a Git checkout: {repository}")
@@ -1578,7 +1843,7 @@ def _verify_exact_tag_checkout(
         )
     ):
         raise ChainError(
-            "prerequisite verification requires the exact clean r2 tagged checkout"
+            "prerequisite verification requires the exact clean release-tagged checkout"
         )
 
 
@@ -1920,7 +2185,7 @@ def _require_release_marker_binding(
         or marker.get("chain_namespace") != CHAIN_NAMESPACE
     ):
         raise ChainError(
-            f"{description} does not bind the exact r2 release and chain"
+            f"{description} does not bind the exact release and chain"
         )
 
 
@@ -2050,13 +2315,165 @@ def _validate_protected_placement_rows(
     return totals
 
 
+def _validate_scientific_qos_contracts(
+    value: object,
+    *,
+    server_qos: set[str],
+    client_qos: set[str],
+) -> None:
+    """Prove exact QOS job-count and walltime support for every placement."""
+
+    fields = {
+        "qos",
+        "max_wall_seconds",
+        "max_jobs_per_user",
+        "max_submit_jobs_per_user",
+        "required_wall_seconds",
+        "required_running_jobs",
+        "required_submit_jobs",
+    }
+    if not isinstance(value, list) or not value:
+        raise ChainError(
+            "protected capacity has no scientific QOS contracts"
+        )
+    prior = ""
+    by_qos: dict[str, Mapping[str, Any]] = {}
+    for index, row in enumerate(value):
+        if not isinstance(row, Mapping) or set(row) != fields:
+            raise ChainError(
+                f"protected scientific QOS contract {index} fields drifted"
+            )
+        qos = row.get("qos")
+        if (
+            not isinstance(qos, str)
+            or _SAFE_NAME.fullmatch(qos) is None
+            or qos <= prior
+        ):
+            raise ChainError(
+                "protected scientific QOS contracts are duplicated or "
+                "not canonically sorted"
+            )
+        prior = qos
+        limits: dict[str, int | None] = {}
+        for field in (
+            "max_wall_seconds",
+            "max_jobs_per_user",
+            "max_submit_jobs_per_user",
+        ):
+            observed = row.get(field)
+            if observed is not None and (
+                not isinstance(observed, int)
+                or isinstance(observed, bool)
+                or observed < 1
+            ):
+                raise ChainError(
+                    f"protected scientific QOS {qos} {field} is invalid"
+                )
+            limits[field] = observed
+        required_wall = row.get("required_wall_seconds")
+        required_running = row.get("required_running_jobs")
+        required_submit = row.get("required_submit_jobs")
+        if (
+            not isinstance(required_wall, int)
+            or isinstance(required_wall, bool)
+            or required_wall < PROTECTED_CLIENT_WALL_SECONDS
+            or not isinstance(required_running, int)
+            or isinstance(required_running, bool)
+            or required_running < 0
+            or not isinstance(required_submit, int)
+            or isinstance(required_submit, bool)
+            or required_submit < 1
+            or (
+                limits["max_wall_seconds"] is not None
+                and limits["max_wall_seconds"] < required_wall
+            )
+            or (
+                limits["max_jobs_per_user"] is not None
+                and limits["max_jobs_per_user"] < required_running
+            )
+            or (
+                limits["max_submit_jobs_per_user"] is not None
+                and limits["max_submit_jobs_per_user"]
+                < required_submit
+            )
+        ):
+            raise ChainError(
+                f"protected scientific QOS {qos} cannot sustain its "
+                "registered load"
+            )
+        by_qos[qos] = row
+    if (
+        set(by_qos) != server_qos | client_qos
+        or sum(
+            int(row["required_running_jobs"])
+            for row in by_qos.values()
+        )
+        != PROTECTED_RUNNING_SCIENTIFIC_JOBS
+        or sum(
+            int(row["required_submit_jobs"])
+            for row in by_qos.values()
+        )
+        != 448
+        or max(
+            int(row["required_wall_seconds"])
+            for row in by_qos.values()
+        )
+        != PROTECTED_MINIMUM_SCIENTIFIC_WALL_SECONDS
+        or any(
+            int(by_qos[qos]["required_wall_seconds"])
+            != PROTECTED_MINIMUM_SCIENTIFIC_WALL_SECONDS
+            for qos in server_qos
+        )
+        or any(
+            int(by_qos[qos]["required_wall_seconds"])
+            < PROTECTED_CLIENT_WALL_SECONDS
+            for qos in client_qos
+        )
+    ):
+        raise ChainError(
+            "protected scientific QOS contracts do not prove 409 running "
+            "jobs, 448 submitted jobs, 24-hour serving, and 12-hour cells"
+        )
+
+
 def _validate_protected_capacity_marker(
     paths: RecoveryPaths, *, git_identity: Mapping[str, str]
 ) -> tuple[dict[str, Any], bytes]:
+    source_binding = _protected_capacity_release_source_binding(
+        paths,
+        git_identity=git_identity,
+    )
+    try:
+        protected_capacity.load_contract(
+            paths.protected_capacity_marker,
+            expected_release_git_commit=str(git_identity["git_commit"]),
+            expected_release_tag_object=str(git_identity["tag_object"]),
+            expected_source_tree_sha256=source_binding[
+                "source_tree_sha256"
+            ],
+            expected_dispatcher_source_sha256=source_binding[
+                "dispatcher_source_sha256"
+            ],
+            expected_qualification_runner_source_sha256=source_binding[
+                "qualification_runner_source_sha256"
+            ],
+        )
+    except (
+        KeyError,
+        OSError,
+        protected_capacity.ProtectedCapacityError,
+    ) as exc:
+        raise ChainError(
+            f"protected-capacity completion marker is invalid: {exc}"
+        ) from exc
     marker, raw = _read_sealed_marker(
         paths.protected_capacity_marker,
         description="protected-capacity completion marker",
     )
+    return marker, raw
+
+    # Kept below only as sealed-history context for the superseded v2 protocol.
+    # The v4 authority is validated by the shared runtime contract above.
     required = {
         "schema_version",
         "protocol",
@@ -2078,7 +2495,11 @@ def _validate_protected_capacity_marker(
         "scheduler_cluster",
         "scheduler_account",
         "scheduler_user",
+        "scheduler_max_jobs",
         "scheduler_max_submit_jobs",
+        "running_scientific_jobs",
+        "minimum_scientific_wall_seconds",
+        "scientific_qos_contracts",
         "partition_cpus",
         "partition_memory_mib",
         "partition_gpus",
@@ -2156,6 +2577,20 @@ def _validate_protected_capacity_marker(
         role="client",
         preempt_type=str(preempt_type),
     )
+    server_qos = {
+        str(row["qos"])
+        for row in marker["scientific_server_placements"]
+    }
+    client_qos = {
+        str(row["qos"])
+        for row in marker["scientific_client_placements"]
+    }
+    _validate_scientific_qos_contracts(
+        marker.get("scientific_qos_contracts"),
+        server_qos=server_qos,
+        client_qos=client_qos,
+    )
+    scheduler_max_jobs = marker.get("scheduler_max_jobs")
     source_fields = (
         "scheduler_evidence_id",
         "scheduler_evidence_sha256",
@@ -2173,6 +2608,19 @@ def _validate_protected_capacity_marker(
         or clients["cpus"] != cpu
         or clients["memory_mib"] != memory_mib
         or marker.get("capacity_source") != PROTECTED_CAPACITY_SOURCE
+        or marker.get("running_scientific_jobs")
+        != PROTECTED_RUNNING_SCIENTIFIC_JOBS
+        or marker.get("minimum_scientific_wall_seconds")
+        != PROTECTED_MINIMUM_SCIENTIFIC_WALL_SECONDS
+        or (
+            scheduler_max_jobs is not None
+            and (
+                not isinstance(scheduler_max_jobs, int)
+                or isinstance(scheduler_max_jobs, bool)
+                or scheduler_max_jobs
+                < PROTECTED_RUNNING_SCIENTIFIC_JOBS
+            )
+        )
         or any(
             not isinstance(marker.get(field), str)
             or re.fullmatch(
@@ -2246,7 +2694,395 @@ def _validate_durable_git_release_marker(
         or marker.get("remote_query_read_only") is not True
     ):
         raise ChainError(
-            "durable Git release marker does not prove the exact pushed r2 release"
+            "durable Git release marker does not prove the exact pushed release"
+        )
+    return marker, raw
+
+
+def _current_canary_tree_inventory(
+    root: Path,
+) -> tuple[list[dict[str, Any]], int, int]:
+    root = _require_canonical_path(
+        root,
+        description="superseded r2 partial canary",
+        kind="directory",
+    )
+    rows: list[dict[str, Any]] = []
+    file_count = 0
+    total_bytes = 0
+    candidates = [
+        root,
+        *sorted(
+            root.rglob("*"),
+            key=lambda path: path.relative_to(root).as_posix(),
+        ),
+    ]
+    for candidate in candidates:
+        relative = (
+            "."
+            if candidate == root
+            else candidate.relative_to(root).as_posix()
+        )
+        metadata = os.lstat(candidate)
+        common = {
+            "relative_path": relative,
+            "device": metadata.st_dev,
+            "inode": metadata.st_ino,
+            "mode": stat.S_IMODE(metadata.st_mode),
+            "nlink": metadata.st_nlink,
+        }
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ChainError(
+                f"superseded r2 partial canary contains a symlink: {relative}"
+            )
+        if stat.S_ISDIR(metadata.st_mode):
+            rows.append(
+                common
+                | {"type": "directory", "size": 0, "sha256": None}
+            )
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ChainError(
+                f"superseded r2 partial canary contains an unsafe entry: {relative}"
+            )
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(candidate, flags)
+        except OSError as exc:
+            raise ChainError(
+                f"cannot open superseded r2 canary artifact {relative}: {exc}"
+            ) from exc
+        digest = hashlib.sha256()
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+            ):
+                raise ChainError(
+                    f"superseded r2 canary artifact is unsafe: {relative}"
+                )
+            for block in iter(
+                lambda: os.read(descriptor, 1024 * 1024),
+                b"",
+            ):
+                digest.update(block)
+            after = os.fstat(descriptor)
+            current = os.lstat(candidate)
+        finally:
+            os.close(descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if any(
+            getattr(before, field) != getattr(after, field)
+            or getattr(after, field) != getattr(current, field)
+            for field in stable_fields
+        ):
+            raise ChainError(
+                f"superseded r2 canary artifact changed while hashing: {relative}"
+            )
+        rows.append(
+            common
+            | {
+                "type": "file",
+                "size": before.st_size,
+                "sha256": digest.hexdigest(),
+            }
+        )
+        file_count += 1
+        total_bytes += before.st_size
+    return rows, file_count, total_bytes
+
+
+def _read_canary_inventory(path: Path) -> list[dict[str, Any]]:
+    path = _require_canonical_path(
+        path,
+        description="superseded r2 canary sealed inventory",
+        kind="file",
+    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) & 0o222
+        ):
+            raise ChainError(
+                "superseded r2 canary sealed inventory is unsafe"
+            )
+        blocks: list[bytes] = []
+        for block in iter(
+            lambda: os.read(descriptor, 1024 * 1024),
+            b"",
+        ):
+            blocks.append(block)
+        raw = b"".join(blocks)
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+    finally:
+        os.close(descriptor)
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if any(
+        getattr(before, field) != getattr(after, field)
+        or getattr(after, field) != getattr(current, field)
+        for field in stable_fields
+    ):
+        raise ChainError(
+            "superseded r2 canary sealed inventory changed while reading"
+        )
+    if not raw or not raw.endswith(b"\n"):
+        raise ChainError(
+            "superseded r2 canary sealed inventory is incomplete"
+        )
+
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ChainError(
+                    "superseded r2 canary inventory has duplicate keys"
+                )
+            value[key] = item
+        return value
+
+    rows: list[dict[str, Any]] = []
+    for line in raw.splitlines(keepends=True):
+        try:
+            value = json.loads(
+                line,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=lambda token: (_ for _ in ()).throw(
+                    ChainError(
+                        "superseded r2 canary inventory contains "
+                        f"non-finite value {token}"
+                    )
+                ),
+            )
+        except ChainError:
+            raise
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ChainError(
+                f"superseded r2 canary sealed inventory is invalid: {exc}"
+            ) from exc
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {
+                "relative_path",
+                "device",
+                "inode",
+                "mode",
+                "nlink",
+                "type",
+                "size",
+                "sha256",
+            }
+            or line != _compact_canonical_json(value)
+        ):
+            raise ChainError(
+                "superseded r2 canary sealed inventory row drifted"
+            )
+        rows.append(value)
+    return rows
+
+
+def _validate_superseded_r2_canary_failure_marker(
+    paths: RecoveryPaths,
+) -> tuple[dict[str, Any], bytes]:
+    marker_path = paths.superseded_r2_canary_failure_marker
+    marker, raw = _read_sealed_marker(
+        marker_path,
+        description="superseded r2 canary failure seal",
+    )
+    identity = dict(marker)
+    seal_id = identity.pop("seal_id", None)
+    release = marker.get("release")
+    code_identity = (
+        release.get("code_identity")
+        if isinstance(release, dict)
+        else None
+    )
+    known = marker.get("known_scheduler_identity")
+    expected_tree = (
+        paths.recovery_root / "slurm_canaries" / "schema5-v1.2-r2"
+    )
+    if (
+        marker.get("schema_version") != 1
+        or marker.get("protocol")
+        != SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL
+        or marker.get("passed") is not True
+        or marker.get("classification")
+        != "deterministic_canary_failure_sealed_fail_closed"
+        or marker.get("error_classification")
+        != "deterministic_missing_subprocess_capture"
+        or marker.get("retry_in_place") is not False
+        or marker.get("no_active_matching_jobs_preseal") is not True
+        or marker.get("no_active_matching_jobs_postseal") is not True
+        or marker.get("mutation_claim")
+        != "bound_to_preexisting_evidence_not_inferred_from_absence"
+        or marker.get("tree") != str(expected_tree)
+        or marker.get("file_count")
+        != SUPERSEDED_R2_CANARY_FAILURE_FILE_COUNT
+        or marker.get("total_bytes")
+        != SUPERSEDED_R2_CANARY_FAILURE_TOTAL_BYTES
+        or seal_id != SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID
+        or seal_id != _sha256_bytes(_compact_canonical_json(identity))
+        or not isinstance(release, dict)
+        or release.get("release_tag") != SUPERSEDED_R2_RELEASE_TAG
+        or release.get("release_git_commit")
+        != SUPERSEDED_R2_RELEASE_COMMIT
+        or release.get("release_tag_object")
+        != SUPERSEDED_R2_RELEASE_TAG_OBJECT
+        or not isinstance(code_identity, dict)
+        or code_identity.get("release_tag")
+        != SUPERSEDED_R2_RELEASE_TAG
+        or code_identity.get("release_git_commit")
+        != SUPERSEDED_R2_RELEASE_COMMIT
+        or code_identity.get("release_tag_object")
+        != SUPERSEDED_R2_RELEASE_TAG_OBJECT
+        or code_identity.get("protocol")
+        != "schema5-v1.2-r2-slurm-canary-code-v3"
+        or not isinstance(known, dict)
+        or known.get("job_ids") != [SUPERSEDED_R2_CANARY_JOB_ID]
+    ):
+        raise ChainError(
+            "superseded r2 canary failure does not bind the exact "
+            "deterministic prelaunch incident"
+        )
+
+    evidence_root = marker_path.parent
+    artifact_contract = {
+        "intent": (
+            "CANARY_FAILURE_SEAL_INTENT.json",
+            "intent_sha256",
+        ),
+        "preseal_inventory": (
+            "CANARY_FAILURE_PRESEAL_INVENTORY.jsonl",
+            "preseal_inventory_sha256",
+        ),
+        "sealed_inventory": (
+            "CANARY_FAILURE_SEALED_INVENTORY.jsonl",
+            "sealed_inventory_sha256",
+        ),
+        "scheduler_pre": (
+            "CANARY_FAILURE_SCHEDULER_PRE.json",
+            "scheduler_pre_sha256",
+        ),
+        "scheduler_post": (
+            "CANARY_FAILURE_SCHEDULER_POST.json",
+            "scheduler_post_sha256",
+        ),
+    }
+    expected_evidence_paths = {marker_path}
+    for field, (filename, digest_field) in artifact_contract.items():
+        expected = evidence_root / filename
+        expected_evidence_paths.add(expected)
+        path = _require_canonical_path(
+            expected,
+            description=f"superseded r2 canary {field}",
+            kind="file",
+        )
+        metadata = path.stat(follow_symlinks=False)
+        if (
+            marker.get(field) != str(expected)
+            or marker.get(digest_field) != _sha256(path)
+            or stat.S_IMODE(metadata.st_mode) & 0o222
+            or metadata.st_nlink != 1
+        ):
+            raise ChainError(
+                f"superseded r2 canary {field} evidence drifted"
+            )
+    observed_evidence_paths = set(evidence_root.iterdir())
+    if observed_evidence_paths != expected_evidence_paths:
+        raise ChainError(
+            "superseded r2 canary failure evidence contains unexpected "
+            "or missing artifacts"
+        )
+
+    sealed_inventory = _read_canary_inventory(
+        Path(str(marker["sealed_inventory"]))
+    )
+    observed, observed_count, observed_bytes = (
+        _current_canary_tree_inventory(expected_tree)
+    )
+    repeated, repeated_count, repeated_bytes = (
+        _current_canary_tree_inventory(expected_tree)
+    )
+    if (
+        observed != repeated
+        or observed_count != repeated_count
+        or observed_bytes != repeated_bytes
+        or observed != sealed_inventory
+        or observed_count != marker.get("file_count")
+        or observed_bytes != marker.get("total_bytes")
+    ):
+        raise ChainError(
+            "superseded r2 partial canary differs from its sealed inventory"
+        )
+
+    for phase in ("scheduler_pre", "scheduler_post"):
+        scheduler, _ = _read_sealed_marker(
+            Path(str(marker[phase])),
+            description=f"superseded r2 canary {phase}",
+        )
+        rows = scheduler.get("matching_sacct_rows")
+        if (
+            scheduler.get("protocol")
+            != "schema5-v1.2-r2-partial-canary-scheduler-evidence-v1"
+            or scheduler.get("complete_squeue_truth") is not True
+            or scheduler.get("complete_sacct_truth") is not True
+            or scheduler.get("no_active_matching_jobs") is not True
+            or scheduler.get("matching_squeue_rows") != []
+            or not isinstance(rows, list)
+            or len(rows) != 1
+            or not isinstance(rows[0], dict)
+            or rows[0].get("job_id")
+            != SUPERSEDED_R2_CANARY_JOB_ID
+            or rows[0].get("state") != "CANCELLED"
+        ):
+            raise ChainError(
+                f"superseded r2 canary {phase} scheduler truth drifted"
+            )
+
+    for root, description in (
+        (expected_tree, "superseded r2 partial canary"),
+        (evidence_root, "superseded r2 canary failure evidence"),
+    ):
+        root = _require_canonical_path(
+            root,
+            description=description,
+            kind="directory",
+        )
+        for candidate in (root, *root.rglob("*")):
+            metadata = candidate.stat(follow_symlinks=False)
+            if candidate.is_symlink() or stat.S_IMODE(metadata.st_mode) & 0o222:
+                raise ChainError(f"{description} is not recursively sealed")
+    if set(evidence_root.iterdir()) != expected_evidence_paths:
+        raise ChainError(
+            "superseded r2 canary failure evidence changed during validation"
         )
     return marker, raw
 
@@ -2415,7 +3251,11 @@ def _validate_watchdog_ready_marker(
     return marker, raw
 
 
-def verify_post_initialize_watchdog(manifest_path: Path) -> dict[str, Any]:
+def verify_post_initialize_watchdog(
+    manifest_path: Path,
+    *,
+    expected_desired_state: str = "paused",
+) -> dict[str, Any]:
     """Verify watchdog gates that necessarily bind the initialized control plane."""
 
     manifest_path = _require_canonical_path(
@@ -2470,9 +3310,11 @@ def verify_post_initialize_watchdog(manifest_path: Path) -> dict[str, Any]:
     )
     immutable = control.get("immutable")
     control_sha256 = control.get("immutable_sha256")
+    if expected_desired_state not in {"paused", "running"}:
+        raise ChainError("invalid expected watchdog control state")
     if (
         not isinstance(immutable, Mapping)
-        or control.get("desired_state") != "paused"
+        or control.get("desired_state") != expected_desired_state
         or control.get("drain_requested") is not False
         or _SHA256.fullmatch(str(control_sha256)) is None
         or immutable.get("release_id") != RELEASE_ID
@@ -2481,7 +3323,8 @@ def verify_post_initialize_watchdog(manifest_path: Path) -> dict[str, Any]:
         or drill.get("control_sha256") != control_sha256
     ):
         raise ChainError(
-            "external watchdog does not bind the exact initialized paused control"
+            "external watchdog does not bind the exact initialized "
+            f"{expected_desired_state} control"
         )
     return {
         "passed": True,
@@ -2536,6 +3379,9 @@ def _external_launch_prerequisite_contract(
     durable, durable_raw = _validate_durable_git_release_marker(
         paths, git_identity=git_identity
     )
+    superseded_r2, superseded_r2_raw = (
+        _validate_superseded_r2_canary_failure_marker(paths)
+    )
     return {
         "durable_git_release": {
             **_launch_prerequisite_binding(
@@ -2547,6 +3393,82 @@ def _external_launch_prerequisite_contract(
             "release_git_commit": durable["release_git_commit"],
             "release_tag_object": durable["release_tag_object"],
             "bundle_sha256": durable["bundle_sha256"],
+        },
+        "superseded_r2_canary_failure": {
+            **_launch_prerequisite_binding(
+                path=paths.superseded_r2_canary_failure_marker,
+                marker=superseded_r2,
+                raw=superseded_r2_raw,
+                identity_field="seal_id",
+            ),
+            "release_git_commit": SUPERSEDED_R2_RELEASE_COMMIT,
+            "release_tag_object": SUPERSEDED_R2_RELEASE_TAG_OBJECT,
+            "job_id": SUPERSEDED_R2_CANARY_JOB_ID,
+            "retry_in_place": False,
+        },
+        "protected_capacity": _launch_prerequisite_binding(
+            path=paths.protected_capacity_marker,
+            marker=protected,
+            raw=protected_raw,
+            identity_field="marker_id",
+        ),
+    }
+
+
+def _sealed_external_launch_prerequisite_contract(
+    paths: RecoveryPaths,
+    *,
+    git_identity: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Rebind immutable launch bytes without consulting a mutable Git checkout."""
+
+    protected, protected_raw = _read_sealed_marker(
+        paths.protected_capacity_marker,
+        description="protected-capacity completion marker",
+    )
+    _require_release_marker_binding(
+        protected,
+        git_identity=git_identity,
+        protocol=PROTECTED_CAPACITY_PROTOCOL,
+        description="protected-capacity completion marker",
+        schema_version=protected_capacity.SCHEMA_VERSION,
+    )
+    _require_marker_identity(
+        protected,
+        identity_field="marker_id",
+        description="protected-capacity completion marker",
+    )
+    if protected.get("passed") is not True:
+        raise ChainError("sealed protected-capacity authority is not passing")
+    durable, durable_raw = _validate_durable_git_release_marker(
+        paths, git_identity=git_identity
+    )
+    superseded_r2, superseded_r2_raw = (
+        _validate_superseded_r2_canary_failure_marker(paths)
+    )
+    return {
+        "durable_git_release": {
+            **_launch_prerequisite_binding(
+                path=paths.durable_git_release_marker,
+                marker=durable,
+                raw=durable_raw,
+                identity_field="marker_id",
+            ),
+            "release_git_commit": durable["release_git_commit"],
+            "release_tag_object": durable["release_tag_object"],
+            "bundle_sha256": durable["bundle_sha256"],
+        },
+        "superseded_r2_canary_failure": {
+            **_launch_prerequisite_binding(
+                path=paths.superseded_r2_canary_failure_marker,
+                marker=superseded_r2,
+                raw=superseded_r2_raw,
+                identity_field="seal_id",
+            ),
+            "release_git_commit": SUPERSEDED_R2_RELEASE_COMMIT,
+            "release_tag_object": SUPERSEDED_R2_RELEASE_TAG_OBJECT,
+            "job_id": SUPERSEDED_R2_CANARY_JOB_ID,
+            "retry_in_place": False,
         },
         "protected_capacity": _launch_prerequisite_binding(
             path=paths.protected_capacity_marker,
@@ -2769,8 +3691,31 @@ def _validate_prerequisite_reports(
     scheduler_acceptance = (
         pilot.get("scheduler_acceptance") if isinstance(pilot, dict) else None
     )
-    expected_durable = _external_launch_prerequisite_contract(
-        paths, git_identity=git_identity
+    reconciliation_incident = (
+        pilot.get("reconciliation_incident")
+        if isinstance(pilot, dict)
+        else None
+    )
+    expected_incident = {
+        "path": str(
+            paths.materialization_pilot_root
+            / "environment-capture"
+            / "evidence"
+            / "CONDA_RECONCILIATION_INCIDENT.json"
+        ),
+        "sha256": PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256,
+        "incident_id": PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID,
+        "harness_stale_conda_record_present": False,
+        "serving_stale_conda_record_present": False,
+    }
+    expected_durable = (
+        _external_launch_prerequisite_contract(
+            paths, git_identity=git_identity
+        )
+        if verify_live_bindings
+        else _sealed_external_launch_prerequisite_contract(
+            paths, git_identity=git_identity
+        )
     )["durable_git_release"]
     portable_durable = {
         "path": expected_durable["marker"],
@@ -2798,6 +3743,7 @@ def _validate_prerequisite_reports(
         or pilot.get("expected_tag") != RELEASE_TAG
         or pilot.get("expected_commit") != git_identity["git_commit"]
         or pilot.get("durable_git_release") != portable_durable
+        or reconciliation_incident != expected_incident
         or not isinstance(pilot.get("pilot_id"), str)
         or _SHA256.fullmatch(pilot["pilot_id"]) is None
         or not isinstance(scheduler_acceptance, dict)
@@ -2872,6 +3818,8 @@ def _validate_prerequisite_reports(
         or canary.get("kind")
         != "schema5_slurm_fleet_composite_canary_complete"
         or canary.get("canary_root") != str(paths.slurm_canary_root)
+        or canary.get("partition") != "mit_normal"
+        or canary.get("qos") != "normal"
         or not isinstance(canary.get("canary_id"), str)
         or _SHA256.fullmatch(canary["canary_id"]) is None
         or canary.get("transaction_root")
@@ -2941,7 +3889,7 @@ def _validate_prerequisite_reports(
         or canary_code.get("durable_git_release") != portable_durable
     ):
         raise ChainError(
-            "sealed prerequisite evidence does not belong to the exact r2 code"
+            "sealed prerequisite evidence does not belong to the exact release code"
         )
     _validate_conda_runtime_toolchain_binding(
         conda_toolchain,
@@ -3040,7 +3988,7 @@ def _prerequisite_evidence_contract(
         description="Slurm fleet canary",
     )
     contract = {
-        "schema_version": 5,
+        "schema_version": 7,
         "protocol": PREREQUISITE_PROTOCOL,
         "release_tag": RELEASE_TAG,
         "release_git_commit": git_identity["git_commit"],
@@ -3071,6 +4019,11 @@ def _prerequisite_evidence_contract(
             ),
             "verifier_runtime": dict(
                 reports["materialization_pilot"]["verifier_runtime"]
+            ),
+            "reconciliation_incident": dict(
+                reports["materialization_pilot"][
+                    "reconciliation_incident"
+                ]
             ),
             "verifier_report": reports["materialization_pilot"],
             "verifier_report_sha256": _sha256_bytes(
@@ -3166,6 +4119,7 @@ def _validate_prerequisite_evidence_contract(
         "release_tag_object",
         "tagged_code",
         "durable_git_release",
+        "superseded_r2_canary_failure",
         "protected_capacity",
         "materialization_pilot",
         "slurm_canary",
@@ -3178,7 +4132,7 @@ def _validate_prerequisite_evidence_contract(
     code_records = contract.get("tagged_code")
     expected_paths = list(PREREQUISITE_CODE_GIT_PATHS)
     if (
-        contract.get("schema_version") != 5
+        contract.get("schema_version") != 7
         or contract.get("protocol") != PREREQUISITE_PROTOCOL
         or contract.get("release_tag") != RELEASE_TAG
         or contract.get("release_git_commit") != git_identity["git_commit"]
@@ -3203,8 +4157,14 @@ def _validate_prerequisite_evidence_contract(
         ):
             raise ChainError(f"prerequisite tagged-code binding drifted: {git_path}")
 
-    expected_external = _external_launch_prerequisite_contract(
-        paths, git_identity=git_identity
+    expected_external = (
+        _sealed_external_launch_prerequisite_contract(
+            paths, git_identity=git_identity
+        )
+        if sealed_only
+        else _external_launch_prerequisite_contract(
+            paths, git_identity=git_identity
+        )
     )
     if any(
         contract.get(name) != binding
@@ -3247,6 +4207,7 @@ def _validate_prerequisite_evidence_contract(
                 "conda_executable",
                 "conda_runtime_toolchain",
                 "verifier_runtime",
+                "reconciliation_incident",
             }
         else:
             expected_fields |= {
@@ -3310,6 +4271,10 @@ def _validate_prerequisite_evidence_contract(
                     )
                     or record.get("verifier_runtime")
                     != record["verifier_report"].get("verifier_runtime")
+                    or record.get("reconciliation_incident")
+                    != record["verifier_report"].get(
+                        "reconciliation_incident"
+                    )
                 )
             )
             or (
@@ -3571,7 +4536,7 @@ launch_gate_comment="$(
     sed -n 's/^Comment=//p' |
     head -n 1
 )"
-if [[ ! "$launch_gate_comment" =~ ^asys:s5-recovery-v1\.2-r2:([0-9a-f]{64}):g([0-9]{4}):([A-Za-z0-9._-]+)$ ]]; then
+if [[ ! "$launch_gate_comment" =~ ^asys:s5-recovery-v1\.2-r3:([0-9a-f]{64}):g([0-9]{4}):([A-Za-z0-9._-]+)$ ]]; then
   echo "launch gate scheduler comment is malformed" >&2
   exit 2
 fi
@@ -3774,7 +4739,7 @@ except ValueError:
 if generation < 0 or not job_id.isdigit():
     fail("scheduler generation or job ID is invalid")
 expected_comment = (
-    f"asys:s5-recovery-v1.2-r2:{chain_id}:g{generation:04d}:{stage_name}"
+    f"asys:s5-recovery-v1.2-r3:{chain_id}:g{generation:04d}:{stage_name}"
 )
 if scheduler_comment != expected_comment:
     fail("scheduler comment does not equal the runtime identity")
@@ -3791,7 +4756,7 @@ manifest_identity = dict(manifest)
 manifest_chain_id = manifest_identity.pop("chain_id", None)
 if (
     manifest.get("schema_version") != __CHAIN_SCHEMA_VERSION__
-    or manifest.get("protocol") != "schema5-v1.2-r2-recovery-chain"
+    or manifest.get("protocol") != "schema5-v1.2-r3-recovery-chain"
     or manifest_chain_id != chain_id
     or require_sha256(manifest_chain_id, "manifest chain ID")
     != digest(canonical_json(manifest_identity))
@@ -3864,7 +4829,7 @@ def require_launch_prerequisite(
         != manifest.get("release_tag_object")
         or marker.get("chain_namespace") != "__CHAIN_NAMESPACE__"
     ):
-        fail(f"{name} does not bind the exact r2 release")
+        fail(f"{name} does not bind the exact release")
     return marker
 
 
@@ -3873,8 +4838,74 @@ protected = require_launch_prerequisite(
     marker_name="__PROTECTED_CAPACITY_MARKER_NAME__",
     protocol="__PROTECTED_CAPACITY_PROTOCOL__",
     identity_field="marker_id",
-    schema_version=2,
+    schema_version=__PROTECTED_CAPACITY_SCHEMA_VERSION__,
 )
+
+superseded_r2_record = canary_source.get(
+    "superseded_r2_canary_failure"
+)
+superseded_r2_fields = {
+    "marker", "marker_sha256", "marker_size", "protocol", "seal_id",
+    "release_git_commit", "release_tag_object", "job_id",
+    "retry_in_place",
+}
+superseded_r2_path = (
+    Path(str(manifest.get("recovery_root", "")))
+    / "__SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH__"
+)
+if (
+    not isinstance(superseded_r2_record, dict)
+    or set(superseded_r2_record) != superseded_r2_fields
+    or superseded_r2_record.get("marker") != str(superseded_r2_path)
+    or superseded_r2_record.get("protocol")
+    != "__SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL__"
+    or superseded_r2_record.get("seal_id")
+    != "__SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID__"
+    or superseded_r2_record.get("release_git_commit")
+    != "__SUPERSEDED_R2_RELEASE_COMMIT__"
+    or superseded_r2_record.get("release_tag_object")
+    != "__SUPERSEDED_R2_RELEASE_TAG_OBJECT__"
+    or superseded_r2_record.get("job_id")
+    != "__SUPERSEDED_R2_CANARY_JOB_ID__"
+    or superseded_r2_record.get("retry_in_place") is not False
+):
+    fail("superseded r2 canary failure manifest binding drifted")
+superseded_r2 = require_backing_file(
+    superseded_r2_record["marker"],
+    superseded_r2_record["marker_sha256"],
+    "superseded r2 canary failure seal",
+    beneath=Path(str(manifest.get("recovery_root", ""))),
+)
+superseded_r2_release = superseded_r2.get("release")
+superseded_r2_known = superseded_r2.get("known_scheduler_identity")
+if (
+    superseded_r2_path.stat().st_size
+    != superseded_r2_record.get("marker_size")
+    or superseded_r2.get("schema_version") != 1
+    or superseded_r2.get("protocol")
+    != "__SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL__"
+    or superseded_r2.get("passed") is not True
+    or superseded_r2.get("classification")
+    != "deterministic_canary_failure_sealed_fail_closed"
+    or superseded_r2.get("error_classification")
+    != "deterministic_missing_subprocess_capture"
+    or superseded_r2.get("retry_in_place") is not False
+    or superseded_r2.get("seal_id")
+    != "__SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID__"
+    or not isinstance(superseded_r2_release, dict)
+    or superseded_r2_release.get("release_tag")
+    != "__SUPERSEDED_R2_RELEASE_TAG__"
+    or superseded_r2_release.get("release_git_commit")
+    != "__SUPERSEDED_R2_RELEASE_COMMIT__"
+    or superseded_r2_release.get("release_tag_object")
+    != "__SUPERSEDED_R2_RELEASE_TAG_OBJECT__"
+    or not isinstance(superseded_r2_known, dict)
+    or superseded_r2_known.get("job_ids")
+    != ["__SUPERSEDED_R2_CANARY_JOB_ID__"]
+    or superseded_r2.get("no_active_matching_jobs_preseal") is not True
+    or superseded_r2.get("no_active_matching_jobs_postseal") is not True
+):
+    fail("superseded r2 canary failure seal drifted")
 
 
 def protected_placement_totals(
@@ -3883,7 +4914,10 @@ def protected_placement_totals(
     fields = (
         {
             "partition", "qos", "partition_preempt_mode", "qos_preempt_mode",
-            "active_serving_gpus", "warm_headroom_gpus",
+            "base_active_gpus", "reserved_additive_gpus",
+            "effective_active_gpus", "retained_warm_turnover_gpus",
+            "attested_total_gpus", "partition_cpus",
+            "partition_memory_mib", "partition_gpus", "partition_nodes",
         }
         if role == "server"
         else {
@@ -3928,7 +4962,12 @@ def protected_placement_totals(
     if value != normalized:
         fail(f"protected scientific {role} placements are not sorted")
     capacity_fields = (
-        ("active_serving_gpus", "warm_headroom_gpus")
+        (
+            "base_active_gpus", "reserved_additive_gpus",
+            "effective_active_gpus", "retained_warm_turnover_gpus",
+            "attested_total_gpus", "partition_cpus",
+            "partition_memory_mib", "partition_gpus", "partition_nodes",
+        )
         if role == "server"
         else ("slots", "cpus", "memory_mib", "reserve_jobs", "submit_headroom")
     )
@@ -3962,17 +5001,165 @@ def protected_placement_totals(
                 "protected capacity must have exactly one directly usable "
                 "384-cell + 64-reserve client placement"
             )
+    else:
+        if (
+            len(normalized) != 1
+            or totals["base_active_gpus"] != 24
+            or totals["reserved_additive_gpus"] != 18
+            or totals["effective_active_gpus"] != 42
+            or totals["retained_warm_turnover_gpus"] != 4
+            or totals["attested_total_gpus"] != 46
+            or totals["partition_cpus"] < 1
+            or totals["partition_memory_mib"] < 1
+            or totals["partition_gpus"] < 46
+            or totals["partition_nodes"] < 1
+        ):
+            fail(
+                "protected scientific server placement does not bind the "
+                "exact 42-active plus 4-warm partition inventory"
+            )
     return totals
+
+
+def validate_protected_qos_contracts(
+    value: object,
+    server_qos: set[str],
+    client_qos: set[str],
+    expected_running_jobs: int,
+) -> None:
+    fields = {
+        "qos", "max_wall_seconds", "max_jobs_per_user",
+        "max_submit_jobs_per_user", "required_wall_seconds",
+        "required_running_jobs", "required_submit_jobs",
+    }
+    if not isinstance(value, list) or not value:
+        fail("protected scientific QOS contracts are absent")
+    prior = ""
+    by_qos: dict[str, dict[str, object]] = {}
+    for row in value:
+        if not isinstance(row, dict) or set(row) != fields:
+            fail("protected scientific QOS contract fields drifted")
+        qos = row.get("qos")
+        if (
+            not isinstance(qos, str)
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", qos
+            )
+            is None
+            or qos <= prior
+        ):
+            fail(
+                "protected scientific QOS contracts are duplicated "
+                "or not canonical"
+            )
+        prior = qos
+        limits: dict[str, int | None] = {}
+        for field in (
+            "max_wall_seconds",
+            "max_jobs_per_user",
+            "max_submit_jobs_per_user",
+        ):
+            observed = row.get(field)
+            if observed is not None and (
+                not isinstance(observed, int)
+                or isinstance(observed, bool)
+                or observed < 1
+            ):
+                fail(f"protected scientific QOS {qos} limit is invalid")
+            limits[field] = observed
+        required_wall = row.get("required_wall_seconds")
+        required_running = row.get("required_running_jobs")
+        required_submit = row.get("required_submit_jobs")
+        if (
+            not isinstance(required_wall, int)
+            or isinstance(required_wall, bool)
+            or required_wall < 43200
+            or not isinstance(required_running, int)
+            or isinstance(required_running, bool)
+            or required_running < 0
+            or not isinstance(required_submit, int)
+            or isinstance(required_submit, bool)
+            or required_submit < 1
+            or (
+                limits["max_wall_seconds"] is not None
+                and limits["max_wall_seconds"] < required_wall
+            )
+            or (
+                limits["max_jobs_per_user"] is not None
+                and limits["max_jobs_per_user"] < required_running
+            )
+            or (
+                limits["max_submit_jobs_per_user"] is not None
+                and limits["max_submit_jobs_per_user"] < required_submit
+            )
+        ):
+            fail(
+                f"protected scientific QOS {qos} cannot sustain its load"
+            )
+        by_qos[qos] = row
+    if (
+        set(by_qos) != server_qos | client_qos
+        or sum(
+            int(row["required_running_jobs"])
+            for row in by_qos.values()
+        )
+        != expected_running_jobs
+        or sum(
+            int(row["required_submit_jobs"])
+            for row in by_qos.values()
+        )
+        != 448
+        or max(
+            int(row["required_wall_seconds"])
+            for row in by_qos.values()
+        )
+        != 86400
+        or any(
+            int(by_qos[qos]["required_wall_seconds"]) != 86400
+            for qos in server_qos
+        )
+        or any(
+            int(by_qos[qos]["required_wall_seconds"]) < 43200
+            for qos in client_qos
+        )
+    ):
+        fail(
+            "protected scientific QOS contracts do not prove exact "
+            "job and walltime capacity"
+        )
 
 
 protected_fields = {
     "schema_version", "protocol", "passed", "release_id", "release_tag",
     "release_git_commit", "release_tag_object", "chain_namespace",
+    "source_tree_sha256", "dispatcher_source_sha256",
+    "qualification_runner_source_sha256",
+    "capacity_generation",
+    "base_fleet_contract_path", "base_fleet_contract_sha256",
+    "effective_fleet_contract_path", "effective_fleet_contract_sha256",
+    "additive_overlay_contract_path", "additive_overlay_contract_sha256",
+    "static_feasibility_certificate",
+    "base_active_logical_replicas", "base_active_gpus",
+    "base_active_topology", "base_active_topology_sha256",
+    "additive_reserved_logical_replicas", "additive_reserved_gpus",
+    "additive_reserved_tp1_replicas", "additive_reserved_tp2_replicas",
+    "additive_reserved_topology", "additive_reserved_topology_sha256",
+    "effective_active_logical_replicas", "effective_active_gpus",
+    "effective_active_topology", "effective_active_topology_sha256",
+    "retained_warm_turnover_job_elements",
+    "retained_warm_turnover_gpus",
+    "retained_warm_turnover_tp1_allocations",
+    "retained_warm_turnover_tp2_allocations",
+    "retained_warm_turnover_topology",
+    "retained_warm_turnover_topology_sha256",
+    "attested_total_gpus", "job_element_accounting",
     "active_gpus", "warm_headroom_gpus", "cell_ceiling", "reserve_jobs",
     "submit_headroom", "cpu", "memory_mib", "preempt_type",
     "capacity_source", "scheduler_cluster", "scheduler_account",
-    "scheduler_user", "scheduler_max_submit_jobs", "partition_cpus",
-    "partition_memory_mib", "partition_gpus",
+    "scheduler_user", "scheduler_max_jobs",
+    "scheduler_max_submit_jobs", "running_scientific_jobs",
+    "minimum_scientific_wall_seconds", "scientific_qos_contracts",
+    "partition_cpus", "partition_memory_mib", "partition_gpus",
     "fleet_contract_sha256", "active_fleet_topology_sha256",
     "scientific_server_preempt_mode", "scientific_client_preempt_mode",
     "scientific_server_placements", "scientific_client_placements",
@@ -3980,7 +5167,17 @@ protected_fields = {
     "canary_id", "canary_evidence_sha256",
     "squeue_complete", "sacct_complete", "marker_id",
 }
+if set(protected) != protected_fields:
+    fail("protected-capacity marker fields drifted")
 integer_minima = {
+    "capacity_generation": 1,
+    "base_active_logical_replicas": 22,
+    "base_active_gpus": 24,
+    "effective_active_logical_replicas": 22,
+    "effective_active_gpus": 24,
+    "retained_warm_turnover_job_elements": 3,
+    "retained_warm_turnover_gpus": 4,
+    "attested_total_gpus": 28,
     "active_gpus": 24,
     "warm_headroom_gpus": 4,
     "cell_ceiling": 384,
@@ -4006,6 +5203,158 @@ protected_clients = protected_placement_totals(
     "client",
     str(protected_preempt_type),
 )
+protected_server_qos = {
+    str(row["qos"])
+    for row in protected["scientific_server_placements"]
+}
+protected_client_qos = {
+    str(row["qos"])
+    for row in protected["scientific_client_placements"]
+}
+if (
+    not isinstance(protected.get("effective_active_logical_replicas"), int)
+    or isinstance(protected.get("effective_active_logical_replicas"), bool)
+    or not isinstance(
+        protected.get("retained_warm_turnover_job_elements"), int
+    )
+    or isinstance(
+        protected.get("retained_warm_turnover_job_elements"), bool
+    )
+):
+    fail("protected dynamic serving-job counts are malformed")
+protected_expected_running = (
+    384
+    + protected["effective_active_logical_replicas"]
+    + protected["retained_warm_turnover_job_elements"]
+)
+validate_protected_qos_contracts(
+    protected.get("scientific_qos_contracts"),
+    protected_server_qos,
+    protected_client_qos,
+    protected_expected_running,
+)
+protected_max_jobs = protected.get("scheduler_max_jobs")
+protected_recovery_root = Path(str(manifest.get("recovery_root", "")))
+for path_field, hash_field, description in (
+    (
+        "base_fleet_contract_path",
+        "base_fleet_contract_sha256",
+        "protected base fleet contract",
+    ),
+    (
+        "effective_fleet_contract_path",
+        "effective_fleet_contract_sha256",
+        "protected effective fleet contract",
+    ),
+    (
+        "additive_overlay_contract_path",
+        "additive_overlay_contract_sha256",
+        "protected additive overlay contract",
+    ),
+):
+    require_backing_file(
+        protected.get(path_field),
+        protected.get(hash_field),
+        description,
+        beneath=protected_recovery_root,
+    )
+certificate_binding = protected.get("static_feasibility_certificate")
+if (
+    not isinstance(certificate_binding, dict)
+    or set(certificate_binding) != {"path", "sha256", "certificate_id"}
+):
+    fail("protected static-feasibility binding is malformed")
+protected_certificate = require_backing_file(
+    certificate_binding.get("path"),
+    certificate_binding.get("sha256"),
+    "protected static-feasibility certificate",
+    beneath=protected_recovery_root,
+)
+require_identity(
+    protected_certificate,
+    "certificate_id",
+    "protected static-feasibility certificate",
+)
+certificate_wave = protected_certificate.get("wave")
+certificate_batches = (
+    certificate_wave.get("microbatches")
+    if isinstance(certificate_wave, dict)
+    else None
+)
+if (
+    protected_certificate.get("protocol")
+    != "schema5-v1.2-r3-throughput-preflight-capacity-certificate-v1"
+    or protected_certificate.get("passed") is not True
+    or protected_certificate.get("certificate_id")
+    != certificate_binding.get("certificate_id")
+    or protected_certificate.get("release_git_commit")
+    != manifest.get("release_git_commit")
+    or protected_certificate.get("source_tree_sha256")
+    != protected.get("source_tree_sha256")
+    or protected_certificate.get("dispatcher_source_sha256")
+    != protected.get("dispatcher_source_sha256")
+    or protected_certificate.get("qualification_runner_source_sha256")
+    != protected.get("qualification_runner_source_sha256")
+    or protected_certificate.get("capacity_generation")
+    != protected.get("capacity_generation")
+    or protected_certificate.get("base_fleet_contract_sha256")
+    != protected.get("base_fleet_contract_sha256")
+    or protected_certificate.get(
+        "proposed_effective_fleet_contract_sha256"
+    )
+    != protected.get("effective_fleet_contract_sha256")
+    or protected_certificate.get("additive_overlay_contract_sha256")
+    != protected.get("additive_overlay_contract_sha256")
+    or protected_certificate.get("base_logical_replicas")
+    != protected.get("base_active_logical_replicas")
+    or protected_certificate.get("base_allocated_gpus")
+    != protected.get("base_active_gpus")
+    or protected_certificate.get("effective_logical_replicas")
+    != protected.get("effective_active_logical_replicas")
+    or protected_certificate.get("effective_active_gpus")
+    != protected.get("effective_active_gpus")
+    or protected_certificate.get("additive_allocated_gpus")
+    != protected.get("additive_reserved_gpus")
+    or protected_certificate.get("selected_cell_count") != 384
+    or not isinstance(certificate_batches, list)
+    or len(certificate_batches) != 16
+    or any(
+        not isinstance(batch, dict)
+        or batch.get("selected_count") != 24
+        for batch in certificate_batches
+    )
+):
+    fail("protected static-feasibility certificate binding drifted")
+for value_field, hash_field in (
+    ("base_active_topology", "base_active_topology_sha256"),
+    ("additive_reserved_topology", "additive_reserved_topology_sha256"),
+    ("effective_active_topology", "effective_active_topology_sha256"),
+    (
+        "retained_warm_turnover_topology",
+        "retained_warm_turnover_topology_sha256",
+    ),
+):
+    if digest(canonical_json(protected.get(value_field))) != protected.get(
+        hash_field
+    ):
+        fail(f"protected topology hash drifted: {value_field}")
+protected_accounting = protected.get("job_element_accounting")
+expected_protected_accounting = {
+    "cell_job_elements": 384,
+    "active_server_job_elements": protected[
+        "effective_active_logical_replicas"
+    ],
+    "warm_turnover_job_elements": protected[
+        "retained_warm_turnover_job_elements"
+    ],
+    "controller_monitor_other_held_job_elements": (
+        64
+        - protected["effective_active_logical_replicas"]
+        - protected["retained_warm_turnover_job_elements"]
+    ),
+    "total_non_cell_reserve_job_elements": 64,
+    "total_canary_job_elements": 448,
+}
 if (
     set(protected) != protected_fields
     or any(
@@ -4014,14 +5363,63 @@ if (
         or protected[field] < minimum
         for field, minimum in integer_minima.items()
     )
-    or protected_servers["active_serving_gpus"] != protected.get("active_gpus")
-    or protected_servers["warm_headroom_gpus"]
+    or protected_servers["effective_active_gpus"]
+    != protected.get("active_gpus")
+    or protected_servers["retained_warm_turnover_gpus"]
     != protected.get("warm_headroom_gpus")
+    or protected_servers["base_active_gpus"]
+    != protected.get("base_active_gpus")
+    or protected_servers["reserved_additive_gpus"]
+    != protected.get("additive_reserved_gpus")
+    or protected_servers["attested_total_gpus"]
+    != protected.get("attested_total_gpus")
     or protected_clients["slots"] != protected.get("cell_ceiling")
     or protected_clients["reserve_jobs"] != protected.get("reserve_jobs")
     or protected_clients["submit_headroom"] != protected.get("submit_headroom")
     or protected_clients["cpus"] != protected.get("cpu")
     or protected_clients["memory_mib"] != protected.get("memory_mib")
+    or protected_accounting != expected_protected_accounting
+    or expected_protected_accounting[
+        "controller_monitor_other_held_job_elements"
+    ]
+    <= 0
+    or protected.get("fleet_contract_sha256")
+    != protected.get("effective_fleet_contract_sha256")
+    or protected.get("active_fleet_topology_sha256")
+    != protected.get("effective_active_topology_sha256")
+    or protected.get("base_active_logical_replicas") != 22
+    or protected.get("base_active_gpus") != 24
+    or protected.get("effective_active_logical_replicas")
+    != (
+        protected.get("base_active_logical_replicas")
+        + protected.get("additive_reserved_logical_replicas")
+    )
+    or protected.get("effective_active_gpus")
+    != (
+        protected.get("base_active_gpus")
+        + protected.get("additive_reserved_gpus")
+    )
+    or protected.get("additive_reserved_logical_replicas")
+    != (
+        protected.get("additive_reserved_tp1_replicas")
+        + protected.get("additive_reserved_tp2_replicas")
+    )
+    or protected.get("additive_reserved_gpus")
+    != (
+        protected.get("additive_reserved_tp1_replicas")
+        + 2 * protected.get("additive_reserved_tp2_replicas")
+    )
+    or protected.get("running_scientific_jobs")
+    != protected_expected_running
+    or protected.get("minimum_scientific_wall_seconds") != 86400
+    or (
+        protected_max_jobs is not None
+        and (
+            not isinstance(protected_max_jobs, int)
+            or isinstance(protected_max_jobs, bool)
+            or protected_max_jobs < protected_expected_running
+        )
+    )
     or protected.get("capacity_source") != "__PROTECTED_CAPACITY_SOURCE__"
     or any(
         not isinstance(protected.get(field), str)
@@ -4040,6 +5438,8 @@ if (
             "scheduler_evidence_id", "scheduler_evidence_sha256",
             "canary_id", "canary_evidence_sha256",
             "fleet_contract_sha256", "active_fleet_topology_sha256",
+            "source_tree_sha256", "dispatcher_source_sha256",
+            "qualification_runner_source_sha256",
         )
     )
     or protected.get("scientific_server_preempt_mode") != "OFF"
@@ -4083,13 +5483,14 @@ initial_fields = {
     "jobs", "receipt_id",
 }
 repair_fields = initial_fields | {
-    "repair_generation", "parent_receipt", "parent_receipt_sha256"
+    "repair_generation", "parent_receipt", "parent_receipt_sha256",
+    "held_root_names",
 }
 expected_receipt_fields = initial_fields if generation == 0 else repair_fields
 expected_receipt_protocol = (
-    "schema5-v1.2-r2-recovery-chain-submission"
+    "schema5-v1.2-r3-recovery-chain-submission"
     if generation == 0
-    else "schema5-v1.2-r2-recovery-chain-repair"
+    else "schema5-v1.2-r3-recovery-chain-repair"
 )
 if (
     set(receipt) != expected_receipt_fields
@@ -4127,7 +5528,7 @@ policy = require_backing_file(
     beneath=evidence_root,
 )
 if (
-    policy.get("protocol") != "schema5-v1.2-r2-live-dependency-policy-v1"
+    policy.get("protocol") != "schema5-v1.2-r3-live-dependency-policy-v1"
     or policy.get("phase") != "pre_submission"
     or policy.get("kill_invalid_depend") is not True
     or "kill_invalid_depend" not in policy.get("dependency_parameters", [])
@@ -4191,7 +5592,7 @@ for manifest_row, record in zip(manifest_jobs, receipt_jobs, strict=True):
         ):
             fail(f"repair receipt generation drifted: {name}")
     expected_record_comment = (
-        f"asys:s5-recovery-v1.2-r2:{chain_id}:"
+        f"asys:s5-recovery-v1.2-r3:{chain_id}:"
         f"g{record_generation:04d}:{name}"
     )
     if record.get("comment") != expected_record_comment:
@@ -4226,53 +5627,202 @@ if generation > 0 and (
 ):
     fail("current allocation is not part of this repair generation")
 root_name = "source_checkout"
+root_names = ["source_checkout"]
 if generation > 0:
-    root_name = next(
-        (
-            str(record["name"])
-            for record in receipt_jobs
-            if record.get("disposition") == "resubmitted"
-        ),
-        "",
-    )
+    root_names = receipt.get("held_root_names")
+    if (
+        not isinstance(root_names, list)
+        or not root_names
+        or len(root_names) != len(set(root_names))
+        or any(
+            not isinstance(name, str)
+            or name not in receipt_by_name
+            or receipt_by_name[name].get("generation") != generation
+            or receipt_by_name[name].get("disposition") != "resubmitted"
+            for name in root_names
+        )
+    ):
+        fail("repair receipt held frontier drifted")
+    root_name = root_names[0]
 if not root_name or root_name not in receipt_by_name:
     fail("submission receipt has no held generation root")
 root_record = receipt_by_name[root_name]
+root_records = [receipt_by_name[name] for name in root_names]
+root_job_ids = [record["job_id"] for record in root_records]
+root_comments = [record["comment"] for record in root_records]
 
 release, release_raw = load_sealed(release_path, "root release completion")
 release_fields = {
     "schema_version", "protocol", "completed_at", "receipt",
     "receipt_sha256", "receipt_id", "root_name", "root_job_id",
-    "root_comment", "release_intent", "release_intent_sha256",
+    "root_comment", "root_names", "root_job_ids", "root_comments",
+    "release_intent", "release_intent_sha256",
     "dependency_policy_check", "dependency_policy_check_sha256",
     "dependency_canary", "state_before", "state_after",
-    "scheduler_observation", "release_attempts", "release_reconciled",
-    "root_no_longer_held", "release_id",
+    "scheduler_observation", "roots_state_before", "roots_state_after",
+    "scheduler_observations", "release_attempts", "release_reconciled",
+    "root_no_longer_held", "all_roots_no_longer_held", "release_id",
 }
 if generation == 0:
     release_fields |= {
         "scheduler_acceptance", "scheduler_acceptance_sha256",
         "scheduler_acceptance_id",
+        "bootstrap_watchdog_ready", "bootstrap_watchdog_ready_sha256",
+        "bootstrap_watchdog_ready_id",
+        "bootstrap_watchdog_armed", "bootstrap_watchdog_armed_sha256",
+        "bootstrap_watchdog_armed_id",
     }
+else:
+    release_fields |= {
+        "generation_scheduler_acceptance",
+        "generation_scheduler_acceptance_sha256",
+        "generation_scheduler_acceptance_id",
+    }
+    if "bootstrap_descendant_armed" in release:
+        release_fields |= {
+            "bootstrap_descendant_armed",
+            "bootstrap_descendant_armed_sha256",
+            "bootstrap_descendant_armed_id",
+        }
 if (
     set(release) != release_fields
     or release.get("schema_version") != SCHEMA_VERSION
     or release.get("protocol")
-    != "schema5-v1.2-r2-recovery-root-release-v1"
+    != "schema5-v1.2-r3-recovery-root-release-v1"
     or release.get("receipt") != str(receipt_path)
     or release.get("receipt_sha256") != digest(receipt_raw)
     or release.get("receipt_id") != receipt.get("receipt_id")
     or release.get("root_name") != root_name
     or release.get("root_job_id") != root_record.get("job_id")
     or release.get("root_comment") != root_record.get("comment")
+    or release.get("root_names") != root_names
+    or release.get("root_job_ids") != root_job_ids
+    or release.get("root_comments") != root_comments
     or release.get("dependency_canary") != manifest_canary
     or release.get("root_no_longer_held") is not True
+    or release.get("all_roots_no_longer_held") is not True
+    or not isinstance(release.get("roots_state_before"), list)
+    or len(release["roots_state_before"]) != len(root_names)
+    or not isinstance(release.get("roots_state_after"), list)
+    or len(release["roots_state_after"]) != len(root_names)
+    or not isinstance(release.get("scheduler_observations"), list)
+    or len(release["scheduler_observations"]) != len(root_names)
+    or release.get("state_before") != release["roots_state_before"][0]
+    or release.get("state_after") != release["roots_state_after"][0]
+    or release.get("scheduler_observation")
+    != release["scheduler_observations"][0]
     or not isinstance(release.get("release_attempts"), list)
     or not release["release_attempts"]
 ):
     fail("root release completion drifted")
 require_identity(release, "release_id", "root release completion")
 if generation == 0:
+    bootstrap_armed = require_backing_file(
+        release.get("bootstrap_watchdog_armed"),
+        release.get("bootstrap_watchdog_armed_sha256"),
+        "bootstrap watchdog armed marker",
+        beneath=evidence_root,
+    )
+    bootstrap_namespace = bootstrap_armed.get("job_namespace")
+    if (
+        bootstrap_armed.get("schema_version") != 1
+        or bootstrap_armed.get("protocol")
+        != "__BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL__"
+        or bootstrap_armed.get("passed") is not True
+        or bootstrap_armed.get("release_id") != "__RELEASE_ID__"
+        or bootstrap_armed.get("release_tag") != "__RELEASE_TAG__"
+        or bootstrap_armed.get("release_git_commit")
+        != manifest.get("release_git_commit")
+        or bootstrap_armed.get("release_tag_object")
+        != manifest.get("release_tag_object")
+        or bootstrap_armed.get("chain_namespace")
+        != "__CHAIN_NAMESPACE__"
+        or bootstrap_armed.get("chain_manifest") != str(manifest_path)
+        or bootstrap_armed.get("chain_manifest_sha256")
+        != digest(manifest_raw)
+        or bootstrap_armed.get("chain_id") != chain_id
+        or bootstrap_armed.get("submission_receipt") != str(receipt_path)
+        or bootstrap_armed.get("submission_receipt_sha256")
+        != digest(receipt_raw)
+        or bootstrap_armed.get("submission_receipt_id")
+        != receipt.get("receipt_id")
+        or bootstrap_armed.get("root_name") != root_name
+        or bootstrap_armed.get("root_job_id")
+        != root_record.get("job_id")
+        or bootstrap_armed.get("root_comment")
+        != root_record.get("comment")
+        or bootstrap_armed.get("job_count") != len(receipt_jobs)
+        or not isinstance(bootstrap_namespace, list)
+        or bootstrap_namespace
+        != [
+            {
+                "name": row["name"],
+                "job_id": row["job_id"],
+                "comment": row["comment"],
+            }
+            for row in receipt_jobs
+        ]
+        or bootstrap_armed.get("forced_command_only") is not True
+        or bootstrap_armed.get("forced_operation") != "bootstrap-repair"
+        or bootstrap_armed.get("root_release_authority")
+        != (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        )
+        or bootstrap_armed.get("prelaunch_root_release") is not False
+        or bootstrap_armed.get("descendant_rearm_authority") is not True
+        or bootstrap_armed.get("release_intent_continuation_authority")
+        is not True
+        or bootstrap_armed.get("scientific_admission_direct") is not False
+        or bootstrap_armed.get("production_control_mutation") is not False
+        or bootstrap_armed.get("safety_hold_clear_authority") is not False
+        or bootstrap_armed.get("handoff_stage") != "watchdog_readiness"
+        or bootstrap_armed.get("bootstrap_watchdog_ready")
+        != release.get("bootstrap_watchdog_ready")
+        or bootstrap_armed.get("bootstrap_watchdog_ready_sha256")
+        != release.get("bootstrap_watchdog_ready_sha256")
+        or bootstrap_armed.get("bootstrap_watchdog_ready_id")
+        != release.get("bootstrap_watchdog_ready_id")
+        or bootstrap_armed.get("marker_id")
+        != release.get("bootstrap_watchdog_armed_id")
+    ):
+        fail("bootstrap watchdog armed marker drifted")
+    require_identity(
+        bootstrap_armed, "marker_id", "bootstrap watchdog armed marker"
+    )
+    bootstrap_ready = require_backing_file(
+        bootstrap_armed.get("bootstrap_watchdog_ready"),
+        bootstrap_armed.get("bootstrap_watchdog_ready_sha256"),
+        "bootstrap watchdog deployment readiness",
+        beneath=evidence_root,
+    )
+    if (
+        bootstrap_ready.get("protocol")
+        != "__BOOTSTRAP_WATCHDOG_READY_PROTOCOL__"
+        or bootstrap_ready.get("ready_id")
+        != bootstrap_armed.get("bootstrap_watchdog_ready_id")
+        or bootstrap_ready.get("separate_bootstrap_key") is not True
+        or bootstrap_ready.get("forced_command_only") is not True
+        or bootstrap_ready.get("allowed_operations")
+        != ["bootstrap-status", "bootstrap-repair"]
+        or bootstrap_ready.get("root_release_authority")
+        != (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        )
+        or bootstrap_ready.get("prelaunch_root_release") is not False
+        or bootstrap_ready.get("descendant_rearm_authority") is not True
+        or bootstrap_ready.get("release_intent_continuation_authority")
+        is not True
+        or bootstrap_ready.get("scientific_admission_direct") is not False
+        or bootstrap_ready.get("production_control_mutation") is not False
+        or bootstrap_ready.get("safety_hold_clear_authority") is not False
+    ):
+        fail("bootstrap watchdog deployment readiness drifted")
+    require_identity(
+        bootstrap_ready, "ready_id",
+        "bootstrap watchdog deployment readiness",
+    )
     scheduler_acceptance = require_backing_file(
         release.get("scheduler_acceptance"),
         release.get("scheduler_acceptance_sha256"),
@@ -4295,6 +5845,61 @@ if generation == 0:
     require_identity(
         scheduler_acceptance, "acceptance_id", "scheduler acceptance evidence"
     )
+else:
+    generation_acceptance = require_backing_file(
+        release.get("generation_scheduler_acceptance"),
+        release.get("generation_scheduler_acceptance_sha256"),
+        "repair generation scheduler acceptance",
+        beneath=evidence_root,
+    )
+    if (
+        generation_acceptance.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-generation-provenance-v1"
+        or generation_acceptance.get("passed") is not True
+        or generation_acceptance.get("chain_id") != chain_id
+        or generation_acceptance.get("submission_receipt")
+        != str(receipt_path)
+        or generation_acceptance.get("submission_receipt_id")
+        != receipt.get("receipt_id")
+        or generation_acceptance.get("repair_generation") != generation
+        or generation_acceptance.get("generation_root_names")
+        != root_names
+        or generation_acceptance.get("scheduler_topology_valid") is not True
+        or generation_acceptance.get("provenance_id")
+        != release.get("generation_scheduler_acceptance_id")
+    ):
+        fail("repair generation scheduler acceptance drifted")
+    require_identity(
+        generation_acceptance,
+        "provenance_id",
+        "repair generation scheduler acceptance",
+    )
+    if "bootstrap_descendant_armed" in release:
+        descendant_armed = require_backing_file(
+            release.get("bootstrap_descendant_armed"),
+            release.get("bootstrap_descendant_armed_sha256"),
+            "bootstrap descendant armed marker",
+            beneath=evidence_root,
+        )
+        if (
+            descendant_armed.get("protocol")
+            != "__BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL__"
+            or descendant_armed.get("passed") is not True
+            or descendant_armed.get("chain_id") != chain_id
+            or descendant_armed.get("submission_receipt_id")
+            != receipt.get("receipt_id")
+            or descendant_armed.get("repair_generation") != generation
+            or descendant_armed.get("root_names") != root_names
+            or descendant_armed.get("root_job_ids") != root_job_ids
+            or descendant_armed.get("marker_id")
+            != release.get("bootstrap_descendant_armed_id")
+        ):
+            fail("bootstrap descendant armed marker drifted")
+        require_identity(
+            descendant_armed,
+            "marker_id",
+            "bootstrap descendant armed marker",
+        )
 require_backing_file(
     release.get("release_intent"),
     release.get("release_intent_sha256"),
@@ -4309,7 +5914,7 @@ release_policy = require_backing_file(
 )
 if (
     release_policy.get("protocol")
-    != "schema5-v1.2-r2-live-dependency-policy-v1"
+    != "schema5-v1.2-r3-live-dependency-policy-v1"
     or release_policy.get("phase") != "root_release"
     or release_policy.get("kill_invalid_depend") is not True
     or "kill_invalid_depend"
@@ -4319,6 +5924,118 @@ if (
 require_identity(
     release_policy, "evidence_id", "root-release dependency policy"
 )
+covered_release_roots = set()
+successful_release_roots = set()
+for ordinal, attempt_binding in enumerate(
+    release["release_attempts"], start=1
+):
+    if (
+        not isinstance(attempt_binding, dict)
+        or set(attempt_binding)
+        != {
+            "attempt", "root_name", "job_id", "intent",
+            "intent_sha256", "result", "result_sha256",
+            "result_id", "result_kind",
+        }
+        or attempt_binding.get("attempt") != ordinal
+        or attempt_binding.get("root_name") not in root_names
+    ):
+        fail("root release attempt summary drifted")
+    release_root_index = root_names.index(
+        attempt_binding["root_name"]
+    )
+    attempt_intent = require_backing_file(
+        attempt_binding.get("intent"),
+        attempt_binding.get("intent_sha256"),
+        "root release attempt intent",
+        beneath=evidence_root,
+    )
+    attempt_result = require_backing_file(
+        attempt_binding.get("result"),
+        attempt_binding.get("result_sha256"),
+        "root release attempt result",
+        beneath=evidence_root,
+    )
+    if (
+        attempt_intent.get("protocol")
+        != "schema5-v1.2-r3-root-release-attempt-intent-v1"
+        or attempt_intent.get("attempt") != ordinal
+        or attempt_intent.get("root_index") != release_root_index
+        or attempt_intent.get("root_name")
+        != attempt_binding.get("root_name")
+        or attempt_intent.get("job_id")
+        != root_job_ids[release_root_index]
+        or attempt_intent.get("command")
+        != [
+            "scontrol", "release",
+            root_job_ids[release_root_index],
+        ]
+        or attempt_intent.get("dependency_policy_check")
+        != release.get("dependency_policy_check")
+        or attempt_intent.get("dependency_policy_check_sha256")
+        != release.get("dependency_policy_check_sha256")
+        or attempt_result.get("protocol")
+        != "schema5-v1.2-r3-root-release-attempt-result-v1"
+        or attempt_result.get("attempt") != ordinal
+        or attempt_result.get("root_index") != release_root_index
+        or attempt_result.get("root_name")
+        != attempt_binding.get("root_name")
+        or attempt_result.get("job_id")
+        != attempt_binding.get("job_id")
+        or attempt_result.get("intent")
+        != attempt_binding.get("intent")
+        or attempt_result.get("intent_sha256")
+        != attempt_binding.get("intent_sha256")
+        or attempt_result.get("result_id")
+        != attempt_binding.get("result_id")
+        or attempt_result.get("result_kind")
+        != attempt_binding.get("result_kind")
+    ):
+        fail("root release attempt lineage drifted")
+    require_identity(
+        attempt_result, "result_id", "root release attempt result"
+    )
+    result_kind = attempt_result.get("result_kind")
+    if result_kind == "scontrol_result":
+        if (
+            not isinstance(attempt_result.get("returncode"), int)
+            or isinstance(attempt_result.get("returncode"), bool)
+            or not isinstance(attempt_result.get("stdout"), str)
+            or not isinstance(attempt_result.get("stderr"), str)
+            or attempt_result.get("stdout_sha256")
+            != digest(attempt_result["stdout"].encode())
+            or attempt_result.get("stderr_sha256")
+            != digest(attempt_result["stderr"].encode())
+            or attempt_result.get("scheduler_reconciliation") is not None
+        ):
+            fail("direct root release attempt result drifted")
+        if attempt_result["returncode"] == 0:
+            successful_release_roots.add(
+                attempt_binding["root_name"]
+            )
+    elif (
+        result_kind
+        == "scheduler_reconciled_after_ambiguous_release"
+    ):
+        if (
+            attempt_result.get("returncode") is not None
+            or attempt_result.get("stdout") is not None
+            or attempt_result.get("stderr") is not None
+            or attempt_result.get("stdout_sha256") is not None
+            or attempt_result.get("stderr_sha256") is not None
+            or attempt_result.get("scheduler_reconciliation")
+            != release["roots_state_before"][release_root_index]
+        ):
+            fail("adopted root release attempt result drifted")
+        successful_release_roots.add(attempt_binding["root_name"])
+    else:
+        fail("root release attempt result kind drifted")
+    covered_release_roots.add(attempt_binding["root_name"])
+if (
+    covered_release_roots != set(root_names)
+    or successful_release_roots != set(root_names)
+):
+    fail("root release attempts do not cover every frontier root")
 
 launch, _ = load_sealed(launch_path, "launch completion")
 launch_fields = {
@@ -4328,11 +6045,30 @@ launch_fields = {
     "dependency_canary", "root_initial_hold",
     "alert_latency_bound_seconds", "launch_id",
 }
+if generation == 0:
+    launch_fields |= {
+        "bootstrap_watchdog_ready", "bootstrap_watchdog_ready_sha256",
+        "bootstrap_watchdog_ready_id",
+        "bootstrap_watchdog_armed", "bootstrap_watchdog_armed_sha256",
+        "bootstrap_watchdog_armed_id",
+    }
+else:
+    launch_fields |= {
+        "generation_scheduler_acceptance",
+        "generation_scheduler_acceptance_sha256",
+        "generation_scheduler_acceptance_id",
+    }
+    if "bootstrap_descendant_armed" in release:
+        launch_fields |= {
+            "bootstrap_descendant_armed",
+            "bootstrap_descendant_armed_sha256",
+            "bootstrap_descendant_armed_id",
+        }
 if (
     set(launch) != launch_fields
     or launch.get("schema_version") != SCHEMA_VERSION
     or launch.get("protocol")
-    != "schema5-v1.2-r2-recovery-chain-launched-v1"
+    != "schema5-v1.2-r3-recovery-chain-launched-v1"
     or launch.get("receipt") != str(receipt_path)
     or launch.get("receipt_sha256") != digest(receipt_raw)
     or launch.get("receipt_id") != receipt.get("receipt_id")
@@ -4343,6 +6079,38 @@ if (
     or launch.get("dependency_canary") != manifest_canary
     or launch.get("root_initial_hold") is not True
     or launch.get("alert_latency_bound_seconds") != 180.0
+    or (
+        generation == 0
+        and (
+            launch.get("bootstrap_watchdog_ready")
+            != release.get("bootstrap_watchdog_ready")
+            or launch.get("bootstrap_watchdog_ready_sha256")
+            != release.get("bootstrap_watchdog_ready_sha256")
+            or launch.get("bootstrap_watchdog_ready_id")
+            != release.get("bootstrap_watchdog_ready_id")
+            or launch.get("bootstrap_watchdog_armed")
+            != release.get("bootstrap_watchdog_armed")
+            or launch.get("bootstrap_watchdog_armed_sha256")
+            != release.get("bootstrap_watchdog_armed_sha256")
+            or launch.get("bootstrap_watchdog_armed_id")
+            != release.get("bootstrap_watchdog_armed_id")
+        )
+    )
+    or (
+        generation > 0
+        and any(
+            launch.get(field) != release.get(field)
+            for field in (
+                "generation_scheduler_acceptance",
+                "generation_scheduler_acceptance_sha256",
+                "generation_scheduler_acceptance_id",
+                "bootstrap_descendant_armed",
+                "bootstrap_descendant_armed_sha256",
+                "bootstrap_descendant_armed_id",
+            )
+            if field in launch_fields
+        )
+    )
 ):
     fail("launch completion drifted")
 require_identity(launch, "launch_id", "launch completion")
@@ -4366,6 +6134,15 @@ PY
         "__CHAIN_SCHEMA_VERSION__": str(CHAIN_SCHEMA_VERSION),
         "__SUBMISSION_SCHEMA_VERSION__": str(SUBMISSION_SCHEMA_VERSION),
         "__SCHEDULER_ACCEPTANCE_PROTOCOL__": SCHEDULER_ACCEPTANCE_PROTOCOL,
+        "__BOOTSTRAP_WATCHDOG_READY_PROTOCOL__": (
+            BOOTSTRAP_WATCHDOG_READY_PROTOCOL
+        ),
+        "__BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL__": (
+            BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL
+        ),
+        "__BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL__": (
+            BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL
+        ),
         "__RELEASE_ID__": RELEASE_ID,
         "__RELEASE_TAG__": RELEASE_TAG,
         "__CHAIN_NAMESPACE__": CHAIN_NAMESPACE,
@@ -4373,7 +6150,29 @@ PY
             PROTECTED_CAPACITY_MARKER_NAME
         ),
         "__PROTECTED_CAPACITY_PROTOCOL__": PROTECTED_CAPACITY_PROTOCOL,
+        "__PROTECTED_CAPACITY_SCHEMA_VERSION__": str(
+            protected_capacity.SCHEMA_VERSION
+        ),
         "__PROTECTED_CAPACITY_SOURCE__": PROTECTED_CAPACITY_SOURCE,
+        "__SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH__": (
+            SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH.as_posix()
+        ),
+        "__SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL__": (
+            SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL
+        ),
+        "__SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID__": (
+            SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID
+        ),
+        "__SUPERSEDED_R2_RELEASE_TAG__": SUPERSEDED_R2_RELEASE_TAG,
+        "__SUPERSEDED_R2_RELEASE_COMMIT__": (
+            SUPERSEDED_R2_RELEASE_COMMIT
+        ),
+        "__SUPERSEDED_R2_RELEASE_TAG_OBJECT__": (
+            SUPERSEDED_R2_RELEASE_TAG_OBJECT
+        ),
+        "__SUPERSEDED_R2_CANARY_JOB_ID__": (
+            SUPERSEDED_R2_CANARY_JOB_ID
+        ),
         "__EXTERNAL_WATCHDOG_DRILL_MARKER_NAME__": (
             EXTERNAL_WATCHDOG_DRILL_MARKER_NAME
         ),
@@ -4494,10 +6293,10 @@ comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
   echo "source checkout scheduler comment is ambiguous" >&2
   exit 2
 }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r2:([0-9a-f]{{64}}):g[0-9]{{4}}:source_checkout$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:([0-9a-f]{{64}}):g[0-9]{{4}}:source_checkout$ ]]; then
   scheduler_chain_id="${{BASH_REMATCH[1]}}"
 else
-  echo "source checkout scheduler identity is outside the immutable r2 chain" >&2
+  echo "source checkout scheduler identity is outside the immutable r3 chain" >&2
   exit 2
 fi
 # Authenticate the sealed interpreter and its complete stdlib/native-library
@@ -4722,7 +6521,7 @@ def _invoke_protocol_aware_r1_verifier(
     verifier_python: Path,
     verifier_library: Path,
 ) -> dict[str, Any]:
-    """Run the native r1 verifier from authenticated r2-tagged code."""
+    """Run the native r1 verifier from authenticated release-tagged code."""
 
     _verify_exact_tag_checkout(
         checkout,
@@ -4951,7 +6750,7 @@ def _snapshot_adopt_body(
     )
     verifier_name = Path(R1_EVIDENCE_VERIFIER_GIT_PATH).name
     r1_renderer_name = Path(R1_NATIVE_RENDERER_GIT_PATH).name
-    r2_renderer_name = Path("scripts/render_schema5_recovery_chain_v12.py").name
+    v12_renderer_name = Path("scripts/render_schema5_recovery_chain_v12.py").name
     return (
         _common_exports(paths)
         + _sentinel_bootstrap_runtime_shell(paths)
@@ -4961,7 +6760,7 @@ def _snapshot_adopt_body(
         + f"""\
 protocol_verifier={_q(paths.jobs_root / verifier_name)}
 r1_native_renderer={_q(paths.jobs_root / r1_renderer_name)}
-r2_native_renderer={_q(paths.jobs_root / r2_renderer_name)}
+v12_native_renderer={_q(paths.jobs_root / v12_renderer_name)}
 {_immutable_tool_shell_check(
     variable="protocol_verifier",
     expected_sha256=_sha256_bytes(bundled_tools[verifier_name]),
@@ -4975,10 +6774,10 @@ r2_native_renderer={_q(paths.jobs_root / r2_renderer_name)}
     description="bundled native r1 recovery renderer",
 )}
 {_immutable_tool_shell_check(
-    variable="r2_native_renderer",
-    expected_sha256=_sha256_bytes(bundled_tools[r2_renderer_name]),
-    expected_size=len(bundled_tools[r2_renderer_name]),
-    description="bundled native r2 recovery renderer",
+    variable="v12_native_renderer",
+    expected_sha256=_sha256_bytes(bundled_tools[v12_renderer_name]),
+    expected_size=len(bundled_tools[v12_renderer_name]),
+    description="bundled native v1.2 recovery renderer",
 )}
 native_report=$(mktemp)
 trap 'rm -f -- "$native_report"' EXIT
@@ -5057,7 +6856,15 @@ def _environment_capture_body(
     tag_object: str,
     expected_source_inventories: Mapping[str, str],
     expected_policy_hashes: Mapping[str, str],
+    expected_reconciliation_incident: Mapping[str, Any],
 ) -> str:
+    expected_incident_fields = {
+        "path",
+        "sha256",
+        "incident_id",
+        "harness_stale_conda_record_present",
+        "serving_stale_conda_record_present",
+    }
     if (
         set(expected_source_inventories) != {"harness", "serving"}
         or any(
@@ -5069,9 +6876,23 @@ def _environment_capture_body(
             not isinstance(value, str) or _SHA256.fullmatch(value) is None
             for value in expected_policy_hashes.values()
         )
+        or set(expected_reconciliation_incident) != expected_incident_fields
+        or expected_reconciliation_incident.get("sha256")
+        != PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256
+        or expected_reconciliation_incident.get("incident_id")
+        != PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID
+        or expected_reconciliation_incident.get(
+            "harness_stale_conda_record_present"
+        )
+        is not False
+        or expected_reconciliation_incident.get(
+            "serving_stale_conda_record_present"
+        )
+        is not False
     ):
         raise ChainError(
-            "pilot source-inventory or environment-policy binding is incomplete"
+            "pilot source-inventory, environment-policy, or production "
+            "reconciliation-incident binding is incomplete"
         )
     tool = paths.source_checkout / "scripts" / "capture_schema5_environments.py"
     ownership_policy = (
@@ -5105,6 +6926,8 @@ def _environment_capture_body(
     serving_inventory = expected_source_inventories["serving"]
     ownership_policy_sha256 = expected_policy_hashes["ownership"]
     integrity_policy_sha256 = expected_policy_hashes["integrity"]
+    incident_sha256 = str(expected_reconciliation_incident["sha256"])
+    incident_id = str(expected_reconciliation_incident["incident_id"])
     marker = paths.environment_capture_root / "ENVIRONMENT_CAPTURE_COMPLETE.json"
     return (
         _common_exports(paths)
@@ -5132,11 +6955,45 @@ for role, root in (("harness", harness), ("serving", serving)):
         )
 PY
 }}
+verify_reconciliation_incident() {{
+  {python} - "$1" {_q(incident_sha256)} {_q(incident_id)} <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+raw = path.read_bytes()
+payload = json.loads(raw)
+expected = {{
+    "sha256": sys.argv[2],
+    "incident_id": sys.argv[3],
+    "harness_stale_conda_record_present": False,
+    "serving_stale_conda_record_present": False,
+}}
+observed = {{
+    "sha256": hashlib.sha256(raw).hexdigest(),
+    "incident_id": payload.get("incident_id"),
+    "harness_stale_conda_record_present": payload.get(
+        "harness_stale_conda_record_present"
+    ),
+    "serving_stale_conda_record_present": payload.get(
+        "serving_stale_conda_record_present"
+    ),
+}}
+if observed != expected:
+    raise SystemExit(
+        f"production Conda reconciliation incident drifted: "
+        f"{{observed}} != {{expected}}"
+    )
+PY
+}}
 verify_capture_binding() {{
   ionice -c 2 -n 7 nice -n 10 {python} {_q(tool)} verify \\
     --output-root {_q(paths.environment_capture_root)}
   {python} - {_q(marker)} {_q(harness_inventory)} {_q(serving_inventory)} \\
-    {_q(ownership_policy_sha256)} {_q(integrity_policy_sha256)} <<'PY'
+    {_q(ownership_policy_sha256)} {_q(integrity_policy_sha256)} \\
+    {_q(incident_sha256)} <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -5147,6 +7004,7 @@ expected_policy = {{
     "ownership_policy_sha256": sys.argv[4],
     "integrity_normalization_policy_sha256": sys.argv[5],
 }}
+expected_incident_sha256 = sys.argv[6]
 observed = {{
     role: marker.get("source_inventories", {{}})
     .get(role, {{}})
@@ -5166,7 +7024,21 @@ if observed_policy != expected_policy:
         f"production capture used policies outside sealed pilot: "
         f"{{observed_policy}} != {{expected_policy}}"
     )
+if marker.get("reconciliation_incident_sha256") != expected_incident_sha256:
+    raise SystemExit(
+        "production capture used a different Conda reconciliation incident"
+    )
 PY
+  captured_incident="$({python} - {_q(marker)} <<'PY'
+import json
+from pathlib import Path
+import sys
+print(json.loads(Path(sys.argv[1]).read_text(
+    encoding="utf-8"
+))["reconciliation_incident_path"])
+PY
+)"
+  verify_reconciliation_incident "$captured_incident"
 }}
 if [[ -f {_q(paths.environment_capture_root / 'ENVIRONMENT_CAPTURE_COMPLETE.json')} && \
       ! -L {_q(paths.environment_capture_root / 'ENVIRONMENT_CAPTURE_COMPLETE.json')} ]]; then
@@ -5174,6 +7046,7 @@ if [[ -f {_q(paths.environment_capture_root / 'ENVIRONMENT_CAPTURE_COMPLETE.json
   exit 0
 fi
 verify_live_sources
+verify_reconciliation_incident {_q(incident)}
 ionice -c 2 -n 7 nice -n 10 {command}
 ionice -c 2 -n 7 nice -n 10 {command} --apply
 verify_capture_binding
@@ -5641,7 +7514,7 @@ squeue_comment="$(squeue -h -j "$SLURM_JOB_ID" -o '%k')"
   echo "email readiness scheduler comment sources disagree" >&2
   exit 2
 }}
-email_comment_re="^asys:s5-recovery-v1\\\\.2-r2:${{chain_id}}:g([0-9]{{4}}):email_readiness$"
+email_comment_re="^asys:s5-recovery-v1\\\\.2-r3:${{chain_id}}:g([0-9]{{4}}):email_readiness$"
 [[ "$job_comment" =~ $email_comment_re ]] || {{
   echo "email readiness scheduler comment is not bound to this chain" >&2
   exit 2
@@ -5713,10 +7586,10 @@ echo "fleet did not satisfy readiness within the bounded 10-hour window; checkin
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "fleet readiness scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r2:[0-9a-f]{{64}}:(g[0-9]{{4}}):fleet_readiness$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:[0-9a-f]{{64}}:(g[0-9]{{4}}):fleet_readiness$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "fleet readiness scheduler comment is outside the immutable r2 namespace: $comment" >&2
+  echo "fleet readiness scheduler comment is outside the immutable r3 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -6031,7 +7904,7 @@ done
 "${{control[@]}}" drill wait --role fleet_supervisor --timeout 900
 "${{control[@]}}" drill finish --timeout 900
 "${{control[@]}}" drill status --live
-exec env LD_LIBRARY_PATH={_q(paths.harness / 'lib')} \
+env LD_LIBRARY_PATH={_q(paths.harness / 'lib')} \
   {_q(paths.harness / 'bin/python')} -I {_q(renderer)} \
   verify-watchdog-readiness --chain-manifest {_q(paths.chain_manifest)}
 """
@@ -6112,15 +7985,20 @@ def _failure_sentinel_body(
     paths: RecoveryPaths,
     *,
     sentinel_payload: bytes,
+    renderer_payload: bytes,
 ) -> str:
     # This tool is copied from the tagged commit into the immutable job namespace.
     # It therefore remains runnable even when the source-checkout stage itself fails.
     tool = paths.jobs_root / SENTINEL_TOOL_FILENAME
     tool_sha256 = _sha256_bytes(sentinel_payload)
     tool_size = len(sentinel_payload)
+    renderer = paths.jobs_root / "render_schema5_recovery_chain_v12.py"
+    renderer_sha256 = _sha256_bytes(renderer_payload)
+    renderer_size = len(renderer_payload)
     return _common_exports(paths) + f"""\
 [[ "${{SLURM_JOB_ID:-}}" =~ ^[0-9]+$ ]] || {{ echo "sentinel requires an exact Slurm job ID" >&2; exit 2; }}
 sentinel_tool={_q(tool)}
+renderer={_q(renderer)}
 {_sentinel_bootstrap_runtime_shell(paths)}
 {_immutable_tool_shell_check(
     variable="sentinel_tool",
@@ -6128,13 +8006,19 @@ sentinel_tool={_q(tool)}
     expected_size=tool_size,
     description="bundled recovery sentinel",
 )}
+{_immutable_tool_shell_check(
+    variable="renderer",
+    expected_sha256=renderer_sha256,
+    expected_size=renderer_size,
+    description="bundled recovery renderer",
+)}
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "sentinel scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r2:[0-9a-f]{{64}}:(g[0-9]{{4}}):failure_sentinel$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:[0-9a-f]{{64}}:(g[0-9]{{4}}):failure_sentinel$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "sentinel scheduler comment is outside the immutable r2 namespace: $comment" >&2
+  echo "sentinel scheduler comment is outside the immutable r3 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -6164,12 +8048,29 @@ print(rows[0]["job_id"])
 PY
 )"
 capacity_receipt={_q(paths.capacity_transient_root)}/"$generation"/"$fleet_readiness_job_id"/{_q(CAPACITY_TRANSIENT_MARKER_NAME)}
-exec env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S "$sentinel_tool" \\
+sentinel_report="$(env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S "$sentinel_tool" \\
   --chain-manifest {_q(paths.chain_manifest)} \\
   --submission-receipt "$receipt" \\
   --capacity-transient-receipt "$capacity_receipt" \\
   --output-root {_q(paths.recovery_root / 'recovery_chain_sentinels' / CHAIN_NAMESPACE)}/"$generation" \\
   --recipient mabdel03@mit.edu \\
+  --apply)"
+printf '%s\\n' "$sentinel_report"
+run_succeeded="$(printf '%s\\n' "$sentinel_report" | "$bootstrap_python" -I -S -c '
+import json
+import sys
+
+value = json.load(sys.stdin).get("run_succeeded")
+if not isinstance(value, bool):
+    raise SystemExit("aggregate sentinel omitted Boolean run_succeeded")
+print("true" if value else "false")
+')"
+if [[ "$run_succeeded" != true ]]; then
+  exit 0
+fi
+exec env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S "$renderer" \\
+  publish-bootstrap-handoff \\
+  --chain-manifest {_q(paths.chain_manifest)} \\
   --apply
 """
 
@@ -6201,10 +8102,10 @@ sentinel_tool={_q(tool)}
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "stage sentinel scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r2:[0-9a-f]{{64}}:(g[0-9]{{4}}):{re.escape(observer_name)}$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:[0-9a-f]{{64}}:(g[0-9]{{4}}):{re.escape(observer_name)}$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "stage sentinel scheduler comment is outside the immutable r2 namespace: $comment" >&2
+  echo "stage sentinel scheduler comment is outside the immutable r3 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -6258,9 +8159,12 @@ def job_specs(
     }
     conda_binding = pilot.get("conda_executable")
     conda_runtime_binding = pilot.get("conda_runtime_toolchain")
+    reconciliation_incident = pilot.get("reconciliation_incident")
     if not isinstance(source_inventories, Mapping) or not isinstance(
         conda_binding, Mapping
-    ) or not isinstance(conda_runtime_binding, Mapping) or any(
+    ) or not isinstance(conda_runtime_binding, Mapping) or not isinstance(
+        reconciliation_incident, Mapping
+    ) or any(
         not isinstance(value, str) or _SHA256.fullmatch(value) is None
         for value in policy_hashes.values()
     ):
@@ -6314,6 +8218,9 @@ def job_specs(
                 tag_object=tag_object,
                 expected_source_inventories=source_inventories,
                 expected_policy_hashes=policy_hashes,
+                expected_reconciliation_incident=(
+                    reconciliation_incident
+                ),
             ),
         ),
         JobSpec(
@@ -6425,6 +8332,7 @@ def job_specs(
             _failure_sentinel_body(
                 paths,
                 sentinel_payload=bundled_tools[SENTINEL_TOOL_FILENAME],
+                renderer_payload=renderer_payload,
             ),
             dependency_type="afterany",
         ),
@@ -6436,7 +8344,7 @@ def _job_name(name: str) -> str:
         stage = name.removeprefix(STAGE_SENTINEL_PREFIX)
         if stage not in PRODUCTION_STAGE_NAMES:
             raise ChainError(f"unknown stage-sentinel job name: {name!r}")
-        return f"asys-s5v12r2-alert-{PRODUCTION_STAGE_NAMES.index(stage):02d}"
+        return f"asys-s5v12r3-alert-{PRODUCTION_STAGE_NAMES.index(stage):02d}"
     shortened = {
         "snapshot_adopt_verify": "snapshot-adopt",
         "environment_capture": "env-capture",
@@ -6461,7 +8369,7 @@ def _job_name(name: str) -> str:
         "legacy_retire": "retire",
         "failure_sentinel": "sentinel",
     }[name]
-    return f"asys-s5v12r2-{shortened}"
+    return f"asys-s5v12r3-{shortened}"
 
 
 def render_sbatch(spec: JobSpec, paths: RecoveryPaths, *, partition: str) -> bytes:
@@ -6555,7 +8463,7 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
         for spec in ordered
     )
     if observed_contract != EXPECTED_JOB_CONTRACT:
-        raise ChainError("recovery DAG differs from the fixed v1.2-r2 job contract")
+        raise ChainError("recovery DAG differs from the fixed v1.2-r3 job contract")
     by_name = {spec.name: spec for spec in ordered}
     for earlier, later in zip(HEAVY_SERIAL_ORDER, HEAVY_SERIAL_ORDER[1:]):
         if earlier not in _ancestors(later, by_name):
@@ -6611,9 +8519,9 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
 
 def _preflight_fresh_destinations(paths: RecoveryPaths) -> None:
     for description, path in (
-        ("v1.2-r2 source checkout", paths.source_checkout),
+        ("v1.2-r3 source checkout", paths.source_checkout),
         (
-            "v1.2-r2 source checkout seal",
+            "v1.2-r3 source checkout seal",
             paths.recovery_root / SOURCE_CHECKOUT_SEAL_NAME,
         ),
         ("v1.2 production release root", paths.release_root),
@@ -6716,7 +8624,7 @@ def _manifest_payload(
         )
     identity = {
         "schema_version": CHAIN_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r2-recovery-chain",
+        "protocol": "schema5-v1.2-r3-recovery-chain",
         "namespace": CHAIN_NAMESPACE,
         "release_id": RELEASE_ID,
         "release_tag": git_identity["release_tag"],
@@ -6773,6 +8681,459 @@ def _manifest_payload(
     }
     identity["chain_id"] = _sha256_bytes(_canonical_json(identity))
     return identity
+
+
+def _isolated_bootstrap_drill_location(
+    manifest_path: Path,
+) -> tuple[Path, Path] | None:
+    """Return the canonical manifest/root for the one allowed sibling drill."""
+
+    manifest_path = _lexical_absolute(manifest_path)
+    isolated_root = manifest_path.parent
+    if (
+        manifest_path.name != CHAIN_MANIFEST_NAME
+        or isolated_root.name != BOOTSTRAP_ISOLATED_DRILL_DIRECTORY
+        or manifest_path != isolated_root / CHAIN_MANIFEST_NAME
+    ):
+        return None
+    canonical_root = isolated_root.parent
+    return canonical_root / CHAIN_MANIFEST_NAME, isolated_root
+
+
+def _isolated_bootstrap_script(
+    row: Mapping[str, Any],
+    *,
+    isolated_root: Path,
+    partition: str,
+) -> bytes:
+    """Render a harmless topology-equivalent script for cancellation testing."""
+
+    name = row.get("name")
+    job_name = row.get("job_name")
+    cpus = row.get("cpus")
+    memory = row.get("memory")
+    time_limit = row.get("time_limit")
+    if (
+        not isinstance(name, str)
+        or _SAFE_NAME.fullmatch(name) is None
+        or not isinstance(job_name, str)
+        or _SAFE_NAME.fullmatch(job_name) is None
+        or not isinstance(cpus, int)
+        or isinstance(cpus, bool)
+        or cpus < 1
+        or not isinstance(memory, str)
+        or re.fullmatch(r"[1-9][0-9]*[KMGT]", memory) is None
+        or not isinstance(time_limit, str)
+        or re.fullmatch(r"[0-9]{2}:[0-9]{2}:[0-9]{2}", time_limit) is None
+        or _SAFE_NAME.fullmatch(partition) is None
+    ):
+        raise ChainError(
+            "canonical recovery topology cannot produce an isolated drill script"
+        )
+    log = isolated_root / "logs" / CHAIN_NAMESPACE / f"{name}_%j.out"
+    return f"""#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --partition={partition}
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --mem={memory}
+#SBATCH --time={time_limit}
+#SBATCH --no-requeue
+#SBATCH --output={log}
+
+set -euo pipefail
+umask 077
+printf '%s\\n' 'schema5 isolated bootstrap cancellation drill: execution is forbidden' >&2
+exit {BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE}
+""".encode("utf-8")
+
+
+def _isolated_bootstrap_manifest_payload(
+    canonical_manifest: Mapping[str, Any],
+    *,
+    canonical_manifest_path: Path,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Derive the exact inert sibling manifest from the verified canonical DAG."""
+
+    canonical_root = canonical_manifest_path.parent
+    isolated_root = canonical_root / BOOTSTRAP_ISOLATED_DRILL_DIRECTORY
+    isolated_jobs_root = isolated_root / "jobs" / CHAIN_NAMESPACE
+    isolated_logs_root = isolated_root / "logs" / CHAIN_NAMESPACE
+    partition = canonical_manifest.get("partition")
+    jobs = canonical_manifest.get("jobs")
+    tools = canonical_manifest.get("recovery_tool_bundle")
+    if (
+        not isinstance(partition, str)
+        or not isinstance(jobs, list)
+        or len(jobs) != len(EXPECTED_JOB_ORDER)
+        or not isinstance(tools, list)
+    ):
+        raise ChainError(
+            "canonical recovery manifest cannot seed the isolated drill"
+        )
+
+    payload = json.loads(
+        json.dumps(canonical_manifest, allow_nan=False)
+    )
+    payload.pop("chain_id", None)
+    payload.update(
+        {
+            "recovery_root": str(isolated_root),
+            "source_checkout": str(
+                isolated_root / "release_source_checkout_v1_2_r3"
+            ),
+            "release_root": str(
+                isolated_root / "releases" / RELEASE_ID
+            ),
+            "environment_capture_root": str(
+                isolated_root / "environment_captures" / RELEASE_ID
+            ),
+            "captured_harness_prefix": str(
+                isolated_root
+                / "environment_captures"
+                / RELEASE_ID
+                / "seeds"
+                / "harness"
+            ),
+            "captured_serving_prefix": str(
+                isolated_root
+                / "environment_captures"
+                / RELEASE_ID
+                / "seeds"
+                / "serving"
+            ),
+            "jobs_root": str(isolated_jobs_root),
+            "logs_root": str(isolated_logs_root),
+            "immutable_pins": str(
+                isolated_root / "immutable_pins.schema5-v1.json"
+            ),
+            "readiness_root": str(isolated_root / "readiness"),
+        }
+    )
+
+    scripts: dict[str, bytes] = {}
+    isolated_jobs: list[dict[str, Any]] = []
+    for row in jobs:
+        if not isinstance(row, Mapping):
+            raise ChainError("canonical recovery manifest has a malformed job")
+        name = str(row.get("name", ""))
+        script = _isolated_bootstrap_script(
+            row,
+            isolated_root=isolated_root,
+            partition=partition,
+        )
+        scripts[name] = script
+        isolated_row = dict(row)
+        isolated_row["script"] = str(
+            isolated_jobs_root / Path(str(row["script"])).name
+        )
+        isolated_row["script_sha256"] = _sha256_bytes(script)
+        isolated_jobs.append(isolated_row)
+    payload["jobs"] = isolated_jobs
+
+    isolated_tools: list[dict[str, Any]] = []
+    for record in tools:
+        if (
+            not isinstance(record, Mapping)
+            or not isinstance(record.get("path"), str)
+        ):
+            raise ChainError(
+                "canonical recovery tool binding is malformed"
+            )
+        isolated_record = dict(record)
+        isolated_record["path"] = str(
+            isolated_jobs_root / Path(record["path"]).name
+        )
+        isolated_tools.append(isolated_record)
+    payload["recovery_tool_bundle"] = isolated_tools
+    payload["chain_id"] = _sha256_bytes(_canonical_json(payload))
+    return payload, scripts
+
+
+def _canonical_prelaunch_receipt(
+    *,
+    canonical_manifest: Mapping[str, Any],
+    canonical_manifest_path: Path,
+) -> dict[str, Any]:
+    """Require one held canonical g0 receipt and no canonical launch mutation."""
+
+    canonical_root = canonical_manifest_path.parent
+    for forbidden in (
+        canonical_root / REPAIR_ROOT_NAME,
+        canonical_root / ROOT_RELEASE_COMPLETE_NAME,
+        canonical_root / LAUNCH_COMPLETE_NAME,
+    ):
+        if forbidden.exists() or forbidden.is_symlink():
+            raise ChainError(
+                "isolated cancellation drill requires an untouched canonical "
+                f"prelaunch namespace: {forbidden}"
+            )
+    receipt_path = canonical_root / SUBMISSION_RECEIPT_NAME
+    return _validate_submission_receipt(
+        receipt_path,
+        manifest=canonical_manifest,
+        manifest_path=canonical_manifest_path,
+        comments=_submission_comments(canonical_manifest),
+    )
+
+
+def verify_isolated_bootstrap_drill_chain(
+    manifest_path: Path,
+) -> dict[str, Any]:
+    """Verify the exact inert sibling used only for bootstrap cancellation."""
+
+    manifest_path = _lexical_absolute(manifest_path)
+    location = _isolated_bootstrap_drill_location(manifest_path)
+    if location is None:
+        raise ChainError(
+            "isolated bootstrap drill manifest is outside its fixed sibling root"
+        )
+    canonical_manifest_path, isolated_root = location
+    manifest_path = _require_canonical_path(
+        manifest_path,
+        description="isolated bootstrap drill manifest",
+        kind="file",
+    )
+    manifest_metadata = manifest_path.stat(follow_symlinks=False)
+    if (
+        stat.S_IMODE(manifest_metadata.st_mode) & 0o222
+        or manifest_metadata.st_nlink != 1
+    ):
+        raise ChainError(
+            "isolated bootstrap drill manifest must be one read-only file"
+        )
+
+    canonical_verification = verify_chain(canonical_manifest_path)
+    canonical_manifest = _read_json(
+        canonical_manifest_path,
+        description="canonical recovery-chain manifest",
+    )
+    _canonical_prelaunch_receipt(
+        canonical_manifest=canonical_manifest,
+        canonical_manifest_path=canonical_manifest_path,
+    )
+    expected, scripts = _isolated_bootstrap_manifest_payload(
+        canonical_manifest,
+        canonical_manifest_path=canonical_manifest_path,
+    )
+    manifest = _read_json(
+        manifest_path,
+        description="isolated bootstrap drill manifest",
+    )
+    if manifest != expected:
+        raise ChainError(
+            "isolated bootstrap drill manifest is not the exact inert "
+            "canonical-topology derivation"
+        )
+
+    root = _require_canonical_path(
+        isolated_root,
+        description="isolated bootstrap drill root",
+        kind="directory",
+    )
+    jobs_root = _require_canonical_path(
+        Path(str(manifest["jobs_root"])),
+        description="isolated bootstrap drill jobs",
+        kind="directory",
+    )
+    logs_root = _require_canonical_path(
+        Path(str(manifest["logs_root"])),
+        description="isolated bootstrap drill logs",
+        kind="directory",
+    )
+    if (
+        root != isolated_root
+        or jobs_root != isolated_root / "jobs" / CHAIN_NAMESPACE
+        or logs_root != isolated_root / "logs" / CHAIN_NAMESPACE
+        or stat.S_IMODE(jobs_root.stat().st_mode) & 0o222
+    ):
+        raise ChainError(
+            "isolated bootstrap drill filesystem namespace drifted"
+        )
+    for forbidden in (
+        isolated_root / ROOT_RELEASE_COMPLETE_NAME,
+        isolated_root / LAUNCH_COMPLETE_NAME,
+    ):
+        if forbidden.exists() or forbidden.is_symlink():
+            raise ChainError(
+                "isolated bootstrap drill must never publish a release marker"
+            )
+
+    canonical_tools = {
+        Path(str(record["path"])).name: record
+        for record in canonical_manifest["recovery_tool_bundle"]
+    }
+    expected_names = {
+        Path(str(row["script"])).name for row in manifest["jobs"]
+    } | set(canonical_tools)
+    if {path.name for path in jobs_root.iterdir()} != expected_names:
+        raise ChainError(
+            "isolated bootstrap drill jobs namespace contents drifted"
+        )
+    for row in manifest["jobs"]:
+        name = str(row["name"])
+        path = _require_canonical_path(
+            Path(str(row["script"])),
+            description=f"isolated bootstrap script {name}",
+            kind="file",
+        )
+        metadata = path.stat(follow_symlinks=False)
+        expected_script = scripts[name]
+        if (
+            path.parent != jobs_root
+            or stat.S_IMODE(metadata.st_mode) & 0o222
+            or metadata.st_nlink != 1
+            or path.read_bytes() != expected_script
+            or row["script_sha256"] != _sha256_bytes(expected_script)
+        ):
+            raise ChainError(
+                f"isolated bootstrap drill script drifted: {name}"
+            )
+    for name, canonical_record in canonical_tools.items():
+        canonical_tool = _require_canonical_path(
+            Path(str(canonical_record["path"])),
+            description=f"canonical recovery tool {name}",
+            kind="file",
+        )
+        isolated_tool = _require_canonical_path(
+            jobs_root / name,
+            description=f"isolated recovery tool {name}",
+            kind="file",
+        )
+        metadata = isolated_tool.stat(follow_symlinks=False)
+        if (
+            stat.S_IMODE(metadata.st_mode) & 0o222
+            or metadata.st_nlink != 1
+            or isolated_tool.read_bytes() != canonical_tool.read_bytes()
+            or _sha256(isolated_tool) != canonical_record["sha256"]
+        ):
+            raise ChainError(
+                f"isolated bootstrap recovery tool drifted: {name}"
+            )
+    return {
+        "passed": True,
+        "isolated_bootstrap_drill": True,
+        "chain_id": manifest["chain_id"],
+        "canonical_chain_id": canonical_manifest["chain_id"],
+        "canonical_verification": canonical_verification,
+        "job_count": len(manifest["jobs"]),
+        "inert_exit_code": BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE,
+    }
+
+
+def prepare_isolated_bootstrap_drill_chain(
+    canonical_manifest_path: Path,
+    *,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Publish a topology-equivalent, inert sibling DAG marker last."""
+
+    canonical_manifest_path = _lexical_absolute(canonical_manifest_path)
+    verify_chain(canonical_manifest_path)
+    canonical_manifest = _read_json(
+        canonical_manifest_path,
+        description="canonical recovery-chain manifest",
+    )
+    canonical_receipt = _canonical_prelaunch_receipt(
+        canonical_manifest=canonical_manifest,
+        canonical_manifest_path=canonical_manifest_path,
+    )
+    manifest, scripts = _isolated_bootstrap_manifest_payload(
+        canonical_manifest,
+        canonical_manifest_path=canonical_manifest_path,
+    )
+    canonical_root = canonical_manifest_path.parent
+    isolated_root = canonical_root / BOOTSTRAP_ISOLATED_DRILL_DIRECTORY
+    isolated_manifest_path = isolated_root / CHAIN_MANIFEST_NAME
+    report = {
+        "status": "dry_run",
+        "isolated_bootstrap_drill": True,
+        "canonical_chain_id": canonical_manifest["chain_id"],
+        "canonical_submission_receipt_id": canonical_receipt["receipt_id"],
+        "chain_id": manifest["chain_id"],
+        "chain_manifest": str(isolated_manifest_path),
+        "job_count": len(manifest["jobs"]),
+        "inert_exit_code": BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE,
+    }
+    if isolated_root.exists() or isolated_root.is_symlink():
+        verified = verify_isolated_bootstrap_drill_chain(
+            isolated_manifest_path
+        )
+        return report | {
+            "status": "already_prepared",
+            "verified": verified,
+        }
+    if not apply:
+        return report
+
+    lock_path = canonical_root / BOOTSTRAP_ISOLATED_RENDER_LOCK_NAME
+    with _exclusive_lock(
+        lock_path,
+        description="isolated bootstrap drill renderer",
+    ):
+        if isolated_root.exists() or isolated_root.is_symlink():
+            verified = verify_isolated_bootstrap_drill_chain(
+                isolated_manifest_path
+            )
+            return report | {
+                "status": "already_prepared",
+                "verified": verified,
+            }
+        temporary_root = canonical_root / (
+            f".{BOOTSTRAP_ISOLATED_DRILL_DIRECTORY}.render."
+            f"{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        temporary_root.mkdir(mode=0o750)
+        try:
+            temporary_jobs = temporary_root / "jobs" / CHAIN_NAMESPACE
+            temporary_logs = temporary_root / "logs" / CHAIN_NAMESPACE
+            temporary_jobs.mkdir(parents=True, mode=0o750)
+            temporary_logs.mkdir(parents=True, mode=0o750)
+            for row in manifest["jobs"]:
+                name = str(row["name"])
+                target = temporary_jobs / Path(str(row["script"])).name
+                descriptor = os.open(
+                    target,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o444,
+                )
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(scripts[name])
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            for record in canonical_manifest["recovery_tool_bundle"]:
+                source = _require_canonical_path(
+                    Path(str(record["path"])),
+                    description="canonical recovery tool",
+                    kind="file",
+                )
+                target = temporary_jobs / source.name
+                descriptor = os.open(
+                    target,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o444,
+                )
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(source.read_bytes())
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            os.chmod(temporary_jobs, 0o550)
+            _fsync_directory(temporary_jobs)
+            _fsync_directory(temporary_logs)
+            _atomic_json(
+                temporary_root / CHAIN_MANIFEST_NAME,
+                manifest,
+                mode=0o444,
+            )
+            _fsync_directory(temporary_root)
+            os.rename(temporary_root, isolated_root)
+            _fsync_directory(canonical_root)
+        finally:
+            if temporary_root.exists():
+                shutil.rmtree(temporary_root)
+    verified = verify_isolated_bootstrap_drill_chain(
+        isolated_manifest_path
+    )
+    return report | {"status": "complete", "verified": verified}
 
 
 def render_chain(
@@ -6859,9 +9220,9 @@ def render_chain(
     if not apply:
         _preflight_fresh_destinations(paths)
         for description, path in (
-            ("v1.2-r2 job namespace", paths.jobs_root),
-            ("v1.2-r2 log namespace", paths.logs_root),
-            ("v1.2-r2 chain manifest", paths.chain_manifest),
+            ("v1.2-r3 job namespace", paths.jobs_root),
+            ("v1.2-r3 log namespace", paths.logs_root),
+            ("v1.2-r3 chain manifest", paths.chain_manifest),
         ):
             if path.exists() or path.is_symlink():
                 raise ChainError(f"{description} must be fresh and absent: {path}")
@@ -6983,7 +9344,7 @@ def verify_bound_prerequisites(
     prerequisite = manifest.get("prerequisite_evidence")
     if (
         manifest.get("schema_version") != CHAIN_SCHEMA_VERSION
-        or manifest.get("protocol") != "schema5-v1.2-r2-recovery-chain"
+        or manifest.get("protocol") != "schema5-v1.2-r3-recovery-chain"
         or chain_id != expected_chain_id
         or not isinstance(chain_id, str)
         or _SHA256.fullmatch(chain_id) is None
@@ -7148,6 +9509,20 @@ def verify_bound_prerequisites(
 def verify_live_creation_prerequisites(manifest_path: Path) -> dict[str, Any]:
     """Recheck mutable creation inputs without weakening sealed ``verify_chain``."""
 
+    isolated_location = _isolated_bootstrap_drill_location(manifest_path)
+    if isolated_location is not None:
+        canonical_manifest_path, _isolated_root = isolated_location
+        isolated = verify_isolated_bootstrap_drill_chain(manifest_path)
+        canonical = verify_live_creation_prerequisites(
+            canonical_manifest_path
+        )
+        return canonical | {
+            "passed": True,
+            "isolated_bootstrap_drill": True,
+            "chain_id": isolated["chain_id"],
+            "canonical_chain_id": isolated["canonical_chain_id"],
+        }
+
     manifest_path = _require_canonical_path(
         _lexical_absolute(manifest_path),
         description="recovery-chain manifest",
@@ -7173,6 +9548,8 @@ def verify_live_creation_prerequisites(manifest_path: Path) -> dict[str, Any]:
 
 def verify_chain(manifest_path: Path) -> dict[str, Any]:
     manifest_path = _lexical_absolute(manifest_path)
+    if _isolated_bootstrap_drill_location(manifest_path) is not None:
+        return verify_isolated_bootstrap_drill_chain(manifest_path)
     if manifest_path.is_symlink():
         raise ChainError(f"recovery-chain manifest cannot be a symlink: {manifest_path}")
     manifest_path = _require_canonical_path(
@@ -7241,7 +9618,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
     chain_id = identity.pop("chain_id")
     if (
         manifest["schema_version"] != CHAIN_SCHEMA_VERSION
-        or manifest["protocol"] != "schema5-v1.2-r2-recovery-chain"
+        or manifest["protocol"] != "schema5-v1.2-r3-recovery-chain"
         or manifest["namespace"] != CHAIN_NAMESPACE
         or manifest["release_id"] != RELEASE_ID
         or manifest["release_tag"] != RELEASE_TAG
@@ -7396,7 +9773,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         raise ChainError("recovery-chain prerequisite roots are not canonical")
     expected_paths = {
         "recovery_root": results_root / "recovery" / "schema5-v1",
-        "source_checkout": recovery_root / "release_source_checkout_v1_2_r2",
+        "source_checkout": recovery_root / "release_source_checkout_v1_2_r3",
         "release_root": recovery_root / "releases" / RELEASE_ID,
         "state_root": results_root / ".dispatcher-schema5-v1",
         "server_pool_root": results_root / "server_pools" / "schema5-v1",
@@ -7974,7 +10351,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
             "bundled native r1 recovery renderer hash drifted"
         ),
         snapshot_adopt_text.find(
-            "bundled native r2 recovery renderer hash drifted"
+            "bundled native v1.2 recovery renderer hash drifted"
         ),
     ]
     native_exec_offset = snapshot_adopt_text.find(
@@ -8101,8 +10478,19 @@ _QUALIFICATION_FAILURE_FIELDS = {
     "additive_scaling_requirement",
     "scheduler_capacity_mutated",
     "rerun_requirement",
+    "failure_drain_intent",
+    "cycle_run_roots",
+    "refill_reconciliations",
     "failure_id",
 }
+_QUALIFICATION_LEGACY_FAILURE_FIELDS = (
+    _QUALIFICATION_FAILURE_FIELDS
+    - {
+        "failure_drain_intent",
+        "cycle_run_roots",
+        "refill_reconciliations",
+    }
+)
 _QUALIFICATION_SCALING_FIELDS = {
     "serving_profile",
     "server_pool_root",
@@ -9238,7 +11626,13 @@ def _verify_superseded_qualification_failure(
         attempt_root / THROUGHPUT_QUALIFICATION_FAILURE_NAME,
         description="superseded throughput-qualification failure",
     )
-    if set(failure) != _QUALIFICATION_FAILURE_FIELDS:
+    failure_protocol = failure.get("protocol")
+    expected_failure_fields = (
+        _QUALIFICATION_FAILURE_FIELDS
+        if failure_protocol == THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL
+        else _QUALIFICATION_LEGACY_FAILURE_FIELDS
+    )
+    if set(failure) != expected_failure_fields:
         raise ChainError(
             "superseded throughput-qualification failure fields drifted"
         )
@@ -9250,9 +11644,18 @@ def _verify_superseded_qualification_failure(
     scaling = failure.get("additive_scaling_requirement")
     retry = successor.get("additive_retry")
     if (
-        failure.get("schema_version") != 1
-        or failure.get("protocol")
-        != THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL
+        failure.get("schema_version")
+        != (
+            THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            if failure_protocol
+            == THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL
+            else 1
+        )
+        or failure_protocol
+        not in {
+            THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL,
+            THROUGHPUT_QUALIFICATION_LEGACY_FAILURE_PROTOCOL,
+        }
         or failure.get("passed") is not False
         or _SHA256.fullmatch(str(failure.get("intent_id", ""))) is None
         or failure.get("attempt")
@@ -9279,6 +11682,675 @@ def _verify_superseded_qualification_failure(
             "its exact additive successor"
         )
     return failure
+
+
+_THROUGHPUT_MARKER_FIELDS = {
+    "schema_version",
+    "protocol",
+    "passed",
+    "release_id",
+    "release_tag",
+    "release_git_commit",
+    "release_tag_object",
+    "chain_namespace",
+    "chain_id",
+    "manifest",
+    "manifest_sha256",
+    "protected_capacity",
+    "attempt",
+    "evidence",
+    "cells",
+    "qids",
+    "unique_design",
+    "load_execution",
+    "ceilings",
+    "health_soak_384_seconds",
+    "loaded_384_seconds",
+    "loaded_384_useful_qids",
+    "loaded_384_observation_count",
+    "certified_exact_384_cuts",
+    "throughput_qids_per_day",
+    "throughput_unit",
+    "every_stratum_progress",
+    "integrity_incidents",
+    "transport_censor_incidents",
+    "qualification_id",
+}
+_THROUGHPUT_EVIDENCE_FIELDS = {
+    "schema_version",
+    "protocol",
+    "intent_id",
+    "plan_id",
+    "run_id",
+    "estimand_excluded",
+    "primary_analysis_eligible",
+    "unique_design",
+    "load_execution",
+    "load_window_intent",
+    "load_window_drain",
+    "load_window_end_intent",
+    "cycle_run_roots",
+    "refill_reconciliations",
+    "observations",
+    "evaluation",
+    "evidence_id",
+}
+_THROUGHPUT_LOAD_FIELDS = {
+    "unit",
+    "repeated_coordinates",
+    "window_intent_id",
+    "window_start_sequence",
+    "window_end_sequence",
+    "window_start_timestamp",
+    "window_end_timestamp",
+    "window_duration_seconds",
+    "trusted_execution_events",
+    "replay_execution_events_total",
+    "cycle_count",
+    "cycle_inventory",
+    "capacity_target",
+    "certified_exact_384_cuts",
+    "work_conserving_refill",
+    "sealed_refill_deficit_journal",
+    "refill_deficit_scan_count",
+    "refill_wall_seconds",
+    "rate_denominator_includes_refill_wall_time",
+    "minimum_unfinished_assignments",
+    "all_strata_progress",
+    "stratum_execution_event_deltas",
+    "throughput_events_per_day",
+}
+_THROUGHPUT_CYCLE_FIELDS = {
+    "cycle_index",
+    "cycle_id",
+    "run_id",
+    "semantic_reference",
+    "status",
+    "validated_execution_events",
+    "unfinished_assignments",
+    "estimand_excluded",
+    "primary_analysis_eligible",
+}
+
+
+def _read_bound_qualification_record(
+    binding: object,
+    *,
+    identity_field: str,
+    description: str,
+) -> tuple[dict[str, Any], Path]:
+    if (
+        not isinstance(binding, Mapping)
+        or set(binding) != {"path", "sha256", identity_field}
+    ):
+        raise ChainError(f"{description} binding fields drifted")
+    path = _manifest_path(
+        binding.get("path"),
+        description=f"{description} path",
+    )
+    value, _ = _read_sealed_marker(path, description=description)
+    _require_marker_identity(
+        value,
+        identity_field=identity_field,
+        description=description,
+    )
+    if (
+        binding.get("sha256") != _sha256(path)
+        or binding.get(identity_field) != value.get(identity_field)
+    ):
+        raise ChainError(f"{description} binding hash or identity drifted")
+    return value, path
+
+
+def _qualification_tree_inventory(
+    root: Path,
+    *,
+    description: str,
+) -> dict[str, Any]:
+    root = _require_recursively_read_only(root, description=description)
+    files: list[dict[str, Any]] = []
+    total = 0
+    for path in sorted(root.rglob("*")):
+        if path.is_dir():
+            continue
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ChainError(f"{description} contains unsafe member: {path}")
+        size = metadata.st_size
+        total += size
+        files.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "size": size,
+                "sha256": _sha256(path),
+            }
+        )
+    return {
+        "root": str(root),
+        "files": len(files),
+        "bytes": total,
+        "inventory_sha256": _sha256_bytes(_canonical_json(files)),
+    }
+
+
+def _verify_r3_throughput_evidence(
+    *,
+    attempt_root: Path,
+    marker: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recompute the repeated-execution gate from sealed observation cuts."""
+
+    evidence, evidence_path = _read_bound_qualification_record(
+        marker.get("evidence"),
+        identity_field="evidence_id",
+        description="throughput-qualification aggregate evidence",
+    )
+    if (
+        evidence_path != attempt_root / "QUALIFICATION_EVIDENCE.json"
+        or set(evidence) != _THROUGHPUT_EVIDENCE_FIELDS
+        or evidence.get("schema_version")
+        != THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+        or evidence.get("protocol")
+        != THROUGHPUT_QUALIFICATION_EVIDENCE_PROTOCOL
+        or evidence.get("run_id")
+        != THROUGHPUT_QUALIFICATION_ROOT_NAME
+        or evidence.get("estimand_excluded") is not True
+        or evidence.get("primary_analysis_eligible") is not False
+        or _SHA256.fullmatch(str(evidence.get("intent_id", ""))) is None
+        or _SHA256.fullmatch(str(evidence.get("plan_id", ""))) is None
+    ):
+        raise ChainError(
+            "throughput-qualification aggregate evidence schema drifted"
+        )
+    unique = evidence.get("unique_design")
+    load = evidence.get("load_execution")
+    evaluation = evidence.get("evaluation")
+    if (
+        not isinstance(unique, Mapping)
+        or set(unique)
+        != {"cells", "qids", "semantic_reference_cycle"}
+        or unique.get("cells") != THROUGHPUT_QUALIFICATION_CELLS
+        or unique.get("qids") != THROUGHPUT_QUALIFICATION_QIDS
+        or _SHA256.fullmatch(
+            str(unique.get("semantic_reference_cycle", ""))
+        )
+        is None
+        or not isinstance(load, Mapping)
+        or set(load) != _THROUGHPUT_LOAD_FIELDS
+        or not isinstance(evaluation, Mapping)
+        or evaluation.get("unique_design") != unique
+        or evaluation.get("load_execution") != load
+    ):
+        raise ChainError(
+            "throughput qualification does not separate unique design from "
+            "load execution"
+        )
+    observation_bindings = evidence.get("observations")
+    if (
+        not isinstance(observation_bindings, list)
+        or len(observation_bindings)
+        < THROUGHPUT_QUALIFICATION_MIN_LOADED_OBSERVATIONS
+    ):
+        raise ChainError("throughput qualification lacks observation evidence")
+    observations: list[dict[str, Any]] = []
+    prior_timestamp = -math.inf
+    prior_events = -1
+    prior_progress: Mapping[str, Any] | None = None
+    for sequence, binding in enumerate(observation_bindings):
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != {
+                "sequence",
+                "observation",
+                "scheduler",
+                "semantic",
+            }
+            or binding.get("sequence") != sequence
+        ):
+            raise ChainError(
+                "throughput observation inventory is not contiguous"
+            )
+        receipt, receipt_path = _read_bound_qualification_record(
+            binding["observation"],
+            identity_field="observation_id",
+            description=f"throughput observation {sequence}",
+        )
+        scheduler, scheduler_path = _read_bound_qualification_record(
+            binding["scheduler"],
+            identity_field="scheduler_id",
+            description=f"throughput scheduler evidence {sequence}",
+        )
+        semantic, semantic_path = _read_bound_qualification_record(
+            binding["semantic"],
+            identity_field="semantic_id",
+            description=f"throughput semantic evidence {sequence}",
+        )
+        timestamp = receipt.get("captured_timestamp")
+        progress = semantic.get("load_strata_progress")
+        if (
+            receipt.get("schema_version")
+            != THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            or receipt.get("protocol")
+            != THROUGHPUT_QUALIFICATION_OBSERVATION_PROTOCOL
+            or scheduler.get("schema_version")
+            != THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            or scheduler.get("protocol")
+            != THROUGHPUT_QUALIFICATION_SCHEDULER_PROTOCOL
+            or semantic.get("schema_version")
+            != THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            or semantic.get("protocol")
+            != THROUGHPUT_QUALIFICATION_SEMANTIC_PROTOCOL
+            or any(
+                record.get("intent_id") != evidence["intent_id"]
+                for record in (receipt, scheduler, semantic)
+            )
+            or any(
+                record.get("sequence") != sequence
+                for record in (receipt, scheduler, semantic)
+            )
+            or not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or not math.isfinite(float(timestamp))
+            or float(timestamp) <= prior_timestamp
+            or scheduler.get("captured_timestamp") != timestamp
+            or semantic.get("captured_timestamp") != timestamp
+            or receipt.get("ceiling") != scheduler.get("ceiling")
+            or receipt.get("scheduler")
+            != {
+                "path": str(scheduler_path),
+                "sha256": _sha256(scheduler_path),
+                "scheduler_id": scheduler["scheduler_id"],
+            }
+            or receipt.get("semantic")
+            != {
+                "path": str(semantic_path),
+                "sha256": _sha256(semantic_path),
+                "semantic_id": semantic["semantic_id"],
+            }
+            or scheduler.get("squeue_complete") is not True
+            or scheduler.get("sacct_complete") is not True
+            or scheduler.get("errors") != []
+            or scheduler.get("qualification_tasks_only") is not True
+            or scheduler.get("production_run_ids") != []
+            or not isinstance(
+                scheduler.get("active_qualification_cells"), int
+            )
+            or isinstance(
+                scheduler.get("active_qualification_cells"), bool
+            )
+            or not isinstance(
+                scheduler.get("unfinished_load_assignments"), int
+            )
+            or isinstance(
+                scheduler.get("unfinished_load_assignments"), bool
+            )
+            or semantic.get("integrity_incidents") != 0
+            or semantic.get("transport_censor_incidents") != 0
+            or semantic.get("load_integrity_incidents") != 0
+            or semantic.get("load_censor_incidents") != 0
+            or not isinstance(
+                semantic.get("trusted_qid_execution_events"), int
+            )
+            or isinstance(
+                semantic.get("trusted_qid_execution_events"), bool
+            )
+            or semantic["trusted_qid_execution_events"] < prior_events
+            or not isinstance(progress, Mapping)
+            or not progress
+            or any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+                for value in progress.values()
+            )
+            or (
+                prior_progress is not None
+                and (
+                    set(progress) != set(prior_progress)
+                    or any(
+                        int(progress[label])
+                        < int(prior_progress[label])
+                        for label in progress
+                    )
+                )
+            )
+        ):
+            raise ChainError(
+                f"throughput observation {sequence} is incomplete or drifted"
+            )
+        prior_timestamp = float(timestamp)
+        prior_events = int(
+            semantic["trusted_qid_execution_events"]
+        )
+        prior_progress = progress
+        observations.append(
+            {
+                "receipt": receipt,
+                "scheduler": scheduler,
+                "semantic": semantic,
+                "receipt_path": receipt_path,
+            }
+        )
+
+    start_sequence = load.get("window_start_sequence")
+    end_sequence = load.get("window_end_sequence")
+    if (
+        load.get("unit") != "trusted_qid_execution_events"
+        or load.get("repeated_coordinates") is not True
+        or not isinstance(start_sequence, int)
+        or isinstance(start_sequence, bool)
+        or not isinstance(end_sequence, int)
+        or isinstance(end_sequence, bool)
+        or not 0 <= start_sequence < end_sequence < len(observations)
+    ):
+        raise ChainError("throughput load-window indexes are invalid")
+    start = observations[start_sequence]
+    end = observations[end_sequence]
+
+    def clean_loaded_cut(observation: Mapping[str, Any]) -> bool:
+        scheduler = observation["scheduler"]
+        semantic = observation["semantic"]
+        return bool(
+            scheduler.get("ceiling")
+            == THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+            and scheduler.get("active_qualification_cells")
+            == THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+            and scheduler.get("unfinished_load_assignments")
+            >= THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+            and semantic.get("integrity_incidents") == 0
+            and semantic.get("transport_censor_incidents") == 0
+            and semantic.get("load_integrity_incidents") == 0
+            and semantic.get("load_censor_incidents") == 0
+        )
+
+    if (
+        not clean_loaded_cut(start)
+        or any(clean_loaded_cut(row) for row in observations[:start_sequence])
+    ):
+        raise ChainError(
+            "throughput window is not bound to the first clean exact-384 cut"
+        )
+    window = observations[start_sequence : end_sequence + 1]
+    for prior, current in zip(window, window[1:]):
+        gap = (
+            float(current["receipt"]["captured_timestamp"])
+            - float(prior["receipt"]["captured_timestamp"])
+        )
+        if (
+            gap > THROUGHPUT_QUALIFICATION_MAX_OBSERVATION_GAP_SECONDS
+            or not clean_loaded_cut(current)
+        ):
+            raise ChainError(
+                "throughput load window lost cadence or exact saturation"
+            )
+    start_time = float(start["receipt"]["captured_timestamp"])
+    end_time = float(end["receipt"]["captured_timestamp"])
+    duration = end_time - start_time
+    events = (
+        int(end["semantic"]["trusted_qid_execution_events"])
+        - int(start["semantic"]["trusted_qid_execution_events"])
+    )
+    start_progress = start["semantic"]["load_strata_progress"]
+    end_progress = end["semantic"]["load_strata_progress"]
+    deltas = {
+        label: int(end_progress[label]) - int(start_progress[label])
+        for label in start_progress
+    }
+    throughput = math.floor(events * 86_400.0 / duration)
+    final = observations[-1]
+    final_semantic = final["semantic"]
+    final_cycles = final_semantic.get("load_cycle_inventory")
+    if (
+        duration < THROUGHPUT_QUALIFICATION_HEALTH_SOAK_SECONDS
+        or events < THROUGHPUT_QUALIFICATION_MIN_EXECUTION_EVENTS
+        or throughput < THROUGHPUT_QUALIFICATION_MIN_QIDS_PER_DAY
+        or any(delta <= 0 for delta in deltas.values())
+        or load.get("window_intent_id") is None
+        or load.get("window_start_timestamp") != start_time
+        or load.get("window_end_timestamp") != end_time
+        or load.get("window_duration_seconds") != math.floor(duration)
+        or load.get("trusted_execution_events") != events
+        or load.get("capacity_target")
+        != THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+        or load.get("certified_exact_384_cuts") is not True
+        or load.get("work_conserving_refill") is not True
+        or load.get("sealed_refill_deficit_journal") is not True
+        or not isinstance(load.get("refill_deficit_scan_count"), int)
+        or isinstance(load.get("refill_deficit_scan_count"), bool)
+        or load["refill_deficit_scan_count"] < 0
+        or not isinstance(load.get("refill_wall_seconds"), (int, float))
+        or isinstance(load.get("refill_wall_seconds"), bool)
+        or not math.isfinite(float(load["refill_wall_seconds"]))
+        or float(load["refill_wall_seconds"]) < 0
+        or load.get("rate_denominator_includes_refill_wall_time")
+        is not True
+        or load.get("minimum_unfinished_assignments")
+        != THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+        or load.get("all_strata_progress") is not True
+        or load.get("stratum_execution_event_deltas") != deltas
+        or load.get("throughput_events_per_day") != throughput
+        or final["scheduler"].get("active_qualification_cells") != 0
+        or final_semantic.get("states")
+        != {"complete": THROUGHPUT_QUALIFICATION_CELLS}
+        or final_semantic.get("validated_qids")
+        != THROUGHPUT_QUALIFICATION_QIDS
+        or final_semantic.get("useful_qids")
+        != THROUGHPUT_QUALIFICATION_QIDS
+        or final_semantic.get("artifact_schema_counts")
+        != {"5": THROUGHPUT_QUALIFICATION_QIDS}
+        or final_semantic.get("semantic_reference_cycle")
+        != unique["semantic_reference_cycle"]
+        or not isinstance(final_cycles, list)
+        or not final_cycles
+        or load.get("cycle_inventory") != final_cycles
+        or load.get("cycle_count") != len(final_cycles)
+        or load.get("replay_execution_events_total")
+        != final_semantic.get("replay_qid_execution_events")
+        or any(
+            not isinstance(record, Mapping)
+            or set(record) != _THROUGHPUT_CYCLE_FIELDS
+            or record.get("cycle_index") != index
+            or _SHA256.fullmatch(str(record.get("cycle_id", ""))) is None
+            or record.get("status")
+            not in {"complete", "load_window_drained"}
+            or record.get("estimand_excluded") is not True
+            or record.get("primary_analysis_eligible") is not False
+            for index, record in enumerate(final_cycles)
+        )
+        or len(
+            [
+                record
+                for record in final_cycles
+                if record["semantic_reference"] is True
+            ]
+        )
+        != 1
+        or final_cycles[0]["semantic_reference"] is not True
+        or final_cycles[0]["cycle_id"]
+        != unique["semantic_reference_cycle"]
+    ):
+        raise ChainError(
+            "throughput qualification does not prove its repeated exact-384 "
+            "execution contract"
+        )
+    cycle_roots = evidence.get("cycle_run_roots")
+    if (
+        not isinstance(cycle_roots, list)
+        or len(cycle_roots) != len(final_cycles)
+    ):
+        raise ChainError("throughput cycle-root inventory is incomplete")
+    for cycle, root_binding in zip(final_cycles, cycle_roots):
+        if not isinstance(root_binding, Mapping):
+            raise ChainError("throughput cycle-root binding is malformed")
+        root = Path(str(root_binding.get("root", "")))
+        observed_inventory = _qualification_tree_inventory(
+            root,
+            description=(
+                f"throughput load cycle {cycle['cycle_index']} run"
+            ),
+        )
+        if (
+            root_binding.get("cycle_index") != cycle["cycle_index"]
+            or root_binding.get("cycle_id") != cycle["cycle_id"]
+            or root_binding.get("run_id") != cycle["run_id"]
+            or root_binding.get("semantic_reference")
+            is not cycle["semantic_reference"]
+            or root_binding.get("estimand_excluded") is not True
+            or root_binding.get("primary_analysis_eligible") is not False
+            or {
+                field: root_binding.get(field)
+                for field in (
+                    "root",
+                    "files",
+                    "bytes",
+                    "inventory_sha256",
+                )
+            }
+            != observed_inventory
+        ):
+            raise ChainError(
+                "throughput cycle-root inventory drifted"
+            )
+    refill_bindings = evidence.get("refill_reconciliations")
+    if not isinstance(refill_bindings, list):
+        raise ChainError("throughput refill journal inventory is malformed")
+    loaded_refills: list[dict[str, Any]] = []
+    for index, binding in enumerate(refill_bindings):
+        refill, _ = _read_bound_qualification_record(
+            (
+                {
+                    "path": binding.get("path"),
+                    "sha256": binding.get("sha256"),
+                    "refill_id": binding.get("refill_id"),
+                }
+                if isinstance(binding, Mapping)
+                else binding
+            ),
+            identity_field="refill_id",
+            description=f"throughput refill reconciliation {index}",
+        )
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding)
+            != {"refill_index", "path", "sha256", "refill_id"}
+            or binding.get("refill_index") != index
+            or refill.get("refill_index") != index
+            or refill.get("schema_version")
+            != THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+        ):
+            raise ChainError(
+                "throughput refill journal binding drifted"
+            )
+        loaded_refills.append(refill)
+    if loaded_refills:
+        try:
+            from scripts import (
+                run_schema5_throughput_qualification as qualification_runtime,
+            )
+        except (ImportError, OSError) as exc:
+            raise ChainError(
+                "cannot load the frozen throughput runtime needed to reopen "
+                f"refill ledgers: {exc}"
+            ) from exc
+        try:
+            pointer_path = Path(str(marker["attempt"]["path"]))
+            pointer = qualification_runtime._read_json(  # noqa: SLF001
+                pointer_path,
+                description="throughput qualification attempt pointer",
+                sealed=True,
+            )
+            base_context = (
+                qualification_runtime.load_qualification_context(
+                    Path(str(marker["manifest"])),
+                    verify_chain=False,
+                )
+            )
+            attempt_context = (
+                qualification_runtime._attempt_context_from_pointer(  # noqa: SLF001
+                    base_context,
+                    path=pointer_path,
+                    pointer=pointer,
+                )
+            )
+            intent = qualification_runtime._read_json(  # noqa: SLF001
+                attempt_root / qualification_runtime.INTENT_NAME,
+                description="throughput qualification intent",
+                sealed=True,
+            )
+            qualification_runtime._verify_refill_dispatch_ledger_bindings(  # noqa: SLF001
+                attempt_context,
+                intent=intent,
+                require_read_only=True,
+            )
+        except (
+            OSError,
+            ValueError,
+            qualification_runtime.ThroughputQualificationError,
+        ) as exc:
+            raise ChainError(
+                "throughput refill admissions do not match their final "
+                f"accepted ledgers and immutable artifacts: {exc}"
+            ) from exc
+    window_refills = [
+        refill
+        for refill in loaded_refills
+        if start_time
+        <= float(refill.get("captured_timestamp", -1))
+        <= end_time
+    ]
+    deficit_refills = [
+        refill
+        for refill in window_refills
+        if int(refill.get("active_deficit", 0)) > 0
+    ]
+    refill_wall_seconds = 0.0
+    refill_groups: dict[int, list[dict[str, Any]]] = {}
+    for refill in window_refills:
+        sequence = refill.get("measurement_sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool):
+            raise ChainError(
+                "throughput refill measurement sequence is malformed"
+            )
+        refill_groups.setdefault(sequence, []).append(refill)
+    for records in refill_groups.values():
+        deficits = [
+            record
+            for record in records
+            if int(record.get("active_deficit", 0)) > 0
+        ]
+        if not deficits:
+            continue
+        eligible = [
+            record
+            for record in records
+            if record.get("measurement_eligible") is True
+        ]
+        if not eligible:
+            raise ChainError(
+                "throughput refill deficit lacks a certified target cut"
+            )
+        refill_wall_seconds += (
+            float(eligible[-1]["captured_timestamp"])
+            - float(deficits[0]["captured_timestamp"])
+        )
+    if (
+        load.get("refill_deficit_scan_count")
+        != len(deficit_refills)
+        or float(load.get("refill_wall_seconds", -1))
+        != refill_wall_seconds
+    ):
+        raise ChainError(
+            "throughput refill count or wall-time accounting drifted"
+        )
+    return {
+        "evidence_id": evidence["evidence_id"],
+        "unique_design": dict(unique),
+        "load_execution": dict(load),
+        "duration": math.floor(duration),
+        "events": events,
+        "observation_count": len(window),
+        "throughput": throughput,
+    }
 
 
 def verify_throughput_qualification(
@@ -9374,31 +12446,7 @@ def verify_throughput_qualification(
         pointer_path,
         pointer,
     )
-    required = {
-        "schema_version",
-        "protocol",
-        "passed",
-        "release_id",
-        "release_tag",
-        "release_git_commit",
-        "release_tag_object",
-        "chain_namespace",
-        "chain_id",
-        "manifest",
-        "manifest_sha256",
-        "protected_capacity",
-        "attempt",
-        "cells",
-        "qids",
-        "ceilings",
-        "steady_384_seconds",
-        "throughput_qids_per_day",
-        "every_stratum_progress",
-        "integrity_incidents",
-        "transport_censor_incidents",
-        "qualification_id",
-    }
-    if set(marker) != required:
+    if set(marker) != _THROUGHPUT_MARKER_FIELDS:
         raise ChainError("throughput-qualification marker fields drifted")
     _require_release_marker_binding(
         marker,
@@ -9408,6 +12456,7 @@ def verify_throughput_qualification(
         },
         protocol=THROUGHPUT_QUALIFICATION_PROTOCOL,
         description="throughput-qualification marker",
+        schema_version=THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION,
     )
     _require_marker_identity(
         marker,
@@ -9424,8 +12473,12 @@ def verify_throughput_qualification(
             "throughput-qualification marker does not bind the exact "
             "current attempt"
         )
-    steady_seconds = marker.get("steady_384_seconds")
-    throughput = marker.get("throughput_qids_per_day")
+    evidence_report = _verify_r3_throughput_evidence(
+        attempt_root=attempt_root,
+        marker=marker,
+    )
+    unique = evidence_report["unique_design"]
+    load = evidence_report["load_execution"]
     if (
         recovery_root
         != _manifest_path(
@@ -9440,23 +12493,28 @@ def verify_throughput_qualification(
         or marker.get("qids") != THROUGHPUT_QUALIFICATION_QIDS
         or marker.get("ceilings")
         != list(THROUGHPUT_QUALIFICATION_CEILINGS)
-        or not isinstance(steady_seconds, (int, float))
-        or isinstance(steady_seconds, bool)
-        or not math.isfinite(float(steady_seconds))
-        or float(steady_seconds)
-        < THROUGHPUT_QUALIFICATION_STEADY_SECONDS
-        or not isinstance(throughput, (int, float))
-        or isinstance(throughput, bool)
-        or not math.isfinite(float(throughput))
-        or float(throughput)
-        < THROUGHPUT_QUALIFICATION_MIN_QIDS_PER_DAY
+        or marker.get("unique_design") != unique
+        or marker.get("load_execution") != load
+        or marker.get("health_soak_384_seconds")
+        != evidence_report["duration"]
+        or marker.get("loaded_384_seconds")
+        != evidence_report["duration"]
+        or marker.get("loaded_384_useful_qids")
+        != evidence_report["events"]
+        or marker.get("loaded_384_observation_count")
+        != evidence_report["observation_count"]
+        or marker.get("certified_exact_384_cuts") is not True
+        or marker.get("throughput_qids_per_day")
+        != evidence_report["throughput"]
+        or marker.get("throughput_unit")
+        != "trusted_qid_execution_events"
         or marker.get("every_stratum_progress") is not True
         or marker.get("integrity_incidents") != 0
         or marker.get("transport_censor_incidents") != 0
     ):
         raise ChainError(
             "throughput qualification does not prove the exact 768-cell, "
-            "15,360-QID, full-384 protected-capacity contract"
+            "15,360-QID unique design and repeated full-384 execution contract"
         )
     return {
         "passed": True,
@@ -9469,8 +12527,24 @@ def verify_throughput_qualification(
         "qualification_id": marker["qualification_id"],
         "cells": marker["cells"],
         "qids": marker["qids"],
-        "steady_384_seconds": marker["steady_384_seconds"],
+        "health_soak_384_seconds": marker[
+            "health_soak_384_seconds"
+        ],
+        "loaded_384_seconds": marker["loaded_384_seconds"],
+        "loaded_384_useful_qids": marker[
+            "loaded_384_useful_qids"
+        ],
+        "loaded_384_observation_count": marker[
+            "loaded_384_observation_count"
+        ],
+        "certified_exact_384_cuts": marker[
+            "certified_exact_384_cuts"
+        ],
+        "unique_design": marker["unique_design"],
+        "load_execution": marker["load_execution"],
+        "throughput_unit": marker["throughput_unit"],
         "throughput_qids_per_day": marker["throughput_qids_per_day"],
+        "evidence_id": evidence_report["evidence_id"],
         "chain_verification": chain_report,
     }
 
@@ -9662,8 +12736,30 @@ def _query_receipt_job_states(
 ) -> dict[str, dict[str, Any]]:
     """Join squeue and sacct for every exact receipt job, rejecting ambiguity."""
 
-    receipt_by_id = {str(row["job_id"]): row for row in receipt["jobs"]}
-    manifest_by_name = {str(row["name"]): row for row in manifest["jobs"]}
+    receipt_jobs = receipt.get("jobs")
+    manifest_jobs = manifest.get("jobs")
+    if (
+        not isinstance(receipt_jobs, list)
+        or not isinstance(manifest_jobs, list)
+        or len(receipt_jobs) != len(manifest_jobs)
+        or any(not isinstance(row, Mapping) for row in receipt_jobs)
+        or [str(row.get("name", "")) for row in receipt_jobs]
+        != [str(row.get("name", "")) for row in manifest_jobs]
+    ):
+        raise ChainError(
+            "receipt job topology differs from the immutable recovery DAG"
+        )
+    receipt_by_id = {
+        str(row["job_id"]): row for row in receipt_jobs
+    }
+    manifest_by_name = {
+        str(row["name"]): row for row in manifest_jobs
+    }
+    if (
+        len(receipt_by_id) != len(receipt_jobs)
+        or any(not job_id.isdigit() for job_id in receipt_by_id)
+    ):
+        raise ChainError("receipt scheduler job IDs are not unique numeric IDs")
     requested_ids = set(receipt_by_id)
     squeue = runner(
         [
@@ -9719,6 +12815,7 @@ def _query_receipt_job_states(
             "exit_code": exit_code,
             "comment": comment,
             "job_name": job_name,
+            "submit_line": fields[5].strip(),
         }
         previous = historical.get(job_id)
         if previous is not None and previous != candidate:
@@ -9757,8 +12854,290 @@ def _query_receipt_job_states(
             "exit_code": None if history is None else history.get("exit_code"),
             "comment": expected_comment,
             "job_name": expected_name,
+            "submit_line": (
+                None if history is None else history.get("submit_line")
+            ),
         }
     return result
+
+
+def _bootstrap_receipt_lineage(
+    *,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> list[tuple[Path, Mapping[str, Any]]]:
+    """Return the exact root-to-leaf receipt lineage for one bootstrap cut."""
+
+    reversed_lineage: list[tuple[Path, Mapping[str, Any]]] = []
+    current = receipt
+    current_path = receipt_path
+    seen: set[Path] = set()
+    protocol = current.get("protocol")
+    if protocol == "schema5-v1.2-r3-recovery-chain-submission":
+        current_generation = 0
+    elif protocol == "schema5-v1.2-r3-recovery-chain-repair":
+        current_generation = current.get("repair_generation")
+        if (
+            not isinstance(current_generation, int)
+            or isinstance(current_generation, bool)
+            or current_generation <= 0
+        ):
+            raise ChainError(
+                "bootstrap repair receipt lineage is malformed"
+            )
+    else:
+        raise ChainError("bootstrap receipt lineage protocol is unknown")
+    recovery_root = manifest_path.parent
+    while True:
+        current_path = _require_canonical_path(
+            current_path,
+            description="bootstrap receipt lineage member",
+            kind="file",
+        )
+        expected_path = (
+            recovery_root / SUBMISSION_RECEIPT_NAME
+            if current_generation == 0
+            else (
+                recovery_root
+                / REPAIR_ROOT_NAME
+                / f"g{current_generation:04d}"
+                / SUBMISSION_RECEIPT_NAME
+            )
+        )
+        if current_path != expected_path:
+            raise ChainError(
+                "bootstrap receipt lineage member is outside its exact "
+                f"generation path: g{current_generation:04d}"
+            )
+        if current_path in seen:
+            raise ChainError("bootstrap receipt lineage contains a cycle")
+        seen.add(current_path)
+        if current_generation == 0:
+            validated = _validate_submission_receipt(
+                current_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                comments=_submission_comments(manifest),
+            )
+            if current != validated:
+                raise ChainError(
+                    "bootstrap anchor receipt differs from its sealed bytes"
+                )
+            reversed_lineage.append((current_path, validated))
+            break
+
+        expected_parent_path = (
+            recovery_root / SUBMISSION_RECEIPT_NAME
+            if current_generation == 1
+            else (
+                recovery_root
+                / REPAIR_ROOT_NAME
+                / f"g{current_generation - 1:04d}"
+                / SUBMISSION_RECEIPT_NAME
+            )
+        )
+        parent_value = current.get("parent_receipt")
+        if parent_value != str(expected_parent_path):
+            raise ChainError(
+                "bootstrap repair receipt skips or reorders its exact "
+                "generation ancestry"
+            )
+        parent_path = _require_canonical_path(
+            expected_parent_path,
+            description="bootstrap parent receipt",
+            kind="file",
+        )
+        validated = _validate_repair_receipt(
+            current_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            generation=current_generation,
+            parent_path=parent_path,
+        )
+        if current != validated:
+            raise ChainError(
+                "bootstrap repair receipt differs from its sealed bytes"
+            )
+        reversed_lineage.append((current_path, validated))
+        current = _read_json(
+            parent_path, description="bootstrap parent receipt"
+        )
+        current_path = parent_path
+        current_generation -= 1
+    return list(reversed(reversed_lineage))
+
+
+def _validate_bootstrap_scheduler_namespace(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    runner: Runner,
+) -> dict[str, Any]:
+    """Join complete user-wide scheduler truth and reject unbound chain jobs.
+
+    Exact-ID receipt queries are insufficient here: a duplicate job carrying a
+    valid recovery comment but a foreign job ID would otherwise be invisible.
+    The scan therefore reads the complete user namespace from both ``squeue`` and
+    ``sacct`` and accepts only comment/job-ID pairs present in the sealed receipt
+    ancestry.
+    """
+
+    lineage = _bootstrap_receipt_lineage(
+        receipt=receipt,
+        receipt_path=receipt_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+    expected_by_comment: dict[str, str] = {}
+    expected_by_id: dict[str, str] = {}
+    expected_name_by_id: dict[str, str] = {}
+    manifest_by_name = {
+        str(row["name"]): row
+        for row in manifest.get("jobs", [])
+        if isinstance(row, Mapping)
+    }
+    for _path, lineage_receipt in lineage:
+        for row in lineage_receipt.get("jobs", []):
+            if not isinstance(row, Mapping):
+                raise ChainError("bootstrap receipt lineage job is malformed")
+            comment = str(row.get("comment", ""))
+            job_id = str(row.get("job_id", ""))
+            name = str(row.get("name", ""))
+            manifest_row = manifest_by_name.get(name)
+            if (
+                not job_id.isdigit()
+                or not comment
+                or not isinstance(manifest_row, Mapping)
+                or not isinstance(manifest_row.get("job_name"), str)
+            ):
+                raise ChainError("bootstrap receipt lineage identity is invalid")
+            previous_id = expected_by_comment.get(comment)
+            previous_comment = expected_by_id.get(job_id)
+            previous_name = expected_name_by_id.get(job_id)
+            if (
+                previous_id not in {None, job_id}
+                or previous_comment not in {None, comment}
+                or previous_name
+                not in {None, str(manifest_row["job_name"])}
+            ):
+                raise ChainError(
+                    "bootstrap receipt lineage scheduler identity is ambiguous"
+                )
+            expected_by_comment[comment] = job_id
+            expected_by_id[job_id] = comment
+            expected_name_by_id[job_id] = str(
+                manifest_row["job_name"]
+            )
+
+    anchor_journal = _read_json(
+        manifest_path.parent / SUBMISSION_JOURNAL_NAME,
+        description="bootstrap anchor submission journal",
+    )
+    scheduler_since = anchor_journal.get("scheduler_since")
+    if not isinstance(scheduler_since, str) or not scheduler_since:
+        raise ChainError("bootstrap anchor scheduler window is unavailable")
+    user = str(manifest["slurm_user"])
+    commands = (
+        [
+            "squeue",
+            "-u",
+            user,
+            "-h",
+            "-o",
+            "%i|%T|%k|%j",
+        ],
+        [
+            "sacct",
+            "-u",
+            user,
+            "-X",
+            "-n",
+            "-P",
+            "-S",
+            scheduler_since,
+            "--format=JobIDRaw,State,ExitCode,Comment%256,JobName%64,SubmitLine",
+        ],
+    )
+    observed: dict[str, dict[str, str]] = {}
+    prefix = (
+        f"asys:s5-recovery-v1.2-r3:{manifest['chain_id']}:g"
+    )
+    for argv in commands:
+        process = runner(argv)
+        if process.returncode != 0:
+            raise ChainError(
+                "bootstrap namespace scan requires complete "
+                f"{argv[0]} truth: {process.stderr.strip()[:500]}"
+            )
+        source = argv[0]
+        for raw in process.stdout.splitlines():
+            fields = raw.rstrip("\n").split("|")
+            minimum = 6 if source == "sacct" else 4
+            if len(fields) < minimum:
+                if raw.strip():
+                    raise ChainError(
+                        "bootstrap namespace scan received malformed "
+                        f"{source} row: {raw[:300]!r}"
+                    )
+                continue
+            if source == "squeue":
+                job_id, state, comment, job_name = (
+                    field.strip() for field in fields[:4]
+                )
+            else:
+                job_id, state, _exit_code, stored, job_name = (
+                    field.strip() for field in fields[:5]
+                )
+                if "." in job_id:
+                    continue
+                comment = _accounting_comment(
+                    stored, fields[5], job_id=job_id
+                )
+            if not comment.startswith(prefix):
+                continue
+            if (
+                not job_id.isdigit()
+                or expected_by_comment.get(comment) != job_id
+                or expected_by_id.get(job_id) != comment
+                or expected_name_by_id.get(job_id) != job_name
+            ):
+                raise ChainError(
+                    f"foreign {source} job collides with the bootstrap "
+                    f"recovery namespace: {job_id}|{comment}|{job_name}"
+                )
+            key = f"{source}:{job_id}"
+            if key in observed:
+                raise ChainError(
+                    "bootstrap namespace scan found a duplicate "
+                    f"{source} row for {job_id}"
+                )
+            observed[key] = {
+                "source": source,
+                "job_id": job_id,
+                "comment": comment,
+                "job_name": job_name,
+                "state": _normalize_slurm_state(state),
+            }
+    return {
+        "complete": True,
+        "lineage_receipt_ids": [
+            str(lineage_receipt["receipt_id"])
+            for _path, lineage_receipt in lineage
+        ],
+        "lineage_job_ids": [
+            [str(row["job_id"]) for row in lineage_receipt["jobs"]]
+            for _path, lineage_receipt in lineage
+        ],
+        "bound_job_ids": sorted(expected_by_id, key=int),
+        "observed_namespace_rows": sorted(
+            observed.values(),
+            key=lambda row: (int(row["job_id"]), row["source"]),
+        ),
+    }
 
 
 def _dependency_config_allows_fail_closed(
@@ -9785,7 +13164,7 @@ def _dependency_config_allows_fail_closed(
         raise ChainError("dependency-policy check timestamp must be finite")
     return {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r2-live-dependency-policy-v1",
+        "protocol": "schema5-v1.2-r3-live-dependency-policy-v1",
         "checked_at": timestamp,
         "argv": ["scontrol", "show", "config"],
         "returncode": int(proc.returncode),
@@ -9829,7 +13208,7 @@ def _validate_dependency_policy_check(
         set(payload) != expected
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r2-live-dependency-policy-v1"
+        != "schema5-v1.2-r3-live-dependency-policy-v1"
         or not isinstance(payload.get("phase"), str)
         or not payload["phase"]
         or (
@@ -9974,7 +13353,7 @@ def _validate_submission_journal(
     started_timestamp = journal["started_timestamp"]
     if (
         journal["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or journal["protocol"] != "schema5-v1.2-r2-recovery-chain-submission"
+        or journal["protocol"] != "schema5-v1.2-r3-recovery-chain-submission"
         or journal["chain_id"] != manifest["chain_id"]
         or journal["manifest"] != str(manifest_path)
         or journal["slurm_user"] != manifest["slurm_user"]
@@ -10156,7 +13535,7 @@ def _validate_submission_receipt(
     receipt_id = identity.pop("receipt_id")
     if (
         receipt["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or receipt["protocol"] != "schema5-v1.2-r2-recovery-chain-submission"
+        or receipt["protocol"] != "schema5-v1.2-r3-recovery-chain-submission"
         or receipt["passed"] is not True
         or receipt["chain_id"] != manifest["chain_id"]
         or receipt["manifest"] != str(manifest_path)
@@ -10429,9 +13808,10 @@ def _capture_scheduler_acceptance(
     expected_comments = {
         str(row["comment"]) for row in receipt_jobs if isinstance(row, Mapping)
     }
-    expected_names = {
-        str(row["job_name"]) for row in manifest_jobs if isinstance(row, Mapping)
-    }
+    expected_comment_prefix = (
+        "asys:s5-recovery-v1.2-r3:"
+        f"{manifest['chain_id']}:g0000:"
+    )
 
     squeue_argv = [
         "squeue",
@@ -10458,7 +13838,10 @@ def _capture_scheduler_acceptance(
             continue
         job_id, state, comment, job_name = fields[:4]
         if job_id not in requested:
-            if comment in expected_comments or job_name in expected_names:
+            if (
+                comment in expected_comments
+                or comment.startswith(expected_comment_prefix)
+            ):
                 raise ChainError(
                     "foreign squeue job collides with the recovery namespace: "
                     f"{job_id}|{comment}|{job_name}"
@@ -10514,7 +13897,10 @@ def _capture_scheduler_acceptance(
             stored_comment, fields[5], job_id=job_id
         )
         if job_id not in requested:
-            if comment in expected_comments or job_name in expected_names:
+            if (
+                comment in expected_comments
+                or comment.startswith(expected_comment_prefix)
+            ):
                 raise ChainError(
                     "foreign sacct job collides with the recovery namespace: "
                     f"{job_id}|{comment}|{job_name}"
@@ -10956,7 +14342,7 @@ def _validate_scheduler_acceptance(
         }
         or intent.get("schema_version") != 1
         or intent.get("protocol")
-        != "schema5-v1.2-r2-recovery-scheduler-acceptance-intent-v1"
+        != "schema5-v1.2-r3-recovery-scheduler-acceptance-intent-v1"
         or intent.get("chain_id") != manifest.get("chain_id")
         or intent.get("submission_receipt") != str(receipt_path)
         or intent.get("submission_receipt_sha256") != _sha256(receipt_path)
@@ -11356,7 +14742,7 @@ def _ensure_scheduler_acceptance(
     intent = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r2-recovery-scheduler-acceptance-intent-v1"
+            "schema5-v1.2-r3-recovery-scheduler-acceptance-intent-v1"
         ),
         "chain_id": manifest["chain_id"],
         "submission_receipt": str(receipt_path),
@@ -11437,6 +14823,1419 @@ def _ensure_scheduler_acceptance(
     )
 
 
+def _validate_bootstrap_watchdog_deployment_ready(
+    path: Path,
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> dict[str, Any]:
+    path = _require_canonical_path(
+        path,
+        description="bootstrap watchdog deployment readiness",
+        kind="file",
+    )
+    if path.stat().st_nlink != 1 or stat.S_IMODE(path.stat().st_mode) & 0o222:
+        raise ChainError(
+            "bootstrap watchdog deployment readiness must be sealed"
+        )
+    payload = _read_json(
+        path, description="bootstrap watchdog deployment readiness"
+    )
+    identity = dict(payload)
+    ready_id = identity.pop("ready_id", None)
+    if (
+        set(payload)
+        != {
+            "schema_version",
+            "protocol",
+            "passed",
+            "release_id",
+            "release_tag",
+            "release_git_commit",
+            "release_tag_object",
+            "chain_namespace",
+            "chain_manifest",
+            "chain_manifest_sha256",
+            "chain_id",
+            "deployment_id",
+            "watchdog_code_sha256",
+            "bootstrap_attestation",
+            "bootstrap_attestation_sha256",
+            "bootstrap_attestation_id",
+            "bundle_manifest",
+            "bundle_manifest_sha256",
+            "bundle_id",
+            "ssh_public_key_sha256",
+            "separate_bootstrap_key",
+            "forced_command_only",
+            "allowed_operations",
+            "timer_seconds",
+            "root_release_authority",
+            "prelaunch_root_release",
+            "descendant_rearm_authority",
+            "release_intent_continuation_authority",
+            "scientific_admission_direct",
+            "production_control_mutation",
+            "safety_hold_clear_authority",
+            "ready_id",
+        }
+        or payload.get("schema_version") != 1
+        or payload.get("protocol") != BOOTSTRAP_WATCHDOG_READY_PROTOCOL
+        or payload.get("passed") is not True
+        or payload.get("release_id") != RELEASE_ID
+        or payload.get("release_tag") != RELEASE_TAG
+        or payload.get("release_git_commit")
+        != manifest.get("release_git_commit")
+        or payload.get("release_tag_object")
+        != manifest.get("release_tag_object")
+        or payload.get("chain_namespace") != CHAIN_NAMESPACE
+        or payload.get("chain_manifest") != str(manifest_path)
+        or payload.get("chain_manifest_sha256") != _sha256(manifest_path)
+        or payload.get("chain_id") != manifest.get("chain_id")
+        or _SHA256.fullmatch(str(payload.get("deployment_id", ""))) is None
+        or _SHA256.fullmatch(
+            str(payload.get("watchdog_code_sha256", ""))
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(payload.get("bootstrap_attestation_sha256", ""))
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(payload.get("bootstrap_attestation_id", ""))
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(payload.get("bundle_manifest_sha256", ""))
+        )
+        is None
+        or _SHA256.fullmatch(str(payload.get("bundle_id", ""))) is None
+        or _SHA256.fullmatch(
+            str(payload.get("ssh_public_key_sha256", ""))
+        )
+        is None
+        or payload.get("separate_bootstrap_key") is not True
+        or payload.get("forced_command_only") is not True
+        or payload.get("allowed_operations")
+        != ["bootstrap-status", "bootstrap-repair"]
+        or payload.get("timer_seconds") != 300
+        or payload.get("root_release_authority")
+        != (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        )
+        or payload.get("prelaunch_root_release") is not False
+        or payload.get("descendant_rearm_authority") is not True
+        or payload.get("release_intent_continuation_authority")
+        is not True
+        or payload.get("scientific_admission_direct") is not False
+        or payload.get("production_control_mutation") is not False
+        or payload.get("safety_hold_clear_authority") is not False
+        or not isinstance(ready_id, str)
+        or _SHA256.fullmatch(ready_id) is None
+        or ready_id != _sha256_bytes(_canonical_json(identity))
+    ):
+        raise ChainError(
+            "bootstrap watchdog deployment readiness contract is invalid"
+        )
+    attestation_path = _require_canonical_path(
+        Path(str(payload["bootstrap_attestation"])),
+        description="bootstrap watchdog external attestation",
+        kind="file",
+    )
+    bundle_path = _require_canonical_path(
+        Path(str(payload["bundle_manifest"])),
+        description="bootstrap watchdog bundle manifest",
+        kind="file",
+    )
+    attestation = _read_json(
+        attestation_path,
+        description="bootstrap watchdog external attestation",
+    )
+    bundle = _read_json(
+        bundle_path, description="bootstrap watchdog bundle manifest"
+    )
+    attestation_identity = dict(attestation)
+    attestation_id = attestation_identity.pop("evidence_id", None)
+    bundle_identity = dict(bundle)
+    bundle_id = bundle_identity.pop("bundle_id", None)
+    try:
+        deployment_path = _require_canonical_path(
+            Path(str(attestation["deployment_evidence"])),
+            description="bootstrap watchdog deployment evidence",
+            kind="file",
+        )
+        drill_path = _require_canonical_path(
+            Path(str(attestation["cancellation_drill_evidence"])),
+            description="bootstrap watchdog cancellation drill evidence",
+            kind="file",
+        )
+        deployment = _read_json(
+            deployment_path,
+            description="bootstrap watchdog deployment evidence",
+        )
+        drill = _read_json(
+            drill_path,
+            description="bootstrap watchdog cancellation drill evidence",
+        )
+    except KeyError as exc:
+        raise ChainError(
+            "bootstrap watchdog attestation lacks backing evidence"
+        ) from exc
+    deployment_identity = dict(deployment)
+    deployment_id = deployment_identity.pop("evidence_id", None)
+    drill_identity = dict(drill)
+    drill_id = drill_identity.pop("evidence_id", None)
+    bundle_harness = bundle.get("harness_environment_binding")
+    bundle_pilot = bundle.get("materialization_pilot")
+    bundle_forced = bundle.get("forced_command_argv")
+
+    def bundle_forced_value(flag: str) -> str | None:
+        if not isinstance(bundle_forced, list):
+            return None
+        try:
+            index = bundle_forced.index(flag)
+        except ValueError:
+            return None
+        if index + 1 >= len(bundle_forced):
+            return None
+        value = bundle_forced[index + 1]
+        return value if isinstance(value, str) else None
+
+    if (
+        attestation_path.stat().st_nlink != 1
+        or stat.S_IMODE(attestation_path.stat().st_mode) & 0o222
+        or bundle_path.stat().st_nlink != 1
+        or stat.S_IMODE(bundle_path.stat().st_mode) & 0o222
+        or _sha256(attestation_path)
+        != payload["bootstrap_attestation_sha256"]
+        or attestation_id != payload["bootstrap_attestation_id"]
+        or attestation_id
+        != _sha256_bytes(_canonical_json(attestation_identity))
+        or _sha256(bundle_path) != payload["bundle_manifest_sha256"]
+        or bundle_id != payload["bundle_id"]
+        or bundle_id != _sha256_bytes(_canonical_json(bundle_identity))
+        or bundle.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-watchdog-bundle-v1"
+        or bundle.get("release_git_commit")
+        != manifest.get("release_git_commit")
+        or bundle.get("release_tag_object")
+        != manifest.get("release_tag_object")
+        or bundle.get("chain_manifest_sha256") != _sha256(manifest_path)
+        or bundle.get("watchdog_code_sha256")
+        != payload["watchdog_code_sha256"]
+        or bundle.get("ssh_public_key_sha256")
+        != payload["ssh_public_key_sha256"]
+        or bundle.get("separate_bootstrap_key") is not True
+        or bundle.get("allowed_operations")
+        != ["bootstrap-status", "bootstrap-repair"]
+        or bundle.get("root_release_authority")
+        != (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        )
+        or bundle.get("prelaunch_root_release") is not False
+        or bundle.get("descendant_rearm_authority") is not True
+        or bundle.get("release_intent_continuation_authority")
+        is not True
+        or bundle.get("scientific_admission_direct") is not False
+        or bundle.get("production_control_mutation") is not False
+        or bundle.get("safety_hold_clear_authority") is not False
+        or not isinstance(bundle_harness, dict)
+        or _SHA256.fullmatch(
+            str(bundle_harness.get("manifest_sha256", ""))
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(bundle_harness.get("inventory_sha256", ""))
+        )
+        is None
+        or not isinstance(bundle_pilot, dict)
+        or set(bundle_pilot)
+        != {
+            "marker",
+            "marker_sha256",
+            "pilot_id",
+            "pilot_root",
+            "release_worktree",
+            "release_bundle",
+            "source_tree_sha256",
+            "release_bundle_id",
+            "release_identity_sha256",
+            "release_completion_sha256",
+        }
+        or _SHA256.fullmatch(
+            str(bundle_pilot.get("marker_sha256", ""))
+        )
+        is None
+        or _SHA256.fullmatch(
+            str(bundle_pilot.get("pilot_id", ""))
+        )
+        is None
+        or any(
+            _SHA256.fullmatch(str(bundle_pilot.get(field, ""))) is None
+            for field in (
+                "source_tree_sha256",
+                "release_bundle_id",
+                "release_identity_sha256",
+                "release_completion_sha256",
+            )
+        )
+        or bundle_forced_value("--harness-python")
+        != bundle_harness.get("lexical_path")
+        or bundle_forced_value("--resolved-harness-python")
+        != bundle_harness.get("resolved_path")
+        or bundle_forced_value("--harness-environment-manifest")
+        != bundle_harness.get("manifest_path")
+        or bundle_forced_value("--harness-environment-sha256")
+        != bundle_harness.get("manifest_sha256")
+        or bundle_forced_value("--materialization-pilot-marker")
+        != bundle_pilot.get("marker")
+        or bundle_forced_value("--materialization-pilot-sha256")
+        != bundle_pilot.get("marker_sha256")
+        or bundle_forced_value("--materialization-pilot-id")
+        != bundle_pilot.get("pilot_id")
+        or attestation.get("root_release_authority")
+        != (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        )
+        or attestation.get("prelaunch_root_release") is not False
+        or attestation.get("descendant_rearm_authority") is not True
+        or attestation.get("release_intent_continuation_authority")
+        is not True
+        or attestation.get("scientific_admission_direct") is not False
+        or attestation.get("production_control_mutation") is not False
+        or attestation.get("safety_hold_clear_authority") is not False
+        or deployment_path.stat().st_nlink != 1
+        or stat.S_IMODE(deployment_path.stat().st_mode) & 0o222
+        or _sha256(deployment_path)
+        != attestation.get("deployment_evidence_sha256")
+        or deployment_id != attestation.get("deployment_evidence_id")
+        or deployment_id
+        != _sha256_bytes(_canonical_json(deployment_identity))
+        or deployment.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-watchdog-deployment-evidence-v1"
+        or deployment.get("passed") is not True
+        or deployment.get("bundle_id") != bundle_id
+        or deployment.get("deployment_id")
+        != attestation.get("deployment_id")
+        or deployment.get("watchdog_code_sha256")
+        != bundle.get("watchdog_code_sha256")
+        or deployment.get("release_git_commit")
+        != manifest.get("release_git_commit")
+        or deployment.get("release_tag_object")
+        != manifest.get("release_tag_object")
+        or deployment.get("chain_id") != manifest.get("chain_id")
+        or deployment.get("chain_manifest_sha256")
+        != _sha256(manifest_path)
+        or deployment.get("submission_receipt_id")
+        != bundle.get("submission_receipt_id")
+        or deployment.get("submission_receipt_sha256")
+        != bundle.get("submission_receipt_sha256")
+        or deployment.get("runtime_inventory_sha256")
+        != bundle.get("runtime_inventory_sha256")
+        or deployment.get("runtime_file_count")
+        != bundle.get("runtime_file_count")
+        or deployment.get("runtime_total_bytes")
+        != bundle.get("runtime_total_bytes")
+        or deployment.get("vm_python_path") != bundle.get("vm_python")
+        or _SHA256.fullmatch(
+            str(deployment.get("vm_python_sha256", ""))
+        )
+        is None
+        or deployment.get("vm_python_immutable") is not True
+        or not isinstance(
+            deployment.get("heartbeat_freshness_seconds"), (int, float)
+        )
+        or isinstance(
+            deployment.get("heartbeat_freshness_seconds"), bool
+        )
+        or not math.isfinite(
+            float(deployment.get("heartbeat_freshness_seconds", -1))
+        )
+        or not 0
+        <= float(deployment["heartbeat_freshness_seconds"])
+        <= BOOTSTRAP_HEARTBEAT_MAX_AGE_SECONDS
+        or deployment.get("heartbeat_max_age_seconds")
+        != BOOTSTRAP_HEARTBEAT_MAX_AGE_SECONDS
+        or deployment.get("separate_bootstrap_key") is not True
+        or deployment.get("forced_command_only") is not True
+        or deployment.get("systemd_service_loaded") is not True
+        or deployment.get("systemd_timer_active") is not True
+        or drill_path.stat().st_nlink != 1
+        or stat.S_IMODE(drill_path.stat().st_mode) & 0o222
+        or _sha256(drill_path)
+        != attestation.get("cancellation_drill_evidence_sha256")
+        or drill_id != attestation.get("cancellation_drill_evidence_id")
+        or drill_id != _sha256_bytes(_canonical_json(drill_identity))
+        or drill.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-watchdog-drill-evidence-v1"
+        or drill.get("passed") is not True
+        or drill.get("bundle_id") != bundle_id
+        or drill.get("deployment_id")
+        != attestation.get("deployment_id")
+        or drill.get("root_remained_held") is not True
+        or drill.get("scientific_jobs_started") != 0
+        or drill.get("duplicate_jobs") != 0
+        or drill.get("duplicate_submission_intents") != 0
+        or drill.get("isolated_cancellation_drill") is not True
+        or not isinstance(
+            bundle.get("isolated_cancellation_drill"), Mapping
+        )
+        or drill.get("isolation_id")
+        != bundle["isolated_cancellation_drill"].get("isolation_id")
+        or drill.get("canonical_job_id_overlap") != 0
+        or drill.get("canonical_comment_overlap") != 0
+        or drill.get("canonical_control_paths_absent") is not True
+        or drill.get("squeue_complete") is not True
+        or drill.get("sacct_complete") is not True
+    ):
+        raise ChainError(
+            "bootstrap watchdog deployment backing evidence drifted"
+        )
+    return payload
+
+
+def _validate_bootstrap_watchdog_armed(
+    path: Path,
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    root_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the external, pre-control resurrection authority.
+
+    This is deliberately a stronger contract than the production watchdog
+    readiness marker.  It exists before ``schema5_initialize`` and therefore
+    binds the immutable recovery transaction itself: release identity, exact
+    manifest and receipt bytes, every scheduler comment/job ID, and the sole
+    narrowly forced operation that may reconstruct a cancelled *held* DAG.
+    It never authorizes releasing the root or changing scientific control state.
+    """
+
+    path = _require_canonical_path(
+        path,
+        description="bootstrap watchdog armed marker",
+        kind="file",
+    )
+    if path.stat().st_nlink != 1 or stat.S_IMODE(path.stat().st_mode) & 0o222:
+        raise ChainError("bootstrap watchdog armed marker must be sealed")
+    payload = _read_json(path, description="bootstrap watchdog armed marker")
+    identity = dict(payload)
+    marker_id = identity.pop("marker_id", None)
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "release_id",
+        "release_tag",
+        "release_git_commit",
+        "release_tag_object",
+        "chain_namespace",
+        "bootstrap_watchdog_ready",
+        "bootstrap_watchdog_ready_sha256",
+        "bootstrap_watchdog_ready_id",
+        "arm_intent",
+        "arm_intent_sha256",
+        "arm_intent_id",
+        "chain_manifest",
+        "chain_manifest_sha256",
+        "chain_id",
+        "submission_receipt",
+        "submission_receipt_sha256",
+        "submission_receipt_id",
+        "root_name",
+        "root_job_id",
+        "root_comment",
+        "job_namespace",
+        "job_count",
+        "forced_command_only",
+        "forced_operation",
+        "scheduler_observations",
+        "scheduler_observation_artifacts",
+        "cancellation_drill",
+        "root_release_authority",
+        "prelaunch_root_release",
+        "descendant_rearm_authority",
+        "release_intent_continuation_authority",
+        "scientific_admission_direct",
+        "production_control_mutation",
+        "safety_hold_clear_authority",
+        "handoff_stage",
+        "marker_id",
+    }
+    observations = payload.get("scheduler_observations")
+    observation_artifacts = payload.get(
+        "scheduler_observation_artifacts"
+    )
+    namespace = payload.get("job_namespace")
+    drill = payload.get("cancellation_drill")
+    expected_namespace = [
+        {
+            "name": record.get("name"),
+            "job_id": record.get("job_id"),
+            "comment": record.get("comment"),
+        }
+        for record in receipt.get("jobs", [])
+        if isinstance(record, Mapping)
+    ]
+    observation_fields = {
+        "observed_at_timestamp",
+        "squeue_complete",
+        "sacct_complete",
+        "submission_receipt_id",
+        "job_count",
+        "ambiguous_jobs",
+        "root_held",
+    }
+    valid_observations = (
+        isinstance(observations, list)
+        and len(observations) == 2
+        and all(
+            isinstance(item, Mapping)
+            and set(item) == observation_fields
+            and isinstance(item.get("observed_at_timestamp"), (int, float))
+            and not isinstance(item.get("observed_at_timestamp"), bool)
+            and math.isfinite(float(item["observed_at_timestamp"]))
+            and item.get("squeue_complete") is True
+            and item.get("sacct_complete") is True
+            and item.get("submission_receipt_id") == receipt.get("receipt_id")
+            and item.get("job_count") == len(expected_namespace)
+            and item.get("ambiguous_jobs") == 0
+            and item.get("root_held") is True
+            for item in observations
+        )
+        and float(observations[1]["observed_at_timestamp"])
+        - float(observations[0]["observed_at_timestamp"])
+        >= 60.0
+    )
+    valid_observation_artifacts = (
+        isinstance(observation_artifacts, list)
+        and len(observation_artifacts) == 2
+    )
+    if valid_observation_artifacts:
+        for binding, summary in zip(
+            observation_artifacts, observations, strict=True
+        ):
+            if (
+                not isinstance(binding, Mapping)
+                or set(binding)
+                != {"artifact", "artifact_sha256", "observation_id"}
+            ):
+                valid_observation_artifacts = False
+                break
+            try:
+                artifact_path = _require_canonical_path(
+                    Path(str(binding["artifact"])),
+                    description="bootstrap scheduler observation",
+                    kind="file",
+                )
+                artifact = _read_json(
+                    artifact_path,
+                    description="bootstrap scheduler observation",
+                )
+            except (OSError, ChainError):
+                valid_observation_artifacts = False
+                break
+            artifact_identity = dict(artifact)
+            observation_id = artifact_identity.pop(
+                "observation_id", None
+            )
+            artifact_jobs = artifact.get("jobs")
+            if (
+                artifact_path.stat().st_nlink != 1
+                or stat.S_IMODE(artifact_path.stat().st_mode) & 0o222
+                or binding["artifact_sha256"] != _sha256(artifact_path)
+                or binding["observation_id"] != observation_id
+                or observation_id
+                != _sha256_bytes(_canonical_json(artifact_identity))
+                or artifact.get("protocol")
+                != "schema5-v1.2-r3-bootstrap-status-v1"
+                or artifact.get("submission_receipt_id")
+                != receipt.get("receipt_id")
+                or artifact.get("submission_receipt_sha256")
+                != _sha256(receipt_path)
+                or artifact.get("anchor_submission_receipt")
+                != str(receipt_path)
+                or artifact.get("anchor_submission_receipt_sha256")
+                != _sha256(receipt_path)
+                or artifact.get("anchor_submission_receipt_id")
+                != receipt.get("receipt_id")
+                or artifact.get("descendant_chain_validated") is not True
+                or artifact.get("root_job_id")
+                != root_record.get("job_id")
+                or artifact.get("root_held") is not True
+                or artifact.get("squeue_complete") is not True
+                or artifact.get("sacct_complete") is not True
+                or artifact.get("ambiguous_jobs") != 0
+                or artifact.get("handoff_complete") is not False
+                or artifact.get(
+                    "watchdog_scientific_jobs_submitted"
+                )
+                != 0
+                or not isinstance(artifact_jobs, list)
+                or artifact_jobs
+                != [
+                    {
+                        "name": manifest_row["name"],
+                        "job_id": receipt_row["job_id"],
+                        "comment": receipt_row["comment"],
+                        "job_name": manifest_row["job_name"],
+                        "state": "PENDING",
+                        "active": True,
+                        "script_sha256": manifest_row[
+                            "script_sha256"
+                        ],
+                        "submit_line_sha256": job["submit_line_sha256"],
+                        "submit_line_exact": True,
+                        "scontrol_command": receipt_row["script"],
+                        "scontrol_requeue": 0,
+                        "spooled_script_sha256": manifest_row[
+                            "script_sha256"
+                        ],
+                        "spooled_script_exact_match": True,
+                    }
+                    for job, manifest_row, receipt_row in zip(
+                        artifact_jobs,
+                        manifest["jobs"],
+                        receipt["jobs"],
+                        strict=True,
+                    )
+                ]
+                or [
+                    {
+                        "name": item.get("name"),
+                        "job_id": item.get("job_id"),
+                        "comment": item.get("comment"),
+                    }
+                    for item in artifact_jobs
+                    if isinstance(item, Mapping)
+                ]
+                != expected_namespace
+                or any(
+                    _SHA256.fullmatch(
+                        str(item.get("submit_line_sha256", ""))
+                    )
+                    is None
+                    for item in artifact_jobs
+                )
+                or summary.get("observed_at_timestamp")
+                != artifact.get("observed_at_timestamp")
+            ):
+                valid_observation_artifacts = False
+                break
+    valid_drill = (
+        isinstance(drill, Mapping)
+        and set(drill)
+        == {
+            "recovery_namespace_cancellation_recovery_seconds",
+            "isolated_cancellation_drill",
+            "isolation_id",
+            "isolated_drill_root",
+            "isolated_chain_id",
+            "isolated_anchor_submission_receipt_id",
+            "canonical_submission_receipt_id",
+            "canonical_job_id_overlap",
+            "canonical_comment_overlap",
+            "canonical_control_paths_absent",
+            "squeue_complete",
+            "sacct_complete",
+            "duplicate_jobs",
+            "duplicate_submission_intents",
+            "root_remained_held",
+            "scientific_jobs_started",
+        }
+        and isinstance(
+            drill.get("recovery_namespace_cancellation_recovery_seconds"),
+            (int, float),
+        )
+        and not isinstance(
+            drill.get("recovery_namespace_cancellation_recovery_seconds"), bool
+        )
+        and math.isfinite(
+            float(drill["recovery_namespace_cancellation_recovery_seconds"])
+        )
+        and 0.0
+        <= float(drill["recovery_namespace_cancellation_recovery_seconds"])
+        <= 900.0
+        and drill.get("isolated_cancellation_drill") is True
+        and _SHA256.fullmatch(str(drill.get("isolation_id", ""))) is not None
+        and isinstance(drill.get("isolated_drill_root"), str)
+        and bool(drill["isolated_drill_root"])
+        and _SHA256.fullmatch(str(drill.get("isolated_chain_id", "")))
+        is not None
+        and _SHA256.fullmatch(
+            str(drill.get("isolated_anchor_submission_receipt_id", ""))
+        )
+        is not None
+        and _SHA256.fullmatch(
+            str(drill.get("canonical_submission_receipt_id", ""))
+        )
+        is not None
+        and drill.get("isolated_chain_id") != manifest.get("chain_id")
+        and drill.get("isolated_anchor_submission_receipt_id")
+        != receipt.get("receipt_id")
+        and drill.get("canonical_submission_receipt_id")
+        == receipt.get("receipt_id")
+        and drill.get("canonical_job_id_overlap") == 0
+        and drill.get("canonical_comment_overlap") == 0
+        and drill.get("canonical_control_paths_absent") is True
+        and drill.get("squeue_complete") is True
+        and drill.get("sacct_complete") is True
+        and drill.get("duplicate_jobs") == 0
+        and drill.get("duplicate_submission_intents") == 0
+        and drill.get("root_remained_held") is True
+        and drill.get("scientific_jobs_started") == 0
+    )
+    if (
+        set(payload) != required
+        or payload.get("schema_version") != 1
+        or payload.get("protocol") != BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL
+        or payload.get("passed") is not True
+        or payload.get("release_id") != RELEASE_ID
+        or payload.get("release_tag") != RELEASE_TAG
+        or payload.get("release_git_commit")
+        != manifest.get("release_git_commit")
+        or payload.get("release_tag_object")
+        != manifest.get("release_tag_object")
+        or payload.get("chain_namespace") != CHAIN_NAMESPACE
+        or payload.get("chain_manifest") != str(manifest_path)
+        or payload.get("chain_manifest_sha256") != _sha256(manifest_path)
+        or payload.get("chain_id") != manifest.get("chain_id")
+        or payload.get("submission_receipt") != str(receipt_path)
+        or payload.get("submission_receipt_sha256") != _sha256(receipt_path)
+        or payload.get("submission_receipt_id") != receipt.get("receipt_id")
+        or payload.get("root_name") != root_record.get("name")
+        or payload.get("root_job_id") != root_record.get("job_id")
+        or payload.get("root_comment") != root_record.get("comment")
+        or namespace != expected_namespace
+        or payload.get("job_count") != len(expected_namespace)
+        or len(expected_namespace) != len(manifest.get("jobs", []))
+        or payload.get("forced_command_only") is not True
+        or payload.get("forced_operation") != "bootstrap-repair"
+        or payload.get("root_release_authority")
+        != (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        )
+        or payload.get("prelaunch_root_release") is not False
+        or payload.get("descendant_rearm_authority") is not True
+        or payload.get("release_intent_continuation_authority")
+        is not True
+        or payload.get("scientific_admission_direct") is not False
+        or payload.get("production_control_mutation") is not False
+        or payload.get("safety_hold_clear_authority") is not False
+        or payload.get("handoff_stage") != "watchdog_readiness"
+        or not valid_observations
+        or not valid_observation_artifacts
+        or not valid_drill
+        or not isinstance(marker_id, str)
+        or _SHA256.fullmatch(marker_id) is None
+        or marker_id != _sha256_bytes(_canonical_json(identity))
+    ):
+        raise ChainError("bootstrap watchdog armed contract is invalid")
+    ready_path = _require_canonical_path(
+        Path(str(payload["bootstrap_watchdog_ready"])),
+        description="bootstrap watchdog deployment readiness",
+        kind="file",
+    )
+    expected_ready_path = receipt_path.parent / BOOTSTRAP_WATCHDOG_READY_NAME
+    ready = _validate_bootstrap_watchdog_deployment_ready(
+        ready_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+    intent_path = _require_canonical_path(
+        Path(str(payload["arm_intent"])),
+        description="bootstrap watchdog arm intent",
+        kind="file",
+    )
+    intent = _read_json(
+        intent_path, description="bootstrap watchdog arm intent"
+    )
+    intent_identity = dict(intent)
+    arm_intent_id = intent_identity.pop("arm_intent_id", None)
+    if (
+        ready_path != expected_ready_path
+        or payload["bootstrap_watchdog_ready_sha256"]
+        != _sha256(ready_path)
+        or payload["bootstrap_watchdog_ready_id"] != ready["ready_id"]
+        or intent_path
+        != receipt_path.parent / BOOTSTRAP_WATCHDOG_ARM_INTENT_NAME
+        or payload["arm_intent_sha256"] != _sha256(intent_path)
+        or payload["arm_intent_id"] != arm_intent_id
+        or set(intent)
+        != {
+            "schema_version",
+            "protocol",
+            "chain_id",
+            "submission_receipt",
+            "submission_receipt_sha256",
+            "submission_receipt_id",
+            "root_job_id",
+            "bootstrap_watchdog_ready",
+            "bootstrap_watchdog_ready_sha256",
+            "bootstrap_watchdog_ready_id",
+            "arm_intent_id",
+        }
+        or intent.get("schema_version") != 1
+        or intent.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-watchdog-arm-intent-v1"
+        or intent.get("chain_id") != manifest.get("chain_id")
+        or intent.get("submission_receipt") != str(receipt_path)
+        or intent.get("submission_receipt_sha256") != _sha256(receipt_path)
+        or intent.get("submission_receipt_id") != receipt.get("receipt_id")
+        or intent.get("root_job_id") != root_record.get("job_id")
+        or intent.get("bootstrap_watchdog_ready") != str(ready_path)
+        or intent.get("bootstrap_watchdog_ready_sha256")
+        != _sha256(ready_path)
+        or intent.get("bootstrap_watchdog_ready_id") != ready["ready_id"]
+        or not isinstance(arm_intent_id, str)
+        or _SHA256.fullmatch(arm_intent_id) is None
+        or arm_intent_id != _sha256_bytes(_canonical_json(intent_identity))
+    ):
+        raise ChainError("bootstrap watchdog arm transaction drifted")
+    return payload
+
+
+def _bootstrap_anchor_armed_authorization(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> dict[str, Any] | None:
+    """Return the sealed generation-zero ARMED authority, if fully published."""
+
+    receipt_path = manifest_path.parent / SUBMISSION_RECEIPT_NAME
+    armed_path = manifest_path.parent / BOOTSTRAP_WATCHDOG_ARMED_NAME
+    if not (armed_path.exists() or armed_path.is_symlink()):
+        return None
+    receipt = _validate_submission_receipt(
+        receipt_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        comments=_submission_comments(manifest),
+    )
+    root_record = next(
+        row for row in receipt["jobs"] if row["name"] == "source_checkout"
+    )
+    armed = _validate_bootstrap_watchdog_armed(
+        armed_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        root_record=root_record,
+    )
+    return {
+        "receipt": str(receipt_path),
+        "receipt_sha256": _sha256(receipt_path),
+        "receipt_id": receipt["receipt_id"],
+        "armed": str(armed_path),
+        "armed_sha256": _sha256(armed_path),
+        "armed_id": armed["marker_id"],
+        "ready": armed["bootstrap_watchdog_ready"],
+        "ready_sha256": armed["bootstrap_watchdog_ready_sha256"],
+        "ready_id": armed["bootstrap_watchdog_ready_id"],
+    }
+
+
+def _bootstrap_anchor_release_intent_authorization(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> dict[str, Any] | None:
+    """Authenticate a marker-first g0 release decision without inferring it."""
+
+    intent_path = manifest_path.parent / ROOT_RELEASE_INTENT_NAME
+    if not (intent_path.exists() or intent_path.is_symlink()):
+        return None
+    armed = _bootstrap_anchor_armed_authorization(
+        manifest=manifest, manifest_path=manifest_path
+    )
+    if armed is None:
+        raise ChainError(
+            "bootstrap root release intent exists without g0 ARMED authority"
+        )
+    receipt_path = Path(str(armed["receipt"]))
+    receipt = _read_json(
+        receipt_path, description="bootstrap anchor submission receipt"
+    )
+    root = next(
+        row for row in receipt["jobs"] if row["name"] == "source_checkout"
+    )
+    intent_path = _require_canonical_path(
+        intent_path,
+        description="bootstrap anchor root release intent",
+        kind="file",
+    )
+    intent = _read_json(
+        intent_path, description="bootstrap anchor root release intent"
+    )
+    acceptance_path = _require_canonical_path(
+        Path(str(intent.get("scheduler_acceptance", ""))),
+        description="bootstrap anchor scheduler acceptance",
+        kind="file",
+    )
+    acceptance = _validate_scheduler_acceptance(
+        acceptance_path,
+        manifest=manifest,
+        receipt=receipt,
+        receipt_path=receipt_path,
+    )
+    if (
+        intent_path.stat().st_nlink != 1
+        or stat.S_IMODE(intent_path.stat().st_mode) & 0o222
+        or intent.get("receipt") != str(receipt_path)
+        or intent.get("receipt_sha256") != _sha256(receipt_path)
+        or intent.get("receipt_id") != receipt["receipt_id"]
+        or intent.get("root_name") != "source_checkout"
+        or intent.get("root_job_id") != root["job_id"]
+        or intent.get("root_comment") != root["comment"]
+        or intent.get("command")
+        != ["scontrol", "release", str(root["job_id"])]
+        or intent.get("bootstrap_watchdog_armed") != armed["armed"]
+        or intent.get("bootstrap_watchdog_armed_sha256")
+        != armed["armed_sha256"]
+        or intent.get("bootstrap_watchdog_armed_id") != armed["armed_id"]
+        or intent.get("scheduler_acceptance") != str(acceptance_path)
+        or intent.get("scheduler_acceptance_sha256")
+        != _sha256(acceptance_path)
+        or intent.get("scheduler_acceptance_id")
+        != acceptance["acceptance_id"]
+    ):
+        raise ChainError(
+            "bootstrap anchor root release intent is not an exact "
+            "acceptance-bound decision"
+        )
+    return {
+        "intent": str(intent_path),
+        "intent_sha256": _sha256(intent_path),
+        "receipt_id": receipt["receipt_id"],
+        "root_job_id": root["job_id"],
+        "scheduler_acceptance_id": acceptance["acceptance_id"],
+    }
+
+
+def _generation_root_records(
+    receipt: Mapping[str, Any], *, generation: int
+) -> list[Mapping[str, Any]]:
+    """Return the exact minimal held frontier recorded for one generation."""
+
+    names = (
+        ["source_checkout"]
+        if generation == 0
+        else list(receipt.get("held_root_names", []))
+    )
+    if (
+        not names
+        or len(names) != len(set(names))
+        or any(not isinstance(name, str) for name in names)
+    ):
+        raise ChainError("recovery receipt has no exact held frontier")
+    by_name = {
+        str(record.get("name")): record
+        for record in receipt.get("jobs", [])
+        if isinstance(record, Mapping)
+    }
+    records: list[Mapping[str, Any]] = []
+    for name in names:
+        record = by_name.get(name)
+        if (
+            not isinstance(record, Mapping)
+            or not str(record.get("job_id", "")).isdigit()
+            or not isinstance(record.get("comment"), str)
+            or (
+                generation > 0
+                and (
+                    record.get("generation") != generation
+                    or record.get("disposition") != "resubmitted"
+                )
+            )
+        ):
+            raise ChainError(
+                f"recovery receipt held frontier drifted for {name}"
+            )
+        records.append(record)
+    return records
+
+
+def _validate_bootstrap_descendant_armed(
+    path: Path,
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    generation: int,
+    root_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    path = _require_canonical_path(
+        path,
+        description="bootstrap descendant armed marker",
+        kind="file",
+    )
+    payload = _read_json(
+        path, description="bootstrap descendant armed marker"
+    )
+    identity = dict(payload)
+    marker_id = identity.pop("marker_id", None)
+    anchor = _bootstrap_anchor_armed_authorization(
+        manifest=manifest, manifest_path=manifest_path
+    )
+    provenance_path = _bootstrap_generation_provenance_path(
+        manifest_path=manifest_path, generation=generation
+    )
+    provenance = _validate_bootstrap_generation_provenance(
+        provenance_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        generation=generation,
+    )
+    root_records = _generation_root_records(
+        receipt, generation=generation
+    )
+    if (
+        not root_records
+        or root_records[0]["name"] != root_record.get("name")
+        or root_records[0]["job_id"] != root_record.get("job_id")
+    ):
+        raise ChainError(
+            "bootstrap descendant arm was given the wrong frontier root"
+        )
+    root_names = [str(record["name"]) for record in root_records]
+    root_job_ids = [str(record["job_id"]) for record in root_records]
+    root_comments = [str(record["comment"]) for record in root_records]
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "chain_id",
+        "chain_manifest",
+        "chain_manifest_sha256",
+        "repair_generation",
+        "submission_receipt",
+        "submission_receipt_sha256",
+        "submission_receipt_id",
+        "parent_submission_receipt",
+        "parent_submission_receipt_sha256",
+        "root_name",
+        "root_job_id",
+        "root_comment",
+        "root_names",
+        "root_job_ids",
+        "root_comments",
+        "anchor_bootstrap_armed",
+        "anchor_bootstrap_armed_sha256",
+        "anchor_bootstrap_armed_id",
+        "generation_provenance",
+        "generation_provenance_sha256",
+        "generation_provenance_id",
+        "scheduler_observation_artifacts",
+        "arm_intent",
+        "arm_intent_sha256",
+        "arm_intent_id",
+        "release_authority",
+        "marker_id",
+    }
+    parent_path = _require_canonical_path(
+        Path(str(receipt["parent_receipt"])),
+        description="bootstrap descendant parent receipt",
+        kind="file",
+    )
+    observation_paths = payload.get("scheduler_observation_artifacts")
+    if (
+        set(payload) != required
+        or payload.get("schema_version") != 1
+        or payload.get("protocol") != BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL
+        or payload.get("passed") is not True
+        or payload.get("chain_id") != manifest["chain_id"]
+        or payload.get("chain_manifest") != str(manifest_path)
+        or payload.get("chain_manifest_sha256") != _sha256(manifest_path)
+        or payload.get("repair_generation") != generation
+        or payload.get("submission_receipt") != str(receipt_path)
+        or payload.get("submission_receipt_sha256") != _sha256(receipt_path)
+        or payload.get("submission_receipt_id") != receipt["receipt_id"]
+        or payload.get("parent_submission_receipt") != str(parent_path)
+        or payload.get("parent_submission_receipt_sha256")
+        != _sha256(parent_path)
+        or payload.get("root_name") != root_record["name"]
+        or payload.get("root_job_id") != root_record["job_id"]
+        or payload.get("root_comment") != root_record["comment"]
+        or payload.get("root_names") != root_names
+        or payload.get("root_job_ids") != root_job_ids
+        or payload.get("root_comments") != root_comments
+        or anchor is None
+        or payload.get("anchor_bootstrap_armed") != anchor["armed"]
+        or payload.get("anchor_bootstrap_armed_sha256")
+        != anchor["armed_sha256"]
+        or payload.get("anchor_bootstrap_armed_id") != anchor["armed_id"]
+        or payload.get("generation_provenance") != str(provenance_path)
+        or payload.get("generation_provenance_sha256")
+        != _sha256(provenance_path)
+        or payload.get("generation_provenance_id")
+        != provenance["provenance_id"]
+        or not isinstance(observation_paths, list)
+        or len(observation_paths) != 2
+        or payload.get("release_authority")
+        != "rearm-only-without-release-intent"
+        or not isinstance(marker_id, str)
+        or _SHA256.fullmatch(marker_id) is None
+        or marker_id != _sha256_bytes(_canonical_json(identity))
+        or path.stat().st_nlink != 1
+        or stat.S_IMODE(path.stat().st_mode) & 0o222
+    ):
+        raise ChainError("bootstrap descendant armed contract is invalid")
+    intent_path = _require_canonical_path(
+        Path(str(payload["arm_intent"])),
+        description="bootstrap descendant arm intent",
+        kind="file",
+    )
+    intent = _read_json(
+        intent_path, description="bootstrap descendant arm intent"
+    )
+    intent_identity = dict(intent)
+    intent_id = intent_identity.pop("arm_intent_id", None)
+    if (
+        intent_path.parent != receipt_path.parent
+        or intent_path.name != BOOTSTRAP_DESCENDANT_ARM_INTENT_NAME
+        or payload["arm_intent_sha256"] != _sha256(intent_path)
+        or payload["arm_intent_id"] != intent_id
+        or intent.get("submission_receipt_id") != receipt["receipt_id"]
+        or intent.get("generation_provenance_id")
+        != provenance["provenance_id"]
+        or intent.get("anchor_bootstrap_armed_id") != anchor["armed_id"]
+        or intent.get("root_job_id") != root_record["job_id"]
+        or intent.get("root_names") != root_names
+        or intent.get("root_job_ids") != root_job_ids
+        or intent.get("root_comments") != root_comments
+        or intent.get("scheduler_observation_artifacts")
+        != observation_paths
+        or intent_id != _sha256_bytes(_canonical_json(intent_identity))
+        or stat.S_IMODE(intent_path.stat().st_mode) & 0o222
+    ):
+        raise ChainError("bootstrap descendant arm transaction drifted")
+    for artifact in observation_paths:
+        artifact_path = _require_canonical_path(
+            Path(str(artifact)),
+            description="bootstrap descendant arm observation",
+            kind="file",
+        )
+        observation = _read_json(
+            artifact_path,
+            description="bootstrap descendant arm observation",
+        )
+        if (
+            artifact_path.parent
+            != receipt_path.parent / BOOTSTRAP_OBSERVATIONS_ROOT_NAME
+            or observation.get("submission_receipt_id")
+            != receipt["receipt_id"]
+            or observation.get("generation_provenance_id")
+            != provenance["provenance_id"]
+            or observation.get("root_job_id") != root_record["job_id"]
+            or observation.get("root_names") != root_names
+            or observation.get("root_job_ids") != root_job_ids
+            or observation.get("roots_held") is not True
+            or observation.get("root_held") is not True
+            or observation.get("descendant_rearm_required") is not True
+            or observation.get("observation_id")
+            != _sha256_bytes(
+                _canonical_json(
+                    {
+                        key: value
+                        for key, value in observation.items()
+                        if key != "observation_id"
+                    }
+                )
+            )
+            or stat.S_IMODE(artifact_path.stat().st_mode) & 0o222
+        ):
+            raise ChainError(
+                "bootstrap descendant arm observation drifted"
+            )
+    return payload
+
+
+def _ensure_bootstrap_descendant_armed(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    generation: int,
+    root_record: Mapping[str, Any],
+    observations: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], Path]:
+    if generation <= 0:
+        raise ChainError("only a repair generation can be descendant-armed")
+    path = receipt_path.parent / BOOTSTRAP_DESCENDANT_ARMED_NAME
+    if path.exists() or path.is_symlink():
+        return (
+            _validate_bootstrap_descendant_armed(
+                path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                receipt=receipt,
+                receipt_path=receipt_path,
+                generation=generation,
+                root_record=root_record,
+            ),
+            path,
+        )
+    anchor = _bootstrap_anchor_armed_authorization(
+        manifest=manifest, manifest_path=manifest_path
+    )
+    if anchor is None:
+        raise ChainError(
+            "bootstrap descendant re-arm lacks sealed g0 ARMED authority"
+        )
+    provenance_path = _bootstrap_generation_provenance_path(
+        manifest_path=manifest_path, generation=generation
+    )
+    provenance = _validate_bootstrap_generation_provenance(
+        provenance_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        generation=generation,
+    )
+    root_records = _generation_root_records(
+        receipt, generation=generation
+    )
+    if (
+        root_records[0]["name"] != root_record.get("name")
+        or root_records[0]["job_id"] != root_record.get("job_id")
+    ):
+        raise ChainError(
+            "bootstrap descendant arm was given the wrong frontier root"
+        )
+    root_names = [str(record["name"]) for record in root_records]
+    root_job_ids = [str(record["job_id"]) for record in root_records]
+    root_comments = [str(record["comment"]) for record in root_records]
+    artifacts = [str(row["observation_artifact"]) for row in observations]
+    parent_path = _require_canonical_path(
+        Path(str(receipt["parent_receipt"])),
+        description="bootstrap descendant parent receipt",
+        kind="file",
+    )
+    intent: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r3-bootstrap-descendant-arm-intent-v1"
+        ),
+        "chain_id": manifest["chain_id"],
+        "repair_generation": generation,
+        "submission_receipt": str(receipt_path),
+        "submission_receipt_sha256": _sha256(receipt_path),
+        "submission_receipt_id": receipt["receipt_id"],
+        "root_job_id": root_record["job_id"],
+        "root_names": root_names,
+        "root_job_ids": root_job_ids,
+        "root_comments": root_comments,
+        "anchor_bootstrap_armed": anchor["armed"],
+        "anchor_bootstrap_armed_sha256": anchor["armed_sha256"],
+        "anchor_bootstrap_armed_id": anchor["armed_id"],
+        "generation_provenance": str(provenance_path),
+        "generation_provenance_sha256": _sha256(provenance_path),
+        "generation_provenance_id": provenance["provenance_id"],
+        "scheduler_observation_artifacts": artifacts,
+        "release_authority": "rearm-only-without-release-intent",
+    }
+    intent["arm_intent_id"] = _sha256_bytes(_canonical_json(intent))
+    intent_path = receipt_path.parent / BOOTSTRAP_DESCENDANT_ARM_INTENT_NAME
+    _write_immutable_json_once(
+        intent_path,
+        intent,
+        description="marker-first bootstrap descendant arm intent",
+    )
+    armed: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL,
+        "passed": True,
+        "chain_id": manifest["chain_id"],
+        "chain_manifest": str(manifest_path),
+        "chain_manifest_sha256": _sha256(manifest_path),
+        "repair_generation": generation,
+        "submission_receipt": str(receipt_path),
+        "submission_receipt_sha256": _sha256(receipt_path),
+        "submission_receipt_id": receipt["receipt_id"],
+        "parent_submission_receipt": str(parent_path),
+        "parent_submission_receipt_sha256": _sha256(parent_path),
+        "root_name": root_record["name"],
+        "root_job_id": root_record["job_id"],
+        "root_comment": root_record["comment"],
+        "root_names": root_names,
+        "root_job_ids": root_job_ids,
+        "root_comments": root_comments,
+        "anchor_bootstrap_armed": anchor["armed"],
+        "anchor_bootstrap_armed_sha256": anchor["armed_sha256"],
+        "anchor_bootstrap_armed_id": anchor["armed_id"],
+        "generation_provenance": str(provenance_path),
+        "generation_provenance_sha256": _sha256(provenance_path),
+        "generation_provenance_id": provenance["provenance_id"],
+        "scheduler_observation_artifacts": artifacts,
+        "arm_intent": str(intent_path),
+        "arm_intent_sha256": _sha256(intent_path),
+        "arm_intent_id": intent["arm_intent_id"],
+        "release_authority": "rearm-only-without-release-intent",
+    }
+    armed["marker_id"] = _sha256_bytes(_canonical_json(armed))
+    _write_immutable_json_once(
+        path,
+        armed,
+        description="marker-last bootstrap descendant armed marker",
+    )
+    return (
+        _validate_bootstrap_descendant_armed(
+            path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            root_record=root_record,
+        ),
+        path,
+    )
+
+
+def _validate_root_release_attempt_result(
+    path: Path,
+    *,
+    intent_path: Path,
+    intent: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one immutable result for one marker-first release attempt."""
+
+    path = _require_canonical_path(
+        path,
+        description="recovery root release attempt result",
+        kind="file",
+    )
+    metadata = path.stat()
+    if metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) & 0o222:
+        raise ChainError(
+            "recovery root release attempt result must be sealed"
+        )
+    payload = _read_json(
+        path, description="recovery root release attempt result"
+    )
+    identity = dict(payload)
+    result_id = identity.pop("result_id", None)
+    required = {
+        "schema_version",
+        "protocol",
+        "attempt",
+        "completed_at",
+        "root_index",
+        "root_name",
+        "job_id",
+        "intent",
+        "intent_sha256",
+        "result_kind",
+        "returncode",
+        "stdout",
+        "stderr",
+        "stdout_sha256",
+        "stderr_sha256",
+        "scheduler_reconciliation",
+        "result_id",
+    }
+    result_kind = payload.get("result_kind")
+    reconciliation = payload.get("scheduler_reconciliation")
+    valid_direct = (
+        result_kind == "scontrol_result"
+        and isinstance(payload.get("returncode"), int)
+        and not isinstance(payload.get("returncode"), bool)
+        and isinstance(payload.get("stdout"), str)
+        and isinstance(payload.get("stderr"), str)
+        and payload.get("stdout_sha256")
+        == _sha256_bytes(payload["stdout"].encode("utf-8"))
+        and payload.get("stderr_sha256")
+        == _sha256_bytes(payload["stderr"].encode("utf-8"))
+        and reconciliation is None
+    )
+    valid_reconciliation = (
+        result_kind
+        in {
+            "scheduler_reconciled_after_ambiguous_release",
+            "scheduler_reconciled_no_effect",
+        }
+        and payload.get("returncode") is None
+        and payload.get("stdout") is None
+        and payload.get("stderr") is None
+        and payload.get("stdout_sha256") is None
+        and payload.get("stderr_sha256") is None
+        and isinstance(reconciliation, Mapping)
+        and reconciliation.get("returncode") == 0
+        and str(reconciliation.get("fields", {}).get("JobId", ""))
+        == str(intent.get("job_id", ""))
+        and (
+            (
+                result_kind
+                == "scheduler_reconciled_after_ambiguous_release"
+                and not (
+                    _normalize_slurm_state(
+                        str(
+                            reconciliation.get("fields", {}).get(
+                                "JobState", ""
+                            )
+                        )
+                    )
+                    == "PENDING"
+                    and str(
+                        reconciliation.get("fields", {}).get(
+                            "Reason", ""
+                        )
+                    ).lower()
+                    == "jobhelduser"
+                )
+            )
+            or (
+                result_kind == "scheduler_reconciled_no_effect"
+                and _normalize_slurm_state(
+                    str(
+                        reconciliation.get("fields", {}).get(
+                            "JobState", ""
+                        )
+                    )
+                )
+                == "PENDING"
+                and str(
+                    reconciliation.get("fields", {}).get("Reason", "")
+                ).lower()
+                == "jobhelduser"
+            )
+        )
+    )
+    if (
+        set(payload) != required
+        or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
+        or payload.get("protocol")
+        != "schema5-v1.2-r3-root-release-attempt-result-v1"
+        or payload.get("attempt") != intent.get("attempt")
+        or payload.get("root_index") != intent.get("root_index")
+        or payload.get("root_name") != intent.get("root_name")
+        or payload.get("job_id") != intent.get("job_id")
+        or payload.get("intent") != str(intent_path)
+        or payload.get("intent_sha256") != _sha256(intent_path)
+        or not isinstance(payload.get("completed_at"), str)
+        or not (valid_direct or valid_reconciliation)
+        or not isinstance(result_id, str)
+        or _SHA256.fullmatch(result_id) is None
+        or result_id != _sha256_bytes(_canonical_json(identity))
+    ):
+        raise ChainError(
+            "recovery root release attempt result drifted"
+        )
+    return payload
+
+
 def _validate_root_release_complete(
     path: Path,
     *,
@@ -11452,6 +16251,20 @@ def _validate_root_release_complete(
     payload = _read_json(path, description="recovery root release completion")
     identity = dict(payload)
     release_id = identity.pop("release_id", None)
+    generation = int(receipt.get("repair_generation", 0))
+    root_records = _generation_root_records(
+        receipt, generation=generation
+    )
+    if (
+        root_records[0]["name"] != root_record.get("name")
+        or root_records[0]["job_id"] != root_record.get("job_id")
+    ):
+        raise ChainError(
+            "recovery root release was given the wrong frontier root"
+        )
+    root_names = [str(record["name"]) for record in root_records]
+    root_job_ids = [str(record["job_id"]) for record in root_records]
+    root_comments = [str(record["comment"]) for record in root_records]
     required = {
         "schema_version",
         "protocol",
@@ -11462,6 +16275,9 @@ def _validate_root_release_complete(
         "root_name",
         "root_job_id",
         "root_comment",
+        "root_names",
+        "root_job_ids",
+        "root_comments",
         "release_intent",
         "release_intent_sha256",
         "dependency_policy_check",
@@ -11470,26 +16286,48 @@ def _validate_root_release_complete(
         "state_before",
         "state_after",
         "scheduler_observation",
+        "roots_state_before",
+        "roots_state_after",
+        "scheduler_observations",
         "release_attempts",
         "release_reconciled",
         "root_no_longer_held",
+        "all_roots_no_longer_held",
         "release_id",
     }
     initial_submission = (
         receipt.get("protocol")
-        == "schema5-v1.2-r2-recovery-chain-submission"
+        == "schema5-v1.2-r3-recovery-chain-submission"
     )
     if initial_submission:
         required |= {
             "scheduler_acceptance",
             "scheduler_acceptance_sha256",
             "scheduler_acceptance_id",
+            "bootstrap_watchdog_ready",
+            "bootstrap_watchdog_ready_sha256",
+            "bootstrap_watchdog_ready_id",
+            "bootstrap_watchdog_armed",
+            "bootstrap_watchdog_armed_sha256",
+            "bootstrap_watchdog_armed_id",
         }
+    else:
+        required |= {
+            "generation_scheduler_acceptance",
+            "generation_scheduler_acceptance_sha256",
+            "generation_scheduler_acceptance_id",
+        }
+        if "bootstrap_descendant_armed" in payload:
+            required |= {
+                "bootstrap_descendant_armed",
+                "bootstrap_descendant_armed_sha256",
+                "bootstrap_descendant_armed_id",
+            }
     if (
         set(payload) != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r2-recovery-root-release-v1"
+        != "schema5-v1.2-r3-recovery-root-release-v1"
         or not isinstance(payload.get("completed_at"), str)
         or payload.get("receipt") != str(receipt_path)
         or payload.get("receipt_sha256") != _sha256(receipt_path)
@@ -11497,9 +16335,23 @@ def _validate_root_release_complete(
         or payload.get("root_name") != root_record.get("name")
         or payload.get("root_job_id") != root_record.get("job_id")
         or payload.get("root_comment") != root_record.get("comment")
+        or payload.get("root_names") != root_names
+        or payload.get("root_job_ids") != root_job_ids
+        or payload.get("root_comments") != root_comments
         or payload.get("dependency_canary")
         != receipt.get("dependency_canary")
         or payload.get("root_no_longer_held") is not True
+        or payload.get("all_roots_no_longer_held") is not True
+        or not isinstance(payload.get("roots_state_before"), list)
+        or len(payload["roots_state_before"]) != len(root_records)
+        or not isinstance(payload.get("roots_state_after"), list)
+        or len(payload["roots_state_after"]) != len(root_records)
+        or not isinstance(payload.get("scheduler_observations"), list)
+        or len(payload["scheduler_observations"]) != len(root_records)
+        or payload.get("state_before") != payload["roots_state_before"][0]
+        or payload.get("state_after") != payload["roots_state_after"][0]
+        or payload.get("scheduler_observation")
+        != payload["scheduler_observations"][0]
         or not isinstance(payload.get("release_attempts"), list)
         or not payload["release_attempts"]
         or not isinstance(release_id, str)
@@ -11523,18 +16375,254 @@ def _validate_root_release_complete(
         != payload["dependency_policy_check_sha256"]
     ):
         raise ChainError("recovery root release evidence hashes drifted")
+    intent = _read_json(
+        intent_path, description="recovery root release intent"
+    )
+    if (
+        intent.get("receipt_id") != receipt.get("receipt_id")
+        or intent.get("root_name") != root_names[0]
+        or intent.get("root_job_id") != root_job_ids[0]
+        or intent.get("root_comment") != root_comments[0]
+        or intent.get("root_names") != root_names
+        or intent.get("root_job_ids") != root_job_ids
+        or intent.get("root_comments") != root_comments
+        or intent.get("command")
+        != ["scontrol", "release", root_job_ids[0]]
+        or intent.get("commands")
+        != [
+            ["scontrol", "release", job_id]
+            for job_id in root_job_ids
+        ]
+    ):
+        raise ChainError(
+            "recovery root release intent frontier drifted"
+        )
+    covered_roots: set[str] = set()
+    successful_roots: set[str] = set()
+    seen_attempt_paths: set[Path] = set()
+    reconciled_observations: dict[str, Mapping[str, Any]] = {}
+    successful_attempt_by_root: dict[str, int] = {}
+    prior_root_index = -1
+    attempts_root = path.parent / "root_release_attempts"
+    attempts_root = _require_canonical_path(
+        attempts_root,
+        description="recovery root release attempts",
+        kind="directory",
+    )
+    expected_intent_paths: list[Path] = []
+    expected_result_paths: list[Path] = []
+    for ordinal, binding in enumerate(
+        payload["release_attempts"], start=1
+    ):
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding)
+            != {
+                "attempt",
+                "root_name",
+                "job_id",
+                "intent",
+                "intent_sha256",
+                "result",
+                "result_sha256",
+                "result_id",
+                "result_kind",
+            }
+        ):
+            raise ChainError(
+                "recovery root release attempt binding drifted"
+            )
+        attempt_path = _require_canonical_path(
+            Path(str(binding["intent"])),
+            description="recovery root release attempt intent",
+            kind="file",
+        )
+        result_path = _require_canonical_path(
+            Path(str(binding["result"])),
+            description="recovery root release attempt result",
+            kind="file",
+        )
+        attempt_metadata = attempt_path.stat()
+        attempt = _read_json(
+            attempt_path,
+            description="recovery root release attempt intent",
+        )
+        name = str(attempt.get("root_name", ""))
+        if name not in root_names:
+            raise ChainError(
+                "recovery root release attempt names a foreign root"
+            )
+        root_index = root_names.index(name)
+        expected_result_path = attempts_root / (
+            f"attempt-{ordinal:04d}.result.json"
+        )
+        if (
+            attempt_path in seen_attempt_paths
+            or attempt_path.parent != attempts_root
+            or result_path != expected_result_path
+            or attempt_metadata.st_nlink != 1
+            or stat.S_IMODE(attempt_metadata.st_mode) & 0o222
+            or attempt_path.name
+            != f"attempt-{ordinal:04d}.intent.json"
+            or attempt.get("schema_version")
+            != SUBMISSION_SCHEMA_VERSION
+            or attempt.get("protocol")
+            != "schema5-v1.2-r3-root-release-attempt-intent-v1"
+            or attempt.get("attempt") != ordinal
+            or attempt.get("root_index") != root_index
+            or attempt.get("job_id") != root_job_ids[root_index]
+            or attempt.get("command")
+            != ["scontrol", "release", root_job_ids[root_index]]
+            or attempt.get("dependency_policy_check")
+            != str(policy_path)
+            or attempt.get("dependency_policy_check_sha256")
+            != _sha256(policy_path)
+            or binding.get("attempt") != ordinal
+            or binding.get("root_name") != name
+            or binding.get("job_id") != attempt.get("job_id")
+            or binding.get("intent_sha256") != _sha256(attempt_path)
+            or binding.get("result_sha256") != _sha256(result_path)
+        ):
+            raise ChainError(
+                "recovery root release attempt intent drifted"
+            )
+        if (
+            root_index < prior_root_index
+            or name in successful_attempt_by_root
+        ):
+            raise ChainError(
+                "recovery root release attempts are not an exact "
+                "frontier-ordered transaction"
+            )
+        prior_root_index = root_index
+        seen_attempt_paths.add(attempt_path)
+        expected_intent_paths.append(attempt_path)
+        expected_result_paths.append(result_path)
+        result = _validate_root_release_attempt_result(
+            result_path,
+            intent_path=attempt_path,
+            intent=attempt,
+        )
+        if (
+            binding.get("result_id") != result["result_id"]
+            or binding.get("result_kind") != result["result_kind"]
+        ):
+            raise ChainError(
+                "recovery root release attempt result binding drifted"
+            )
+        covered_roots.add(name)
+        if (
+            result["result_kind"]
+            == "scheduler_reconciled_after_ambiguous_release"
+        ):
+            if name in reconciled_observations:
+                raise ChainError(
+                    "a frontier root has multiple ambiguous adoptions"
+                )
+            reconciled_observations[name] = result[
+                "scheduler_reconciliation"
+            ]
+            successful_roots.add(name)
+            successful_attempt_by_root[name] = ordinal
+        elif result["returncode"] == 0:
+            successful_roots.add(name)
+            successful_attempt_by_root[name] = ordinal
+    actual_intent_paths = sorted(
+        attempts_root.glob("attempt-*.intent.json")
+    )
+    actual_result_paths = sorted(
+        attempts_root.glob("attempt-*.result.json")
+    )
+    actual_attempt_members = sorted(attempts_root.iterdir())
+    if (
+        covered_roots != set(root_names)
+        or successful_roots != set(root_names)
+        or set(successful_attempt_by_root) != set(root_names)
+        or actual_intent_paths != expected_intent_paths
+        or actual_result_paths != expected_result_paths
+        or actual_attempt_members
+        != sorted(expected_intent_paths + expected_result_paths)
+    ):
+        raise ChainError(
+            "recovery root release attempts do not exactly cover and "
+            "successfully resolve every frontier root"
+        )
+    for index, (record, before, after, observation) in enumerate(
+        zip(
+            root_records,
+            payload["roots_state_before"],
+            payload["roots_state_after"],
+            payload["scheduler_observations"],
+            strict=True,
+        )
+    ):
+        if (
+            not isinstance(before, Mapping)
+            or not isinstance(after, Mapping)
+            or not isinstance(observation, Mapping)
+            or observation.get("job_id") != record["job_id"]
+            or (
+                str(record["name"]) in reconciled_observations
+                and reconciled_observations[str(record["name"])]
+                != before
+            )
+            or (
+                after.get("returncode") == 0
+                and _normalize_slurm_state(
+                    str(after.get("fields", {}).get("JobState", ""))
+                )
+                == "PENDING"
+                and str(
+                    after.get("fields", {}).get("Reason", "")
+                ).lower()
+                == "jobhelduser"
+            )
+            or index >= len(root_names)
+        ):
+            raise ChainError(
+                "recovery root release frontier evidence drifted"
+            )
     _validate_dependency_policy_check(
         policy_path, expected_phase="root_release"
     )
     if initial_submission:
+        manifest_path = Path(str(receipt["manifest"]))
+        manifest = _read_json(
+            manifest_path,
+            description="bootstrap-watchdog chain manifest",
+        )
+        bootstrap_path = _require_canonical_path(
+            Path(str(payload["bootstrap_watchdog_armed"])),
+            description="bootstrap watchdog armed marker",
+            kind="file",
+        )
+        bootstrap = _validate_bootstrap_watchdog_armed(
+            bootstrap_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            root_record=root_record,
+        )
+        if (
+            _sha256(bootstrap_path)
+            != payload["bootstrap_watchdog_armed_sha256"]
+            or bootstrap["marker_id"]
+            != payload["bootstrap_watchdog_armed_id"]
+            or bootstrap["bootstrap_watchdog_ready"]
+            != payload["bootstrap_watchdog_ready"]
+            or bootstrap["bootstrap_watchdog_ready_sha256"]
+            != payload["bootstrap_watchdog_ready_sha256"]
+            or bootstrap["bootstrap_watchdog_ready_id"]
+            != payload["bootstrap_watchdog_ready_id"]
+        ):
+            raise ChainError(
+                "recovery root release bootstrap-watchdog binding drifted"
+            )
         acceptance_path = _require_canonical_path(
             Path(str(payload["scheduler_acceptance"])),
             description="scheduler acceptance evidence",
             kind="file",
-        )
-        manifest = _read_json(
-            Path(str(receipt["manifest"])),
-            description="scheduler-acceptance chain manifest",
         )
         acceptance = _validate_scheduler_acceptance(
             acceptance_path,
@@ -11551,6 +16639,59 @@ def _validate_root_release_complete(
             raise ChainError(
                 "recovery root release scheduler acceptance binding drifted"
             )
+    else:
+        generation = int(receipt.get("repair_generation", 0))
+        manifest_path = Path(str(receipt["manifest"]))
+        provenance_path = _require_canonical_path(
+            Path(str(payload["generation_scheduler_acceptance"])),
+            description="repair generation scheduler acceptance",
+            kind="file",
+        )
+        provenance = _validate_bootstrap_generation_provenance(
+            provenance_path,
+            manifest=_read_json(
+                manifest_path, description="repair chain manifest"
+            ),
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+        )
+        if (
+            payload["generation_scheduler_acceptance_sha256"]
+            != _sha256(provenance_path)
+            or payload["generation_scheduler_acceptance_id"]
+            != provenance["provenance_id"]
+        ):
+            raise ChainError(
+                "repair root release generation acceptance drifted"
+            )
+        if "bootstrap_descendant_armed" in payload:
+            descendant_path = _require_canonical_path(
+                Path(str(payload["bootstrap_descendant_armed"])),
+                description="repair bootstrap descendant armed marker",
+                kind="file",
+            )
+            descendant = _validate_bootstrap_descendant_armed(
+                descendant_path,
+                manifest=_read_json(
+                    manifest_path, description="repair chain manifest"
+                ),
+                manifest_path=manifest_path,
+                receipt=receipt,
+                receipt_path=receipt_path,
+                generation=generation,
+                root_record=root_record,
+            )
+            if (
+                payload["bootstrap_descendant_armed_sha256"]
+                != _sha256(descendant_path)
+                or payload["bootstrap_descendant_armed_id"]
+                != descendant["marker_id"]
+            ):
+                raise ChainError(
+                    "repair root release descendant arm binding drifted"
+                )
     return payload
 
 
@@ -11570,9 +16711,7 @@ def _validate_launch_complete(
     payload = _read_json(path, description="recovery-chain launch completion")
     identity = dict(payload)
     launch_id = identity.pop("launch_id", None)
-    if (
-        set(payload)
-        != {
+    required = {
             "schema_version",
             "protocol",
             "completed_at",
@@ -11588,9 +16727,33 @@ def _validate_launch_complete(
             "alert_latency_bound_seconds",
             "launch_id",
         }
+    if receipt.get("protocol") == "schema5-v1.2-r3-recovery-chain-submission":
+        required |= {
+            "bootstrap_watchdog_ready",
+            "bootstrap_watchdog_ready_sha256",
+            "bootstrap_watchdog_ready_id",
+            "bootstrap_watchdog_armed",
+            "bootstrap_watchdog_armed_sha256",
+            "bootstrap_watchdog_armed_id",
+        }
+    else:
+        required |= {
+            "generation_scheduler_acceptance",
+            "generation_scheduler_acceptance_sha256",
+            "generation_scheduler_acceptance_id",
+        }
+        if "bootstrap_descendant_armed" in release:
+            required |= {
+                "bootstrap_descendant_armed",
+                "bootstrap_descendant_armed_sha256",
+                "bootstrap_descendant_armed_id",
+            }
+    if (
+        set(payload)
+        != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r2-recovery-chain-launched-v1"
+        != "schema5-v1.2-r3-recovery-chain-launched-v1"
         or payload.get("receipt") != str(receipt_path)
         or payload.get("receipt_sha256") != _sha256(receipt_path)
         or payload.get("receipt_id") != receipt.get("receipt_id")
@@ -11602,6 +16765,35 @@ def _validate_launch_complete(
         != receipt.get("dependency_canary")
         or payload.get("root_initial_hold") is not True
         or payload.get("alert_latency_bound_seconds") != 180.0
+        or (
+            "bootstrap_watchdog_ready" in required
+            and (
+                payload.get("bootstrap_watchdog_ready")
+                != release.get("bootstrap_watchdog_ready")
+                or payload.get("bootstrap_watchdog_ready_sha256")
+                != release.get("bootstrap_watchdog_ready_sha256")
+                or payload.get("bootstrap_watchdog_ready_id")
+                != release.get("bootstrap_watchdog_ready_id")
+                or payload.get("bootstrap_watchdog_armed")
+                != release.get("bootstrap_watchdog_armed")
+                or payload.get("bootstrap_watchdog_armed_sha256")
+                != release.get("bootstrap_watchdog_armed_sha256")
+                or payload.get("bootstrap_watchdog_armed_id")
+                != release.get("bootstrap_watchdog_armed_id")
+            )
+        )
+        or any(
+            payload.get(field) != release.get(field)
+            for field in (
+                "generation_scheduler_acceptance",
+                "generation_scheduler_acceptance_sha256",
+                "generation_scheduler_acceptance_id",
+                "bootstrap_descendant_armed",
+                "bootstrap_descendant_armed_sha256",
+                "bootstrap_descendant_armed_id",
+            )
+            if field in required
+        )
         or not isinstance(launch_id, str)
         or _SHA256.fullmatch(launch_id) is None
         or launch_id != _sha256_bytes(_canonical_json(identity))
@@ -11620,27 +16812,143 @@ def _ensure_recovery_root_released(
     root_name: str,
     runner: Runner,
     timestamp: float,
+    bootstrap_watchdog_armed_path: Path | None = None,
+    bootstrap_descendant_armed_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    records = {
-        str(record.get("name")): record
-        for record in receipt.get("jobs", [])
-        if isinstance(record, Mapping)
-    }
-    root_record = records.get(root_name)
+    generation = int(receipt.get("repair_generation", 0))
+    root_records = _generation_root_records(
+        receipt, generation=generation
+    )
+    root_record = root_records[0]
     if (
-        not isinstance(root_record, Mapping)
-        or not str(root_record.get("job_id", "")).isdigit()
-        or not isinstance(root_record.get("comment"), str)
+        root_name != root_record["name"]
         or receipt.get("root_initial_hold") is not True
     ):
-        raise ChainError("recovery receipt lacks its initially held root")
+        raise ChainError(
+            "recovery release target is not the receipt's exact held frontier"
+        )
+    root_names = [str(record["name"]) for record in root_records]
+    root_job_ids = [str(record["job_id"]) for record in root_records]
+    root_comments = [str(record["comment"]) for record in root_records]
     release_path = evidence_root / ROOT_RELEASE_COMPLETE_NAME
     launch_path = evidence_root / LAUNCH_COMPLETE_NAME
+    initial_submission = (
+        receipt.get("protocol")
+        == "schema5-v1.2-r3-recovery-chain-submission"
+    )
+    bootstrap_binding: dict[str, Any] = {}
+    if initial_submission:
+        expected_bootstrap_path = (
+            evidence_root / BOOTSTRAP_WATCHDOG_ARMED_NAME
+        )
+        if bootstrap_watchdog_armed_path is None:
+            bootstrap_watchdog_armed_path = expected_bootstrap_path
+        bootstrap_watchdog_armed_path = _lexical_absolute(
+            bootstrap_watchdog_armed_path
+        )
+        if bootstrap_watchdog_armed_path != expected_bootstrap_path:
+            raise ChainError(
+                "bootstrap watchdog armed marker must be receipt-local"
+            )
+        bootstrap = _validate_bootstrap_watchdog_armed(
+            bootstrap_watchdog_armed_path,
+            manifest=manifest,
+            manifest_path=Path(str(receipt["manifest"])),
+            receipt=receipt,
+            receipt_path=receipt_path,
+            root_record=root_record,
+        )
+        bootstrap_binding = {
+            "bootstrap_watchdog_ready": bootstrap[
+                "bootstrap_watchdog_ready"
+            ],
+            "bootstrap_watchdog_ready_sha256": bootstrap[
+                "bootstrap_watchdog_ready_sha256"
+            ],
+            "bootstrap_watchdog_ready_id": bootstrap[
+                "bootstrap_watchdog_ready_id"
+            ],
+            "bootstrap_watchdog_armed": str(
+                bootstrap_watchdog_armed_path
+            ),
+            "bootstrap_watchdog_armed_sha256": _sha256(
+                bootstrap_watchdog_armed_path
+            ),
+            "bootstrap_watchdog_armed_id": bootstrap["marker_id"],
+        }
+    elif bootstrap_descendant_armed_path is not None:
+        if generation <= 0:
+            raise ChainError("repair release lacks its exact generation")
+        expected_descendant_path = (
+            evidence_root / BOOTSTRAP_DESCENDANT_ARMED_NAME
+        )
+        if bootstrap_descendant_armed_path is None:
+            bootstrap_descendant_armed_path = expected_descendant_path
+        bootstrap_descendant_armed_path = _lexical_absolute(
+            bootstrap_descendant_armed_path
+        )
+        if bootstrap_descendant_armed_path != expected_descendant_path:
+            raise ChainError(
+                "bootstrap descendant armed marker must be receipt-local"
+            )
+        descendant = _validate_bootstrap_descendant_armed(
+            bootstrap_descendant_armed_path,
+            manifest=manifest,
+            manifest_path=Path(str(receipt["manifest"])),
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            root_record=root_record,
+        )
+        provenance_path = _bootstrap_generation_provenance_path(
+            manifest_path=Path(str(receipt["manifest"])),
+            generation=generation,
+        )
+        bootstrap_binding = {
+            "bootstrap_descendant_armed": str(
+                bootstrap_descendant_armed_path
+            ),
+            "bootstrap_descendant_armed_sha256": _sha256(
+                bootstrap_descendant_armed_path
+            ),
+            "bootstrap_descendant_armed_id": descendant["marker_id"],
+            "generation_scheduler_acceptance": str(provenance_path),
+            "generation_scheduler_acceptance_sha256": _sha256(
+                provenance_path
+            ),
+            "generation_scheduler_acceptance_id": descendant[
+                "generation_provenance_id"
+            ],
+        }
+    else:
+        if generation <= 0:
+            raise ChainError("repair release lacks its exact generation")
+        provenance_path = _bootstrap_generation_provenance_path(
+            manifest_path=Path(str(receipt["manifest"])),
+            generation=generation,
+        )
+        provenance = _validate_bootstrap_generation_provenance(
+            provenance_path,
+            manifest=manifest,
+            manifest_path=Path(str(receipt["manifest"])),
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+        )
+        bootstrap_binding = {
+            "generation_scheduler_acceptance": str(provenance_path),
+            "generation_scheduler_acceptance_sha256": _sha256(
+                provenance_path
+            ),
+            "generation_scheduler_acceptance_id": provenance[
+                "provenance_id"
+            ],
+        }
 
     def publish_launch(release: Mapping[str, Any]) -> dict[str, Any]:
         launch = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r2-recovery-chain-launched-v1",
+            "protocol": "schema5-v1.2-r3-recovery-chain-launched-v1",
             "completed_at": _utc_now(),
             "receipt": str(receipt_path),
             "receipt_sha256": _sha256(receipt_path),
@@ -11654,6 +16962,7 @@ def _ensure_recovery_root_released(
             "alert_latency_bound_seconds": receipt["dependency_canary"][
                 "alert_latency_bound_seconds"
             ],
+            **bootstrap_binding,
         }
         if launch_path.exists() or launch_path.is_symlink():
             return _validate_launch_complete(
@@ -11686,11 +16995,6 @@ def _ensure_recovery_root_released(
         )
         return release, publish_launch(release)
 
-    job_id = str(root_record["job_id"])
-    initial_submission = (
-        receipt.get("protocol")
-        == "schema5-v1.2-r2-recovery-chain-submission"
-    )
     acceptance: dict[str, Any] | None = None
     acceptance_path: Path | None = None
     if initial_submission:
@@ -11715,15 +17019,23 @@ def _ensure_recovery_root_released(
     intent_path = evidence_root / ROOT_RELEASE_INTENT_NAME
     release_intent = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r2-recovery-root-release-intent-v1",
+        "protocol": "schema5-v1.2-r3-recovery-root-release-intent-v1",
         "created_at": _utc_now(),
         "receipt": str(receipt_path),
         "receipt_sha256": _sha256(receipt_path),
         "receipt_id": receipt["receipt_id"],
         "root_name": root_name,
-        "root_job_id": job_id,
+        "root_job_id": root_job_ids[0],
         "root_comment": root_record["comment"],
-        "command": ["scontrol", "release", job_id],
+        "root_names": root_names,
+        "root_job_ids": root_job_ids,
+        "root_comments": root_comments,
+        "command": ["scontrol", "release", root_job_ids[0]],
+        "commands": [
+            ["scontrol", "release", job_id]
+            for job_id in root_job_ids
+        ],
+        **bootstrap_binding,
         **acceptance_binding,
     }
     if intent_path.exists() or intent_path.is_symlink():
@@ -11745,143 +17057,364 @@ def _ensure_recovery_root_released(
             description="marker-first recovery root release intent",
         )
 
-    policy, policy_path = _persist_dependency_policy_check(
-        evidence_root,
-        phase="root_release",
-        runner=runner,
-        checked_at=timestamp,
-    )
-    matches = _query_comment_jobs(
-        str(root_record["comment"]),
-        slurm_user=str(manifest["slurm_user"]),
-        since=str(journal["scheduler_since"]),
-        runner=runner,
-    )
-    if (
-        len(matches) != 1
-        or matches[0]["job_id"] != job_id
-        or matches[0]["job_name"]
-        != next(
-            row["job_name"]
-            for row in manifest["jobs"]
-            if row["name"] == root_name
-        )
-    ):
-        raise ChainError("held recovery root scheduler identity is ambiguous")
-    before = _show_recovery_job(job_id, runner=runner)
-    state = str(before["fields"].get("JobState", "")).upper()
-    reason = str(before["fields"].get("Reason", ""))
     attempts_root = evidence_root / "root_release_attempts"
     if attempts_root.is_symlink():
         raise ChainError("recovery root release attempts are symlinked")
+    attempts_root.mkdir(parents=True, mode=0o750, exist_ok=True)
+    attempts_root = _require_canonical_path(
+        attempts_root,
+        description="recovery root release attempts",
+        kind="directory",
+    )
     existing_intents = sorted(attempts_root.glob("attempt-*.intent.json"))
     if any(
         path.name != f"attempt-{index:04d}.intent.json"
         for index, path in enumerate(existing_intents, start=1)
     ):
         raise ChainError("recovery root release attempts are not contiguous")
-    performed = False
-    if state == "PENDING" and reason.lower() == "jobhelduser":
-        attempt_number = len(existing_intents) + 1
-        attempt_intent_path = (
-            attempts_root / f"attempt-{attempt_number:04d}.intent.json"
-        )
-        attempt_intent = {
-            "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r2-root-release-attempt-intent-v1",
-            "attempt": attempt_number,
-            "created_at": _utc_now(),
-            "job_id": job_id,
-            "command": release_intent["command"],
-            "dependency_policy_check": str(policy_path),
-            "dependency_policy_check_sha256": _sha256(policy_path),
-        }
-        _write_immutable_json_once(
-            attempt_intent_path,
-            attempt_intent,
+    if existing_intents:
+        first_attempt = _read_json(
+            _require_canonical_path(
+                existing_intents[0],
+                description="recovery root release attempt intent",
+                kind="file",
+            ),
             description="recovery root release attempt intent",
         )
-        proc = runner(release_intent["command"])
-        result = {
-            "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r2-root-release-attempt-result-v1",
-            "attempt": attempt_number,
-            "completed_at": _utc_now(),
-            "intent": str(attempt_intent_path),
-            "intent_sha256": _sha256(attempt_intent_path),
-            "returncode": int(proc.returncode),
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "stdout_sha256": _sha256_bytes(proc.stdout.encode("utf-8")),
-            "stderr_sha256": _sha256_bytes(proc.stderr.encode("utf-8")),
-        }
-        _write_immutable_json_once(
-            attempts_root / f"attempt-{attempt_number:04d}.result.json",
-            result,
-            description="recovery root release attempt result",
+        policy_path = _require_canonical_path(
+            Path(str(first_attempt.get("dependency_policy_check", ""))),
+            description="root-release dependency-policy evidence",
+            kind="file",
         )
-        if proc.returncode != 0:
+        policy = _validate_dependency_policy_check(
+            policy_path, expected_phase="root_release"
+        )
+        if first_attempt.get(
+            "dependency_policy_check_sha256"
+        ) != _sha256(policy_path):
             raise ChainError(
-                f"cannot release exact recovery root {job_id}: "
-                f"{proc.stderr.strip()[:500]}"
+                "root-release attempt lost its dependency policy binding"
             )
-        performed = True
-        existing_intents.append(attempt_intent_path)
-    elif not existing_intents:
-        raise ChainError(
-            "recovery root is not held and no marker-first release attempt exists"
+    else:
+        policy, policy_path = _persist_dependency_policy_check(
+            evidence_root,
+            phase="root_release",
+            runner=runner,
+            checked_at=timestamp,
         )
-    after = _show_recovery_job(job_id, runner=runner)
-    if (
-        after["returncode"] == 0
-        and str(after["fields"].get("JobState", "")).upper() == "PENDING"
-        and str(after["fields"].get("Reason", "")).lower() == "jobhelduser"
+    attempts_by_root: dict[str, list[Path]] = {
+        name: [] for name in root_names
+    }
+    for index, attempt_path in enumerate(existing_intents, start=1):
+        attempt = _read_json(
+            _require_canonical_path(
+                attempt_path,
+                description="recovery root release attempt intent",
+                kind="file",
+            ),
+            description="recovery root release attempt intent",
+        )
+        name = str(attempt.get("root_name", ""))
+        if (
+            name not in attempts_by_root
+            or attempt.get("attempt") != index
+            or attempt.get("job_id")
+            != root_job_ids[root_names.index(name)]
+            or attempt.get("command")
+            != release_intent["commands"][root_names.index(name)]
+            or attempt.get("dependency_policy_check") != str(policy_path)
+            or attempt.get("dependency_policy_check_sha256")
+            != _sha256(policy_path)
+        ):
+            raise ChainError(
+                "recovery root release attempt intent drifted"
+            )
+        attempts_by_root[name].append(attempt_path)
+
+    manifest_by_name = {
+        str(row["name"]): row for row in manifest["jobs"]
+    }
+    roots_state_before: list[dict[str, Any]] = []
+    roots_state_after: list[dict[str, Any]] = []
+    scheduler_observations: list[dict[str, Any]] = []
+    performed = False
+    for root_index, (name, job_id, comment) in enumerate(
+        zip(root_names, root_job_ids, root_comments, strict=True)
     ):
-        raise ChainError("recovery root remains held after exact release")
-    observed = _query_comment_jobs(
-        str(root_record["comment"]),
-        slurm_user=str(manifest["slurm_user"]),
-        since=str(journal["scheduler_since"]),
-        runner=runner,
-    )
-    if len(observed) != 1 or observed[0]["job_id"] != job_id:
-        raise ChainError("released recovery root scheduler identity is ambiguous")
+        matches = _query_comment_jobs(
+            comment,
+            slurm_user=str(manifest["slurm_user"]),
+            since=str(journal["scheduler_since"]),
+            runner=runner,
+        )
+        if (
+            len(matches) != 1
+            or matches[0]["job_id"] != job_id
+            or matches[0]["job_name"]
+            != manifest_by_name[name]["job_name"]
+        ):
+            raise ChainError(
+                f"held recovery root scheduler identity is ambiguous: {name}"
+            )
+        before = _show_recovery_job(job_id, runner=runner)
+        if before["returncode"] != 0:
+            raise ChainError(
+                f"cannot reconcile exact recovery root {name}/{job_id}"
+            )
+        roots_state_before.append(before)
+        state = _normalize_slurm_state(
+            str(before["fields"].get("JobState", ""))
+        )
+        held = (
+            state == "PENDING"
+            and str(before["fields"].get("Reason", "")).lower()
+            == "jobhelduser"
+        )
+        root_attempts = attempts_by_root[name]
+        missing_results = [
+            attempt_path
+            for attempt_path in root_attempts
+            if not attempt_path.with_name(
+                attempt_path.name.replace(
+                    ".intent.json", ".result.json"
+                )
+            ).exists()
+        ]
+        if missing_results:
+            if (
+                len(missing_results) != 1
+                or missing_results[0] != existing_intents[-1]
+            ):
+                raise ChainError(
+                    "an ambiguous root release attempt cannot be "
+                    "reconciled from exact scheduler state"
+                )
+            ambiguous_intent_path = missing_results[0]
+            ambiguous_intent = _read_json(
+                ambiguous_intent_path,
+                description="ambiguous root release attempt intent",
+            )
+            adoption_result = {
+                "schema_version": SUBMISSION_SCHEMA_VERSION,
+                "protocol": (
+                    "schema5-v1.2-r3-root-release-attempt-result-v1"
+                ),
+                "attempt": ambiguous_intent["attempt"],
+                "completed_at": _utc_now(),
+                "root_index": root_index,
+                "root_name": name,
+                "job_id": job_id,
+                "intent": str(ambiguous_intent_path),
+                "intent_sha256": _sha256(ambiguous_intent_path),
+                "result_kind": (
+                    "scheduler_reconciled_no_effect"
+                    if held
+                    else (
+                        "scheduler_reconciled_after_ambiguous_release"
+                    )
+                ),
+                "returncode": None,
+                "stdout": None,
+                "stderr": None,
+                "stdout_sha256": None,
+                "stderr_sha256": None,
+                "scheduler_reconciliation": before,
+            }
+            adoption_result["result_id"] = _sha256_bytes(
+                _canonical_json(adoption_result)
+            )
+            adoption_path = ambiguous_intent_path.with_name(
+                ambiguous_intent_path.name.replace(
+                    ".intent.json", ".result.json"
+                )
+            )
+            _write_immutable_json_once(
+                adoption_path,
+                adoption_result,
+                description=(
+                    "scheduler-reconciled root release attempt result"
+                ),
+            )
+            _validate_root_release_attempt_result(
+                adoption_path,
+                intent_path=ambiguous_intent_path,
+                intent=ambiguous_intent,
+            )
+        if held:
+            attempt_number = len(existing_intents) + 1
+            attempt_intent_path = (
+                attempts_root
+                / f"attempt-{attempt_number:04d}.intent.json"
+            )
+            attempt_intent = {
+                "schema_version": SUBMISSION_SCHEMA_VERSION,
+                "protocol": (
+                    "schema5-v1.2-r3-root-release-attempt-intent-v1"
+                ),
+                "attempt": attempt_number,
+                "created_at": _utc_now(),
+                "root_index": root_index,
+                "root_name": name,
+                "job_id": job_id,
+                "command": release_intent["commands"][root_index],
+                "dependency_policy_check": str(policy_path),
+                "dependency_policy_check_sha256": _sha256(policy_path),
+            }
+            _write_immutable_json_once(
+                attempt_intent_path,
+                attempt_intent,
+                description="recovery root release attempt intent",
+            )
+            existing_intents.append(attempt_intent_path)
+            attempts_by_root[name].append(attempt_intent_path)
+            proc = runner(release_intent["commands"][root_index])
+            result = {
+                "schema_version": SUBMISSION_SCHEMA_VERSION,
+                "protocol": (
+                    "schema5-v1.2-r3-root-release-attempt-result-v1"
+                ),
+                "attempt": attempt_number,
+                "completed_at": _utc_now(),
+                "root_index": root_index,
+                "root_name": name,
+                "job_id": job_id,
+                "intent": str(attempt_intent_path),
+                "intent_sha256": _sha256(attempt_intent_path),
+                "result_kind": "scontrol_result",
+                "returncode": int(proc.returncode),
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "stdout_sha256": _sha256_bytes(
+                    proc.stdout.encode("utf-8")
+                ),
+                "stderr_sha256": _sha256_bytes(
+                    proc.stderr.encode("utf-8")
+                ),
+                "scheduler_reconciliation": None,
+            }
+            result["result_id"] = _sha256_bytes(
+                _canonical_json(result)
+            )
+            result_path = (
+                attempts_root
+                / f"attempt-{attempt_number:04d}.result.json"
+            )
+            _write_immutable_json_once(
+                result_path,
+                result,
+                description="recovery root release attempt result",
+            )
+            _validate_root_release_attempt_result(
+                result_path,
+                intent_path=attempt_intent_path,
+                intent=attempt_intent,
+            )
+            if proc.returncode != 0:
+                raise ChainError(
+                    f"cannot release exact recovery root {name}/{job_id}: "
+                    f"{proc.stderr.strip()[:500]}"
+                )
+            performed = True
+        elif not attempts_by_root[name]:
+            raise ChainError(
+                "non-held recovery frontier root lacks its exact "
+                f"marker-first release attempt: {name}/{job_id}"
+            )
+        after = _show_recovery_job(job_id, runner=runner)
+        if (
+            after["returncode"] != 0
+            or (
+                _normalize_slurm_state(
+                    str(after["fields"].get("JobState", ""))
+                )
+                == "PENDING"
+                and str(after["fields"].get("Reason", "")).lower()
+                == "jobhelduser"
+            )
+        ):
+            raise ChainError(
+                f"recovery root remains held after exact release: {name}"
+            )
+        roots_state_after.append(after)
+        observed = _query_comment_jobs(
+            comment,
+            slurm_user=str(manifest["slurm_user"]),
+            since=str(journal["scheduler_since"]),
+            runner=runner,
+        )
+        if (
+            len(observed) != 1
+            or observed[0]["job_id"] != job_id
+            or observed[0]["job_name"]
+            != manifest_by_name[name]["job_name"]
+        ):
+            raise ChainError(
+                f"released recovery root scheduler identity is ambiguous: {name}"
+            )
+        scheduler_observations.append(observed[0])
     attempts = []
-    for attempt_intent_path in existing_intents:
+    for ordinal, attempt_intent_path in enumerate(
+        existing_intents, start=1
+    ):
+        attempt_intent = _read_json(
+            attempt_intent_path,
+            description="recovery root release attempt intent",
+        )
         result_path = attempt_intent_path.with_name(
             attempt_intent_path.name.replace(".intent.json", ".result.json")
         )
+        if not result_path.exists():
+            raise ChainError(
+                "recovery root release completion requires every attempt "
+                "result"
+            )
+        attempt_result = _validate_root_release_attempt_result(
+            result_path,
+            intent_path=attempt_intent_path,
+            intent=attempt_intent,
+        )
         attempts.append(
             {
+                "attempt": ordinal,
                 "intent": str(attempt_intent_path),
                 "intent_sha256": _sha256(attempt_intent_path),
-                "result": str(result_path) if result_path.exists() else None,
-                "result_sha256": (
-                    _sha256(result_path) if result_path.exists() else None
-                ),
+                "result": str(result_path),
+                "result_sha256": _sha256(result_path),
+                "result_id": attempt_result["result_id"],
+                "result_kind": attempt_result["result_kind"],
+                "root_name": attempt_intent["root_name"],
+                "job_id": attempt_intent["job_id"],
             }
         )
     release = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r2-recovery-root-release-v1",
+        "protocol": "schema5-v1.2-r3-recovery-root-release-v1",
         "completed_at": _utc_now(),
         "receipt": str(receipt_path),
         "receipt_sha256": _sha256(receipt_path),
         "receipt_id": receipt["receipt_id"],
         "root_name": root_name,
-        "root_job_id": job_id,
+        "root_job_id": root_job_ids[0],
         "root_comment": root_record["comment"],
+        "root_names": root_names,
+        "root_job_ids": root_job_ids,
+        "root_comments": root_comments,
         "release_intent": str(intent_path),
         "release_intent_sha256": _sha256(intent_path),
         "dependency_policy_check": str(policy_path),
         "dependency_policy_check_sha256": _sha256(policy_path),
         "dependency_canary": receipt["dependency_canary"],
-        "state_before": before,
-        "state_after": after,
-        "scheduler_observation": observed[0],
+        "state_before": roots_state_before[0],
+        "state_after": roots_state_after[0],
+        "scheduler_observation": scheduler_observations[0],
+        "roots_state_before": roots_state_before,
+        "roots_state_after": roots_state_after,
+        "scheduler_observations": scheduler_observations,
         "release_attempts": attempts,
         "release_reconciled": not performed,
         "root_no_longer_held": True,
+        "all_roots_no_longer_held": True,
+        **bootstrap_binding,
         **acceptance_binding,
     }
     release["release_id"] = _sha256_bytes(_canonical_json(release))
@@ -11970,25 +17503,52 @@ def submit_chain(
                 manifest_path=manifest_path,
                 comments=comments,
             )
-            journal = _read_json(
-                journal_path, description="sealed chain submission journal"
+            provenance_path = _bootstrap_generation_provenance_path(
+                manifest_path=manifest_path,
+                generation=0,
             )
-            release, launch = _ensure_recovery_root_released(
-                evidence_root=recovery_root,
+            provenance = _ensure_bootstrap_generation_provenance(
                 manifest=manifest,
-                receipt_path=receipt_path,
+                manifest_path=manifest_path,
                 receipt=receipt,
-                journal=journal,
-                root_name="source_checkout",
+                receipt_path=receipt_path,
+                generation=0,
+                states=_query_receipt_job_states(
+                    receipt=receipt,
+                    manifest=manifest,
+                    runner=runner,
+                ),
                 runner=runner,
-                timestamp=boundary_timestamp(),
             )
             return receipt | {
-                "status": "already_launched",
+                "status": (
+                    "already_launched"
+                    if (
+                        recovery_root / LAUNCH_COMPLETE_NAME
+                    ).is_file()
+                    else "awaiting_bootstrap_watchdog"
+                ),
                 "verified": verified,
                 "live_prerequisites": live_prerequisites,
-                "root_release": release,
-                "launch_complete": launch,
+                "launch_marker_complete": (
+                    recovery_root / LAUNCH_COMPLETE_NAME
+                ).is_file(),
+                "release_reconciliation_required": not (
+                    recovery_root / LAUNCH_COMPLETE_NAME
+                ).is_file(),
+                "bootstrap_watchdog_ready": str(
+                    recovery_root / BOOTSTRAP_WATCHDOG_READY_NAME
+                ),
+                "bootstrap_watchdog_armed": str(
+                    recovery_root / BOOTSTRAP_WATCHDOG_ARMED_NAME
+                ),
+                "bootstrap_generation_provenance": str(provenance_path),
+                "bootstrap_generation_provenance_sha256": _sha256(
+                    provenance_path
+                ),
+                "bootstrap_generation_provenance_id": provenance[
+                    "provenance_id"
+                ],
             }
 
         if journal_path.exists() or journal_path.is_symlink():
@@ -12013,7 +17573,7 @@ def submit_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.2-r2-recovery-chain-submission",
+                "protocol": "schema5-v1.2-r3-recovery-chain-submission",
                 "chain_id": manifest["chain_id"],
                 "manifest": str(manifest_path),
                 "started_at": _utc_now(),
@@ -12155,7 +17715,7 @@ def submit_chain(
         _fsync_directory(journal_path.parent)
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r2-recovery-chain-submission",
+            "protocol": "schema5-v1.2-r3-recovery-chain-submission",
             "passed": True,
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
@@ -12198,23 +17758,656 @@ def submit_chain(
             manifest_path=manifest_path,
             comments=comments,
         )
-        release, launch = _ensure_recovery_root_released(
-            evidence_root=recovery_root,
+        provenance_path = _bootstrap_generation_provenance_path(
+            manifest_path=manifest_path,
+            generation=0,
+        )
+        provenance = _ensure_bootstrap_generation_provenance(
             manifest=manifest,
-            receipt_path=receipt_path,
+            manifest_path=manifest_path,
             receipt=validated_receipt,
-            journal=journal,
-            root_name="source_checkout",
+            receipt_path=receipt_path,
+            generation=0,
+            states=_query_receipt_job_states(
+                receipt=validated_receipt,
+                manifest=manifest,
+                runner=runner,
+            ),
             runner=runner,
-            timestamp=boundary_timestamp(),
         )
         return validated_receipt | {
-            "status": "launched",
+            "status": "awaiting_bootstrap_watchdog",
             "verified": verified,
             "live_prerequisites": live_prerequisites,
-            "root_release": release,
-            "launch_complete": launch,
+            "launch_marker_complete": False,
+            "release_reconciliation_required": False,
+            "bootstrap_watchdog_ready": str(
+                recovery_root / BOOTSTRAP_WATCHDOG_READY_NAME
+            ),
+            "bootstrap_watchdog_armed": str(
+                recovery_root / BOOTSTRAP_WATCHDOG_ARMED_NAME
+            ),
+            "bootstrap_generation_provenance": str(provenance_path),
+            "bootstrap_generation_provenance_sha256": _sha256(
+                provenance_path
+            ),
+            "bootstrap_generation_provenance_id": provenance[
+                "provenance_id"
+            ],
         }
+
+
+def release_recovery_root(
+    manifest_path: Path,
+    *,
+    apply: bool = False,
+    runner: Runner | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Release the latest exact held generation after its sealed arm decision.
+
+    Submission and release are intentionally separate transactions.  This command
+    has no path that creates scheduler jobs, clears a scientific control-plane
+    hold, or changes admission; it can release only the exact receipt-bound
+    recovery root of the latest complete generation.
+    """
+
+    manifest_path = _lexical_absolute(manifest_path)
+    verified = verify_chain(manifest_path)
+    live_prerequisites = verify_live_creation_prerequisites(manifest_path)
+    manifest = _read_json(
+        manifest_path, description="recovery-chain manifest"
+    )
+    recovery_root = manifest_path.parent
+    receipt, receipt_path, generation, pending = _latest_chain_receipt(
+        manifest=manifest, manifest_path=manifest_path
+    )
+    if pending is not None:
+        raise ChainError(
+            "cannot release while the latest repair transaction is incomplete"
+        )
+    journal_path = receipt_path.parent / SUBMISSION_JOURNAL_NAME
+    journal = _read_json(
+        journal_path, description="sealed chain submission journal"
+    )
+    if generation == 0:
+        _validate_submission_journal(
+            journal,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            comments=_submission_comments(manifest),
+        )
+    else:
+        parent_path = _require_canonical_path(
+            Path(str(receipt["parent_receipt"])),
+            description="release generation parent receipt",
+            kind="file",
+        )
+        parent = _read_json(
+            parent_path, description="release generation parent receipt"
+        )
+        _validate_repair_journal(
+            journal,
+            manifest=manifest,
+            base=parent,
+            base_path=parent_path,
+            generation=generation,
+        )
+    root_records = _generation_root_records(
+        receipt, generation=generation
+    )
+    root_record = root_records[0]
+    root_name = str(root_record["name"])
+    root_names = [str(record["name"]) for record in root_records]
+    root_job_ids = [str(record["job_id"]) for record in root_records]
+    anchor_launch: Mapping[str, Any] | None = None
+    anchor_release_intent: Mapping[str, Any] | None = None
+    if generation > 0:
+        anchor_launch = _bootstrap_anchor_launch_authorization(
+            manifest=manifest,
+            manifest_path=manifest_path,
+        )
+        anchor_release_intent = (
+            _bootstrap_anchor_release_intent_authorization(
+                manifest=manifest,
+                manifest_path=manifest_path,
+            )
+        )
+        if anchor_launch is None and anchor_release_intent is None:
+            raise ChainError(
+                "a descendant bootstrap arm authorizes rearm only; "
+                "release requires the sealed g0 launch or root-release intent"
+            )
+    armed_path: Path
+    if generation == 0:
+        armed_path = recovery_root / BOOTSTRAP_WATCHDOG_ARMED_NAME
+        armed = _validate_bootstrap_watchdog_armed(
+            armed_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            root_record=root_record,
+        )
+        armed_result = {
+            "bootstrap_watchdog_ready": armed[
+                "bootstrap_watchdog_ready"
+            ],
+            "bootstrap_watchdog_ready_id": armed[
+                "bootstrap_watchdog_ready_id"
+            ],
+            "bootstrap_watchdog_armed": str(armed_path),
+            "bootstrap_watchdog_armed_id": armed["marker_id"],
+        }
+    else:
+        armed_path = receipt_path.parent / BOOTSTRAP_DESCENDANT_ARMED_NAME
+        armed = _validate_bootstrap_descendant_armed(
+            armed_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            root_record=root_record,
+        )
+        armed_result = {
+            "bootstrap_descendant_armed": str(armed_path),
+            "bootstrap_descendant_armed_id": armed["marker_id"],
+            "anchor_bootstrap_armed_id": armed[
+                "anchor_bootstrap_armed_id"
+            ],
+            "anchor_launch_authorized": anchor_launch is not None,
+            "anchor_launch_id": (
+                None
+                if anchor_launch is None
+                else anchor_launch["launch_id"]
+            ),
+            "anchor_release_intent_authorized": (
+                anchor_release_intent is not None
+            ),
+            "anchor_release_intent_sha256": (
+                None
+                if anchor_release_intent is None
+                else anchor_release_intent["intent_sha256"]
+            ),
+        }
+    if not apply:
+        return {
+            "status": "ready_to_release",
+            "passed": True,
+            "chain_id": manifest["chain_id"],
+            "receipt": str(receipt_path),
+            "receipt_id": receipt["receipt_id"],
+            "repair_generation": generation,
+            "root_job_id": root_record["job_id"],
+            "root_names": root_names,
+            "root_job_ids": root_job_ids,
+            **armed_result,
+            "verified": verified,
+            "live_prerequisites": live_prerequisites,
+        }
+    runner = (
+        (
+            lambda argv: subprocess.run(
+                argv, text=True, capture_output=True, check=False
+            )
+        )
+        if runner is None
+        else runner
+    )
+    timestamp = time.time() if now is None else float(now)
+    if not math.isfinite(timestamp):
+        raise ChainError("root-release timestamp must be finite")
+    lock_path = recovery_root / SUBMISSION_LOCK_NAME
+    with _exclusive_lock(
+        lock_path, description="recovery-chain root releaser"
+    ):
+        # Revalidate every immutable input while holding the same transaction
+        # lock used by submit and repair.
+        current, current_path, current_generation, current_pending = (
+            _latest_chain_receipt(
+                manifest=manifest, manifest_path=manifest_path
+            )
+        )
+        if (
+            current_pending is not None
+            or current_path != receipt_path
+            or current_generation != generation
+            or current["receipt_id"] != receipt["receipt_id"]
+        ):
+            raise ChainError(
+                "latest recovery generation changed before root release"
+            )
+        receipt = current
+        verify_live_creation_prerequisites(manifest_path)
+        states = _query_receipt_job_states(
+            receipt=receipt, manifest=manifest, runner=runner
+        )
+        _ensure_bootstrap_generation_provenance(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            states=states,
+            runner=runner,
+        )
+        if generation == 0:
+            _validate_bootstrap_watchdog_armed(
+                armed_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                receipt=receipt,
+                receipt_path=receipt_path,
+                root_record=root_record,
+            )
+        else:
+            _validate_bootstrap_descendant_armed(
+                armed_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                receipt=receipt,
+                receipt_path=receipt_path,
+                generation=generation,
+                root_record=root_record,
+            )
+            current_anchor_launch = (
+                _bootstrap_anchor_launch_authorization(
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                )
+            )
+            current_anchor_release_intent = (
+                _bootstrap_anchor_release_intent_authorization(
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                )
+            )
+            if (
+                current_anchor_launch is None
+                and current_anchor_release_intent is None
+            ):
+                raise ChainError(
+                    "a descendant bootstrap arm authorizes rearm only; "
+                    "release requires the sealed g0 launch or "
+                    "root-release intent"
+                )
+        release, launch = _ensure_recovery_root_released(
+            evidence_root=receipt_path.parent,
+            manifest=manifest,
+            receipt_path=receipt_path,
+            receipt=receipt,
+            journal=journal,
+            root_name=root_name,
+            runner=runner,
+            timestamp=timestamp,
+            bootstrap_watchdog_armed_path=(
+                armed_path if generation == 0 else None
+            ),
+            bootstrap_descendant_armed_path=(
+                armed_path if generation > 0 else None
+            ),
+        )
+    return {
+        "status": "launched",
+        "passed": True,
+        "chain_id": manifest["chain_id"],
+        "receipt": str(receipt_path),
+        "receipt_id": receipt["receipt_id"],
+        "repair_generation": generation,
+        "root_names": root_names,
+        "root_job_ids": root_job_ids,
+        **armed_result,
+        "root_release": release,
+        "launch_complete": launch,
+        "verified": verified,
+        "live_prerequisites": live_prerequisites,
+    }
+
+
+def publish_bootstrap_watchdog_handoff(
+    manifest_path: Path,
+    *,
+    apply: bool = False,
+    runner: Runner | None = None,
+) -> dict[str, Any]:
+    """End bootstrap authority only from the successful aggregate sentinel."""
+
+    manifest_path = _lexical_absolute(manifest_path)
+    verify_chain(manifest_path)
+    manifest = _read_json(
+        manifest_path, description="recovery-chain manifest"
+    )
+    recovery_root = manifest_path.parent
+    path = recovery_root / BOOTSTRAP_WATCHDOG_HANDOFF_NAME
+    if path.exists() or path.is_symlink():
+        path = _require_canonical_path(
+            path,
+            description="bootstrap watchdog handoff",
+            kind="file",
+        )
+        if path.stat().st_nlink != 1 or stat.S_IMODE(path.stat().st_mode) & 0o222:
+            raise ChainError("bootstrap watchdog handoff must be sealed")
+        persisted = _read_json(
+            path, description="bootstrap watchdog handoff"
+        )
+        identity = dict(persisted)
+        handoff_id = identity.pop("handoff_id", None)
+        receipt_path = _require_canonical_path(
+            Path(str(persisted.get("submission_receipt", ""))),
+            description="handoff submission receipt",
+            kind="file",
+        )
+        receipt, latest_path, generation, pending = _latest_chain_receipt(
+            manifest=manifest, manifest_path=manifest_path
+        )
+        root_record = _generation_root_records(
+            receipt, generation=generation
+        )[0]
+        release_path = _require_canonical_path(
+            Path(str(persisted.get("root_release", ""))),
+            description="handoff root release",
+            kind="file",
+        )
+        release = _validate_root_release_complete(
+            release_path,
+            receipt_path=latest_path,
+            receipt=receipt,
+            root_record=root_record,
+        )
+        launch_path = _require_canonical_path(
+            Path(str(persisted.get("launch_complete", ""))),
+            description="handoff launch completion",
+            kind="file",
+        )
+        launch = _validate_launch_complete(
+            launch_path,
+            receipt_path=latest_path,
+            receipt=receipt,
+            release_path=release_path,
+            release=release,
+        )
+        ready_path = _require_canonical_path(
+            Path(str(persisted.get("production_watchdog_ready", ""))),
+            description="handoff production watchdog readiness",
+            kind="file",
+        )
+        ready = _read_json(
+            ready_path, description="handoff production watchdog readiness"
+        )
+        control = _read_json(
+            _require_canonical_path(
+                Path(str(manifest["state_root"])) / "control.json",
+                description="handoff production control",
+                kind="file",
+            ),
+            description="handoff production control",
+        )
+        if (
+            pending is not None
+            or receipt_path != latest_path
+            or persisted.get("schema_version") != 2
+            or persisted.get("protocol")
+            != BOOTSTRAP_WATCHDOG_HANDOFF_PROTOCOL
+            or persisted.get("passed") is not True
+            or persisted.get("release_id") != RELEASE_ID
+            or persisted.get("release_tag") != RELEASE_TAG
+            or persisted.get("release_git_commit")
+            != manifest["release_git_commit"]
+            or persisted.get("release_tag_object")
+            != manifest["release_tag_object"]
+            or persisted.get("chain_namespace") != CHAIN_NAMESPACE
+            or persisted.get("chain_id") != manifest["chain_id"]
+            or persisted.get("repair_generation") != generation
+            or persisted.get("submission_receipt_sha256")
+            != _sha256(latest_path)
+            or persisted.get("submission_receipt_id")
+            != receipt["receipt_id"]
+            or persisted.get("root_release_sha256")
+            != _sha256(release_path)
+            or persisted.get("root_release_id")
+            != release["release_id"]
+            or persisted.get("launch_complete_sha256")
+            != _sha256(launch_path)
+            or persisted.get("launch_id") != launch["launch_id"]
+            or persisted.get("production_watchdog_ready_sha256")
+            != _sha256(ready_path)
+            or persisted.get("production_watchdog_ready_id")
+            != ready.get("marker_id")
+            or persisted.get("control_sha256")
+            != control.get("immutable_sha256")
+            or persisted.get("all_predecessors_terminal_success")
+            is not True
+            or persisted.get("aggregate_sentinel_running")
+            is not True
+            or persisted.get("aggregate_sentinel_classification_success")
+            is not True
+            or persisted.get("production_resume_terminal_success")
+            is not True
+            or persisted.get("production_control_healthy") is not True
+            or persisted.get("bootstrap_repair_disabled") is not True
+            or persisted.get("production_watchdog_authoritative") is not True
+            or not isinstance(persisted.get("handoff_at"), str)
+            or not isinstance(handoff_id, str)
+            or _SHA256.fullmatch(handoff_id) is None
+            or handoff_id
+            != _sha256_bytes(_canonical_json(identity))
+        ):
+            raise ChainError("bootstrap watchdog handoff binding drifted")
+        return {
+            "passed": True,
+            "apply": apply,
+            "handoff": str(path),
+            "handoff_id": handoff_id,
+            "bootstrap_repair_disabled": True,
+            "production_watchdog_authoritative": True,
+        }
+
+    if not apply:
+        raise ChainError("bootstrap watchdog handoff is not published")
+    runner = (
+        (
+            lambda argv: subprocess.run(
+                argv, text=True, capture_output=True, check=False
+            )
+        )
+        if runner is None
+        else runner
+    )
+    with _exclusive_lock(
+        recovery_root / SUBMISSION_LOCK_NAME,
+        description="bootstrap watchdog handoff publisher",
+    ):
+        if path.exists() or path.is_symlink():
+            raise ChainError(
+                "bootstrap watchdog handoff appeared while acquiring its "
+                "transaction lock; replay verification is required"
+            )
+        report = verify_post_initialize_watchdog(
+            manifest_path, expected_desired_state="running"
+        )
+        receipt, receipt_path, generation, pending = _latest_chain_receipt(
+            manifest=manifest, manifest_path=manifest_path
+        )
+        if pending is not None:
+            raise ChainError(
+                "bootstrap handoff refuses an incomplete repair transaction"
+            )
+        root_record = _generation_root_records(
+            receipt, generation=generation
+        )[0]
+        release_path = receipt_path.parent / ROOT_RELEASE_COMPLETE_NAME
+        release = _validate_root_release_complete(
+            release_path,
+            receipt_path=receipt_path,
+            receipt=receipt,
+            root_record=root_record,
+        )
+        launch_path = receipt_path.parent / LAUNCH_COMPLETE_NAME
+        launch = _validate_launch_complete(
+            launch_path,
+            receipt_path=receipt_path,
+            receipt=receipt,
+            release_path=release_path,
+            release=release,
+        )
+        states = _query_receipt_job_states(
+            receipt=receipt, manifest=manifest, runner=runner
+        )
+        sentinel = states.get("failure_sentinel", {})
+        current_job_id = os.environ.get("SLURM_JOB_ID")
+        if (
+            current_job_id != sentinel.get("job_id")
+            or sentinel.get("state") != "RUNNING"
+            or sentinel.get("active") is not True
+        ):
+            raise ChainError(
+                "bootstrap handoff is not running in the exact aggregate sentinel"
+            )
+        failures = [
+            name
+            for name, state in states.items()
+            if name != "failure_sentinel"
+            and (
+                state.get("state") != "COMPLETED"
+                or state.get("active") is not False
+                or state.get("exit_code") != "0:0"
+            )
+        ]
+        production_resume = states.get("production_resume", {})
+        if failures or production_resume.get("state") != "COMPLETED":
+            raise ChainError(
+                "bootstrap handoff requires every stage and observer to "
+                f"finish successfully: {failures}"
+            )
+        harness_python = (
+            Path(str(manifest["release_root"]))
+            / "environments"
+            / "harness"
+            / "bin"
+            / "python"
+        )
+        control_tool = (
+            Path(str(manifest["release_root"]))
+            / "worktree"
+            / "slurm"
+            / "schema5_control.py"
+        )
+        status_proc = runner(
+            [
+                str(harness_python),
+                "-I",
+                str(control_tool),
+                "--state-dir",
+                str(manifest["state_root"]),
+                "status",
+                "--live",
+            ]
+        )
+        try:
+            live = json.loads(status_proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise ChainError(
+                "production control status returned invalid JSON"
+            ) from exc
+        controllers = live.get("controllers")
+        if (
+            status_proc.returncode != 0
+            or live.get("healthy") is not True
+            or live.get("desired_state") != "running"
+            or live.get("drain_requested") is not False
+            or live.get("immutable_sha256") != report["control_sha256"]
+            or not isinstance(controllers, Mapping)
+            or set(controllers) != {"dispatcher", "fleet_supervisor"}
+            or any(
+                not isinstance(value, Mapping)
+                or value.get("live_active") is not True
+                or value.get("heartbeat_stale") is not False
+                or value.get("active_identity_mismatch") is not False
+                for value in controllers.values()
+            )
+            or live.get("active_alerts") != []
+            or live.get("admission_safety_hold", {}).get("active") is not False
+        ):
+            raise ChainError(
+                "production controllers are not live and hold-free"
+            )
+        anchor = _bootstrap_anchor_armed_authorization(
+            manifest=manifest, manifest_path=manifest_path
+        )
+        if anchor is None:
+            raise ChainError("bootstrap handoff lacks its sealed g0 arm")
+        production = report["watchdog_ready"]
+        handoff: dict[str, Any] = {
+            "schema_version": 2,
+            "protocol": BOOTSTRAP_WATCHDOG_HANDOFF_PROTOCOL,
+            "passed": True,
+            "release_id": RELEASE_ID,
+            "release_tag": RELEASE_TAG,
+            "release_git_commit": manifest["release_git_commit"],
+            "release_tag_object": manifest["release_tag_object"],
+            "chain_namespace": CHAIN_NAMESPACE,
+            "chain_id": manifest["chain_id"],
+            "repair_generation": generation,
+            "submission_receipt": str(receipt_path),
+            "submission_receipt_sha256": _sha256(receipt_path),
+            "submission_receipt_id": receipt["receipt_id"],
+            "root_release": str(release_path),
+            "root_release_sha256": _sha256(release_path),
+            "root_release_id": release["release_id"],
+            "launch_complete": str(launch_path),
+            "launch_complete_sha256": _sha256(launch_path),
+            "launch_id": launch["launch_id"],
+            "bootstrap_watchdog_armed": anchor["armed"],
+            "bootstrap_watchdog_armed_sha256": anchor["armed_sha256"],
+            "bootstrap_watchdog_armed_id": anchor["armed_id"],
+            "production_watchdog_ready": production["marker"],
+            "production_watchdog_ready_sha256": production["marker_sha256"],
+            "production_watchdog_ready_id": production["marker_id"],
+            "control_sha256": report["control_sha256"],
+            "production_control_status_sha256": _sha256_bytes(
+                _canonical_json(live)
+            ),
+            "aggregate_sentinel_job_id": sentinel["job_id"],
+            "aggregate_sentinel_comment": sentinel["comment"],
+            "all_predecessors_terminal_success": True,
+            "aggregate_sentinel_running": True,
+            "aggregate_sentinel_classification_success": True,
+            "production_resume_job_id": production_resume["job_id"],
+            "production_resume_comment": production_resume["comment"],
+            "production_resume_terminal_success": True,
+            "production_control_healthy": True,
+            "handoff_at": _utc_now(),
+            "bootstrap_repair_disabled": True,
+            "production_watchdog_authoritative": True,
+        }
+        handoff["handoff_id"] = _sha256_bytes(_canonical_json(handoff))
+        _write_immutable_json_once(
+            path,
+            handoff,
+            description="marker-last bootstrap watchdog handoff",
+        )
+    return {
+        "passed": True,
+        "apply": apply,
+        "handoff": str(path),
+        "handoff_id": handoff["handoff_id"],
+        "bootstrap_repair_disabled": True,
+        "production_watchdog_authoritative": True,
+    }
+
+
+def verify_bootstrap_watchdog_handoff(
+    manifest_path: Path,
+) -> dict[str, Any]:
+    path = _lexical_absolute(manifest_path).parent / (
+        BOOTSTRAP_WATCHDOG_HANDOFF_NAME
+    )
+    if not path.exists() or path.is_symlink():
+        raise ChainError("bootstrap watchdog handoff is not published")
+    return publish_bootstrap_watchdog_handoff(
+        manifest_path, apply=False
+    )
 
 
 def _validate_repair_receipt(
@@ -12256,7 +18449,8 @@ def _validate_repair_receipt(
         "repair_generation", "parent_receipt", "parent_receipt_sha256",
         "submitted_at", "dependency_policy", "dependency_policy_check",
         "dependency_policy_check_sha256", "dependency_canary",
-        "root_initial_hold", "no_requeue", "stage_failure_sentinels",
+        "root_initial_hold", "held_root_names", "no_requeue",
+        "stage_failure_sentinels",
         "jobs", "receipt_id",
     }
     parent_by_name = {
@@ -12267,7 +18461,7 @@ def _validate_repair_receipt(
     if (
         set(receipt) != expected_fields
         or receipt.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or receipt.get("protocol") != "schema5-v1.2-r2-recovery-chain-repair"
+        or receipt.get("protocol") != "schema5-v1.2-r3-recovery-chain-repair"
         or receipt.get("passed") is not True
         or receipt.get("chain_id") != manifest["chain_id"]
         or receipt.get("manifest") != str(manifest_path)
@@ -12288,6 +18482,8 @@ def _validate_repair_receipt(
         or receipt.get("stage_failure_sentinels")
         != manifest["stage_failure_sentinels"]
         or receipt.get("root_initial_hold") is not True
+        or receipt.get("held_root_names")
+        != _repair_frontier_names(manifest, repair_names)
         or receipt.get("no_requeue") is not True
         or not isinstance(receipt_id, str)
         or not _SHA256.fullmatch(receipt_id)
@@ -12425,7 +18621,7 @@ def _validate_repair_journal(
         "dependency_policy_check",
         "dependency_policy_check_sha256",
         "dependency_canary",
-        "held_root_name",
+        "held_root_names",
         "jobs",
     }
     started = journal.get("started_timestamp")
@@ -12433,7 +18629,7 @@ def _validate_repair_journal(
     if (
         set(journal) != expected_fields
         or journal.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or journal.get("protocol") != "schema5-v1.2-r2-recovery-chain-repair-journal"
+        or journal.get("protocol") != "schema5-v1.2-r3-recovery-chain-repair-journal"
         or journal.get("chain_id") != manifest["chain_id"]
         or journal.get("repair_generation") != generation
         or journal.get("base_receipt") != str(base_path)
@@ -12455,7 +18651,8 @@ def _validate_repair_journal(
         or not isinstance(repair_names, list)
         or not repair_names
         or len(repair_names) != len(set(repair_names))
-        or journal.get("held_root_name") != repair_names[0]
+        or journal.get("held_root_names")
+        != _repair_frontier_names(manifest, repair_names)
         or not isinstance(journal.get("jobs"), dict)
     ):
         raise ChainError("repair journal identity is invalid")
@@ -12547,7 +18744,8 @@ def _validate_repair_journal(
                 row,
                 dependency_job_ids=dependency_ids,
                 comment=comment,
-                initial_hold=name == repair_names[0],
+                initial_hold=name
+                in set(_repair_frontier_names(manifest, repair_names)),
             )
             or not isinstance(attempts, int)
             or isinstance(attempts, bool)
@@ -12580,6 +18778,98 @@ def _validate_repair_journal(
         observed_ids.add(job_id)
         submitted[name] = job_id
     return list(repair_names)
+
+
+def _repair_frontier_names(
+    manifest: Mapping[str, Any], repair_names: Sequence[str]
+) -> list[str]:
+    """Return every selected job with no selected ancestor, in DAG order."""
+
+    by_name = {str(row["name"]): row for row in manifest["jobs"]}
+    if (
+        not repair_names
+        or any(not isinstance(name, str) for name in repair_names)
+        or len(repair_names) != len(set(repair_names))
+        or not set(repair_names) <= set(by_name)
+    ):
+        raise ChainError(
+            "repair set must name unique jobs in the recovery manifest"
+        )
+    selected = set(repair_names)
+    roots = [
+        str(row["name"])
+        for row in manifest["jobs"]
+        if row["name"] in selected
+        and not (_manifest_ancestors(str(row["name"]), by_name) & selected)
+    ]
+    if not roots:
+        raise ChainError("repair set has no admission frontier")
+    return roots
+
+
+def _is_exact_completed_stage_observer(
+    *,
+    name: str,
+    manifest: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    states: Mapping[str, Mapping[str, Any]],
+    failed_set: set[str],
+) -> bool:
+    """Recognize only the paired after-any observer of its failed stage."""
+
+    pairs = {
+        str(binding["sentinel"]): str(binding["stage"])
+        for binding in manifest.get("stage_failure_sentinels", [])
+        if isinstance(binding, Mapping)
+        and isinstance(binding.get("sentinel"), str)
+        and isinstance(binding.get("stage"), str)
+    }
+    stage = pairs.get(name)
+    if stage is None or stage not in failed_set:
+        return False
+    manifest_by_name = {
+        str(row["name"]): row
+        for row in manifest.get("jobs", [])
+        if isinstance(row, Mapping)
+    }
+    receipt_by_name = {
+        str(row["name"]): row
+        for row in receipt.get("jobs", [])
+        if isinstance(row, Mapping)
+    }
+    observer_spec = manifest_by_name.get(name)
+    stage_spec = manifest_by_name.get(stage)
+    observer_receipt = receipt_by_name.get(name)
+    stage_receipt = receipt_by_name.get(stage)
+    observer_state = states.get(name)
+    stage_state = states.get(stage)
+    return bool(
+        isinstance(observer_spec, Mapping)
+        and isinstance(stage_spec, Mapping)
+        and isinstance(observer_receipt, Mapping)
+        and isinstance(stage_receipt, Mapping)
+        and isinstance(observer_state, Mapping)
+        and isinstance(stage_state, Mapping)
+        and observer_spec.get("dependencies") == [stage]
+        and observer_spec.get("dependency_type") == "afterany"
+        and observer_receipt.get("dependencies") == [stage]
+        and observer_receipt.get("dependency_type") == "afterany"
+        and observer_receipt.get("dependency_job_ids")
+        == [stage_receipt.get("job_id")]
+        and observer_receipt.get("script") == observer_spec.get("script")
+        and observer_receipt.get("script_sha256")
+        == observer_spec.get("script_sha256")
+        and observer_state.get("job_id")
+        == observer_receipt.get("job_id")
+        and observer_state.get("comment")
+        == observer_receipt.get("comment")
+        and observer_state.get("state") == "COMPLETED"
+        and observer_state.get("active") is False
+        and observer_state.get("exit_code") == "0:0"
+        and stage_state.get("job_id") == stage_receipt.get("job_id")
+        and stage_state.get("state") in _REPAIRABLE_SLURM_STATES
+        and stage_state.get("active") is False
+    )
 
 
 def _preflight_repair_stage_artifacts(
@@ -12724,7 +19014,7 @@ def _validate_capacity_transient_repair_binding(
         dict(binding) != expected_binding
         or marker.get("schema_version") != 1
         or marker.get("protocol")
-        != "schema5-v1.2-r2-fleet-capacity-transient-receipt"
+        != "schema5-v1.2-r3-fleet-capacity-transient-receipt"
         or marker.get("passed") is not True
         or marker.get("capacity_transient_root") is not True
         or marker.get("chain_id") != manifest["chain_id"]
@@ -12739,7 +19029,7 @@ def _validate_capacity_transient_repair_binding(
         or marker_id != _sha256_bytes(_canonical_json(marker_identity))
         or capacity_evidence.get("schema_version") != 1
         or capacity_evidence.get("protocol")
-        != "schema5-v1.2-r2-fleet-capacity-transient-evidence"
+        != "schema5-v1.2-r3-fleet-capacity-transient-evidence"
         or capacity_evidence.get("passed") is not True
         or capacity_evidence.get("chain_id") != manifest["chain_id"]
         or capacity_evidence.get("chain_generation") != generation
@@ -12965,7 +19255,8 @@ def _validate_qualification_capacity_transition_binding(
     )
     if (
         set(failure_marker) != _QUALIFICATION_FAILURE_FIELDS
-        or failure_marker.get("schema_version") != 1
+        or failure_marker.get("schema_version")
+        != THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
         or failure_marker.get("protocol")
         != THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL
         or failure_marker.get("passed") is not False
@@ -13066,7 +19357,7 @@ def _validate_qualification_capacity_transition_binding(
         or marker.get("schema_version") != 1
         or marker.get("protocol")
         != (
-            "schema5-v1.2-r2-throughput-qualification-"
+            "schema5-v1.2-r3-throughput-qualification-"
             "capacity-transition-v1"
         )
         or marker.get("passed") is not True
@@ -13233,7 +19524,7 @@ def _sentinel_repair_jobs(
     if (
         marker.get("schema_version") != 1
         or marker.get("protocol")
-        != "schema5-v1.2-r2-recovery-sentinel-outcome"
+        != "schema5-v1.2-r3-recovery-sentinel-outcome"
         or marker.get("passed") is not True
         or marker.get("chain_id") != manifest["chain_id"]
         or marker.get("manifest") != str(manifest_path)
@@ -13247,7 +19538,7 @@ def _sentinel_repair_jobs(
         or marker_id != _sha256_bytes(_canonical_json(marker_identity))
         or evidence.get("schema_version") != 1
         or evidence.get("protocol")
-        != "schema5-v1.2-r2-recovery-scheduler-evidence"
+        != "schema5-v1.2-r3-recovery-scheduler-evidence"
         or evidence.get("passed") is not True
         or evidence.get("chain_id") != manifest["chain_id"]
         or evidence.get("manifest") != str(manifest_path)
@@ -13330,12 +19621,1677 @@ def _sentinel_repair_jobs(
     return [name for name in order if name in set(selected)]
 
 
+_BOOTSTRAP_INFRASTRUCTURE_TERMINAL_STATES = {
+    "BOOT_FAIL",
+    "CANCELLED",
+    "NODE_FAIL",
+    "PREEMPTED",
+    "REVOKED",
+}
+
+
+def _bootstrap_anchor_launch_authorization(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> dict[str, Any] | None:
+    """Return the immutable initial launch authorization, if it exists.
+
+    A repair generation may inherit only the original marker-last decision to
+    launch this exact chain.  An absent pair means the chain is still in its
+    prelaunch held phase; a partial or invalid pair is an integrity failure.
+    """
+
+    receipt_path = manifest_path.parent / SUBMISSION_RECEIPT_NAME
+    receipt = _validate_submission_receipt(
+        receipt_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        comments=_submission_comments(manifest),
+    )
+    release_path = manifest_path.parent / ROOT_RELEASE_COMPLETE_NAME
+    launch_path = manifest_path.parent / LAUNCH_COMPLETE_NAME
+    release_exists = release_path.exists() or release_path.is_symlink()
+    launch_exists = launch_path.exists() or launch_path.is_symlink()
+    if not release_exists and not launch_exists:
+        return None
+    if release_exists != launch_exists:
+        raise ChainError(
+            "bootstrap anchor launch authorization is only partially published"
+        )
+    root_record = next(
+        row for row in receipt["jobs"] if row["name"] == "source_checkout"
+    )
+    release = _validate_root_release_complete(
+        release_path,
+        receipt_path=receipt_path,
+        receipt=receipt,
+        root_record=root_record,
+    )
+    launch = _validate_launch_complete(
+        launch_path,
+        receipt_path=receipt_path,
+        receipt=receipt,
+        release_path=release_path,
+        release=release,
+    )
+    return {
+        "receipt": str(receipt_path),
+        "receipt_sha256": _sha256(receipt_path),
+        "receipt_id": receipt["receipt_id"],
+        "root_release": str(release_path),
+        "root_release_sha256": _sha256(release_path),
+        "root_release_id": release["release_id"],
+        "launch_complete": str(launch_path),
+        "launch_complete_sha256": _sha256(launch_path),
+        "launch_id": launch["launch_id"],
+    }
+
+
+def _bootstrap_generation_provenance_path(
+    *, manifest_path: Path, generation: int
+) -> Path:
+    if generation == 0:
+        return manifest_path.parent / BOOTSTRAP_GENERATION_PROVENANCE_NAME
+    return (
+        manifest_path.parent
+        / REPAIR_ROOT_NAME
+        / f"g{generation:04d}"
+        / BOOTSTRAP_GENERATION_PROVENANCE_NAME
+    )
+
+
+def _bootstrap_live_job_provenance(
+    *,
+    manifest_row: Mapping[str, Any],
+    receipt_row: Mapping[str, Any],
+    state: Mapping[str, Any],
+    runner: Runner,
+    spool_path: Path,
+    origin_generation: int,
+    generation_root_names: Sequence[str],
+) -> dict[str, Any]:
+    name = str(manifest_row["name"])
+    submit_line = state.get("submit_line")
+    try:
+        submit_argv = (
+            shlex.split(submit_line)
+            if isinstance(submit_line, str)
+            else []
+        )
+    except ValueError as exc:
+        raise ChainError(
+            f"bootstrap SubmitLine is malformed for {name}: {exc}"
+        ) from exc
+    expected_submit_argv = submission_argv(
+        manifest_row,
+        dependency_job_ids=[
+            str(value)
+            for value in receipt_row.get("dependency_job_ids", [])
+        ],
+        comment=str(receipt_row["comment"]),
+        initial_hold=name in set(generation_root_names),
+    )
+    if submit_argv != expected_submit_argv:
+        raise ChainError(f"bootstrap SubmitLine drifted for {name}")
+    details = _show_recovery_job(str(state["job_id"]), runner=runner)
+    fields = details["fields"]
+    expected_dependency_pairs = sorted(
+        (
+            str(receipt_row["dependency_type"]),
+            str(dependency_id),
+        )
+        for dependency_id in receipt_row["dependency_job_ids"]
+    )
+    observed_dependency_pairs = sorted(
+        _scheduler_dependency_pairs(str(fields.get("Dependency", "")))
+    )
+    if (
+        details["returncode"] != 0
+        or fields.get("JobId") != state["job_id"]
+        or fields.get("JobName") != state["job_name"]
+        or fields.get("Comment") != state["comment"]
+        or fields.get("Command") != receipt_row["script"]
+        or fields.get("Requeue") != "0"
+        or observed_dependency_pairs != expected_dependency_pairs
+        or (
+            name in set(generation_root_names)
+            and str(fields.get("Reason", "")).lower() != "jobhelduser"
+        )
+        or (
+            name not in set(generation_root_names)
+            and str(fields.get("Reason", "")).lower()
+            not in {"dependency", "dependencyneverSatisfied".lower()}
+        )
+    ):
+        raise ChainError(
+            f"scontrol acceptance provenance drifted for {name}"
+        )
+    spool = runner(
+        [
+            "scontrol",
+            "write",
+            "batch_script",
+            str(state["job_id"]),
+            str(spool_path),
+        ]
+    )
+    if (
+        spool.returncode != 0
+        or not spool_path.is_file()
+        or spool_path.is_symlink()
+    ):
+        raise ChainError(
+            f"cannot capture bootstrap spooled script for {name}"
+        )
+    local_script = _require_canonical_path(
+        Path(str(receipt_row["script"])),
+        description=f"bootstrap local sbatch {name}",
+        kind="file",
+    )
+    spooled_sha256 = _sha256(spool_path)
+    local_sha256 = _sha256(local_script)
+    if (
+        local_sha256 != receipt_row["script_sha256"]
+        or spooled_sha256 != local_sha256
+        or spool_path.read_bytes() != local_script.read_bytes()
+    ):
+        raise ChainError(f"spooled sbatch differs for {name}")
+    return {
+        "name": name,
+        "job_id": state["job_id"],
+        "comment": state["comment"],
+        "job_name": state["job_name"],
+        "script_sha256": local_sha256,
+        "submit_line_sha256": _sha256_bytes(
+            str(submit_line).encode("utf-8")
+        ),
+        "submit_argv": submit_argv,
+        "submit_line_exact": True,
+        "scontrol_command": fields["Command"],
+        "scontrol_requeue": 0,
+        "scontrol_dependency_pairs": [
+            {"type": dependency_type, "job_id": dependency_id}
+            for dependency_type, dependency_id in observed_dependency_pairs
+        ],
+        "scontrol_reason": str(fields.get("Reason", "")),
+        "dependency_type": receipt_row["dependency_type"],
+        "dependency_job_ids": list(receipt_row["dependency_job_ids"]),
+        "initial_hold": name in set(generation_root_names),
+        "spooled_script_sha256": spooled_sha256,
+        "spooled_script_exact_match": True,
+        "origin_generation": origin_generation,
+    }
+
+
+def _validate_bootstrap_generation_provenance(
+    path: Path,
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    generation: int,
+) -> dict[str, Any]:
+    path = _require_canonical_path(
+        path,
+        description="bootstrap generation scheduler provenance",
+        kind="file",
+    )
+    payload = _read_json(
+        path, description="bootstrap generation scheduler provenance"
+    )
+    identity = dict(payload)
+    provenance_id = identity.pop("provenance_id", None)
+    parent_fields = (
+        {
+            "parent_provenance": None,
+            "parent_provenance_sha256": None,
+            "parent_provenance_id": None,
+        }
+        if generation == 0
+        else None
+    )
+    if generation > 0:
+        parent_receipt_path = _require_canonical_path(
+            Path(str(receipt["parent_receipt"])),
+            description="bootstrap parent receipt",
+            kind="file",
+        )
+        parent_receipt = _read_json(
+            parent_receipt_path,
+            description="bootstrap parent receipt",
+        )
+        parent_generation = int(parent_receipt.get("repair_generation", 0))
+        parent_path = _bootstrap_generation_provenance_path(
+            manifest_path=manifest_path,
+            generation=parent_generation,
+        )
+        parent = _validate_bootstrap_generation_provenance(
+            parent_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=parent_receipt,
+            receipt_path=parent_receipt_path,
+            generation=parent_generation,
+        )
+        parent_fields = {
+            "parent_provenance": str(parent_path),
+            "parent_provenance_sha256": _sha256(parent_path),
+            "parent_provenance_id": parent["provenance_id"],
+        }
+    lineage = _bootstrap_receipt_lineage(
+        receipt=receipt,
+        receipt_path=receipt_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+    expected_lineage_receipt_ids = [
+        str(lineage_receipt["receipt_id"])
+        for _path, lineage_receipt in lineage
+    ]
+    expected_lineage_job_ids = sorted(
+        {
+            str(row["job_id"])
+            for _path, lineage_receipt in lineage
+            for row in lineage_receipt["jobs"]
+        },
+        key=int,
+    )
+    origin_roots: dict[int, set[str]] = {}
+    for lineage_path, lineage_receipt in lineage:
+        lineage_generation = int(
+            lineage_receipt.get("repair_generation", 0)
+        )
+        origin_roots[lineage_generation] = set(
+            ["source_checkout"]
+            if lineage_generation == 0
+            else lineage_receipt.get("held_root_names", [])
+        )
+        if (
+            not origin_roots[lineage_generation]
+            or any(
+                root not in {str(row["name"]) for row in manifest["jobs"]}
+                for root in origin_roots[lineage_generation]
+            )
+        ):
+            raise ChainError(
+                "bootstrap provenance lineage has no generation root: "
+                f"{lineage_path}"
+            )
+    generation_root_names = (
+        ["source_checkout"]
+        if generation == 0
+        else list(receipt.get("held_root_names", []))
+    )
+    if not generation_root_names:
+        raise ChainError(
+            "bootstrap generation provenance has no held roots"
+        )
+    expected_fields = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "release_git_commit",
+        "release_tag_object",
+        "chain_id",
+        "chain_manifest",
+        "chain_manifest_sha256",
+        "submission_receipt",
+        "submission_receipt_sha256",
+        "submission_receipt_id",
+        "repair_generation",
+        "parent_provenance",
+        "parent_provenance_sha256",
+        "parent_provenance_id",
+        "namespace_lineage_receipt_ids",
+        "namespace_bound_job_ids",
+        "namespace_scan_complete",
+        "generation_root_names",
+        "current_generation_names",
+        "scheduler_topology_valid",
+        "jobs",
+        "provenance_id",
+    }
+    jobs = payload.get("jobs")
+    if (
+        set(payload) != expected_fields
+        or payload.get("schema_version") != 1
+        or payload.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-generation-provenance-v1"
+        or payload.get("passed") is not True
+        or payload.get("release_git_commit")
+        != manifest["release_git_commit"]
+        or payload.get("release_tag_object")
+        != manifest["release_tag_object"]
+        or payload.get("chain_id") != manifest["chain_id"]
+        or payload.get("chain_manifest") != str(manifest_path)
+        or payload.get("chain_manifest_sha256") != _sha256(manifest_path)
+        or payload.get("submission_receipt") != str(receipt_path)
+        or payload.get("submission_receipt_sha256") != _sha256(receipt_path)
+        or payload.get("submission_receipt_id") != receipt["receipt_id"]
+        or payload.get("repair_generation") != generation
+        or any(
+            payload.get(field) != value
+            for field, value in parent_fields.items()
+        )
+        or payload.get("namespace_scan_complete") is not True
+        or payload.get("namespace_lineage_receipt_ids")
+        != expected_lineage_receipt_ids
+        or payload.get("namespace_bound_job_ids")
+        != expected_lineage_job_ids
+        or payload.get("generation_root_names") != generation_root_names
+        or payload.get("current_generation_names")
+        != [
+            str(row["name"])
+            for row in receipt["jobs"]
+            if generation == 0
+            or int(row.get("generation", 0)) == generation
+        ]
+        or payload.get("scheduler_topology_valid") is not True
+        or not isinstance(jobs, list)
+        or len(jobs) != len(manifest["jobs"])
+        or not isinstance(provenance_id, str)
+        or _SHA256.fullmatch(provenance_id) is None
+        or provenance_id != _sha256_bytes(_canonical_json(identity))
+        or stat.S_IMODE(path.stat().st_mode) & 0o222
+        or path.stat().st_nlink != 1
+    ):
+        raise ChainError(
+            "bootstrap generation scheduler provenance is invalid"
+        )
+    for job, manifest_row, receipt_row in zip(
+        jobs, manifest["jobs"], receipt["jobs"], strict=True
+    ):
+        origin_generation = int(receipt_row.get("generation", 0))
+        if (
+            not isinstance(job, dict)
+            or set(job)
+            != {
+                "name",
+                "job_id",
+                "comment",
+                "job_name",
+                "script_sha256",
+                "submit_line_sha256",
+                "submit_argv",
+                "submit_line_exact",
+                "scontrol_command",
+                "scontrol_requeue",
+                "scontrol_dependency_pairs",
+                "scontrol_reason",
+                "dependency_type",
+                "dependency_job_ids",
+                "initial_hold",
+                "spooled_script_sha256",
+                "spooled_script_exact_match",
+                "origin_generation",
+            }
+            or job.get("name") != manifest_row["name"]
+            or job.get("job_id") != receipt_row["job_id"]
+            or job.get("comment") != receipt_row["comment"]
+            or job.get("job_name") != manifest_row["job_name"]
+            or job.get("script_sha256")
+            != manifest_row["script_sha256"]
+            or job.get("scontrol_command") != receipt_row["script"]
+            or job.get("scontrol_requeue") != 0
+            or job.get("dependency_type")
+            != receipt_row["dependency_type"]
+            or job.get("dependency_job_ids")
+            != receipt_row["dependency_job_ids"]
+            or job.get("initial_hold")
+            is not (
+                manifest_row["name"]
+                in origin_roots.get(origin_generation, set())
+            )
+            or job.get("submit_argv")
+            != submission_argv(
+                manifest_row,
+                dependency_job_ids=receipt_row[
+                    "dependency_job_ids"
+                ],
+                comment=receipt_row["comment"],
+                initial_hold=bool(job.get("initial_hold")),
+            )
+            or job.get("scontrol_dependency_pairs")
+            != [
+                {"type": dependency_type, "job_id": dependency_id}
+                for dependency_type, dependency_id in sorted(
+                    (
+                        receipt_row["dependency_type"],
+                        str(dependency_id),
+                    )
+                    for dependency_id in receipt_row[
+                        "dependency_job_ids"
+                    ]
+                )
+            ]
+            or not isinstance(job.get("scontrol_reason"), str)
+            or (
+                job.get("initial_hold") is True
+                and str(job.get("scontrol_reason", "")).lower()
+                != "jobhelduser"
+            )
+            or job.get("spooled_script_sha256")
+            != manifest_row["script_sha256"]
+            or job.get("submit_line_exact") is not True
+            or job.get("spooled_script_exact_match") is not True
+            or _SHA256.fullmatch(
+                str(job.get("submit_line_sha256", ""))
+            )
+            is None
+            or job.get("origin_generation") != origin_generation
+            or not 0 <= origin_generation <= generation
+        ):
+            raise ChainError(
+                "bootstrap generation job provenance drifted"
+            )
+    return payload
+
+
+def _ensure_bootstrap_generation_provenance(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    generation: int,
+    states: Mapping[str, Mapping[str, Any]],
+    runner: Runner,
+) -> dict[str, Any]:
+    path = _bootstrap_generation_provenance_path(
+        manifest_path=manifest_path, generation=generation
+    )
+    if path.exists() or path.is_symlink():
+        validated = _validate_bootstrap_generation_provenance(
+            path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+        )
+        _validate_bootstrap_scheduler_namespace(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            runner=runner,
+        )
+        release_path = receipt_path.parent / ROOT_RELEASE_COMPLETE_NAME
+        launch_path = receipt_path.parent / LAUNCH_COMPLETE_NAME
+        if (
+            release_path.exists()
+            or release_path.is_symlink()
+            or launch_path.exists()
+            or launch_path.is_symlink()
+        ):
+            if not (
+                (release_path.exists() or release_path.is_symlink())
+                and (launch_path.exists() or launch_path.is_symlink())
+            ):
+                raise ChainError(
+                    "bootstrap generation launch markers are only partially "
+                    "published"
+                )
+            root_record = _generation_root_records(
+                receipt, generation=generation
+            )[0]
+            release = _validate_root_release_complete(
+                release_path,
+                receipt_path=receipt_path,
+                receipt=receipt,
+                root_record=root_record,
+            )
+            _validate_launch_complete(
+                launch_path,
+                receipt_path=receipt_path,
+                receipt=receipt,
+                release_path=release_path,
+                release=release,
+            )
+            # Scheduler acceptance is deliberately frozen while every frontier
+            # root is held.  Once the marker-last launch transaction exists,
+            # replay authenticates that sealed cut plus complete namespace
+            # truth; it must not demand that a correctly released root return
+            # to JobHeldUser or recapture a mutable post-release spool state.
+            return validated
+        release_intent_path = (
+            receipt_path.parent / ROOT_RELEASE_INTENT_NAME
+        )
+        if (
+            release_intent_path.exists()
+            or release_intent_path.is_symlink()
+        ):
+            release_intent_path = _require_canonical_path(
+                release_intent_path,
+                description="bootstrap generation release intent",
+                kind="file",
+            )
+            release_intent = _read_json(
+                release_intent_path,
+                description="bootstrap generation release intent",
+            )
+            root_records = _generation_root_records(
+                receipt, generation=generation
+            )
+            root_names = [
+                str(record["name"]) for record in root_records
+            ]
+            root_job_ids = [
+                str(record["job_id"]) for record in root_records
+            ]
+            root_comments = [
+                str(record["comment"]) for record in root_records
+            ]
+            if (
+                release_intent.get("receipt") != str(receipt_path)
+                or release_intent.get("receipt_sha256")
+                != _sha256(receipt_path)
+                or release_intent.get("receipt_id")
+                != receipt["receipt_id"]
+                or release_intent.get("root_names") != root_names
+                or release_intent.get("root_job_ids") != root_job_ids
+                or release_intent.get("root_comments") != root_comments
+                or release_intent.get("commands")
+                != [
+                    ["scontrol", "release", job_id]
+                    for job_id in root_job_ids
+                ]
+            ):
+                raise ChainError(
+                    "bootstrap generation release intent drifted"
+                )
+            attempts_root = receipt_path.parent / "root_release_attempts"
+            attempts = (
+                sorted(attempts_root.glob("attempt-*.intent.json"))
+                if attempts_root.is_dir()
+                and not attempts_root.is_symlink()
+                else []
+            )
+            attempted: set[str] = set()
+            for index, attempt_path in enumerate(attempts, start=1):
+                attempt = _read_json(
+                    _require_canonical_path(
+                        attempt_path,
+                        description=(
+                            "bootstrap generation release attempt"
+                        ),
+                        kind="file",
+                    ),
+                    description="bootstrap generation release attempt",
+                )
+                name = str(attempt.get("root_name", ""))
+                if (
+                    attempt_path.name
+                    != f"attempt-{index:04d}.intent.json"
+                    or name not in root_names
+                    or attempt.get("attempt") != index
+                    or attempt.get("job_id")
+                    != root_job_ids[root_names.index(name)]
+                    or attempt.get("command")
+                    != release_intent["commands"][
+                        root_names.index(name)
+                    ]
+                ):
+                    raise ChainError(
+                        "bootstrap generation release attempt drifted"
+                    )
+                attempted.add(name)
+            current_names = set(validated["current_generation_names"])
+            invalid_transition = []
+            for name in current_names:
+                state = states[name]
+                if name in root_names:
+                    if name not in attempted:
+                        details = _show_recovery_job(
+                            str(state["job_id"]), runner=runner
+                        )
+                        held = (
+                            state.get("state") == "PENDING"
+                            and state.get("active") is True
+                            and details["returncode"] == 0
+                            and str(
+                                details["fields"].get("Reason", "")
+                            ).lower()
+                            == "jobhelduser"
+                        )
+                        if not held:
+                            invalid_transition.append(name)
+                elif (
+                    state.get("state") != "PENDING"
+                    or state.get("active") is not True
+                ):
+                    invalid_transition.append(name)
+            if invalid_transition:
+                raise ChainError(
+                    "bootstrap release boundary contains an unjournaled "
+                    f"scheduler transition: {sorted(invalid_transition)}"
+                )
+            return validated
+        state_values = {
+            str(item.get("state")) for item in states.values()
+        }
+        if (
+            len(states) == len(manifest["jobs"])
+            and all(item.get("active") is False for item in states.values())
+            and state_values
+            <= _BOOTSTRAP_INFRASTRUCTURE_TERMINAL_STATES
+            | {"COMPLETED"}
+            and bool(
+                state_values
+                & _BOOTSTRAP_INFRASTRUCTURE_TERMINAL_STATES
+            )
+        ):
+            # Recovery-namespace cancellation destroys the held topology but not
+            # its already sealed acceptance. Two scheduler-complete observations
+            # of this exact terminal namespace authorize only a new held
+            # descendant generation.
+            return validated
+        generation_root_names = list(validated["generation_root_names"])
+        current_names = set(validated["current_generation_names"])
+        missing_active = sorted(
+            name
+            for name in current_names
+            if states[name].get("state") == "PENDING"
+            and states[name].get("active") is not True
+        )
+        if missing_active:
+            raise ChainError(
+                "squeue set is incomplete for bootstrap generation jobs: "
+                f"{missing_active}"
+            )
+        missing_accounting = sorted(
+            name
+            for name in current_names
+            if states[name].get("active") is True
+            and not isinstance(states[name].get("submit_line"), str)
+        )
+        if missing_accounting:
+            raise ChainError(
+                "sacct set is incomplete for bootstrap generation jobs: "
+                f"{missing_accounting}"
+            )
+        if any(
+            (
+                states[name].get("state") != "PENDING"
+                or states[name].get("active") is not True
+            )
+            if name in current_names
+            else (
+                states[name].get("state") != "COMPLETED"
+                or states[name].get("active") is not False
+            )
+            for name in states
+        ):
+            raise ChainError(
+                "live bootstrap generation topology drifted from its "
+                "sealed acceptance"
+            )
+        sealed_by_name = {
+            str(row["name"]): row for row in validated["jobs"]
+        }
+        receipt_by_name = {
+            str(row["name"]): row for row in receipt["jobs"]
+        }
+        manifest_by_name = {
+            str(row["name"]): row for row in manifest["jobs"]
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="schema5-bootstrap-acceptance-replay-"
+        ) as spool_directory:
+            spool_root = Path(spool_directory)
+            for index, name in enumerate(validated["current_generation_names"]):
+                current = _bootstrap_live_job_provenance(
+                    manifest_row=manifest_by_name[name],
+                    receipt_row=receipt_by_name[name],
+                    state=states[name],
+                    runner=runner,
+                    spool_path=spool_root / f"{index:02d}-{name}.sbatch",
+                    origin_generation=int(
+                        receipt_by_name[name].get("generation", 0)
+                    ),
+                    generation_root_names=generation_root_names,
+                )
+                if current != sealed_by_name[name]:
+                    raise ChainError(
+                        "live bootstrap scheduler acceptance drifted for "
+                        f"{name}"
+                    )
+        return validated
+    namespace = _validate_bootstrap_scheduler_namespace(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        runner=runner,
+    )
+    parent: dict[str, Any] | None = None
+    parent_path: Path | None = None
+    if generation > 0:
+        parent_receipt_path = _require_canonical_path(
+            Path(str(receipt["parent_receipt"])),
+            description="bootstrap parent receipt",
+            kind="file",
+        )
+        parent_receipt = _read_json(
+            parent_receipt_path,
+            description="bootstrap parent receipt",
+        )
+        parent_generation = int(parent_receipt.get("repair_generation", 0))
+        parent_path = _bootstrap_generation_provenance_path(
+            manifest_path=manifest_path,
+            generation=parent_generation,
+        )
+        parent = _validate_bootstrap_generation_provenance(
+            parent_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=parent_receipt,
+            receipt_path=parent_receipt_path,
+            generation=parent_generation,
+        )
+    parent_jobs = (
+        {}
+        if parent is None
+        else {str(row["name"]): row for row in parent["jobs"]}
+    )
+    generation_root_names = (
+        ["source_checkout"]
+        if generation == 0
+        else list(receipt.get("held_root_names", []))
+    )
+    if not generation_root_names:
+        raise ChainError(
+            "bootstrap generation has no exact held frontier"
+        )
+    current_generation_names = {
+        str(row["name"])
+        for row in receipt["jobs"]
+        if int(row.get("generation", 0)) == generation
+    }
+    if generation == 0:
+        current_generation_names = {
+            str(row["name"]) for row in receipt["jobs"]
+        }
+    if not current_generation_names or any(
+        (
+            states[name].get("state") != "PENDING"
+            or states[name].get("active") is not True
+        )
+        if name in current_generation_names
+        else (
+            states[name].get("state") != "COMPLETED"
+            or states[name].get("active") is not False
+        )
+        for name in states
+    ):
+        raise ChainError(
+            "bootstrap generation scheduler topology is not one held "
+            "PENDING suffix over completed ancestors"
+        )
+    jobs: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(
+        prefix="schema5-bootstrap-provenance-"
+    ) as spool_directory:
+        spool_root = Path(spool_directory)
+        for index, (manifest_row, receipt_row) in enumerate(
+            zip(manifest["jobs"], receipt["jobs"], strict=True)
+        ):
+            name = str(manifest_row["name"])
+            origin_generation = int(receipt_row.get("generation", 0))
+            if origin_generation < generation:
+                inherited = parent_jobs.get(name)
+                if (
+                    not isinstance(inherited, dict)
+                    or inherited.get("job_id") != receipt_row["job_id"]
+                    or inherited.get("origin_generation")
+                    != origin_generation
+                ):
+                    raise ChainError(
+                        f"bootstrap inherited provenance drifted for {name}"
+                    )
+                jobs.append(dict(inherited))
+            else:
+                jobs.append(
+                    _bootstrap_live_job_provenance(
+                        manifest_row=manifest_row,
+                        receipt_row=receipt_row,
+                        state=states[name],
+                        runner=runner,
+                        spool_path=spool_root / f"{index:02d}-{name}.sbatch",
+                        origin_generation=origin_generation,
+                        generation_root_names=generation_root_names,
+                    )
+                )
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r3-bootstrap-generation-provenance-v1",
+        "passed": True,
+        "release_git_commit": manifest["release_git_commit"],
+        "release_tag_object": manifest["release_tag_object"],
+        "chain_id": manifest["chain_id"],
+        "chain_manifest": str(manifest_path),
+        "chain_manifest_sha256": _sha256(manifest_path),
+        "submission_receipt": str(receipt_path),
+        "submission_receipt_sha256": _sha256(receipt_path),
+        "submission_receipt_id": receipt["receipt_id"],
+        "repair_generation": generation,
+        "parent_provenance": (
+            None if parent_path is None else str(parent_path)
+        ),
+        "parent_provenance_sha256": (
+            None if parent_path is None else _sha256(parent_path)
+        ),
+        "parent_provenance_id": (
+            None if parent is None else parent["provenance_id"]
+        ),
+        "namespace_lineage_receipt_ids": namespace[
+            "lineage_receipt_ids"
+        ],
+        "namespace_bound_job_ids": namespace["bound_job_ids"],
+        "namespace_scan_complete": True,
+        "generation_root_names": generation_root_names,
+        "current_generation_names": sorted(
+            current_generation_names,
+            key=lambda value: [
+                str(row["name"]) for row in manifest["jobs"]
+            ].index(value),
+        ),
+        "scheduler_topology_valid": True,
+        "jobs": jobs,
+    }
+    payload["provenance_id"] = _sha256_bytes(_canonical_json(payload))
+    _write_immutable_json_once(
+        path,
+        payload,
+        description="marker-last bootstrap generation scheduler provenance",
+    )
+    return _validate_bootstrap_generation_provenance(
+        path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        generation=generation,
+    )
+
+
+def _validate_bootstrap_status_payload(
+    payload: Mapping[str, Any],
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    generation: int,
+    provenance: Mapping[str, Any],
+) -> None:
+    """Validate one status cut's exact receipt ancestry and job-ID closure."""
+
+    required = {
+        "schema_version",
+        "protocol",
+        "passed",
+        "observed_at_timestamp",
+        "release_git_commit",
+        "release_tag_object",
+        "chain_id",
+        "chain_manifest",
+        "chain_manifest_sha256",
+        "submission_receipt",
+        "submission_receipt_sha256",
+        "submission_receipt_id",
+        "generation_provenance",
+        "generation_provenance_sha256",
+        "generation_provenance_id",
+        "anchor_submission_receipt",
+        "anchor_submission_receipt_sha256",
+        "anchor_submission_receipt_id",
+        "descendant_chain_validated",
+        "repair_generation",
+        "root_name",
+        "root_job_id",
+        "root_names",
+        "root_job_ids",
+        "roots_held",
+        "root_held",
+        "squeue_complete",
+        "sacct_complete",
+        "namespace_scan_complete",
+        "namespace_lineage_receipt_ids",
+        "namespace_lineage_job_ids",
+        "namespace_bound_job_ids",
+        "ambiguous_jobs",
+        "job_count",
+        "jobs",
+        "recovery_namespace_cancelled",
+        "anchor_launch_authorized",
+        "anchor_launch_id",
+        "anchor_armed_authorized",
+        "anchor_armed_id",
+        "anchor_release_intent_authorized",
+        "anchor_release_intent_sha256",
+        "descendant_armed",
+        "descendant_armed_id",
+        "descendant_rearm_required",
+        "descendant_release_required",
+        "handoff_complete",
+        "watchdog_scientific_jobs_submitted",
+        "observation_id",
+    }
+    identity = dict(payload)
+    observation_id = identity.pop("observation_id", None)
+    lineage = _bootstrap_receipt_lineage(
+        receipt=receipt,
+        receipt_path=receipt_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+    expected_lineage_ids = [
+        str(lineage_receipt["receipt_id"])
+        for _path, lineage_receipt in lineage
+    ]
+    expected_bound_ids = sorted(
+        {
+            str(row["job_id"])
+            for _path, lineage_receipt in lineage
+            for row in lineage_receipt["jobs"]
+        },
+        key=int,
+    )
+    expected_lineage_job_ids = [
+        [str(row["job_id"]) for row in lineage_receipt["jobs"]]
+        for _path, lineage_receipt in lineage
+    ]
+    root_records = _generation_root_records(
+        receipt, generation=generation
+    )
+    expected_root_names = [
+        str(record["name"]) for record in root_records
+    ]
+    expected_root_job_ids = [
+        str(record["job_id"]) for record in root_records
+    ]
+    expected_jobs = receipt.get("jobs")
+    status_jobs = payload.get("jobs")
+    anchor_path, anchor_receipt = lineage[0]
+    if (
+        set(payload) != required
+        or payload.get("schema_version") != 1
+        or payload.get("protocol")
+        != "schema5-v1.2-r3-bootstrap-status-v1"
+        or payload.get("passed") is not True
+        or payload.get("release_git_commit")
+        != manifest["release_git_commit"]
+        or payload.get("release_tag_object")
+        != manifest["release_tag_object"]
+        or payload.get("chain_id") != manifest["chain_id"]
+        or payload.get("chain_manifest") != str(manifest_path)
+        or payload.get("chain_manifest_sha256") != _sha256(manifest_path)
+        or payload.get("submission_receipt") != str(receipt_path)
+        or payload.get("submission_receipt_sha256")
+        != _sha256(receipt_path)
+        or payload.get("submission_receipt_id")
+        != receipt["receipt_id"]
+        or payload.get("repair_generation") != generation
+        or payload.get("generation_provenance")
+        != str(
+            _bootstrap_generation_provenance_path(
+                manifest_path=manifest_path, generation=generation
+            )
+        )
+        or payload.get("generation_provenance_sha256")
+        != _sha256(
+            _bootstrap_generation_provenance_path(
+                manifest_path=manifest_path, generation=generation
+            )
+        )
+        or payload.get("generation_provenance_id")
+        != provenance["provenance_id"]
+        or payload.get("anchor_submission_receipt") != str(anchor_path)
+        or payload.get("anchor_submission_receipt_sha256")
+        != _sha256(anchor_path)
+        or payload.get("anchor_submission_receipt_id")
+        != anchor_receipt["receipt_id"]
+        or payload.get("descendant_chain_validated") is not True
+        or payload.get("namespace_scan_complete") is not True
+        or payload.get("namespace_lineage_receipt_ids")
+        != expected_lineage_ids
+        or payload.get("namespace_lineage_job_ids")
+        != expected_lineage_job_ids
+        or payload.get("namespace_bound_job_ids")
+        != expected_bound_ids
+        or provenance.get("namespace_lineage_receipt_ids")
+        != expected_lineage_ids
+        or provenance.get("namespace_bound_job_ids")
+        != expected_bound_ids
+        or payload.get("root_names") != expected_root_names
+        or payload.get("root_job_ids") != expected_root_job_ids
+        or payload.get("root_name") != expected_root_names[0]
+        or payload.get("root_job_id") != expected_root_job_ids[0]
+        or payload.get("roots_held") is not payload.get("root_held")
+        or payload.get("job_count") != len(manifest["jobs"])
+        or not isinstance(expected_jobs, list)
+        or not isinstance(status_jobs, list)
+        or len(status_jobs) != len(expected_jobs)
+        or not isinstance(observation_id, str)
+        or _SHA256.fullmatch(observation_id) is None
+        or observation_id != _sha256_bytes(_canonical_json(identity))
+    ):
+        raise ChainError(
+            "bootstrap status receipt ancestry or bound-ID contract drifted"
+        )
+    provenance_by_name = {
+        str(row["name"]): row
+        for row in provenance["jobs"]
+    }
+    status_job_fields = {
+        "name",
+        "job_id",
+        "comment",
+        "job_name",
+        "state",
+        "active",
+        "script_sha256",
+        "submit_line_sha256",
+        "submit_line_exact",
+        "scontrol_command",
+        "scontrol_requeue",
+        "spooled_script_sha256",
+        "spooled_script_exact_match",
+    }
+    observed_current_ids: set[str] = set()
+    for status_row, receipt_row, manifest_row in zip(
+        status_jobs, expected_jobs, manifest["jobs"], strict=True
+    ):
+        sealed = provenance_by_name.get(str(receipt_row["name"]))
+        job_id = (
+            str(status_row.get("job_id", ""))
+            if isinstance(status_row, Mapping)
+            else ""
+        )
+        if (
+            not isinstance(status_row, Mapping)
+            or set(status_row) != status_job_fields
+            or not isinstance(sealed, Mapping)
+            or status_row.get("name") != receipt_row["name"]
+            or job_id != str(receipt_row["job_id"])
+            or not job_id.isdigit()
+            or job_id in observed_current_ids
+            or status_row.get("comment") != receipt_row["comment"]
+            or status_row.get("job_name") != manifest_row["job_name"]
+            or any(
+                status_row.get(field) != sealed.get(field)
+                for field in (
+                    "name",
+                    "job_id",
+                    "comment",
+                    "job_name",
+                    "script_sha256",
+                    "submit_line_sha256",
+                    "submit_line_exact",
+                    "scontrol_command",
+                    "scontrol_requeue",
+                    "spooled_script_sha256",
+                    "spooled_script_exact_match",
+                )
+            )
+            or not isinstance(status_row.get("state"), str)
+            or not isinstance(status_row.get("active"), bool)
+        ):
+            raise ChainError(
+                "bootstrap status current-generation job identity drifted"
+            )
+        observed_current_ids.add(job_id)
+    if not observed_current_ids <= set(expected_bound_ids):
+        raise ChainError(
+            "bootstrap status current job IDs escape the bound ancestry"
+        )
+
+
+def _validate_bootstrap_observation_pair(
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+    generation: int,
+    require_cancelled: bool,
+    require_release: bool,
+    require_rearm: bool = False,
+) -> list[dict[str, Any]]:
+    observation_root = (
+        receipt_path.parent / BOOTSTRAP_OBSERVATIONS_ROOT_NAME
+    )
+    observations = (
+        sorted(observation_root.glob("observation-*.json"))
+        if observation_root.is_dir() and not observation_root.is_symlink()
+        else []
+    )
+    if len(observations) < 2:
+        raise ChainError(
+            "bootstrap repair requires two persisted observations"
+        )
+    selected = observations[-2:]
+    payloads = [
+        _read_json(path, description="bootstrap scheduler observation")
+        for path in selected
+    ]
+    expected_same = (
+        "submission_receipt",
+        "submission_receipt_sha256",
+        "submission_receipt_id",
+        "repair_generation",
+        "root_name",
+        "root_job_id",
+        "root_names",
+        "root_job_ids",
+        "roots_held",
+        "anchor_launch_authorized",
+        "anchor_launch_id",
+        "anchor_armed_authorized",
+        "anchor_armed_id",
+        "anchor_release_intent_authorized",
+        "anchor_release_intent_sha256",
+        "descendant_armed",
+        "descendant_armed_id",
+        "descendant_rearm_required",
+        "descendant_release_required",
+        "generation_provenance",
+        "generation_provenance_sha256",
+        "generation_provenance_id",
+        "namespace_lineage_receipt_ids",
+        "namespace_lineage_job_ids",
+        "namespace_bound_job_ids",
+    )
+    if (
+        any(
+            stat.S_IMODE(path.stat().st_mode) & 0o222
+            or path.stat().st_nlink != 1
+            for path in selected
+        )
+        or any(
+            payload.get("protocol")
+            != "schema5-v1.2-r3-bootstrap-status-v1"
+            or payload.get("passed") is not True
+            or payload.get("release_git_commit")
+            != manifest["release_git_commit"]
+            or payload.get("release_tag_object")
+            != manifest["release_tag_object"]
+            or payload.get("chain_id") != manifest["chain_id"]
+            or payload.get("submission_receipt_id")
+            != receipt.get("receipt_id")
+            or payload.get("submission_receipt_sha256")
+            != _sha256(receipt_path)
+            or payload.get("repair_generation") != generation
+            or payload.get("squeue_complete") is not True
+            or payload.get("sacct_complete") is not True
+            or payload.get("ambiguous_jobs") != 0
+            or payload.get("handoff_complete") is not False
+            or payload.get("watchdog_scientific_jobs_submitted") != 0
+            or payload.get("observation_id")
+            != _sha256_bytes(
+                _canonical_json(
+                    {
+                        key: value
+                        for key, value in payload.items()
+                        if key != "observation_id"
+                    }
+                )
+            )
+            or (
+                require_cancelled
+                and payload.get("recovery_namespace_cancelled") is not True
+            )
+            or (
+                require_release
+                and payload.get("descendant_release_required") is not True
+            )
+            or (
+                require_rearm
+                and payload.get("descendant_rearm_required") is not True
+            )
+            for payload in payloads
+        )
+        or any(
+            payloads[0].get(field) != payloads[1].get(field)
+            for field in expected_same
+        )
+        or not isinstance(
+            payloads[0].get("observed_at_timestamp"), (int, float)
+        )
+        or isinstance(
+            payloads[0].get("observed_at_timestamp"), bool
+        )
+        or not isinstance(
+            payloads[1].get("observed_at_timestamp"), (int, float)
+        )
+        or isinstance(
+            payloads[1].get("observed_at_timestamp"), bool
+        )
+        or not math.isfinite(
+            float(payloads[0]["observed_at_timestamp"])
+        )
+        or not math.isfinite(
+            float(payloads[1]["observed_at_timestamp"])
+        )
+        or float(payloads[1]["observed_at_timestamp"])
+        - float(payloads[0]["observed_at_timestamp"])
+        < 60.0
+        or payloads[0]["observation_id"]
+        == payloads[1]["observation_id"]
+    ):
+        raise ChainError(
+            "bootstrap scheduler observations do not authorize repair"
+        )
+    provenance_path = _bootstrap_generation_provenance_path(
+        manifest_path=manifest_path,
+        generation=generation,
+    )
+    provenance = _validate_bootstrap_generation_provenance(
+        provenance_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        generation=generation,
+    )
+    if (
+        payloads[0].get("generation_provenance") != str(provenance_path)
+        or payloads[0].get("generation_provenance_sha256")
+        != _sha256(provenance_path)
+        or payloads[0].get("generation_provenance_id")
+        != provenance["provenance_id"]
+    ):
+        raise ChainError(
+            "bootstrap scheduler observations lost generation provenance"
+        )
+    for payload in payloads:
+        _validate_bootstrap_status_payload(
+            payload,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            provenance=provenance,
+        )
+    return [
+        dict(payload)
+        | {
+            "observation_artifact": str(path),
+            "observation_artifact_sha256": _sha256(path),
+        }
+        for payload, path in zip(payloads, selected, strict=True)
+    ]
+
+
+def bootstrap_status(
+    manifest_path: Path,
+    *,
+    runner: Runner | None = None,
+    now: float | None = None,
+    record: bool = False,
+) -> dict[str, Any]:
+    """Observe the exact pre-handoff recovery namespace without mutation."""
+
+    manifest_path = _lexical_absolute(manifest_path)
+    verify_chain(manifest_path)
+    manifest = _read_json(
+        manifest_path, description="recovery-chain manifest"
+    )
+    runner = (
+        (
+            lambda argv: subprocess.run(
+                argv, text=True, capture_output=True, check=False
+            )
+        )
+        if runner is None
+        else runner
+    )
+    timestamp = time.time() if now is None else float(now)
+    if not math.isfinite(timestamp):
+        raise ChainError("bootstrap observation timestamp must be finite")
+    receipt, receipt_path, generation, pending = _latest_chain_receipt(
+        manifest=manifest, manifest_path=manifest_path
+    )
+    anchor_receipt_path = manifest_path.parent / SUBMISSION_RECEIPT_NAME
+    anchor_receipt = _validate_submission_receipt(
+        anchor_receipt_path,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        comments=_submission_comments(manifest),
+    )
+    if pending is not None:
+        raise ChainError(
+            "bootstrap status refuses an incomplete repair transaction"
+        )
+    anchor_launch = _bootstrap_anchor_launch_authorization(
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+    anchor_armed = _bootstrap_anchor_armed_authorization(
+        manifest=manifest,
+        manifest_path=manifest_path,
+    )
+    anchor_release_intent = (
+        _bootstrap_anchor_release_intent_authorization(
+            manifest=manifest,
+            manifest_path=manifest_path,
+        )
+    )
+    states = _query_receipt_job_states(
+        receipt=receipt, manifest=manifest, runner=runner
+    )
+    namespace = _validate_bootstrap_scheduler_namespace(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        runner=runner,
+    )
+    if generation == 0:
+        root_names = ["source_checkout"]
+    else:
+        root_names = list(receipt.get("held_root_names", []))
+    root_name = root_names[0] if root_names else ""
+    if not root_name or root_name not in states:
+        raise ChainError("bootstrap receipt has no exact generation root")
+    root = states[root_name]
+    root_record = next(
+        row for row in receipt["jobs"] if row["name"] == root_name
+    )
+    root_details_by_name = {
+        name: _show_recovery_job(
+            str(states[name]["job_id"]), runner=runner
+        )
+        for name in root_names
+    }
+    root_held = bool(root_names) and all(
+        details["returncode"] == 0
+        and _normalize_slurm_state(
+            str(details["fields"].get("JobState", ""))
+        )
+        == "PENDING"
+        and str(details["fields"].get("Reason", "")).lower()
+        == "jobhelduser"
+        for details in root_details_by_name.values()
+    )
+    state_values = {str(item["state"]) for item in states.values()}
+    recovery_namespace_cancelled = (
+        len(states) == len(manifest["jobs"])
+        and not any(item["active"] for item in states.values())
+        and state_values
+        <= _BOOTSTRAP_INFRASTRUCTURE_TERMINAL_STATES | {"COMPLETED"}
+        and bool(
+            state_values & _BOOTSTRAP_INFRASTRUCTURE_TERMINAL_STATES
+        )
+    )
+    handoff_path = (
+        manifest_path.parent / BOOTSTRAP_WATCHDOG_HANDOFF_NAME
+    )
+    handoff_complete = False
+    if handoff_path.exists() or handoff_path.is_symlink():
+        verify_bootstrap_watchdog_handoff(manifest_path)
+        handoff_complete = True
+    descendant_armed_path = (
+        receipt_path.parent / BOOTSTRAP_DESCENDANT_ARMED_NAME
+    )
+    descendant_armed: Mapping[str, Any] | None = None
+    if generation > 0 and (
+        descendant_armed_path.exists() or descendant_armed_path.is_symlink()
+    ):
+        descendant_armed = _validate_bootstrap_descendant_armed(
+            descendant_armed_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            root_record=root_record,
+        )
+    provenance_path = _bootstrap_generation_provenance_path(
+        manifest_path=manifest_path, generation=generation
+    )
+    if (
+        record
+        and (provenance_path.exists() or provenance_path.is_symlink())
+    ):
+        provenance = _ensure_bootstrap_generation_provenance(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            states=states,
+            runner=runner,
+        )
+    elif provenance_path.exists() or provenance_path.is_symlink():
+        provenance = _validate_bootstrap_generation_provenance(
+            provenance_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+        )
+    elif record:
+        provenance = _ensure_bootstrap_generation_provenance(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=receipt,
+            receipt_path=receipt_path,
+            generation=generation,
+            states=states,
+            runner=runner,
+        )
+    else:
+        provenance = None
+    provenance_jobs = (
+        {}
+        if provenance is None
+        else {str(row["name"]): row for row in provenance["jobs"]}
+    )
+    jobs: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(
+        prefix="schema5-bootstrap-spool-"
+    ) as spool_directory:
+        spool_root = Path(spool_directory)
+        for index, manifest_row in enumerate(manifest["jobs"]):
+            name = str(manifest_row["name"])
+            item = states[name]
+            receipt_row = next(
+                row for row in receipt["jobs"] if row["name"] == name
+            )
+            sealed = provenance_jobs.get(name)
+            if item["active"] or sealed is None:
+                current = _bootstrap_live_job_provenance(
+                    manifest_row=manifest_row,
+                    receipt_row=receipt_row,
+                    state=item,
+                    runner=runner,
+                    spool_path=spool_root / f"{index:02d}-{name}.sbatch",
+                    origin_generation=int(
+                        receipt_row.get("generation", 0)
+                    ),
+                    generation_root_names=(
+                        ["source_checkout"]
+                        if generation == 0
+                        else list(receipt["held_root_names"])
+                    ),
+                )
+                if sealed is not None and current != sealed:
+                    raise ChainError(
+                        f"live bootstrap provenance drifted for {name}"
+                    )
+                sealed = current
+            if not isinstance(sealed, Mapping):
+                raise ChainError(
+                    f"bootstrap provenance is unavailable for {name}"
+                )
+            jobs.append(
+                {
+                    "name": sealed["name"],
+                    "job_id": sealed["job_id"],
+                    "comment": sealed["comment"],
+                    "job_name": sealed["job_name"],
+                    "state": item["state"],
+                    "active": item["active"],
+                    "script_sha256": sealed["script_sha256"],
+                    "submit_line_sha256": sealed[
+                        "submit_line_sha256"
+                    ],
+                    "submit_line_exact": sealed["submit_line_exact"],
+                    "scontrol_command": sealed["scontrol_command"],
+                    "scontrol_requeue": sealed["scontrol_requeue"],
+                    "spooled_script_sha256": sealed[
+                        "spooled_script_sha256"
+                    ],
+                    "spooled_script_exact_match": sealed[
+                        "spooled_script_exact_match"
+                    ],
+                }
+            )
+    observation: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r3-bootstrap-status-v1",
+        "passed": True,
+        "observed_at_timestamp": timestamp,
+        "release_git_commit": manifest["release_git_commit"],
+        "release_tag_object": manifest["release_tag_object"],
+        "chain_id": manifest["chain_id"],
+        "chain_manifest": str(manifest_path),
+        "chain_manifest_sha256": _sha256(manifest_path),
+        "submission_receipt": str(receipt_path),
+        "submission_receipt_sha256": _sha256(receipt_path),
+        "submission_receipt_id": receipt["receipt_id"],
+        "generation_provenance": (
+            None if provenance is None else str(provenance_path)
+        ),
+        "generation_provenance_sha256": (
+            None if provenance is None else _sha256(provenance_path)
+        ),
+        "generation_provenance_id": (
+            None if provenance is None else provenance["provenance_id"]
+        ),
+        "anchor_submission_receipt": str(anchor_receipt_path),
+        "anchor_submission_receipt_sha256": _sha256(
+            anchor_receipt_path
+        ),
+        "anchor_submission_receipt_id": anchor_receipt["receipt_id"],
+        "descendant_chain_validated": True,
+        "repair_generation": generation,
+        "root_name": root_name,
+        "root_job_id": root["job_id"],
+        "root_names": root_names,
+        "root_job_ids": [states[name]["job_id"] for name in root_names],
+        "roots_held": root_held,
+        "root_held": root_held,
+        "squeue_complete": True,
+        "sacct_complete": True,
+        "namespace_scan_complete": namespace["complete"],
+        "namespace_lineage_receipt_ids": namespace[
+            "lineage_receipt_ids"
+        ],
+        "namespace_lineage_job_ids": namespace["lineage_job_ids"],
+        "namespace_bound_job_ids": namespace["bound_job_ids"],
+        "ambiguous_jobs": 0,
+        "job_count": len(jobs),
+        "jobs": jobs,
+        "recovery_namespace_cancelled": recovery_namespace_cancelled,
+        "anchor_launch_authorized": anchor_launch is not None,
+        "anchor_launch_id": (
+            None if anchor_launch is None else anchor_launch["launch_id"]
+        ),
+        "anchor_armed_authorized": anchor_armed is not None,
+        "anchor_armed_id": (
+            None if anchor_armed is None else anchor_armed["armed_id"]
+        ),
+        "anchor_release_intent_authorized": (
+            anchor_release_intent is not None
+        ),
+        "anchor_release_intent_sha256": (
+            None
+            if anchor_release_intent is None
+            else anchor_release_intent["intent_sha256"]
+        ),
+        "descendant_armed": (
+            None
+            if descendant_armed is None
+            else str(descendant_armed_path)
+        ),
+        "descendant_armed_id": (
+            None
+            if descendant_armed is None
+            else descendant_armed["marker_id"]
+        ),
+        "descendant_rearm_required": (
+            generation > 0
+            and root_held
+            and anchor_armed is not None
+            and descendant_armed is None
+        ),
+        "descendant_release_required": (
+            generation > 0
+            and root_held
+            and (
+                anchor_launch is not None
+                or (
+                    anchor_release_intent is not None
+                    and descendant_armed is not None
+                )
+            )
+        ),
+        "handoff_complete": handoff_complete,
+        "watchdog_scientific_jobs_submitted": 0,
+    }
+    observation["observation_id"] = _sha256_bytes(
+        _canonical_json(observation)
+    )
+    if provenance is None:
+        raise ChainError(
+            "bootstrap status requires sealed generation provenance"
+        )
+    _validate_bootstrap_status_payload(
+        observation,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        generation=generation,
+        provenance=provenance,
+    )
+    if record:
+        observation_root = (
+            receipt_path.parent / BOOTSTRAP_OBSERVATIONS_ROOT_NAME
+        )
+        if observation_root.is_symlink():
+            raise ChainError("bootstrap observation root is symlinked")
+        observation_root.mkdir(parents=True, mode=0o750, exist_ok=True)
+        observation_path = observation_root / (
+            f"observation-{int(timestamp * 1_000_000):020d}-"
+            f"{observation['observation_id']}.json"
+        )
+        _write_immutable_json_once(
+            observation_path,
+            observation,
+            description="append-only bootstrap scheduler observation",
+        )
+        observation = observation | {
+            "observation_artifact": str(observation_path),
+            "observation_artifact_sha256": _sha256(observation_path),
+        }
+    return observation
+
+
 def repair_chain(
     manifest_path: Path,
     *,
     apply: bool = False,
     runner: Runner | None = None,
     now: float | None = None,
+    bootstrap: bool = False,
 ) -> dict[str, Any]:
     """Resubmit only the non-completed DAG suffix under a new durable generation."""
 
@@ -13363,29 +21319,55 @@ def repair_chain(
             base_journal_path,
             description="latest recovery submission journal",
         )
-        if base_generation == 0:
-            launched_root = "source_checkout"
-        else:
-            launched_roots = [
-                str(record["name"])
-                for record in base["jobs"]
-                if record.get("disposition") == "resubmitted"
-            ]
-            if not launched_roots:
-                raise ChainError("repair receipt has no resubmitted held root")
-            launched_root = launched_roots[0]
-        if apply:
-            _ensure_recovery_root_released(
-                evidence_root=base_path.parent,
+        launched_root_records = _generation_root_records(
+            base, generation=base_generation
+        )
+        launched_roots = [
+            str(record["name"]) for record in launched_root_records
+        ]
+        launched_root = launched_roots[0]
+        if bootstrap:
+            anchor_receipt_path = (
+                manifest_path.parent / SUBMISSION_RECEIPT_NAME
+            )
+            anchor_receipt = _validate_submission_receipt(
+                anchor_receipt_path,
                 manifest=manifest,
-                receipt_path=base_path,
-                receipt=base,
-                journal=base_journal,
-                root_name=launched_root,
-                runner=runner,
-                timestamp=boundary_timestamp(),
+                manifest_path=manifest_path,
+                comments=_submission_comments(manifest),
+            )
+            anchor_launch = _bootstrap_anchor_launch_authorization(
+                manifest=manifest,
+                manifest_path=manifest_path,
+            )
+            anchor_armed = _bootstrap_anchor_armed_authorization(
+                manifest=manifest,
+                manifest_path=manifest_path,
+            )
+            anchor_release_intent = (
+                _bootstrap_anchor_release_intent_authorization(
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                )
             )
         else:
+            anchor_receipt_path = None
+            anchor_receipt = None
+            anchor_launch = None
+            anchor_armed = None
+            anchor_release_intent = None
+        if bootstrap:
+            handoff_path = (
+                manifest_path.parent / BOOTSTRAP_WATCHDOG_HANDOFF_NAME
+            )
+            if handoff_path.exists() or handoff_path.is_symlink():
+                raise ChainError(
+                    "bootstrap repair authority ended at watchdog handoff"
+                )
+        else:
+            # Repair must never implicitly turn a held, externally
+            # unprotected DAG into a running one.  Initial release is the
+            # separate ``release-root`` transaction.
             release_path = base_path.parent / ROOT_RELEASE_COMPLETE_NAME
             launch_path = base_path.parent / LAUNCH_COMPLETE_NAME
             root_record = next(
@@ -13411,17 +21393,218 @@ def repair_chain(
         )
         active = sorted(name for name, item in states.items() if item["active"])
         if active:
+            if bootstrap and base_generation > 0:
+                provenance_path = _bootstrap_generation_provenance_path(
+                    manifest_path=manifest_path,
+                    generation=base_generation,
+                )
+                provenance = _ensure_bootstrap_generation_provenance(
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    receipt=base,
+                    receipt_path=base_path,
+                    generation=base_generation,
+                    states=states,
+                    runner=runner,
+                )
+                root_record = next(
+                    row
+                    for row in base["jobs"]
+                    if row["name"] == launched_root
+                )
+                descendant_armed_path = (
+                    base_path.parent / BOOTSTRAP_DESCENDANT_ARMED_NAME
+                )
+                descendant_armed: Mapping[str, Any] | None = None
+                if (
+                    descendant_armed_path.exists()
+                    or descendant_armed_path.is_symlink()
+                ):
+                    descendant_armed = _validate_bootstrap_descendant_armed(
+                        descendant_armed_path,
+                        manifest=manifest,
+                        manifest_path=manifest_path,
+                        receipt=base,
+                        receipt_path=base_path,
+                        generation=base_generation,
+                        root_record=root_record,
+                    )
+                if anchor_armed is not None and descendant_armed is None:
+                    observations = _validate_bootstrap_observation_pair(
+                        manifest=manifest,
+                        manifest_path=manifest_path,
+                        receipt=base,
+                        receipt_path=base_path,
+                        generation=base_generation,
+                        require_cancelled=False,
+                        require_release=False,
+                        require_rearm=True,
+                    )
+                    descendant_armed, descendant_armed_path = (
+                        _ensure_bootstrap_descendant_armed(
+                            manifest=manifest,
+                            manifest_path=manifest_path,
+                            receipt=base,
+                            receipt_path=base_path,
+                            generation=base_generation,
+                            root_record=root_record,
+                            observations=observations,
+                        )
+                    )
+                release_authorized = (
+                    anchor_launch is not None
+                    or (
+                        anchor_release_intent is not None
+                        and descendant_armed is not None
+                    )
+                )
+                common = {
+                    "passed": True,
+                    "repair_generation": base_generation,
+                    "submission_receipt": str(base_path),
+                    "submission_receipt_sha256": _sha256(base_path),
+                    "submission_receipt_id": base["receipt_id"],
+                    "generation_provenance": str(provenance_path),
+                    "generation_provenance_sha256": _sha256(
+                        provenance_path
+                    ),
+                    "generation_provenance_id": provenance[
+                        "provenance_id"
+                    ],
+                    "parent_submission_receipt_id": (
+                        _read_json(
+                            Path(str(base["parent_receipt"])),
+                            description="bootstrap repair parent receipt",
+                        )["receipt_id"]
+                    ),
+                    "anchor_submission_receipt_id": anchor_receipt[
+                        "receipt_id"
+                    ],
+                    "anchor_submission_receipt_sha256": _sha256(
+                        anchor_receipt_path
+                    ),
+                    "anchor_launch_authorized": anchor_launch is not None,
+                    "anchor_launch_id": (
+                        None
+                        if anchor_launch is None
+                        else anchor_launch["launch_id"]
+                    ),
+                    "anchor_armed_authorized": anchor_armed is not None,
+                    "anchor_armed_id": (
+                        None
+                        if anchor_armed is None
+                        else anchor_armed["armed_id"]
+                    ),
+                    "anchor_release_intent_authorized": (
+                        anchor_release_intent is not None
+                    ),
+                    "descendant_armed": (
+                        None
+                        if descendant_armed is None
+                        else str(descendant_armed_path)
+                    ),
+                    "descendant_armed_id": (
+                        None
+                        if descendant_armed is None
+                        else descendant_armed["marker_id"]
+                    ),
+                    "root_name": launched_root,
+                    "root_job_id": root_record["job_id"],
+                    "root_names": launched_roots,
+                    "root_job_ids": [
+                        str(record["job_id"])
+                        for record in launched_root_records
+                    ],
+                    "watchdog_scientific_jobs_submitted": 0,
+                }
+                if not release_authorized:
+                    return base | common | {
+                        "status": (
+                            "bootstrap_descendant_rearmed_held"
+                            if descendant_armed is not None
+                            else "bootstrap_repair_reconciled"
+                        ),
+                        "roots_held": True,
+                        "root_held": True,
+                        "root_released": False,
+                        "root_release_id": None,
+                        "launch_id": None,
+                    }
+                if anchor_launch is not None:
+                    _validate_bootstrap_observation_pair(
+                        manifest=manifest,
+                        manifest_path=manifest_path,
+                        receipt=base,
+                        receipt_path=base_path,
+                        generation=base_generation,
+                        require_cancelled=False,
+                        require_release=True,
+                    )
+                release, launch = _ensure_recovery_root_released(
+                    evidence_root=base_path.parent,
+                    manifest=manifest,
+                    receipt_path=base_path,
+                    receipt=base,
+                    journal=base_journal,
+                    root_name=launched_root,
+                    runner=runner,
+                    timestamp=boundary_timestamp(),
+                    bootstrap_descendant_armed_path=(
+                        descendant_armed_path
+                    ),
+                )
+                return base | common | {
+                    "status": (
+                        "bootstrap_descendant_rearmed_launched"
+                        if anchor_launch is None
+                        else "bootstrap_repair_reconciled"
+                    ),
+                    "roots_held": False,
+                    "root_held": False,
+                    "root_released": True,
+                    "root_release_id": release["release_id"],
+                    "launch_id": launch["launch_id"],
+                    "watchdog_scientific_jobs_submitted": 0,
+                }
             report = {"status": "in_progress", "active_jobs": active, "repair_jobs": []}
             if apply:
                 raise ChainError(f"cannot repair while receipt jobs are active: {active}")
             return report
-        repair_names = _sentinel_repair_jobs(
-            manifest=manifest,
-            manifest_path=manifest_path,
-            receipt_path=base_path,
-            generation=base_generation,
-            states=states,
-        )
+        if bootstrap:
+            invalid_states = sorted(
+                name
+                for name, item in states.items()
+                if item["state"]
+                not in _BOOTSTRAP_INFRASTRUCTURE_TERMINAL_STATES
+                | {"COMPLETED"}
+            )
+            repair_names = [
+                str(row["name"])
+                for row in manifest["jobs"]
+                if states[str(row["name"])]["state"] != "COMPLETED"
+            ]
+            if invalid_states or not repair_names:
+                raise ChainError(
+                    "bootstrap repair requires only completed or "
+                    "infrastructure-terminal recovery jobs"
+                )
+            _validate_bootstrap_observation_pair(
+                manifest=manifest,
+                manifest_path=manifest_path,
+                receipt=base,
+                receipt_path=base_path,
+                generation=base_generation,
+                require_cancelled=True,
+                require_release=False,
+            )
+        else:
+            repair_names = _sentinel_repair_jobs(
+                manifest=manifest,
+                manifest_path=manifest_path,
+                receipt_path=base_path,
+                generation=base_generation,
+                states=states,
+            )
         if not repair_names:
             if pending is not None:
                 raise ChainError("pending repair exists although its parent DAG is complete")
@@ -13435,6 +21618,12 @@ def repair_chain(
         for name, item in states.items():
             if name != "failure_sentinel" and item["state"] == "COMPLETED" and (
                 _manifest_ancestors(name, by_name) & failed_set
+            ) and not _is_exact_completed_stage_observer(
+                name=name,
+                manifest=manifest,
+                receipt=base,
+                states=states,
+                failed_set=failed_set,
             ):
                 raise ChainError(f"completed job {name} has a failed ancestor")
 
@@ -13465,7 +21654,7 @@ def repair_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.2-r2-recovery-chain-repair-journal",
+                "protocol": "schema5-v1.2-r3-recovery-chain-repair-journal",
                 "chain_id": manifest["chain_id"], "repair_generation": generation,
                 "base_receipt": str(base_path), "base_receipt_sha256": _sha256(base_path),
                 "repair_jobs": repair_names, "started_at": _utc_now(),
@@ -13480,7 +21669,9 @@ def repair_chain(
                     _canonical_json(policy)
                 ),
                 "dependency_canary": _dependency_canary_binding(manifest),
-                "held_root_name": repair_names[0],
+                "held_root_names": _repair_frontier_names(
+                    manifest, repair_names
+                ),
                 "jobs": {},
             }
             temporary_generation = manifest_path.parent / (
@@ -13520,12 +21711,20 @@ def repair_chain(
                 base_path=base_path,
                 generation=generation,
             )
-            expected_repair_names = _sentinel_repair_jobs(
-                manifest=manifest,
-                manifest_path=manifest_path,
-                receipt_path=base_path,
-                generation=base_generation,
-                states=states,
+            expected_repair_names = (
+                [
+                    str(row["name"])
+                    for row in manifest["jobs"]
+                    if states[str(row["name"])]["state"] != "COMPLETED"
+                ]
+                if bootstrap
+                else _sentinel_repair_jobs(
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    receipt_path=base_path,
+                    generation=base_generation,
+                    states=states,
+                )
             )
             if repair_names != expected_repair_names:
                 raise ChainError(
@@ -13563,7 +21762,8 @@ def repair_chain(
                 row,
                 dependency_job_ids=dependency_ids,
                 comment=comment,
-                initial_hold=name == repair_names[0],
+                initial_hold=name
+                in set(journal["held_root_names"]),
             )
             record = journal["jobs"].get(name)
             if not isinstance(record, dict):
@@ -13664,7 +21864,7 @@ def repair_chain(
             })
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r2-recovery-chain-repair", "passed": True,
+            "protocol": "schema5-v1.2-r3-recovery-chain-repair", "passed": True,
             "chain_id": manifest["chain_id"], "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
             "submission_journal": str(journal_path),
@@ -13681,6 +21881,7 @@ def repair_chain(
             ],
             "dependency_canary": journal["dependency_canary"],
             "root_initial_hold": True,
+            "held_root_names": list(journal["held_root_names"]),
             "no_requeue": True,
             "stage_failure_sentinels": manifest[
                 "stage_failure_sentinels"
@@ -13694,13 +21895,102 @@ def repair_chain(
             receipt_path, manifest=manifest, manifest_path=manifest_path,
             generation=generation, parent_path=base_path,
         )
+        repaired_states = _query_receipt_job_states(
+            receipt=validated,
+            manifest=manifest,
+            runner=runner,
+        )
+        provenance_path = _bootstrap_generation_provenance_path(
+            manifest_path=manifest_path,
+            generation=generation,
+        )
+        provenance = _ensure_bootstrap_generation_provenance(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            receipt=validated,
+            receipt_path=receipt_path,
+            generation=generation,
+            states=repaired_states,
+            runner=runner,
+        )
+        if bootstrap:
+            # A reconstructed generation is always left held.  Even a durable
+            # g0 launch or release intent is reconciled only after two fresh,
+            # exact observations of this generation's acceptance-bound root.
+            status = "bootstrap_repaired_held"
+            root_held = True
+            root_released = False
+            release_fields = {
+                "root_release_id": None,
+                "launch_id": None,
+            }
+            return validated | {
+                "status": status,
+                "passed": True,
+                "repair_jobs": repair_names,
+                "submission_receipt": str(receipt_path),
+                "submission_receipt_sha256": _sha256(receipt_path),
+                "submission_receipt_id": validated["receipt_id"],
+                "generation_provenance": str(provenance_path),
+                "generation_provenance_sha256": _sha256(
+                    provenance_path
+                ),
+                "generation_provenance_id": provenance["provenance_id"],
+                "parent_submission_receipt_id": base["receipt_id"],
+                "anchor_submission_receipt_id": anchor_receipt[
+                    "receipt_id"
+                ],
+                "anchor_submission_receipt_sha256": _sha256(
+                    anchor_receipt_path
+                ),
+                "anchor_launch_authorized": anchor_launch is not None,
+                "anchor_launch_id": (
+                    None
+                    if anchor_launch is None
+                    else anchor_launch["launch_id"]
+                ),
+                "anchor_armed_authorized": anchor_armed is not None,
+                "anchor_armed_id": (
+                    None
+                    if anchor_armed is None
+                    else anchor_armed["armed_id"]
+                ),
+                "anchor_release_intent_authorized": (
+                    anchor_release_intent is not None
+                ),
+                "descendant_armed": None,
+                "descendant_armed_id": None,
+                "root_name": validated["held_root_names"][0],
+                "root_job_id": next(
+                    str(row["job_id"])
+                    for row in validated["jobs"]
+                    if row["name"] == validated["held_root_names"][0]
+                ),
+                "root_names": list(validated["held_root_names"]),
+                "root_job_ids": [
+                    str(
+                        next(
+                            row["job_id"]
+                            for row in validated["jobs"]
+                            if row["name"] == name
+                        )
+                    )
+                    for name in validated["held_root_names"]
+                ],
+                "root_held": root_held,
+                "roots_held": root_held,
+                "root_released": root_released,
+                **release_fields,
+                "watchdog_scientific_jobs_submitted": 0,
+                "release_required": not root_released,
+            }
         release, launch = _ensure_recovery_root_released(
             evidence_root=generation_root,
             manifest=manifest,
             receipt_path=receipt_path,
             receipt=validated,
             journal=journal,
-            root_name=repair_names[0],
+            root_name=validated["held_root_names"][0],
             runner=runner,
             timestamp=boundary_timestamp(),
         )
@@ -13837,7 +22127,7 @@ def quarantine_partial_materialization(
 
         expected_intent = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r2-partial-materialization-quarantine-intent",
+            "protocol": "schema5-v1.2-r3-partial-materialization-quarantine-intent",
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
@@ -13889,7 +22179,7 @@ def quarantine_partial_materialization(
             completion_id = completion_identity.pop("completion_id", None)
             expected_completion = {
                 "schema_version": 1,
-                "protocol": "schema5-v1.2-r2-partial-materialization-quarantine",
+                "protocol": "schema5-v1.2-r3-partial-materialization-quarantine",
                 "passed": True,
                 "release_id": RELEASE_ID,
                 "materialize_job_id": materialize_job_id,
@@ -14014,7 +22304,7 @@ def quarantine_partial_materialization(
             raise ChainError("materialization quarantine rename did not preserve identity")
         completion = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r2-partial-materialization-quarantine",
+            "protocol": "schema5-v1.2-r3-partial-materialization-quarantine",
             "passed": True,
             "release_id": RELEASE_ID,
             "materialize_job_id": materialize_job_id,
@@ -14056,7 +22346,7 @@ def quarantine_partial_materialization(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    render = subparsers.add_parser("render", help="dry-run or publish the v1.2-r2 chain")
+    render = subparsers.add_parser("render", help="dry-run or publish the v1.2-r3 chain")
     render.add_argument("--repository", required=True, type=Path)
     render.add_argument("--results-root", required=True, type=Path)
     render.add_argument("--recovery-root", required=True, type=Path)
@@ -14102,6 +22392,73 @@ def _build_parser() -> argparse.ArgumentParser:
     submit = subparsers.add_parser("submit", help="dry-run or transactionally submit")
     submit.add_argument("--chain-manifest", required=True, type=Path)
     submit.add_argument("--apply", action="store_true")
+    isolated_drill = subparsers.add_parser(
+        "prepare-isolated-bootstrap-drill",
+        help=(
+            "derive the exact inert sibling DAG used for bootstrap "
+            "cancellation recovery"
+        ),
+    )
+    isolated_drill.add_argument(
+        "--chain-manifest",
+        required=True,
+        type=Path,
+        help="canonical submitted r3 recovery-chain manifest",
+    )
+    isolated_drill.add_argument("--apply", action="store_true")
+    release_root = subparsers.add_parser(
+        "release-root",
+        help=(
+            "release the exact held root after bootstrap-watchdog "
+            "readiness is sealed"
+        ),
+    )
+    release_root.add_argument("--chain-manifest", required=True, type=Path)
+    release_root.add_argument("--apply", action="store_true")
+    bootstrap_status_parser = subparsers.add_parser(
+        "bootstrap-status",
+        help="record one exact pre-handoff scheduler observation",
+    )
+    bootstrap_status_parser.add_argument(
+        "--chain-manifest", required=True, type=Path
+    )
+    bootstrap_status_parser.add_argument(
+        "--no-record", action="store_true"
+    )
+    bootstrap_repair_parser = subparsers.add_parser(
+        "bootstrap-repair",
+        help=(
+            "reconstruct an infrastructure-cancelled recovery suffix "
+            "under one held generation"
+        ),
+    )
+    bootstrap_repair_parser.add_argument(
+        "--chain-manifest", required=True, type=Path
+    )
+    bootstrap_repair_parser.add_argument("--apply", action="store_true")
+    bootstrap_repair_parser.add_argument(
+        "--result-output",
+        type=Path,
+        help=(
+            "publish the exact immutable bootstrap repair result at "
+            "BOOTSTRAP_REPAIR_RESULT.json"
+        ),
+    )
+    handoff = subparsers.add_parser(
+        "publish-bootstrap-handoff",
+        help=(
+            "publish marker-last handoff to the ready control-bound watchdog"
+        ),
+    )
+    handoff.add_argument("--chain-manifest", required=True, type=Path)
+    handoff.add_argument("--apply", action="store_true")
+    verify_handoff = subparsers.add_parser(
+        "verify-bootstrap-handoff",
+        help="require the immutable aggregate-sentinel watchdog handoff",
+    )
+    verify_handoff.add_argument(
+        "--chain-manifest", required=True, type=Path
+    )
     repair = subparsers.add_parser(
         "repair",
         aliases=["repair-chain"],
@@ -14171,6 +22528,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "submit":
             result = submit_chain(args.chain_manifest, apply=args.apply)
+        elif args.command == "prepare-isolated-bootstrap-drill":
+            result = prepare_isolated_bootstrap_drill_chain(
+                args.chain_manifest,
+                apply=args.apply,
+            )
+        elif args.command == "release-root":
+            result = release_recovery_root(
+                args.chain_manifest, apply=args.apply
+            )
+        elif args.command == "bootstrap-status":
+            result = bootstrap_status(
+                args.chain_manifest, record=not args.no_record
+            )
+        elif args.command == "bootstrap-repair":
+            result = repair_chain(
+                args.chain_manifest,
+                apply=args.apply,
+                bootstrap=True,
+            )
+            if args.result_output is not None:
+                if not args.apply:
+                    raise ChainError(
+                        "--result-output requires bootstrap-repair --apply"
+                    )
+                result_output = _lexical_absolute(args.result_output)
+                expected_output = (
+                    _lexical_absolute(args.chain_manifest).parent
+                    / BOOTSTRAP_REPAIR_RESULT_NAME
+                )
+                if result_output != expected_output:
+                    raise ChainError(
+                        "bootstrap repair result must use its fixed "
+                        f"namespace path: {expected_output}"
+                    )
+                _write_immutable_json_once(
+                    result_output,
+                    result,
+                    description="bootstrap repair result",
+                )
+                result = result | {
+                    "repair_result": str(result_output),
+                    "repair_result_sha256": _sha256(result_output),
+                }
+        elif args.command == "publish-bootstrap-handoff":
+            result = publish_bootstrap_watchdog_handoff(
+                args.chain_manifest, apply=args.apply
+            )
+        elif args.command == "verify-bootstrap-handoff":
+            result = verify_bootstrap_watchdog_handoff(
+                args.chain_manifest
+            )
         elif args.command in {"repair", "repair-chain"}:
             result = repair_chain(args.chain_manifest, apply=args.apply)
         elif args.command == "quarantine-materialization":

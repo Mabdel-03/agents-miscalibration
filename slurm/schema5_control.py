@@ -31,6 +31,8 @@ job rather than resubmitting.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import copy
 import fcntl
 import hashlib
@@ -108,7 +110,7 @@ from scripts import schema5_email_ack
 CONTROL_SCHEMA_VERSION = 1
 CONTROL_PROTOCOL = "schema5-v1"
 PRODUCTION_RELEASE_ID = "sweep-recovery-schema5-v1.2"
-PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r2"
+PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r3"
 PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
 # All production ramp stages are authorized by the sealed protected-capacity
 # contract before control initialization.  A later capacity generation is reserved
@@ -140,8 +142,43 @@ EXTERNAL_WATCHDOG_DRILL_EVIDENCE_PROTOCOL = (
 EXTERNAL_WATCHDOG_DRILL_MAX_RECOVERY_SECONDS = 900.0
 EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS = 1_800.0
 EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS = 3_600.0
+EXTERNAL_WATCHDOG_MIRROR_DIRNAME = "external_watchdog_mirror"
+EXTERNAL_WATCHDOG_STATUS_PROTOCOL = (
+    "schema5-v1.2-r3-external-watchdog-status-observation-v1"
+)
+EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL = (
+    "schema5-v1.2-r3-external-watchdog-action-intent-v1"
+)
+EXTERNAL_WATCHDOG_ACTION_PROTOCOL = (
+    "schema5-v1.2-r3-external-watchdog-action-receipt-v1"
+)
+EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL = (
+    "schema5-v1.2-r3-external-watchdog-cycle-intent-v1"
+)
+EXTERNAL_WATCHDOG_CYCLE_PROTOCOL = (
+    "schema5-v1.2-r3-external-watchdog-cycle-receipt-v1"
+)
+EXTERNAL_WATCHDOG_LATEST_PROTOCOL = (
+    "schema5-v1.2-r3-external-watchdog-latest-pointer-v1"
+)
+EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS = 60.0
+EXTERNAL_WATCHDOG_MIRROR_STALE_SECONDS = 600.0
 ROLE_NAMES = ("dispatcher", "fleet_supervisor")
 ROLE_SHORT = {"dispatcher": "dispatch", "fleet_supervisor": "fleet"}
+CONTROLLER_JOB_NAME_PREFIXES = (
+    "asys-s5-dispatch-g",
+    "asys-s5-fleet-g",
+)
+# These names predate generation-addressed rendering.  They are recognized only
+# so a stale/synthetic controller can never disappear from a drain cut; production
+# provenance still requires the exact canonical generation-addressed name.
+LEGACY_CONTROLLER_JOB_NAMES = frozenset(
+    {
+        "asys-s5-dispatch",
+        "asys-s5-dispatcher",
+        "asys-s5-fleet",
+    }
+)
 REQUIRED_RUNS = {
     "full_sweep_schema5_v1": 4_680,
     "full_sweep_agent_counts_schema5_v1": 14_400,
@@ -179,6 +216,8 @@ REQUIRED_GATES = (
     "snapshot",
     "migrations",
     "semantic_audit",
+    "static_feasibility_certificate",
+    "protected_capacity",
     "fleet",
     "context_audit",
     "smoke_runs",
@@ -194,7 +233,7 @@ PRODUCTION_AUTHORIZATION_GATES = (
     "external_watchdog",
 )
 PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
-PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r2-production-authorization-v1"
+PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r3-production-authorization-v1"
 PRODUCTION_AUTHORIZATION_VERIFIER = (
     "scripts/render_schema5_recovery_chain_v12.py"
 )
@@ -298,6 +337,10 @@ SCIENTIFIC_INTEGRITY_ALERT_KEYS = frozenset(
         # demonstrably inadequate capacity.
         "monitor:ramp-stall",
         "monitor:throughput",
+        # Immutable cell admission artifacts are the no-redraw authority.  Local
+        # provenance drift before sbatch is a scientific-integrity incident even
+        # though no scheduler allocation was created.
+        "dispatcher:submission-integrity",
     }
 )
 CAPACITY_REMEDIATION_ALERT_KEYS = frozenset(
@@ -314,13 +357,13 @@ CAPACITY_STATE_SCHEMA_VERSION = 1
 CAPACITY_STATE_PROTOCOL = "schema5-capacity-generation-v1"
 CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION = 1
 CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL = (
-    "schema5-v1.2-r2-client-placement-capacity-generation-v1"
+    "schema5-v1.2-r3-client-placement-capacity-generation-v1"
 )
 CLIENT_CAPACITY_BUILD_PROTOCOL = (
-    "schema5-v1.2-r2-client-capacity-build-v1"
+    "schema5-v1.2-r3-client-capacity-build-v1"
 )
 CLIENT_CAPACITY_SUBMISSION_PROTOCOL = (
-    "schema5-v1.2-r2-client-capacity-canary-submission-v1"
+    "schema5-v1.2-r3-client-capacity-canary-submission-v1"
 )
 CLIENT_CAPACITY_BUILD_INTENT = "CLIENT_CAPACITY_BUILD_INTENT.json"
 CLIENT_CAPACITY_CANARY_SBATCH = "client_capacity_canary.sbatch"
@@ -355,16 +398,28 @@ FINAL_SEMANTIC_INTENT_FILENAME = "SEMANTIC_VALIDATION_INTENT.json"
 FINAL_SEMANTIC_PREFLIGHT_FILENAME = "SEMANTIC_PREFLIGHT_COMPLETE.json"
 FINAL_SEMANTIC_ARCHIVE_DIRNAME = "semantic_recovery_archive"
 FINAL_ANALYSIS_CACHE_DIRNAME = "analysis_cache"
+FINAL_ANALYSIS_CACHE_RECOVERY_DIRNAME = "analysis_cache_recovery"
+FINAL_ANALYSIS_CACHE_PUBLICATION_RECOVERY_DIRNAME = (
+    "analysis_cache_publication_recovery"
+)
 FINAL_SNAPSHOT_DIRNAME = "snapshot"
+FINAL_SNAPSHOT_SCHEMA_VERSION = 2
+FINAL_SNAPSHOT_KIND = "final"
+FINAL_SNAPSHOT_ID_PREFIX = "schema5-v2-final"
 FINAL_FLEET_RETIREMENT_DIRNAME = "fleet_retirement"
 FINAL_FLEET_RETIREMENT_INTENT_FILENAME = "FLEET_RETIREMENT_INTENT.json"
 FINAL_FLEET_RETIREMENT_ATTEMPTS_FILENAME = "retirement_attempts.jsonl"
 FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME = "FLEET_RETIREMENT_COMPLETE.json"
 TRUSTED_GENERATION_EVIDENCE_DIRNAME = "trusted-generation-evidence-schema5-v1"
 FINALIZER_COMMAND_DEADLINE_SECONDS = 18_000.0
-FINALIZER_SNAPSHOT_DEADLINE_SECONDS = 43_200.0
-FINALIZATION_SCHEMA_VERSION = 2
-FINALIZATION_PROTOCOL = "schema5-autonomous-finalization-v2"
+# Finalizer allocations are twelve hours and receive USR1 twenty minutes before
+# expiry.  Bound the longest child to eleven hours so TERM/KILL/reap and durable
+# retry journaling always have at least forty minutes of allocation headroom.
+FINALIZER_SNAPSHOT_DEADLINE_SECONDS = 39_600.0
+FINALIZER_CHILD_POLL_SECONDS = 1.0
+FINALIZER_CHILD_TERMINATE_GRACE_SECONDS = 30.0
+FINALIZATION_SCHEMA_VERSION = 4
+FINALIZATION_PROTOCOL = "schema5-autonomous-finalization-v4"
 FINALIZATION_STATES = frozenset(
     {
         "idle",
@@ -388,6 +443,13 @@ ACTIVE_FINALIZATION_STATES = frozenset(
 )
 FINALIZER_JOB_TOKEN_PREFIX = "asys-schema5-finalizer-v1"
 FINALIZER_STATE_DIRNAME = "finalizer"
+EXACT_SBATCH_SUBMISSION_TRANSPORT = "stdin_exact_bytes_held_v1"
+SBATCH_SPOOL_RECEIPTS_DIRNAME = "sbatch-spool-receipts"
+FINALIZER_REQUEST_INTENT_FILENAME = "FINALIZATION_REQUEST_INTENT.json"
+FINALIZER_REQUEST_INTENT_SCHEMA_VERSION = 2
+FINALIZER_REQUEST_INTENT_PROTOCOL = (
+    "schema5-autonomous-finalization-request-intent-v2"
+)
 FINALIZER_SUCCESSOR_RETIREMENT_DIRNAME = "successor-retirements"
 FINALIZER_SUCCESSOR_RETIREMENT_INTENT_FILENAME = (
     "SUCCESSOR_RETIREMENT_INTENT.json"
@@ -402,6 +464,21 @@ FINALIZER_SUCCESSOR_RETIREMENT_PROTOCOL = (
 FINALIZER_JOB_TIME_LIMIT = "12:00:00"
 FINALIZER_JOB_MEMORY = "8G"
 FINALIZER_MAX_TRANSIENT_ATTEMPTS = 128
+# One pending drain attempt must not release its after-any successor immediately.
+# Persisting the not-before timestamp as history also lets a successor honour the
+# same cadence if the publisher is killed during this bounded wait.
+FINALIZER_DRAIN_RETRY_SECONDS = 60.0
+FINALIZER_PHASE_ORDER = {
+    "requested": 0,
+    "draining": 0,
+    "validating": 1,
+    "retiring_fleet": 2,
+    "snapshotting": 3,
+    "complete": 4,
+}
+FINALIZER_WORKER_ATTEMPT_STATES = frozenset(
+    {"started", "pending", "retryable_failed", "blocked", "complete"}
+)
 FINAL_SNAPSHOT_CONTROL_FILENAMES = frozenset(
     {
         "SNAPSHOT_COMPLETE.json",
@@ -425,6 +502,12 @@ FINAL_SNAPSHOT_REQUIRED_SOURCES = frozenset(
     }
 )
 FINAL_SNAPSHOT_OPTIONAL_SOURCES = frozenset({"semantic_recovery_archive"})
+FINAL_CONTROL_CUT_DIRNAME = "control_plane_cut"
+FINAL_CONTROL_CUT_PAYLOAD_DIRNAME = "payload"
+FINAL_CONTROL_CUT_INTENT_FILENAME = "CONTROL_CUT_INTENT.json"
+FINAL_CONTROL_CUT_COMPLETE_FILENAME = "CONTROL_CUT_COMPLETE.json"
+FINAL_CONTROL_CUT_PROJECTION_FILENAME = "CONTROL_PROJECTION.json"
+FINAL_CONTROL_CUT_EXCLUSIONS_FILENAME = "EXCLUDED_MUTABLE_FILES.json"
 
 # Readiness is intentionally a closed, versioned contract.  These are scientific and
 # operational facts that must be independently checksummed; a generic
@@ -441,6 +524,10 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
         "permanent_ledger_archive_report",
     ),
     "semantic_audit": ("legacy_semantic_audit_report",),
+    "static_feasibility_certificate": (
+        "preflight_capacity_certificate",
+    ),
+    "protected_capacity": ("protected_capacity_marker",),
     "fleet": ("fleet_health_report", "fleet_contract"),
     "context_audit": ("dense_peer_context_audit", "seven_agent_context_audit"),
     "smoke_runs": (
@@ -453,7 +540,7 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r2-smoke-attempt-binding-v1"
+    "schema5-v1.2-r3-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -534,6 +621,62 @@ class SchedulerVisibilityPending(ControlError):
     """A recently submitted exact intent is still inside scheduler visibility grace."""
 
 
+class FinalizerRetryableError(ControlError):
+    """A typed infrastructure failure eligible for a bounded finalizer retry."""
+
+
+class FinalizerSchedulerReadError(FinalizerRetryableError):
+    """Scheduler truth could not be read completely and unambiguously."""
+
+
+class FinalizerSubmissionError(FinalizerRetryableError):
+    """One exact finalizer sbatch submission failed."""
+
+
+class FinalizerNodeError(FinalizerRetryableError):
+    """The finalizer's execution node failed transiently."""
+
+
+class FinalizerConnectionError(FinalizerRetryableError):
+    """A required infrastructure connection failed transiently."""
+
+
+class FinalizerTimeoutError(FinalizerRetryableError):
+    """A bounded finalizer operation exceeded its deadline."""
+
+
+class FinalizerInterruptedError(FinalizerRetryableError):
+    """USR1 or TERM requested a resumable finalizer drain."""
+
+
+class FinalizerDeterministicError(ControlError):
+    """A final artifact, provenance, or invariant failure requires intervention."""
+
+
+class FinalizerSemanticError(FinalizerDeterministicError):
+    """Final semantic acceptance or provenance is invalid."""
+
+
+class FinalizerCacheError(FinalizerDeterministicError):
+    """The primary final analysis cache is incomplete or drifted."""
+
+
+class FinalizerSnapshotError(FinalizerDeterministicError):
+    """The marker-last final snapshot is incomplete or drifted."""
+
+
+class FinalizerProvenanceError(FinalizerDeterministicError):
+    """Finalization provenance differs from frozen authority."""
+
+
+class FinalizerInvariantError(FinalizerDeterministicError):
+    """A durable finalization invariant is violated."""
+
+
+class FinalizerRetryLimitError(FinalizerInvariantError):
+    """The durable finalizer retry budget is exhausted."""
+
+
 class ControllerFenced(ControlError):
     """A controller job does not own the exact durable role generation."""
 
@@ -563,6 +706,8 @@ class SchedulerJob:
     command: str = ""
     source: str = "squeue"
     dependency: str = ""
+    partition: str = ""
+    qos: str = ""
 
     @property
     def active(self) -> bool:
@@ -580,6 +725,9 @@ class SchedulerSnapshot:
     squeue_ok: bool = True
     sacct_ok: bool = True
     errors: tuple[str, ...] = ()
+    # Exact lower bound represented by this successful sacct query.  ``None``
+    # means absence cannot prove that an earlier submission was never accepted.
+    accounting_start_timestamp: float | None = None
 
     @property
     def active_job_ids(self) -> set[str]:
@@ -719,6 +867,42 @@ def parse_job_token(value: str) -> dict[str, str] | None:
     return fields
 
 
+def _controller_job_name(name: str) -> bool:
+    """Return whether ``name`` occupies the schema-5 controller namespace."""
+
+    return name in LEGACY_CONTROLLER_JOB_NAMES or name.startswith(
+        CONTROLLER_JOB_NAME_PREFIXES
+    )
+
+
+def _rendered_controller_job_name(
+    role: str, generation: int, intent_token: str
+) -> str:
+    """Return the one production job name bound by a durable controller record."""
+
+    _validate_role(role)
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+    ):
+        raise SchedulerAmbiguity(
+            f"controller {role} record has an invalid generation"
+        )
+    if (
+        not isinstance(intent_token, str)
+        or not intent_token
+        or any(char in intent_token for char in ";|\n\r")
+    ):
+        raise SchedulerAmbiguity(
+            f"controller {role} record has an invalid intent token"
+        )
+    return (
+        f"asys-s5-{ROLE_SHORT[role]}-g{generation:06d}-"
+        f"{intent_token[:8]}"
+    )
+
+
 def _validate_role(role: str) -> None:
     if role not in ROLE_NAMES:
         raise ControlError(f"unknown controller role {role!r}; expected {ROLE_NAMES}")
@@ -740,6 +924,282 @@ def _state_path(state_dir: Path) -> Path:
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     io.atomic_write_text(
+        path,
+        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n",
+    )
+
+
+def _atomic_publish_readonly_bytes(path: Path, payload: bytes) -> None:
+    """Publish immutable bytes without ever replacing an existing winner.
+
+    Publication is a small marker-last transaction:
+
+    * a uniquely named, payload-bound inode is created and directory-fsynced;
+    * its complete bytes and final read-only mode are fsynced;
+    * ``link(2)`` installs the destination with no-clobber semantics; and
+    * the owned temporary link is removed and the directory is fsynced again.
+
+    A directory advisory lock serializes publishers on the shared filesystem.  On
+    replay, this function adopts a complete owned inode, removes only incomplete
+    inodes in the exact payload namespace, and rejects malformed or conflicting
+    namespace entries.  Consequently a process death at any write/link/fsync
+    boundary cannot overwrite an immutable winner or leave an unrecoverable
+    read-only partial file.
+    """
+
+    path = Path(os.path.abspath(os.fspath(path.expanduser())))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    namespace_prefix = f".{path.name}.publish."
+    owned_pattern = re.compile(
+        rf"^{re.escape(namespace_prefix)}"
+        rf"(?P<sha256>[0-9a-f]{{64}})\.(?P<owner>[0-9a-f]{{32}})\.tmp$"
+    )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    directory_descriptor = os.open(path.parent, directory_flags)
+
+    def _read_regular_nofollow(
+        candidate: Path, *, allowed_links: set[int]
+    ) -> tuple[bytes, os.stat_result]:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(candidate, flags)
+        try:
+            before = os.fstat(descriptor)
+            blocks: list[bytes] = []
+            while block := os.read(descriptor, 1024 * 1024):
+                blocks.append(block)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        identity = lambda item: (  # noqa: E731
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+        current = candidate.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink not in allowed_links
+            or stat.S_IMODE(before.st_mode) & 0o222
+            or identity(before) != identity(after)
+            or identity(current) != identity(after)
+        ):
+            raise ImmutablePinError(
+                f"immutable publication inode is unsafe or changed: {candidate}"
+            )
+        return b"".join(blocks), current
+
+    def _validate_destination(*, allowed_links: set[int]) -> os.stat_result:
+        if path.is_symlink() or not path.is_file():
+            raise ImmutablePinError(
+                f"immutable publication destination is unsafe: {path}"
+            )
+        observed, metadata = _read_regular_nofollow(
+            path, allowed_links=allowed_links
+        )
+        if observed != payload:
+            raise ImmutablePinError(
+                f"immutable publication destination already has different bytes: {path}"
+            )
+        return metadata
+
+    try:
+        fcntl.flock(directory_descriptor, fcntl.LOCK_EX)
+        entries: list[tuple[Path, re.Match[str]]] = []
+        for candidate in path.parent.iterdir():
+            if not candidate.name.startswith(namespace_prefix):
+                continue
+            match = owned_pattern.fullmatch(candidate.name)
+            if match is None:
+                raise ImmutablePinError(
+                    "foreign immutable-publication namespace entry exists: "
+                    f"{candidate}"
+                )
+            if match.group("sha256") != payload_sha256:
+                if candidate.is_symlink():
+                    raise ImmutablePinError(
+                        "conflicting immutable-publication entry is a symlink: "
+                        f"{candidate}"
+                    )
+                metadata = candidate.stat(follow_symlinks=False)
+                if (
+                    stat.S_ISREG(metadata.st_mode)
+                    and metadata.st_nlink == 1
+                    and stat.S_IMODE(metadata.st_mode) & 0o222
+                ):
+                    # A writable inode cannot be a completed publication.  With the
+                    # directory lock held it is an abandoned preimage from a process
+                    # that died before sealing; remove it even if replay now computes
+                    # a different marker payload from successor-stable state.
+                    candidate.unlink()
+                    os.fsync(directory_descriptor)
+                    continue
+                raise ImmutablePinError(
+                    "conflicting immutable-publication payload exists: "
+                    f"{candidate}"
+                )
+            if candidate.is_symlink():
+                raise ImmutablePinError(
+                    f"owned immutable-publication entry is a symlink: {candidate}"
+                )
+            entries.append((candidate, match))
+
+        destination_exists = path.exists() or path.is_symlink()
+        if destination_exists:
+            destination_metadata = _validate_destination(
+                allowed_links={1, 2}
+            )
+            for candidate, _match in entries:
+                try:
+                    candidate_metadata = candidate.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if (
+                    stat.S_ISREG(candidate_metadata.st_mode)
+                    and candidate_metadata.st_dev == destination_metadata.st_dev
+                    and candidate_metadata.st_ino == destination_metadata.st_ino
+                ):
+                    candidate.unlink()
+                    os.fsync(directory_descriptor)
+                    continue
+                # With the directory lock held, every other same-payload inode is a
+                # stale pre-link attempt.  Remove it only after proving its exact
+                # owned name and regular one-link identity.
+                if (
+                    not stat.S_ISREG(candidate_metadata.st_mode)
+                    or candidate_metadata.st_nlink != 1
+                ):
+                    raise ImmutablePinError(
+                        "owned immutable-publication entry has unsafe identity: "
+                        f"{candidate}"
+                    )
+                if not stat.S_IMODE(candidate_metadata.st_mode) & 0o222:
+                    observed, _metadata = _read_regular_nofollow(
+                        candidate, allowed_links={1}
+                    )
+                    if observed != payload:
+                        raise ImmutablePinError(
+                            "sealed immutable-publication preimage is corrupt: "
+                            f"{candidate}"
+                        )
+                candidate.unlink()
+                os.fsync(directory_descriptor)
+            _validate_destination(allowed_links={1})
+            return
+
+        # Recover a complete, sealed pre-link inode if one survived a process death.
+        recovered = False
+        for candidate, _match in entries:
+            metadata = candidate.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise ImmutablePinError(
+                    f"owned immutable-publication entry has unsafe identity: {candidate}"
+                )
+            if stat.S_IMODE(metadata.st_mode) & 0o222:
+                candidate.unlink()
+                os.fsync(directory_descriptor)
+                continue
+            observed, _metadata = _read_regular_nofollow(
+                candidate, allowed_links={1}
+            )
+            if observed != payload:
+                # A sealed inode in the correct hash namespace with different
+                # bytes is evidence of corruption, never an incomplete write.
+                raise ImmutablePinError(
+                    f"sealed immutable-publication preimage is corrupt: {candidate}"
+                )
+            if recovered:
+                candidate.unlink()
+                os.fsync(directory_descriptor)
+                continue
+            try:
+                os.link(candidate, path, follow_symlinks=False)
+            except FileExistsError:
+                _validate_destination(allowed_links={1, 2})
+            os.fsync(directory_descriptor)
+            candidate.unlink()
+            os.fsync(directory_descriptor)
+            recovered = True
+
+        if recovered:
+            _validate_destination(allowed_links={1})
+            return
+
+        temporary = path.parent / (
+            f"{namespace_prefix}{payload_sha256}.{uuid.uuid4().hex}.tmp"
+        )
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            created = os.fstat(descriptor)
+            if not stat.S_ISREG(created.st_mode) or created.st_nlink != 1:
+                raise ImmutablePinError(
+                    f"new immutable-publication inode is unsafe: {temporary}"
+                )
+            os.fsync(directory_descriptor)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError(
+                        "short write while publishing immutable artifact"
+                    )
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            os.fchmod(descriptor, 0o444)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+            os.fsync(directory_descriptor)
+        finally:
+            # Ordinary Python exceptions (including a lost filesystem reply after
+            # the link committed) can close the two-link window immediately.  A
+            # real SIGKILL skips this block; the owned-name replay above then removes
+            # the surviving link before any caller accepts the destination.
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            os.fsync(directory_descriptor)
+        _validate_destination(allowed_links={1})
+    finally:
+        try:
+            fcntl.flock(directory_descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(directory_descriptor)
+
+
+def _atomic_publish_readonly_text(path: Path, payload: str) -> None:
+    _atomic_publish_readonly_bytes(path, payload.encode("utf-8"))
+
+
+def _atomic_publish_readonly_json(
+    path: Path, value: Mapping[str, Any]
+) -> None:
+    _atomic_publish_readonly_text(
         path,
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n",
     )
@@ -950,6 +1410,7 @@ def _new_admission_safety_hold(*, configured_ceiling: int) -> dict[str, Any]:
         "configured_ceiling": int(configured_ceiling),
         "consecutive_clean_polls": 0,
         "semantic_clean_after_activation": False,
+        "activation_id": None,
         "activated_at": None,
         "activated_timestamp": None,
         "updated_at": None,
@@ -974,6 +1435,7 @@ def _validate_admission_safety_hold(
         "configured_ceiling",
         "consecutive_clean_polls",
         "semantic_clean_after_activation",
+        "activation_id",
         "activated_at",
         "activated_timestamp",
         "updated_at",
@@ -1018,9 +1480,17 @@ def _validate_admission_safety_hold(
             hold.get("mode") not in {"transient", "integrity", "operator"}
             or not hold["reasons"]
             or hold.get("activated_timestamp") is None
+            or re.fullmatch(
+                r"[0-9a-f]{32}", str(hold.get("activation_id", ""))
+            )
+            is None
         ):
             raise ControlError("active admission safety hold lacks its durable cause")
-    elif hold.get("mode") is not None or hold["reasons"]:
+    elif (
+        hold.get("mode") is not None
+        or hold["reasons"]
+        or hold.get("activation_id") is not None
+    ):
         raise ControlError("inactive admission safety hold retains active causes")
     for record in hold["history"]:
         if (
@@ -1041,6 +1511,7 @@ def _validate_safety_hold_drain_intent(value: Any) -> None:
         "protocol",
         "drain_id",
         "rollout_generation",
+        "hold_activation_id",
         "hold_activated_timestamp",
         "hold_reasons",
         "state",
@@ -1066,6 +1537,10 @@ def _validate_safety_hold_drain_intent(value: Any) -> None:
         or not isinstance(value.get("rollout_generation"), int)
         or isinstance(value.get("rollout_generation"), bool)
         or value["rollout_generation"] < 0
+        or re.fullmatch(
+            r"[0-9a-f]{32}", str(value.get("hold_activation_id", ""))
+        )
+        is None
         or not isinstance(value.get("hold_activated_timestamp"), (int, float))
         or isinstance(value.get("hold_activated_timestamp"), bool)
         or not isinstance(value.get("hold_reasons"), list)
@@ -1192,6 +1667,15 @@ def _validate_capacity_contract_record(
         "sha256",
         "marker_path",
         "marker_sha256",
+        "protected_capacity_marker_path",
+        "protected_capacity_marker_sha256",
+        "protected_capacity_marker_id",
+        "static_feasibility_certificate_path",
+        "static_feasibility_certificate_sha256",
+        "static_feasibility_certificate_id",
+        "base_fleet_contract_sha256",
+        "additive_overlay_contract_path",
+        "additive_overlay_contract_sha256",
         "fleet_id",
         "logical_replicas",
         "allocated_gpus",
@@ -1209,6 +1693,40 @@ def _validate_capacity_contract_record(
         or not isinstance(record.get("marker_path"), str)
         or not Path(record["marker_path"]).is_absolute()
         or _SHA256_RE.fullmatch(str(record.get("marker_sha256", ""))) is None
+        or not isinstance(record.get("protected_capacity_marker_path"), str)
+        or not Path(record["protected_capacity_marker_path"]).is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(record.get("protected_capacity_marker_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(record.get("protected_capacity_marker_id", ""))
+        )
+        is None
+        or not isinstance(
+            record.get("static_feasibility_certificate_path"), str
+        )
+        or not Path(
+            record["static_feasibility_certificate_path"]
+        ).is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(record.get("static_feasibility_certificate_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(record.get("static_feasibility_certificate_id", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(record.get("base_fleet_contract_sha256", ""))
+        )
+        is None
+        or not isinstance(record.get("additive_overlay_contract_path"), str)
+        or not Path(record["additive_overlay_contract_path"]).is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(record.get("additive_overlay_contract_sha256", ""))
+        )
+        is None
         or record.get("fleet_id") != "schema5-v1"
         or not isinstance(record.get("logical_replicas"), int)
         or isinstance(record.get("logical_replicas"), bool)
@@ -1856,11 +2374,19 @@ def _new_finalization_state(
         "requested_at": None,
         "requested_timestamp": None,
         "semantic_evidence": None,
+        "request_intent": None,
+        "consumed_capacity_incidents": [],
         "output_root": str(
-            results_root / "recovery" / "schema5-v1.2-r2" / "final"
+            results_root / "recovery" / "schema5-v1.2-r3" / "final"
         ),
         "attempts": 0,
+        "worker_attempts": [],
         "next_attempt": 1,
+        "phase_evidence": {
+            "validating": None,
+            "retiring_fleet": None,
+            "snapshotting": None,
+        },
         "active_job": None,
         "successor_job": None,
         "successor_retirement": None,
@@ -1879,6 +2405,14 @@ def _validate_finalizer_job_record(value: Any, *, context: str) -> None:
         "job_token",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv",
+        "submission_argv_sha256",
+        "persistent_hold",
+        "spooled_receipt_path",
+        "spooled_receipt_sha256",
+        "released_at",
+        "released_timestamp",
         "dependency_job_id",
         "job_id",
         "state",
@@ -1894,7 +2428,18 @@ def _validate_finalizer_job_record(value: Any, *, context: str) -> None:
     submitted = value.get("submitted_timestamp")
     dependency = value.get("dependency_job_id")
     job_id = value.get("job_id")
+    released = value.get("released_timestamp")
+    submission_argv = value.get("submission_argv")
+    receipt_path = value.get("spooled_receipt_path")
+    receipt_sha256 = value.get("spooled_receipt_sha256")
     sbatch = Path(str(value.get("sbatch_path", ""))).expanduser()
+    try:
+        exact_submission_argv = _exact_sbatch_submission_argv(
+            token=str(value.get("job_token", "")),
+            dependency_job_id=dependency if isinstance(dependency, str) else None,
+        )
+    except ControlError:
+        exact_submission_argv = None
     if (
         not isinstance(attempt, int)
         or isinstance(attempt, bool)
@@ -1906,6 +2451,14 @@ def _validate_finalizer_job_record(value: Any, *, context: str) -> None:
         )
         or not sbatch.is_absolute()
         or _SHA256_RE.fullmatch(str(value.get("sbatch_sha256", ""))) is None
+        or value.get("submission_transport")
+        != EXACT_SBATCH_SUBMISSION_TRANSPORT
+        or not isinstance(submission_argv, list)
+        or not all(isinstance(item, str) for item in submission_argv)
+        or submission_argv != exact_submission_argv
+        or value.get("submission_argv_sha256")
+        != _submission_argv_sha256(submission_argv)
+        or not isinstance(value.get("persistent_hold"), bool)
         or value.get("state")
         not in {"submitting", "submitted", "started", "terminal", "cancelled"}
         or not isinstance(created, (int, float))
@@ -1931,6 +2484,26 @@ def _validate_finalizer_job_record(value: Any, *, context: str) -> None:
         or (
             value.get("state") in {"submitted", "started", "terminal", "cancelled"}
             and job_id is None
+        )
+        or (
+            job_id is None
+            and (
+                receipt_path is not None
+                or receipt_sha256 is not None
+                or released is not None
+                or value.get("released_at") is not None
+            )
+        )
+        or (
+            job_id is not None
+            and (
+                not isinstance(receipt_path, str)
+                or not Path(receipt_path).is_absolute()
+                or _SHA256_RE.fullmatch(str(receipt_sha256 or "")) is None
+                or not isinstance(released, (int, float))
+                or isinstance(released, bool)
+                or value.get("released_at") != utc_timestamp(float(released))
+            )
         )
     ):
         raise ControlError(f"{context} finalizer job record is invalid")
@@ -1987,6 +2560,242 @@ def _validate_successor_retirement_binding(value: Any) -> None:
             )
 
 
+def _validate_finalizer_worker_attempts(
+    finalization: Mapping[str, Any],
+) -> None:
+    attempts = finalization.get("worker_attempts")
+    if (
+        not isinstance(attempts, list)
+        or len(attempts) != finalization.get("attempts")
+        or len(attempts) > FINALIZER_MAX_TRANSIENT_ATTEMPTS
+    ):
+        raise ControlError("finalizer worker attempt accounting is invalid")
+    identities: set[tuple[int, str]] = set()
+    expected = {
+        "attempt",
+        "job_id",
+        "status",
+        "started_at",
+        "started_timestamp",
+        "finished_at",
+        "finished_timestamp",
+    }
+    for row in attempts:
+        if not isinstance(row, Mapping) or set(row) != expected:
+            raise ControlError("finalizer worker attempt record is invalid")
+        attempt = row.get("attempt")
+        job_id = row.get("job_id")
+        started = row.get("started_timestamp")
+        finished = row.get("finished_timestamp")
+        identity = (attempt, job_id)
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+            or not isinstance(job_id, str)
+            or not job_id.isdigit()
+            or identity in identities
+            or row.get("status") not in FINALIZER_WORKER_ATTEMPT_STATES
+            or not isinstance(started, (int, float))
+            or isinstance(started, bool)
+            or row.get("started_at") != utc_timestamp(float(started))
+            or (
+                row.get("status") == "started"
+                and (
+                    finished is not None
+                    or row.get("finished_at") is not None
+                )
+            )
+            or (
+                row.get("status") != "started"
+                and (
+                    not isinstance(finished, (int, float))
+                    or isinstance(finished, bool)
+                    or row.get("finished_at")
+                    != utc_timestamp(float(finished))
+                )
+            )
+        ):
+            raise ControlError("finalizer worker attempt record is invalid")
+        identities.add(identity)
+
+
+def _validate_finalizer_phase_evidence(
+    finalization: Mapping[str, Any],
+) -> None:
+    evidence = finalization.get("phase_evidence")
+    if not isinstance(evidence, Mapping) or set(evidence) != {
+        "validating",
+        "retiring_fleet",
+        "snapshotting",
+    }:
+        raise ControlError("finalizer phase evidence fields are invalid")
+    fields = {
+        "validating": {
+            "entered_at",
+            "entered_timestamp",
+            "semantic_report_path",
+            "semantic_intent_path",
+            "semantic_preflight_path",
+            "semantic_report_sha256",
+            "semantic_intent_sha256",
+            "semantic_intent_id",
+            "semantic_preflight_sha256",
+            "semantic_preflight_id",
+        },
+        "retiring_fleet": {
+            "entered_at",
+            "entered_timestamp",
+            "semantic_report_sha256",
+            "semantic_preflight_sha256",
+            "semantic_preflight_id",
+            "retirement_root",
+            "retirement_intent_path",
+            "retirement_intent_sha256",
+            "retirement_id",
+            "retirement_marker_path",
+            "retirement_marker_sha256",
+            "retirement_completion_id",
+        },
+        "snapshotting": {
+            "entered_at",
+            "entered_timestamp",
+            "retirement_root",
+            "retirement_marker_path",
+            "retirement_marker_sha256",
+            "retirement_completion_id",
+            "cache_root",
+            "cache_marker_path",
+            "cache_marker_sha256",
+            "cache_generation_id",
+            "cache_tree_sha256",
+            "snapshot_root",
+            "snapshot_marker_path",
+            "snapshot_marker_sha256",
+            "snapshot_id",
+        },
+    }
+    path_fields = {
+        "semantic_report_path",
+        "semantic_intent_path",
+        "semantic_preflight_path",
+        "retirement_root",
+        "retirement_intent_path",
+        "retirement_marker_path",
+        "cache_root",
+        "cache_marker_path",
+        "snapshot_root",
+        "snapshot_marker_path",
+    }
+    sha_fields = {
+        "semantic_report_sha256",
+        "semantic_intent_sha256",
+        "semantic_intent_id",
+        "semantic_preflight_sha256",
+        "semantic_preflight_id",
+        "retirement_intent_sha256",
+        "retirement_id",
+        "retirement_marker_sha256",
+        "retirement_completion_id",
+        "cache_marker_sha256",
+        "cache_generation_id",
+        "cache_tree_sha256",
+        "snapshot_marker_sha256",
+    }
+    present: list[str] = []
+    for phase in ("validating", "retiring_fleet", "snapshotting"):
+        row = evidence.get(phase)
+        if row is None:
+            continue
+        present.append(phase)
+        entered = row.get("entered_timestamp") if isinstance(row, Mapping) else None
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != fields[phase]
+            or not isinstance(entered, (int, float))
+            or isinstance(entered, bool)
+            or row.get("entered_at") != utc_timestamp(float(entered))
+        ):
+            raise ControlError(f"finalizer {phase} phase evidence is invalid")
+        for field in path_fields & set(row):
+            value = row[field]
+            if not isinstance(value, str) or not Path(value).is_absolute():
+                raise ControlError(
+                    f"finalizer {phase} phase path {field} is invalid"
+                )
+        for field in sha_fields & set(row):
+            value = row[field]
+            if value is not None and _SHA256_RE.fullmatch(str(value)) is None:
+                raise ControlError(
+                    f"finalizer {phase} phase identity {field} is invalid"
+                )
+        snapshot_id = row.get("snapshot_id")
+        if snapshot_id is not None and (
+            not isinstance(snapshot_id, str) or not snapshot_id
+        ):
+            raise ControlError("finalizer snapshot phase identity is invalid")
+    expected_prefix = [
+        phase
+        for phase in ("validating", "retiring_fleet", "snapshotting")
+        if evidence.get(phase) is not None
+    ]
+    if present != expected_prefix or present not in (
+        [],
+        ["validating"],
+        ["validating", "retiring_fleet"],
+        ["validating", "retiring_fleet", "snapshotting"],
+    ):
+        raise ControlError("finalizer phase evidence is not monotonic")
+    state = finalization.get("state")
+    if state != "blocked":
+        required_count = min(FINALIZER_PHASE_ORDER.get(str(state), 0), 3)
+        if len(present) != required_count:
+            raise ControlError(
+                "finalizer durable state differs from its phase evidence"
+            )
+    validating = evidence.get("validating")
+    retiring = evidence.get("retiring_fleet")
+    snapshotting = evidence.get("snapshotting")
+    if retiring is not None and any(
+        validating.get(field) is None
+        for field in (
+            "semantic_report_sha256",
+            "semantic_intent_sha256",
+            "semantic_intent_id",
+            "semantic_preflight_sha256",
+            "semantic_preflight_id",
+        )
+    ):
+        raise ControlError(
+            "fleet-retirement phase lacks completed semantic bindings"
+        )
+    if snapshotting is not None and any(
+        retiring.get(field) is None
+        for field in (
+            "retirement_intent_sha256",
+            "retirement_id",
+            "retirement_marker_sha256",
+            "retirement_completion_id",
+        )
+    ):
+        raise ControlError(
+            "snapshot phase lacks completed fleet-retirement bindings"
+        )
+    if state == "complete" and any(
+        snapshotting.get(field) is None
+        for field in (
+            "cache_marker_sha256",
+            "cache_generation_id",
+            "cache_tree_sha256",
+            "snapshot_marker_sha256",
+            "snapshot_id",
+        )
+    ):
+        raise ControlError(
+            "completed finalization lacks cache/snapshot phase bindings"
+        )
+
+
 def _validate_finalization_state(
     control: Mapping[str, Any], finalization: Any
 ) -> None:
@@ -1998,9 +2807,13 @@ def _validate_finalization_state(
         "requested_at",
         "requested_timestamp",
         "semantic_evidence",
+        "request_intent",
+        "consumed_capacity_incidents",
         "output_root",
         "attempts",
+        "worker_attempts",
         "next_attempt",
+        "phase_evidence",
         "active_job",
         "successor_job",
         "successor_retirement",
@@ -2014,7 +2827,7 @@ def _validate_finalization_state(
         str(control["immutable"]["results_root"])
     ).expanduser().resolve()
     expected_output = (
-        results_root / "recovery" / "schema5-v1.2-r2" / "final"
+        results_root / "recovery" / "schema5-v1.2-r3" / "final"
     )
     state = finalization.get("state")
     requested = finalization.get("requested_timestamp")
@@ -2040,6 +2853,7 @@ def _validate_finalization_state(
                 "requested_at",
                 "requested_timestamp",
                 "semantic_evidence",
+                "request_intent",
                 "active_job",
                 "successor_job",
                 "successor_retirement",
@@ -2059,6 +2873,7 @@ def _validate_finalization_state(
         ):
             raise ControlError("active finalization intent identity is invalid")
         evidence = finalization.get("semantic_evidence")
+        request_intent = finalization.get("request_intent")
         if (
             not isinstance(evidence, dict)
             or set(evidence) != {"path", "sha256", "captured_timestamp"}
@@ -2068,6 +2883,35 @@ def _validate_finalization_state(
             or isinstance(evidence.get("captured_timestamp"), bool)
         ):
             raise ControlError("active finalization semantic evidence is invalid")
+        if (
+            not isinstance(request_intent, dict)
+            or set(request_intent) != {"path", "sha256", "intent_id"}
+            or not Path(str(request_intent.get("path", ""))).is_absolute()
+            or _SHA256_RE.fullmatch(str(request_intent.get("sha256", ""))) is None
+            or request_intent.get("intent_id") != finalization.get("intent_id")
+        ):
+            raise ControlError("active finalization request intent is invalid")
+    _validate_finalizer_worker_attempts(finalization)
+    _validate_finalizer_phase_evidence(finalization)
+    if state == "idle" and (
+        finalization["worker_attempts"]
+        or any(finalization["phase_evidence"].values())
+    ):
+        raise ControlError("idle finalization contains durable phase progress")
+    consumed = finalization.get("consumed_capacity_incidents")
+    if (
+        not isinstance(consumed, list)
+        or consumed != sorted(set(consumed))
+        or any(
+            not isinstance(key, str)
+            or key not in CAPACITY_REMEDIATION_ALERT_KEYS
+            for key in consumed
+        )
+        or (state == "idle" and consumed)
+    ):
+        raise ControlError(
+            "finalization consumed-capacity incident binding is invalid"
+        )
     _validate_finalizer_job_record(
         finalization.get("active_job"), context="active"
     )
@@ -2159,6 +3003,413 @@ def _append_finalization_history(
     history.append(payload)
 
 
+def _finalization_request_intent_path(control: Mapping[str, Any]) -> Path:
+    results_root = Path(
+        str(control["immutable"]["results_root"])
+    ).expanduser().resolve()
+    return (
+        results_root
+        / CONTROL_STATE_DIRNAME
+        / FINALIZER_STATE_DIRNAME
+        / FINALIZER_REQUEST_INTENT_FILENAME
+    )
+
+
+def _cleanup_finalization_request_intent_orphans(root: Path) -> list[str]:
+    """Remove only mkstemp names owned by the request-intent publisher.
+
+    The caller owns ``control_lock``.  A process death releases that lock, so an exact
+    hidden eight-character ``tempfile`` name cannot belong to a concurrent publisher.
+    Anything with a different name, inode shape, owner, or mode is left untouched and
+    fails closed when it collides with this private namespace.
+    """
+
+    pattern = re.compile(
+        rf"^\.{re.escape(FINALIZER_REQUEST_INTENT_FILENAME)}\."
+        r"[a-z0-9_]{8}\.tmp$"
+    )
+    removed: list[str] = []
+    for candidate in sorted(root.iterdir(), key=lambda item: item.name):
+        if pattern.fullmatch(candidate.name) is None:
+            continue
+        try:
+            candidate_stat = candidate.lstat()
+        except OSError as exc:
+            raise ControlError(
+                "cannot inspect orphaned finalization request-intent temporary"
+            ) from exc
+        mode = stat.S_IMODE(candidate_stat.st_mode)
+        if (
+            not stat.S_ISREG(candidate_stat.st_mode)
+            or candidate_stat.st_nlink != 1
+            or candidate_stat.st_uid != os.geteuid()
+            or mode not in {0o600, 0o444}
+        ):
+            raise ControlError(
+                "request-intent temporary namespace contains an unknown entry"
+            )
+        candidate.unlink()
+        removed.append(candidate.name)
+    if removed:
+        io._fsync_directory(root)
+    return removed
+
+
+def _finalization_capacity_alert_resolution_plan(
+    control: Mapping[str, Any],
+    incident_keys: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Bind every control-resident alert that the request is allowed to resolve."""
+
+    consumed = sorted(set(incident_keys))
+    if consumed != list(incident_keys):
+        raise ControlError(
+            "finalization capacity incidents must be sorted and unique"
+        )
+    return [
+        {
+            "dedupe_key": dedupe_key,
+            "alert_ids": sorted(
+                str(alert["alert_id"])
+                for alert in control.get("alerts", [])
+                if isinstance(alert, Mapping)
+                and alert.get("dedupe_key") == dedupe_key
+                and alert.get("resolved_at") is None
+            ),
+        }
+        for dedupe_key in consumed
+    ]
+
+
+def _validate_finalization_capacity_alert_resolution_plan(
+    value: Any,
+    *,
+    consumed_capacity_incidents: Sequence[str],
+) -> list[dict[str, Any]]:
+    consumed = list(consumed_capacity_incidents)
+    if not isinstance(value, list) or len(value) != len(consumed):
+        raise ControlError(
+            "autonomous finalization alert-resolution plan is invalid"
+        )
+    observed_keys: list[str] = []
+    observed_ids: list[str] = []
+    for row in value:
+        if not isinstance(row, dict) or set(row) != {
+            "dedupe_key",
+            "alert_ids",
+        }:
+            raise ControlError(
+                "autonomous finalization alert-resolution plan is invalid"
+            )
+        dedupe_key = row.get("dedupe_key")
+        alert_ids = row.get("alert_ids")
+        if (
+            not isinstance(dedupe_key, str)
+            or dedupe_key not in CAPACITY_REMEDIATION_ALERT_KEYS
+            or not isinstance(alert_ids, list)
+            or alert_ids != sorted(set(alert_ids))
+            or any(
+                not isinstance(alert_id, str)
+                or re.fullmatch(r"[0-9a-f]{32}", alert_id) is None
+                for alert_id in alert_ids
+            )
+        ):
+            raise ControlError(
+                "autonomous finalization alert-resolution plan is invalid"
+            )
+        observed_keys.append(dedupe_key)
+        observed_ids.extend(alert_ids)
+    if observed_keys != consumed or len(observed_ids) != len(set(observed_ids)):
+        raise ControlError(
+            "autonomous finalization alert-resolution plan is invalid"
+        )
+    return copy.deepcopy(value)
+
+
+def _finalization_request_intent_identity(
+    control: Mapping[str, Any],
+    *,
+    semantic_evidence: Mapping[str, Any],
+    consumed_capacity_incidents: Sequence[str],
+    capacity_alert_resolution_plan: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema_version": FINALIZER_REQUEST_INTENT_SCHEMA_VERSION,
+        "protocol": FINALIZER_REQUEST_INTENT_PROTOCOL,
+        "kind": "schema5_autonomous_finalization_request_intent",
+        "release_id": control["immutable"]["release_id"],
+        "immutable_sha256": control["immutable_sha256"],
+        "semantic_evidence": copy.deepcopy(dict(semantic_evidence)),
+        "consumed_capacity_incidents": list(consumed_capacity_incidents),
+        "capacity_alert_resolution_plan": copy.deepcopy(
+            list(capacity_alert_resolution_plan)
+        ),
+    }
+
+
+def _validate_finalization_request_intent_payload(
+    control: Mapping[str, Any],
+    value: Any,
+    *,
+    semantic_evidence: Mapping[str, Any] | None = None,
+    consumed_capacity_incidents: Sequence[str] | None = None,
+    capacity_alert_resolution_plan: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    required = {
+        "schema_version",
+        "protocol",
+        "kind",
+        "release_id",
+        "immutable_sha256",
+        "semantic_evidence",
+        "consumed_capacity_incidents",
+        "capacity_alert_resolution_plan",
+        "requested_at",
+        "requested_timestamp",
+        "intent_id",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ControlError("autonomous finalization request intent fields are invalid")
+    evidence = value.get("semantic_evidence")
+    consumed = value.get("consumed_capacity_incidents")
+    resolution_plan = value.get("capacity_alert_resolution_plan")
+    requested = value.get("requested_timestamp")
+    identity = {
+        key: copy.deepcopy(item)
+        for key, item in value.items()
+        if key not in {"requested_at", "requested_timestamp", "intent_id"}
+    }
+    if (
+        value.get("schema_version") != FINALIZER_REQUEST_INTENT_SCHEMA_VERSION
+        or value.get("protocol") != FINALIZER_REQUEST_INTENT_PROTOCOL
+        or value.get("kind")
+        != "schema5_autonomous_finalization_request_intent"
+        or value.get("release_id") != control["immutable"]["release_id"]
+        or value.get("immutable_sha256") != control["immutable_sha256"]
+        or not isinstance(evidence, dict)
+        or set(evidence) != {"path", "sha256", "captured_timestamp"}
+        or not Path(str(evidence.get("path", ""))).is_absolute()
+        or _SHA256_RE.fullmatch(str(evidence.get("sha256", ""))) is None
+        or not isinstance(evidence.get("captured_timestamp"), (int, float))
+        or isinstance(evidence.get("captured_timestamp"), bool)
+        or not isinstance(consumed, list)
+        or consumed != sorted(set(consumed))
+        or any(
+            not isinstance(key, str)
+            or key not in CAPACITY_REMEDIATION_ALERT_KEYS
+            for key in consumed
+        )
+        or not isinstance(requested, (int, float))
+        or isinstance(requested, bool)
+        or not math.isfinite(float(requested))
+        or float(requested) < 0
+        or value.get("requested_at") != utc_timestamp(float(requested))
+        or value.get("intent_id") != sha256_value(identity)
+    ):
+        raise ControlError("autonomous finalization request intent is invalid")
+    _validate_finalization_capacity_alert_resolution_plan(
+        resolution_plan,
+        consumed_capacity_incidents=consumed,
+    )
+    if semantic_evidence is not None and evidence != dict(semantic_evidence):
+        raise ControlError(
+            "autonomous finalization request intent semantic evidence drifted"
+        )
+    if (
+        consumed_capacity_incidents is not None
+        and consumed != list(consumed_capacity_incidents)
+    ):
+        raise ControlError(
+            "autonomous finalization request intent capacity incidents drifted"
+        )
+    if (
+        capacity_alert_resolution_plan is not None
+        and resolution_plan != list(capacity_alert_resolution_plan)
+    ):
+        raise ControlError(
+            "autonomous finalization request intent alert-resolution plan drifted"
+        )
+    return value
+
+
+def _verify_finalization_request_intent(
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    finalization = control["finalization"]
+    binding = finalization.get("request_intent")
+    if not isinstance(binding, Mapping):
+        raise ControlError("active finalization lacks its request-intent binding")
+    path = Path(str(binding.get("path", ""))).expanduser()
+    expected_path = _finalization_request_intent_path(control)
+    if (
+        not path.is_absolute()
+        or path != expected_path
+        or path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+        or sha256_file(path) != binding.get("sha256")
+    ):
+        raise ControlError(
+            "autonomous finalization request intent is missing, mutable, or drifted"
+        )
+    value = _load_json_object(
+        path, description="autonomous finalization request intent"
+    )
+    _validate_finalization_request_intent_payload(
+        control,
+        value,
+        semantic_evidence=finalization["semantic_evidence"],
+        consumed_capacity_incidents=finalization[
+            "consumed_capacity_incidents"
+        ],
+    )
+    if value["intent_id"] != binding.get("intent_id"):
+        raise ControlError(
+            "autonomous finalization request-intent identity drifted"
+        )
+    evidence_path = Path(value["semantic_evidence"]["path"])
+    report = _load_json_object(
+        evidence_path,
+        description="request-intent semantic finalization evidence",
+    )
+    if (
+        _finalization_semantic_evidence(
+            expected_path.parent.parent,
+            evidence_path,
+            report,
+        )
+        != value["semantic_evidence"]
+    ):
+        raise ControlError(
+            "autonomous finalization request semantic evidence drifted"
+        )
+    return value
+
+
+def _publish_finalization_request_intent(
+    state_dir: Path,
+    control: Mapping[str, Any],
+    *,
+    semantic_evidence: Mapping[str, Any],
+    consumed_capacity_incidents: Sequence[str],
+    capacity_alert_resolution_plan: Sequence[Mapping[str, Any]],
+    now: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    path = _finalization_request_intent_path(control)
+    expected_state_dir = path.parent.parent
+    if state_dir.expanduser().resolve() != expected_state_dir:
+        raise ControlError(
+            "autonomous finalization state root differs from immutable results root"
+        )
+    root = path.parent
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ControlError("autonomous finalizer state directory is unsafe")
+    root.mkdir(parents=True, exist_ok=True)
+    _cleanup_finalization_request_intent_orphans(root)
+    identity = _finalization_request_intent_identity(
+        control,
+        semantic_evidence=semantic_evidence,
+        consumed_capacity_incidents=consumed_capacity_incidents,
+        capacity_alert_resolution_plan=capacity_alert_resolution_plan,
+    )
+    intent_id = sha256_value(identity)
+    if path.exists() or path.is_symlink():
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_nlink != 1
+            or path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                "autonomous finalization request intent path is unsafe"
+            )
+        value = _load_json_object(
+            path, description="existing autonomous finalization request intent"
+        )
+        _validate_finalization_request_intent_payload(control, value)
+        frozen_consumed = list(value["consumed_capacity_incidents"])
+        current_consumed = list(consumed_capacity_incidents)
+        if not set(current_consumed).issubset(frozen_consumed):
+            raise ControlError(
+                "existing autonomous finalization request intent does not bind "
+                "a newly active capacity cause"
+            )
+        frozen_resolution_plan = value["capacity_alert_resolution_plan"]
+        frozen_alert_ids_by_key = {
+            str(row["dedupe_key"]): {
+                str(alert_id) for alert_id in row["alert_ids"]
+            }
+            for row in frozen_resolution_plan
+        }
+        current_alert_ids_by_key = {
+            str(row["dedupe_key"]): {
+                str(alert_id) for alert_id in row["alert_ids"]
+            }
+            for row in capacity_alert_resolution_plan
+        }
+        for dedupe_key, current_alert_ids in current_alert_ids_by_key.items():
+            if not current_alert_ids.issubset(
+                frozen_alert_ids_by_key.get(dedupe_key, set())
+            ):
+                raise ControlError(
+                    "existing autonomous finalization request intent does not bind "
+                    "a newly active capacity alert"
+                )
+        existing_evidence = value["semantic_evidence"]
+        evidence_path = Path(existing_evidence["path"])
+        evidence_report = _load_json_object(
+            evidence_path,
+            description="existing request-intent semantic evidence",
+        )
+        if (
+            _finalization_semantic_evidence(
+                state_dir,
+                evidence_path,
+                evidence_report,
+            )
+            != existing_evidence
+        ):
+            raise ControlError(
+                "existing autonomous finalization semantic evidence drifted"
+            )
+        expected_existing_id = sha256_value(
+            _finalization_request_intent_identity(
+                control,
+                semantic_evidence=existing_evidence,
+                consumed_capacity_incidents=frozen_consumed,
+                capacity_alert_resolution_plan=frozen_resolution_plan,
+            )
+        )
+        if value["intent_id"] != expected_existing_id:
+            raise ControlError(
+                "existing autonomous finalization request intent conflicts"
+            )
+    else:
+        value = {
+            **identity,
+            "requested_at": utc_timestamp(now),
+            "requested_timestamp": now,
+            "intent_id": intent_id,
+        }
+        _atomic_publish_readonly_json(path, value)
+    intent_id = str(value["intent_id"])
+    if (
+        path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+        or path.is_symlink()
+    ):
+        raise ControlError(
+            "autonomous finalization request intent was not sealed safely"
+        )
+    binding = {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "intent_id": intent_id,
+    }
+    return value, binding
+
+
 def _required_pin(mapping: Mapping[str, Any], field: str, *, context: str) -> Any:
     value = mapping.get(field)
     if value is None or value == "" or value == []:
@@ -2174,6 +3425,7 @@ _IMMUTABLE_PIN_FIELDS = {
     "release_bundle_id",
     "release_worktree",
     "git_commit",
+    "release_tag_object",
     "source_tree_sha256",
     "transport_uncertainty_binding",
     "transport_uncertainty_binding_sha256",
@@ -2223,6 +3475,7 @@ _RELEASE_FRAGMENT_FIELDS = {
     "release_id",
     "release_worktree",
     "git_commit",
+    "release_tag_object",
     "source_tree_sha256",
     "transport_uncertainty_binding",
     "transport_uncertainty_binding_sha256",
@@ -2321,6 +3574,8 @@ def expected_fleet_supervisor_command(pins: Mapping[str, Any]) -> list[str]:
         / "bin"
         / "python"
     )
+    results_root = Path(str(pins["results_root"])).expanduser().resolve()
+    state_dir = results_root / CONTROL_STATE_DIRNAME
     return [
         str(harness_python),
         "-u",
@@ -2351,6 +3606,8 @@ def expected_fleet_supervisor_command(pins: Mapping[str, Any]) -> list[str]:
         str(pins["protected_capacity_marker_sha256"]),
         "--protected-capacity-marker-id",
         str(pins["protected_capacity_marker_id"]),
+        "--control-state-dir",
+        str(state_dir),
         "--harness-environment-prefix",
         str(Path(str(pins["harness_environment_prefix"])).expanduser().resolve()),
         "--serving-environment-prefix",
@@ -2841,9 +4098,16 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     if (
         not isinstance(git_identity, dict)
         or set(git_identity)
-        != {"git_commit", "git_tag", "source_tree_sha256"}
+        != {
+            "git_commit",
+            "git_tag",
+            "git_tag_object",
+            "source_tree_sha256",
+        }
         or git_identity.get("git_tag") != PRODUCTION_OPERATIONAL_TAG
         or git_identity.get("git_commit") != pins["git_commit"]
+        or git_identity.get("git_tag_object")
+        != pins["release_tag_object"]
         or git_identity.get("source_tree_sha256") != pins["source_tree_sha256"]
     ):
         raise ImmutablePinError("release identity Git/source pin drifted")
@@ -2903,6 +4167,87 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     )
 
 
+def _protected_capacity_source_expectations(
+    immutable: Mapping[str, Any],
+) -> dict[str, str]:
+    """Derive the exact frozen source pins required by every capacity load."""
+
+    release = Path(str(immutable["release_worktree"])).expanduser().resolve()
+    dispatcher = (release / "slurm" / "dispatch_sweeps.py").resolve()
+    qualification_runner = (
+        release / "scripts" / "run_schema5_throughput_qualification.py"
+    ).resolve()
+    source_tree_sha256 = str(immutable["source_tree_sha256"])
+    if (
+        _SHA256_RE.fullmatch(source_tree_sha256) is None
+        or dispatcher.is_symlink()
+        or not dispatcher.is_file()
+        or qualification_runner.is_symlink()
+        or not qualification_runner.is_file()
+    ):
+        raise ImmutablePinError(
+            "protected-capacity frozen source authority is incomplete"
+        )
+    return {
+        "expected_source_tree_sha256": source_tree_sha256,
+        "expected_dispatcher_source_sha256": sha256_file(dispatcher),
+        "expected_qualification_runner_source_sha256": sha256_file(
+            qualification_runner
+        ),
+    }
+
+
+def _load_immutable_protected_capacity_contract(
+    immutable: Mapping[str, Any],
+) -> protected_capacity.ProtectedCapacityContract:
+    """Load generation one, whose sealed bytes pin the annotated tag object."""
+
+    return protected_capacity.load_contract(
+        immutable["protected_capacity_marker_path"],
+        expected_release_git_commit=str(immutable["git_commit"]),
+        expected_release_tag_object=str(
+            immutable["release_tag_object"]
+        ),
+        expected_marker_id=str(
+            immutable["protected_capacity_marker_id"]
+        ),
+        expected_sha256=str(
+            immutable["protected_capacity_marker_sha256"]
+        ),
+        **_protected_capacity_source_expectations(immutable),
+    )
+
+
+def _load_protected_capacity_contract(
+    control: Mapping[str, Any],
+    *,
+    path: str | Path,
+    expected_marker_id: str,
+    expected_sha256: str,
+) -> protected_capacity.ProtectedCapacityContract:
+    """Strictly load any generation under the immutable tag/source lineage."""
+
+    immutable = control["immutable"]
+    initial = _load_immutable_protected_capacity_contract(immutable)
+    resolved = Path(path).expanduser().resolve()
+    if (
+        resolved == initial.path
+        and expected_marker_id == initial.marker_id
+        and expected_sha256 == initial.sha256
+    ):
+        return initial
+    return protected_capacity.load_contract(
+        resolved,
+        expected_release_git_commit=str(immutable["git_commit"]),
+        expected_release_tag_object=str(
+            immutable["release_tag_object"]
+        ),
+        expected_marker_id=expected_marker_id,
+        expected_sha256=expected_sha256,
+        **_protected_capacity_source_expectations(immutable),
+    )
+
+
 def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> None:
     """Validate the frozen schema-5 production identity and (optionally) its files."""
     if not isinstance(pins, dict):
@@ -2919,6 +4264,7 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
         "release_bundle_id",
         "release_worktree",
         "git_commit",
+        "release_tag_object",
         "source_tree_sha256",
         "transport_uncertainty_binding",
         "transport_uncertainty_binding_sha256",
@@ -2954,6 +4300,10 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
         raise ImmutablePinError(
             f"release_id must be {PRODUCTION_RELEASE_ID!r}; schema-5 v1.1 "
             "and other downgrade identities are not production-authorized"
+        )
+    if re.fullmatch(r"[0-9a-f]{40}", str(pins["release_tag_object"])) is None:
+        raise ImmutablePinError(
+            "release_tag_object must pin the exact annotated Git tag object"
         )
     try:
         expected_transport_binding = (
@@ -3208,20 +4558,19 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
                 f"pinned artifact drifted: {path}; expected {expected_hash}, got {observed}"
             )
     try:
-        capacity_contract = protected_capacity.load_contract(
-            pins["protected_capacity_marker_path"],
-            expected_release_git_commit=str(pins["git_commit"]),
-            expected_marker_id=str(pins["protected_capacity_marker_id"]),
-            expected_sha256=str(pins["protected_capacity_marker_sha256"]),
+        capacity_contract = _load_immutable_protected_capacity_contract(
+            pins
         )
         model_contracts = load_model_contracts(
             pins["model_contract_path"],
             expected_sha256=pins["model_contract_sha256"],
         )
         frozen_fleet = load_fleet_contract(
-            pins["fleet_contract_path"],
+            capacity_contract.effective_fleet_contract_path,
             model_contracts=model_contracts,
-            expected_sha256=pins["fleet_contract_sha256"],
+            expected_sha256=(
+                capacity_contract.effective_fleet_contract_sha256
+            ),
             allow_capacity_layout=True,
         )
         protected_capacity.authorize_fleet(frozen_fleet, capacity_contract)
@@ -3318,6 +4667,15 @@ def load_control(state_dir: Path, *, verify_files: bool = False) -> dict[str, An
         raise ImmutablePinError("control immutable pin digest is invalid")
     pins_path = state_dir / IMMUTABLE_PINS_FILENAME
     try:
+        if (
+            pins_path.is_symlink()
+            or not pins_path.is_file()
+            or pins_path.stat().st_nlink != 1
+            or pins_path.stat().st_mode & 0o222
+        ):
+            raise ImmutablePinError(
+                f"frozen immutable pin copy is not a sealed single-link file: {pins_path}"
+            )
         frozen_pins = json.loads(pins_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ImmutablePinError(
@@ -3343,6 +4701,11 @@ def load_control(state_dir: Path, *, verify_files: bool = False) -> dict[str, An
     _validate_capacity_state(value.get("capacity"))
     _validate_monitoring_state(value.get("monitoring"))
     _validate_finalization_state(value, value.get("finalization"))
+    if (
+        verify_files
+        and value["finalization"].get("request_intent") is not None
+    ):
+        _verify_finalization_request_intent(value)
     if (
         verify_files
         and isinstance(value["finalization"].get("successor_retirement"), dict)
@@ -3460,12 +4823,28 @@ def initialize_control(
                 raise ImmutablePinError(
                     "init is idempotent only for exactly the existing immutable pins"
                 )
-            return existing
-        if _read_jsonl_locked(state_dir / TRANSITION_JOURNAL, missing_ok=True):
-            raise ControlError(
-                "transition journal exists without control.json; preserve it and use a new "
-                "state directory or perform explicit recovery"
+            _ensure_bootstrap_dispatcher_ledger(
+                state_dir,
+                timestamp=float(existing["created_timestamp"]),
+                require_empty=(
+                    existing["desired_state"] == "paused"
+                    and int(existing["rollout_generation"]) == 0
+                ),
             )
+            return existing
+        durable_history = _read_jsonl_locked(
+            state_dir / TRANSITION_JOURNAL, missing_ok=True
+        )
+        if durable_history:
+            if (
+                len(durable_history) != 1
+                or not isinstance(durable_history[0].get("timestamp"), (int, float))
+            ):
+                raise ControlError(
+                    "transition journal exists without control.json and is not an "
+                    "exact recoverable init preimage"
+                )
+            timestamp = float(durable_history[0]["timestamp"])
         control: dict[str, Any] = {
             "schema_version": CONTROL_SCHEMA_VERSION,
             "protocol": CONTROL_PROTOCOL,
@@ -3540,18 +4919,100 @@ def initialize_control(
             "alert_email": alert_email,
             "last_reconciliation": None,
         }
-        append_transition(
+        init_details = {
+            "immutable_sha256": control["immutable_sha256"],
+            "alert_email": alert_email,
+        }
+        if durable_history:
+            expected_record = _history_record(
+                control,
+                event="initialized_paused",
+                details=init_details,
+                now=timestamp,
+            )
+            if durable_history != [expected_record]:
+                raise ControlError(
+                    "transition journal exists without control.json and conflicts "
+                    "with the requested immutable init"
+                )
+            control["transition_history"] = copy.deepcopy(durable_history)
+            validate_transition_history(control)
+        else:
+            append_transition(
+                state_dir,
+                control,
+                event="initialized_paused",
+                details=init_details,
+                now=timestamp,
+            )
+        _ensure_bootstrap_dispatcher_ledger(
             state_dir,
-            control,
-            event="initialized_paused",
-            details={"immutable_sha256": control["immutable_sha256"]},
-            now=timestamp,
+            timestamp=timestamp,
+            require_empty=True,
         )
         pins_path = state_dir / IMMUTABLE_PINS_FILENAME
-        _atomic_write_json(pins_path, dict(pins))
-        pins_path.chmod(0o444)
+        if pins_path.exists() or pins_path.is_symlink():
+            if (
+                pins_path.is_symlink()
+                or not pins_path.is_file()
+                or pins_path.stat().st_nlink != 1
+                or pins_path.stat().st_mode & 0o222
+            ):
+                raise ImmutablePinError(
+                    "recoverable init immutable pins are not a sealed single-link file"
+                )
+            try:
+                existing_pins = json.loads(pins_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ImmutablePinError(
+                    f"cannot validate recoverable init immutable pins: {exc}"
+                ) from exc
+            if existing_pins != dict(pins):
+                raise ImmutablePinError(
+                    "recoverable init immutable pins conflict with the requested pins"
+                )
+        else:
+            _atomic_publish_readonly_json(pins_path, dict(pins))
         _atomic_write_json(_state_path(state_dir), control)
         return control
+
+
+def _ensure_bootstrap_dispatcher_ledger(
+    state_dir: Path,
+    *,
+    timestamp: float,
+    require_empty: bool,
+) -> None:
+    """Create/recover the canonical empty ledger before any running generation."""
+
+    from slurm.dispatch_sweeps import _empty_ledger, validate_ledger_structure
+
+    ledger_path = state_dir / "ledger.json"
+    expected = _empty_ledger(now=float(timestamp))
+    if not os.path.lexists(ledger_path):
+        if not require_empty:
+            raise ControlError(
+                "initialized control lacks its canonical dispatcher ledger"
+            )
+        _atomic_write_json(ledger_path, expected)
+    try:
+        _raw, observed = _stable_mutable_json_preimage(
+            ledger_path,
+            required_parent=state_dir,
+            description="bootstrap dispatcher ledger",
+        )
+        observed = validate_ledger_structure(
+            observed, source=str(ledger_path)
+        )
+    except Exception as exc:
+        raise ControlError(
+            f"bootstrap dispatcher ledger is unsafe: {exc}"
+        ) from exc
+    if require_empty and observed != expected:
+        raise ControlError(
+            "paused rollout-zero control has a nonempty or conflicting "
+            "dispatcher ledger"
+        )
 
 
 def _save_control(
@@ -3932,19 +5393,14 @@ def _validate_fleet_artifact(
             "fleet wrapper scheduler/transport metrics differ from raw evidence"
         )
     try:
-        capacity_contract = protected_capacity.load_contract(
-            control["immutable"]["protected_capacity_marker_path"],
-            expected_release_git_commit=str(
-                control["immutable"]["git_commit"]
-            ),
-            expected_marker_id=str(
-                control["immutable"]["protected_capacity_marker_id"]
-            ),
-            expected_sha256=str(
-                control["immutable"][
-                    "protected_capacity_marker_sha256"
-                ]
-            ),
+        capacity_authority = effective_protected_capacity_binding(
+            control, verify_files=True
+        )
+        capacity_contract = _load_protected_capacity_contract(
+            control,
+            path=capacity_authority["path"],
+            expected_marker_id=str(capacity_authority["marker_id"]),
+            expected_sha256=str(capacity_authority["sha256"]),
         )
         client_capacity_summary = (
             protected_capacity.validate_live_client_capacity_evidence(
@@ -5946,6 +7402,94 @@ def _validate_gate_metrics(
             "unexpected_qids": 0,
             "repair_count": 0,
         }
+    elif gate == "static_feasibility_certificate":
+        authority = effective_protected_capacity_binding(
+            control, verify_files=True
+        )
+        certificate = protected_capacity.load_static_feasibility_certificate(
+            authority["static_feasibility_certificate_path"],
+            expected_sha256=authority[
+                "static_feasibility_certificate_sha256"
+            ],
+            expected_certificate_id=authority[
+                "static_feasibility_certificate_id"
+            ],
+            expected_capacity_generation=authority[
+                "capacity_generation"
+            ],
+            expected_base_fleet_contract_sha256=authority[
+                "base_fleet_contract_sha256"
+            ],
+            expected_effective_fleet_contract_sha256=authority[
+                "effective_fleet_contract_sha256"
+            ],
+            expected_additive_overlay_contract_sha256=authority[
+                "additive_overlay_contract_sha256"
+            ],
+            expected_release_git_commit=str(
+                control["immutable"]["git_commit"]
+            ),
+        )
+        exact_metrics = {
+            "capacity_generation": certificate.capacity_generation,
+            "certificate_id": certificate.certificate_id,
+            "certificate_sha256": certificate.sha256,
+            "base_fleet_contract_sha256": (
+                certificate.base_fleet_contract_sha256
+            ),
+            "effective_fleet_contract_sha256": (
+                certificate.effective_fleet_contract_sha256
+            ),
+            "additive_overlay_contract_sha256": (
+                certificate.additive_overlay_contract_sha256
+            ),
+            "effective_logical_replicas": (
+                certificate.effective_logical_replicas
+            ),
+            "effective_active_gpus": certificate.effective_active_gpus,
+            "selected_cell_count": protected_capacity.CLIENT_JOB_ELEMENTS,
+        }
+        artifact = artifacts["preflight_capacity_certificate"][0]
+        if artifact != certificate.path or sha256_file(artifact) != certificate.sha256:
+            raise ReadinessError(
+                "static-feasibility gate does not reference the exact current "
+                "certificate"
+            )
+    elif gate == "protected_capacity":
+        authority = effective_protected_capacity_binding(
+            control, verify_files=True
+        )
+        contract = _load_protected_capacity_contract(
+            control,
+            path=authority["path"],
+            expected_marker_id=str(authority["marker_id"]),
+            expected_sha256=str(authority["sha256"]),
+        )
+        exact_metrics = {
+            "capacity_generation": contract.capacity_generation,
+            "marker_id": contract.marker_id,
+            "marker_sha256": contract.sha256,
+            "certificate_id": (
+                contract.static_feasibility_certificate_id
+            ),
+            "effective_fleet_contract_sha256": (
+                contract.effective_fleet_contract_sha256
+            ),
+            "effective_logical_replicas": (
+                contract.effective_active_logical_replicas
+            ),
+            "effective_active_gpus": contract.effective_active_gpus,
+            "retained_warm_turnover_gpus": (
+                contract.retained_warm_turnover_gpus
+            ),
+            "attested_total_gpus": contract.attested_total_gpus,
+        }
+        artifact = artifacts["protected_capacity_marker"][0]
+        if artifact != contract.path or sha256_file(artifact) != contract.sha256:
+            raise ReadinessError(
+                "protected-capacity gate does not reference the exact current "
+                "marker"
+            )
     elif gate == "fleet":
         fleet_binding = effective_fleet_contract_binding(
             control, verify_files=True
@@ -6541,7 +8085,10 @@ def _authorization_lineage(
     chain_id: str,
 ) -> dict[str, str]:
     immutable = control["immutable"]
-    marker_path = Path(str(immutable["protected_capacity_marker_path"]))
+    capacity_authority = effective_protected_capacity_binding(
+        control, verify_files=True
+    )
+    marker_path = Path(str(capacity_authority["path"]))
     marker_binding, marker = _authorization_file_binding(
         marker_path,
         description="protected-capacity release lineage",
@@ -6550,9 +8097,9 @@ def _authorization_lineage(
     assert marker is not None
     if (
         marker_binding["sha256"]
-        != immutable["protected_capacity_marker_sha256"]
+        != capacity_authority["sha256"]
         or marker_binding["marker_id"]
-        != immutable["protected_capacity_marker_id"]
+        != capacity_authority["marker_id"]
     ):
         raise ReadinessError(
             "production authorization protected-capacity lineage drifted"
@@ -6784,7 +8331,11 @@ def _build_throughput_authorization_artifacts(
         "qualification_id",
         "cells",
         "qids",
-        "steady_384_seconds",
+        "health_soak_384_seconds",
+        "loaded_384_seconds",
+        "loaded_384_useful_qids",
+        "loaded_384_observation_count",
+        "loaded_384_exact_saturation",
         "throughput_qids_per_day",
         "chain_verification",
     }
@@ -6795,6 +8346,21 @@ def _build_throughput_authorization_artifacts(
     if (
         report.get("cells") != 768
         or report.get("qids") != 15_360
+        or not isinstance(report.get("health_soak_384_seconds"), (int, float))
+        or isinstance(report.get("health_soak_384_seconds"), bool)
+        or float(report["health_soak_384_seconds"]) < 7_200
+        or not isinstance(report.get("loaded_384_seconds"), (int, float))
+        or isinstance(report.get("loaded_384_seconds"), bool)
+        or not 0 < float(report["loaded_384_seconds"]) <= float(
+            report["health_soak_384_seconds"]
+        )
+        or not isinstance(report.get("loaded_384_useful_qids"), int)
+        or isinstance(report.get("loaded_384_useful_qids"), bool)
+        or not 0 < int(report["loaded_384_useful_qids"]) <= 15_360
+        or not isinstance(report.get("loaded_384_observation_count"), int)
+        or isinstance(report.get("loaded_384_observation_count"), bool)
+        or int(report["loaded_384_observation_count"]) < 2
+        or report.get("loaded_384_exact_saturation") is not True
         or not isinstance(report.get("chain_verification"), Mapping)
         or report["chain_verification"].get("chain_id")
         != report["chain_id"]
@@ -7991,6 +9557,10 @@ def _verify_resume_controller_visibility(
             raise SchedulerAmbiguity(
                 f"resume controller {role} job {record['job_id']} remained invisible beyond grace"
             )
+        if _exact_live_controller_job(snapshot, record) is None:
+            raise SchedulerAmbiguity(
+                f"resume controller {role} lacks exact spool/transport proof"
+            )
         visible[role] = matches[0]
     return visible
 
@@ -8127,6 +9697,7 @@ def _release_resume_role(
         raise SchedulerAmbiguity(
             f"refusing to release duplicate {role} controller jobs"
         )
+    scheduler_job: SchedulerJob
     if not matches:
         # Once an exact held allocation is released it may start and finish before a
         # crash-retry observes it.  Complete accounting truth plus a unique terminal
@@ -8136,24 +9707,45 @@ def _release_resume_role(
             raise SchedulerVisibilityPending(
                 f"exact resume controller {role} is not visible for release"
             )
-        if not token_matches[0].active:
-            with control_lock(state_dir):
-                updated = load_control(state_dir)
-                intent = updated.get("resume_intent")
-                if isinstance(intent, dict):
-                    intent.setdefault("release_results", {})[role] = {
-                        "job_id": str(record["job_id"]),
-                        "status": "adopted_terminal_after_release",
-                        "at": utc_timestamp(now),
-                    }
-                    _save_control(state_dir, updated, now=now)
-            return
-    proc = release_runner(["scontrol", "release", str(record["job_id"])])
+        scheduler_job = token_matches[0]
+    else:
+        scheduler_job = matches[0]
+    receipt_path = Path(str(record.get("spooled_receipt_path", ""))).resolve()
+    receipt_sha256 = str(record.get("spooled_receipt_sha256", ""))
+    if (
+        not receipt_path.is_absolute()
+        or _SHA256_RE.fullmatch(receipt_sha256) is None
+    ):
+        raise SchedulerAmbiguity(
+            f"cannot release {role} controller without exact spool proof"
+        )
+    observation_runner = (
+        _run_subprocess
+        if release_runner is _run_subprocess
+        else getattr(release_runner, "release_observation_runner", None)
+    )
+    proof = _ensure_exact_sbatch_released(
+        state_dir,
+        record=record,
+        job_id=str(record["job_id"]),
+        receipt_path=receipt_path,
+        receipt_sha256=receipt_sha256,
+        now=now,
+        release_runner=release_runner,
+        scheduler_job=scheduler_job,
+        observation_runner=(
+            observation_runner if callable(observation_runner) else None
+        ),
+    )
     result = {
         "job_id": str(record["job_id"]),
-        "status": "released" if proc.returncode == 0 else "release_failed",
-        "returncode": int(proc.returncode),
-        "stderr": proc.stderr.strip()[:500],
+        "status": (
+            "adopted_terminal_after_release"
+            if not scheduler_job.active
+            else "released"
+        ),
+        "returncode": 0,
+        "stderr": "",
         "at": utc_timestamp(now),
     }
     with control_lock(state_dir):
@@ -8164,6 +9756,18 @@ def _release_resume_role(
                 "resume intent disappeared during controller release"
             )
         intent.setdefault("release_results", {})[role] = result
+        controller_record = updated["controllers"][role].get("active")
+        if isinstance(controller_record, dict):
+            controller_record.update(proof)
+            submission_intent = updated["controllers"][role].get(
+                "submission_intent"
+            )
+            if (
+                isinstance(submission_intent, dict)
+                and submission_intent.get("intent_token")
+                == controller_record.get("intent_token")
+            ):
+                submission_intent.update(proof)
         append_transition(
             state_dir,
             updated,
@@ -8172,11 +9776,6 @@ def _release_resume_role(
             now=now,
         )
         _save_control(state_dir, updated, now=now)
-    if proc.returncode != 0:
-        raise ControlError(
-            f"failed to release exact held {role} controller {record['job_id']}: "
-            f"{proc.stderr.strip()[:500]}"
-        )
 
 
 def resume_control(
@@ -8344,6 +9943,9 @@ def resume_control(
                 allow_active_controllers=True,
                 allow_crash_window_intents=True,
             )
+        require_fresh_external_watchdog_mirror(
+            state_dir, control=control, now=timestamp
+        )
         if control["desired_state"] == "running":
             intent = control.get("resume_intent")
             if not isinstance(intent, dict) or intent.get("state") != "complete":
@@ -8597,7 +10199,8 @@ def _assert_cell_submission_cut_visible(
     *,
     now: float,
     visibility_grace_seconds: float = 300.0,
-) -> None:
+    ledger_cut: tuple[bytes, Mapping[str, Any]] | None = None,
+) -> tuple[bytes, dict[str, Any]]:
     """Prove every intent that crossed sbatch is represented at the drain cut.
 
     The dispatcher fsyncs ``submitting`` before invoking sbatch and keeps the shared
@@ -8611,61 +10214,63 @@ def _assert_cell_submission_cut_visible(
         raise SchedulerAmbiguity(
             "exact cell drain requires complete squeue+sacct transaction truth"
         )
-    ledger_path = state_dir / "ledger.json"
-    if not ledger_path.exists():
-        return
-    try:
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SchedulerAmbiguity(
-            f"cannot prove the cell submission cut from dispatcher ledger: {exc}"
-        ) from exc
-    intents = ledger.get("intents") if isinstance(ledger, dict) else None
-    jobs = ledger.get("jobs") if isinstance(ledger, dict) else None
-    if not isinstance(intents, dict) or not isinstance(jobs, dict):
-        raise SchedulerAmbiguity(
-            "dispatcher ledger has no typed intents/jobs transaction mapping"
+    if ledger_cut is None:
+        ledger_raw, ledger = _production_dispatcher_ledger_preimage(
+            state_dir,
+            description="exact cell submission-cut dispatcher ledger",
         )
+    else:
+        ledger_raw, supplied = ledger_cut
+        if not isinstance(ledger_raw, bytes) or not isinstance(supplied, Mapping):
+            raise SchedulerAmbiguity(
+                "exact cell submission cut received an invalid ledger preimage"
+            )
+        ledger = dict(supplied)
+    intents = ledger["intents"]
+    jobs = ledger["jobs"]
 
     for batch_id, intent in sorted(intents.items()):
         if not isinstance(batch_id, str) or not isinstance(intent, dict):
             raise SchedulerAmbiguity("dispatcher ledger contains an invalid cell intent")
         state = str(intent.get("state", ""))
-        if state not in {"submitting", "submitted"}:
+        if state not in {"submitting", "submitted", "reconciled"}:
             # ``prepared`` is durable before the dispatcher changes to ``submitting``;
             # sbatch is never invoked from that state.  Reconciled/terminal states are
             # already represented in the durable jobs table.
             continue
         expected_comment = CELL_INTENT_PREFIX + batch_id
         expected_name = f"asys-dispatch-{batch_id[-10:]}"
-        expected_path = str(
-            Path(str(intent.get("sbatch_path", ""))).expanduser().resolve()
+        from slurm.dispatch_sweeps import (
+            STDIN_EXACT_SUBMISSION_TRANSPORT,
+            _command_binds_stdin_submission,
+            _stdin_submission_argv_sha256,
         )
+
+        if (
+            intent.get("submission_transport")
+            != STDIN_EXACT_SUBMISSION_TRANSPORT
+            or intent.get("submission_argv_sha256")
+            != _stdin_submission_argv_sha256(batch_id)
+        ):
+            raise SchedulerAmbiguity(
+                f"cell intent {batch_id} lacks its exact stdin transport"
+            )
         matching_bases: set[str] = set()
         provenance_errors: list[str] = []
         for job in snapshot.jobs:
             base_id = _cell_array_base_job_id(job.job_id)
             if base_id is None:
                 continue
-            try:
-                command_paths = {
-                    str(Path(part).expanduser().resolve())
-                    for part in shlex.split(job.command)
-                    if part.endswith(".sbatch") and Path(part).is_absolute()
-                }
-            except (OSError, ValueError):
-                command_paths = set()
             namespace_match = (
                 job.comment == expected_comment
                 or job.job_name == expected_name
-                or expected_path in command_paths
             )
             if not namespace_match:
                 continue
             if (
                 job.comment != expected_comment
                 or job.job_name != expected_name
-                or expected_path not in command_paths
+                or not _command_binds_stdin_submission(job.command, batch_id)
             ):
                 provenance_errors.append(job.job_id)
                 continue
@@ -8694,11 +10299,33 @@ def _assert_cell_submission_cut_visible(
             )
         if matching_bases:
             continue
-        if isinstance(recorded_job, dict) and recorded_job.get("state") == "inactive":
-            # A prior complete dispatcher poll already observed this accepted job as
-            # absent beyond its visibility reservation.  It cannot start after this
-            # pause and need not remain in sacct's finite query window forever.
-            continue
+        if isinstance(recorded_job, dict):
+            recorded_state = recorded_job.get("state")
+            if recorded_state == "terminal":
+                # A complete joined scheduler observation previously proved this
+                # exact accepted allocation terminal.
+                continue
+            if recorded_state == "inactive":
+                inactive_since = recorded_job.get("inactive_since_at")
+                if (
+                    not isinstance(inactive_since, (int, float))
+                    or isinstance(inactive_since, bool)
+                    or not math.isfinite(float(inactive_since))
+                ):
+                    raise SchedulerAmbiguity(
+                        f"inactive cell intent {batch_id} lacks its durable "
+                        "absence timestamp"
+                    )
+                inactive_age = max(
+                    0.0, float(now) - float(inactive_since)
+                )
+                if inactive_age < visibility_grace_seconds:
+                    raise SchedulerVisibilityPending(
+                        f"accepted cell intent {batch_id} was first observed "
+                        f"inactive only {inactive_age:.1f}s ago; retry after "
+                        "the visibility contract"
+                    )
+                continue
         submit_started_at = intent.get("submit_started_at")
         if (
             not isinstance(submit_started_at, (int, float))
@@ -8714,17 +10341,194 @@ def _assert_cell_submission_cut_visible(
                 f"cell intent {batch_id} crossed sbatch only {age:.1f}s ago but is not "
                 "yet visible in complete squeue+sacct truth; retry pause after visibility"
             )
-        if state == "submitted" or recorded_job_id is not None:
+        if state in {"submitted", "reconciled"} or recorded_job_id is not None:
             raise SchedulerAmbiguity(
                 f"accepted cell intent {batch_id} job {recorded_job_id} disappeared from "
                 "complete scheduler history"
             )
         # An ID-less ambiguous submit that remains absent from both authoritative
         # sources beyond the visibility grace is proven not accepted for this cut.
+    _assert_dispatcher_ledger_preimage_unchanged(
+        state_dir,
+        expected_raw=ledger_raw,
+        description="exact cell submission-cut dispatcher ledger",
+    )
+    return ledger_raw, ledger
+
+
+def _lexical_absolute_artifact_path(
+    value: Any, *, description: str
+) -> Path:
+    if not isinstance(value, str) or not value:
+        raise SchedulerAmbiguity(f"{description} path is missing")
+    supplied = Path(value).expanduser()
+    if not supplied.is_absolute():
+        raise SchedulerAmbiguity(f"{description} path is not absolute")
+    lexical = Path(os.path.abspath(os.fspath(supplied)))
+    if str(supplied) != str(lexical):
+        raise SchedulerAmbiguity(
+            f"{description} path is not lexically canonical"
+        )
+    return lexical
+
+
+def _strict_json_object_preimage(
+    raw: bytes, *, description: str
+) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise SchedulerAmbiguity(
+                    f"{description} repeats JSON field {key!r}"
+                )
+            result[key] = value
+        return result
+
+    def finite_float(token: str) -> float:
+        value = float(token)
+        if not math.isfinite(value):
+            raise SchedulerAmbiguity(
+                f"{description} contains non-finite number {token!r}"
+            )
+        return value
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_float=finite_float,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                SchedulerAmbiguity(
+                    f"{description} contains non-finite number {token!r}"
+                )
+            ),
+        )
+    except SchedulerAmbiguity:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise SchedulerAmbiguity(
+            f"{description} JSON is invalid: {exc}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise SchedulerAmbiguity(f"{description} is not a JSON object")
+    return value
+
+
+def _cell_worker_binding_from_sbatch(
+    raw: bytes,
+    *,
+    batch_id: str,
+    expected_job_name: str,
+    batch_manifest_path: Path,
+    batch_manifest_sha256: str,
+    task_count: int,
+) -> dict[str, str]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise SchedulerAmbiguity(
+            f"cell batch {batch_id} sbatch is not UTF-8"
+        ) from exc
+    collapsed = text.replace("\\\n", " ")
+    worker_lines = [
+        line.strip()
+        for line in collapsed.splitlines()
+        if line.lstrip().startswith("exec ")
+    ]
+    if len(worker_lines) != 1:
+        raise SchedulerAmbiguity(
+            f"cell batch {batch_id} sbatch must contain one worker exec"
+        )
+    try:
+        tokens = shlex.split(worker_lines[0])
+    except ValueError as exc:
+        raise SchedulerAmbiguity(
+            f"cell batch {batch_id} worker command is invalid: {exc}"
+        ) from exc
+    run_task_positions = [
+        index for index, token in enumerate(tokens) if token == "run-task"
+    ]
+    if (
+        not tokens
+        or tokens[0] != "exec"
+        or len(run_task_positions) != 1
+        or run_task_positions[0] < 2
+    ):
+        raise SchedulerAmbiguity(
+            f"cell batch {batch_id} sbatch lacks its exact run-task worker"
+        )
+    run_task_index = run_task_positions[0]
+    worker_script = Path(tokens[run_task_index - 1]).expanduser()
+    worker_lexical = (
+        Path(os.path.abspath(os.fspath(worker_script)))
+        if worker_script.is_absolute()
+        else None
+    )
+    if (
+        worker_lexical is None
+        or str(worker_script) != str(worker_lexical)
+        or worker_lexical.name != "dispatch_sweeps.py"
+        or worker_lexical.parent.name != "slurm"
+    ):
+        raise SchedulerAmbiguity(
+            f"cell batch {batch_id} sbatch worker path is not exact"
+        )
+
+    def exact_option(name: str) -> str:
+        positions = [
+            index for index, token in enumerate(tokens) if token == name
+        ]
+        if (
+            len(positions) != 1
+            or positions[0] + 1 >= len(tokens)
+        ):
+            raise SchedulerAmbiguity(
+                f"cell batch {batch_id} sbatch option {name} is ambiguous"
+            )
+        return tokens[positions[0] + 1]
+
+    if (
+        exact_option("--batch-manifest") != str(batch_manifest_path)
+        or exact_option("--batch-manifest-sha256")
+        != batch_manifest_sha256
+        or exact_option("--index") != "$SLURM_ARRAY_TASK_ID"
+    ):
+        raise SchedulerAmbiguity(
+            f"cell batch {batch_id} sbatch worker arguments drifted"
+        )
+    directive_lines = [line.strip() for line in text.splitlines()]
+    for directive in (
+        f"#SBATCH --job-name={expected_job_name}",
+        f"#SBATCH --comment={CELL_INTENT_PREFIX}{batch_id}",
+        "#SBATCH --cpus-per-task=1",
+        "#SBATCH --mem=4G",
+        "#SBATCH --time=12:00:00",
+        f"#SBATCH --array=0-{task_count - 1}%{task_count}",
+        "#SBATCH --signal=B:USR1@1200",
+        "#SBATCH --no-requeue",
+    ):
+        if directive_lines.count(directive) != 1:
+            raise SchedulerAmbiguity(
+                f"cell batch {batch_id} sbatch directive drifted: "
+                f"{directive}"
+            )
+    return {
+        "worker_script": str(worker_lexical),
+        "worker_command_sha256": hashlib.sha256(
+            worker_lines[0].encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def _exact_live_cell_task_actions(
-    state_dir: Path, snapshot: SchedulerSnapshot
+    state_dir: Path,
+    snapshot: SchedulerSnapshot,
+    *,
+    ledger_preimage: Mapping[str, Any] | None = None,
+    trusted_bindings: (
+        MutableMapping[str, dict[str, Any]] | None
+    ) = None,
 ) -> tuple[list[str], list[str]]:
     """Map every live schema-5 cell task to a durable drain action.
 
@@ -8747,24 +10551,46 @@ def _exact_live_cell_task_actions(
         and normalize_scheduler_state(job.state) in ACTIVE_SCHEDULER_STATES
         and _cell_job(job.job_name)
     ]
-    if not live_rows:
-        return [], []
-    ledger_path = state_dir / "ledger.json"
-    try:
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SchedulerAmbiguity(
-            f"cannot map live cell tasks without durable dispatcher ledger: {exc}"
-        ) from exc
+    ledger_raw: bytes | None = None
+    if ledger_preimage is None:
+        ledger_raw, ledger = _production_dispatcher_ledger_preimage(
+            state_dir,
+            description="exact cell drain dispatcher ledger",
+        )
+    else:
+        try:
+            from slurm.dispatch_sweeps import (
+                validate_production_ledger_structure,
+            )
+
+            ledger = validate_production_ledger_structure(
+                dict(ledger_preimage),
+                source=str(state_dir / "ledger.json"),
+            )
+        except Exception as exc:
+            raise SchedulerAmbiguity(
+                f"exact cell drain received an invalid ledger preimage: {exc}"
+            ) from exc
     if not isinstance(ledger, dict) or not isinstance(ledger.get("jobs"), dict):
         raise SchedulerAmbiguity("dispatcher ledger has no typed jobs mapping")
     intents = ledger.get("intents")
     if not isinstance(intents, dict):
         raise SchedulerAmbiguity("dispatcher ledger has no typed intents mapping")
+    if not live_rows:
+        if ledger_raw is not None:
+            _assert_dispatcher_ledger_preimage_unchanged(
+                state_dir,
+                expected_raw=ledger_raw,
+                description="exact cell drain dispatcher ledger",
+            )
+        return [], []
 
     signal_ids: list[str] = []
     cancel_ids: list[str] = []
     errors: list[str] = []
+    artifact_bindings: dict[
+        tuple[str, str], tuple[dict[str, Any], list[Any]]
+    ] = {}
     for job in live_rows:
         base_id = _cell_array_base_job_id(job.job_id)
         if base_id is None:
@@ -8785,9 +10611,27 @@ def _exact_live_cell_task_actions(
             )
             continue
         expected_name = f"asys-dispatch-{batch_id[-10:]}"
+        from slurm.dispatch_sweeps import (
+            STDIN_EXACT_SUBMISSION_TRANSPORT,
+            _command_binds_stdin_submission,
+            _stdin_submission_argv_sha256,
+        )
+
         if job.job_name != expected_name:
             errors.append(
                 f"cell task {job.job_id} has unexpected job name {job.job_name!r}"
+            )
+            continue
+        if (
+            intent.get("submission_transport")
+            != STDIN_EXACT_SUBMISSION_TRANSPORT
+            or intent.get("submission_argv_sha256")
+            != _stdin_submission_argv_sha256(batch_id)
+            or not _command_binds_stdin_submission(job.command, batch_id)
+        ):
+            errors.append(
+                f"cell task {job.job_id} lacks its exact stdin submission "
+                "transport"
             )
             continue
         intent_job_id = intent.get("job_id")
@@ -8800,7 +10644,8 @@ def _exact_live_cell_task_actions(
             if (
                 str(record.get("job_id")) != base_id
                 or str(record.get("batch_id")) != batch_id
-                or str(record.get("sbatch_path")) != str(intent.get("sbatch_path"))
+                or str(record.get("sbatch_path"))
+                != str(intent.get("sbatch_path"))
             ):
                 errors.append(
                     f"cell task {job.job_id} conflicts with batch intent {batch_id}"
@@ -8811,25 +10656,214 @@ def _exact_live_cell_task_actions(
                 f"cell task {job.job_id} has no accepted or ambiguous durable job record"
             )
             continue
-        sbatch_path = str(
-            Path(str(intent.get("sbatch_path", ""))).expanduser().resolve()
-        )
+        intent_tasks = intent.get("tasks")
+        if not isinstance(intent_tasks, list):
+            errors.append(
+                f"cell task {job.job_id} intent has no typed task list"
+            )
+            continue
+        if intent.get("state") not in {
+            "submitting",
+            "submitted",
+            "reconciled",
+        }:
+            errors.append(
+                f"cell task {job.job_id} has incompatible intent state "
+                f"{intent.get('state')!r}"
+            )
+            continue
+        if isinstance(record, dict) and (
+            any(
+                record.get(field) != intent.get(field)
+                for field in (
+                    "batch_manifest",
+                    "batch_manifest_sha256",
+                    "sbatch_path",
+                    "sbatch_sha256",
+                    "tasks",
+                    "submission_transport",
+                    "submission_argv_sha256",
+                )
+            )
+            or record.get("spooled_sbatch_sha256")
+            != intent.get("sbatch_sha256")
+            or not isinstance(record.get("task_count"), int)
+            or isinstance(record.get("task_count"), bool)
+            or record.get("task_count") != len(intent_tasks)
+            or record.get("state")
+            not in {"submitted", "active", "visibility_grace"}
+        ):
+            errors.append(
+                f"cell task {job.job_id} job record differs from intent "
+                f"{batch_id} or has incompatible state"
+            )
+            continue
+        task_suffix = job.job_id.partition("_")[2]
+        if not task_suffix:
+            errors.append(
+                f"cell task {job.job_id} is an unexpanded array parent"
+            )
+            continue
+        if int(task_suffix) >= len(intent_tasks):
+            errors.append(
+                f"cell task {job.job_id} index exceeds its durable task list"
+            )
+            continue
         try:
-            command_paths = {
-                str(Path(part).expanduser().resolve())
-                for part in shlex.split(job.command)
-                if part.endswith(".sbatch")
+            sbatch_artifact = _lexical_absolute_artifact_path(
+                intent.get("sbatch_path"),
+                description=f"cell batch {batch_id} sbatch",
+            )
+            manifest_artifact = _lexical_absolute_artifact_path(
+                intent.get("batch_manifest"),
+                description=f"cell batch {batch_id} manifest",
+            )
+            sbatch_sha256 = str(intent.get("sbatch_sha256", ""))
+            manifest_sha256 = str(
+                intent.get("batch_manifest_sha256", "")
+            )
+            if (
+                _SHA256_RE.fullmatch(sbatch_sha256) is None
+                or _SHA256_RE.fullmatch(manifest_sha256) is None
+            ):
+                raise SchedulerAmbiguity(
+                    f"cell batch {batch_id} artifact hashes are invalid"
+                )
+            cache_key = (base_id, batch_id)
+            cached = artifact_bindings.get(cache_key)
+            if cached is None:
+                sbatch_raw = _stable_readonly_preimage(
+                    sbatch_artifact,
+                    description=f"cell batch {batch_id} sbatch",
+                )
+                manifest_raw = _stable_readonly_preimage(
+                    manifest_artifact,
+                    description=f"cell batch {batch_id} manifest",
+                )
+                if (
+                    hashlib.sha256(sbatch_raw).hexdigest()
+                    != sbatch_sha256
+                    or hashlib.sha256(manifest_raw).hexdigest()
+                    != manifest_sha256
+                ):
+                    raise SchedulerAmbiguity(
+                        f"cell batch {batch_id} artifact hash drifted"
+                    )
+                if isinstance(record, dict):
+                    from slurm.dispatch_sweeps import (
+                        DispatcherError,
+                        _spooled_script_receipt,
+                    )
+
+                    try:
+                        (
+                            observed_receipt_path,
+                            observed_receipt_sha256,
+                        ) = _spooled_script_receipt(
+                            batch_id=batch_id,
+                            job_id=base_id,
+                            expected_name=expected_name,
+                            expected_comment=job.comment,
+                            sbatch_path=sbatch_artifact,
+                            sbatch_sha256=sbatch_sha256,
+                            spooled_script_reader=lambda _job_id: (
+                                _ for _ in ()
+                            ).throw(
+                                DispatcherError(
+                                    "sealed spooled-script receipt is missing"
+                                )
+                            ),
+                            now=float(snapshot.captured_at),
+                        )
+                    except DispatcherError as exc:
+                        raise SchedulerAmbiguity(str(exc)) from exc
+                    if (
+                        observed_receipt_path
+                        != record.get("spooled_receipt_path")
+                        or observed_receipt_sha256
+                        != record.get("spooled_receipt_sha256")
+                    ):
+                        raise SchedulerAmbiguity(
+                            f"cell batch {batch_id} spooled-script receipt "
+                            "differs from its durable job record"
+                        )
+                else:
+                    from slurm.dispatch_sweeps import (
+                        _read_spooled_batch_script,
+                    )
+
+                    if (
+                        hashlib.sha256(
+                            _read_spooled_batch_script(base_id)
+                        ).hexdigest()
+                        != sbatch_sha256
+                    ):
+                        raise SchedulerAmbiguity(
+                            f"cell batch {batch_id} Slurm-spooled script "
+                            "differs from its durable intent"
+                        )
+                manifest = _strict_json_object_preimage(
+                    manifest_raw,
+                    description=f"cell batch {batch_id} manifest",
+                )
+                if (
+                    manifest.get("schema_version") != 1
+                    or manifest.get("batch_id") != batch_id
+                    or manifest.get("tasks") != intent_tasks
+                ):
+                    raise SchedulerAmbiguity(
+                        f"cell batch {batch_id} manifest differs from intent"
+                    )
+                worker_binding = _cell_worker_binding_from_sbatch(
+                    sbatch_raw,
+                    batch_id=batch_id,
+                    expected_job_name=expected_name,
+                    batch_manifest_path=manifest_artifact,
+                    batch_manifest_sha256=manifest_sha256,
+                    task_count=len(intent_tasks),
+                )
+                artifact_binding = {
+                    "array_job_id": base_id,
+                    "batch_id": batch_id,
+                    "job_name": job.job_name,
+                    "comment": job.comment,
+                    "sbatch_path": str(sbatch_artifact),
+                    "sbatch_sha256": sbatch_sha256,
+                    "batch_manifest_path": str(manifest_artifact),
+                    "batch_manifest_sha256": manifest_sha256,
+                    **worker_binding,
+                }
+                artifact_bindings[cache_key] = (
+                    artifact_binding,
+                    intent_tasks,
+                )
+            else:
+                artifact_binding, cached_tasks = cached
+                if cached_tasks != intent_tasks:
+                    raise SchedulerAmbiguity(
+                        f"cell batch {batch_id} task mapping changed"
+                    )
+        except (
+            OSError,
+            ValueError,
+            SchedulerAmbiguity,
+        ) as exc:
+            errors.append(
+                f"cell task {job.job_id} artifact provenance failed: {exc}"
+            )
+            continue
+        if trusted_bindings is not None:
+            binding = {
+                **artifact_binding,
+                "scheduler_job_id": job.job_id,
+                "state": normalize_scheduler_state(job.state),
             }
-        except (OSError, ValueError) as exc:
-            errors.append(
-                f"cell task {job.job_id} has an invalid submit command: {exc}"
-            )
-            continue
-        if sbatch_path not in command_paths:
-            errors.append(
-                f"cell task {job.job_id} does not bind its immutable sbatch path"
-            )
-            continue
+            prior = trusted_bindings.setdefault(job.job_id, binding)
+            if prior != binding:
+                errors.append(
+                    f"cell task {job.job_id} has conflicting artifact bindings"
+                )
+                continue
         if normalize_scheduler_state(job.state) in {"RUNNING", "COMPLETING"}:
             signal_ids.append(job.job_id)
         else:
@@ -8841,6 +10875,12 @@ def _exact_live_cell_task_actions(
     all_ids = signal_ids + cancel_ids
     if len(all_ids) != len(set(all_ids)):
         raise SchedulerAmbiguity("exact cell drain contains duplicate task IDs")
+    if ledger_raw is not None:
+        _assert_dispatcher_ledger_preimage_unchanged(
+            state_dir,
+            expected_raw=ledger_raw,
+            description="exact cell drain dispatcher ledger",
+        )
     return sorted(signal_ids), sorted(cancel_ids)
 
 
@@ -8851,6 +10891,705 @@ def _exact_running_cell_task_ids(
 
     signal_ids, _cancel_ids = _exact_live_cell_task_actions(state_dir, snapshot)
     return signal_ids
+
+
+_TRUSTED_SCIENTIFIC_LIVE_STATES = {
+    "PENDING",
+    "RUNNING",
+    "CONFIGURING",
+    "COMPLETING",
+    "RESIZING",
+    "SUSPENDED",
+}
+_TRUSTED_FLEET_BINDING_FIELDS = {
+    "job_name",
+    "comment",
+    "sbatch_path",
+    "sbatch_sha256",
+    "intent_token",
+    "replica_id",
+    "serving_profile",
+    "ledger_generation",
+    "ledger_path",
+    "ledger_sha256",
+    "partition",
+    "qos",
+    "allocated_gpus",
+    "gpu_type",
+}
+
+_SCIENTIFIC_SBATCH_RESOURCE_FLAGS = frozenset(
+    {
+        "--account",
+        "--constraint",
+        "--cpus-per-task",
+        "--gres",
+        "--gpus",
+        "--gpus-per-node",
+        "--gpus-per-socket",
+        "--gpus-per-task",
+        "--mem",
+        "--mem-per-cpu",
+        "--mem-per-gpu",
+        "--nodes",
+        "--ntasks",
+        "--ntasks-per-node",
+        "--partition",
+        "--qos",
+        "--reservation",
+        "--tres-per-job",
+        "--tres-per-node",
+        "--tres-per-socket",
+        "--tres-per-task",
+    }
+)
+_SCIENTIFIC_SBATCH_SHORT_RESOURCE_FLAGS = frozenset(
+    {"-A", "-C", "-N", "-c", "-n", "-p", "-q"}
+)
+
+
+def _command_has_scientific_resource_override(command: str) -> bool:
+    """Reject CLI resource overrides that can supersede an immutable sbatch file."""
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return True
+    for token in tokens:
+        if token in _SCIENTIFIC_SBATCH_SHORT_RESOURCE_FLAGS:
+            return True
+        if re.fullmatch(r"-[ACNcnpq].+", token) is not None:
+            return True
+        if any(
+            token == flag or token.startswith(flag + "=")
+            for flag in _SCIENTIFIC_SBATCH_RESOURCE_FLAGS
+        ):
+            return True
+    return False
+
+
+def _stable_mutable_json_preimage(
+    path: Path,
+    *,
+    required_parent: Path | None,
+    description: str,
+) -> tuple[bytes, dict[str, Any]]:
+    """Read one atomic mutable ledger without following or racing replacement."""
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if required_parent is not None:
+        parent = Path(
+            os.path.abspath(os.fspath(required_parent.expanduser()))
+        ).resolve()
+        if lexical.parent != parent:
+            raise SchedulerAmbiguity(
+                f"{description} is outside its exact state directory"
+            )
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SchedulerAmbiguity(f"{description} is unavailable: {exc}") from exc
+    if resolved != lexical or lexical.is_symlink():
+        raise SchedulerAmbiguity(f"{description} traverses a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise SchedulerAmbiguity(f"cannot open {description}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = lambda item: (  # noqa: E731
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SchedulerAmbiguity(
+            f"{description} disappeared after its stable read: {exc}"
+        ) from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+    ):
+        raise SchedulerAmbiguity(
+            f"{description} changed or is not a one-link regular file"
+        )
+    raw = b"".join(blocks)
+    value = _strict_json_object_preimage(
+        raw, description=description
+    )
+    return raw, value
+
+
+def _production_dispatcher_ledger_preimage(
+    state_dir: Path, *, description: str
+) -> tuple[bytes, dict[str, Any]]:
+    """Load the mandatory, production-closed dispatcher transaction ledger."""
+
+    ledger_path = state_dir / "ledger.json"
+    try:
+        raw, ledger = _stable_mutable_json_preimage(
+            ledger_path,
+            required_parent=state_dir,
+            description=description,
+        )
+        from slurm.dispatch_sweeps import validate_production_ledger_structure
+
+        ledger = validate_production_ledger_structure(
+            ledger, source=str(ledger_path)
+        )
+    except Exception as exc:
+        raise SchedulerAmbiguity(
+            f"cannot prove the mandatory dispatcher ledger cut: {exc}"
+        ) from exc
+    return raw, ledger
+
+
+def _assert_dispatcher_ledger_preimage_unchanged(
+    state_dir: Path, *, expected_raw: bytes, description: str
+) -> None:
+    observed_raw, _ledger = _production_dispatcher_ledger_preimage(
+        state_dir, description=description
+    )
+    if observed_raw != expected_raw:
+        raise SchedulerAmbiguity(
+            f"{description} changed before the drain transaction committed"
+        )
+
+
+def _stable_readonly_preimage(path: Path, *, description: str) -> bytes:
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SchedulerAmbiguity(f"{description} is unavailable: {exc}") from exc
+    if resolved != lexical or lexical.is_symlink():
+        raise SchedulerAmbiguity(f"{description} traverses a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise SchedulerAmbiguity(f"cannot open {description}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = lambda item: (  # noqa: E731
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SchedulerAmbiguity(
+            f"{description} disappeared after its stable read: {exc}"
+        ) from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) & 0o222
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+        or stat.S_IMODE(current.st_mode) & 0o222
+    ):
+        raise SchedulerAmbiguity(
+            f"{description} changed or is not a one-link read-only regular file"
+        )
+    return b"".join(blocks)
+
+
+def _trusted_scientific_live_scheduler_rows(
+    snapshot: SchedulerSnapshot,
+    *,
+    now: float,
+) -> dict[str, SchedulerJob]:
+    if (
+        snapshot.squeue_ok is not True
+        or snapshot.sacct_ok is not True
+        or snapshot.errors
+        or not math.isfinite(float(snapshot.captured_at))
+        or float(snapshot.captured_at) <= 0
+        or float(snapshot.captured_at) > now + 1.0
+        or now - float(snapshot.captured_at)
+        > protected_capacity.MAX_TRUSTED_SCHEDULER_AGE_SECONDS
+    ):
+        raise SchedulerAmbiguity(
+            "trusted scientific occupancy requires complete, current "
+            "squeue+sacct truth"
+        )
+    live: dict[str, SchedulerJob] = {}
+    for row in snapshot.jobs:
+        if row.source != "squeue":
+            continue
+        state = normalize_scheduler_state(row.state)
+        if state not in _TRUSTED_SCIENTIFIC_LIVE_STATES:
+            continue
+        if _EXACT_CELL_TASK_ID.fullmatch(row.job_id) is None or row.job_id in live:
+            raise SchedulerAmbiguity(
+                "trusted scientific scheduler truth contains a malformed or "
+                f"duplicated live identity: {row.job_id!r}"
+            )
+        if (
+            re.fullmatch(r"[A-Za-z0-9_.-]+", row.partition) is None
+            or re.fullmatch(r"[A-Za-z0-9_.-]+", row.qos) is None
+        ):
+            raise SchedulerAmbiguity(
+                "trusted scientific scheduler truth lacks exact partition/QOS "
+                f"for live job {row.job_id}"
+            )
+        live[row.job_id] = row
+    return live
+
+
+def _trusted_dispatcher_bindings(
+    state_dir: Path,
+    snapshot: SchedulerSnapshot,
+    *,
+    live_rows: Mapping[str, SchedulerJob],
+    now: float,
+    allow_exact_quiescence: bool,
+) -> tuple[dict[str, dict[str, Any]], float | None, bool, str]:
+    scoped = {
+        job_id: row
+        for job_id, row in live_rows.items()
+        if row.comment.startswith(CELL_INTENT_PREFIX) or _cell_job(row.job_name)
+    }
+    ledger_path = state_dir / "ledger.json"
+    if not scoped and allow_exact_quiescence:
+        raw, ledger = _production_dispatcher_ledger_preimage(
+            state_dir,
+            description="trusted quiescent dispatcher ledger",
+        )
+        updated = ledger.get("updated_at")
+        ledger_updated = (
+            float(updated)
+            if isinstance(updated, (int, float))
+            and not isinstance(updated, bool)
+            and math.isfinite(float(updated))
+            and float(updated) > 0
+            and float(updated) <= now + 1.0
+            else None
+        )
+        ledger_sha256 = hashlib.sha256(raw).hexdigest()
+        provenance_id = sha256_value(
+            {
+                "exact_cell_quiescence": True,
+                "ledger_sha256": ledger_sha256,
+                "bindings": {},
+            }
+        )
+        return {}, ledger_updated, True, provenance_id
+
+    raw, ledger = _production_dispatcher_ledger_preimage(
+        state_dir,
+        description="trusted scientific dispatcher ledger",
+    )
+    updated = ledger.get("updated_at")
+    if (
+        not isinstance(updated, (int, float))
+        or isinstance(updated, bool)
+        or not math.isfinite(float(updated))
+        or float(updated) <= 0
+        or float(updated) > now + 1.0
+        or now - float(updated)
+        > protected_capacity.MAX_DISPATCHER_LEDGER_AGE_SECONDS
+    ):
+        raise SchedulerAmbiguity(
+            "trusted scientific dispatcher ledger is missing, future, or "
+            "older than 360 seconds"
+        )
+    # This existing exact drain join validates the immutable intent, numeric array
+    # base/task, scheduler name/comment, and exact sbatch command for every scoped row.
+    # The returned set must equal the namespace selected above.  In particular, a
+    # foreign-named job carrying a forged schema-5 comment must be rejected rather
+    # than silently skipped by the drain mapper and then discounted as trusted.
+    bindings: dict[str, dict[str, Any]] = {}
+    signal_ids, cancel_ids = _exact_live_cell_task_actions(
+        state_dir,
+        snapshot,
+        ledger_preimage=ledger,
+        trusted_bindings=bindings,
+    )
+    mapped_ids = set(signal_ids) | set(cancel_ids)
+    if mapped_ids != set(scoped):
+        raise SchedulerAmbiguity(
+            "trusted scientific dispatcher mapping differs from its exact "
+            "scheduler namespace: "
+            f"missing={sorted(set(scoped) - mapped_ids)}, "
+            f"unexpected={sorted(mapped_ids - set(scoped))}"
+        )
+    if set(bindings) != mapped_ids:
+        raise SchedulerAmbiguity(
+            "trusted scientific dispatcher artifact bindings differ from "
+            "the exact mapped task set"
+        )
+    resource_overrides = sorted(
+        job_id
+        for job_id in mapped_ids
+        if _command_has_scientific_resource_override(
+            scoped[job_id].command
+        )
+    )
+    if resource_overrides:
+        raise SchedulerAmbiguity(
+            "trusted scientific dispatcher jobs contain scheduler resource "
+            "overrides outside their immutable sbatch files: "
+            + ", ".join(resource_overrides)
+        )
+    bindings = {
+        job_id: {
+            **binding,
+            "partition": scoped[job_id].partition,
+            "qos": scoped[job_id].qos,
+        }
+        for job_id, binding in bindings.items()
+    }
+    post_raw, _post_ledger = _production_dispatcher_ledger_preimage(
+        state_dir,
+        description="trusted scientific dispatcher ledger",
+    )
+    if post_raw != raw:
+        raise SchedulerAmbiguity(
+            "trusted scientific dispatcher ledger changed while its cell "
+            "artifacts were reconciled"
+        )
+    provenance_id = sha256_value(
+        {
+            "exact_cell_quiescence": False,
+            "ledger_sha256": hashlib.sha256(raw).hexdigest(),
+            "bindings": bindings,
+        }
+    )
+    return bindings, float(updated), False, provenance_id
+
+
+def reconcile_trusted_scientific_job_provenance(
+    state_dir: Path,
+    *,
+    fleet_bindings: Mapping[str, Mapping[str, Any]],
+    fleet_contract_sha256: str,
+    fleet_generation: int,
+    scheduler_snapshot: SchedulerSnapshot | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    now: float | None = None,
+    allow_exact_cell_quiescence: bool = False,
+) -> protected_capacity.TrustedScientificJobProvenance:
+    """Join exact dispatcher/fleet ledgers to complete current scheduler truth.
+
+    Callers may supply fleet IDs only after their fleet transaction, registry/history,
+    and spooled-script validators have accepted the binding.  This shared boundary
+    independently rejects name/comment-only matches, missing siblings, stale
+    dispatcher state, and any scheduler-set ambiguity before residual capacity can
+    discount an allocation.
+    """
+
+    timestamp = time.time() if now is None else float(now)
+    snapshot = (
+        scheduler_snapshot
+        if scheduler_snapshot is not None
+        else (scheduler_reader or (lambda: query_scheduler(now=timestamp)))()
+    )
+    live_rows = _trusted_scientific_live_scheduler_rows(
+        snapshot,
+        now=timestamp,
+    )
+    (
+        cell_bindings,
+        dispatcher_updated,
+        exact_quiescence,
+        dispatcher_provenance_id,
+    ) = _trusted_dispatcher_bindings(
+        Path(state_dir),
+        snapshot,
+        live_rows=live_rows,
+        now=timestamp,
+        allow_exact_quiescence=allow_exact_cell_quiescence,
+    )
+    if not isinstance(fleet_bindings, Mapping):
+        raise SchedulerAmbiguity(
+            "trusted scientific fleet bindings are not a mapping"
+        )
+    normalized_fleet: dict[str, dict[str, Any]] = {}
+    expected_names: set[str] = set()
+    for job_id, raw_binding in sorted(fleet_bindings.items()):
+        if (
+            not isinstance(job_id, str)
+            or not job_id.isdigit()
+            or not isinstance(raw_binding, Mapping)
+            or set(raw_binding) != _TRUSTED_FLEET_BINDING_FIELDS
+        ):
+            raise SchedulerAmbiguity(
+                "trusted scientific fleet binding fields are invalid"
+            )
+        binding = dict(raw_binding)
+        row = live_rows.get(job_id)
+        partition = binding.get("partition")
+        qos = binding.get("qos")
+        allocated_gpus = binding.get("allocated_gpus")
+        gpu_type = binding.get("gpu_type")
+        serving_profile = binding.get("serving_profile")
+        if (
+            not isinstance(partition, str)
+            or re.fullmatch(r"[A-Za-z0-9_.-]+", partition) is None
+            or not isinstance(qos, str)
+            or re.fullmatch(r"[A-Za-z0-9_.-]+", qos) is None
+            or not isinstance(allocated_gpus, int)
+            or isinstance(allocated_gpus, bool)
+            or allocated_gpus < 1
+            or not isinstance(gpu_type, str)
+            or re.fullmatch(r"[A-Za-z0-9_.-]+", gpu_type) is None
+            or not isinstance(serving_profile, str)
+            or re.fullmatch(r"[A-Za-z0-9_.-]+", serving_profile) is None
+        ):
+            raise SchedulerAmbiguity(
+                f"trusted scientific fleet job {job_id} has invalid placement "
+                "or GPU authority"
+            )
+        parsed = fleet_transactions.parse_intent_comment(
+            str(binding.get("comment", ""))
+        )
+        sbatch_lexical = Path(
+            os.path.abspath(
+                os.fspath(
+                    Path(str(binding.get("sbatch_path", ""))).expanduser()
+                )
+            )
+        )
+        sbatch_path = str(sbatch_lexical)
+        ledger_generation = binding.get("ledger_generation")
+        if (
+            not isinstance(ledger_generation, int)
+            or isinstance(ledger_generation, bool)
+            or ledger_generation < 1
+            or ledger_generation != fleet_generation
+        ):
+            raise SchedulerAmbiguity(
+                f"trusted scientific fleet job {job_id} has an invalid "
+                "or non-current ledger generation"
+            )
+        sbatch = sbatch_lexical
+        try:
+            transaction_directory = sbatch.parents[2]
+        except IndexError as exc:
+            raise SchedulerAmbiguity(
+                f"trusted scientific fleet job {job_id} has an unsafe script path"
+            ) from exc
+        expected_ledger_path = Path(
+            os.path.abspath(
+                os.fspath(
+                    fleet_transactions.ledger_path(
+                        transaction_directory,
+                        ledger_generation,
+                    ).expanduser()
+                )
+            )
+        )
+        supplied_ledger_path = Path(
+            os.path.abspath(
+                os.fspath(
+                    Path(
+                        str(binding.get("ledger_path", ""))
+                    ).expanduser()
+                )
+            )
+        )
+        if supplied_ledger_path != expected_ledger_path:
+            raise SchedulerAmbiguity(
+                f"trusted scientific fleet job {job_id} ledger path is not "
+                "generation-addressed from its script"
+            )
+        sbatch_raw = _stable_readonly_preimage(
+            sbatch,
+            description=f"trusted fleet script for job {job_id}",
+        )
+        ledger_raw, fleet_ledger = _stable_mutable_json_preimage(
+            supplied_ledger_path,
+            required_parent=expected_ledger_path.parent,
+            description=f"trusted fleet ledger for job {job_id}",
+        )
+        replicas = fleet_ledger.get("replicas")
+        replica_record = (
+            replicas.get(str(binding.get("replica_id")))
+            if isinstance(replicas, Mapping)
+            else None
+        )
+        attempts = (
+            replica_record.get("attempts")
+            if isinstance(replica_record, Mapping)
+            else None
+        )
+        exact_attempts = [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, Mapping)
+            and attempt.get("intent_token") == binding.get("intent_token")
+            and str(attempt.get("job_id")) == job_id
+            and attempt.get("sbatch_path") == sbatch_path
+            and attempt.get("sbatch_sha256")
+            == binding.get("sbatch_sha256")
+            and attempt.get("submission_transport")
+            == fleet_transactions.STDIN_EXACT_SUBMISSION_TRANSPORT
+            and attempt.get("submission_argv_sha256")
+            == fleet_transactions.submission_argv_sha256(
+                str(binding.get("comment", ""))
+            )
+            and attempt.get("allocated_gpus") == allocated_gpus
+            and attempt.get("state") == "committed"
+        ] if isinstance(attempts, list) else []
+        try:
+            sbatch_text = sbatch_raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise SchedulerAmbiguity(
+                f"trusted fleet script for job {job_id} is not UTF-8"
+            ) from exc
+        sbatch_lines = [line.strip() for line in sbatch_text.splitlines()]
+        placement_directives_valid = all(
+            sbatch_lines.count(directive) == 1
+            for directive in (
+                f"#SBATCH --partition={partition}",
+                f"#SBATCH --qos={qos}",
+                f"#SBATCH --gres=gpu:{gpu_type}:{allocated_gpus}",
+            )
+        )
+        # Slurm's portable squeue/sacct formats expose requested placement but do not
+        # expose a complete per-job GPU allocation in one authoritative field.  Bind
+        # GPU authority to the immutable script and committed generation ledger, and
+        # reject CLI resource overrides that could supersede either source.
+        if (
+            row is None
+            or row.job_name != binding.get("job_name")
+            or row.comment != binding.get("comment")
+            or row.partition != partition
+            or row.qos != qos
+            or not fleet_transactions.command_binds_stdin_submission(
+                row.command, str(binding.get("comment", ""))
+            )
+            or _command_has_scientific_resource_override(row.command)
+            or _SHA256_RE.fullmatch(str(binding.get("sbatch_sha256", "")))
+            is None
+            or hashlib.sha256(sbatch_raw).hexdigest()
+            != binding.get("sbatch_sha256")
+            or _SHA256_RE.fullmatch(str(binding.get("ledger_sha256", "")))
+            is None
+            or hashlib.sha256(ledger_raw).hexdigest()
+            != binding.get("ledger_sha256")
+            or fleet_ledger.get("rollout_generation") != ledger_generation
+            or len(exact_attempts) != 1
+            or not placement_directives_valid
+            or parsed is None
+            or parsed.get("fleet") != fleet_contract_sha256
+            or parsed.get("intent") != binding.get("intent_token")
+            or parsed.get("replica") != binding.get("replica_id")
+            or parsed.get("profile") != serving_profile
+            or parsed.get("generation")
+            != str(binding.get("ledger_generation"))
+        ):
+            raise SchedulerAmbiguity(
+                f"trusted scientific fleet job {job_id} lacks its exact "
+                "ledger/scheduler/script provenance"
+            )
+        expected_names.add(str(binding["job_name"]))
+        normalized_fleet[job_id] = {
+            **binding,
+            "sbatch_path": sbatch_path,
+            "state": normalize_scheduler_state(row.state),
+        }
+    unbound_fleet: list[str] = []
+    for job_id, row in live_rows.items():
+        parsed = fleet_transactions.parse_intent_comment(row.comment)
+        in_namespace = (
+            row.job_name.startswith("asys-s5-serve-")
+            or row.job_name in expected_names
+            or (
+                parsed is not None
+                and parsed.get("fleet") == fleet_contract_sha256
+            )
+        )
+        if in_namespace and job_id not in normalized_fleet:
+            unbound_fleet.append(job_id)
+    if unbound_fleet:
+        raise SchedulerAmbiguity(
+            "trusted scientific fleet reconciliation has unbound live jobs: "
+            + ", ".join(sorted(unbound_fleet))
+        )
+    scheduler_states = {
+        job_id: normalize_scheduler_state(row.state)
+        for job_id, row in sorted(live_rows.items())
+    }
+    scheduler_truth_id = sha256_value(
+        {
+            "captured_at": snapshot.captured_at,
+            "squeue_ok": snapshot.squeue_ok,
+            "sacct_ok": snapshot.sacct_ok,
+            "errors": list(snapshot.errors),
+            "jobs": [
+                {
+                    "job_id": row.job_id,
+                    "job_name": row.job_name,
+                    "state": row.state,
+                    "comment": row.comment,
+                    "command": row.command,
+                    "source": row.source,
+                    "partition": row.partition,
+                    "qos": row.qos,
+                }
+                for row in snapshot.jobs
+            ],
+        }
+    )
+    fleet_provenance_id = sha256_value(
+        {
+            "fleet_contract_sha256": fleet_contract_sha256,
+            "fleet_generation": fleet_generation,
+            "bindings": normalized_fleet,
+        }
+    )
+    try:
+        return protected_capacity.build_trusted_scientific_job_provenance(
+            scheduler_job_states=scheduler_states,
+            scheduler_captured_timestamp=float(snapshot.captured_at),
+            trusted_cell_job_ids=tuple(cell_bindings),
+            trusted_fleet_job_ids=tuple(normalized_fleet),
+            dispatcher_ledger_updated_timestamp=dispatcher_updated,
+            exact_cell_quiescence=exact_quiescence,
+            dispatcher_provenance_id=dispatcher_provenance_id,
+            fleet_provenance_id=fleet_provenance_id,
+            fleet_contract_sha256=fleet_contract_sha256,
+            fleet_generation=fleet_generation,
+            scheduler_truth_id=scheduler_truth_id,
+            now=timestamp,
+        )
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise SchedulerAmbiguity(
+            f"trusted scientific provenance failed closed: {exc}"
+        ) from exc
 
 
 def _safety_hold_scheduler_snapshot_sha256(
@@ -8871,6 +11610,8 @@ def _safety_hold_scheduler_snapshot_sha256(
                     "command": row.command,
                     "source": row.source,
                     "dependency": row.dependency,
+                    "partition": row.partition,
+                    "qos": row.qos,
                 }
                 for row in snapshot.jobs
             ],
@@ -8894,6 +11635,7 @@ def _append_safety_hold_drain_event(
             "event": event,
             "drain_id": intent["drain_id"],
             "rollout_generation": intent["rollout_generation"],
+            "hold_activation_id": intent["hold_activation_id"],
             "hold_activated_timestamp": intent["hold_activated_timestamp"],
             "details": copy.deepcopy(dict(details)),
         },
@@ -8940,6 +11682,27 @@ def _set_safety_hold_drain_failure(
             now=now,
         )
         _save_control(state_dir, control, now=now)
+
+
+def _safety_hold_drain_complete_for_current_activation(
+    control: Mapping[str, Any],
+) -> bool:
+    hold = control.get("admission_safety_hold")
+    intent = control.get("safety_hold_drain_intent")
+    if not isinstance(hold, Mapping) or hold.get("active") is not True:
+        return False
+    activation = hold.get("activated_timestamp")
+    return bool(
+        isinstance(activation, (int, float))
+        and not isinstance(activation, bool)
+        and isinstance(intent, Mapping)
+        and intent.get("state") == "complete"
+        and intent.get("rollout_generation")
+        == control.get("rollout_generation")
+        and intent.get("hold_activation_id") == hold.get("activation_id")
+        and float(intent.get("hold_activated_timestamp", -1.0))
+        == float(activation)
+    )
 
 
 def _persist_safety_hold_drain_result(
@@ -9019,11 +11782,13 @@ def _ensure_safety_hold_cell_drain_locked(
         # explicit scheduler drain below.
         return current
     activation = float(hold["activated_timestamp"])
+    activation_id = str(hold["activation_id"])
     existing = current.get("safety_hold_drain_intent")
     same_activation = bool(
         isinstance(existing, dict)
         and int(existing.get("rollout_generation", -1))
         == int(current["rollout_generation"])
+        and existing.get("hold_activation_id") == activation_id
         and float(existing.get("hold_activated_timestamp", -1.0)) == activation
     )
     if same_activation and existing.get("state") == "complete":
@@ -9035,11 +11800,13 @@ def _ensure_safety_hold_cell_drain_locked(
         if not hold["active"] or control["desired_state"] != "running":
             return control
         activation = float(hold["activated_timestamp"])
+        activation_id = str(hold["activation_id"])
         previous = control.get("safety_hold_drain_intent")
         same_activation = bool(
             isinstance(previous, dict)
             and int(previous.get("rollout_generation", -1))
             == int(control["rollout_generation"])
+            and previous.get("hold_activation_id") == activation_id
             and float(previous.get("hold_activated_timestamp", -1.0))
             == activation
         )
@@ -9059,6 +11826,7 @@ def _ensure_safety_hold_cell_drain_locked(
                 "protocol": SAFETY_HOLD_DRAIN_PROTOCOL,
                 "drain_id": uuid.uuid4().hex,
                 "rollout_generation": int(control["rollout_generation"]),
+                "hold_activation_id": activation_id,
                 "hold_activated_timestamp": activation,
                 "hold_reasons": sorted(hold["reasons"]),
                 "state": "reconciling",
@@ -9112,13 +11880,15 @@ def _ensure_safety_hold_cell_drain_locked(
                 else query_scheduler(tolerate_errors=True)
             )
         )
-        _assert_cell_submission_cut_visible(
+        ledger_cut = _assert_cell_submission_cut_visible(
             state_dir,
             snapshot,
             now=timestamp,
         )
         running_ids, pending_ids = _exact_live_cell_task_actions(
-            state_dir, snapshot
+            state_dir,
+            snapshot,
+            ledger_preimage=ledger_cut[1],
         )
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
@@ -9132,6 +11902,11 @@ def _ensure_safety_hold_cell_drain_locked(
         **{job_id: "pending_cell_cancel" for job_id in pending_ids},
     }
     with control_lock(state_dir):
+        _assert_dispatcher_ledger_preimage_unchanged(
+            state_dir,
+            expected_raw=ledger_cut[0],
+            description="safety-hold exact-target dispatcher ledger",
+        )
         control = load_control(state_dir)
         intent = control.get("safety_hold_drain_intent")
         if not isinstance(intent, dict) or intent.get("state") != "reconciling":
@@ -9372,13 +12147,15 @@ def _pause_control_locked(
         return load_control(state_dir)
 
     # Resolve every exact target before crossing the first external mutation boundary.
-    _assert_cell_submission_cut_visible(
+    ledger_cut = _assert_cell_submission_cut_visible(
         state_dir,
         scheduler,
         now=timestamp,
     )
     cell_task_ids, pending_cell_task_ids = _exact_live_cell_task_actions(
-        state_dir, scheduler
+        state_dir,
+        scheduler,
+        ledger_preimage=ledger_cut[1],
     )
     by_id = {job.job_id: job for job in scheduler.jobs}
     verified_successors: list[str] = []
@@ -9392,6 +12169,11 @@ def _pause_control_locked(
             )
         verified_successors.append(job_id)
     with control_lock(state_dir):
+        _assert_dispatcher_ledger_preimage_unchanged(
+            state_dir,
+            expected_raw=ledger_cut[0],
+            description="pause exact-target dispatcher ledger",
+        )
         control = load_control(state_dir)
         previous = control.get("drain_intent")
         previous_results = (
@@ -9524,12 +12306,25 @@ def _require_complete_quiescent_scheduler(
     active_cells = sorted(
         job.job_id for job in snapshot.jobs if job.active and _cell_job(job.job_name)
     )
+    malformed_named_controllers = sorted(
+        job.job_id
+        for job in snapshot.jobs
+        if job.active
+        and _controller_job_name(job.job_name)
+        and parse_job_token(job.comment) is None
+    )
+    if malformed_named_controllers:
+        raise SchedulerAmbiguity(
+            f"{operation} found controller-named jobs with missing or malformed "
+            f"provenance: {malformed_named_controllers}"
+        )
     active_controllers = sorted(
         job.job_id
         for job in snapshot.jobs
         if job.active
         and (
-            job.comment.startswith(TOKEN_PREFIX)
+            _controller_job_name(job.job_name)
+            or job.comment.startswith(TOKEN_PREFIX)
             or parse_job_token(job.comment) is not None
         )
     )
@@ -9538,6 +12333,118 @@ def _require_complete_quiescent_scheduler(
             f"{operation} requires a fully drained control plane; "
             f"active_cells={active_cells}, active_controllers={active_controllers}"
         )
+
+
+def effective_protected_capacity_binding(
+    control: Mapping[str, Any], *, verify_files: bool = True
+) -> dict[str, Any]:
+    """Return the generation-scoped marker/certificate authority.
+
+    Generation one uses the immutable initialization marker.  Every later
+    generation must publish a complete replacement marker and static certificate
+    in the same transaction as its effective fleet; no base-only immutable marker
+    may authorize a later overlay.
+    """
+
+    immutable = control["immutable"]
+    record = control.get("capacity", {}).get("current_contract")
+    if record is None:
+        binding = {
+            "capacity_generation": int(
+                control.get("capacity", {}).get("current_generation", 1)
+            ),
+            "path": str(
+                Path(
+                    str(immutable["protected_capacity_marker_path"])
+                ).resolve()
+            ),
+            "sha256": str(
+                immutable["protected_capacity_marker_sha256"]
+            ),
+            "marker_id": str(immutable["protected_capacity_marker_id"]),
+        }
+    else:
+        _validate_capacity_contract_record(
+            record,
+            expected_generation=int(
+                control["capacity"]["current_generation"]
+            ),
+        )
+        binding = {
+            "capacity_generation": int(record["capacity_generation"]),
+            "path": str(
+                Path(record["protected_capacity_marker_path"]).resolve()
+            ),
+            "sha256": str(record["protected_capacity_marker_sha256"]),
+            "marker_id": str(record["protected_capacity_marker_id"]),
+        }
+    del verify_files
+    try:
+        contract = _load_protected_capacity_contract(
+            control,
+            path=binding["path"],
+            expected_marker_id=str(binding["marker_id"]),
+            expected_sha256=str(binding["sha256"]),
+        )
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ImmutablePinError(
+            f"effective protected-capacity authority drifted: {exc}"
+        ) from exc
+    if contract.capacity_generation != binding["capacity_generation"]:
+        raise ImmutablePinError(
+            "effective protected-capacity generation drifted"
+        )
+    binding.update(
+        {
+                "static_feasibility_certificate_path": str(
+                    contract.static_feasibility_certificate_path
+                ),
+                "static_feasibility_certificate_sha256": (
+                    contract.static_feasibility_certificate_sha256
+                ),
+                "static_feasibility_certificate_id": (
+                    contract.static_feasibility_certificate_id
+                ),
+                "effective_fleet_contract_path": str(
+                    contract.effective_fleet_contract_path
+                ),
+                "effective_fleet_contract_sha256": (
+                    contract.effective_fleet_contract_sha256
+                ),
+                "base_fleet_contract_sha256": (
+                    contract.base_fleet_contract_sha256
+                ),
+                "additive_overlay_contract_path": str(
+                    contract.additive_overlay_contract_path
+                ),
+                "additive_overlay_contract_sha256": (
+                    contract.additive_overlay_contract_sha256
+                ),
+        }
+    )
+    return binding
+
+
+def load_effective_protected_capacity_contract(
+    control: Mapping[str, Any], *, verify_files: bool = True
+) -> protected_capacity.ProtectedCapacityContract:
+    """Load the effective generation under the immutable tag/source authority.
+
+    External production components must use this boundary instead of calling
+    :func:`protected_capacity.load_contract` directly.  It joins the current
+    generation record to its marker/certificate authority and then enforces the
+    annotated-tag object and exact frozen dispatcher/qualification source hashes.
+    """
+
+    authority = effective_protected_capacity_binding(
+        control, verify_files=verify_files
+    )
+    return _load_protected_capacity_contract(
+        control,
+        path=authority["path"],
+        expected_marker_id=str(authority["marker_id"]),
+        expected_sha256=str(authority["sha256"]),
+    )
 
 
 def effective_fleet_contract_binding(
@@ -9554,16 +12461,28 @@ def effective_fleet_contract_binding(
     immutable = control["immutable"]
     record = control.get("capacity", {}).get("current_contract")
     if record is None:
-        payload = _load_json_object(
-            Path(str(immutable["fleet_contract_path"])).resolve(),
-            description="immutable fleet contract",
+        authority = effective_protected_capacity_binding(
+            control, verify_files=verify_files
         )
+        path = Path(
+            authority.get(
+                "effective_fleet_contract_path",
+                immutable["fleet_contract_path"],
+            )
+        ).resolve()
+        sha256 = str(
+            authority.get(
+                "effective_fleet_contract_sha256",
+                immutable["fleet_contract_sha256"],
+            )
+        )
+        payload = _load_json_object(path, description="effective fleet contract")
         return {
             "capacity_generation": int(
                 control.get("capacity", {}).get("current_generation", 1)
             ),
-            "path": str(Path(str(immutable["fleet_contract_path"])).resolve()),
-            "sha256": str(immutable["fleet_contract_sha256"]),
+            "path": str(path),
+            "sha256": sha256,
             "fleet_id": str(payload.get("fleet_id")),
             "logical_replicas": int(payload.get("logical_replica_count", -1)),
             "allocated_gpus": int(payload.get("allocated_gpu_count", -1)),
@@ -9572,7 +12491,10 @@ def effective_fleet_contract_binding(
                 for profile in payload.get("profiles", [])
                 if isinstance(profile, dict)
             },
-            "is_capacity_overlay": False,
+            "is_capacity_overlay": (
+                sha256 != str(immutable["fleet_contract_sha256"])
+            ),
+            "protected_capacity": authority,
         }
     _validate_capacity_contract_record(
         record,
@@ -9591,6 +12513,54 @@ def effective_fleet_contract_binding(
         ):
             raise ImmutablePinError("effective capacity fleet artifact drifted")
         _verify_capacity_contract_marker(marker)
+    authority = effective_protected_capacity_binding(
+        control, verify_files=verify_files
+    )
+    expected_authority = {
+        "capacity_generation": int(authority["capacity_generation"]),
+        "path": str(
+            Path(authority["effective_fleet_contract_path"]).resolve()
+        ),
+        "sha256": str(authority["effective_fleet_contract_sha256"]),
+        "protected_capacity_marker_path": str(
+            Path(authority["path"]).resolve()
+        ),
+        "protected_capacity_marker_sha256": str(authority["sha256"]),
+        "protected_capacity_marker_id": str(authority["marker_id"]),
+        "static_feasibility_certificate_path": str(
+            Path(
+                authority["static_feasibility_certificate_path"]
+            ).resolve()
+        ),
+        "static_feasibility_certificate_sha256": str(
+            authority["static_feasibility_certificate_sha256"]
+        ),
+        "static_feasibility_certificate_id": str(
+            authority["static_feasibility_certificate_id"]
+        ),
+        "base_fleet_contract_sha256": str(
+            authority["base_fleet_contract_sha256"]
+        ),
+        "additive_overlay_contract_path": str(
+            Path(authority["additive_overlay_contract_path"]).resolve()
+        ),
+        "additive_overlay_contract_sha256": str(
+            authority["additive_overlay_contract_sha256"]
+        ),
+    }
+    observed_authority = {
+        field: (
+            str(Path(record[field]).resolve())
+            if field.endswith("_path") or field == "path"
+            else record[field]
+        )
+        for field in expected_authority
+    }
+    if observed_authority != expected_authority:
+        raise ImmutablePinError(
+            "effective fleet control record differs from its protected "
+            "marker/certificate authority"
+        )
     return {
         "capacity_generation": int(record["capacity_generation"]),
         "path": str(path),
@@ -9600,6 +12570,7 @@ def effective_fleet_contract_binding(
         "allocated_gpus": int(record["allocated_gpus"]),
         "profile_replicas": copy.deepcopy(record["profile_replicas"]),
         "is_capacity_overlay": True,
+        "protected_capacity": authority,
     }
 
 
@@ -9906,8 +12877,7 @@ def _trusted_generation_control_evidence(
             )
     else:
         evidence_root.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(evidence_path, record)
-        evidence_path.chmod(0o444)
+        _atomic_publish_readonly_json(evidence_path, record)
     return GenerationEvidence(
         kind="control_generation",
         path=evidence_path.resolve(),
@@ -10314,9 +13284,15 @@ def effective_fleet_supervisor_command(
 
     command = list(control["immutable"]["fleet_supervisor_command"])
     binding = effective_fleet_contract_binding(control, verify_files=True)
+    authority = effective_protected_capacity_binding(
+        control, verify_files=True
+    )
     replacements = {
         "--fleet-contract": str(binding["path"]),
         "--fleet-contract-sha256": str(binding["sha256"]),
+        "--protected-capacity-marker": str(authority["path"]),
+        "--protected-capacity-marker-sha256": str(authority["sha256"]),
+        "--protected-capacity-marker-id": str(authority["marker_id"]),
     }
     for flag, replacement in replacements.items():
         try:
@@ -10379,13 +13355,17 @@ def _verify_capacity_contract_marker(marker_path: Path) -> dict[str, Any]:
     checksum_path = Path(str(marker["checksum_path"])).resolve()
     if (
         marker_path.is_symlink()
+        or not marker_path.is_file()
+        or marker_path.stat().st_nlink != 1
         or marker_path.stat().st_mode & 0o222
         or contract_path.is_symlink()
         or not contract_path.is_file()
+        or contract_path.stat().st_nlink != 1
         or contract_path.stat().st_mode & 0o222
         or sha256_file(contract_path) != marker["contract_sha256"]
         or checksum_path.is_symlink()
         or not checksum_path.is_file()
+        or checksum_path.stat().st_nlink != 1
         or checksum_path.stat().st_mode & 0o222
         or sha256_file(checksum_path) != marker["checksum_sha256"]
         or checksum_path.read_text(encoding="utf-8").strip().split()
@@ -10403,9 +13383,10 @@ def _seal_capacity_contract(
     to_generation: int,
     source_path: Path,
     expected_sha256: str,
+    protected_capacity_authority: Mapping[str, Any],
     now: float,
 ) -> dict[str, Any]:
-    """Copy an operator-supplied contract into a marker-last immutable generation."""
+    """Archive a fleet and bind its exact generation-scoped safety authority."""
 
     source = source_path.expanduser().resolve()
     if (
@@ -10457,6 +13438,98 @@ def _seal_capacity_contract(
         )
     if proposed_counts == current_counts:
         raise ImmutablePinError("capacity contract does not change the fleet layout")
+    required_authority = {
+        "protected_capacity_marker_path",
+        "protected_capacity_marker_sha256",
+        "protected_capacity_marker_id",
+        "static_feasibility_certificate_path",
+        "static_feasibility_certificate_sha256",
+        "static_feasibility_certificate_id",
+        "base_fleet_contract_sha256",
+        "additive_overlay_contract_path",
+        "additive_overlay_contract_sha256",
+    }
+    if not isinstance(protected_capacity_authority, Mapping) or set(
+        protected_capacity_authority
+    ) != required_authority:
+        raise ImmutablePinError(
+            "capacity transition safety authority has the wrong fields"
+        )
+    try:
+        capacity_contract = _load_protected_capacity_contract(
+            control,
+            path=protected_capacity_authority[
+                "protected_capacity_marker_path"
+            ],
+            expected_marker_id=str(
+                protected_capacity_authority[
+                    "protected_capacity_marker_id"
+                ]
+            ),
+            expected_sha256=str(
+                protected_capacity_authority[
+                    "protected_capacity_marker_sha256"
+                ]
+            ),
+        )
+        protected_capacity.authorize_fleet(fleet, capacity_contract)
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ImmutablePinError(
+            f"capacity transition safety authority drifted: {exc}"
+        ) from exc
+    if (
+        capacity_contract.capacity_generation != to_generation
+        or capacity_contract.effective_fleet_contract_path != source
+        or capacity_contract.effective_fleet_contract_sha256
+        != expected_sha256
+        or {
+            "protected_capacity_marker_path": str(capacity_contract.path),
+            "protected_capacity_marker_sha256": capacity_contract.sha256,
+            "protected_capacity_marker_id": capacity_contract.marker_id,
+            "static_feasibility_certificate_path": str(
+                capacity_contract.static_feasibility_certificate_path
+            ),
+            "static_feasibility_certificate_sha256": (
+                capacity_contract.static_feasibility_certificate_sha256
+            ),
+            "static_feasibility_certificate_id": (
+                capacity_contract.static_feasibility_certificate_id
+            ),
+            "base_fleet_contract_sha256": (
+                capacity_contract.base_fleet_contract_sha256
+            ),
+            "additive_overlay_contract_path": str(
+                capacity_contract.additive_overlay_contract_path
+            ),
+            "additive_overlay_contract_sha256": (
+                capacity_contract.additive_overlay_contract_sha256
+            ),
+        }
+        != dict(protected_capacity_authority)
+    ):
+        raise ImmutablePinError(
+            "capacity transition marker/certificate generation binding drifted"
+        )
+
+    def record(marker_path: Path) -> dict[str, Any]:
+        return {
+            "capacity_generation": to_generation,
+            # The protected marker binds this staged immutable path exactly.
+            # The independent copy below is audit evidence, not runtime authority.
+            "path": str(source),
+            "sha256": expected_sha256,
+            "marker_path": str(marker_path.resolve()),
+            "marker_sha256": sha256_file(marker_path),
+            **dict(protected_capacity_authority),
+            "fleet_id": fleet.fleet_id,
+            "logical_replicas": len(fleet.replicas),
+            "allocated_gpus": sum(
+                item.gpus_per_replica for item in fleet.replicas
+            ),
+            "profile_replicas": proposed_counts,
+            "activated_at": utc_timestamp(now),
+            "activated_timestamp": now,
+        }
 
     root = state_dir / "capacity-transitions" / transition_id / "contract"
     marker_path = root / CAPACITY_CONTRACT_COMPLETE
@@ -10470,19 +13543,7 @@ def _seal_capacity_contract(
             raise ImmutablePinError(
                 "existing capacity contract marker conflicts with this transition"
             )
-        return {
-            "capacity_generation": to_generation,
-            "path": marker["contract_path"],
-            "sha256": marker["contract_sha256"],
-            "marker_path": str(marker_path.resolve()),
-            "marker_sha256": sha256_file(marker_path),
-            "fleet_id": fleet.fleet_id,
-            "logical_replicas": len(fleet.replicas),
-            "allocated_gpus": sum(item.gpus_per_replica for item in fleet.replicas),
-            "profile_replicas": proposed_counts,
-            "activated_at": utc_timestamp(now),
-            "activated_timestamp": now,
-        }
+        return record(marker_path)
     root.mkdir(parents=True, exist_ok=True)
     intent_path = root / "CONTRACT_CAPTURE_INTENT.json"
     intent = {
@@ -10492,9 +13553,19 @@ def _seal_capacity_contract(
         "capacity_generation": to_generation,
         "source_path": str(source),
         "source_sha256": expected_sha256,
+        "protected_capacity_marker_sha256": (
+            protected_capacity_authority[
+                "protected_capacity_marker_sha256"
+            ]
+        ),
+        "static_feasibility_certificate_sha256": (
+            protected_capacity_authority[
+                "static_feasibility_certificate_sha256"
+            ]
+        ),
         "immutable_sha256": control["immutable_sha256"],
     }
-    if intent_path.exists():
+    if intent_path.exists() or intent_path.is_symlink():
         if _load_json_object(intent_path, description="capacity contract intent") != intent:
             raise ImmutablePinError("capacity contract capture intent conflicts")
     else:
@@ -10548,28 +13619,15 @@ def _seal_capacity_contract(
     }
     for path in (intent_path, target, target_sidecar):
         path.chmod(0o444)
-    _atomic_write_json(marker_path, marker)
-    marker_path.chmod(0o444)
+    _atomic_publish_readonly_json(marker_path, marker)
     root.chmod(0o555)
     _verify_capacity_contract_marker(marker_path)
-    return {
-        "capacity_generation": to_generation,
-        "path": str(target.resolve()),
-        "sha256": expected_sha256,
-        "marker_path": str(marker_path.resolve()),
-        "marker_sha256": sha256_file(marker_path),
-        "fleet_id": fleet.fleet_id,
-        "logical_replicas": len(fleet.replicas),
-        "allocated_gpus": sum(item.gpus_per_replica for item in fleet.replicas),
-        "profile_replicas": proposed_counts,
-        "activated_at": utc_timestamp(now),
-        "activated_timestamp": now,
-    }
+    return record(marker_path)
 
 
 def _fleet_contract_reconciliation_identity(
     control: Mapping[str, Any],
-) -> tuple[str, dict[str, str], dict[str, str]]:
+) -> tuple[str, dict[str, str], dict[str, str], dict[str, str]]:
     binding = effective_fleet_contract_binding(control, verify_files=True)
     contract = _load_json_object(
         Path(binding["path"]), description="effective fleet contract"
@@ -10580,6 +13638,7 @@ def _fleet_contract_reconciliation_identity(
         raise ImmutablePinError("fleet contract lacks its reconciliation identity")
     replica_profiles: dict[str, str] = {}
     replica_job_names: dict[str, str] = {}
+    replica_qos: dict[str, str] = {}
     for profile in profiles:
         if not isinstance(profile, dict):
             raise ImmutablePinError("fleet contract profile is malformed")
@@ -10592,11 +13651,14 @@ def _fleet_contract_reconciliation_identity(
                 raise ImmutablePinError("fleet contract replica is malformed")
             replica_id = replica.get("replica_id")
             job_name = replica.get("scheduler_job_name")
+            qos = replica.get("qos")
             if (
                 not isinstance(replica_id, str)
                 or not replica_id
                 or not isinstance(job_name, str)
                 or not job_name
+                or not isinstance(qos, str)
+                or re.fullmatch(r"[A-Za-z0-9_.-]+", qos) is None
                 or replica.get("pool_id", pool_id) != pool_id
                 or replica_id in replica_profiles
             ):
@@ -10605,12 +13667,13 @@ def _fleet_contract_reconciliation_identity(
                 )
             replica_profiles[replica_id] = profile_name
             replica_job_names[replica_id] = job_name
+            replica_qos[replica_id] = qos
     if (
         len(replica_profiles) != binding["logical_replicas"]
         or len(set(replica_job_names.values())) != len(replica_job_names)
     ):
         raise ImmutablePinError("fleet contract replica cardinality is inconsistent")
-    return str(pool_id), replica_profiles, replica_job_names
+    return str(pool_id), replica_profiles, replica_job_names, replica_qos
 
 
 def _default_fleet_retirement_evidence(
@@ -10621,7 +13684,7 @@ def _default_fleet_retirement_evidence(
     """Resolve exact active fleet IDs through the supervisor's transaction join."""
 
     pool_root = Path(control["immutable"]["server_pool_root"]).resolve()
-    pool_id, replica_profiles, replica_job_names = (
+    pool_id, replica_profiles, replica_job_names, replica_qos = (
         _fleet_contract_reconciliation_identity(control)
     )
     snapshot = scheduler or fleet_transactions.query_scheduler()
@@ -10669,6 +13732,7 @@ def _default_fleet_retirement_evidence(
             fleet_sha256=fleet_sha256,
             replica_profiles=replica_profiles,
             replica_job_names=replica_job_names,
+            replica_qos=replica_qos,
         )
     allocations = [
         {
@@ -10723,8 +13787,17 @@ def _capacity_archive_source_files(
     )
     fleet_binding = effective_fleet_contract_binding(control, verify_files=True)
     add("fleet/fleet_contract.json", Path(fleet_binding["path"]))
-    if fleet_binding["is_capacity_overlay"]:
-        record = control["capacity"]["current_contract"]
+    authority = fleet_binding["protected_capacity"]
+    add(
+        "fleet/protected_capacity_marker.json",
+        Path(authority["path"]),
+    )
+    add(
+        "fleet/static_feasibility_certificate.json",
+        Path(authority["static_feasibility_certificate_path"]),
+    )
+    record = control["capacity"]["current_contract"]
+    if isinstance(record, Mapping):
         add("fleet/capacity_contract_complete.json", Path(record["marker_path"]))
     pool_root = Path(control["immutable"]["server_pool_root"]).resolve()
     transaction_root = fleet_transactions.state_directory(pool_root)
@@ -10774,6 +13847,13 @@ def _capacity_file_inventory(
 
 def _verify_capacity_archive(archive_root: Path) -> dict[str, Any]:
     marker_path = archive_root / CAPACITY_ARCHIVE_COMPLETE
+    if (
+        marker_path.is_symlink()
+        or not marker_path.is_file()
+        or marker_path.stat().st_nlink != 1
+        or marker_path.stat().st_mode & 0o222
+    ):
+        raise ControlError("capacity archive completion marker is not sealed")
     marker = _load_json_object(marker_path, description="capacity archive marker")
     if (
         marker.get("schema_version") != 1
@@ -10972,8 +14052,7 @@ def _create_capacity_archive(
         "inventory_file_sha256": sha256_file(inventory_path),
         "file_count": len(copied_rows),
     }
-    _atomic_write_json(marker_path, marker)
-    marker_path.chmod(0o444)
+    _atomic_publish_readonly_json(marker_path, marker)
     archive_root.chmod(0o555)
     _verify_capacity_archive(archive_root)
     return archive_root, sha256_file(marker_path)
@@ -10985,6 +14064,7 @@ def _activate_operator_hold(
     event = "updated" if hold["active"] else "activated"
     prior_reasons = list(hold["reasons"]) if hold["active"] else []
     if not hold["active"]:
+        hold["activation_id"] = uuid.uuid4().hex
         hold["activated_at"] = utc_timestamp(now)
         hold["activated_timestamp"] = now
     reasons = sorted(set([*prior_reasons, reason]))
@@ -11200,6 +14280,7 @@ def _clear_capacity_operator_hold(
             "semantic_clean_after_activation": False,
             "activated_at": None,
             "activated_timestamp": None,
+            "activation_id": None,
             "updated_at": utc_timestamp(now),
             "updated_timestamp": now,
             "acknowledged_at": None,
@@ -11248,7 +14329,17 @@ def _write_capacity_retirement_intent(
         "consumed_capacity_incidents": intended_incidents,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    if path.exists() or path.is_symlink():
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_nlink != 1
+            or path.stat().st_mode & 0o222
+        ):
+            raise SchedulerAmbiguity(
+                "existing exact fleet-retirement intent is not a sealed "
+                "single-link file"
+            )
         existing = _load_json_object(
             path, description="capacity retirement intent"
         )
@@ -11278,8 +14369,7 @@ def _write_capacity_retirement_intent(
             )
         intended_incidents = list(recorded_incidents)
     else:
-        _atomic_write_json(path, payload)
-        path.chmod(0o444)
+        _atomic_publish_readonly_json(path, payload)
     return path.resolve(), sha256_file(path), intended_incidents
 
 
@@ -11316,7 +14406,16 @@ def _retire_fleet_transaction_state(
     target = transition_root / CAPACITY_FLEET_STATE_RETIREMENT
     intent_path = transition_root / "FLEET_TRANSACTION_STATE_RETIREMENT_INTENT.json"
     complete_path = transition_root / "FLEET_TRANSACTION_STATE_RETIRED.json"
-    if complete_path.exists():
+    if complete_path.exists() or complete_path.is_symlink():
+        if (
+            complete_path.is_symlink()
+            or not complete_path.is_file()
+            or complete_path.stat().st_nlink != 1
+            or complete_path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                "retired fleet transaction state marker is not sealed"
+            )
         marker = _load_json_object(
             complete_path, description="retired fleet transaction state"
         )
@@ -11345,11 +14444,20 @@ def _retire_fleet_transaction_state(
         "inventory_sha256": digest,
         "file_count": len(rows),
     }
-    if intent_path.exists():
-        if _load_json_object(intent_path, description="fleet state retire intent") != intent:
+    if intent_path.exists() or intent_path.is_symlink():
+        if (
+            intent_path.is_symlink()
+            or not intent_path.is_file()
+            or intent_path.stat().st_nlink != 1
+            or intent_path.stat().st_mode & 0o222
+            or _load_json_object(
+                intent_path, description="fleet state retire intent"
+            )
+            != intent
+        ):
             raise ControlError("fleet transaction retirement intent conflicts")
     else:
-        _atomic_write_json(intent_path, intent)
+        _atomic_publish_readonly_json(intent_path, intent)
     if source.exists():
         if target.exists():
             raise ControlError(
@@ -11374,9 +14482,7 @@ def _retire_fleet_transaction_state(
         "inventory_sha256": digest,
         "file_count": len(rows),
     }
-    _atomic_write_json(complete_path, marker)
-    complete_path.chmod(0o444)
-    intent_path.chmod(0o444)
+    _atomic_publish_readonly_json(complete_path, marker)
     return marker
 
 
@@ -11478,6 +14584,12 @@ def _retired_capacity_transition_v1_reference_do_not_call(
     action: str,
     fleet_contract_path: Path | None = None,
     fleet_contract_sha256: str | None = None,
+    protected_capacity_marker_path: Path | None = None,
+    protected_capacity_marker_sha256: str | None = None,
+    protected_capacity_marker_id: str | None = None,
+    static_feasibility_certificate_path: Path | None = None,
+    static_feasibility_certificate_sha256: str | None = None,
+    static_feasibility_certificate_id: str | None = None,
     scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
     fleet_evidence_reader: (
         Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
@@ -11715,7 +14827,13 @@ def _retired_capacity_transition_v1_reference_do_not_call(
                     transition_id=transition_id,
                     now=timestamp,
                 )
-                invalidated = ("fleet", "smoke_runs", "scheduler_reconciliation")
+                invalidated = (
+                    "static_feasibility_certificate",
+                    "protected_capacity",
+                    "fleet",
+                    "smoke_runs",
+                    "scheduler_reconciliation",
+                )
                 active = {
                     "transition_id": transition_id,
                     "phase": "retirement_requested",
@@ -11974,7 +15092,19 @@ def _inspect_capacity_contract(
     *,
     path: Path | None,
     expected_sha256: str | None,
-) -> tuple[Path, str, FrozenFleetContract, dict[str, int]]:
+    protected_capacity_marker_path: Path | None,
+    protected_capacity_marker_sha256: str | None,
+    protected_capacity_marker_id: str | None,
+    static_feasibility_certificate_path: Path | None,
+    static_feasibility_certificate_sha256: str | None,
+    static_feasibility_certificate_id: str | None,
+) -> tuple[
+    Path,
+    str,
+    FrozenFleetContract,
+    dict[str, int],
+    dict[str, Any],
+]:
     if path is None or expected_sha256 is None:
         raise ImmutablePinError(
             "capacity transition requires --fleet-contract and --fleet-contract-sha256"
@@ -12028,7 +15158,77 @@ def _inspect_capacity_contract(
         raise ImmutablePinError(
             f"proposed capacity contract removes replicas: {reductions}"
         )
-    return resolved, expected_sha256, fleet, proposed_counts
+    if (
+        protected_capacity_marker_path is None
+        or protected_capacity_marker_sha256 is None
+        or protected_capacity_marker_id is None
+        or static_feasibility_certificate_path is None
+        or static_feasibility_certificate_sha256 is None
+        or static_feasibility_certificate_id is None
+    ):
+        raise ImmutablePinError(
+            "capacity transition requires a same-generation protected marker "
+            "and static feasibility certificate"
+        )
+    immutable = control["immutable"]
+    expected_generation = int(control["capacity"]["current_generation"]) + 1
+    try:
+        capacity_contract = _load_protected_capacity_contract(
+            control,
+            path=protected_capacity_marker_path,
+            expected_marker_id=str(protected_capacity_marker_id),
+            expected_sha256=str(protected_capacity_marker_sha256),
+        )
+        protected_capacity.authorize_fleet(fleet, capacity_contract)
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ImmutablePinError(
+            f"proposed protected-capacity authority failed closed: {exc}"
+        ) from exc
+    certificate_path = static_feasibility_certificate_path.expanduser().resolve()
+    if (
+        capacity_contract.capacity_generation != expected_generation
+        or capacity_contract.effective_fleet_contract_path != resolved
+        or capacity_contract.effective_fleet_contract_sha256 != expected_sha256
+        or capacity_contract.base_fleet_contract_sha256
+        != immutable["fleet_contract_sha256"]
+        or capacity_contract.additive_overlay_contract_path != resolved
+        or capacity_contract.additive_overlay_contract_sha256
+        != expected_sha256
+        or capacity_contract.static_feasibility_certificate_path
+        != certificate_path
+        or capacity_contract.static_feasibility_certificate_sha256
+        != static_feasibility_certificate_sha256
+        or capacity_contract.static_feasibility_certificate_id
+        != static_feasibility_certificate_id
+    ):
+        raise ImmutablePinError(
+            "proposed marker/certificate/fleet do not form one exact capacity "
+            "generation"
+        )
+    authority = {
+        "protected_capacity_marker_path": str(capacity_contract.path),
+        "protected_capacity_marker_sha256": capacity_contract.sha256,
+        "protected_capacity_marker_id": capacity_contract.marker_id,
+        "static_feasibility_certificate_path": str(
+            capacity_contract.static_feasibility_certificate_path
+        ),
+        "static_feasibility_certificate_sha256": (
+            capacity_contract.static_feasibility_certificate_sha256
+        ),
+        "static_feasibility_certificate_id": (
+            capacity_contract.static_feasibility_certificate_id
+        ),
+        "base_fleet_contract_sha256": (
+            capacity_contract.base_fleet_contract_sha256
+        ),
+        "additive_overlay_contract_path": str(
+            capacity_contract.additive_overlay_contract_path
+        ),
+        "additive_overlay_contract_sha256": (
+            capacity_contract.additive_overlay_contract_sha256
+        ),
+    }
+    return resolved, expected_sha256, fleet, proposed_counts, authority
 
 
 def _complete_capacity_resume(
@@ -12182,6 +15382,12 @@ def capacity_transition(
     action: str,
     fleet_contract_path: Path | None = None,
     fleet_contract_sha256: str | None = None,
+    protected_capacity_marker_path: Path | None = None,
+    protected_capacity_marker_sha256: str | None = None,
+    protected_capacity_marker_id: str | None = None,
+    static_feasibility_certificate_path: Path | None = None,
+    static_feasibility_certificate_sha256: str | None = None,
+    static_feasibility_certificate_id: str | None = None,
     scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
     fleet_evidence_reader: (
         Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
@@ -12299,11 +15505,35 @@ def capacity_transition(
                         "would_resume_transition": True,
                         "transition": active,
                     }
-                proposed_path, proposed_hash, fleet, proposed_counts = (
+                (
+                    proposed_path,
+                    proposed_hash,
+                    fleet,
+                    proposed_counts,
+                    proposed_authority,
+                ) = (
                     _inspect_capacity_contract(
                         control,
                         path=fleet_contract_path,
                         expected_sha256=fleet_contract_sha256,
+                        protected_capacity_marker_path=(
+                            protected_capacity_marker_path
+                        ),
+                        protected_capacity_marker_sha256=(
+                            protected_capacity_marker_sha256
+                        ),
+                        protected_capacity_marker_id=(
+                            protected_capacity_marker_id
+                        ),
+                        static_feasibility_certificate_path=(
+                            static_feasibility_certificate_path
+                        ),
+                        static_feasibility_certificate_sha256=(
+                            static_feasibility_certificate_sha256
+                        ),
+                        static_feasibility_certificate_id=(
+                            static_feasibility_certificate_id
+                        ),
                     )
                 )
                 evidence = dict(resolve_fleet(control))
@@ -12331,6 +15561,7 @@ def capacity_transition(
                         item.gpus_per_replica for item in fleet.replicas
                     ),
                     "profile_replicas": proposed_counts,
+                    "protected_capacity": proposed_authority,
                     "old_fleet_job_ids": job_ids,
                     "fleet_evidence_sha256": sha256_value(evidence),
                 }
@@ -12467,11 +15698,35 @@ def capacity_transition(
 
             # ``apply``: establish the marker-last contract/archive and exact-ID intent.
             if active is None:
-                proposed_path, proposed_hash, _fleet, _counts = (
+                (
+                    proposed_path,
+                    proposed_hash,
+                    _fleet,
+                    _counts,
+                    proposed_authority,
+                ) = (
                     _inspect_capacity_contract(
                         control,
                         path=fleet_contract_path,
                         expected_sha256=fleet_contract_sha256,
+                        protected_capacity_marker_path=(
+                            protected_capacity_marker_path
+                        ),
+                        protected_capacity_marker_sha256=(
+                            protected_capacity_marker_sha256
+                        ),
+                        protected_capacity_marker_id=(
+                            protected_capacity_marker_id
+                        ),
+                        static_feasibility_certificate_path=(
+                            static_feasibility_certificate_path
+                        ),
+                        static_feasibility_certificate_sha256=(
+                            static_feasibility_certificate_sha256
+                        ),
+                        static_feasibility_certificate_id=(
+                            static_feasibility_certificate_id
+                        ),
                     )
                 )
                 evidence = dict(resolve_fleet(control))
@@ -12496,6 +15751,16 @@ def capacity_transition(
                                     control
                                 )["sha256"],
                                 "new_fleet": proposed_hash,
+                                "protected_capacity_marker": (
+                                    proposed_authority[
+                                        "protected_capacity_marker_sha256"
+                                    ]
+                                ),
+                                "static_feasibility_certificate": (
+                                    proposed_authority[
+                                        "static_feasibility_certificate_sha256"
+                                    ]
+                                ),
                                 "job_ids": job_ids,
                             }
                         )
@@ -12514,6 +15779,7 @@ def capacity_transition(
                     to_generation=to_generation,
                     source_path=proposed_path,
                     expected_sha256=proposed_hash,
+                    protected_capacity_authority=proposed_authority,
                     now=timestamp,
                 )
                 evidence_sha = sha256_value(evidence)
@@ -12537,7 +15803,13 @@ def capacity_transition(
                         consumed_capacity_incidents=incident_intent,
                     )
                 )
-                invalidated = ("fleet", "smoke_runs", "scheduler_reconciliation")
+                invalidated = (
+                    "static_feasibility_certificate",
+                    "protected_capacity",
+                    "fleet",
+                    "smoke_runs",
+                    "scheduler_reconciliation",
+                )
                 active = {
                     "transition_id": transition_id,
                     "phase": "retirement_requested",
@@ -12853,7 +16125,9 @@ def _validate_final_fleet_retirement_evidence(
         raise SchedulerAmbiguity(
             "final fleet retirement evidence has the wrong fields"
         )
-    pool_id, replica_profiles, _ = _fleet_contract_reconciliation_identity(control)
+    pool_id, replica_profiles, _, _ = (
+        _fleet_contract_reconciliation_identity(control)
+    )
     ledger_generation = evidence.get("ledger_generation")
     captured = evidence.get("scheduler_captured_timestamp")
     allocations = evidence.get("active_allocations")
@@ -12950,7 +16224,7 @@ def _active_fleet_scope_job_ids(
 ) -> list[str]:
     """Return every active job in the frozen fleet namespace, including malformed ones."""
 
-    _, _, replica_job_names = _fleet_contract_reconciliation_identity(control)
+    _, _, replica_job_names, _ = _fleet_contract_reconciliation_identity(control)
     expected_names = set(replica_job_names.values())
     scoped = {
         job.job_id
@@ -13154,8 +16428,7 @@ def _prepare_final_fleet_retirement(
             "fleet_evidence_sha256": sha256_value(evidence),
         }
         intent["retirement_id"] = sha256_value(intent)
-        _atomic_write_json(intent_path, intent)
-        intent_path.chmod(0o444)
+        _atomic_publish_readonly_json(intent_path, intent)
     if complete_path.exists():
         _verify_final_fleet_retirement(retirement_root, control=control)
     return retirement_root, intent
@@ -13357,26 +16630,53 @@ def _advance_final_fleet_retirement(
     prior_attempts = _read_jsonl_locked(attempts_path, missing_ok=True)
     attempt_number = len(prior_attempts) + 1
     results: dict[str, dict[str, Any]] = {}
-    exception: str | None = None
-    try:
-        for job_id in targets:
+    command_errors: list[str] = []
+    retryable_exception: FinalizerRetryableError | None = None
+    for job_id in targets:
+        try:
             proc = cancel_runner(["scancel", job_id])
             results[job_id] = {
                 "returncode": int(proc.returncode),
                 "stderr": proc.stderr.strip()[:1000],
             }
             if proc.returncode != 0:
-                exception = (
+                command_errors.append(
                     f"failed exact final fleet retirement {job_id}: "
                     f"{proc.stderr.strip()[:500]}"
                 )
-                break
-    except Exception as exc:
-        exception = f"{type(exc).__name__}: {exc}"
+        except FinalizerRetryableError as exc:
+            retryable_exception = exc
+            command_errors.append(f"{type(exc).__name__}: {exc}")
+            break
+        except subprocess.TimeoutExpired as exc:
+            retryable_exception = FinalizerTimeoutError(
+                f"exact fleet retirement command timed out: {exc}"
+            )
+            command_errors.append(
+                f"{type(retryable_exception).__name__}: "
+                f"{retryable_exception}"
+            )
+            break
+        except TimeoutError as exc:
+            retryable_exception = FinalizerTimeoutError(str(exc))
+            command_errors.append(
+                f"{type(retryable_exception).__name__}: "
+                f"{retryable_exception}"
+            )
+            break
+        except ConnectionError as exc:
+            retryable_exception = FinalizerConnectionError(str(exc))
+            command_errors.append(
+                f"{type(retryable_exception).__name__}: "
+                f"{retryable_exception}"
+            )
+            break
 
     post_snapshot: SchedulerSnapshot | None = None
     remaining: list[str] | None = None
-    if exception is None:
+    deterministic_error: FinalizerProvenanceError | None = None
+    post_read_error: FinalizerSchedulerReadError | None = None
+    try:
         post_snapshot = scheduler_reader()
         _require_complete_quiescent_scheduler(
             post_snapshot, operation="final fleet retirement verification"
@@ -13384,12 +16684,24 @@ def _advance_final_fleet_retirement(
         post_active = _active_fleet_scope_job_ids(control, post_snapshot)
         unexpected = sorted(set(post_active) - set(exact_ids), key=int)
         if unexpected:
-            exception = (
+            deterministic_error = FinalizerProvenanceError(
                 "new fleet IDs appeared during exact retirement: "
                 + ", ".join(unexpected)
             )
         else:
             remaining = sorted(set(post_active) & set(exact_ids), key=int)
+    except FinalizerProvenanceError as exc:
+        deterministic_error = exc
+    except Exception as exc:
+        post_read_error = FinalizerSchedulerReadError(
+            "cannot reconcile final fleet retirement through complete "
+            f"post-command scheduler truth: {type(exc).__name__}: {exc}"
+        )
+        command_errors.append(
+            f"{type(post_read_error).__name__}: {post_read_error}"
+        )
+
+    exception = "; ".join(command_errors) if command_errors else None
     if attempts_path.exists():
         attempts_path.chmod(0o644)
     attempt_record = {
@@ -13408,11 +16720,26 @@ def _advance_final_fleet_retirement(
         "remaining_job_ids": remaining,
     }
     _append_jsonl(attempts_path, attempt_record)
-    if exception is not None:
-        raise ControlError(exception)
+    if deterministic_error is not None:
+        raise deterministic_error
+    if post_read_error is not None:
+        raise post_read_error
     assert post_snapshot is not None and remaining is not None
     if remaining:
+        if retryable_exception is not None:
+            raise retryable_exception
+        if command_errors:
+            raise FinalizerNodeError(
+                "exact final fleet retirement remains active after scheduler "
+                f"command errors: {remaining}; {exception}"
+            )
+        # A zero return from scancel is only an admission of the request, not proof
+        # that the allocation has left scheduler truth.
         return None, remaining
+
+    # Complete post-command truth is authoritative.  A nonzero scancel, timeout, or
+    # natural-exit race is accepted when every marker-pinned allocation is terminal or
+    # absent; no command return code alone can permanently block finalization.
 
     attempts = _validate_final_fleet_retirement_attempts(
         attempts_path,
@@ -13438,8 +16765,7 @@ def _advance_final_fleet_retirement(
         "completed_timestamp": now,
     }
     marker["completion_id"] = sha256_value(marker)
-    _atomic_write_json(marker_path, marker)
-    marker_path.chmod(0o444)
+    _atomic_publish_readonly_json(marker_path, marker)
     retirement_root.chmod(0o555)
     verified, _ = _verify_final_fleet_retirement(
         retirement_root, control=control
@@ -13447,11 +16773,90 @@ def _advance_final_fleet_retirement(
     return verified, []
 
 
-def _run_finalizer_process(
-    argv: Sequence[str], *, environment: Mapping[str, str], timeout_seconds: float
-) -> subprocess.CompletedProcess[str]:
-    """Run one frozen finalizer stage with TERM/KILL deadline enforcement."""
+class _FinalizerInterruptionController:
+    """Own one finalizer child until a requested drain has fully reaped it."""
 
+    def __init__(self) -> None:
+        self.requested_signal: signal.Signals | None = None
+        self.active_child: subprocess.Popen[str] | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self.requested_signal is not None
+
+    def request(self, signum: int) -> None:
+        observed = signal.Signals(signum)
+        if self.requested_signal is None:
+            self.requested_signal = observed
+        child = self.active_child
+        if child is not None and child.poll() is None:
+            _signal_process_group(child, signal.SIGTERM)
+
+    def register(self, child: subprocess.Popen[str]) -> None:
+        if self.active_child is not None:
+            raise FinalizerInvariantError(
+                "finalizer interruption controller already owns a child"
+            )
+        self.active_child = child
+        if self.requested and child.poll() is None:
+            _signal_process_group(child, signal.SIGTERM)
+
+    def release_reaped(self, child: subprocess.Popen[str]) -> None:
+        if self.active_child is not child:
+            raise FinalizerInvariantError(
+                "finalizer interruption controller lost child ownership"
+            )
+        if child.poll() is None:
+            raise FinalizerInvariantError(
+                "finalizer child ownership was released before reap"
+            )
+        self.active_child = None
+
+    def raise_if_requested(self) -> None:
+        if self.requested_signal is not None:
+            raise FinalizerInterruptedError(
+                "autonomous finalizer received "
+                f"{self.requested_signal.name}; active child was terminated and reaped"
+            )
+
+
+def _terminate_and_reap_finalizer_child(
+    child: subprocess.Popen[str],
+) -> tuple[str, str]:
+    """TERM, bounded-wait, KILL, and reap one process group."""
+
+    _signal_process_group(child, signal.SIGTERM)
+    try:
+        return child.communicate(
+            timeout=FINALIZER_CHILD_TERMINATE_GRACE_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        _signal_process_group(child, signal.SIGKILL)
+        return child.communicate()
+
+
+def _run_finalizer_process(
+    argv: Sequence[str],
+    *,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+    interruption: _FinalizerInterruptionController | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one frozen stage while retaining ownership through TERM/KILL/reap."""
+
+    if (
+        not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not math.isfinite(float(timeout_seconds))
+        or float(timeout_seconds) <= 0
+        or float(timeout_seconds) > FINALIZER_SNAPSHOT_DEADLINE_SECONDS
+    ):
+        raise FinalizerInvariantError(
+            "finalizer subprocess deadline must be positive and no greater than "
+            f"{FINALIZER_SNAPSHOT_DEADLINE_SECONDS:.0f}s"
+        )
+    controller = interruption or _FinalizerInterruptionController()
+    controller.raise_if_requested()
     child = subprocess.Popen(
         list(argv),
         env=dict(environment),
@@ -13461,23 +16866,88 @@ def _run_finalizer_process(
         start_new_session=True,
     )
     try:
-        stdout, stderr = child.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        _signal_process_group(child, signal.SIGTERM)
-        try:
-            stdout, stderr = child.communicate(
-                timeout=MONITOR_TERMINATE_GRACE_SECONDS
-            )
-        except subprocess.TimeoutExpired:
-            _signal_process_group(child, signal.SIGKILL)
-            stdout, stderr = child.communicate()
-        raise ControlError(
-            f"finalizer command exceeded {timeout_seconds:.0f}s and was terminated: "
-            f"{shlex.join(list(argv))}; stderr={stderr.strip()[:500]}"
-        )
+        controller.register(child)
+    except BaseException:
+        _terminate_and_reap_finalizer_child(child)
+        raise
+    deadline = time.monotonic() + float(timeout_seconds)
+    stdout = ""
+    stderr = ""
+    failure: BaseException | None = None
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stdout, stderr = _terminate_and_reap_finalizer_child(child)
+                failure = FinalizerTimeoutError(
+                    "finalizer command exceeded "
+                    f"{timeout_seconds:.0f}s and was terminated: "
+                    f"{shlex.join(list(argv))}; stderr={stderr.strip()[:500]}"
+                )
+                break
+            try:
+                stdout, stderr = child.communicate(
+                    timeout=min(FINALIZER_CHILD_POLL_SECONDS, remaining)
+                )
+                if controller.requested:
+                    failure = FinalizerInterruptedError(
+                        "autonomous finalizer received "
+                        f"{controller.requested_signal.name}; active child was "
+                        "terminated and reaped"
+                    )
+                break
+            except subprocess.TimeoutExpired:
+                if controller.requested:
+                    stdout, stderr = _terminate_and_reap_finalizer_child(child)
+                    failure = FinalizerInterruptedError(
+                        "autonomous finalizer received "
+                        f"{controller.requested_signal.name}; active child was "
+                        "terminated and reaped"
+                    )
+                    break
+    finally:
+        if child.poll() is None:
+            stdout, stderr = _terminate_and_reap_finalizer_child(child)
+        controller.release_reaped(child)
+    if failure is not None:
+        raise failure
+    controller.raise_if_requested()
     return subprocess.CompletedProcess(
         list(argv), int(child.returncode), stdout, stderr
     )
+
+
+@contextmanager
+def _finalizer_signal_handlers(
+    interruption: _FinalizerInterruptionController,
+) -> Iterator[None]:
+    """Translate Slurm USR1/TERM into bounded child drain requests."""
+
+    if threading.current_thread() is not threading.main_thread():
+        raise FinalizerInvariantError(
+            "autonomous finalizer signal ownership requires the main thread"
+        )
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        interruption.request(signum)
+
+    watched = (signal.SIGUSR1, signal.SIGTERM)
+    previous = {sig: signal.signal(sig, request_stop) for sig in watched}
+    try:
+        yield
+    finally:
+        try:
+            child = interruption.active_child
+            if child is not None:
+                if child.poll() is None:
+                    _terminate_and_reap_finalizer_child(child)
+                interruption.release_reaped(child)
+        finally:
+            # Retain USR1/TERM ownership until every child is gone.  Restoring the
+            # default TERM disposition earlier would reopen the orphan window during
+            # the bounded cleanup itself.
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
 
 
 def _finalizer_environment(control: Mapping[str, Any]) -> dict[str, str]:
@@ -13535,6 +17005,147 @@ _FINAL_INTEGRITY_OUTCOME_FIELDS = (
     "invalid_rows",
     "untrusted_valid_rows",
 )
+FINAL_AGGREGATE_OUTCOME_FIELDS = frozenset(
+    (
+        *_FINAL_TRANSPORT_ACCOUNTING_FIELDS,
+        *_FINAL_INTEGRITY_OUTCOME_FIELDS,
+        "stale_unmanifested_dirs",
+        "contract_errors",
+    )
+)
+FINAL_RUN_OUTCOME_FIELDS = frozenset(
+    (
+        *_FINAL_TRANSPORT_ACCOUNTING_FIELDS,
+        *_FINAL_INTEGRITY_OUTCOME_FIELDS,
+    )
+)
+FINAL_ACCEPTANCE_CHECK_NAMES = frozenset(
+    {
+        "exact_complete_cells",
+        "no_noncomplete_cells",
+        "exact_validated_qids",
+        "top_level_partition_exact",
+        "auxiliary_partition_exact",
+        "useful_transport_partition_exact",
+        "transport_coordinate_partition_exact",
+        "topology_transport_coordinate_qid_bound",
+        "transport_affected_qid_bounds_exact",
+        "transport_protocol_exact",
+        "zero_integrity_errors",
+        "schema5_only",
+        "throughput_projection_acceptable",
+    }
+)
+
+
+def _validate_final_outcome_schema(
+    outcomes: Any,
+    *,
+    expected_fields: frozenset[str],
+    context: str,
+) -> Mapping[str, int]:
+    if not isinstance(outcomes, Mapping):
+        raise ControlError(
+            f"final semantic {context} outcomes must be an object"
+        )
+    observed_fields = set(outcomes)
+    if observed_fields != expected_fields:
+        raise ControlError(
+            f"final semantic {context} outcome fields are not exact: "
+            f"missing={sorted(expected_fields - observed_fields, key=repr)!r}, "
+            f"unexpected={sorted(observed_fields - expected_fields, key=repr)!r}"
+        )
+    for field in sorted(expected_fields):
+        value = outcomes[field]
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+        ):
+            raise ControlError(
+                f"final semantic {context} outcome {field} is not a "
+                "non-negative integer"
+            )
+    return outcomes
+
+
+def _recompute_final_acceptance_checks(
+    *,
+    semantic: Mapping[str, Any],
+    outcomes: Mapping[str, int],
+) -> dict[str, bool]:
+    states = semantic["states"]
+    transport_protocol = semantic["transport_censor_protocol"]
+    integrity_errors = sum(
+        outcomes[field]
+        for field in (
+            *_FINAL_INTEGRITY_OUTCOME_FIELDS,
+            "stale_unmanifested_dirs",
+            "contract_errors",
+        )
+    )
+    return {
+        "exact_complete_cells": (
+            states.get("complete") == EXPECTED_TOTAL_CELLS
+        ),
+        "no_noncomplete_cells": (
+            sum(
+                count
+                for state, count in states.items()
+                if state != "complete"
+            )
+            == 0
+        ),
+        "exact_validated_qids": (
+            outcomes["validated_qids"] == EXPECTED_TOTAL_QIDS
+        ),
+        "top_level_partition_exact": (
+            outcomes["validated_qids"]
+            == outcomes["completed_qids"]
+            + outcomes["length_censored_qids"]
+            + outcomes["protocol_censored_qids"]
+            + outcomes["transport_censored_qids"]
+        ),
+        "auxiliary_partition_exact": (
+            outcomes["auxiliary_outcomes"]
+            == outcomes["auxiliary_completed"]
+            + outcomes["auxiliary_length_censored"]
+            + outcomes["auxiliary_protocol_censored"]
+            + outcomes["auxiliary_transport_censored"]
+        ),
+        "useful_transport_partition_exact": (
+            outcomes["validated_qids"]
+            == outcomes["useful_qids"]
+            + outcomes["transport_affected_qids"]
+        ),
+        "transport_coordinate_partition_exact": (
+            outcomes["transport_censored_coordinates"]
+            == outcomes["topology_transport_censored_coordinates"]
+            + outcomes["auxiliary_transport_censored"]
+        ),
+        "topology_transport_coordinate_qid_bound": (
+            outcomes["topology_transport_censored_coordinates"]
+            >= outcomes["transport_censored_qids"]
+        ),
+        "transport_affected_qid_bounds_exact": (
+            outcomes["transport_censored_qids"]
+            <= outcomes["transport_affected_qids"]
+            <= outcomes["transport_censored_coordinates"]
+        ),
+        "transport_protocol_exact": transport_protocol
+        == {
+            "version": TRANSPORT_CENSOR_PROTOCOL_VERSION,
+            "hash": TRANSPORT_CENSOR_PROTOCOL_HASH,
+        },
+        "zero_integrity_errors": integrity_errors == 0,
+        "schema5_only": semantic["artifact_schema_counts"]
+        == {"5": EXPECTED_TOTAL_QIDS},
+        # At exact terminal cardinality there is no unfinished stratum whose
+        # projected throughput can invalidate completion.
+        "throughput_projection_acceptable": (
+            outcomes["validated_qids"] == EXPECTED_TOTAL_QIDS
+        ),
+    }
 
 
 def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
@@ -13545,18 +17156,33 @@ def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
         or semantic.get("scan_successful") is not True
         or semantic.get("scan_errors") != []
         or not isinstance(acceptance, dict)
-        or acceptance.get("passed") is not True
-        or not isinstance(acceptance.get("checks"), dict)
-        or not acceptance["checks"]
-        or not all(value is True for value in acceptance["checks"].values())
     ):
         raise ControlError("final semantic scan did not pass every acceptance check")
+    if set(acceptance) != {"passed", "checks"}:
+        raise ControlError("final semantic acceptance fields are not exact")
+    reported_checks = acceptance.get("checks")
+    if (
+        not isinstance(acceptance.get("passed"), bool)
+        or not isinstance(reported_checks, Mapping)
+        or set(reported_checks) != FINAL_ACCEPTANCE_CHECK_NAMES
+        or any(not isinstance(value, bool) for value in reported_checks.values())
+    ):
+        raise ControlError(
+            "final semantic acceptance check names or types are not exact"
+        )
+    if acceptance["passed"] is not True:
+        raise ControlError(
+            "final semantic scan did not pass every acceptance check"
+        )
     states = semantic.get("states")
-    outcomes = semantic.get("outcomes")
+    outcomes = _validate_final_outcome_schema(
+        semantic.get("outcomes"),
+        expected_fields=FINAL_AGGREGATE_OUTCOME_FIELDS,
+        context="aggregate",
+    )
     if (
         states != {"complete": EXPECTED_TOTAL_CELLS}
-        or not isinstance(outcomes, dict)
-        or outcomes.get("validated_qids") != EXPECTED_TOTAL_QIDS
+        or outcomes["validated_qids"] != EXPECTED_TOTAL_QIDS
         or semantic.get("artifact_schema_counts")
         != {"5": EXPECTED_TOTAL_QIDS}
     ):
@@ -13576,7 +17202,7 @@ def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
         "stale_unmanifested_dirs",
         "contract_errors",
     ):
-        if outcomes.get(name, 0) != 0:
+        if outcomes[name] != 0:
             raise ControlError(f"final semantic outcome {name} is nonzero")
     _validate_final_transport_accounting(
         outcomes,
@@ -13626,9 +17252,18 @@ def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
     if not isinstance(runs, dict) or set(runs) != set(REQUIRED_RUNS):
         raise ControlError("final semantic report does not cover the exact run set")
     run_outcomes: list[Mapping[str, Any]] = []
+    run_rows: list[Mapping[str, Any]] = []
     for run_id, expected_cells in REQUIRED_RUNS.items():
         row = runs[run_id]
-        row_outcomes = row.get("outcomes") if isinstance(row, dict) else None
+        row_outcomes = (
+            _validate_final_outcome_schema(
+                row.get("outcomes"),
+                expected_fields=FINAL_RUN_OUTCOME_FIELDS,
+                context=run_id,
+            )
+            if isinstance(row, dict)
+            else None
+        )
         if (
             not isinstance(row, dict)
             or not isinstance(row_outcomes, Mapping)
@@ -13646,7 +17281,7 @@ def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
                 f"final semantic report for {run_id} violates its frozen contract"
             )
         for name in _FINAL_INTEGRITY_OUTCOME_FIELDS:
-            if row_outcomes.get(name, 0) != 0:
+            if row_outcomes[name] != 0:
                 raise ControlError(
                     f"final semantic outcome {run_id}/{name} is nonzero"
                 )
@@ -13656,16 +17291,42 @@ def _validate_final_semantic_report(report: Mapping[str, Any]) -> None:
             context=run_id,
         )
         run_outcomes.append(row_outcomes)
+        run_rows.append(row)
     for field in (
         *_FINAL_TRANSPORT_ACCOUNTING_FIELDS,
         *_FINAL_INTEGRITY_OUTCOME_FIELDS,
     ):
-        if outcomes.get(field, 0) != sum(
-            int(row.get(field, 0)) for row in run_outcomes
+        if outcomes[field] != sum(
+            row[field] for row in run_outcomes
         ):
             raise ControlError(
                 f"final semantic aggregate {field} is not the exact run sum"
             )
+    if outcomes["stale_unmanifested_dirs"] != sum(
+        int(row["stale_unmanifested_dirs"]) for row in run_rows
+    ):
+        raise ControlError(
+            "final semantic aggregate stale_unmanifested_dirs is not the "
+            "exact run sum"
+        )
+    if outcomes["contract_errors"] != sum(
+        len(row["contract_errors"]) for row in run_rows
+    ):
+        raise ControlError(
+            "final semantic aggregate contract_errors is not the exact run sum"
+        )
+    recomputed_checks = _recompute_final_acceptance_checks(
+        semantic=semantic,
+        outcomes=outcomes,
+    )
+    if (
+        dict(reported_checks) != recomputed_checks
+        or acceptance["passed"] is not all(recomputed_checks.values())
+    ):
+        raise ControlError(
+            "final semantic acceptance checks do not match independently "
+            "recomputed terminal acceptance"
+        )
 
 
 def _validate_final_transport_accounting(
@@ -13679,7 +17340,12 @@ def _validate_final_transport_accounting(
     fields = _FINAL_TRANSPORT_ACCOUNTING_FIELDS
     values: dict[str, int] = {}
     for field in fields:
-        value = outcomes.get(field, 0)
+        if field not in outcomes:
+            raise ControlError(
+                f"final semantic {context} transport accounting is missing "
+                f"{field}"
+            )
+        value = outcomes[field]
         if (
             not isinstance(value, int)
             or isinstance(value, bool)
@@ -13949,39 +17615,68 @@ def _validate_final_semantic_intent(
 
 
 def _write_independent_archive_copy(source: Path, destination: Path) -> None:
-    """Copy one regular preimage without links/reflinks and fsync it."""
+    """Copy one stable preimage through the crash-recoverable publisher.
 
+    These preimages are transaction metadata and semantic summaries, not the large
+    result corpus.  Reading from one descriptor lets us prove a stable source cut;
+    the shared immutable publisher then provides owned-temp recovery and atomic
+    no-clobber installation instead of leaving an ownerless read-only ``.tmp`` after
+    SIGKILL.
+    """
+
+    source = Path(os.path.abspath(os.fspath(source.expanduser())))
     if source.is_symlink() or not source.is_file():
         raise ControlError(f"cannot archive unsafe semantic preimage: {source}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        with source.open("rb") as reader, temporary.open("xb") as writer:
-            shutil.copyfileobj(reader, writer, length=1024 * 1024)
-            writer.flush()
-            os.fsync(writer.fileno())
-        if sha256_file(temporary) != sha256_file(source):
-            raise ControlError(
-                f"semantic preimage archive checksum mismatch: {source}"
-            )
-        os.replace(temporary, destination)
-        io._fsync_directory(destination.parent)
-        destination.chmod(0o444)
-        destination_stat = destination.stat()
-        source_stat = source.stat()
-        if (
-            destination_stat.st_dev,
-            destination_stat.st_ino,
-        ) == (
-            source_stat.st_dev,
-            source_stat.st_ino,
-        ):
-            raise ControlError(
-                f"semantic preimage archive shares an inode: {source}"
-            )
+        descriptor = os.open(source, flags)
+    except OSError as exc:
+        raise ControlError(
+            f"cannot open semantic preimage for archival: {source}: {exc}"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        os.close(descriptor)
+    identity = lambda item: (  # noqa: E731
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    current = source.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+    ):
+        raise ControlError(
+            f"semantic preimage changed during archival: {source}"
+        )
+    payload = b"".join(blocks)
+    _atomic_publish_readonly_bytes(destination, payload)
+    destination_stat = destination.stat(follow_symlinks=False)
+    source_stat = source.stat(follow_symlinks=False)
+    if (
+        destination_stat.st_dev,
+        destination_stat.st_ino,
+    ) == (
+        source_stat.st_dev,
+        source_stat.st_ino,
+    ):
+        raise ControlError(
+            f"semantic preimage archive shares an inode: {source}"
+        )
 
 
 def _archive_stale_final_semantic_evidence(
@@ -14113,8 +17808,7 @@ def _archive_stale_final_semantic_evidence(
             "archived_timestamp": now,
         }
         marker["completion_id"] = sha256_value(marker)
-        _atomic_write_json(marker_path, marker)
-        marker_path.chmod(0o444)
+        _atomic_publish_readonly_json(marker_path, marker)
         archive_root.chmod(0o555)
     for path in present:
         # The complete archive is now the durable preimage.  Removing the canonical
@@ -14151,8 +17845,7 @@ def _create_final_semantic_intent(
         "created_timestamp": now,
     }
     intent["intent_id"] = sha256_value(intent)
-    _atomic_write_json(path, intent)
-    path.chmod(0o444)
+    _atomic_publish_readonly_json(path, intent)
     return _validate_final_semantic_intent(
         path,
         final_root=final_root,
@@ -14369,8 +18062,7 @@ def _ensure_final_semantic_preflight(
             raise ControlError(
                 "final semantic result sources changed during the scan"
             )
-        _atomic_write_json(semantic_path, transient)
-        semantic_path.chmod(0o444)
+        _atomic_publish_readonly_json(semantic_path, transient)
         report, report_sha256 = _load_sealed_final_semantic_report(semantic_path)
         _validate_semantic_report_source_binding(report, source_contract)
 
@@ -14395,8 +18087,7 @@ def _ensure_final_semantic_preflight(
         "source_contract_sha256": source_contract_sha256,
     }
     marker["preflight_id"] = sha256_value(marker)
-    _atomic_write_json(marker_path, marker)
-    marker_path.chmod(0o444)
+    _atomic_publish_readonly_json(marker_path, marker)
     return _verify_final_semantic_preflight(final_root, control=control)
 
 
@@ -14405,6 +18096,7 @@ def _validate_primary_analysis_cache(
     control: Mapping[str, Any],
     *,
     trusted_catalog: TrustedGenerationCatalog | None = None,
+    allow_interrupted_publication: bool = False,
 ) -> tuple[dict[str, Any], str]:
     marker_path = cache_root / "ingest_manifest_v1.json"
     marker = _load_json_object(marker_path, description="primary analysis cache")
@@ -14556,7 +18248,10 @@ def _validate_primary_analysis_cache(
         raise ControlError(
             "primary analysis cache trusted-generation contract drifted"
         )
-    if (cache_root / ".cache_generation_in_progress.json").exists():
+    if (
+        not allow_interrupted_publication
+        and (cache_root / ".cache_generation_in_progress.json").exists()
+    ):
         raise ControlError("primary analysis cache publication is incomplete")
     required_artifacts = (
         "items_v1.parquet",
@@ -14592,10 +18287,564 @@ def _validate_primary_analysis_cache(
     if (
         _SHA256_RE.fullmatch(str(cache_contract_sha256 or "")) is None
         or marker.get("cache_generation_id") != expected_generation_id
-        or (cache_root / "ingest_manifest_v1.previous.json").exists()
+        or (
+            not allow_interrupted_publication
+            and (cache_root / "ingest_manifest_v1.previous.json").exists()
+        )
     ):
         raise ControlError("primary analysis cache generation identity is invalid")
     return marker, sha256_file(marker_path)
+
+
+def _validate_primary_cache_build_marker(path: Path) -> dict[str, Any]:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+    ):
+        raise ControlError("primary analysis cache build marker is unsafe")
+    marker = _load_json_object(
+        path, description="primary analysis cache build marker"
+    )
+    started_at = marker.get("started_at")
+    pid = marker.get("pid")
+    if (
+        set(marker)
+        != {
+            "cache_build_schema_version",
+            "status",
+            "analysis_mode",
+            "run_ids",
+            "pid",
+            "started_at",
+        }
+        or marker.get("cache_build_schema_version") != 1
+        or marker.get("status") != "in_progress"
+        or marker.get("analysis_mode") != "primary-schema5"
+        or marker.get("run_ids") != list(REQUIRED_RUNS)
+        or not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid < 1
+        or not isinstance(started_at, (int, float))
+        or isinstance(started_at, bool)
+        or not math.isfinite(float(started_at))
+        or float(started_at) < 0
+    ):
+        raise ControlError(
+            "primary analysis cache build marker does not bind the final build"
+        )
+    return marker
+
+
+def _resume_primary_analysis_cache_publication(
+    cache_root: Path,
+    *,
+    final_root: Path,
+    control: Mapping[str, Any],
+    trusted_catalog: TrustedGenerationCatalog,
+    now: float,
+) -> tuple[dict[str, Any], str] | None:
+    """Finish a manifest-last cache commit left between publication boundaries.
+
+    If the new manifest already authenticates every exact artifact, the expensive
+    analysis build is complete.  Preserve the transaction metadata independently,
+    withdraw ``previous`` first, and remove the in-progress marker last.  A crash at
+    every boundary is replayable from the deterministic generation-addressed archive.
+    Truly partial generations return ``None`` and are handled by the full preimage
+    recovery transaction below.
+    """
+
+    manifest_path = cache_root / "ingest_manifest_v1.json"
+    in_progress_path = cache_root / ".cache_generation_in_progress.json"
+    previous_path = cache_root / "ingest_manifest_v1.previous.json"
+    metadata_paths = (in_progress_path, previous_path)
+    if not manifest_path.exists() or not any(
+        path.exists() or path.is_symlink() for path in metadata_paths
+    ):
+        return None
+    try:
+        marker, _ = _validate_primary_analysis_cache(
+            cache_root,
+            control,
+            trusted_catalog=trusted_catalog,
+            allow_interrupted_publication=True,
+        )
+    except ControlError:
+        return None
+    if in_progress_path.exists() or in_progress_path.is_symlink():
+        _validate_primary_cache_build_marker(in_progress_path)
+    present_rows: list[dict[str, Any]] = []
+    for path in metadata_paths:
+        if not (path.exists() or path.is_symlink()):
+            continue
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_nlink != 1
+        ):
+            raise ControlError(
+                f"primary analysis cache publication metadata is unsafe: {path}"
+            )
+        present_rows.append(
+            {
+                "name": path.name,
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+        )
+    publication_id = sha256_value(
+        {
+            "cache_root": str(cache_root.resolve()),
+            "cache_generation_id": marker["cache_generation_id"],
+        }
+    )
+    recovery_root = (
+        final_root
+        / FINAL_ANALYSIS_CACHE_PUBLICATION_RECOVERY_DIRNAME
+        / publication_id
+    ).resolve()
+    archive_root = recovery_root / "preimage"
+    intent_path = recovery_root / "RECOVERY_INTENT.json"
+    complete_path = recovery_root / "RECOVERY_COMPLETE.json"
+    recovery_root.parent.mkdir(parents=True, exist_ok=True)
+    if recovery_root.is_symlink() or (
+        recovery_root.exists() and not recovery_root.is_dir()
+    ):
+        raise ControlError(
+            "primary analysis cache publication recovery root is unsafe"
+        )
+    recovery_root.mkdir(parents=True, exist_ok=True)
+    if intent_path.exists() or intent_path.is_symlink():
+        intent = _load_json_object(
+            intent_path,
+            description="primary cache publication recovery intent",
+        )
+        original_rows = intent.get("metadata")
+        without_id = dict(intent)
+        intent_id = without_id.pop("intent_id", None)
+        created_timestamp = intent.get("created_timestamp")
+        if (
+            set(intent)
+            != {
+                "schema_version",
+                "kind",
+                "publication_id",
+                "cache_root",
+                "cache_generation_id",
+                "metadata",
+                "created_at",
+                "created_timestamp",
+                "intent_id",
+            }
+            or intent.get("schema_version") != 1
+            or intent.get("kind")
+            != "schema5_primary_cache_publication_recovery_intent"
+            or intent.get("publication_id") != publication_id
+            or Path(str(intent.get("cache_root", ""))).resolve()
+            != cache_root.resolve()
+            or intent.get("cache_generation_id")
+            != marker["cache_generation_id"]
+            or not isinstance(original_rows, list)
+            or not original_rows
+            or not isinstance(created_timestamp, (int, float))
+            or isinstance(created_timestamp, bool)
+            or not math.isfinite(float(created_timestamp))
+            or float(created_timestamp) < 0
+            or intent.get("created_at")
+            != utc_timestamp(float(created_timestamp))
+            or intent_id != sha256_value(without_id)
+            or intent_path.is_symlink()
+            or intent_path.stat().st_nlink != 1
+            or intent_path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                "primary analysis cache publication recovery intent drifted"
+            )
+    else:
+        if not present_rows:
+            raise ControlError(
+                "primary analysis cache publication recovery lost its metadata"
+            )
+        intent = {
+            "schema_version": 1,
+            "kind": "schema5_primary_cache_publication_recovery_intent",
+            "publication_id": publication_id,
+            "cache_root": str(cache_root.resolve()),
+            "cache_generation_id": marker["cache_generation_id"],
+            "metadata": present_rows,
+            "created_at": utc_timestamp(now),
+            "created_timestamp": float(now),
+        }
+        intent["intent_id"] = sha256_value(intent)
+        _atomic_publish_readonly_json(intent_path, intent)
+        original_rows = intent["metadata"]
+    if (
+        not isinstance(original_rows, list)
+        or {
+            str(row.get("name", ""))
+            for row in original_rows
+            if isinstance(row, Mapping)
+        }
+        - {path.name for path in metadata_paths}
+    ):
+        raise ControlError(
+            "primary analysis cache publication recovery metadata is invalid"
+        )
+    archive_root.mkdir(parents=True, exist_ok=True)
+    by_name = {path.name: path for path in metadata_paths}
+    for row in original_rows:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"name", "size", "sha256"}
+            or row.get("name") not in by_name
+            or not isinstance(row.get("size"), int)
+            or isinstance(row.get("size"), bool)
+            or row["size"] < 0
+            or _SHA256_RE.fullmatch(str(row.get("sha256", ""))) is None
+        ):
+            raise ControlError(
+                "primary analysis cache publication recovery metadata is invalid"
+            )
+        source = by_name[str(row["name"])]
+        archived = archive_root / str(row["name"])
+        if archived.exists() or archived.is_symlink():
+            if (
+                archived.is_symlink()
+                or not archived.is_file()
+                or archived.stat().st_nlink != 1
+                or archived.stat().st_size != row["size"]
+                or sha256_file(archived) != row["sha256"]
+            ):
+                raise ControlError(
+                    "primary analysis cache publication archive drifted"
+                )
+        else:
+            if (
+                source.is_symlink()
+                or not source.is_file()
+                or source.stat().st_nlink != 1
+                or source.stat().st_size != row["size"]
+                or sha256_file(source) != row["sha256"]
+            ):
+                raise ControlError(
+                    "primary analysis cache publication preimage disappeared"
+                )
+            _write_independent_archive_copy(source, archived)
+    archive_rows, archive_sha256 = _directory_inventory(archive_root)
+    if len(archive_rows) != len(original_rows):
+        raise ControlError(
+            "primary analysis cache publication archive is incomplete"
+        )
+    completion = {
+        "schema_version": 1,
+        "kind": "schema5_primary_cache_publication_recovery",
+        "complete": True,
+        "publication_id": publication_id,
+        "intent_sha256": sha256_file(intent_path),
+        "archive": str(archive_root.resolve()),
+        "inventory_sha256": archive_sha256,
+        "file_count": len(archive_rows),
+        "completed_at": utc_timestamp(
+            float(intent["created_timestamp"])
+        ),
+        "completed_timestamp": float(intent["created_timestamp"]),
+    }
+    completion["completion_id"] = sha256_value(completion)
+    if complete_path.exists() or complete_path.is_symlink():
+        observed = _load_json_object(
+            complete_path,
+            description="primary cache publication recovery marker",
+        )
+        if (
+            observed != completion
+            or complete_path.is_symlink()
+            or complete_path.stat().st_nlink != 1
+            or complete_path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                "primary analysis cache publication recovery marker drifted"
+            )
+    else:
+        _seal_read_only_tree(archive_root)
+        _atomic_publish_readonly_json(complete_path, completion)
+    _seal_read_only_tree(archive_root)
+    intent_path.chmod(0o444)
+    complete_path.chmod(0o444)
+    recovery_root.chmod(0o555)
+    # Withdraw the superseded manifest before making the new generation visible.
+    for path in (previous_path, in_progress_path):
+        if not (path.exists() or path.is_symlink()):
+            continue
+        row = next(
+            (
+                item
+                for item in original_rows
+                if item["name"] == path.name
+            ),
+            None,
+        )
+        if (
+            row is None
+            or path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_nlink != 1
+            or path.stat().st_size != row["size"]
+            or sha256_file(path) != row["sha256"]
+        ):
+            raise ControlError(
+                "primary analysis cache publication metadata changed before commit"
+            )
+        io.remove_file(path)
+    return _validate_primary_analysis_cache(
+        cache_root,
+        control,
+        trusted_catalog=trusted_catalog,
+    )
+
+
+def _recover_interrupted_primary_analysis_cache(
+    cache_root: Path,
+    *,
+    final_root: Path,
+    now: float,
+) -> dict[str, Any] | None:
+    """Archive one exact interrupted cache generation and reopen a clean target.
+
+    A cache is publishable only when its manifest exists and neither transaction
+    marker exists.  Every other nonempty state is a recoverable generation preimage,
+    not scientific corruption.  The marker-first recovery directory makes rename
+    crashes idempotent and preserves the complete preimage for audit.
+    """
+
+    recovery_parent = (
+        final_root / FINAL_ANALYSIS_CACHE_RECOVERY_DIRNAME
+    ).resolve()
+    if recovery_parent.exists():
+        for candidate in sorted(recovery_parent.iterdir()):
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise ControlError(
+                    "primary analysis cache recovery namespace is unsafe"
+                )
+            intent_candidate = candidate / "RECOVERY_INTENT.json"
+            archive_candidate = candidate / "preimage"
+            marker_candidate = candidate / "RECOVERY_COMPLETE.json"
+            if not intent_candidate.exists() or marker_candidate.exists():
+                continue
+            intent_value = _load_json_object(
+                intent_candidate,
+                description="interrupted primary cache recovery intent",
+            )
+            created_timestamp = intent_value.get("created_timestamp")
+            if (
+                set(intent_value)
+                != {
+                    "schema_version",
+                    "kind",
+                    "recovery_id",
+                    "cache_root",
+                    "archive",
+                    "inventory_sha256",
+                    "file_count",
+                    "created_at",
+                    "created_timestamp",
+                }
+                or intent_value.get("schema_version") != 1
+                or intent_value.get("kind")
+                != "schema5_primary_cache_recovery_intent"
+                or intent_value.get("recovery_id") != candidate.name
+                or Path(str(intent_value.get("cache_root", ""))).resolve()
+                != cache_root.resolve()
+                or Path(str(intent_value.get("archive", ""))).resolve()
+                != archive_candidate.resolve()
+                or _SHA256_RE.fullmatch(
+                    str(intent_value.get("inventory_sha256", ""))
+                )
+                is None
+                or not isinstance(intent_value.get("file_count"), int)
+                or isinstance(intent_value.get("file_count"), bool)
+                or int(intent_value.get("file_count", -1)) < 1
+                or not isinstance(created_timestamp, (int, float))
+                or isinstance(created_timestamp, bool)
+                or not math.isfinite(float(created_timestamp))
+                or float(created_timestamp) < 0
+                or intent_value.get("created_at")
+                != utc_timestamp(float(created_timestamp))
+                or intent_candidate.is_symlink()
+                or intent_candidate.stat().st_nlink != 1
+                or intent_candidate.stat().st_mode & 0o222
+            ):
+                raise ControlError(
+                    "interrupted primary cache recovery intent is invalid"
+                )
+            if archive_candidate.exists() or archive_candidate.is_symlink():
+                if archive_candidate.is_symlink() or not archive_candidate.is_dir():
+                    raise ControlError(
+                        "interrupted primary cache recovery archive is unsafe"
+                    )
+            else:
+                if (
+                    cache_root.is_symlink()
+                    or not cache_root.is_dir()
+                ):
+                    raise ControlError(
+                        "interrupted primary cache recovery lost its exact preimage"
+                    )
+                source_rows, source_sha256 = _directory_inventory(cache_root)
+                if (
+                    source_sha256 != intent_value.get("inventory_sha256")
+                    or len(source_rows) != intent_value.get("file_count")
+                ):
+                    raise ControlError(
+                        "interrupted primary cache recovery source changed "
+                        "before marker-first rename"
+                    )
+                os.replace(cache_root, archive_candidate)
+                io._fsync_directory(archive_candidate.parent)
+            archived_rows, archived_sha256 = _directory_inventory(
+                archive_candidate
+            )
+            if (
+                archived_sha256 != intent_value.get("inventory_sha256")
+                or len(archived_rows) != intent_value.get("file_count")
+            ):
+                raise ControlError(
+                    "interrupted primary cache recovery archive drifted"
+                )
+            _seal_read_only_tree(archive_candidate)
+            if cache_root.exists() and any(cache_root.iterdir()):
+                raise ControlError(
+                    "interrupted primary cache recovery conflicts with a new build"
+                )
+            cache_root.mkdir(parents=True, exist_ok=True)
+            completed_timestamp = float(
+                intent_value["created_timestamp"]
+            )
+            recovered = {
+                "schema_version": 1,
+                "kind": "schema5_primary_cache_recovery",
+                "complete": True,
+                "recovery_id": candidate.name,
+                "intent_sha256": sha256_file(intent_candidate),
+                "archive": str(archive_candidate.resolve()),
+                "inventory_sha256": archived_sha256,
+                "file_count": len(archived_rows),
+                "completed_at": utc_timestamp(completed_timestamp),
+                "completed_timestamp": completed_timestamp,
+            }
+            recovered["completion_id"] = sha256_value(recovered)
+            _atomic_publish_readonly_json(marker_candidate, recovered)
+    manifest = cache_root / "ingest_manifest_v1.json"
+    in_progress = cache_root / ".cache_generation_in_progress.json"
+    previous = cache_root / "ingest_manifest_v1.previous.json"
+    if not cache_root.exists():
+        return None
+    if cache_root.is_symlink() or not cache_root.is_dir():
+        raise ControlError("primary analysis cache root is unsafe")
+    entries = list(cache_root.iterdir())
+    interrupted = bool(
+        entries
+        and (
+            not manifest.is_file()
+            or in_progress.exists()
+            or previous.exists()
+        )
+    )
+    if not interrupted:
+        return None
+    rows, inventory_sha256 = _directory_inventory(cache_root)
+    recovery_id = sha256_value(
+        {
+            "cache_root": str(cache_root.resolve()),
+            "inventory_sha256": inventory_sha256,
+            "rows": rows,
+        }
+    )
+    recovery_root = (
+        final_root / FINAL_ANALYSIS_CACHE_RECOVERY_DIRNAME / recovery_id
+    ).resolve()
+    archive = recovery_root / "preimage"
+    intent_path = recovery_root / "RECOVERY_INTENT.json"
+    marker_path = recovery_root / "RECOVERY_COMPLETE.json"
+    intent = {
+        "schema_version": 1,
+        "kind": "schema5_primary_cache_recovery_intent",
+        "recovery_id": recovery_id,
+        "cache_root": str(cache_root.resolve()),
+        "archive": str(archive),
+        "inventory_sha256": inventory_sha256,
+        "file_count": len(rows),
+        "created_at": utc_timestamp(now),
+        "created_timestamp": float(now),
+    }
+    recovery_root.mkdir(parents=True, exist_ok=True)
+    if intent_path.exists():
+        existing = _load_json_object(
+            intent_path, description="primary cache recovery intent"
+        )
+        created_timestamp = existing.get("created_timestamp")
+        stable_existing = {
+            key: value
+            for key, value in existing.items()
+            if key not in {"created_at", "created_timestamp"}
+        }
+        stable_requested = {
+            key: value
+            for key, value in intent.items()
+            if key not in {"created_at", "created_timestamp"}
+        }
+        if (
+            stable_existing != stable_requested
+            or not isinstance(created_timestamp, (int, float))
+            or isinstance(created_timestamp, bool)
+            or not math.isfinite(float(created_timestamp))
+            or float(created_timestamp) < 0
+            or existing.get("created_at")
+            != utc_timestamp(float(created_timestamp))
+            or intent_path.is_symlink()
+            or intent_path.stat().st_nlink != 1
+            or intent_path.stat().st_mode & 0o222
+        ):
+            raise ControlError(
+                "primary analysis cache recovery intent conflicts with replay"
+            )
+        intent = existing
+    else:
+        _atomic_publish_readonly_json(intent_path, intent)
+    if archive.exists():
+        archived_rows, archived_sha256 = _directory_inventory(archive)
+        if archived_rows != rows or archived_sha256 != inventory_sha256:
+            raise ControlError(
+                "primary analysis cache recovery archive drifted"
+            )
+    else:
+        os.replace(cache_root, archive)
+        io._fsync_directory(archive.parent)
+    _seal_read_only_tree(archive)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    marker = {
+        "schema_version": 1,
+        "kind": "schema5_primary_cache_recovery",
+        "complete": True,
+        "recovery_id": recovery_id,
+        "intent_sha256": sha256_file(intent_path),
+        "archive": str(archive),
+        "inventory_sha256": inventory_sha256,
+        "file_count": len(rows),
+        "completed_at": intent["created_at"],
+        "completed_timestamp": intent["created_timestamp"],
+    }
+    marker["completion_id"] = sha256_value(marker)
+    if marker_path.exists():
+        existing = _load_json_object(
+            marker_path, description="primary cache recovery marker"
+        )
+        if existing != marker or marker_path.stat().st_mode & 0o222:
+            raise ControlError(
+                "primary analysis cache recovery marker conflicts with replay"
+            )
+    else:
+        _atomic_publish_readonly_json(marker_path, marker)
+    return marker
 
 
 def _directory_inventory(root: Path) -> tuple[list[dict[str, Any]], str]:
@@ -14646,11 +18895,77 @@ def _active_manifest_cell_locks(control: Mapping[str, Any]) -> list[str]:
     return active
 
 
+_FINAL_CONTROL_WRITER_EXCLUSION = threading.local()
+
+
 @contextmanager
-def _final_writer_exclusion(control: Mapping[str, Any], state_dir: Path) -> Iterator[None]:
-    """Prove and retain exclusion over controller and fleet writers."""
+def _final_control_writer_exclusion(state_dir: Path) -> Iterator[None]:
+    """Exclude auxiliary state writers without introducing a lock cycle.
+
+    The global cross-process order is monitor persistence, watchdog mirror, admission
+    boundary, control, then component-local locks.  ``finalize_sweep`` already owns the
+    admission boundary when it reaches its writer guards, so these two earlier locks
+    are *only* acquired with nonblocking try-locks.  Contention aborts the finalizer and
+    releases admission for a clean retry; it never waits in reverse order.
+
+    The context is locally re-entrant so the public cut builder independently enforces
+    exclusion while a normal finalizer can retain the same locks across retirement and
+    marker-last cut publication.
+    """
+
+    canonical_state_dir = state_dir.expanduser().resolve()
+    depth = int(getattr(_FINAL_CONTROL_WRITER_EXCLUSION, "depth", 0))
+    if depth:
+        if (
+            getattr(_FINAL_CONTROL_WRITER_EXCLUSION, "state_dir", None)
+            != canonical_state_dir
+        ):
+            raise ControlError(
+                "nested final control writer exclusion changed state directory"
+            )
+        _FINAL_CONTROL_WRITER_EXCLUSION.depth = depth + 1
+        try:
+            yield
+        finally:
+            _FINAL_CONTROL_WRITER_EXCLUSION.depth = depth
+        return
 
     with ExitStack() as stack:
+        try:
+            stack.enter_context(
+                _file_lock(
+                    state_dir / "monitoring" / ".persist.lock",
+                    nonblocking=True,
+                )
+            )
+            stack.enter_context(
+                _file_lock(
+                    state_dir
+                    / "locks"
+                    / "external-watchdog-mirror.lock",
+                    nonblocking=True,
+                )
+            )
+        except ControlError as exc:
+            raise ControlError(
+                "final control cut found an active monitor/watchdog writer; "
+                "retry after that transaction commits"
+            ) from exc
+        _FINAL_CONTROL_WRITER_EXCLUSION.state_dir = canonical_state_dir
+        _FINAL_CONTROL_WRITER_EXCLUSION.depth = 1
+        try:
+            yield
+        finally:
+            _FINAL_CONTROL_WRITER_EXCLUSION.depth = 0
+            del _FINAL_CONTROL_WRITER_EXCLUSION.state_dir
+
+
+@contextmanager
+def _final_writer_exclusion(control: Mapping[str, Any], state_dir: Path) -> Iterator[None]:
+    """Prove and retain exclusion over every final control-plane writer."""
+
+    with ExitStack() as stack:
+        stack.enter_context(_final_control_writer_exclusion(state_dir))
         for role in ROLE_NAMES:
             stack.enter_context(role_singleton_lock(state_dir, role))
         stack.enter_context(
@@ -14661,7 +18976,1216 @@ def _final_writer_exclusion(control: Mapping[str, Any], state_dir: Path) -> Iter
         yield
 
 
-def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any], str]:
+def _final_watchdog_journal_validation(
+    state_dir: Path,
+    *,
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Semantically validate and hash-bind the watchdog journal selected by a cut."""
+
+    root = _external_watchdog_mirror_root(state_dir)
+    required = _watchdog_mirror_required(control)
+    if not os.path.lexists(root):
+        if required:
+            raise ControlError(
+                "final control cut requires the external watchdog mirror"
+            )
+        proof: dict[str, Any] = {
+            "schema_version": 1,
+            "kind": "schema5_final_watchdog_journal_validation",
+            "required": False,
+            "present": False,
+            "status_receipt_count": 0,
+            "action_intent_count": 0,
+            "action_receipt_count": 0,
+            "cycle_intent_count": 0,
+            "cycle_receipt_count": 0,
+            "latest_sequence": None,
+            "latest_receipt_id": None,
+            "latest_pointer_id": None,
+            "files": [],
+        }
+        proof["validation_id"] = sha256_value(proof)
+        return proof
+    if root.is_symlink() or not root.is_dir():
+        raise ControlError("final control cut watchdog mirror root is unsafe")
+
+    allowed_directories = {
+        "status_receipts",
+        "action_intents",
+        "action_receipts",
+        "cycle_intents",
+        "cycle_receipts",
+    }
+    for member in sorted(root.iterdir(), key=lambda item: item.name):
+        if member.is_symlink() or (
+            member.is_dir() and member.name not in allowed_directories
+        ) or (
+            member.is_file() and member.name != "LATEST.json"
+        ) or not (member.is_dir() or member.is_file()):
+            raise ControlError(
+                f"final control cut watchdog mirror has a foreign member: {member}"
+            )
+
+    statuses = _load_watchdog_status_observations(state_dir)
+    action_intents = _load_watchdog_action_intents(state_dir)
+    action_receipts = _load_watchdog_action_receipts(state_dir)
+    cycle_intents = _load_watchdog_cycle_intents(state_dir)
+    cycle_receipts = _load_watchdog_cycle_receipts(state_dir)
+    if len(action_intents) != len(action_receipts):
+        raise ControlError(
+            "final control cut watchdog action journal is incomplete"
+        )
+    if len(cycle_intents) != len(cycle_receipts):
+        raise ControlError(
+            "final control cut watchdog cycle journal is incomplete"
+        )
+
+    pointer_path = root / "LATEST.json"
+    latest_sequence: int | None = None
+    latest_receipt_id: str | None = None
+    latest_pointer_id: str | None = None
+    if cycle_receipts:
+        if not os.path.lexists(pointer_path):
+            raise ControlError(
+                "final control cut watchdog journal lacks its latest pointer"
+            )
+        pointer, _raw = _watchdog_mirror_read(
+            pointer_path,
+            description="final control cut watchdog latest pointer",
+            read_only=False,
+        )
+        latest, latest_path = cycle_receipts[-1]
+        expected_pointer = _watchdog_latest_pointer_value(
+            receipt=latest,
+            receipt_path=latest_path,
+        )
+        if pointer != expected_pointer:
+            raise ControlError(
+                "final control cut watchdog pointer conflicts with its journal tail"
+            )
+        latest_sequence = int(latest["sequence"])
+        latest_receipt_id = str(latest["receipt_id"])
+        latest_pointer_id = str(pointer["pointer_id"])
+    elif os.path.lexists(pointer_path):
+        raise ControlError(
+            "final control cut watchdog pointer exists without a cycle receipt"
+        )
+    if required and not cycle_receipts:
+        raise ControlError(
+            "final control cut requires a completed external watchdog cycle"
+        )
+
+    files: list[dict[str, Any]] = []
+    for path in sorted(
+        (member for member in root.rglob("*") if member.is_file()),
+        key=lambda item: item.relative_to(state_dir).as_posix(),
+    ):
+        raw, metadata = _stable_final_control_cut_preimage(path)
+        files.append(
+            {
+                "path": path.relative_to(state_dir).as_posix(),
+                "size": metadata.st_size,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+    proof = {
+        "schema_version": 1,
+        "kind": "schema5_final_watchdog_journal_validation",
+        "required": required,
+        "present": True,
+        "status_receipt_count": len(statuses),
+        "action_intent_count": len(action_intents),
+        "action_receipt_count": len(action_receipts),
+        "cycle_intent_count": len(cycle_intents),
+        "cycle_receipt_count": len(cycle_receipts),
+        "latest_sequence": latest_sequence,
+        "latest_receipt_id": latest_receipt_id,
+        "latest_pointer_id": latest_pointer_id,
+        "files": files,
+    }
+    proof["validation_id"] = sha256_value(proof)
+    return proof
+
+
+def _validate_final_watchdog_journal_proof(
+    projection: Any,
+    *,
+    included_files: Sequence[Mapping[str, Any]],
+    mutable_preimages: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind semantic watchdog validation to the exact captured file preimages."""
+
+    proof = (
+        projection.get("external_watchdog_journal")
+        if isinstance(projection, Mapping)
+        else None
+    )
+    fields = {
+        "schema_version",
+        "kind",
+        "required",
+        "present",
+        "status_receipt_count",
+        "action_intent_count",
+        "action_receipt_count",
+        "cycle_intent_count",
+        "cycle_receipt_count",
+        "latest_sequence",
+        "latest_receipt_id",
+        "latest_pointer_id",
+        "files",
+        "validation_id",
+    }
+    if not isinstance(proof, dict) or set(proof) != fields:
+        raise ControlError(
+            "final control-plane watchdog journal proof is missing or malformed"
+        )
+    without_id = dict(proof)
+    validation_id = without_id.pop("validation_id", None)
+    counts = (
+        proof.get("status_receipt_count"),
+        proof.get("action_intent_count"),
+        proof.get("action_receipt_count"),
+        proof.get("cycle_intent_count"),
+        proof.get("cycle_receipt_count"),
+    )
+    files = proof.get("files")
+    latest_sequence = proof.get("latest_sequence")
+    latest_receipt_id = proof.get("latest_receipt_id")
+    latest_pointer_id = proof.get("latest_pointer_id")
+    if (
+        proof.get("schema_version") != 1
+        or proof.get("kind")
+        != "schema5_final_watchdog_journal_validation"
+        or not isinstance(proof.get("required"), bool)
+        or not isinstance(proof.get("present"), bool)
+        or any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            for value in counts
+        )
+        or proof["action_intent_count"]
+        != proof["action_receipt_count"]
+        or proof["cycle_intent_count"]
+        != proof["cycle_receipt_count"]
+        or (
+            latest_sequence is not None
+            and (
+                not isinstance(latest_sequence, int)
+                or isinstance(latest_sequence, bool)
+                or latest_sequence < 1
+            )
+        )
+        or (
+            latest_receipt_id is not None
+            and _SHA256_RE.fullmatch(str(latest_receipt_id)) is None
+        )
+        or (
+            latest_pointer_id is not None
+            and _SHA256_RE.fullmatch(str(latest_pointer_id)) is None
+        )
+        or (
+            proof["cycle_receipt_count"] == 0
+            and any(
+                value is not None
+                for value in (
+                    latest_sequence,
+                    latest_receipt_id,
+                    latest_pointer_id,
+                )
+            )
+        )
+        or (
+            proof["cycle_receipt_count"] > 0
+            and (
+                latest_sequence != proof["cycle_receipt_count"]
+                or latest_receipt_id is None
+                or latest_pointer_id is None
+            )
+        )
+        or (
+            proof["required"] is True
+            and (
+                proof["present"] is not True
+                or proof["cycle_receipt_count"] < 1
+            )
+        )
+        or validation_id != sha256_value(without_id)
+        or not isinstance(files, list)
+        or files
+        != sorted(
+            files,
+            key=lambda row: (
+                str(row.get("path", ""))
+                if isinstance(row, Mapping)
+                else repr(row)
+            ),
+        )
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {"path", "size", "sha256"}
+            or not str(row.get("path", "")).startswith(
+                EXTERNAL_WATCHDOG_MIRROR_DIRNAME + "/"
+            )
+            or not isinstance(row.get("size"), int)
+            or isinstance(row.get("size"), bool)
+            or int(row.get("size", -1)) < 0
+            or _SHA256_RE.fullmatch(str(row.get("sha256", ""))) is None
+            for row in files
+        )
+    ):
+        raise ControlError(
+            "final control-plane watchdog journal proof is invalid"
+        )
+    if proof["present"] is False and (
+        any(counts)
+        or files
+        or any(
+            value is not None
+            for value in (
+                latest_sequence,
+                latest_receipt_id,
+                latest_pointer_id,
+            )
+        )
+    ):
+        raise ControlError(
+            "absent final watchdog journal proof contains captured state"
+        )
+
+    captured = sorted(
+        (
+            {
+                "path": str(row["path"]),
+                "size": int(row["size"]),
+                "sha256": str(row["sha256"]),
+            }
+            for row in [*included_files, *mutable_preimages]
+            if str(row["path"]).startswith(
+                EXTERNAL_WATCHDOG_MIRROR_DIRNAME + "/"
+            )
+        ),
+        key=lambda row: row["path"],
+    )
+    if files != captured:
+        raise ControlError(
+            "final watchdog semantic proof differs from captured journal preimages"
+        )
+    return proof
+
+
+def _final_control_cut_projection(
+    control: Mapping[str, Any],
+    *,
+    external_watchdog_journal: Mapping[str, Any],
+) -> dict[str, Any]:
+    finalization = control["finalization"]
+    return {
+        "schema_version": 1,
+        "kind": "schema5_final_control_plane_projection",
+        "immutable": copy.deepcopy(control["immutable"]),
+        "immutable_sha256": control["immutable_sha256"],
+        "desired_state": control["desired_state"],
+        "drain_requested": control["drain_requested"],
+        "admission": copy.deepcopy(control["admission"]),
+        "capacity": {
+            "current_generation": control["capacity"]["current_generation"],
+            "current_contract": copy.deepcopy(
+                control["capacity"].get("current_contract")
+            ),
+            "effective_fleet": effective_fleet_contract_binding(
+                control, verify_files=True
+            ),
+            "effective_protected_capacity": (
+                effective_protected_capacity_binding(
+                    control, verify_files=True
+                )
+            ),
+        },
+        "rollout_generation": control["rollout_generation"],
+        "external_watchdog_journal": copy.deepcopy(
+            dict(external_watchdog_journal)
+        ),
+        "finalization": {
+            "schema_version": finalization["schema_version"],
+            "protocol": finalization["protocol"],
+            "state": finalization["state"],
+            "intent_id": finalization["intent_id"],
+            "requested_at": finalization["requested_at"],
+            "requested_timestamp": finalization["requested_timestamp"],
+            "semantic_evidence": copy.deepcopy(
+                finalization["semantic_evidence"]
+            ),
+            "consumed_capacity_incidents": copy.deepcopy(
+                finalization["consumed_capacity_incidents"]
+            ),
+            "output_root": finalization["output_root"],
+            "phase_evidence": copy.deepcopy(finalization["phase_evidence"]),
+        },
+    }
+
+
+def _stable_final_control_cut_preimage(
+    path: Path,
+) -> tuple[bytes, os.stat_result]:
+    """Read one one-link regular file without racing a replacement.
+
+    A control-plane cut includes live mutable journals, so a path-level
+    ``read_bytes`` followed by ``stat`` is insufficient: a writer could replace
+    the lexical path while the read is in progress.  Reading through one
+    no-follow descriptor and comparing only stable identity fields avoids both
+    that race and false drift from access-time updates.
+    """
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ControlError(
+            f"final control cut source is unavailable: {lexical}: {exc}"
+        ) from exc
+    if resolved != lexical or lexical.is_symlink():
+        raise ControlError(
+            f"final control cut source traverses a symlink: {lexical}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise ControlError(
+            f"cannot open final control cut source: {lexical}: {exc}"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = lambda item: (  # noqa: E731
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ControlError(
+            f"final control cut source disappeared after read: {lexical}: {exc}"
+        ) from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+    ):
+        raise ControlError(
+            f"final control cut source changed during read: {lexical}"
+        )
+    return b"".join(blocks), current
+
+
+def _decode_final_control_cut_preimage(
+    row: Mapping[str, Any],
+) -> bytes:
+    """Decode and re-prove one mutable preimage embedded in a sealed intent."""
+
+    try:
+        payload = str(row["payload"]).encode("ascii")
+        decoded = base64.b64decode(payload, validate=True)
+    except (KeyError, UnicodeEncodeError, ValueError, binascii.Error) as exc:
+        raise ControlError(
+            "final control-plane mutable preimage is not canonical base64"
+        ) from exc
+    if (
+        len(decoded) != row.get("size")
+        or hashlib.sha256(decoded).hexdigest() != row.get("sha256")
+    ):
+        raise ControlError(
+            "final control-plane mutable preimage checksum drifted"
+        )
+    return decoded
+
+
+def _validate_final_control_cut_rows(
+    intent: Mapping[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Validate the closed, disjoint file classification in one cut intent."""
+
+    included = intent.get("included_files")
+    mutable_preimages = intent.get("mutable_preimages")
+    excluded = intent.get("excluded_files")
+
+    def safe_relative(value: Any) -> bool:
+        if not isinstance(value, str) or not value:
+            return False
+        candidate = Path(value)
+        return (
+            not candidate.is_absolute()
+            and ".." not in candidate.parts
+            and candidate.as_posix() == value
+        )
+
+    included_valid = isinstance(included, list) and all(
+        isinstance(row, dict)
+        and set(row) == {"path", "size", "sha256"}
+        and safe_relative(row["path"])
+        and isinstance(row["size"], int)
+        and not isinstance(row["size"], bool)
+        and row["size"] >= 0
+        and _SHA256_RE.fullmatch(str(row["sha256"])) is not None
+        for row in included
+    )
+    mutable_valid = isinstance(mutable_preimages, list) and all(
+        isinstance(row, dict)
+        and set(row)
+        == {"path", "size", "sha256", "encoding", "payload"}
+        and row["encoding"] == "base64"
+        and safe_relative(row["path"])
+        and isinstance(row["size"], int)
+        and not isinstance(row["size"], bool)
+        and row["size"] >= 0
+        and _SHA256_RE.fullmatch(str(row["sha256"])) is not None
+        and isinstance(row["payload"], str)
+        for row in mutable_preimages
+    )
+    excluded_valid = isinstance(excluded, list) and all(
+        isinstance(row, dict)
+        and set(row) == {"path", "size", "mtime_ns", "reason"}
+        and row["reason"] in {"runtime_log", "advisory_lock"}
+        and safe_relative(row["path"])
+        and isinstance(row["size"], int)
+        and not isinstance(row["size"], bool)
+        and row["size"] >= 0
+        and isinstance(row["mtime_ns"], int)
+        and not isinstance(row["mtime_ns"], bool)
+        and row["mtime_ns"] >= 0
+        for row in excluded
+    )
+    if not (included_valid and mutable_valid and excluded_valid):
+        raise ControlError(
+            "final control-plane cut file classification is malformed"
+        )
+    assert isinstance(included, list)
+    assert isinstance(mutable_preimages, list)
+    assert isinstance(excluded, list)
+    for row in mutable_preimages:
+        _decode_final_control_cut_preimage(row)
+    groups = (included, mutable_preimages, excluded)
+    if any(
+        [str(row["path"]) for row in group]
+        != sorted(str(row["path"]) for row in group)
+        for group in groups
+    ):
+        raise ControlError(
+            "final control-plane cut file classification is not sorted"
+        )
+    all_paths = [
+        str(row["path"]) for group in groups for row in group
+    ]
+    if len(all_paths) != len(set(all_paths)):
+        raise ControlError(
+            "final control-plane cut file classification is duplicated"
+        )
+    return included, mutable_preimages, excluded
+
+
+def _final_control_cut_source_inventory(
+    state_dir: Path,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Classify one locked control-plane cut into immutable copies and exclusions."""
+
+    included: list[dict[str, Any]] = []
+    mutable_preimages: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for root, directory_names, file_names in os.walk(
+        state_dir, topdown=True, followlinks=False
+    ):
+        directory_names.sort()
+        file_names.sort()
+        root_path = Path(root)
+        for name in directory_names:
+            path = root_path / name
+            if path.is_symlink() or not path.is_dir():
+                raise ControlError(
+                    f"final control cut contains an unsafe directory: {path}"
+                )
+        for name in file_names:
+            path = root_path / name
+            relative = path.relative_to(state_dir).as_posix()
+            if path.is_symlink() or not path.is_file():
+                raise ControlError(
+                    f"final control cut contains an unsafe file: {path}"
+                )
+            parts = Path(relative).parts
+            if (
+                "logs" in parts
+                or name.endswith(".log")
+                or name.endswith(".out")
+            ):
+                metadata = path.stat(follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ControlError(
+                        f"final control cut contains an unsafe log: {path}"
+                    )
+                excluded.append(
+                    {
+                        "path": relative,
+                        "size": metadata.st_size,
+                        "mtime_ns": metadata.st_mtime_ns,
+                        "reason": "runtime_log",
+                    }
+                )
+                continue
+            if name.endswith(".lock"):
+                metadata = path.stat(follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ControlError(
+                        f"final control cut contains an unsafe lock: {path}"
+                    )
+                excluded.append(
+                    {
+                        "path": relative,
+                        "size": metadata.st_size,
+                        "mtime_ns": metadata.st_mtime_ns,
+                        "reason": "advisory_lock",
+                    }
+                )
+                continue
+            raw, metadata = _stable_final_control_cut_preimage(path)
+            row = {
+                "path": relative,
+                "size": metadata.st_size,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            }
+            if (
+                name.endswith(".jsonl")
+                or name in {CONTROL_FILENAME, "ledger.json"}
+                or metadata.st_mode & 0o222
+            ):
+                mutable_preimages.append(
+                    {
+                        **row,
+                        "encoding": "base64",
+                        "payload": base64.b64encode(raw).decode("ascii"),
+                    }
+                )
+            else:
+                included.append(row)
+    included.sort(key=lambda row: str(row["path"]))
+    mutable_preimages.sort(key=lambda row: str(row["path"]))
+    excluded.sort(key=lambda row: str(row["path"]))
+    if len(
+        {
+            str(row["path"])
+            for row in [*included, *mutable_preimages, *excluded]
+        }
+    ) != (
+        len(included) + len(mutable_preimages) + len(excluded)
+    ):
+        raise ControlError("final control cut source inventory is duplicated")
+    return included, mutable_preimages, excluded
+
+
+def _validate_final_control_cut_intent(
+    path: Path,
+    *,
+    state_dir: Path,
+    control: Mapping[str, Any],
+    bindings: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    intent = _load_json_object(
+        path, description="final control-plane cut intent"
+    )
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "source_root",
+        "immutable_sha256",
+        "capacity_generation",
+        "rollout_generation",
+        "finalization_intent_id",
+        "bindings",
+        "control_projection",
+        "included_files",
+        "mutable_preimages",
+        "excluded_files",
+        "created_at",
+        "created_timestamp",
+        "intent_id",
+    }
+    without_id = dict(intent)
+    intent_id = without_id.pop("intent_id", None)
+    created = intent.get("created_timestamp")
+    (
+        included_files,
+        mutable_preimages,
+        _excluded_files,
+    ) = _validate_final_control_cut_rows(intent)
+    projection = intent.get("control_projection")
+    _validate_final_watchdog_journal_proof(
+        projection,
+        included_files=included_files,
+        mutable_preimages=mutable_preimages,
+    )
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+        or set(intent) != expected_fields
+        or intent.get("schema_version") != 1
+        or intent.get("kind") != "schema5_final_control_plane_cut_intent"
+        or Path(str(intent.get("source_root", ""))).resolve()
+        != state_dir.resolve()
+        or intent.get("immutable_sha256") != control["immutable_sha256"]
+        or intent.get("capacity_generation")
+        != control["capacity"]["current_generation"]
+        or intent.get("rollout_generation") != control["rollout_generation"]
+        or intent.get("finalization_intent_id")
+        != control["finalization"]["intent_id"]
+        or intent.get("bindings") != dict(bindings)
+        or not isinstance(projection, dict)
+        or projection.get("immutable_sha256") != control["immutable_sha256"]
+        or projection.get("rollout_generation")
+        != control["rollout_generation"]
+        or projection.get("finalization", {}).get("intent_id")
+        != control["finalization"]["intent_id"]
+        or not isinstance(created, (int, float))
+        or isinstance(created, bool)
+        or not math.isfinite(float(created))
+        or float(created) < 0
+        or intent.get("created_at") != utc_timestamp(float(created))
+        or intent_id != sha256_value(without_id)
+    ):
+        raise ControlError("final control-plane cut intent is invalid or drifted")
+    return intent, sha256_file(path)
+
+
+def _validate_final_control_plane_cut(
+    payload_root: Path,
+    *,
+    expected_bindings: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
+    marker_path = payload_root / FINAL_CONTROL_CUT_COMPLETE_FILENAME
+    intent_path = payload_root / FINAL_CONTROL_CUT_INTENT_FILENAME
+    marker = _load_json_object(
+        marker_path, description="final control-plane cut completion"
+    )
+    intent = _load_json_object(
+        intent_path, description="snapshotted final control-plane cut intent"
+    )
+    intent_without_id = dict(intent)
+    sealed_intent_id = intent_without_id.pop("intent_id", None)
+    (
+        included_files,
+        mutable_preimages,
+        excluded_files,
+    ) = _validate_final_control_cut_rows(intent)
+    projection = intent.get("control_projection")
+    _validate_final_watchdog_journal_proof(
+        projection,
+        included_files=included_files,
+        mutable_preimages=mutable_preimages,
+    )
+    intent_created = intent.get("created_timestamp")
+    if (
+        set(intent)
+        != {
+            "schema_version",
+            "kind",
+            "source_root",
+            "immutable_sha256",
+            "capacity_generation",
+            "rollout_generation",
+            "finalization_intent_id",
+            "bindings",
+            "control_projection",
+            "included_files",
+            "mutable_preimages",
+            "excluded_files",
+            "created_at",
+            "created_timestamp",
+            "intent_id",
+        }
+        or intent.get("schema_version") != 1
+        or intent.get("kind") != "schema5_final_control_plane_cut_intent"
+        or not Path(str(intent.get("source_root", ""))).is_absolute()
+        or _SHA256_RE.fullmatch(str(intent.get("immutable_sha256", "")))
+        is None
+        or not isinstance(intent.get("capacity_generation"), int)
+        or isinstance(intent.get("capacity_generation"), bool)
+        or not isinstance(intent.get("rollout_generation"), int)
+        or isinstance(intent.get("rollout_generation"), bool)
+        or not isinstance(intent.get("bindings"), dict)
+        or not isinstance(projection, dict)
+        or projection.get("immutable_sha256")
+        != intent.get("immutable_sha256")
+        or projection.get("rollout_generation")
+        != intent.get("rollout_generation")
+        or projection.get("finalization", {}).get("intent_id")
+        != intent.get("finalization_intent_id")
+        or not isinstance(intent_created, (int, float))
+        or isinstance(intent_created, bool)
+        or not math.isfinite(float(intent_created))
+        or float(intent_created) < 0
+        or intent.get("created_at")
+        != utc_timestamp(float(intent_created))
+        or sealed_intent_id != sha256_value(intent_without_id)
+    ):
+        raise ControlError("snapshotted final control-plane cut intent is invalid")
+    without_id = dict(marker)
+    completion_id = without_id.pop("completion_id", None)
+    completed = marker.get("completed_timestamp")
+    expected_files = {
+        f"source/{row['path']}" for row in included_files
+    } | {
+        f"mutable_preimages/{row['path']}" for row in mutable_preimages
+    } | {
+        FINAL_CONTROL_CUT_INTENT_FILENAME,
+        FINAL_CONTROL_CUT_PROJECTION_FILENAME,
+        FINAL_CONTROL_CUT_EXCLUSIONS_FILENAME,
+    }
+    observed_rows, _observed_sha256 = _directory_inventory(payload_root)
+    inventory_rows = [
+        row
+        for row in observed_rows
+        if row["path"] != FINAL_CONTROL_CUT_COMPLETE_FILENAME
+    ]
+    inventory_sha256 = sha256_value(inventory_rows)
+    observed_files = {str(row["path"]) for row in inventory_rows}
+    if (
+        payload_root.is_symlink()
+        or not payload_root.is_dir()
+        or payload_root.stat().st_mode & 0o222
+        or set(marker)
+        != {
+            "schema_version",
+            "kind",
+            "complete",
+            "intent_id",
+            "intent_sha256",
+            "bindings",
+            "inventory_sha256",
+            "file_count",
+            "completed_at",
+            "completed_timestamp",
+            "completion_id",
+        }
+        or marker.get("schema_version") != 1
+        or marker.get("kind") != "schema5_final_control_plane_cut"
+        or marker.get("complete") is not True
+        or marker.get("intent_id") != intent.get("intent_id")
+        or marker.get("intent_sha256") != sha256_file(intent_path)
+        or marker.get("bindings") != intent.get("bindings")
+        or (
+            expected_bindings is not None
+            and marker.get("bindings") != dict(expected_bindings)
+        )
+        or marker.get("inventory_sha256") != inventory_sha256
+        or marker.get("file_count") != len(inventory_rows)
+        or observed_files != expected_files
+        or not isinstance(completed, (int, float))
+        or isinstance(completed, bool)
+        or not math.isfinite(float(completed))
+        or float(completed) < 0
+        or marker.get("completed_at") != utc_timestamp(float(completed))
+        or completion_id != sha256_value(without_id)
+    ):
+        raise ControlError("final control-plane cut is incomplete or drifted")
+    for member in payload_root.rglob("*"):
+        metadata = member.stat(follow_symlinks=False)
+        if (
+            member.is_symlink()
+            or metadata.st_mode & 0o222
+            or (
+                not stat.S_ISDIR(metadata.st_mode)
+                and not stat.S_ISREG(metadata.st_mode)
+            )
+            or (
+                stat.S_ISREG(metadata.st_mode)
+                and metadata.st_nlink != 1
+            )
+        ):
+            raise ControlError(
+                f"final control-plane cut member is unsafe: {member}"
+            )
+    projection_path = payload_root / FINAL_CONTROL_CUT_PROJECTION_FILENAME
+    exclusions_path = payload_root / FINAL_CONTROL_CUT_EXCLUSIONS_FILENAME
+    if (
+        _load_json_object(
+            projection_path, description="final control-plane projection"
+        )
+        != intent["control_projection"]
+        or _load_json_object(
+            exclusions_path, description="final control-plane exclusions"
+        )
+        != {
+            "schema_version": 1,
+            "kind": "schema5_final_control_plane_exclusions",
+            "files": intent["excluded_files"],
+        }
+    ):
+        raise ControlError("final control-plane cut projection drifted")
+    for row in intent["included_files"]:
+        destination = payload_root / "source" / str(row["path"])
+        if (
+            destination.is_symlink()
+            or not destination.is_file()
+            or destination.stat().st_nlink != 1
+            or destination.stat().st_mode & 0o222
+            or destination.stat().st_size != row["size"]
+            or sha256_file(destination) != row["sha256"]
+        ):
+            raise ControlError(
+                f"final control-plane cut member drifted: {row['path']}"
+            )
+    for row in intent["mutable_preimages"]:
+        destination = payload_root / "mutable_preimages" / str(row["path"])
+        expected_payload = _decode_final_control_cut_preimage(row)
+        if (
+            destination.is_symlink()
+            or not destination.is_file()
+            or destination.stat().st_nlink != 1
+            or destination.stat().st_mode & 0o222
+            or destination.stat().st_size != row["size"]
+            or destination.read_bytes() != expected_payload
+        ):
+            raise ControlError(
+                "final control-plane mutable preimage drifted: "
+                f"{row['path']}"
+            )
+    return marker, sha256_file(marker_path)
+
+
+def _ensure_final_control_plane_cut(
+    state_dir: Path,
+    *,
+    final_root: Path,
+    bindings: Mapping[str, Any],
+    now: float,
+) -> tuple[Path, dict[str, Any], str]:
+    """Freeze one successor-invariant control source under exact writer exclusion."""
+
+    with _final_control_writer_exclusion(state_dir):
+        return _ensure_final_control_plane_cut_locked(
+            state_dir,
+            final_root=final_root,
+            bindings=bindings,
+            now=now,
+        )
+
+
+def _ensure_final_control_plane_cut_locked(
+    state_dir: Path,
+    *,
+    final_root: Path,
+    bindings: Mapping[str, Any],
+    now: float,
+) -> tuple[Path, dict[str, Any], str]:
+    """Freeze one successor-invariant control source for the final snapshot."""
+
+    cut_root = (final_root / FINAL_CONTROL_CUT_DIRNAME).resolve()
+    payload_root = cut_root / FINAL_CONTROL_CUT_PAYLOAD_DIRNAME
+    intent_path = cut_root / FINAL_CONTROL_CUT_INTENT_FILENAME
+    marker_path = payload_root / FINAL_CONTROL_CUT_COMPLETE_FILENAME
+    cut_root.mkdir(parents=True, exist_ok=True)
+    if cut_root.is_symlink() or not cut_root.is_dir():
+        raise ControlError("final control-plane cut root is unsafe")
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        if intent_path.exists() or intent_path.is_symlink():
+            # A real process death can occur after link(2) installs the winner but
+            # before the publisher removes its owned temporary hardlink.  Replay the
+            # same canonical payload first so the generic publisher can collapse
+            # that exact namespace back to a one-link immutable intent.
+            existing_intent = _load_json_object(
+                intent_path,
+                description="recoverable final control-plane cut intent",
+            )
+            _atomic_publish_readonly_json(intent_path, existing_intent)
+            intent, intent_sha256 = _validate_final_control_cut_intent(
+                intent_path,
+                state_dir=state_dir,
+                control=control,
+                bindings=bindings,
+            )
+        else:
+            watchdog_journal = _final_watchdog_journal_validation(
+                state_dir,
+                control=control,
+            )
+            (
+                included,
+                mutable_preimages,
+                excluded,
+            ) = _final_control_cut_source_inventory(state_dir)
+            intent = {
+                "schema_version": 1,
+                "kind": "schema5_final_control_plane_cut_intent",
+                "source_root": str(state_dir.resolve()),
+                "immutable_sha256": control["immutable_sha256"],
+                "capacity_generation": control["capacity"][
+                    "current_generation"
+                ],
+                "rollout_generation": control["rollout_generation"],
+                "finalization_intent_id": control["finalization"]["intent_id"],
+                "bindings": copy.deepcopy(dict(bindings)),
+                "control_projection": _final_control_cut_projection(
+                    control,
+                    external_watchdog_journal=watchdog_journal,
+                ),
+                "included_files": included,
+                "mutable_preimages": mutable_preimages,
+                "excluded_files": excluded,
+                "created_at": utc_timestamp(now),
+                "created_timestamp": float(now),
+            }
+            intent["intent_id"] = sha256_value(intent)
+            _atomic_publish_readonly_json(intent_path, intent)
+            intent, intent_sha256 = _validate_final_control_cut_intent(
+                intent_path,
+                state_dir=state_dir,
+                control=control,
+                bindings=bindings,
+            )
+    if marker_path.exists() or marker_path.is_symlink():
+        existing_marker = _load_json_object(
+            marker_path,
+            description="recoverable final control-plane cut completion",
+        )
+        _atomic_publish_readonly_json(marker_path, existing_marker)
+        # Marker publication is the last content mutation.  A process may die after
+        # that atomic link but before the recursive chmod; seal first, then verify the
+        # marker-bound inventory.  Tampered bytes still fail the subsequent proof.
+        _seal_read_only_tree(payload_root)
+        intent_path.chmod(0o444)
+        cut_root.chmod(0o555)
+        marker, marker_sha256 = _validate_final_control_plane_cut(
+            payload_root, expected_bindings=bindings
+        )
+        return payload_root, marker, marker_sha256
+    if payload_root.is_symlink() or (
+        payload_root.exists() and not payload_root.is_dir()
+    ):
+        raise ControlError("final control-plane cut payload root is unsafe")
+    payload_root.mkdir(parents=True, exist_ok=True)
+    source_root = payload_root / "source"
+    source_root.mkdir(parents=True, exist_ok=True)
+    for row in intent["included_files"]:
+        source = state_dir / str(row["path"])
+        destination = source_root / str(row["path"])
+        if (
+            source.is_symlink()
+            or not source.is_file()
+            or source.stat().st_nlink != 1
+            or source.stat().st_mode & 0o222
+            or source.stat().st_size != row["size"]
+            or sha256_file(source) != row["sha256"]
+        ):
+            raise ControlError(
+                f"final control-plane immutable source drifted: {row['path']}"
+            )
+        _write_independent_archive_copy(source, destination)
+    mutable_root = payload_root / "mutable_preimages"
+    mutable_root.mkdir(parents=True, exist_ok=True)
+    for row in intent["mutable_preimages"]:
+        destination = mutable_root / str(row["path"])
+        _atomic_publish_readonly_bytes(
+            destination,
+            _decode_final_control_cut_preimage(row),
+        )
+    _atomic_publish_readonly_json(
+        payload_root / FINAL_CONTROL_CUT_INTENT_FILENAME,
+        intent,
+    )
+    _atomic_publish_readonly_json(
+        payload_root / FINAL_CONTROL_CUT_PROJECTION_FILENAME,
+        intent["control_projection"],
+    )
+    _atomic_publish_readonly_json(
+        payload_root / FINAL_CONTROL_CUT_EXCLUSIONS_FILENAME,
+        {
+            "schema_version": 1,
+            "kind": "schema5_final_control_plane_exclusions",
+            "files": intent["excluded_files"],
+        },
+    )
+    inventory_rows, inventory_sha256 = _directory_inventory(payload_root)
+    marker = {
+        "schema_version": 1,
+        "kind": "schema5_final_control_plane_cut",
+        "complete": True,
+        "intent_id": intent["intent_id"],
+        "intent_sha256": intent_sha256,
+        "bindings": copy.deepcopy(dict(bindings)),
+        "inventory_sha256": inventory_sha256,
+        "file_count": len(inventory_rows),
+        "completed_at": utc_timestamp(now),
+        "completed_timestamp": float(now),
+    }
+    marker["completion_id"] = sha256_value(marker)
+    _atomic_publish_readonly_json(marker_path, marker)
+    _seal_read_only_tree(payload_root)
+    intent_path.chmod(0o444)
+    cut_root.chmod(0o555)
+    marker, marker_sha256 = _validate_final_control_plane_cut(
+        payload_root, expected_bindings=bindings
+    )
+    return payload_root, marker, marker_sha256
+
+
+def _canonical_final_snapshot_sources(
+    control: Mapping[str, Any],
+    *,
+    final_root: Path,
+    trusted_catalog_root: Path,
+    include_semantic_archive: bool | None = None,
+) -> tuple[tuple[str, Path], ...]:
+    """Derive the one canonical name-to-origin map for a final snapshot."""
+
+    immutable = control["immutable"]
+    run_sources = {
+        str(run["run_id"]): Path(str(run["run_root"])).resolve()
+        for run in immutable["runs"]
+    }
+    if set(run_sources) != set(REQUIRED_RUNS):
+        raise FinalizerProvenanceError(
+            "final snapshot run origins differ from the frozen run set"
+        )
+    resolved_final_root = final_root.expanduser().resolve()
+    sources: dict[str, Path] = {
+        **run_sources,
+        "control": (
+            resolved_final_root
+            / FINAL_CONTROL_CUT_DIRNAME
+            / FINAL_CONTROL_CUT_PAYLOAD_DIRNAME
+        ).resolve(),
+        "semantic_validation": (
+            resolved_final_root / FINAL_SEMANTIC_FILENAME
+        ).resolve(),
+        "semantic_intent": (
+            resolved_final_root / FINAL_SEMANTIC_INTENT_FILENAME
+        ).resolve(),
+        "semantic_preflight": (
+            resolved_final_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+        ).resolve(),
+        "primary_analysis_cache": (
+            resolved_final_root / FINAL_ANALYSIS_CACHE_DIRNAME
+        ).resolve(),
+        "fleet_retirement": (
+            resolved_final_root / FINAL_FLEET_RETIREMENT_DIRNAME
+        ).resolve(),
+        "server_pool": Path(
+            str(immutable["server_pool_root"])
+        ).resolve(),
+        "trusted_generation_catalog": (
+            trusted_catalog_root.expanduser().resolve()
+        ),
+    }
+    semantic_archive = (
+        resolved_final_root / FINAL_SEMANTIC_ARCHIVE_DIRNAME
+    )
+    if include_semantic_archive is None:
+        if semantic_archive.is_symlink():
+            raise FinalizerProvenanceError(
+                "final semantic recovery archive may not be a symlink"
+            )
+        include_semantic_archive = semantic_archive.is_dir()
+    if include_semantic_archive:
+        sources["semantic_recovery_archive"] = semantic_archive.resolve()
+    if (
+        not FINAL_SNAPSHOT_REQUIRED_SOURCES.issubset(sources)
+        or set(sources)
+        - FINAL_SNAPSHOT_REQUIRED_SOURCES
+        - FINAL_SNAPSHOT_OPTIONAL_SOURCES
+    ):
+        raise FinalizerProvenanceError(
+            "canonical final snapshot source set is invalid"
+        )
+    return tuple(sorted(sources.items()))
+
+
+def _final_snapshot_source_rows(
+    sources: Sequence[tuple[str, Path]],
+) -> list[dict[str, str]]:
+    rows = [
+        {"name": str(name), "path": str(Path(path).expanduser().resolve())}
+        for name, path in sources
+    ]
+    if (
+        rows != sorted(rows, key=lambda row: row["name"])
+        or len({row["name"] for row in rows}) != len(rows)
+        or any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", row["name"])
+            is None
+            or not Path(row["path"]).is_absolute()
+            for row in rows
+        )
+    ):
+        raise FinalizerProvenanceError(
+            "final snapshot source origins are not canonical"
+        )
+    return rows
+
+
+def _canonical_final_control_cut_bindings(
+    control: Mapping[str, Any],
+    *,
+    semantic_report_sha256: str,
+    semantic_preflight_sha256: str,
+    retirement: Mapping[str, Any],
+    retirement_marker_sha256: str,
+    cache_payload: Mapping[str, Any],
+    cache_marker_sha256: str,
+    cache_tree_sha256: str,
+    trusted_catalog: TrustedGenerationCatalog,
+) -> dict[str, Any]:
+    """Bind the snapshotted control cut to the exact accepted final artifacts."""
+
+    return {
+        "immutable_sha256": control["immutable_sha256"],
+        "capacity_generation": control["capacity"]["current_generation"],
+        "rollout_generation": control["rollout_generation"],
+        "finalization_intent_id": control["finalization"]["intent_id"],
+        "semantic_report_sha256": semantic_report_sha256,
+        "semantic_preflight_sha256": semantic_preflight_sha256,
+        "retirement_id": retirement["retirement_id"],
+        "retirement_completion_id": retirement["completion_id"],
+        "retirement_marker_sha256": retirement_marker_sha256,
+        "cache_marker_sha256": cache_marker_sha256,
+        "cache_generation_id": cache_payload["cache_generation_id"],
+        "cache_tree_sha256": cache_tree_sha256,
+        "trusted_generation_catalog_id": trusted_catalog.catalog_id,
+        "trusted_generation_catalog_marker_sha256": (
+            trusted_catalog.marker_sha256
+        ),
+    }
+
+
+def _validate_final_snapshot_marker(
+    snapshot_root: Path,
+    *,
+    expected_sources: Sequence[tuple[str, Path]] | None = None,
+    expected_control_cut_bindings: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], str]:
     """Recursively re-prove a marker-last recovery snapshot from its inventories."""
 
     if (
@@ -14675,6 +20199,7 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
     marker_fields = {
         "schema_version",
         "snapshot_id",
+        "snapshot_kind",
         "completed_at",
         "file_count",
         "total_bytes",
@@ -14684,9 +20209,14 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
     }
     if (
         set(marker) != marker_fields
-        or marker.get("schema_version") != 1
+        or marker.get("schema_version") != FINAL_SNAPSHOT_SCHEMA_VERSION
+        or marker.get("snapshot_kind") != FINAL_SNAPSHOT_KIND
         or not isinstance(marker.get("snapshot_id"), str)
-        or not marker["snapshot_id"]
+        or re.fullmatch(
+            rf"{re.escape(FINAL_SNAPSHOT_ID_PREFIX)}-[0-9a-f]{{16}}",
+            str(marker.get("snapshot_id", "")),
+        )
+        is None
         or not isinstance(marker.get("completed_at"), str)
         or marker.get("verified") is not True
         or marker.get("read_only") is not True
@@ -14856,6 +20386,7 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
     catalog_fields = {
         "schema_version",
         "snapshot_id",
+        "snapshot_kind",
         "created_at",
         "copy_contract",
         "sources",
@@ -14869,8 +20400,11 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
     sources = catalog.get("sources")
     if (
         set(catalog) != catalog_fields
-        or catalog.get("schema_version") != 1
+        or catalog.get("schema_version") != FINAL_SNAPSHOT_SCHEMA_VERSION
+        or catalog.get("snapshot_kind") != FINAL_SNAPSHOT_KIND
         or catalog.get("snapshot_id") != marker["snapshot_id"]
+        or catalog.get("snapshot_id")
+        != f"{FINAL_SNAPSHOT_ID_PREFIX}-{inventory_sha256[:16]}"
         or not isinstance(catalog.get("created_at"), str)
         or catalog.get("copy_contract")
         != "independent_regular_files_no_hardlinks_no_symlinks"
@@ -14900,6 +20434,7 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
     if created > completed:
         raise ControlError("final snapshot marker predates its catalog")
     source_names: list[str] = []
+    observed_source_rows: list[dict[str, str]] = []
     for source in sources:
         if (
             not isinstance(source, dict)
@@ -14910,11 +20445,21 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
             is None
             or not isinstance(source.get("path"), str)
             or not Path(str(source["path"])).is_absolute()
+            or str(Path(str(source["path"])).resolve())
+            != str(source["path"])
         ):
             raise ControlError("final snapshot catalog source is invalid")
         source_names.append(str(source["name"]))
+        observed_source_rows.append(
+            {
+                "name": str(source["name"]),
+                "path": str(source["path"]),
+            }
+        )
     if (
         len(source_names) != len(set(source_names))
+        or observed_source_rows
+        != sorted(observed_source_rows, key=lambda row: row["name"])
         or not FINAL_SNAPSHOT_REQUIRED_SOURCES.issubset(source_names)
         or set(source_names)
         - FINAL_SNAPSHOT_REQUIRED_SOURCES
@@ -14925,6 +20470,17 @@ def _validate_final_snapshot_marker(snapshot_root: Path) -> tuple[dict[str, Any]
         != set(source_names)
     ):
         raise ControlError("final snapshot catalog source set is invalid")
+    if expected_sources is not None:
+        expected_source_rows = _final_snapshot_source_rows(expected_sources)
+        if observed_source_rows != expected_source_rows:
+            raise FinalizerProvenanceError(
+                "final snapshot source origins differ from the canonical "
+                "name-to-path map"
+            )
+    _validate_final_control_plane_cut(
+        snapshot_root / "control",
+        expected_bindings=expected_control_cut_bindings,
+    )
     return marker, sha256_file(marker_path)
 
 
@@ -15071,6 +20627,8 @@ def _verify_final_complete(
         "snapshot",
         "snapshot_marker_sha256",
         "snapshot_control_artifacts",
+        "snapshot_source_map",
+        "control_cut_bindings",
         "fleet_retirement",
         "fleet_retirement_marker_sha256",
         "autonomous_finalizer",
@@ -15082,7 +20640,7 @@ def _verify_final_complete(
     completed_timestamp = marker.get("completed_timestamp")
     if (
         set(marker) != expected_fields
-        or marker.get("schema_version") != 3
+        or marker.get("schema_version") != 4
         or marker.get("kind") != "schema5_final_completion"
         or marker.get("complete") is not True
         or marker.get("complete_cells") != EXPECTED_TOTAL_CELLS
@@ -15170,7 +20728,62 @@ def _verify_final_complete(
         != _trusted_generation_catalog_binding(trusted_catalog)
     ):
         raise ControlError("FINAL_COMPLETE.json semantic preflight drifted")
-    _, snapshot_marker_sha256 = _validate_final_snapshot_marker(snapshot_root)
+    cache_payload, cache_marker_sha256 = _validate_primary_analysis_cache(
+        cache_root,
+        control,
+        trusted_catalog=trusted_catalog,
+    )
+    _, cache_tree_sha256 = _directory_inventory(cache_root)
+    if (
+        cache_marker_sha256 != marker["analysis_manifest_sha256"]
+        or cache_tree_sha256 != marker["analysis_tree_sha256"]
+    ):
+        raise ControlError("FINAL_COMPLETE primary analysis cache drifted")
+    fleet_retirement, retirement_marker_sha256 = (
+        _verify_final_fleet_retirement(retirement_root, control=control)
+    )
+    claimed_source_map = marker.get("snapshot_source_map")
+    include_semantic_archive = bool(
+        isinstance(claimed_source_map, list)
+        and any(
+            isinstance(row, Mapping)
+            and row.get("name") == "semantic_recovery_archive"
+            for row in claimed_source_map
+        )
+    )
+    expected_sources = _canonical_final_snapshot_sources(
+        control,
+        final_root=output_root,
+        trusted_catalog_root=trusted_catalog.marker_path.parent,
+        include_semantic_archive=include_semantic_archive,
+    )
+    expected_source_rows = _final_snapshot_source_rows(expected_sources)
+    expected_control_cut_bindings = (
+        _canonical_final_control_cut_bindings(
+            control,
+            semantic_report_sha256=semantic_sha256,
+            semantic_preflight_sha256=semantic_preflight_sha256,
+            retirement=fleet_retirement,
+            retirement_marker_sha256=retirement_marker_sha256,
+            cache_payload=cache_payload,
+            cache_marker_sha256=cache_marker_sha256,
+            cache_tree_sha256=cache_tree_sha256,
+            trusted_catalog=trusted_catalog,
+        )
+    )
+    if claimed_source_map != expected_source_rows:
+        raise ControlError(
+            "FINAL_COMPLETE snapshot source origins drifted from the canonical map"
+        )
+    if marker.get("control_cut_bindings") != expected_control_cut_bindings:
+        raise ControlError(
+            "FINAL_COMPLETE control-cut bindings drifted from final artifacts"
+        )
+    _, snapshot_marker_sha256 = _validate_final_snapshot_marker(
+        snapshot_root,
+        expected_sources=expected_sources,
+        expected_control_cut_bindings=expected_control_cut_bindings,
+    )
     if (
         snapshot_marker_sha256 != marker["snapshot_marker_sha256"]
         or not isinstance(snapshot_control_artifacts, dict)
@@ -15212,9 +20825,6 @@ def _verify_final_complete(
         or marker.get("rollout_generation") != control["rollout_generation"]
     ):
         raise ControlError("FINAL_COMPLETE.json does not bind the current control")
-    fleet_retirement, _ = _verify_final_fleet_retirement(
-        retirement_root, control=control
-    )
     semantic_preflight = _load_json_object(
         semantic_preflight_path,
         description="final semantic preflight marker",
@@ -15284,6 +20894,82 @@ def _verify_completed_finalization_control_binding(
     return verified
 
 
+def _record_autonomous_finalizer_phase(
+    state_dir: Path,
+    *,
+    publisher_finalizer: Mapping[str, Any],
+    phase: str,
+    bindings: Mapping[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    """Commit one monotonic phase and merge marker-bound artifact identities."""
+
+    if phase not in {"validating", "retiring_fleet", "snapshotting"}:
+        raise FinalizerInvariantError(f"unsupported finalizer phase {phase!r}")
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        active = finalization.get("active_job")
+        if (
+            finalization.get("state") not in ACTIVE_FINALIZATION_STATES
+            or not isinstance(active, Mapping)
+            or _finalizer_job_identity(active)
+            != _finalizer_job_identity(publisher_finalizer)
+        ):
+            raise ControllerFenced(
+                "autonomous finalizer phase publisher no longer owns control"
+            )
+        evidence = finalization["phase_evidence"]
+        existing = evidence.get(phase)
+        changed = False
+        if existing is None:
+            existing = {
+                "entered_at": utc_timestamp(now),
+                "entered_timestamp": now,
+                **copy.deepcopy(dict(bindings)),
+            }
+            evidence[phase] = existing
+            changed = True
+            event = f"{phase}_entered"
+        else:
+            event = f"{phase}_artifacts_bound"
+            for field, value in bindings.items():
+                if field not in existing:
+                    raise FinalizerInvariantError(
+                        f"{phase} phase binding has an unknown field {field}"
+                    )
+                prior = existing[field]
+                if prior is not None and value is not None and prior != value:
+                    raise FinalizerProvenanceError(
+                        f"{phase} phase binding drifted for {field}"
+                    )
+                if prior is None and value is not None:
+                    existing[field] = copy.deepcopy(value)
+                    changed = True
+        current_state = str(finalization["state"])
+        current_rank = FINALIZER_PHASE_ORDER.get(current_state, 0)
+        target_rank = FINALIZER_PHASE_ORDER[phase]
+        if current_rank < target_rank:
+            if target_rank != current_rank + 1:
+                raise FinalizerInvariantError(
+                    f"finalizer phase cannot skip from {current_state} to {phase}"
+                )
+            finalization["state"] = phase
+            changed = True
+        if changed:
+            _append_finalization_history(
+                finalization,
+                event=event,
+                details={
+                    "phase": phase,
+                    "bindings": copy.deepcopy(dict(existing)),
+                },
+                now=now,
+            )
+            _save_control(state_dir, control, now=now)
+        return copy.deepcopy(existing)
+
+
 def finalize_sweep(
     state_dir: Path,
     *,
@@ -15309,6 +20995,7 @@ def finalize_sweep(
     lock_scanner: Callable[[Mapping[str, Any]], Sequence[str]] | None = None,
     writer_guard: Callable[[Mapping[str, Any], Path], Any] | None = None,
     publisher_finalizer: Mapping[str, Any] | None = None,
+    interruption_controller: _FinalizerInterruptionController | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Publish FINAL_COMPLETE last, after exact data, cache, and snapshot proofs."""
@@ -15336,7 +21023,7 @@ def finalize_sweep(
     final_root = (
         output_root.expanduser().resolve()
         if output_root is not None
-        else results_root / "recovery" / "schema5-v1.2-r2" / "final"
+        else results_root / "recovery" / "schema5-v1.2-r3" / "final"
     )
     if (
         publisher_finalizer is not None
@@ -15355,13 +21042,18 @@ def finalize_sweep(
     )
     run_command = command_runner or (
         lambda argv, environment, timeout: _run_finalizer_process(
-            argv, environment=environment, timeout_seconds=timeout
+            argv,
+            environment=environment,
+            timeout_seconds=timeout,
+            interruption=interruption_controller,
         )
     )
     scan_locks = lock_scanner or _active_manifest_cell_locks
     guard_factory = writer_guard or _final_writer_exclusion
     resolve_fleet = fleet_evidence_reader or _default_fleet_retirement_evidence
     retire_runner = cancel_runner or _run_subprocess
+    if interruption_controller is not None:
+        interruption_controller.raise_if_requested()
     with finalizer_lock(state_dir):
         # Pause is itself fenced by admission-boundary.lock. A live worker may need
         # one retry after receiving USR1; no audit or cache is written until it drains.
@@ -15403,6 +21095,8 @@ def finalize_sweep(
                 trusted_catalog
             )
             environment = _finalizer_environment(current)
+            if interruption_controller is not None:
+                interruption_controller.raise_if_requested()
             immutable = current["immutable"]
             harness_python = (
                 Path(immutable["harness_environment_prefix"]).resolve()
@@ -15414,6 +21108,30 @@ def finalize_sweep(
             semantic_preflight_path = (
                 final_root / FINAL_SEMANTIC_PREFLIGHT_FILENAME
             )
+            semantic_intent_path = (
+                final_root / FINAL_SEMANTIC_INTENT_FILENAME
+            )
+            if publisher_finalizer is not None:
+                _record_autonomous_finalizer_phase(
+                    state_dir,
+                    publisher_finalizer=publisher_finalizer,
+                    phase="validating",
+                    bindings={
+                        "semantic_report_path": str(semantic_path.resolve()),
+                        "semantic_intent_path": str(
+                            semantic_intent_path.resolve()
+                        ),
+                        "semantic_preflight_path": str(
+                            semantic_preflight_path.resolve()
+                        ),
+                        "semantic_report_sha256": None,
+                        "semantic_intent_sha256": None,
+                        "semantic_intent_id": None,
+                        "semantic_preflight_sha256": None,
+                        "semantic_preflight_id": None,
+                    },
+                    now=timestamp,
+                )
 
             # Phase one: retain serving capacity while proving the complete dataset.
             # Admission is paused and both controller writers are excluded, but the
@@ -15452,10 +21170,74 @@ def finalize_sweep(
                     raise ControlError(
                         "final semantic scan did not bind the sealed generation catalog"
                     )
+                if publisher_finalizer is not None:
+                    semantic_intent = _load_json_object(
+                        semantic_intent_path,
+                        description="final semantic intent",
+                    )
+                    _record_autonomous_finalizer_phase(
+                        state_dir,
+                        publisher_finalizer=publisher_finalizer,
+                        phase="validating",
+                        bindings={
+                            "semantic_report_sha256": semantic_report_sha256,
+                            "semantic_intent_sha256": sha256_file(
+                                semantic_intent_path
+                            ),
+                            "semantic_intent_id": semantic_intent["intent_id"],
+                            "semantic_preflight_sha256": (
+                                semantic_preflight_sha256
+                            ),
+                            "semantic_preflight_id": _semantic_preflight[
+                                "preflight_id"
+                            ],
+                        },
+                        now=timestamp,
+                    )
+            if interruption_controller is not None:
+                interruption_controller.raise_if_requested()
 
             # Phase two: only sealed semantic acceptance can authorize the immutable
             # exact-ID retirement intent.  Refresh scheduler truth after the potentially
             # long semantic scan before freezing those IDs.
+            retirement_root = (
+                final_root / FINAL_FLEET_RETIREMENT_DIRNAME
+            )
+            retirement_intent_path = (
+                retirement_root / FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+            )
+            retirement_marker_path = (
+                retirement_root / FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+            )
+            if publisher_finalizer is not None:
+                _record_autonomous_finalizer_phase(
+                    state_dir,
+                    publisher_finalizer=publisher_finalizer,
+                    phase="retiring_fleet",
+                    bindings={
+                        "semantic_report_sha256": semantic_report_sha256,
+                        "semantic_preflight_sha256": (
+                            semantic_preflight_sha256
+                        ),
+                        "semantic_preflight_id": _semantic_preflight[
+                            "preflight_id"
+                        ],
+                        "retirement_root": str(retirement_root.resolve()),
+                        "retirement_intent_path": str(
+                            retirement_intent_path.resolve()
+                        ),
+                        "retirement_intent_sha256": None,
+                        "retirement_id": None,
+                        "retirement_marker_path": str(
+                            retirement_marker_path.resolve()
+                        ),
+                        "retirement_marker_sha256": None,
+                        "retirement_completion_id": None,
+                    },
+                    now=timestamp,
+                )
+            if interruption_controller is not None:
+                interruption_controller.raise_if_requested()
             retirement_snapshot = read_scheduler()
             _require_complete_quiescent_scheduler(
                 retirement_snapshot,
@@ -15470,6 +21252,23 @@ def finalize_sweep(
                 fleet_evidence_reader=resolve_fleet,
                 now=timestamp,
             )
+            retirement_intent = _load_json_object(
+                retirement_intent_path,
+                description="final fleet retirement intent",
+            )
+            if publisher_finalizer is not None:
+                _record_autonomous_finalizer_phase(
+                    state_dir,
+                    publisher_finalizer=publisher_finalizer,
+                    phase="retiring_fleet",
+                    bindings={
+                        "retirement_intent_sha256": sha256_file(
+                            retirement_intent_path
+                        ),
+                        "retirement_id": retirement_intent["retirement_id"],
+                    },
+                    now=timestamp,
+                )
             with guard_factory(current, state_dir):
                 locked = sorted(str(item) for item in scan_locks(current))
                 if locked:
@@ -15498,14 +21297,94 @@ def finalize_sweep(
                 _, retirement_marker_sha256 = _verify_final_fleet_retirement(
                     retirement_root, control=current
                 )
+                if publisher_finalizer is not None:
+                    _record_autonomous_finalizer_phase(
+                        state_dir,
+                        publisher_finalizer=publisher_finalizer,
+                        phase="retiring_fleet",
+                        bindings={
+                            "retirement_marker_sha256": (
+                                retirement_marker_sha256
+                            ),
+                            "retirement_completion_id": retirement[
+                                "completion_id"
+                            ],
+                        },
+                        now=timestamp,
+                    )
+                if interruption_controller is not None:
+                    interruption_controller.raise_if_requested()
 
                 cache_root = final_root / FINAL_ANALYSIS_CACHE_DIRNAME
                 cache_marker = cache_root / "ingest_manifest_v1.json"
+                snapshot_root = final_root / FINAL_SNAPSHOT_DIRNAME
+                snapshot_marker_path = (
+                    snapshot_root / "SNAPSHOT_COMPLETE.json"
+                )
+                if publisher_finalizer is not None:
+                    _record_autonomous_finalizer_phase(
+                        state_dir,
+                        publisher_finalizer=publisher_finalizer,
+                        phase="snapshotting",
+                        bindings={
+                            "retirement_root": str(retirement_root.resolve()),
+                            "retirement_marker_path": str(
+                                retirement_marker_path.resolve()
+                            ),
+                            "retirement_marker_sha256": (
+                                retirement_marker_sha256
+                            ),
+                            "retirement_completion_id": retirement[
+                                "completion_id"
+                            ],
+                            "cache_root": str(cache_root.resolve()),
+                            "cache_marker_path": str(cache_marker.resolve()),
+                            "cache_marker_sha256": None,
+                            "cache_generation_id": None,
+                            "cache_tree_sha256": None,
+                            "snapshot_root": str(snapshot_root.resolve()),
+                            "snapshot_marker_path": str(
+                                snapshot_marker_path.resolve()
+                            ),
+                            "snapshot_marker_sha256": None,
+                            "snapshot_id": None,
+                        },
+                        now=timestamp,
+                    )
+                resumed_cache = None
+                if cache_root.exists() and any(cache_root.iterdir()):
+                    resumed_cache = _resume_primary_analysis_cache_publication(
+                        cache_root,
+                        final_root=final_root,
+                        control=current,
+                        trusted_catalog=trusted_catalog,
+                        now=timestamp,
+                    )
+                    if (
+                        resumed_cache is None
+                        and (
+                            not cache_marker.exists()
+                            or (
+                                cache_root
+                                / ".cache_generation_in_progress.json"
+                            ).exists()
+                            or (
+                                cache_root
+                                / "ingest_manifest_v1.previous.json"
+                            ).exists()
+                        )
+                    ):
+                        _recover_interrupted_primary_analysis_cache(
+                            cache_root,
+                            final_root=final_root,
+                            now=timestamp,
+                        )
                 if not cache_marker.exists():
                     if cache_root.exists() and any(cache_root.iterdir()):
-                        raise ControlError(
-                            "incomplete primary analysis cache requires explicit "
-                            "evidence-preserving recovery"
+                        _recover_interrupted_primary_analysis_cache(
+                            cache_root,
+                            final_root=final_root,
+                            now=timestamp,
                         )
                     cache_root.mkdir(parents=True, exist_ok=True)
                     command = [
@@ -15532,45 +21411,76 @@ def finalize_sweep(
                             "primary analysis cache build failed: "
                             f"rc={proc.returncode}; {proc.stderr.strip()[:1000]}"
                         )
-                _, cache_marker_sha256 = _validate_primary_analysis_cache(
+                    if interruption_controller is not None:
+                        interruption_controller.raise_if_requested()
+                    _resume_primary_analysis_cache_publication(
+                        cache_root,
+                        final_root=final_root,
+                        control=current,
+                        trusted_catalog=trusted_catalog,
+                        now=timestamp,
+                    )
+                cache_payload, cache_marker_sha256 = _validate_primary_analysis_cache(
                     cache_root,
                     current,
                     trusted_catalog=trusted_catalog,
                 )
                 _seal_read_only_tree(cache_root)
                 _, cache_tree_sha256 = _directory_inventory(cache_root)
-
-                sources = [
-                    *[
-                        (str(run["run_id"]), Path(run["run_root"]).resolve())
-                        for run in immutable["runs"]
-                    ],
-                    ("control", state_dir),
-                    ("semantic_validation", semantic_path),
-                    (
-                        "semantic_intent",
-                        final_root / FINAL_SEMANTIC_INTENT_FILENAME,
-                    ),
-                    ("semantic_preflight", semantic_preflight_path),
-                    ("primary_analysis_cache", cache_root),
-                    ("fleet_retirement", retirement_root),
-                    (
-                        "server_pool",
-                        Path(immutable["server_pool_root"]).resolve(),
-                    ),
-                    (
-                        "trusted_generation_catalog",
-                        trusted_catalog.marker_path.parent,
-                    ),
-                ]
-                semantic_archive = (
-                    final_root / FINAL_SEMANTIC_ARCHIVE_DIRNAME
-                )
-                if semantic_archive.is_dir():
-                    sources.append(
-                        ("semantic_recovery_archive", semantic_archive)
+                if publisher_finalizer is not None:
+                    _record_autonomous_finalizer_phase(
+                        state_dir,
+                        publisher_finalizer=publisher_finalizer,
+                        phase="snapshotting",
+                        bindings={
+                            "cache_marker_sha256": cache_marker_sha256,
+                            "cache_generation_id": cache_payload[
+                                "cache_generation_id"
+                            ],
+                            "cache_tree_sha256": cache_tree_sha256,
+                        },
+                        now=timestamp,
                     )
-                snapshot_root = final_root / FINAL_SNAPSHOT_DIRNAME
+
+                control_cut_bindings = (
+                    _canonical_final_control_cut_bindings(
+                        current,
+                        semantic_report_sha256=semantic_report_sha256,
+                        semantic_preflight_sha256=semantic_preflight_sha256,
+                        retirement=retirement,
+                        retirement_marker_sha256=retirement_marker_sha256,
+                        cache_payload=cache_payload,
+                        cache_marker_sha256=cache_marker_sha256,
+                        cache_tree_sha256=cache_tree_sha256,
+                        trusted_catalog=trusted_catalog,
+                    )
+                )
+                (
+                    control_cut_source,
+                    _control_cut_marker,
+                    _control_cut_marker_sha256,
+                ) = _ensure_final_control_plane_cut(
+                    state_dir,
+                    final_root=final_root,
+                    bindings=control_cut_bindings,
+                    now=timestamp,
+                )
+                sources = list(
+                    _canonical_final_snapshot_sources(
+                        current,
+                        final_root=final_root,
+                        trusted_catalog_root=(
+                            trusted_catalog.marker_path.parent
+                        ),
+                    )
+                )
+                if dict(sources).get("control") != control_cut_source.resolve():
+                    raise FinalizerProvenanceError(
+                        "canonical final snapshot control origin differs from "
+                        "the sealed control cut"
+                    )
+                if interruption_controller is not None:
+                    interruption_controller.raise_if_requested()
                 if snapshot_builder is None:
                     snapshot_script = (
                         release_root / "scripts" / "create_recovery_snapshot.py"
@@ -15581,6 +21491,8 @@ def finalize_sweep(
                         str(snapshot_script),
                         "--snapshot-root",
                         str(snapshot_root),
+                        "--snapshot-kind",
+                        FINAL_SNAPSHOT_KIND,
                     ]
                     for name, source in sources:
                         command.extend(("--source", f"{name}={source}"))
@@ -15594,15 +21506,22 @@ def finalize_sweep(
                             "final snapshot creation failed: "
                             f"rc={proc.returncode}; {proc.stderr.strip()[:1000]}"
                         )
+                    verify_command = [
+                        str(harness_python),
+                        "-u",
+                        str(snapshot_script),
+                        "--snapshot-root",
+                        str(snapshot_root),
+                        "--snapshot-kind",
+                        FINAL_SNAPSHOT_KIND,
+                        "--verify-only",
+                    ]
+                    for name, source in sources:
+                        verify_command.extend(
+                            ("--source", f"{name}={source}")
+                        )
                     verify = run_command(
-                        [
-                            str(harness_python),
-                            "-u",
-                            str(snapshot_script),
-                            "--snapshot-root",
-                            str(snapshot_root),
-                            "--verify-only",
-                        ],
+                        verify_command,
                         environment,
                         FINALIZER_SNAPSHOT_DEADLINE_SECONDS,
                     )
@@ -15613,13 +21532,34 @@ def finalize_sweep(
                         )
                 else:
                     snapshot_builder(snapshot_root, sources, environment)
-                _, snapshot_marker_sha256 = _validate_final_snapshot_marker(
-                    snapshot_root
+                if interruption_controller is not None:
+                    interruption_controller.raise_if_requested()
+                snapshot_payload, snapshot_marker_sha256 = (
+                    _validate_final_snapshot_marker(
+                        snapshot_root,
+                        expected_sources=sources,
+                        expected_control_cut_bindings=(
+                            control_cut_bindings
+                        ),
+                    )
                 )
+                if publisher_finalizer is not None:
+                    _record_autonomous_finalizer_phase(
+                        state_dir,
+                        publisher_finalizer=publisher_finalizer,
+                        phase="snapshotting",
+                        bindings={
+                            "snapshot_marker_sha256": snapshot_marker_sha256,
+                            "snapshot_id": snapshot_payload["snapshot_id"],
+                        },
+                        now=timestamp,
+                    )
 
                 # Re-prove scheduler and per-cell locks immediately before the one
                 # publication that declares the experiment final.
                 autonomous_binding: dict[str, Any] | None = None
+                if interruption_controller is not None:
+                    interruption_controller.raise_if_requested()
                 if publisher_finalizer is not None:
                     _retire_autonomous_finalizer_successor(
                         state_dir,
@@ -15729,8 +21669,10 @@ def finalize_sweep(
                     fleet_retirement=retirement,
                     autonomous_finalizer=autonomous_binding,
                 )
+                if interruption_controller is not None:
+                    interruption_controller.raise_if_requested()
                 final_payload: dict[str, Any] = {
-                    "schema_version": 3,
+                    "schema_version": 4,
                     "kind": "schema5_final_completion",
                     "complete": True,
                     "release_id": immutable["release_id"],
@@ -15769,6 +21711,10 @@ def finalize_sweep(
                     "snapshot_control_artifacts": (
                         _final_snapshot_control_hashes(snapshot_root)
                     ),
+                    "snapshot_source_map": _final_snapshot_source_rows(
+                        sources
+                    ),
+                    "control_cut_bindings": control_cut_bindings,
                     "fleet_retirement": str(retirement_root),
                     "fleet_retirement_marker_sha256": (
                         retirement_marker_sha256
@@ -15777,8 +21723,7 @@ def finalize_sweep(
                     "zero_writer_proof": zero_writer_proof,
                 }
                 final_payload["final_id"] = sha256_value(final_payload)
-                _atomic_write_json(marker_path, final_payload)
-                marker_path.chmod(0o444)
+                _atomic_publish_readonly_json(marker_path, final_payload)
     return _verify_final_complete(final_root, control=current)
 
 
@@ -16020,8 +21965,7 @@ exec {shlex.quote(str(python))} -I -u {shlex.quote(str(script))} \
                 f"autonomous finalizer sbatch drifted: {target}"
             )
         return target
-    io.atomic_write_text(target, payload)
-    target.chmod(0o444)
+    _atomic_publish_readonly_text(target, payload)
     return target
 
 
@@ -16053,12 +21997,42 @@ def _finalizer_job_identity(
         raise ImmutablePinError(
             f"finalizer identity sbatch is unsafe or drifted: {sbatch_path}"
         )
+    receipt_path = Path(str(record["spooled_receipt_path"])).resolve()
+    if verify_sbatch:
+        receipt = _load_json_object(
+            receipt_path, description="finalizer exact spool receipt"
+        )
+        expected_receipt = {
+            "schema_version": 1,
+            "kind": "schema5_exact_sbatch_spool_receipt",
+            "job_id": job_id,
+            "job_token": str(record["job_token"]),
+            "sbatch_path": str(sbatch_path),
+            "sbatch_sha256": str(record["sbatch_sha256"]),
+            "spooled_sbatch_sha256": str(record["sbatch_sha256"]),
+            "submission_transport": str(record["submission_transport"]),
+            "submission_argv": list(record["submission_argv"]),
+            "submission_argv_sha256": str(record["submission_argv_sha256"]),
+            "submitted_held": True,
+            "persistent_hold": bool(record["persistent_hold"]),
+        }
+        _validate_exact_sbatch_receipt(
+            receipt_path, expected=expected_receipt
+        )
+        if sha256_file(receipt_path) != record["spooled_receipt_sha256"]:
+            raise ImmutablePinError("finalizer exact spool receipt hash drifted")
     identity: dict[str, Any] = {
         "attempt": int(record["attempt"]),
         "intent_token": str(record["intent_token"]),
         "job_token": str(record["job_token"]),
         "sbatch_path": str(sbatch_path),
         "sbatch_sha256": str(record["sbatch_sha256"]),
+        "submission_transport": str(record["submission_transport"]),
+        "submission_argv": list(record["submission_argv"]),
+        "submission_argv_sha256": str(record["submission_argv_sha256"]),
+        "persistent_hold": bool(record["persistent_hold"]),
+        "spooled_receipt_path": str(receipt_path),
+        "spooled_receipt_sha256": str(record["spooled_receipt_sha256"]),
         "dependency_job_id": record.get("dependency_job_id"),
         "job_id": job_id,
     }
@@ -16073,6 +22047,12 @@ def _validate_finalizer_identity(value: Any, *, context: str) -> None:
         "job_token",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv",
+        "submission_argv_sha256",
+        "persistent_hold",
+        "spooled_receipt_path",
+        "spooled_receipt_sha256",
         "dependency_job_id",
         "job_id",
         "identity_id",
@@ -16083,6 +22063,13 @@ def _validate_finalizer_identity(value: Any, *, context: str) -> None:
     attempt = value.get("attempt") if isinstance(value, dict) else None
     intent_token = value.get("intent_token") if isinstance(value, dict) else None
     token = str(value.get("job_token", "")) if isinstance(value, dict) else ""
+    try:
+        exact_submission_argv = _exact_sbatch_submission_argv(
+            token=token,
+            dependency_job_id=dependency if isinstance(dependency, str) else None,
+        )
+    except ControlError:
+        exact_submission_argv = None
     if (
         not isinstance(value, dict)
         or set(value) != expected
@@ -16096,6 +22083,21 @@ def _validate_finalizer_identity(value: Any, *, context: str) -> None:
         )
         or not Path(str(value.get("sbatch_path", ""))).is_absolute()
         or _SHA256_RE.fullmatch(str(value.get("sbatch_sha256", ""))) is None
+        or value.get("submission_transport")
+        != EXACT_SBATCH_SUBMISSION_TRANSPORT
+        or not isinstance(value.get("submission_argv"), list)
+        or not all(
+            isinstance(item, str) for item in value.get("submission_argv", [])
+        )
+        or value.get("submission_argv") != exact_submission_argv
+        or value.get("submission_argv_sha256")
+        != _submission_argv_sha256(value.get("submission_argv", []))
+        or not isinstance(value.get("persistent_hold"), bool)
+        or not Path(str(value.get("spooled_receipt_path", ""))).is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(value.get("spooled_receipt_sha256", ""))
+        )
+        is None
         or (
             dependency is not None
             and (not isinstance(dependency, str) or not dependency.isdigit())
@@ -16132,14 +22134,48 @@ def _finalizer_scheduler_observation(
             f"{context} finalizer scheduler identity is absent or ambiguous"
         )
     job = matching_token[0]
-    expected_name = f"asys-s5-final-a{int(identity['attempt']):06d}"
-    dependency = identity.get("dependency_job_id")
+    normalized_state = _validate_finalizer_scheduler_envelope(
+        job,
+        identity,
+        require_active=require_active,
+        context=context,
+    )
+    return {
+        "job_id": job.job_id,
+        "job_name": job.job_name,
+        "state": normalized_state,
+        "comment": job.comment,
+        "command": job.command,
+        "source": job.source,
+        "dependency": job.dependency,
+    }
+
+
+def _validate_finalizer_scheduler_envelope(
+    job: SchedulerJob,
+    record: Mapping[str, Any],
+    *,
+    require_active: bool | None,
+    context: str,
+) -> str:
+    """Validate scheduler identity before any held finalizer can be released."""
+
+    attempt = record.get("attempt")
+    dependency = record.get("dependency_job_id")
+    if (
+        not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or attempt < 1
+        or not job.job_id.isdigit()
+        or job.comment != record.get("job_token")
+    ):
+        raise SchedulerAmbiguity(
+            f"{context} finalizer scheduler envelope is invalid"
+        )
+    expected_name = f"asys-s5-final-a{attempt:06d}"
     normalized_state = normalize_scheduler_state(job.state)
     if (
         job.job_name != expected_name
-        or not _command_binds_exact_sbatch(
-            job.command, str(identity["sbatch_path"])
-        )
         or (
             dependency is None
             and bool(_normalized_scheduler_dependency(job.dependency))
@@ -16161,15 +22197,7 @@ def _finalizer_scheduler_observation(
         raise SchedulerAmbiguity(
             f"{context} finalizer scheduler provenance is invalid"
         )
-    return {
-        "job_id": job.job_id,
-        "job_name": job.job_name,
-        "state": normalized_state,
-        "comment": job.comment,
-        "command": job.command,
-        "source": job.source,
-        "dependency": job.dependency,
-    }
+    return normalized_state
 
 
 def _finalizer_namespace_active_job_ids(
@@ -16537,8 +22565,7 @@ def _ensure_successor_retirement_intent(
                 "created_at": utc_timestamp(now),
                 "created_timestamp": now,
             }
-            _atomic_write_json(intent_path, intent)
-            intent_path.chmod(0o444)
+            _atomic_publish_readonly_json(intent_path, intent)
             intent_sha256 = sha256_file(intent_path)
         binding = {
             "schema_version": FINALIZER_SUCCESSOR_RETIREMENT_SCHEMA_VERSION,
@@ -16723,8 +22750,7 @@ def _retire_autonomous_finalizer_successor(
         )
         receipt_payload = existing_receipt
     else:
-        _atomic_write_json(receipt_path, receipt_payload)
-        receipt_path.chmod(0o444)
+        _atomic_publish_readonly_json(receipt_path, receipt_payload)
         receipt_sha256 = sha256_file(receipt_path)
     completed_binding = {
         **binding,
@@ -16835,6 +22861,71 @@ def _parse_sbatch_job_id(proc: subprocess.CompletedProcess[str]) -> str:
     return value
 
 
+def _append_finalizer_transition_once(
+    state_dir: Path,
+    control: MutableMapping[str, Any],
+    *,
+    event: str,
+    details: Mapping[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    """Append or adopt one exact finalizer transition after a journal-ahead crash."""
+
+    durable = _read_jsonl_locked(
+        state_dir / TRANSITION_JOURNAL, missing_ok=True
+    )
+    memory = list(control.get("transition_history", []))
+    if durable[: len(memory)] != memory:
+        raise ControlError(
+            "transition journal diverged during finalizer transaction replay"
+        )
+    matches = [
+        row
+        for row in durable
+        if row.get("event") == event
+        and row.get("details") == dict(details)
+    ]
+    if len(matches) > 1:
+        raise ControlError(
+            f"finalizer transition event {event!r} was journaled more than once"
+        )
+    if matches:
+        if len(durable) > len(memory):
+            control["transition_history"] = copy.deepcopy(durable)
+            validate_transition_history(control)
+        return matches[0]
+    return append_transition(
+        state_dir,
+        control,
+        event=event,
+        details=details,
+        now=now,
+    )
+
+
+def _finalizer_record_scheduler_observation(
+    snapshot: SchedulerSnapshot,
+    record: Mapping[str, Any],
+    job: SchedulerJob,
+    *,
+    require_active: bool | None,
+    context: str,
+) -> dict[str, Any]:
+    provisional = copy.deepcopy(dict(record))
+    if provisional.get("job_id") not in (None, job.job_id):
+        raise SchedulerAmbiguity(
+            f"{context} finalizer scheduler job ID conflicts with control"
+        )
+    provisional["job_id"] = job.job_id
+    identity = _finalizer_job_identity(provisional)
+    return _finalizer_scheduler_observation(
+        snapshot,
+        identity,
+        require_active=require_active,
+        context=context,
+    )
+
+
 def _submit_finalizer_job(
     state_dir: Path,
     *,
@@ -16863,6 +22954,13 @@ def _submit_finalizer_job(
             raise ControlError("autonomous finalization is not active")
         record = finalization.get(field)
         if isinstance(record, dict):
+            if (
+                int(record["attempt"]) != int(attempt)
+                or record.get("dependency_job_id") != dependency_job_id
+            ):
+                raise SchedulerAmbiguity(
+                    f"finalizer {field} submission intent changed"
+                )
             matches = _finalizer_scheduler_matches(snapshot, record)
             if len(matches) > 1:
                 raise SchedulerAmbiguity(
@@ -16870,32 +22968,69 @@ def _submit_finalizer_job(
                 )
             if len(matches) == 1:
                 job = matches[0]
-                if (
-                    record.get("job_id") not in (None, job.job_id)
-                    or not _command_binds_exact_sbatch(
-                        job.command, str(record["sbatch_path"])
+                try:
+                    _validate_finalizer_scheduler_envelope(
+                        job,
+                        record,
+                        require_active=None,
+                        context=field,
                     )
-                    or (
-                        record.get("dependency_job_id") is None
-                        and bool(_normalized_scheduler_dependency(job.dependency))
-                    )
-                    or (
-                        record.get("dependency_job_id") is not None
-                        and not _dependency_binds_exact_afterany(
-                            job.dependency,
-                            str(record["dependency_job_id"]),
-                        )
-                    )
-                ):
+                except SchedulerAmbiguity as exc:
                     raise SchedulerAmbiguity(
                         f"finalizer {field} scheduler identity is ambiguous"
-                    )
+                    ) from exc
+                proof = _prove_exact_sbatch_and_release(
+                    state_dir,
+                    record=record,
+                    job_id=job.job_id,
+                    submit_runner=runner,
+                    release_after_proof=True,
+                    now=timestamp,
+                    scheduler_job=job,
+                )
+                record.update(proof)
                 record["job_id"] = job.job_id
+                try:
+                    _finalizer_record_scheduler_observation(
+                        snapshot,
+                        record,
+                        job,
+                        require_active=None,
+                        context=field,
+                    )
+                except SchedulerAmbiguity as exc:
+                    raise SchedulerAmbiguity(
+                        f"finalizer {field} scheduler identity is ambiguous"
+                    ) from exc
+                newly_adopted = record.get("job_id") is None
+                newly_adopted = record.get("submitted_timestamp") is None
                 record["submitted_at"] = utc_timestamp(timestamp)
                 record["submitted_timestamp"] = timestamp
                 record["state"] = (
                     "submitted" if job.active else "terminal"
                 )
+                if newly_adopted:
+                    _append_finalization_history(
+                        finalization,
+                        event="job_submitted",
+                        details={
+                            "field": field,
+                            "attempt": attempt,
+                            "job_id": job.job_id,
+                        },
+                        now=timestamp,
+                    )
+                    _append_finalizer_transition_once(
+                        state_dir,
+                        control,
+                        event="finalizer_submitted",
+                        details={
+                            "field": field,
+                            "attempt": attempt,
+                            "job_id": job.job_id,
+                        },
+                        now=timestamp,
+                    )
                 _save_control(state_dir, control, now=timestamp)
                 return copy.deepcopy(record)
             if record.get("job_id") is not None:
@@ -16925,6 +23060,10 @@ def _submit_finalizer_job(
                 raise SchedulerVisibilityPending(
                     f"finalizer {field} submission is inside visibility grace"
                 )
+        if attempt != int(finalization["next_attempt"]):
+            raise ControlError(
+                "finalizer submission attempt differs from durable next_attempt"
+            )
         intent_token = uuid.uuid4().hex
         intent_id = str(finalization["intent_id"])
         sbatch_path = _render_finalizer_sbatch(
@@ -16944,6 +23083,21 @@ def _submit_finalizer_job(
             ),
             "sbatch_path": str(sbatch_path),
             "sbatch_sha256": sha256_file(sbatch_path),
+            "submission_transport": EXACT_SBATCH_SUBMISSION_TRANSPORT,
+            "submission_argv": _exact_sbatch_submission_argv(
+                token=finalizer_job_token(
+                    intent_id=intent_id,
+                    attempt=attempt,
+                    intent_token=intent_token,
+                ),
+                dependency_job_id=dependency_job_id,
+            ),
+            "submission_argv_sha256": None,
+            "persistent_hold": False,
+            "spooled_receipt_path": None,
+            "spooled_receipt_sha256": None,
+            "released_at": None,
+            "released_timestamp": None,
             "dependency_job_id": dependency_job_id,
             "job_id": None,
             "state": "submitting",
@@ -16952,7 +23106,14 @@ def _submit_finalizer_job(
             "submitted_at": None,
             "submitted_timestamp": None,
         }
+        record["submission_argv_sha256"] = _submission_argv_sha256(
+            record["submission_argv"]
+        )
         finalization[field] = record
+        # Advance the allocator in the same durable mutation as the scheduler intent.
+        # A crash after this save can adopt or reset the intent without ever reusing
+        # an attempt number.
+        finalization["next_attempt"] = attempt + 1
         _append_finalization_history(
             finalization,
             event="job_submission_intent",
@@ -16964,7 +23125,7 @@ def _submit_finalizer_job(
             },
             now=timestamp,
         )
-        append_transition(
+        _append_finalizer_transition_once(
             state_dir,
             control,
             event="finalizer_submission_intent",
@@ -16981,23 +23142,36 @@ def _submit_finalizer_job(
         created = True
     if not created:
         raise AssertionError("finalizer submission record was not created")
+    sbatch_payload = _stable_readonly_preimage(
+        Path(record_copy["sbatch_path"]),
+        description="finalizer sbatch at exact submission boundary",
+    )
+    if (
+        hashlib.sha256(sbatch_payload).hexdigest()
+        != record_copy["sbatch_sha256"]
+    ):
+        raise ImmutablePinError(
+            "finalizer sbatch changed before exact submission"
+        )
     proc = runner(
-        _submit_argv(
-            Path(record_copy["sbatch_path"]),
-            token=str(record_copy["job_token"]),
-            dependency_job_id=dependency_job_id,
+        _ExactSbatchInvocation(
+            record_copy["submission_argv"],
+            sbatch_payload,
         )
     )
     completed_at = time.time() if now is None else timestamp
     try:
         job_id = _parse_sbatch_job_id(proc)
     except ControlError as exc:
+        submission_error = FinalizerSubmissionError(
+            f"finalizer sbatch was rejected: {exc}"
+        )
         with control_lock(state_dir):
             control = load_control(state_dir)
             finalization = control["finalization"]
             finalization["last_error"] = {
-                "kind": "SchedulerSubmissionError",
-                "message": str(exc)[:2000],
+                "kind": type(submission_error).__name__,
+                "message": str(submission_error)[:2000],
                 "transient": True,
                 "at": utc_timestamp(completed_at),
                 "timestamp": completed_at,
@@ -17009,7 +23183,15 @@ def _submit_finalizer_job(
                 now=completed_at,
             )
             _save_control(state_dir, control, now=completed_at)
-        raise
+        raise submission_error from exc
+    proof = _prove_exact_sbatch_and_release(
+        state_dir,
+        record=record_copy,
+        job_id=job_id,
+        submit_runner=runner,
+        release_after_proof=True,
+        now=completed_at,
+    )
     with control_lock(state_dir):
         control = load_control(state_dir)
         finalization = control["finalization"]
@@ -17025,6 +23207,7 @@ def _submit_finalizer_job(
         current["state"] = "submitted"
         current["submitted_at"] = utc_timestamp(completed_at)
         current["submitted_timestamp"] = completed_at
+        current.update(proof)
         finalization["last_error"] = None
         _append_finalization_history(
             finalization,
@@ -17032,7 +23215,7 @@ def _submit_finalizer_job(
             details={"field": field, "attempt": attempt, "job_id": job_id},
             now=completed_at,
         )
-        append_transition(
+        _append_finalizer_transition_once(
             state_dir,
             control,
             event="finalizer_submitted",
@@ -17048,13 +23231,12 @@ def _finalization_semantic_evidence(
     report_path: Path,
     report: Mapping[str, Any],
 ) -> dict[str, Any]:
-    path = report_path.expanduser().resolve()
-    monitoring_root = (state_dir / "monitoring").resolve()
+    path = _safe_finalization_semantic_report_path(state_dir, report_path)
+    file_stat = path.lstat()
     if (
-        path.is_symlink()
-        or not path.is_file()
-        or path.stat().st_mode & 0o222
-        or monitoring_root not in path.parents
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_nlink != 1
+        or file_stat.st_mode & 0o222
     ):
         raise ControlError(
             "autonomous finalization requires sealed monitor semantic evidence"
@@ -17068,6 +23250,393 @@ def _finalization_semantic_evidence(
         "sha256": sha256_file(path),
         "captured_timestamp": float(captured),
     }
+
+
+def _safe_finalization_semantic_report_path(
+    state_dir: Path, report_path: Path
+) -> Path:
+    """Validate the lexical report path without following any symlink component."""
+
+    expanded = report_path.expanduser()
+    if not expanded.is_absolute():
+        raise ControlError(
+            "autonomous finalization semantic evidence path must be absolute"
+        )
+    lexical = Path(os.path.abspath(os.fspath(expanded)))
+    if lexical != expanded:
+        raise ControlError(
+            "autonomous finalization semantic evidence path is not lexical"
+        )
+    monitoring_root = state_dir / "monitoring"
+    if monitoring_root not in lexical.parents:
+        raise ControlError(
+            "autonomous finalization semantic evidence escapes monitoring root"
+        )
+    current = Path(lexical.anchor)
+    for component in lexical.parts[1:]:
+        current /= component
+        try:
+            component_stat = current.lstat()
+        except OSError as exc:
+            raise ControlError(
+                "autonomous finalization semantic evidence path is unavailable"
+            ) from exc
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise ControlError(
+                "autonomous finalization semantic evidence path traverses a symlink"
+            )
+    return lexical
+
+
+def _finalization_capacity_incident_plan(
+    state_dir: Path, control: Mapping[str, Any]
+) -> list[str]:
+    """Return the only critical causes exact completion may consume.
+
+    A journal-ahead raise has no control-resident alert identity that this transaction
+    can resolve safely.  It must first be reconciled by the normal alert retry path.
+    Every cause outside the explicit capacity-remediation class remains blocking.
+    """
+
+    hold = control["admission_safety_hold"]
+    hold_reasons = (
+        set(str(reason) for reason in hold["reasons"])
+        if hold["active"]
+        else set()
+    )
+    control_critical = set(_active_critical_alerts(control))
+    journal_critical = set(_active_critical_alerts_from_journal(state_dir))
+    journal_ahead = sorted(journal_critical - control_critical)
+    if journal_ahead:
+        raise ControlError(
+            "finalization cannot consume journal-ahead critical alerts before "
+            "control reconciliation: "
+            + ", ".join(journal_ahead)
+        )
+    active_causes = hold_reasons | control_critical | journal_critical
+    blocking = sorted(active_causes - CAPACITY_REMEDIATION_ALERT_KEYS)
+    if blocking:
+        raise ControlError(
+            "finalization remains blocked by non-capacity safety causes: "
+            + ", ".join(blocking)
+        )
+    return sorted(active_causes & CAPACITY_REMEDIATION_ALERT_KEYS)
+
+
+def _append_finalization_transition_once(
+    state_dir: Path,
+    control: MutableMapping[str, Any],
+    *,
+    event: str,
+    details: Mapping[str, Any],
+    intent_id: str,
+    now: float,
+) -> dict[str, Any]:
+    """Append one finalization event, adopting a journal-ahead replay exactly once."""
+
+    if (
+        _SHA256_RE.fullmatch(intent_id) is None
+        or details.get("intent_id") != intent_id
+    ):
+        raise ControlError("finalization transition event lacks its exact intent")
+    durable = _read_jsonl_locked(
+        state_dir / TRANSITION_JOURNAL, missing_ok=True
+    )
+    memory = list(control.get("transition_history", []))
+    if durable[: len(memory)] != memory:
+        raise ControlError("transition journal diverged during finalization replay")
+    matches = [
+        row
+        for row in durable
+        if row.get("event") == event
+        and isinstance(row.get("details"), dict)
+        and row["details"].get("intent_id") == intent_id
+    ]
+    if len(matches) > 1:
+        raise ControlError(
+            f"finalization transition event {event!r} was journaled more than once"
+        )
+    if matches:
+        if matches[0].get("details") != dict(details):
+            raise ControlError(
+                f"finalization transition event {event!r} conflicts with replay"
+            )
+        if len(durable) > len(memory):
+            control["transition_history"] = copy.deepcopy(durable)
+            validate_transition_history(control)
+        return matches[0]
+    return append_transition(
+        state_dir,
+        control,
+        event=event,
+        details=details,
+        now=now,
+    )
+
+
+def _consume_finalization_capacity_incidents_locked(
+    state_dir: Path,
+    control: MutableMapping[str, Any],
+    *,
+    intent_id: str,
+    incident_keys: Sequence[str],
+    alert_resolution_plan: Sequence[Mapping[str, Any]],
+    now: float,
+) -> list[str]:
+    """Resolve and clear only the capacity incidents sealed by finalization intent."""
+
+    consumed = sorted(set(incident_keys))
+    if (
+        consumed != list(incident_keys)
+        or any(key not in CAPACITY_REMEDIATION_ALERT_KEYS for key in consumed)
+    ):
+        raise ControlError(
+            "finalization request intent contains an invalid capacity incident set"
+        )
+    frozen_plan = _validate_finalization_capacity_alert_resolution_plan(
+        list(alert_resolution_plan),
+        consumed_capacity_incidents=consumed,
+    )
+    if not consumed:
+        return []
+    hold = control["admission_safety_hold"]
+    hold_reasons = (
+        {str(reason) for reason in hold["reasons"]}
+        if hold["active"]
+        else set()
+    )
+    active_critical_causes = (
+        hold_reasons
+        | set(_active_critical_alerts(control))
+        | set(_active_critical_alerts_from_journal(state_dir))
+    )
+    unbound_causes = active_critical_causes - set(consumed)
+    unbound_noncapacity = sorted(
+        unbound_causes - CAPACITY_REMEDIATION_ALERT_KEYS
+    )
+    if unbound_noncapacity:
+        raise ControlError(
+            "finalization capacity consumption is blocked by non-capacity "
+            "safety causes: "
+            + ", ".join(unbound_noncapacity)
+        )
+    if unbound_causes:
+        raise ControlError(
+            "finalization capacity consumption encountered a newly active "
+            "capacity cause outside its immutable incident set: "
+            + ", ".join(sorted(unbound_causes))
+        )
+    durable_alert_records = _read_jsonl_locked(
+        state_dir / ALERT_JOURNAL, missing_ok=True
+    )
+    frozen_alert_ids = {
+        str(alert_id)
+        for row in frozen_plan
+        for alert_id in row["alert_ids"]
+    }
+    current_unresolved_ids = {
+        str(alert["alert_id"])
+        for alert in control.get("alerts", [])
+        if isinstance(alert, Mapping)
+        and alert.get("dedupe_key") in consumed
+        and alert.get("resolved_at") is None
+    }
+    if not current_unresolved_ids.issubset(frozen_alert_ids):
+        raise ControlError(
+            "finalization capacity consumption encountered a newly active "
+            "capacity alert outside its immutable resolution plan"
+        )
+    resolution_actions: list[
+        tuple[MutableMapping[str, Any], dict[str, Any], bool]
+    ] = []
+    for resolution_binding in frozen_plan:
+        dedupe_key = str(resolution_binding["dedupe_key"])
+        for alert_id in resolution_binding["alert_ids"]:
+            matches = [
+                alert
+                for alert in control.get("alerts", [])
+                if isinstance(alert, dict)
+                and alert.get("alert_id") == alert_id
+            ]
+            if (
+                len(matches) != 1
+                or matches[0].get("dedupe_key") != dedupe_key
+            ):
+                raise ControlError(
+                    "finalization alert-resolution plan no longer maps to "
+                    "exact control alert identity"
+                )
+            alert = matches[0]
+            prior_raises = [
+                row
+                for row in durable_alert_records
+                if row.get("action") == "raised"
+                and row.get("alert_id") == alert_id
+                and row.get("dedupe_key") == dedupe_key
+            ]
+            if not prior_raises:
+                raise ControlError(
+                    "finalization alert-resolution plan lacks its durable raise"
+                )
+            prior_resolutions = [
+                row
+                for row in durable_alert_records
+                if row.get("action") == "resolved"
+                and row.get("alert_id") == alert_id
+                and row.get("dedupe_key") == dedupe_key
+            ]
+            bound_resolutions = [
+                row
+                for row in prior_resolutions
+                if row.get("finalization_intent_id") == intent_id
+            ]
+            if len(bound_resolutions) > 1:
+                raise ControlError(
+                    "finalization incident resolution journal contains duplicate replay"
+                )
+            if bound_resolutions:
+                resolution = bound_resolutions[0]
+            elif prior_resolutions:
+                resolution = prior_resolutions[0]
+            else:
+                resolution = {
+                    "at": utc_timestamp(now),
+                    "timestamp": now,
+                    "action": "resolved",
+                    "alert_id": alert_id,
+                    "dedupe_key": dedupe_key,
+                    "finalization_intent_id": intent_id,
+                }
+            resolution_timestamp = resolution.get("timestamp")
+            if (
+                not isinstance(resolution.get("at"), str)
+                or not isinstance(resolution_timestamp, (int, float))
+                or isinstance(resolution_timestamp, bool)
+            ):
+                raise ControlError(
+                    "finalization incident resolution replay timestamp is invalid"
+                )
+            resolution_actions.append(
+                (alert, resolution, not bool(prior_resolutions))
+            )
+
+    if hold["active"]:
+        remaining = sorted(
+            reason for reason in hold["reasons"] if reason not in consumed
+        )
+        if remaining:
+            raise ControlError(
+                "finalization capacity consumption would clear unrelated "
+                "non-capacity hold causes: "
+                + ", ".join(remaining)
+            )
+
+    # All conflict and replay validation above is read-only.  Only after that
+    # preflight succeeds may the transaction append resolution evidence and
+    # update its in-memory control projection.
+    for alert, resolution, append_resolution in resolution_actions:
+        if append_resolution:
+            _append_jsonl(state_dir / ALERT_JOURNAL, resolution)
+        if alert.get("resolved_at") is None:
+            alert["resolved_at"] = resolution["at"]
+            alert["resolved_timestamp"] = resolution["timestamp"]
+
+    if hold["active"]:
+        previous_reasons = list(hold["reasons"])
+        previous_mode = hold["mode"]
+        hold["history"].append(
+            {
+                "event": "cleared",
+                "mode": previous_mode,
+                "reasons": previous_reasons,
+                "at": utc_timestamp(now),
+                "timestamp": now,
+                "clear_reason": "exact_completion_finalization",
+                "consumed_reasons": consumed,
+                "finalization_intent_id": intent_id,
+            }
+        )
+        hold.update(
+            {
+                "active": False,
+                "mode": None,
+                "reasons": [],
+                "consecutive_clean_polls": 0,
+                "semantic_clean_after_activation": False,
+                "activated_at": None,
+                "activated_timestamp": None,
+                "activation_id": None,
+                "updated_at": utc_timestamp(now),
+                "updated_timestamp": now,
+                "acknowledged_at": None,
+                "acknowledged_timestamp": None,
+            }
+        )
+    _append_finalization_transition_once(
+        state_dir,
+        control,
+        event="finalization_capacity_incidents_consumed",
+        details={
+            "intent_id": intent_id,
+            "dedupe_keys": consumed,
+            "resolved_alert_ids": sorted(frozen_alert_ids),
+        },
+        intent_id=intent_id,
+        now=now,
+    )
+    return consumed
+
+
+def _pending_finalization_request_payload(
+    control: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return one fenced request transaction not yet adopted by control state."""
+
+    fenced: dict[str, dict[str, Any]] = {}
+    adopted: set[str] = set()
+    for row in control.get("transition_history", []):
+        if not isinstance(row, Mapping) or not isinstance(
+            row.get("details"), Mapping
+        ):
+            continue
+        details = row["details"]
+        if row.get("event") == "autonomous_finalization_admission_fenced":
+            payload = details.get("request_payload")
+            if not isinstance(payload, dict):
+                raise ControlError(
+                    "finalization admission fence lacks its resumable request payload"
+                )
+            validated = _validate_finalization_request_intent_payload(
+                control, payload
+            )
+            intent_id = str(validated["intent_id"])
+            if intent_id in fenced and fenced[intent_id] != validated:
+                raise ControlError(
+                    "finalization admission fence repeats a conflicting intent"
+                )
+            fenced[intent_id] = copy.deepcopy(validated)
+        elif row.get("event") == "autonomous_finalization_requested":
+            intent_id = details.get("intent_id")
+            if isinstance(intent_id, str):
+                adopted.add(intent_id)
+    pending = [
+        payload
+        for intent_id, payload in fenced.items()
+        if intent_id not in adopted
+    ]
+    if len(pending) > 1:
+        raise ControlError(
+            "multiple unadopted autonomous finalization requests are fenced"
+        )
+    if pending and (
+        control.get("desired_state") != "paused"
+        or control.get("drain_requested") is not True
+        or control.get("finalization", {}).get("state") != "idle"
+    ):
+        raise ControlError(
+            "pending autonomous finalization request lost its admission fence"
+        )
+    return copy.deepcopy(pending[0]) if pending else None
 
 
 def request_autonomous_finalization(
@@ -17091,16 +23660,19 @@ def request_autonomous_finalization(
     timestamp = time.time() if now is None else float(now)
     if scheduler is not None and scheduler_reader is not None:
         raise ControlError("finalization accepts scheduler or scheduler_reader, not both")
-    report = (
-        dict(semantic_report)
-        if semantic_report is not None
-        else _load_json_object(
-            semantic_report_path.expanduser().resolve(),
-            description="autonomous finalization semantic report",
-        )
+    resolved_report_path = _safe_finalization_semantic_report_path(
+        state_dir, semantic_report_path
     )
+    report = _load_json_object(
+        resolved_report_path,
+        description="autonomous finalization semantic report",
+    )
+    if semantic_report is not None and dict(semantic_report) != report:
+        raise ControlError(
+            "semantic report override differs from sealed evidence"
+        )
     evidence = _finalization_semantic_evidence(
-        state_dir, semantic_report_path, report
+        state_dir, resolved_report_path, report
     )
     with admission_boundary_lock(state_dir):
         with control_lock(state_dir):
@@ -17112,12 +23684,7 @@ def request_autonomous_finalization(
                 raise ControlError(
                     "blocked finalization requires scientific-integrity review"
                 )
-            if finalization["state"] != "idle":
-                if finalization["semantic_evidence"] != evidence:
-                    raise ControlError(
-                        "active finalization is bound to different semantic evidence"
-                    )
-            else:
+            if finalization["state"] == "idle":
                 manual_marker = (
                     Path(str(finalization["output_root"]))
                     / FINAL_COMPLETE_FILENAME
@@ -17132,25 +23699,140 @@ def request_autonomous_finalization(
                     raise ControlError(
                         "finalization cannot begin during a capacity transition"
                     )
-                if control["admission_safety_hold"]["active"]:
-                    raise ControlError(
-                        "finalization cannot begin through an admission safety hold"
+                pending_request = _pending_finalization_request_payload(
+                    control
+                )
+                if pending_request is None:
+                    consumed_capacity_incidents = (
+                        _finalization_capacity_incident_plan(
+                            state_dir, control
+                        )
                     )
-                intent_payload = {
-                    "release_id": control["immutable"]["release_id"],
-                    "immutable_sha256": control["immutable_sha256"],
-                    "semantic_evidence": evidence,
-                    "requested_timestamp": timestamp,
-                }
+                    capacity_alert_resolution_plan = (
+                        _finalization_capacity_alert_resolution_plan(
+                            control, consumed_capacity_incidents
+                        )
+                    )
+                    request_identity = (
+                        _finalization_request_intent_identity(
+                            control,
+                            semantic_evidence=evidence,
+                            consumed_capacity_incidents=(
+                                consumed_capacity_incidents
+                            ),
+                            capacity_alert_resolution_plan=(
+                                capacity_alert_resolution_plan
+                            ),
+                        )
+                    )
+                    pending_request = {
+                        **request_identity,
+                        "requested_at": utc_timestamp(timestamp),
+                        "requested_timestamp": timestamp,
+                        "intent_id": sha256_value(request_identity),
+                    }
+                    _validate_finalization_request_intent_payload(
+                        control, pending_request
+                    )
+                    control["desired_state"] = "paused"
+                    control["drain_requested"] = True
+                    _close_open_epoch(
+                        control,
+                        reason="autonomous_finalization_requested",
+                        now=timestamp,
+                    )
+                    _reset_admission_ramp(
+                        state_dir,
+                        control,
+                        reason="autonomous_finalization_requested",
+                        now=timestamp,
+                        ceiling=24,
+                        clear_last_observation=True,
+                    )
+                    append_transition(
+                        state_dir,
+                        control,
+                        event="autonomous_finalization_admission_fenced",
+                        details={
+                            "intent_id": pending_request["intent_id"],
+                            "request_payload": copy.deepcopy(
+                                pending_request
+                            ),
+                            "effective_ceiling": 0,
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                evidence = copy.deepcopy(
+                    pending_request["semantic_evidence"]
+                )
+                consumed_capacity_incidents = list(
+                    pending_request["consumed_capacity_incidents"]
+                )
+                capacity_alert_resolution_plan = copy.deepcopy(
+                    pending_request["capacity_alert_resolution_plan"]
+                )
+                request_intent, request_binding = (
+                    _publish_finalization_request_intent(
+                        state_dir,
+                        control,
+                        semantic_evidence=evidence,
+                        consumed_capacity_incidents=(
+                            consumed_capacity_incidents
+                        ),
+                        capacity_alert_resolution_plan=(
+                            capacity_alert_resolution_plan
+                        ),
+                        now=float(
+                            pending_request["requested_timestamp"]
+                        ),
+                    )
+                )
+                if request_intent != pending_request:
+                    raise ControlError(
+                        "published finalization request differs from its "
+                        "durable admission fence"
+                    )
+                evidence = copy.deepcopy(
+                    request_intent["semantic_evidence"]
+                )
+                intent_id = str(request_intent["intent_id"])
+                requested_timestamp = float(
+                    request_intent["requested_timestamp"]
+                )
+                consumed_capacity_incidents = list(
+                    request_intent["consumed_capacity_incidents"]
+                )
+                capacity_alert_resolution_plan = copy.deepcopy(
+                    request_intent["capacity_alert_resolution_plan"]
+                )
+                _consume_finalization_capacity_incidents_locked(
+                    state_dir,
+                    control,
+                    intent_id=intent_id,
+                    incident_keys=consumed_capacity_incidents,
+                    alert_resolution_plan=capacity_alert_resolution_plan,
+                    now=requested_timestamp,
+                )
                 finalization.update(
                     {
                         "state": "requested",
-                        "intent_id": sha256_value(intent_payload),
-                        "requested_at": utc_timestamp(timestamp),
-                        "requested_timestamp": timestamp,
+                        "intent_id": intent_id,
+                        "requested_at": request_intent["requested_at"],
+                        "requested_timestamp": requested_timestamp,
                         "semantic_evidence": evidence,
+                        "request_intent": request_binding,
+                        "consumed_capacity_incidents": (
+                            consumed_capacity_incidents
+                        ),
                         "attempts": 0,
+                        "worker_attempts": [],
                         "next_attempt": 1,
+                        "phase_evidence": {
+                            "validating": None,
+                            "retiring_fleet": None,
+                            "snapshotting": None,
+                        },
                         "active_job": None,
                         "successor_job": None,
                         "successor_retirement": None,
@@ -17161,55 +23843,38 @@ def request_autonomous_finalization(
                 _append_finalization_history(
                     finalization,
                     event="requested",
-                    details={"semantic_evidence": evidence},
-                    now=timestamp,
+                    details={
+                        "semantic_evidence": evidence,
+                        "request_intent": request_binding,
+                        "consumed_capacity_incidents": (
+                            consumed_capacity_incidents
+                        ),
+                    },
+                    now=requested_timestamp,
                 )
-                append_transition(
+                _append_finalization_transition_once(
                     state_dir,
                     control,
                     event="autonomous_finalization_requested",
                     details={
-                        "intent_id": finalization["intent_id"],
+                        "intent_id": intent_id,
                         "semantic_evidence": evidence,
+                        "request_intent": request_binding,
+                        "consumed_capacity_incidents": (
+                            consumed_capacity_incidents
+                        ),
                     },
-                    now=timestamp,
+                    intent_id=intent_id,
+                    now=requested_timestamp,
                 )
                 _save_control(state_dir, control, now=timestamp)
     read_scheduler = scheduler_reader or (
         lambda: query_scheduler(tolerate_errors=False)
     )
     snapshot = scheduler or read_scheduler()
-    active = _submit_finalizer_job(
+    reconcile_autonomous_finalization(
         state_dir,
-        field="active_job",
-        attempt=1,
-        dependency_job_id=None,
         snapshot=snapshot,
-        submit_runner=submit_runner,
-        now=timestamp,
-    )
-    successor_snapshot = read_scheduler() if scheduler is None else SchedulerSnapshot(
-        (
-            *snapshot.jobs,
-            SchedulerJob(
-                str(active["job_id"]),
-                f"asys-s5-final-a{int(active['attempt']):06d}",
-                "PENDING",
-                str(active["job_token"]),
-                str(active["sbatch_path"]),
-            ),
-        ),
-        timestamp,
-        True,
-        True,
-        (),
-    )
-    _submit_finalizer_job(
-        state_dir,
-        field="successor_job",
-        attempt=2,
-        dependency_job_id=str(active["job_id"]),
-        snapshot=successor_snapshot,
         submit_runner=submit_runner,
         now=timestamp,
     )
@@ -17225,14 +23890,21 @@ def request_autonomous_finalization(
         control = load_control(state_dir)
         finalization = control["finalization"]
         if finalization["state"] == "requested":
+            active = finalization.get("active_job")
+            successor = finalization.get("successor_job")
+            if not isinstance(active, Mapping) or not isinstance(
+                successor, Mapping
+            ):
+                raise SchedulerAmbiguity(
+                    "finalizer reconciliation did not establish a durable pair"
+                )
             finalization["state"] = "draining"
-            finalization["next_attempt"] = 3
             _append_finalization_history(
                 finalization,
                 event="draining",
                 details={
                     "active_job_id": active["job_id"],
-                    "successor_job_id": finalization["successor_job"]["job_id"],
+                    "successor_job_id": successor["job_id"],
                 },
                 now=timestamp,
             )
@@ -17375,6 +24047,315 @@ def _reset_finalizer_chain_for_retry(
         _save_control(state_dir, control, now=now)
 
 
+def _finalizer_submission_rejected(
+    finalization: Mapping[str, Any],
+    *,
+    field: str,
+    record: Mapping[str, Any],
+) -> bool:
+    error = finalization.get("last_error")
+    if (
+        not isinstance(error, Mapping)
+        or error.get("kind") != "FinalizerSubmissionError"
+        or not str(error.get("message", "")).startswith(
+            "finalizer sbatch was rejected:"
+        )
+    ):
+        return False
+    return any(
+        row.get("event") == "job_submission_rejected"
+        and isinstance(row.get("details"), Mapping)
+        and row["details"].get("field") == field
+        and row["details"].get("attempt") == record.get("attempt")
+        for row in reversed(finalization.get("history", []))
+    )
+
+
+def _finalizer_record_missing_after_grace(
+    finalization: Mapping[str, Any],
+    *,
+    field: str,
+    record: Mapping[str, Any],
+    snapshot: SchedulerSnapshot,
+) -> bool:
+    if _finalizer_scheduler_matches(snapshot, record):
+        return False
+    job_id = record.get("job_id")
+    if job_id is not None and any(
+        job.job_id == str(job_id) for job in snapshot.jobs
+    ):
+        raise SchedulerAmbiguity(
+            f"finalizer {field} job ID exists with a different token"
+        )
+    if _finalizer_submission_rejected(
+        finalization, field=field, record=record
+    ):
+        return True
+    reference = (
+        record.get("submitted_timestamp")
+        if record.get("submitted_timestamp") is not None
+        else record.get("created_timestamp")
+    )
+    if (
+        not isinstance(reference, (int, float))
+        or isinstance(reference, bool)
+    ):
+        raise ControlError(
+            f"finalizer {field} visibility timestamp is invalid"
+        )
+    if snapshot.captured_at - float(reference) < SUBMISSION_VISIBILITY_GRACE_SECONDS:
+        raise SchedulerVisibilityPending(
+            f"finalizer {field} is inside scheduler visibility grace"
+        )
+    return True
+
+
+def _retire_unavailable_finalizer_successor(
+    state_dir: Path,
+    *,
+    snapshot: SchedulerSnapshot,
+    expected_active: Mapping[str, Any],
+    expected_successor: Mapping[str, Any],
+    scheduler_job: SchedulerJob | None,
+    reason: str,
+    now: float,
+) -> None:
+    """Clear one proven-unavailable successor before allocating its replacement."""
+
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        active = finalization.get("active_job")
+        successor = finalization.get("successor_job")
+        if (
+            not isinstance(active, Mapping)
+            or not isinstance(successor, Mapping)
+            or active.get("job_token") != expected_active.get("job_token")
+            or successor.get("job_token") != expected_successor.get("job_token")
+            or finalization.get("successor_retirement") is not None
+        ):
+            raise SchedulerAmbiguity(
+                "finalizer identities changed before successor replacement"
+            )
+        publisher_observation = _finalizer_scheduler_observation(
+            snapshot,
+            _finalizer_job_identity(active),
+            require_active=True,
+            context="replacement publisher",
+        )
+        successor_observation: dict[str, Any] | None = None
+        if scheduler_job is not None:
+            successor_observation = _finalizer_record_scheduler_observation(
+                snapshot,
+                successor,
+                scheduler_job,
+                require_active=False,
+                context="retired successor",
+            )
+        elif not _finalizer_record_missing_after_grace(
+            finalization,
+            field="successor_job",
+            record=successor,
+            snapshot=snapshot,
+        ):
+            raise AssertionError("missing successor was not eligible for replacement")
+        details = {
+            "intent_id": finalization["intent_id"],
+            "publisher_job_id": active["job_id"],
+            "successor_attempt": successor["attempt"],
+            "successor_job_id": successor.get("job_id"),
+            "successor_job_token": successor["job_token"],
+            "successor_record": copy.deepcopy(dict(successor)),
+            "publisher_observation": publisher_observation,
+            "successor_observation": successor_observation,
+            "scheduler_state": (
+                None
+                if successor_observation is None
+                else successor_observation["state"]
+            ),
+            "reason": reason,
+        }
+        _append_finalization_history(
+            finalization,
+            event="successor_retired_for_replacement",
+            details=details,
+            now=now,
+        )
+        finalization["successor_job"] = None
+        _append_finalizer_transition_once(
+            state_dir,
+            control,
+            event="finalizer_successor_retired_for_replacement",
+            details=details,
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+
+
+def _adopt_completed_finalizer_phase_evidence(
+    control: Mapping[str, Any],
+    finalization: MutableMapping[str, Any],
+    *,
+    marker: Mapping[str, Any],
+    now: float,
+) -> None:
+    """Recover all durable phases from one independently verified final marker."""
+
+    evidence = finalization["phase_evidence"]
+    snapshotting = evidence.get("snapshotting")
+    if isinstance(snapshotting, Mapping) and all(
+        snapshotting.get(field) is not None
+        for field in (
+            "cache_marker_sha256",
+            "cache_generation_id",
+            "cache_tree_sha256",
+            "snapshot_marker_sha256",
+            "snapshot_id",
+        )
+    ):
+        return
+    required_marker_fields = {
+        "semantic_report",
+        "semantic_report_sha256",
+        "semantic_preflight",
+        "semantic_preflight_sha256",
+        "analysis_cache",
+        "analysis_manifest_sha256",
+        "analysis_tree_sha256",
+        "snapshot",
+        "snapshot_marker_sha256",
+        "fleet_retirement",
+        "fleet_retirement_marker_sha256",
+    }
+    if not required_marker_fields.issubset(marker):
+        raise FinalizerInvariantError(
+            "verified final marker lacks phase-adoption bindings"
+        )
+    output_root = Path(str(finalization["output_root"])).resolve()
+    semantic_preflight = _load_json_object(
+        Path(str(marker["semantic_preflight"])),
+        description="phase-adoption semantic preflight",
+    )
+    semantic_intent_path = (
+        output_root / FINAL_SEMANTIC_INTENT_FILENAME
+    ).resolve()
+    semantic_intent = _load_json_object(
+        semantic_intent_path,
+        description="phase-adoption semantic intent",
+    )
+    retirement_root = Path(str(marker["fleet_retirement"])).resolve()
+    retirement_intent_path = (
+        retirement_root / FINAL_FLEET_RETIREMENT_INTENT_FILENAME
+    )
+    retirement_intent = _load_json_object(
+        retirement_intent_path,
+        description="phase-adoption retirement intent",
+    )
+    retirement_marker_path = (
+        retirement_root / FINAL_FLEET_RETIREMENT_COMPLETE_FILENAME
+    )
+    retirement_marker = _load_json_object(
+        retirement_marker_path,
+        description="phase-adoption retirement marker",
+    )
+    cache_root = Path(str(marker["analysis_cache"])).resolve()
+    cache_marker_path = cache_root / "ingest_manifest_v1.json"
+    cache_marker = _load_json_object(
+        cache_marker_path,
+        description="phase-adoption analysis cache",
+    )
+    snapshot_root = Path(str(marker["snapshot"])).resolve()
+    snapshot_marker_path = snapshot_root / "SNAPSHOT_COMPLETE.json"
+    snapshot_marker = _load_json_object(
+        snapshot_marker_path,
+        description="phase-adoption snapshot marker",
+    )
+    rows = {
+        "validating": {
+            "entered_at": utc_timestamp(now),
+            "entered_timestamp": now,
+            "semantic_report_path": str(
+                Path(str(marker["semantic_report"])).resolve()
+            ),
+            "semantic_intent_path": str(semantic_intent_path),
+            "semantic_preflight_path": str(
+                Path(str(marker["semantic_preflight"])).resolve()
+            ),
+            "semantic_report_sha256": marker["semantic_report_sha256"],
+            "semantic_intent_sha256": sha256_file(semantic_intent_path),
+            "semantic_intent_id": semantic_intent["intent_id"],
+            "semantic_preflight_sha256": marker[
+                "semantic_preflight_sha256"
+            ],
+            "semantic_preflight_id": semantic_preflight["preflight_id"],
+        },
+        "retiring_fleet": {
+            "entered_at": utc_timestamp(now),
+            "entered_timestamp": now,
+            "semantic_report_sha256": marker["semantic_report_sha256"],
+            "semantic_preflight_sha256": marker[
+                "semantic_preflight_sha256"
+            ],
+            "semantic_preflight_id": semantic_preflight["preflight_id"],
+            "retirement_root": str(retirement_root),
+            "retirement_intent_path": str(retirement_intent_path),
+            "retirement_intent_sha256": sha256_file(
+                retirement_intent_path
+            ),
+            "retirement_id": retirement_intent["retirement_id"],
+            "retirement_marker_path": str(retirement_marker_path),
+            "retirement_marker_sha256": marker[
+                "fleet_retirement_marker_sha256"
+            ],
+            "retirement_completion_id": retirement_marker["completion_id"],
+        },
+        "snapshotting": {
+            "entered_at": utc_timestamp(now),
+            "entered_timestamp": now,
+            "retirement_root": str(retirement_root),
+            "retirement_marker_path": str(retirement_marker_path),
+            "retirement_marker_sha256": marker[
+                "fleet_retirement_marker_sha256"
+            ],
+            "retirement_completion_id": retirement_marker["completion_id"],
+            "cache_root": str(cache_root),
+            "cache_marker_path": str(cache_marker_path),
+            "cache_marker_sha256": marker["analysis_manifest_sha256"],
+            "cache_generation_id": cache_marker["cache_generation_id"],
+            "cache_tree_sha256": marker["analysis_tree_sha256"],
+            "snapshot_root": str(snapshot_root),
+            "snapshot_marker_path": str(snapshot_marker_path),
+            "snapshot_marker_sha256": marker["snapshot_marker_sha256"],
+            "snapshot_id": snapshot_marker["snapshot_id"],
+        },
+    }
+    changed = False
+    for phase, row in rows.items():
+        existing = evidence.get(phase)
+        if existing is None:
+            evidence[phase] = row
+            changed = True
+            continue
+        for field, value in row.items():
+            prior = existing[field]
+            if field in {"entered_at", "entered_timestamp"}:
+                continue
+            if prior is not None and prior != value:
+                raise FinalizerProvenanceError(
+                    f"completed marker conflicts with {phase}/{field}"
+                )
+            if prior is None:
+                existing[field] = value
+                changed = True
+    if changed:
+        _append_finalization_history(
+            finalization,
+            event="completed_artifact_phases_adopted",
+            details={"final_id": marker.get("final_id")},
+            now=now,
+        )
+
+
 def _commit_autonomous_finalization_complete(
     state_dir: Path, *, now: float
 ) -> dict[str, Any]:
@@ -17405,6 +24386,12 @@ def _commit_autonomous_finalization_complete(
         _autonomous_finalizer_completion_binding(control)
         verified = _verify_final_complete(
             Path(str(finalization["output_root"])), control=control
+        )
+        _adopt_completed_finalizer_phase_evidence(
+            control,
+            finalization,
+            marker=verified,
+            now=now,
         )
         finalization["state"] = "complete"
         finalization["completion_marker"] = {
@@ -17441,39 +24428,508 @@ def _commit_autonomous_finalization_complete(
         return copy.deepcopy(finalization)
 
 
-def _finalization_error_is_deterministic(exc: BaseException) -> bool:
-    if isinstance(exc, (ImmutablePinError, ReadinessError, GenerationCatalogError)):
-        return True
-    message = str(exc).lower()
-    transient_fragments = {
-        "scheduler",
-        "squeue",
-        "sacct",
-        "timeout",
-        "timed out",
-        "active cell locks",
-        "fleet retirement pending",
-        "visibility grace",
-        "temporarily",
-        "connection",
-        "node",
+def _read_finalizer_scheduler_truth(
+    reader: Callable[[], SchedulerSnapshot],
+) -> SchedulerSnapshot:
+    """Return complete scheduler truth or one explicit retryable read error."""
+
+    try:
+        snapshot = reader()
+    except FinalizerRetryableError:
+        raise
+    except (
+        SchedulerAmbiguity,
+        SchedulerVisibilityPending,
+        ControlError,
+        OSError,
+        subprocess.TimeoutExpired,
+        TimeoutError,
+        ConnectionError,
+    ) as exc:
+        raise FinalizerSchedulerReadError(
+            f"finalizer scheduler read failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if (
+        not isinstance(snapshot, SchedulerSnapshot)
+        or not snapshot.squeue_ok
+        or not snapshot.sacct_ok
+        or snapshot.errors
+    ):
+        raise FinalizerSchedulerReadError(
+            "finalizer scheduler read returned incomplete squeue+sacct truth"
+        )
+    return snapshot
+
+
+def _typed_finalizer_failure(
+    exc: BaseException,
+    *,
+    finalization: Mapping[str, Any],
+) -> tuple[BaseException, bool]:
+    """Classify only an explicit typed infrastructure allowlist as retryable."""
+
+    if isinstance(
+        exc,
+        (
+            FinalizerRetryableError,
+            SchedulerVisibilityPending,
+        ),
+    ):
+        return exc, True
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return (
+            FinalizerTimeoutError(
+                f"finalizer subprocess timed out: {exc}"
+            ),
+            True,
+        )
+    if isinstance(exc, TimeoutError):
+        return FinalizerTimeoutError(str(exc)), True
+    if isinstance(exc, ConnectionError):
+        return FinalizerConnectionError(str(exc)), True
+    if isinstance(
+        exc,
+        (
+            FinalizerDeterministicError,
+            ImmutablePinError,
+            ReadinessError,
+            GenerationCatalogError,
+        ),
+    ):
+        return exc, False
+    state = str(finalization.get("state", ""))
+    if isinstance(exc, ControlError):
+        if state == "validating":
+            return FinalizerSemanticError(str(exc)), False
+        if state == "retiring_fleet":
+            return FinalizerProvenanceError(str(exc)), False
+        if state == "snapshotting":
+            phase = finalization.get("phase_evidence", {}).get("snapshotting")
+            if (
+                isinstance(phase, Mapping)
+                and phase.get("cache_marker_sha256") is None
+            ):
+                return FinalizerCacheError(str(exc)), False
+            return FinalizerSnapshotError(str(exc)), False
+        return FinalizerInvariantError(str(exc)), False
+    # Unknown exception classes are never admitted into the retry allowlist.
+    return exc, False
+
+
+def _authenticate_or_adopt_finalizer_worker(
+    state_dir: Path,
+    *,
+    intent_id: str,
+    attempt: int,
+    job_id: str,
+    scheduler_reader: Callable[[], SchedulerSnapshot],
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ),
+    now: float,
+) -> SchedulerSnapshot | None:
+    """Fence one worker or adopt its accepted-before-ID submission exactly once.
+
+    A Slurm allocation may start after ``sbatch`` accepted it but before the
+    submitter committed the numeric job ID.  The running allocation is allowed to
+    close that transaction only when complete scheduler truth maps its environment
+    job ID to one exact durable token, immutable sbatch, dependency, and attempt.
+    All foreign or ambiguous workers are fenced before the broad execution-failure
+    handler, so they cannot mutate authoritative finalization state.
+    """
+
+    current = load_control(state_dir, verify_files=True)
+    finalization = current["finalization"]
+    if finalization.get("intent_id") != intent_id:
+        raise ControllerFenced("finalizer worker lost its durable intent")
+    if any(
+        row["attempt"] == attempt and row["job_id"] == job_id
+        for row in finalization["worker_attempts"]
+    ):
+        return None
+    candidates = [
+        (field, record)
+        for field, record in (
+            ("active_job", finalization.get("active_job")),
+            ("successor_job", finalization.get("successor_job")),
+        )
+        if isinstance(record, Mapping) and record.get("attempt") == attempt
+    ]
+    if len(candidates) != 1:
+        raise ControllerFenced(
+            "finalizer worker attempt does not match one durable job"
+        )
+    field, record = candidates[0]
+    recorded_job_id = record.get("job_id")
+    if recorded_job_id is not None:
+        if recorded_job_id != job_id:
+            raise ControllerFenced(
+                "finalizer worker job ID differs from its durable identity"
+            )
+        return None
+    if record.get("state") != "submitting":
+        raise ControllerFenced(
+            "ID-less finalizer worker is not backed by a submitting intent"
+        )
+
+    snapshot = _read_finalizer_scheduler_truth(scheduler_reader)
+    matches = _finalizer_scheduler_matches(snapshot, record)
+    if len(matches) != 1 or matches[0].job_id != job_id:
+        raise ControllerFenced(
+            "ID-less finalizer worker is absent or ambiguous in scheduler truth"
+        )
+    try:
+        _validate_finalizer_scheduler_envelope(
+            matches[0],
+            record,
+            require_active=True,
+            context=f"worker self-adoption {field}",
+        )
+    except ControlError as exc:
+        raise ControllerFenced(
+            "ID-less finalizer worker scheduler provenance is invalid"
+        ) from exc
+    adopted = _submit_finalizer_job(
+        state_dir,
+        field=field,
+        attempt=attempt,
+        dependency_job_id=record.get("dependency_job_id"),
+        snapshot=snapshot,
+        submit_runner=submit_runner,
+        now=now,
+    )
+    if adopted.get("job_id") != job_id:
+        raise ControllerFenced(
+            "finalizer worker self-adoption committed a different job ID"
+        )
+    return snapshot
+
+
+def _finalizer_drain_backoff_seconds(
+    finalization: Mapping[str, Any], *, now: float
+) -> float:
+    """Return the remaining durable cadence after the latest drain-pending cut."""
+
+    for row in reversed(finalization.get("history", [])):
+        if row.get("event") != "drain_pending":
+            continue
+        details = row.get("details")
+        not_before = (
+            details.get("retry_not_before_timestamp")
+            if isinstance(details, Mapping)
+            else None
+        )
+        if (
+            not isinstance(not_before, (int, float))
+            or isinstance(not_before, bool)
+            or not math.isfinite(float(not_before))
+        ):
+            raise FinalizerInvariantError(
+                "durable finalizer drain backoff is malformed"
+            )
+        return max(0.0, float(not_before) - float(now))
+    return 0.0
+
+
+def _exact_live_finalizer_draining_controllers(
+    control: Mapping[str, Any],
+    snapshot: SchedulerSnapshot,
+) -> list[str]:
+    """Map every live schema-5 controller to one exact durable record."""
+
+    scoped = [
+        job
+        for job in snapshot.jobs
+        if job.active
+        and (
+            _controller_job_name(job.job_name)
+            or job.comment.startswith(TOKEN_PREFIX)
+            or parse_job_token(job.comment) is not None
+        )
+    ]
+    if not scoped:
+        return []
+    malformed_ids = sorted(
+        {job.job_id for job in scoped if not job.job_id.isdigit()}
+    )
+    if malformed_ids:
+        raise SchedulerAmbiguity(
+            "draining controller namespace has malformed job IDs: "
+            f"{malformed_ids}"
+        )
+    malformed_provenance_ids = sorted(
+        {
+            job.job_id
+            for job in scoped
+            if _controller_job_name(job.job_name)
+            and parse_job_token(job.comment) is None
+        },
+        key=int,
+    )
+    if malformed_provenance_ids:
+        raise SchedulerAmbiguity(
+            "controller-named jobs have missing or malformed provenance during "
+            f"drain: {malformed_provenance_ids}"
+        )
+    mapped: dict[str, tuple[str, str, str]] = {}
+    for role in ROLE_NAMES:
+        role_state = control["controllers"][role]
+        for field in ("active", "successor", "submission_intent"):
+            record = role_state.get(field)
+            if not isinstance(record, Mapping):
+                continue
+            token = str(record.get("job_token", ""))
+            matches = [job for job in scoped if job.comment == token]
+            if len(matches) > 1:
+                raise SchedulerAmbiguity(
+                    f"draining controller {role}/{field} maps to duplicate jobs"
+                )
+            if not matches:
+                recorded_id = record.get("job_id")
+                if recorded_id is not None and any(
+                    job.job_id == str(recorded_id) for job in scoped
+                ):
+                    raise SchedulerAmbiguity(
+                        f"draining controller {role}/{field} has a token mismatch"
+                    )
+                continue
+            job = matches[0]
+            recorded_id = record.get("job_id")
+            sbatch_path = str(record.get("sbatch_path", ""))
+            dependency = record.get("dependency_job_id")
+            parsed = parse_job_token(token)
+            expected_name = _rendered_controller_job_name(
+                role,
+                record.get("generation"),
+                record.get("intent_token"),
+            )
+            if (
+                parsed is None
+                or parsed.get("role") != role
+                or job.job_name != expected_name
+                or (
+                    recorded_id is not None
+                    and str(recorded_id) != job.job_id
+                )
+                or not job.job_id.isdigit()
+                or (
+                    dependency is None
+                    and bool(_normalized_scheduler_dependency(job.dependency))
+                )
+                or (
+                    dependency is not None
+                    and not _dependency_binds_exact_afterany(
+                        job.dependency, str(dependency)
+                    )
+                )
+            ):
+                raise SchedulerAmbiguity(
+                    f"draining controller {role}/{field} provenance is invalid"
+                )
+            identity = (role, token, sbatch_path)
+            prior = mapped.setdefault(job.job_id, identity)
+            if prior != identity:
+                raise SchedulerAmbiguity(
+                    f"draining controller job {job.job_id} maps to multiple identities"
+                )
+    unexpected = sorted(
+        {job.job_id for job in scoped} - set(mapped),
+        key=int,
+    )
+    if unexpected:
+        raise SchedulerAmbiguity(
+            f"unmapped schema-5 controllers remain live during drain: {unexpected}"
+        )
+    return sorted(mapped, key=int)
+
+
+def _finalizer_drain_observation(
+    state_dir: Path,
+    *,
+    control: Mapping[str, Any],
+    snapshot: SchedulerSnapshot,
+    now: float,
+) -> dict[str, Any]:
+    """Return one complete, exact drain cut without mutating scheduler state."""
+
+    _require_complete_finalizer_scheduler(
+        snapshot, operation="autonomous finalizer drain"
+    )
+    ledger_cut = _assert_cell_submission_cut_visible(
+        state_dir, snapshot, now=now
+    )
+    running_cells, pending_cells = _exact_live_cell_task_actions(
+        state_dir,
+        snapshot,
+        ledger_preimage=ledger_cut[1],
+    )
+    mapped_cell_set = {*running_cells, *pending_cells}
+    live_cell_set = {
+        job.job_id
+        for job in snapshot.jobs
+        if job.active and _cell_job(job.job_name)
     }
-    if any(fragment in message for fragment in transient_fragments):
-        return False
-    deterministic_fragments = {
-        "semantic",
-        "acceptance",
-        "corrupt",
-        "malformed",
-        "duplicate",
-        "unexpected",
-        "untrusted",
-        "protocol",
-        "contract",
-        "checksum drift",
-        "schema",
+    malformed_cells = sorted(
+        {
+            value
+            for value in mapped_cell_set | live_cell_set
+            if _EXACT_CELL_TASK_ID.fullmatch(value) is None
+        }
+    )
+    if malformed_cells:
+        raise SchedulerAmbiguity(
+            f"finalizer drain has malformed cell task IDs: {malformed_cells}"
+        )
+    sort_cell = lambda value: tuple(
+        int(part) for part in value.split("_", 1)
+    )
+    mapped_cells = sorted(mapped_cell_set, key=sort_cell)
+    live_cells = sorted(live_cell_set, key=sort_cell)
+    if mapped_cells != live_cells:
+        raise SchedulerAmbiguity(
+            "live cell drain mapping differs from complete scheduler truth"
+        )
+    _assert_dispatcher_ledger_preimage_unchanged(
+        state_dir,
+        expected_raw=ledger_cut[0],
+        description="finalizer drain dispatcher ledger",
+    )
+    controllers = _exact_live_finalizer_draining_controllers(control, snapshot)
+    locks = sorted(_active_manifest_cell_locks(control))
+    return {
+        "captured_timestamp": float(snapshot.captured_at),
+        "active_cell_task_ids": live_cells,
+        "active_controller_job_ids": controllers,
+        "active_cell_locks": locks,
+        "pending": bool(live_cells or controllers or locks),
     }
-    return any(fragment in message for fragment in deterministic_fragments)
+
+
+def _begin_finalizer_worker_attempt(
+    state_dir: Path,
+    *,
+    intent_id: str,
+    attempt: int,
+    job_id: str,
+    now: float,
+) -> str:
+    """Count one exact worker identity once, before any scheduler read."""
+
+    with control_lock(state_dir):
+        control = load_control(state_dir, verify_files=True)
+        finalization = control["finalization"]
+        if finalization.get("intent_id") != intent_id:
+            raise ControllerFenced(
+                "finalizer worker attempt lost its durable intent"
+            )
+        if finalization.get("state") == "blocked":
+            return "blocked"
+        if finalization.get("state") == "complete":
+            return "complete"
+        for row in finalization["worker_attempts"]:
+            if row["attempt"] == attempt and row["job_id"] == job_id:
+                return str(row["status"])
+        identities = [
+            record
+            for record in (
+                finalization.get("active_job"),
+                finalization.get("successor_job"),
+            )
+            if isinstance(record, Mapping)
+            and record.get("attempt") == attempt
+            and record.get("job_id") == job_id
+        ]
+        if len(identities) != 1:
+            raise ControllerFenced(
+                "finalizer worker attempt does not match one durable job"
+            )
+        if int(finalization["attempts"]) >= FINALIZER_MAX_TRANSIENT_ATTEMPTS:
+            error = FinalizerRetryLimitError(
+                "autonomous finalizer exhausted its bounded retry budget"
+            )
+            finalization["state"] = "blocked"
+            finalization["last_error"] = {
+                "kind": type(error).__name__,
+                "message": str(error),
+                "transient": False,
+                "at": utc_timestamp(now),
+                "timestamp": now,
+            }
+            _append_finalization_history(
+                finalization,
+                event="retry_budget_exhausted",
+                details={"attempt": attempt, "job_id": job_id},
+                now=now,
+            )
+            append_transition(
+                state_dir,
+                control,
+                event="autonomous_finalization_blocked",
+                details={
+                    "attempt": attempt,
+                    "job_id": job_id,
+                    "error": str(error),
+                },
+                now=now,
+            )
+            _save_control(state_dir, control, now=now)
+            return "exhausted"
+        finalization["worker_attempts"].append(
+            {
+                "attempt": attempt,
+                "job_id": job_id,
+                "status": "started",
+                "started_at": utc_timestamp(now),
+                "started_timestamp": now,
+                "finished_at": None,
+                "finished_timestamp": None,
+            }
+        )
+        finalization["attempts"] = len(finalization["worker_attempts"])
+        _append_finalization_history(
+            finalization,
+            event="worker_attempt_started",
+            details={"attempt": attempt, "job_id": job_id},
+            now=now,
+        )
+        _save_control(state_dir, control, now=now)
+        return "started"
+
+
+def _finish_finalizer_worker_attempt(
+    state_dir: Path,
+    *,
+    attempt: int,
+    job_id: str,
+    status: str,
+    now: float,
+) -> None:
+    if status not in FINALIZER_WORKER_ATTEMPT_STATES - {"started"}:
+        raise FinalizerInvariantError(
+            f"invalid finalizer worker terminal status {status!r}"
+        )
+    with control_lock(state_dir):
+        control = load_control(state_dir)
+        rows = [
+            row
+            for row in control["finalization"]["worker_attempts"]
+            if row["attempt"] == attempt and row["job_id"] == job_id
+        ]
+        if len(rows) != 1:
+            raise FinalizerInvariantError(
+                "finalizer worker attempt record is missing or duplicated"
+            )
+        row = rows[0]
+        if row["status"] == status:
+            return
+        if row["status"] != "started":
+            raise FinalizerInvariantError(
+                "finalizer worker attempt already has a different outcome"
+            )
+        row["status"] = status
+        row["finished_at"] = utc_timestamp(now)
+        row["finished_timestamp"] = now
+        _save_control(state_dir, control, now=now)
 
 
 def reconcile_autonomous_finalization(
@@ -17517,42 +24973,85 @@ def reconcile_autonomous_finalization(
         return _commit_autonomous_finalization_complete(
             state_dir, now=timestamp
         )
-    if finalization["state"] in {"idle", "blocked"}:
+    if finalization["state"] == "idle":
+        pending_request = _pending_finalization_request_payload(current)
+        if pending_request is not None:
+            return request_autonomous_finalization(
+                state_dir,
+                semantic_report_path=Path(
+                    str(pending_request["semantic_evidence"]["path"])
+                ),
+                scheduler=snapshot,
+                submit_runner=submit_runner,
+                now=timestamp,
+            )
         return copy.deepcopy(finalization)
+    if finalization["state"] == "blocked":
+        return copy.deepcopy(finalization)
+    # An accepted sbatch can outlive the process before its numeric job ID reaches
+    # control.json.  Adopt only the unique scheduler row bound to the exact durable
+    # token and immutable sbatch; do this before any identity requires ``job_id``.
+    for field in ("active_job", "successor_job"):
+        current = load_control(state_dir, verify_files=True)
+        finalization = current["finalization"]
+        record = finalization.get(field)
+        if not isinstance(record, Mapping) or record.get("job_id") is not None:
+            continue
+        matches = _finalizer_scheduler_matches(snapshot, record)
+        if len(matches) > 1:
+            raise SchedulerAmbiguity(
+                f"finalizer {field} maps to multiple scheduler jobs"
+            )
+        if len(matches) == 1:
+            _submit_finalizer_job(
+                state_dir,
+                field=field,
+                attempt=int(record["attempt"]),
+                dependency_job_id=record.get("dependency_job_id"),
+                snapshot=snapshot,
+                submit_runner=submit_runner,
+                now=timestamp,
+            )
+    current = load_control(state_dir, verify_files=True)
+    finalization = current["finalization"]
     active = finalization.get("active_job")
     successor = finalization.get("successor_job")
+    active_matches = (
+        _finalizer_scheduler_matches(snapshot, active)
+        if isinstance(active, Mapping)
+        else []
+    )
+    successor_matches = (
+        _finalizer_scheduler_matches(snapshot, successor)
+        if isinstance(successor, Mapping)
+        else []
+    )
+    if len(active_matches) > 1 or len(successor_matches) > 1:
+        raise SchedulerAmbiguity("duplicate autonomous finalizer jobs are visible")
     active_live = (
-        [
-            job
-            for job in _finalizer_scheduler_matches(snapshot, active)
-            if job.active
-        ]
+        [job for job in active_matches if job.active]
         if isinstance(active, Mapping)
         else []
     )
     successor_live = (
-        [
-            job
-            for job in _finalizer_scheduler_matches(snapshot, successor)
-            if job.active
-        ]
+        [job for job in successor_matches if job.active]
         if isinstance(successor, Mapping)
         else []
     )
-    if len(active_live) > 1 or len(successor_live) > 1:
-        raise SchedulerAmbiguity("duplicate autonomous finalizer jobs are live")
-    if active_live:
-        _finalizer_scheduler_observation(
+    if active_matches:
+        _finalizer_record_scheduler_observation(
             snapshot,
-            _finalizer_job_identity(active),
-            require_active=True,
+            active,
+            active_matches[0],
+            require_active=bool(active_live),
             context="active",
         )
-    if successor_live:
-        _finalizer_scheduler_observation(
+    if successor_matches:
+        _finalizer_record_scheduler_observation(
             snapshot,
-            _finalizer_job_identity(successor),
-            require_active=True,
+            successor,
+            successor_matches[0],
+            require_active=bool(successor_live),
             context="successor",
         )
     expected_live_ids = {
@@ -17567,6 +25066,13 @@ def reconcile_autonomous_finalization(
     if unexpected_live:
         raise SchedulerAmbiguity(
             f"unmapped autonomous finalizer jobs are live: {unexpected_live}"
+        )
+    if isinstance(active, Mapping) and not active_matches:
+        _finalizer_record_missing_after_grace(
+            finalization,
+            field="active_job",
+            record=active,
+            snapshot=snapshot,
         )
     retirement = finalization.get("successor_retirement")
     if isinstance(retirement, Mapping):
@@ -17618,6 +25124,48 @@ def reconcile_autonomous_finalization(
             successor = latest["successor_job"]
             active_live = []
             successor_live = []
+    if active_live and isinstance(successor, Mapping) and not successor_live:
+        terminal_job = successor_matches[0] if successor_matches else None
+        terminal_state = (
+            normalize_scheduler_state(terminal_job.state)
+            if terminal_job is not None
+            else None
+        )
+        if terminal_state is not None and terminal_state not in {
+            "CANCELLED",
+            "REVOKED",
+        }:
+            raise SchedulerAmbiguity(
+                "after-any successor reached an execution terminal state while "
+                f"its publisher remains live: {terminal_state}"
+            )
+        reason = (
+            f"terminal_{terminal_state.lower()}"
+            if terminal_state is not None
+            else (
+                "submission_rejected"
+                if _finalizer_submission_rejected(
+                    finalization,
+                    field="successor_job",
+                    record=successor,
+                )
+                else "missing_after_visibility_grace"
+            )
+        )
+        _retire_unavailable_finalizer_successor(
+            state_dir,
+            snapshot=snapshot,
+            expected_active=active,
+            expected_successor=successor,
+            scheduler_job=terminal_job,
+            reason=reason,
+            now=timestamp,
+        )
+        latest = load_control(state_dir)["finalization"]
+        active = latest["active_job"]
+        successor = None
+        successor_matches = []
+        successor_live = []
     if not active_live and successor_live:
         _promote_finalizer_successor(
             state_dir,
@@ -17648,10 +25196,6 @@ def reconcile_autonomous_finalization(
             submit_runner=submit_runner,
             now=timestamp,
         )
-        with control_lock(state_dir):
-            updated = load_control(state_dir)
-            updated["finalization"]["next_attempt"] = attempt + 1
-            _save_control(state_dir, updated, now=timestamp)
         successor = None
     if not successor_live and successor is None:
         latest = load_control(state_dir)["finalization"]
@@ -17666,11 +25210,398 @@ def reconcile_autonomous_finalization(
             submit_runner=submit_runner,
             now=timestamp,
         )
-        with control_lock(state_dir):
-            updated = load_control(state_dir)
-            updated["finalization"]["next_attempt"] = attempt + 1
-            _save_control(state_dir, updated, now=timestamp)
     return copy.deepcopy(load_control(state_dir)["finalization"])
+
+
+def _run_autonomous_finalizer_worker_impl(
+    state_dir: Path,
+    *,
+    intent_id: str,
+    attempt: int,
+    job_id: str | None = None,
+    scheduler_reader: Callable[[], SchedulerSnapshot] | None = None,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    cancel_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    finalize_runner: Callable[..., Mapping[str, Any]] | None = None,
+    sleep_runner: Callable[[float], None] | None = None,
+    interruption_controller: _FinalizerInterruptionController,
+    now: float | None = None,
+) -> int:
+    """Advance one resumable finalization attempt and preserve its successor."""
+
+    timestamp = time.time() if now is None else float(now)
+    slurm_job_id = job_id or os.environ.get("SLURM_JOB_ID", "")
+    if not slurm_job_id.isdigit():
+        raise ControllerFenced("finalizer worker requires a numeric SLURM_JOB_ID")
+    current = load_control(state_dir, verify_files=True)
+    if current["finalization"].get("intent_id") != intent_id:
+        raise ControllerFenced("finalizer intent ID no longer owns control state")
+    read_scheduler = scheduler_reader or (
+        lambda: query_scheduler(tolerate_errors=False)
+    )
+    def sleeper(seconds: float) -> None:
+        if sleep_runner is not None:
+            sleep_runner(seconds)
+            interruption_controller.raise_if_requested()
+            return
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while True:
+            interruption_controller.raise_if_requested()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(FINALIZER_CHILD_POLL_SECONDS, remaining))
+    if current["finalization"]["state"] == "complete":
+        active = current["finalization"].get("active_job")
+        if (
+            not isinstance(active, Mapping)
+            or active.get("job_id") != slurm_job_id
+            or active.get("attempt") != attempt
+        ):
+            raise ControllerFenced(
+                "completed finalization only accepts its exact publisher replay"
+            )
+        reconcile_autonomous_finalization(
+            state_dir,
+            snapshot=_read_finalizer_scheduler_truth(read_scheduler),
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+        return 0
+    try:
+        adopted_snapshot = _authenticate_or_adopt_finalizer_worker(
+            state_dir,
+            intent_id=intent_id,
+            attempt=attempt,
+            job_id=slurm_job_id,
+            scheduler_reader=read_scheduler,
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+    except FinalizerRetryableError:
+        # An ID-less worker cannot safely write failure state until complete
+        # scheduler truth authenticates it.  Its after-any successor remains the
+        # durable retry mechanism.
+        return 75
+    attempt_recorded = False
+    try:
+        backoff = _finalizer_drain_backoff_seconds(
+            load_control(state_dir)["finalization"], now=timestamp
+        )
+        if backoff > 0:
+            sleeper(backoff)
+            if now is None:
+                timestamp = time.time()
+        attempt_status = _begin_finalizer_worker_attempt(
+            state_dir,
+            intent_id=intent_id,
+            attempt=attempt,
+            job_id=slurm_job_id,
+            now=timestamp,
+        )
+        if attempt_status == "complete":
+            return 0
+        if attempt_status in {"pending", "retryable_failed"}:
+            return 75
+        if attempt_status in {"blocked", "exhausted"}:
+            if attempt_status == "exhausted":
+                record_alert(
+                    state_dir,
+                    kind="finalization-failure",
+                    severity="critical",
+                    message=(
+                        "FinalizerRetryLimitError: autonomous finalizer "
+                        "exhausted its bounded retry budget"
+                    ),
+                    dedupe_key="finalization:blocked",
+                    send_email=True,
+                    now=timestamp,
+                )
+            return 2
+        attempt_recorded = True
+        interruption_controller.raise_if_requested()
+        # Obtain complete scheduler truth before promoting a running after-any
+        # successor into the active slot.  If this read fails, the durable pair is
+        # left unchanged, so the exact recorded successor remains adoptable by the
+        # next controller/watchdog reconciliation instead of becoming an unpaired
+        # active job.
+        snapshot = adopted_snapshot or _read_finalizer_scheduler_truth(
+            read_scheduler
+        )
+        publisher_record = _promote_finalizer_successor(
+            state_dir, job_id=slurm_job_id, attempt=attempt, now=timestamp
+        )
+        reconcile_autonomous_finalization(
+            state_dir,
+            snapshot=snapshot,
+            submit_runner=submit_runner,
+            now=timestamp,
+        )
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            finalization = control["finalization"]
+            if finalization["state"] == "requested":
+                finalization["state"] = "draining"
+                _append_finalization_history(
+                    finalization,
+                    event="draining",
+                    details={
+                        "active_job_id": publisher_record["job_id"],
+                        "successor_job_id": (
+                            None
+                            if finalization.get("successor_job") is None
+                            else finalization["successor_job"].get("job_id")
+                        ),
+                    },
+                    now=timestamp,
+                )
+                _append_finalizer_transition_once(
+                    state_dir,
+                    control,
+                    event="autonomous_finalization_draining",
+                    details={"intent_id": finalization["intent_id"]},
+                    now=timestamp,
+                )
+            finalization["last_error"] = None
+            _append_finalization_history(
+                finalization,
+                event="attempt_execution_started",
+                details={"attempt": attempt, "job_id": slurm_job_id},
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+            phase_rank = FINALIZER_PHASE_ORDER.get(
+                str(finalization["state"]), 0
+            )
+            output_root = Path(str(finalization["output_root"])).resolve()
+        if phase_rank == 0:
+            durable = load_control(state_dir)
+            drain_intent = durable.get("drain_intent")
+            if (
+                not isinstance(drain_intent, Mapping)
+                or drain_intent.get("state") != "complete"
+            ):
+                pause_control(
+                    state_dir,
+                    drain=True,
+                    scheduler=snapshot,
+                    cancel_runner=cancel_runner,
+                    now=timestamp,
+                )
+            drain_snapshot = _read_finalizer_scheduler_truth(read_scheduler)
+            drain_control = load_control(state_dir, verify_files=True)
+            drain = _finalizer_drain_observation(
+                state_dir,
+                control=drain_control,
+                snapshot=drain_snapshot,
+                now=timestamp,
+            )
+            if drain["pending"]:
+                retry_not_before = timestamp + FINALIZER_DRAIN_RETRY_SECONDS
+                with control_lock(state_dir):
+                    control = load_control(state_dir)
+                    finalization = control["finalization"]
+                    if finalization["state"] not in {"requested", "draining"}:
+                        raise FinalizerInvariantError(
+                            "finalizer phase advanced during drain observation"
+                        )
+                    finalization["state"] = "draining"
+                    finalization["last_error"] = None
+                    _append_finalization_history(
+                        finalization,
+                        event="drain_pending",
+                        details={
+                            **drain,
+                            "attempt": attempt,
+                            "job_id": slurm_job_id,
+                            "retry_not_before_timestamp": retry_not_before,
+                        },
+                        now=timestamp,
+                    )
+                    _save_control(state_dir, control, now=timestamp)
+                _finish_finalizer_worker_attempt(
+                    state_dir,
+                    attempt=attempt,
+                    job_id=slurm_job_id,
+                    status="pending",
+                    now=timestamp,
+                )
+                sleeper(FINALIZER_DRAIN_RETRY_SECONDS)
+                return 75
+            _record_autonomous_finalizer_phase(
+                state_dir,
+                publisher_finalizer=publisher_record,
+                phase="validating",
+                bindings={
+                    "semantic_report_path": str(
+                        (output_root / FINAL_SEMANTIC_FILENAME).resolve()
+                    ),
+                    "semantic_intent_path": str(
+                        (
+                            output_root
+                            / FINAL_SEMANTIC_INTENT_FILENAME
+                        ).resolve()
+                    ),
+                    "semantic_preflight_path": str(
+                        (
+                            output_root
+                            / FINAL_SEMANTIC_PREFLIGHT_FILENAME
+                        ).resolve()
+                    ),
+                    "semantic_report_sha256": None,
+                    "semantic_intent_sha256": None,
+                    "semantic_intent_id": None,
+                    "semantic_preflight_sha256": None,
+                    "semantic_preflight_id": None,
+                },
+                now=timestamp,
+            )
+        runner = finalize_runner or finalize_sweep
+        wrapped_scheduler_reader = lambda: _read_finalizer_scheduler_truth(
+            read_scheduler
+        )
+        runner_kwargs: dict[str, Any] = {
+            "output_root": output_root,
+            "scheduler_reader": wrapped_scheduler_reader,
+            "cancel_runner": cancel_runner,
+            "publisher_finalizer": publisher_record,
+            "now": timestamp,
+        }
+        if finalize_runner is None:
+            runner_kwargs["interruption_controller"] = (
+                interruption_controller
+            )
+        result = runner(state_dir, **runner_kwargs)
+        interruption_controller.raise_if_requested()
+        if result.get("complete") is not True:
+            with control_lock(state_dir):
+                control = load_control(state_dir)
+                finalization = control["finalization"]
+                _append_finalization_history(
+                    finalization,
+                    event="attempt_pending",
+                    details={"attempt": attempt, "result": dict(result)},
+                    now=timestamp,
+                )
+                _save_control(state_dir, control, now=timestamp)
+            _finish_finalizer_worker_attempt(
+                state_dir,
+                attempt=attempt,
+                job_id=slurm_job_id,
+                status="pending",
+                now=timestamp,
+            )
+            return 75
+        _commit_autonomous_finalization_complete(state_dir, now=timestamp)
+        _finish_finalizer_worker_attempt(
+            state_dir,
+            attempt=attempt,
+            job_id=slurm_job_id,
+            status="complete",
+            now=timestamp,
+        )
+        return 0
+    except ControllerFenced:
+        # A foreign, stale, or concurrently superseded worker never gets to turn
+        # its loss of authority into a scientific-integrity state mutation.
+        raise
+    except Exception as exc:
+        observed = load_control(state_dir)["finalization"]
+        typed_error, retryable = _typed_finalizer_failure(
+            exc,
+            finalization=observed,
+        )
+        retry_exhausted = bool(
+            retryable
+            and int(observed["attempts"])
+            >= FINALIZER_MAX_TRANSIENT_ATTEMPTS
+        )
+        if retry_exhausted:
+            typed_error = FinalizerRetryLimitError(
+                "autonomous finalizer exhausted its bounded retry budget "
+                f"after {type(exc).__name__}: {exc}"
+            )
+            retryable = False
+        with control_lock(state_dir):
+            control = load_control(state_dir)
+            finalization = control["finalization"]
+            if attempt_recorded:
+                rows = [
+                    row
+                    for row in finalization["worker_attempts"]
+                    if row["attempt"] == attempt
+                    and row["job_id"] == slurm_job_id
+                ]
+                if len(rows) != 1:
+                    raise FinalizerInvariantError(
+                        "finalizer failure lost its worker attempt record"
+                    )
+                row = rows[0]
+                if row["status"] == "started":
+                    row["status"] = (
+                        "retryable_failed" if retryable else "blocked"
+                    )
+                    row["finished_at"] = utc_timestamp(timestamp)
+                    row["finished_timestamp"] = timestamp
+            finalization["last_error"] = {
+                "kind": type(typed_error).__name__,
+                "message": str(typed_error)[:2000],
+                "transient": retryable,
+                "at": utc_timestamp(timestamp),
+                "timestamp": timestamp,
+            }
+            if not retryable:
+                finalization["state"] = "blocked"
+            _append_finalization_history(
+                finalization,
+                event=(
+                    "retry_budget_exhausted"
+                    if retry_exhausted
+                    else "blocked"
+                    if not retryable
+                    else "attempt_failed_transient"
+                ),
+                details={
+                    "attempt": attempt,
+                    "error_kind": type(typed_error).__name__,
+                    "error": str(typed_error)[:2000],
+                },
+                now=timestamp,
+            )
+            append_transition(
+                state_dir,
+                control,
+                event=(
+                    "autonomous_finalization_blocked"
+                    if not retryable
+                    else "autonomous_finalization_retryable"
+                ),
+                details={
+                    "attempt": attempt,
+                    "error_kind": type(typed_error).__name__,
+                    "error": str(typed_error)[:2000],
+                },
+                now=timestamp,
+            )
+            _save_control(state_dir, control, now=timestamp)
+        record_alert(
+            state_dir,
+            kind="finalization-failure",
+            severity="critical",
+            message=f"{type(typed_error).__name__}: {typed_error}",
+            dedupe_key=(
+                "finalization:blocked"
+                if not retryable
+                else "finalization:execution"
+            ),
+            send_email=True,
+            now=timestamp,
+        )
+        return 75 if retryable else 2
 
 
 def run_autonomous_finalizer_worker(
@@ -17687,142 +25618,31 @@ def run_autonomous_finalizer_worker(
         Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
     ) = None,
     finalize_runner: Callable[..., Mapping[str, Any]] | None = None,
+    sleep_runner: Callable[[float], None] | None = None,
+    interruption_controller: _FinalizerInterruptionController | None = None,
     now: float | None = None,
 ) -> int:
-    """Advance one resumable finalization attempt and preserve its successor."""
+    """Run one signal-owned finalizer worker with no orphanable child."""
 
-    timestamp = time.time() if now is None else float(now)
-    slurm_job_id = job_id or os.environ.get("SLURM_JOB_ID", "")
-    if not slurm_job_id.isdigit():
-        raise ControllerFenced("finalizer worker requires a numeric SLURM_JOB_ID")
-    current = load_control(state_dir, verify_files=True)
-    if current["finalization"].get("intent_id") != intent_id:
-        raise ControllerFenced("finalizer intent ID no longer owns control state")
-    read_scheduler = scheduler_reader or (
-        lambda: query_scheduler(tolerate_errors=False)
+    controller = (
+        interruption_controller
+        if interruption_controller is not None
+        else _FinalizerInterruptionController()
     )
-    if current["finalization"]["state"] == "complete":
-        active = current["finalization"].get("active_job")
-        if (
-            not isinstance(active, Mapping)
-            or active.get("job_id") != slurm_job_id
-            or active.get("attempt") != attempt
-        ):
-            raise ControllerFenced(
-                "completed finalization only accepts its exact publisher replay"
-            )
-        reconcile_autonomous_finalization(
+    with _finalizer_signal_handlers(controller):
+        return _run_autonomous_finalizer_worker_impl(
             state_dir,
-            snapshot=read_scheduler(),
+            intent_id=intent_id,
+            attempt=attempt,
+            job_id=job_id,
+            scheduler_reader=scheduler_reader,
             submit_runner=submit_runner,
-            now=timestamp,
-        )
-        return 0
-    publisher_record = _promote_finalizer_successor(
-        state_dir, job_id=slurm_job_id, attempt=attempt, now=timestamp
-    )
-    snapshot = read_scheduler()
-    try:
-        reconcile_autonomous_finalization(
-            state_dir,
-            snapshot=snapshot,
-            submit_runner=submit_runner,
-            now=timestamp,
-        )
-        with control_lock(state_dir):
-            control = load_control(state_dir)
-            finalization = control["finalization"]
-            finalization["attempts"] = int(finalization["attempts"]) + 1
-            finalization["state"] = (
-                "draining"
-                if control["desired_state"] != "paused"
-                or control.get("drain_requested") is not True
-                else "validating"
-            )
-            finalization["last_error"] = None
-            _append_finalization_history(
-                finalization,
-                event="attempt_started",
-                details={"attempt": attempt, "job_id": slurm_job_id},
-                now=timestamp,
-            )
-            _save_control(state_dir, control, now=timestamp)
-        runner = finalize_runner or finalize_sweep
-        result = runner(
-            state_dir,
-            output_root=Path(
-                load_control(state_dir)["finalization"]["output_root"]
-            ),
-            scheduler_reader=read_scheduler,
             cancel_runner=cancel_runner,
-            publisher_finalizer=publisher_record,
-            now=timestamp,
+            finalize_runner=finalize_runner,
+            sleep_runner=sleep_runner,
+            interruption_controller=controller,
+            now=now,
         )
-        if result.get("complete") is not True:
-            with control_lock(state_dir):
-                control = load_control(state_dir)
-                finalization = control["finalization"]
-                finalization["state"] = (
-                    "retiring_fleet"
-                    if result.get("phase") == "fleet_retirement_pending"
-                    else "snapshotting"
-                )
-                _append_finalization_history(
-                    finalization,
-                    event="attempt_pending",
-                    details={"attempt": attempt, "result": dict(result)},
-                    now=timestamp,
-                )
-                _save_control(state_dir, control, now=timestamp)
-            return 75
-        _commit_autonomous_finalization_complete(state_dir, now=timestamp)
-        return 0
-    except Exception as exc:
-        deterministic = _finalization_error_is_deterministic(exc)
-        with control_lock(state_dir):
-            control = load_control(state_dir)
-            finalization = control["finalization"]
-            finalization["last_error"] = {
-                "kind": type(exc).__name__,
-                "message": str(exc)[:2000],
-                "transient": not deterministic,
-                "at": utc_timestamp(timestamp),
-                "timestamp": timestamp,
-            }
-            if deterministic:
-                finalization["state"] = "blocked"
-            _append_finalization_history(
-                finalization,
-                event="blocked" if deterministic else "attempt_failed_transient",
-                details={"attempt": attempt, "error": str(exc)[:2000]},
-                now=timestamp,
-            )
-            append_transition(
-                state_dir,
-                control,
-                event=(
-                    "autonomous_finalization_blocked"
-                    if deterministic
-                    else "autonomous_finalization_retryable"
-                ),
-                details={"attempt": attempt, "error": str(exc)[:2000]},
-                now=timestamp,
-            )
-            _save_control(state_dir, control, now=timestamp)
-        record_alert(
-            state_dir,
-            kind="finalization-failure",
-            severity="critical",
-            message=f"{type(exc).__name__}: {exc}",
-            dedupe_key=(
-                "finalization:blocked"
-                if deterministic
-                else "finalization:execution"
-            ),
-            send_email=True,
-            now=timestamp,
-        )
-        return 2 if deterministic else 75
 
 
 def set_admission_ceiling(
@@ -17948,7 +25768,12 @@ def _active_critical_alerts_from_journal(state_dir: Path) -> list[str]:
             else:
                 prior["occurrences"] = record["occurrences"]
         elif action == "resolved":
-            if set(record) != common | {"dedupe_key"}:
+            resolution_extras = set(record) - (common | {"dedupe_key"})
+            if resolution_extras not in (
+                set(),
+                {"capacity_transition_id"},
+                {"finalization_intent_id"},
+            ):
                 raise ControlError(
                     "alert journal contains an invalid resolution record"
                 )
@@ -17961,6 +25786,22 @@ def _active_critical_alerts_from_journal(state_dir: Path) -> list[str]:
             ):
                 raise ControlError(
                     "alert journal resolution does not match a raised alert"
+                )
+            if (
+                "capacity_transition_id" in record
+                and (
+                    not isinstance(record["capacity_transition_id"], str)
+                    or not record["capacity_transition_id"]
+                )
+            ) or (
+                "finalization_intent_id" in record
+                and _SHA256_RE.fullmatch(
+                    str(record["finalization_intent_id"])
+                )
+                is None
+            ):
+                raise ControlError(
+                    "alert journal resolution transaction identity is invalid"
                 )
             # A retry after journal-ahead/control-behind recovery can allocate a new
             # alert ID for the same dedupe key.  Resolving that durable incident closes
@@ -18717,7 +26558,9 @@ def _client_capacity_contract_summary(
             control["capacity"]["current_generation"]
         ),
         "authorization_sha256": str(
-            immutable["protected_capacity_marker_sha256"]
+            effective_protected_capacity_binding(
+                control, verify_files=verify_files
+            )["sha256"]
         ),
     }
     if (
@@ -18739,15 +26582,14 @@ def _client_capacity_contract_summary(
                 "state root"
             )
         try:
-            contract = protected_capacity.load_contract(
-                immutable["protected_capacity_marker_path"],
-                expected_release_git_commit=str(immutable["git_commit"]),
-                expected_marker_id=str(
-                    immutable["protected_capacity_marker_id"]
-                ),
-                expected_sha256=str(
-                    immutable["protected_capacity_marker_sha256"]
-                ),
+            capacity_authority = effective_protected_capacity_binding(
+                control, verify_files=True
+            )
+            contract = _load_protected_capacity_contract(
+                control,
+                path=capacity_authority["path"],
+                expected_marker_id=str(capacity_authority["marker_id"]),
+                expected_sha256=str(capacity_authority["sha256"]),
             )
             placement = protected_capacity.authorize_client(
                 contract,
@@ -18854,8 +26696,7 @@ def _write_sealed_builder_json(
         if existing != dict(payload):
             raise ControlError(f"{description} conflicts with its durable preimage")
         return
-    _atomic_write_json(path, payload)
-    path.chmod(0o444)
+    _atomic_publish_readonly_json(path, payload)
 
 
 def _client_capacity_canary_sbatch(
@@ -19017,7 +26858,11 @@ def _client_capacity_submission_scheduler_snapshot(
     for source in ("squeue", "sacct"):
         rows = [
             job
-            for job in parse_scheduler_rows(raw[source]["stdout"], source=source)
+            for job in parse_scheduler_rows(
+                raw[source]["stdout"],
+                source=source,
+                require_placement=True,
+            )
             if not (source == "sacct" and "." in job.job_id)
         ]
         near = [
@@ -20834,17 +28679,18 @@ def build_client_capacity_generation(
                 intent,
                 description="client-capacity build intent",
             )
-        if sbatch_path.exists():
+        if sbatch_path.exists() or sbatch_path.is_symlink():
             if (
                 sbatch_path.is_symlink()
+                or not sbatch_path.is_file()
+                or sbatch_path.stat().st_nlink != 1
                 or sbatch_path.stat().st_mode & 0o222
                 or sbatch_path.read_text(encoding="utf-8") != sbatch_payload
                 or sha256_file(sbatch_path) != sbatch_sha
             ):
                 raise ControlError("client-capacity canary sbatch drifted")
         else:
-            io.atomic_write_text(sbatch_path, sbatch_payload)
-            sbatch_path.chmod(0o444)
+            _atomic_publish_readonly_text(sbatch_path, sbatch_payload)
 
         scheduler_payload = {
             "passed": True,
@@ -21918,9 +29764,9 @@ def record_admission_ramp_observation(
             "client_capacity_authorization_sha256": (
                 client_capacity_authorization["sha256"]
                 if client_capacity_authorization is not None
-                else control["immutable"][
-                    "protected_capacity_marker_sha256"
-                ]
+                else effective_protected_capacity_binding(
+                    control, verify_files=True
+                )["sha256"]
             ),
         }
         ramp["promotions"].append(promotion)
@@ -22065,28 +29911,68 @@ def _scheduler_physical_records(
     return records
 
 
-def parse_scheduler_rows(text: str, *, source: str) -> list[SchedulerJob]:
+def parse_scheduler_rows(
+    text: str,
+    *,
+    source: str,
+    require_placement: bool = False,
+) -> list[SchedulerJob]:
     """Parse the common scheduler row, including scheduler-owned dependency state."""
     rows: list[SchedulerJob] = []
     for line_number, raw in _scheduler_physical_records(text, source=source):
         if not raw.strip():
             continue
         if source == "sacct":
-            fields = raw.rstrip("\n").split("|", 4)
-            expected_fields = 5
+            fields = raw.rstrip("\n").split("|", 6)
+            expected_fields = 7
+            legacy_fields = 5
         elif source == "squeue":
-            fields = raw.rstrip("\n").split("|", 5)
-            expected_fields = 6
+            fields = raw.rstrip("\n").split("|", 7)
+            expected_fields = 8
+            legacy_fields = 6
         else:
             raise SchedulerAmbiguity(f"unsupported scheduler row source {source!r}")
-        if len(fields) != expected_fields:
+        if len(fields) == legacy_fields and not require_placement:
+            if source == "sacct":
+                job_id, name, state, comment, command = (
+                    field.strip() for field in fields
+                )
+            else:
+                job_id, name, state, comment, command, dependency = (
+                    field.strip() for field in fields
+                )
+            partition = ""
+            qos = ""
+        elif len(fields) == expected_fields:
+            if source == "sacct":
+                job_id, name, state, partition, qos, comment, command = (
+                    field.strip() for field in fields
+                )
+            else:
+                (
+                    job_id,
+                    name,
+                    state,
+                    partition,
+                    qos,
+                    comment,
+                    command,
+                    dependency,
+                ) = (field.strip() for field in fields)
+        else:
             raise SchedulerAmbiguity(
                 f"malformed {source} scheduler row {line_number}: {raw!r}"
             )
+        normalized_state = state.upper().split()[0].rstrip("+")
+        placement_required_for_row = require_placement and normalized_state in {
+            "PENDING",
+            "RUNNING",
+            "CONFIGURING",
+            "COMPLETING",
+            "RESIZING",
+            "SUSPENDED",
+        }
         if source == "sacct":
-            job_id, name, state, comment, command = (
-                field.strip() for field in fields
-            )
             stored = "" if comment.lower() in {"", "(null)", "null", "none"} else comment
             if "." in job_id:
                 # Accounting steps are discarded by ``query_scheduler`` and can carry
@@ -22102,11 +29988,18 @@ def parse_scheduler_rows(text: str, *, source: str) -> list[SchedulerJob]:
                         f"sacct Comment/SubmitLine conflict for job {job_id}"
                     )
                 comment = stored or derived or ""
-        else:
-            job_id, name, state, comment, command, dependency = (
-                field.strip() for field in fields
+        if (
+            not job_id
+            or not name
+            or not state
+            or (
+                placement_required_for_row
+                and (
+                    re.fullmatch(r"[A-Za-z0-9_.-]+", partition) is None
+                    or re.fullmatch(r"[A-Za-z0-9_.-]+", qos) is None
+                )
             )
-        if not job_id or not name or not state:
+        ):
             raise SchedulerAmbiguity(
                 f"incomplete {source} scheduler row {line_number}: {raw!r}"
             )
@@ -22119,12 +30012,29 @@ def parse_scheduler_rows(text: str, *, source: str) -> list[SchedulerJob]:
                 command=command,
                 source=source,
                 dependency=dependency,
+                partition=partition,
+                qos=qos,
             )
         )
     return rows
 
 
 def _run_subprocess(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    if isinstance(argv, _ExactSbatchInvocation):
+        try:
+            submission_text = argv.stdin_bytes.decode("utf-8")
+        except UnicodeError as exc:
+            raise ControlError(
+                f"exact sbatch payload is not UTF-8: {exc}"
+            ) from exc
+        return subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60.0,
+            input=submission_text,
+        )
     return subprocess.run(
         list(argv),
         capture_output=True,
@@ -22156,6 +30066,12 @@ def query_scheduler(
     if not scheduler_user:
         raise ControlError("USER is unset; scheduler queries cannot be scoped safely")
     timestamp = time.time() if now is None else float(now)
+    accounting_start_text = time.strftime(
+        "%Y-%m-%d", time.localtime(timestamp - 7 * 86_400)
+    )
+    accounting_start_timestamp = time.mktime(
+        time.strptime(accounting_start_text, "%Y-%m-%d")
+    )
     commands = (
         (
             "squeue",
@@ -22166,7 +30082,7 @@ def query_scheduler(
                 "-h",
                 "-r",
                 "-o",
-                "%i|%j|%T|%k|%o|%E",
+                "%i|%j|%T|%P|%q|%k|%o|%E",
             ],
         ),
         (
@@ -22178,12 +30094,13 @@ def query_scheduler(
                 "-n",
                 "-P",
                 "-S",
-                time.strftime("%Y-%m-%d", time.localtime(timestamp - 7 * 86_400)),
-                "--format=JobID,JobName,State,Comment,SubmitLine",
+                accounting_start_text,
+                "--format=JobID,JobName,State,Partition,QOS,Comment,SubmitLine",
             ],
         ),
     )
     by_id: dict[str, SchedulerJob] = {}
+    squeue_rows: dict[str, SchedulerJob] = {}
     errors: list[str] = []
     succeeded: dict[str, bool] = {"squeue": False, "sacct": False}
     # Accounting is loaded first; live queue rows then override stale accounting state.
@@ -22204,7 +30121,11 @@ def query_scheduler(
     for source in ("sacct", "squeue"):
         if source not in outputs:
             continue
-        for row in parse_scheduler_rows(outputs[source], source=source):
+        for row in parse_scheduler_rows(
+            outputs[source],
+            source=source,
+            require_placement=True,
+        ):
             # sacct includes job steps; they are never independently submitted control
             # jobs and would make a parent job appear duplicated.
             if source == "sacct" and "." in row.job_id:
@@ -22216,6 +30137,8 @@ def query_scheduler(
                     bool(prior.comment)
                     and prior.comment != row.comment
                 )
+                or prior.partition != row.partition
+                or prior.qos != row.qos
             ):
                 raise SchedulerAmbiguity(
                     f"squeue/sacct identity conflict for scheduler job {row.job_id}"
@@ -22253,16 +30176,54 @@ def query_scheduler(
                     command=row.command,
                     source=row.source,
                     dependency=prior.dependency,
+                    partition=row.partition,
+                    qos=row.qos,
                 )
             by_id[row.job_id] = row
+            if source == "squeue":
+                squeue_rows[row.job_id] = row
     if errors and not tolerate_errors:
         raise ControlError("; ".join(errors))
+    # sacct may report an array-parent summary while expanded live elements appear
+    # only in ``squeue -r``.  That is the sole safe active sacct-only shape.  Any
+    # other active accounting row is incomplete live truth: adopting it can commit
+    # fairness while the occupancy view reserves zero slots, permitting a redraw.
+    for job in tuple(by_id.values()):
+        if job.source != "sacct" or not job.active:
+            continue
+        prefix = job.job_id + "_"
+        children = [
+            child
+            for child_id, child in squeue_rows.items()
+            if child_id.startswith(prefix)
+            and child_id[len(prefix) :].isdigit()
+            and child.active
+        ]
+        if not children:
+            raise SchedulerAmbiguity(
+                f"active sacct-only scheduler job {job.job_id} is absent from "
+                "complete squeue truth"
+            )
+        if any(
+            child.job_name != job.job_name
+            or (job.comment and child.comment != job.comment)
+            or child.partition != job.partition
+            or child.qos != job.qos
+            for child in children
+        ):
+            raise SchedulerAmbiguity(
+                f"active sacct array parent {job.job_id} conflicts with its "
+                "expanded squeue elements"
+            )
     return SchedulerSnapshot(
         jobs=tuple(sorted(by_id.values(), key=lambda job: job.job_id)),
         captured_at=timestamp,
         squeue_ok=succeeded["squeue"],
         sacct_ok=succeeded["sacct"],
         errors=tuple(errors),
+        accounting_start_timestamp=(
+            accounting_start_timestamp if succeeded["sacct"] else None
+        ),
     )
 
 
@@ -22407,7 +30368,9 @@ def build_reconciliation_report(
 
 
 def _adopt_unique_intents(
-    control: MutableMapping[str, Any], snapshot: SchedulerSnapshot
+    state_dir: Path,
+    control: MutableMapping[str, Any],
+    snapshot: SchedulerSnapshot,
 ) -> list[dict[str, Any]]:
     """Adopt jobs accepted between ``sbatch`` and durable job-ID commit."""
     adopted: list[dict[str, Any]] = []
@@ -22430,6 +30393,21 @@ def _adopt_unique_intents(
         match = active[0] if active else (matches[-1] if len(matches) == 1 else None)
         if match is None:
             continue
+        proof = _prove_exact_sbatch_and_release(
+            state_dir,
+            record=intent,
+            job_id=match.job_id,
+            submit_runner=_run_subprocess,
+            release_after_proof=not bool(intent.get("hold", False)),
+            now=float(snapshot.captured_at),
+            scheduler_job=match,
+        )
+        intent.update(proof)
+        _validate_exact_sbatch_record_proof(
+            intent,
+            job_id=match.job_id,
+            context=f"controller intent {intent.get('intent_token')}",
+        )
         intent["state"] = "submitted"
         intent["job_id"] = match.job_id
         intent["adopted_from_scheduler"] = True
@@ -22459,7 +30437,7 @@ def reconcile_control(
     timestamp = snapshot.captured_at if now is None else float(now)
     with control_lock(state_dir):
         control = load_control(state_dir)
-        adopted = _adopt_unique_intents(control, snapshot)
+        adopted = _adopt_unique_intents(state_dir, control, snapshot)
         report = build_reconciliation_report(
             control, snapshot, all_jobs=all_jobs, no_admit=no_admit
         )
@@ -23253,6 +31231,9 @@ def production_environment(
     """
     immutable = control["immutable"]
     fleet = effective_fleet_contract_binding(control, verify_files=True)
+    capacity_authority = effective_protected_capacity_binding(
+        control, verify_files=True
+    )
     attestation = (
         validate_runtime_integrity_attestation(control, verify_metadata=False)
         if int(control.get("rollout_generation", 0)) >= 1
@@ -23262,13 +31243,13 @@ def production_environment(
         "ASYS_RELEASE_ID": str(immutable["release_id"]),
         "ASYS_RELEASE_GIT_COMMIT": str(immutable["git_commit"]),
         "ASYS_PROTECTED_CAPACITY_MARKER": str(
-            immutable["protected_capacity_marker_path"]
+            capacity_authority["path"]
         ),
         "ASYS_PROTECTED_CAPACITY_MARKER_SHA256": str(
-            immutable["protected_capacity_marker_sha256"]
+            capacity_authority["sha256"]
         ),
         "ASYS_PROTECTED_CAPACITY_MARKER_ID": str(
-            immutable["protected_capacity_marker_id"]
+            capacity_authority["marker_id"]
         ),
         "ASYS_TRANSPORT_CENSOR_PROTOCOL_VERSION": str(
             immutable["transport_uncertainty_binding"][
@@ -23358,7 +31339,7 @@ def _require_production_running(control: Mapping[str, Any]) -> None:
 
     if control.get("desired_state") != "running" or control.get("drain_requested"):
         raise ControlError("schema-5 admission is disabled by desired state")
-    if control.get("finalization", {}).get("state") in ACTIVE_FINALIZATION_STATES:
+    if control.get("finalization", {}).get("state") != "idle":
         raise ControlError("schema-5 admission is disabled by autonomous finalization")
     intent = control.get("resume_intent")
     if not isinstance(intent, dict) or intent.get("state") != "complete":
@@ -23497,6 +31478,25 @@ def admission_contract_from_state(state_dir: Path) -> dict[str, Any]:
     admission = copy.deepcopy(control["admission"])
     configured_ceiling = int(admission["current_ceiling"])
     safety_hold = copy.deepcopy(control["admission_safety_hold"])
+    if control["desired_state"] == "running":
+        drain_intent = control.get("safety_hold_drain_intent")
+        if safety_hold["active"] and not (
+            _safety_hold_drain_complete_for_current_activation(control)
+        ):
+            raise ControlError(
+                "running admission safety hold lacks a complete exact "
+                "activation/generation cell drain"
+            )
+        if (
+            not safety_hold["active"]
+            and isinstance(drain_intent, Mapping)
+            and drain_intent.get("rollout_generation")
+            == control["rollout_generation"]
+            and drain_intent.get("state") != "complete"
+        ):
+            raise ControlError(
+                "running admission retains an unresolved recent safety-hold drain"
+            )
     active_critical_alerts = sorted(
         set(_active_critical_alerts(control))
         | set(_active_critical_alerts_from_journal(state_dir))
@@ -23507,7 +31507,7 @@ def admission_contract_from_state(state_dir: Path) -> dict[str, Any]:
         if (
             safety_hold["active"]
             or active_critical_alerts
-            or control["finalization"]["state"] in ACTIVE_FINALIZATION_STATES
+            or control["finalization"]["state"] != "idle"
         )
         else configured_ceiling
     )
@@ -23518,15 +31518,14 @@ def admission_contract_from_state(state_dir: Path) -> dict[str, Any]:
         verify_files=True,
     )
     try:
-        capacity_contract = protected_capacity.load_contract(
-            control["immutable"]["protected_capacity_marker_path"],
-            expected_release_git_commit=str(control["immutable"]["git_commit"]),
-            expected_marker_id=str(
-                control["immutable"]["protected_capacity_marker_id"]
-            ),
-            expected_sha256=str(
-                control["immutable"]["protected_capacity_marker_sha256"]
-            ),
+        capacity_authority = effective_protected_capacity_binding(
+            control, verify_files=True
+        )
+        capacity_contract = _load_protected_capacity_contract(
+            control,
+            path=capacity_authority["path"],
+            expected_marker_id=str(capacity_authority["marker_id"]),
+            expected_sha256=str(capacity_authority["sha256"]),
         )
         protected_capacity.authorize_client(
             capacity_contract,
@@ -23929,7 +31928,9 @@ def render_generation_sbatch(
     )
     provenance = production_environment(control)
     replacements = {
-        "JOB_NAME": f"asys-s5-{short}-g{generation:06d}-{intent_token[:8]}",
+        "JOB_NAME": _rendered_controller_job_name(
+            role, generation, intent_token
+        ),
         "JOB_TOKEN": token,
         "PARTITION": resource["partition"],
         "MEMORY": resource["memory"],
@@ -23984,15 +31985,19 @@ def render_generation_sbatch(
         generation=generation,
         intent_token=intent_token,
     )
-    if target.exists():
-        if target.read_text(encoding="utf-8") != payload:
+    if target.exists() or target.is_symlink():
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat().st_nlink != 1
+            or target.stat().st_mode & 0o222
+            or target.read_text(encoding="utf-8") != payload
+        ):
             raise ImmutablePinError(
                 f"generation sbatch already exists with different bytes: {target}"
             )
         return target
-    io.atomic_write_text(target, payload)
-    # Make the immutable intent artifact read-only.  A retry reuses identical bytes.
-    target.chmod(0o444)
+    _atomic_publish_readonly_text(target, payload)
     return target
 
 
@@ -24008,6 +32013,768 @@ def _submit_argv(
         argv.append(f"--dependency=afterany:{dependency_job_id}")
     argv.append(str(path))
     return argv
+
+
+class _ExactSbatchInvocation(list[str]):
+    """One exact stdin transport handed across the external sbatch boundary.
+
+    The list surface preserves the existing injectable runner contract.  The
+    production runner recognizes this type and supplies ``stdin_bytes`` directly to
+    sbatch, so Slurm never reopens the mutable pathname after validation.
+    """
+
+    def __init__(self, argv: Sequence[str], stdin_bytes: bytes) -> None:
+        super().__init__(argv)
+        self.stdin_bytes = bytes(stdin_bytes)
+        self.stdin_sha256 = hashlib.sha256(self.stdin_bytes).hexdigest()
+        self.transport = EXACT_SBATCH_SUBMISSION_TRANSPORT
+
+
+def _exact_sbatch_submission_argv(
+    *,
+    token: str,
+    dependency_job_id: str | None,
+) -> list[str]:
+    if not token or any(character in token for character in ("\x00", "\n", "\r")):
+        raise ControlError("exact sbatch submission token is unsafe")
+    argv = ["sbatch", "--parsable", f"--comment={token}", "--hold"]
+    if dependency_job_id is not None:
+        if not dependency_job_id.isdigit():
+            raise ControlError(
+                f"unsafe exact sbatch dependency job ID {dependency_job_id!r}"
+            )
+        argv.append(f"--dependency=afterany:{dependency_job_id}")
+    return argv
+
+
+def _submission_argv_sha256(argv: Sequence[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            list(argv),
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _exact_sbatch_receipt_path(
+    state_dir: Path, *, job_token: str, job_id: str
+) -> Path:
+    if not job_id.isdigit():
+        raise ControlError("spooled-script receipt requires a numeric job ID")
+    token_digest = hashlib.sha256(job_token.encode("utf-8")).hexdigest()
+    return (
+        state_dir
+        / SBATCH_SPOOL_RECEIPTS_DIRNAME
+        / f"{token_digest}.{job_id}.json"
+    ).resolve()
+
+
+def _read_slurm_spooled_script(job_id: str) -> bytes:
+    proc = _run_subprocess(
+        ["scontrol", "write", "batch_script", job_id, "-"]
+    )
+    if proc.returncode != 0 or not isinstance(proc.stdout, str):
+        raise SchedulerVisibilityPending(
+            "cannot retrieve exact Slurm-spooled script for "
+            f"job {job_id}: rc={proc.returncode}; {proc.stderr.strip()[:500]}"
+        )
+    return proc.stdout.encode("utf-8")
+
+
+def _validate_exact_sbatch_receipt(
+    path: Path,
+    *,
+    expected: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+    ):
+        raise ImmutablePinError(
+            f"exact Slurm-spooled script receipt is unsafe: {path}"
+        )
+    value = _load_json_object(
+        path, description="exact Slurm-spooled script receipt"
+    )
+    if (
+        set(value) != set(expected) | {"verified_at", "verified_timestamp"}
+        or any(value.get(key) != item for key, item in expected.items())
+        or not isinstance(value.get("verified_timestamp"), (int, float))
+        or isinstance(value.get("verified_timestamp"), bool)
+        or value.get("verified_at")
+        != utc_timestamp(float(value.get("verified_timestamp", -1)))
+    ):
+        raise ImmutablePinError(
+            "exact Slurm-spooled script receipt identity drifted"
+        )
+    return value, sha256_file(path)
+
+
+def _exact_sbatch_release_paths(receipt_path: Path) -> tuple[Path, Path]:
+    stem = receipt_path.name
+    if not stem.endswith(".json"):
+        raise ImmutablePinError(
+            "exact Slurm spool receipt path has an invalid suffix"
+        )
+    prefix = stem[: -len(".json")]
+    return (
+        receipt_path.with_name(prefix + ".release-intent.json"),
+        receipt_path.with_name(prefix + ".release-complete.json"),
+    )
+
+
+def _validate_exact_sbatch_release_intent(
+    path: Path,
+    *,
+    record: Mapping[str, Any],
+    job_id: str,
+    receipt_path: Path,
+    receipt_sha256: str,
+) -> tuple[dict[str, Any], str]:
+    value = _load_json_object(
+        path, description="exact held-sbatch release intent"
+    )
+    expected_authorization = (
+        "resume_transaction"
+        if bool(record.get("persistent_hold"))
+        else "automatic_after_spool_proof"
+    )
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "job_id",
+        "job_token",
+        "spooled_receipt_path",
+        "spooled_receipt_sha256",
+        "submission_argv_sha256",
+        "persistent_hold",
+        "authorization",
+        "requested_at",
+        "requested_timestamp",
+        "intent_id",
+    }
+    without_id = dict(value)
+    intent_id = without_id.pop("intent_id", None)
+    requested = value.get("requested_timestamp")
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+        or set(value) != expected_fields
+        or value.get("schema_version") != 1
+        or value.get("kind") != "schema5_exact_sbatch_release_intent"
+        or value.get("job_id") != job_id
+        or value.get("job_token") != record.get("job_token")
+        or value.get("spooled_receipt_path") != str(receipt_path)
+        or value.get("spooled_receipt_sha256") != receipt_sha256
+        or value.get("submission_argv_sha256")
+        != record.get("submission_argv_sha256")
+        or value.get("persistent_hold")
+        is not bool(record.get("persistent_hold"))
+        or value.get("authorization") != expected_authorization
+        or not isinstance(requested, (int, float))
+        or isinstance(requested, bool)
+        or value.get("requested_at") != utc_timestamp(float(requested))
+        or intent_id != sha256_value(without_id)
+    ):
+        raise ImmutablePinError(
+            "exact held-sbatch release intent identity drifted"
+        )
+    return value, sha256_file(path)
+
+
+def _validate_exact_sbatch_release_complete(
+    path: Path,
+    *,
+    record: Mapping[str, Any],
+    job_id: str,
+    intent_path: Path,
+    intent_sha256: str,
+    intent_id: str,
+) -> tuple[dict[str, Any], str]:
+    value = _load_json_object(
+        path, description="exact held-sbatch release completion"
+    )
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "job_id",
+        "job_token",
+        "release_intent_path",
+        "release_intent_sha256",
+        "release_intent_id",
+        "scheduler_observation",
+        "release_returncode",
+        "release_stderr",
+        "released_at",
+        "released_timestamp",
+        "completion_id",
+    }
+    without_id = dict(value)
+    completion_id = without_id.pop("completion_id", None)
+    released = value.get("released_timestamp")
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_nlink != 1
+        or path.stat().st_mode & 0o222
+        or set(value) != expected_fields
+        or value.get("schema_version") != 1
+        or value.get("kind") != "schema5_exact_sbatch_release_complete"
+        or value.get("job_id") != job_id
+        or value.get("job_token") != record.get("job_token")
+        or value.get("release_intent_path") != str(intent_path)
+        or value.get("release_intent_sha256") != intent_sha256
+        or value.get("release_intent_id") != intent_id
+        or value.get("scheduler_observation")
+        not in {
+            "release_command_succeeded",
+            "already_running",
+            "already_active_nonpending",
+            "already_pending_unheld",
+            "already_terminal",
+        }
+        or (
+            value.get("release_returncode") is not None
+            and (
+                not isinstance(value.get("release_returncode"), int)
+                or isinstance(value.get("release_returncode"), bool)
+            )
+        )
+        or not isinstance(value.get("release_stderr"), str)
+        or not isinstance(released, (int, float))
+        or isinstance(released, bool)
+        or value.get("released_at") != utc_timestamp(float(released))
+        or completion_id != sha256_value(without_id)
+    ):
+        raise ImmutablePinError(
+            "exact held-sbatch release completion identity drifted"
+        )
+    return value, sha256_file(path)
+
+
+def _scheduler_job_release_observation(
+    job: SchedulerJob,
+    *,
+    record: Mapping[str, Any],
+    job_id: str,
+    reason: str | None = None,
+) -> str | None:
+    if job.job_id != job_id or job.comment != record.get("job_token"):
+        raise SchedulerAmbiguity(
+            "exact held-sbatch release scheduler identity mismatched"
+        )
+    state = normalize_scheduler_state(job.state)
+    if state in TERMINAL_SCHEDULER_STATES:
+        return "already_terminal"
+    if state == "RUNNING":
+        return "already_running"
+    if state in ACTIVE_SCHEDULER_STATES - {"PENDING"}:
+        return "already_active_nonpending"
+    if state == "PENDING" and reason is not None:
+        normalized_reason = reason.strip().lower()
+        if normalized_reason.startswith("jobheld"):
+            return None
+        return "already_pending_unheld"
+    if state not in ACTIVE_SCHEDULER_STATES | TERMINAL_SCHEDULER_STATES:
+        raise SchedulerAmbiguity(
+            f"exact held-sbatch release observed unknown state {state!r}"
+        )
+    return None
+
+
+def _query_exact_sbatch_release_observation(
+    *,
+    record: Mapping[str, Any],
+    job_id: str,
+    runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+) -> str | None:
+    proc = runner(["scontrol", "show", "job", "-o", job_id])
+    if proc.returncode != 0:
+        return None
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise SchedulerAmbiguity(
+            "exact held-sbatch release query returned an ambiguous record"
+        )
+    try:
+        tokens = shlex.split(lines[0], posix=True)
+    except (TypeError, ValueError) as exc:
+        raise SchedulerAmbiguity(
+            "cannot parse exact held-sbatch release scheduler record"
+        ) from exc
+    fields: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        if not key or key in fields:
+            raise SchedulerAmbiguity(
+                "exact held-sbatch release scheduler record has duplicate fields"
+            )
+        fields[key] = value.strip('"')
+    job = SchedulerJob(
+        job_id=fields.get("JobId", ""),
+        job_name=fields.get("JobName", ""),
+        state=fields.get("JobState", ""),
+        comment=fields.get("Comment", ""),
+        source="scontrol",
+    )
+    return _scheduler_job_release_observation(
+        job,
+        record=record,
+        job_id=job_id,
+        reason=fields.get("Reason"),
+    )
+
+
+def _ensure_exact_sbatch_released(
+    state_dir: Path,
+    *,
+    record: Mapping[str, Any],
+    job_id: str,
+    receipt_path: Path,
+    receipt_sha256: str,
+    now: float,
+    release_runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+    scheduler_job: SchedulerJob | None,
+    observation_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ),
+) -> dict[str, Any]:
+    """Marker-first release with replay adoption of an already released job."""
+
+    intent_path, complete_path = _exact_sbatch_release_paths(receipt_path)
+    if intent_path.exists() or intent_path.is_symlink():
+        intent, intent_sha256 = _validate_exact_sbatch_release_intent(
+            intent_path,
+            record=record,
+            job_id=job_id,
+            receipt_path=receipt_path,
+            receipt_sha256=receipt_sha256,
+        )
+    else:
+        authorization = (
+            "resume_transaction"
+            if bool(record.get("persistent_hold"))
+            else "automatic_after_spool_proof"
+        )
+        intent = {
+            "schema_version": 1,
+            "kind": "schema5_exact_sbatch_release_intent",
+            "job_id": job_id,
+            "job_token": str(record["job_token"]),
+            "spooled_receipt_path": str(receipt_path),
+            "spooled_receipt_sha256": receipt_sha256,
+            "submission_argv_sha256": str(record["submission_argv_sha256"]),
+            "persistent_hold": bool(record.get("persistent_hold")),
+            "authorization": authorization,
+            "requested_at": utc_timestamp(now),
+            "requested_timestamp": float(now),
+        }
+        intent["intent_id"] = sha256_value(intent)
+        _atomic_publish_readonly_json(intent_path, intent)
+        intent, intent_sha256 = _validate_exact_sbatch_release_intent(
+            intent_path,
+            record=record,
+            job_id=job_id,
+            receipt_path=receipt_path,
+            receipt_sha256=receipt_sha256,
+        )
+    if complete_path.exists() or complete_path.is_symlink():
+        completion, _completion_sha256 = (
+            _validate_exact_sbatch_release_complete(
+                complete_path,
+                record=record,
+                job_id=job_id,
+                intent_path=intent_path,
+                intent_sha256=intent_sha256,
+                intent_id=str(intent["intent_id"]),
+            )
+        )
+        return {
+            "released_at": completion["released_at"],
+            "released_timestamp": float(completion["released_timestamp"]),
+        }
+
+    observation = (
+        _scheduler_job_release_observation(
+            scheduler_job,
+            record=record,
+            job_id=job_id,
+        )
+        if scheduler_job is not None
+        else None
+    )
+    release_returncode: int | None = None
+    release_stderr = ""
+    if observation is None:
+        proc = release_runner(["scontrol", "release", job_id])
+        release_returncode = int(proc.returncode)
+        release_stderr = proc.stderr.strip()[:500]
+        if proc.returncode == 0:
+            observation = "release_command_succeeded"
+        else:
+            if observation_runner is not None:
+                observation = _query_exact_sbatch_release_observation(
+                    record=record,
+                    job_id=job_id,
+                    runner=observation_runner,
+                )
+            # A complete snapshot may already prove a fast start/exit even when
+            # scontrol no longer retains the record.
+            if observation is None and scheduler_job is not None:
+                observation = _scheduler_job_release_observation(
+                    scheduler_job,
+                    record=record,
+                    job_id=job_id,
+                )
+            if observation is None:
+                raise SchedulerVisibilityPending(
+                    f"exact held sbatch job {job_id} remains held or its "
+                    "release state is not yet provable"
+                )
+
+    completion = {
+        "schema_version": 1,
+        "kind": "schema5_exact_sbatch_release_complete",
+        "job_id": job_id,
+        "job_token": str(record["job_token"]),
+        "release_intent_path": str(intent_path),
+        "release_intent_sha256": intent_sha256,
+        "release_intent_id": str(intent["intent_id"]),
+        "scheduler_observation": observation,
+        "release_returncode": release_returncode,
+        "release_stderr": release_stderr,
+        "released_at": utc_timestamp(now),
+        "released_timestamp": float(now),
+    }
+    completion["completion_id"] = sha256_value(completion)
+    _atomic_publish_readonly_json(complete_path, completion)
+    completion, _completion_sha256 = _validate_exact_sbatch_release_complete(
+        complete_path,
+        record=record,
+        job_id=job_id,
+        intent_path=intent_path,
+        intent_sha256=intent_sha256,
+        intent_id=str(intent["intent_id"]),
+    )
+    return {
+        "released_at": completion["released_at"],
+        "released_timestamp": float(completion["released_timestamp"]),
+    }
+
+
+def _validate_exact_sbatch_release_record(
+    record: Mapping[str, Any],
+    *,
+    job_id: str,
+    receipt_path: Path,
+    receipt_sha256: str,
+) -> None:
+    intent_path, complete_path = _exact_sbatch_release_paths(receipt_path)
+    intent, intent_sha256 = _validate_exact_sbatch_release_intent(
+        intent_path,
+        record=record,
+        job_id=job_id,
+        receipt_path=receipt_path,
+        receipt_sha256=receipt_sha256,
+    )
+    completion, _completion_sha256 = _validate_exact_sbatch_release_complete(
+        complete_path,
+        record=record,
+        job_id=job_id,
+        intent_path=intent_path,
+        intent_sha256=intent_sha256,
+        intent_id=str(intent["intent_id"]),
+    )
+    if (
+        record.get("released_at") != completion["released_at"]
+        or record.get("released_timestamp")
+        != completion["released_timestamp"]
+    ):
+        raise ImmutablePinError(
+            "exact held-sbatch release record differs from sealed completion"
+        )
+
+
+def _validate_exact_sbatch_record_proof(
+    record: Mapping[str, Any],
+    *,
+    job_id: str,
+    context: str,
+) -> tuple[dict[str, Any], str]:
+    """Re-prove one accepted stdin submission from its sealed Slurm spool receipt.
+
+    Slurm's ``Command``/``SubmitLine`` presentation is not the byte authority for a
+    batch script submitted on standard input.  The immutable intent, exact numeric job
+    ID, scheduler token, and independently captured ``scontrol write batch_script``
+    bytes are.  This verifier intentionally does not use the displayed command.
+    """
+
+    if not isinstance(job_id, str) or not job_id.isdigit():
+        raise SchedulerAmbiguity(f"{context} has an invalid scheduler job ID")
+    sbatch_path = Path(str(record.get("sbatch_path", ""))).expanduser()
+    receipt_path = Path(
+        str(record.get("spooled_receipt_path", ""))
+    ).expanduser()
+    submission_argv = record.get("submission_argv")
+    dependency_job_id = record.get("dependency_job_id")
+    try:
+        exact_submission_argv = _exact_sbatch_submission_argv(
+            token=str(record.get("job_token", "")),
+            dependency_job_id=(
+                dependency_job_id
+                if isinstance(dependency_job_id, str)
+                else None
+            ),
+        )
+    except ControlError:
+        exact_submission_argv = None
+    if (
+        not sbatch_path.is_absolute()
+        or sbatch_path.is_symlink()
+        or not sbatch_path.is_file()
+        or sbatch_path.stat().st_nlink != 1
+        or sbatch_path.stat().st_mode & 0o222
+        or _SHA256_RE.fullmatch(str(record.get("sbatch_sha256", ""))) is None
+        or sha256_file(sbatch_path) != record.get("sbatch_sha256")
+        or record.get("submission_transport")
+        != EXACT_SBATCH_SUBMISSION_TRANSPORT
+        or not isinstance(submission_argv, list)
+        or not all(isinstance(item, str) for item in submission_argv)
+        or submission_argv != exact_submission_argv
+        or record.get("submission_argv_sha256")
+        != _submission_argv_sha256(submission_argv)
+        or not isinstance(record.get("persistent_hold"), bool)
+        or not receipt_path.is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(record.get("spooled_receipt_sha256", ""))
+        )
+        is None
+    ):
+        raise SchedulerAmbiguity(
+            f"{context} lacks an exact immutable stdin submission contract"
+        )
+    expected = {
+        "schema_version": 1,
+        "kind": "schema5_exact_sbatch_spool_receipt",
+        "job_id": job_id,
+        "job_token": str(record.get("job_token", "")),
+        "sbatch_path": str(sbatch_path.resolve()),
+        "sbatch_sha256": str(record["sbatch_sha256"]),
+        "spooled_sbatch_sha256": str(record["sbatch_sha256"]),
+        "submission_transport": EXACT_SBATCH_SUBMISSION_TRANSPORT,
+        "submission_argv": list(submission_argv),
+        "submission_argv_sha256": str(record["submission_argv_sha256"]),
+        "submitted_held": True,
+        "persistent_hold": bool(record["persistent_hold"]),
+    }
+    try:
+        receipt, receipt_sha256 = _validate_exact_sbatch_receipt(
+            receipt_path.resolve(), expected=expected
+        )
+    except (ControlError, OSError) as exc:
+        raise SchedulerAmbiguity(
+            f"{context} lacks its sealed exact Slurm spool proof"
+        ) from exc
+    if receipt_sha256 != record["spooled_receipt_sha256"]:
+        raise SchedulerAmbiguity(
+            f"{context} exact Slurm spool receipt checksum drifted"
+        )
+    if (
+        not bool(record["persistent_hold"])
+        and record.get("released_timestamp") is None
+    ):
+        raise SchedulerAmbiguity(
+            f"{context} exact held submission lacks a durable release record"
+        )
+    if record.get("released_timestamp") is not None:
+        try:
+            _validate_exact_sbatch_release_record(
+                record,
+                job_id=job_id,
+                receipt_path=receipt_path.resolve(),
+                receipt_sha256=receipt_sha256,
+            )
+        except (ControlError, OSError) as exc:
+            raise SchedulerAmbiguity(
+                f"{context} lacks its sealed exact release proof"
+            ) from exc
+    return receipt, receipt_sha256
+
+
+def _prove_exact_sbatch_and_release(
+    state_dir: Path,
+    *,
+    record: Mapping[str, Any],
+    job_id: str,
+    submit_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ),
+    release_after_proof: bool,
+    now: float,
+    scheduler_job: SchedulerJob | None = None,
+    release_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    observation_runner: (
+        Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+) -> dict[str, Any]:
+    """Seal Slurm's exact spool proof while held, then optionally release it.
+
+    Test runners are scheduler fakes and therefore use the exact in-memory transport
+    payload as their synthetic spool unless they expose ``spooled_script`` on the
+    returned process.  Production always queries Slurm independently.
+    """
+
+    path = Path(str(record["sbatch_path"])).expanduser().resolve()
+    payload = _stable_readonly_preimage(
+        path, description="exact sbatch submission artifact"
+    )
+    sbatch_sha256 = hashlib.sha256(payload).hexdigest()
+    argv = list(record["submission_argv"])
+    exact_argv = _exact_sbatch_submission_argv(
+        token=str(record["job_token"]),
+        dependency_job_id=(
+            str(record["dependency_job_id"])
+            if record.get("dependency_job_id") is not None
+            else None
+        ),
+    )
+    if (
+        sbatch_sha256 != record["sbatch_sha256"]
+        or record.get("submission_transport")
+        != EXACT_SBATCH_SUBMISSION_TRANSPORT
+        or record.get("submission_argv_sha256")
+        != _submission_argv_sha256(argv)
+        or argv != exact_argv
+    ):
+        raise ImmutablePinError("exact sbatch submission contract drifted")
+    receipt_path = _exact_sbatch_receipt_path(
+        state_dir,
+        job_token=str(record["job_token"]),
+        job_id=job_id,
+    )
+    expected = {
+        "schema_version": 1,
+        "kind": "schema5_exact_sbatch_spool_receipt",
+        "job_id": job_id,
+        "job_token": str(record["job_token"]),
+        "sbatch_path": str(path),
+        "sbatch_sha256": sbatch_sha256,
+        "spooled_sbatch_sha256": sbatch_sha256,
+        "submission_transport": EXACT_SBATCH_SUBMISSION_TRANSPORT,
+        "submission_argv": argv,
+        "submission_argv_sha256": _submission_argv_sha256(argv),
+        "submitted_held": True,
+        "persistent_hold": bool(record.get("persistent_hold", False)),
+    }
+    if receipt_path.exists() or receipt_path.is_symlink():
+        _, receipt_sha256 = _validate_exact_sbatch_receipt(
+            receipt_path, expected=expected
+        )
+    else:
+        spool = (
+            payload
+            if submit_runner is not None and submit_runner is not _run_subprocess
+            else _read_slurm_spooled_script(job_id)
+        )
+        if hashlib.sha256(spool).hexdigest() != sbatch_sha256:
+            raise SchedulerAmbiguity(
+                f"Slurm-spooled script differs from exact intent for job {job_id}"
+            )
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_publish_readonly_json(
+            receipt_path,
+            {
+                **expected,
+                "verified_at": utc_timestamp(now),
+                "verified_timestamp": float(now),
+            },
+        )
+        _, receipt_sha256 = _validate_exact_sbatch_receipt(
+            receipt_path, expected=expected
+        )
+    proof_record = {
+        **dict(record),
+        "spooled_receipt_path": str(receipt_path),
+        "spooled_receipt_sha256": receipt_sha256,
+    }
+    persisted_released = record.get("released_timestamp")
+    release_proof: dict[str, Any] = {
+        "released_at": record.get("released_at"),
+        "released_timestamp": (
+            float(persisted_released)
+            if isinstance(persisted_released, (int, float))
+            and not isinstance(persisted_released, bool)
+            else None
+        ),
+    }
+    if release_proof["released_timestamp"] is not None:
+        _validate_exact_sbatch_release_record(
+            proof_record,
+            job_id=job_id,
+            receipt_path=receipt_path,
+            receipt_sha256=receipt_sha256,
+        )
+    elif release_after_proof or (
+        not bool(record.get("persistent_hold")) and scheduler_job is not None
+    ):
+        if release_runner is None:
+            configured_release = (
+                getattr(submit_runner, "release_runner", None)
+                if submit_runner is not None
+                else None
+            )
+            release_runner = (
+                configured_release
+                if callable(configured_release)
+                else (
+                    (lambda _argv: subprocess.CompletedProcess(
+                        _argv, 0, "", ""
+                    ))
+                    if submit_runner is not None
+                    and submit_runner is not _run_subprocess
+                    else _run_subprocess
+                )
+            )
+        if observation_runner is None:
+            configured_observer = (
+                getattr(submit_runner, "release_observation_runner", None)
+                if submit_runner is not None
+                else None
+            )
+            observation_runner = (
+                configured_observer
+                if callable(configured_observer)
+                else (
+                    _run_subprocess
+                    if submit_runner is None or submit_runner is _run_subprocess
+                    else None
+                )
+            )
+        release_proof = _ensure_exact_sbatch_released(
+            state_dir,
+            record=proof_record,
+            job_id=job_id,
+            receipt_path=receipt_path,
+            receipt_sha256=receipt_sha256,
+            now=now,
+            release_runner=release_runner,
+            scheduler_job=scheduler_job,
+            observation_runner=observation_runner,
+        )
+    return {
+        "spooled_receipt_path": str(receipt_path),
+        "spooled_receipt_sha256": receipt_sha256,
+        **release_proof,
+    }
 
 
 def _find_intent_jobs(snapshot: SchedulerSnapshot, token: str) -> list[SchedulerJob]:
@@ -24028,6 +32795,11 @@ def _exact_live_controller_job(
     ]
     if len(matches) != 1 or matches[0].job_id != job_id:
         return None
+    _validate_exact_sbatch_record_proof(
+        record,
+        job_id=job_id,
+        context=f"controller job {job_id}",
+    )
     return matches[0]
 
 
@@ -24099,8 +32871,19 @@ def submit_controller_intent(
                     f"controller job {current_target['job_id']} for {role} has a token mismatch"
                 )
             if exact_matches and exact_matches[0].active:
+                if _exact_live_controller_job(
+                    scheduler, current_target
+                ) is None:
+                    raise SchedulerAmbiguity(
+                        "controller active record lacks exact scheduler proof"
+                    )
                 return copy.deepcopy(current_target)
             if exact_matches:
+                _validate_exact_sbatch_record_proof(
+                    current_target,
+                    job_id=exact_matches[0].job_id,
+                    context="terminal controller record",
+                )
                 # Accounting proves the previous exact allocation was accepted and is
                 # terminal.  It is safe to create a new generation immediately.
                 role_state[target] = None
@@ -24145,6 +32928,21 @@ def submit_controller_intent(
                 )
             active = [job for job in matches if job.active]
             if len(active) == 1:
+                proof = _prove_exact_sbatch_and_release(
+                    state_dir,
+                    record=intent,
+                    job_id=active[0].job_id,
+                    submit_runner=runner,
+                    release_after_proof=not bool(intent.get("hold", False)),
+                    now=timestamp,
+                    scheduler_job=active[0],
+                )
+                intent.update(proof)
+                _validate_exact_sbatch_record_proof(
+                    intent,
+                    job_id=active[0].job_id,
+                    context="controller adoption",
+                )
                 intent["state"] = "submitted"
                 intent["job_id"] = active[0].job_id
                 intent["adopted_from_scheduler"] = True
@@ -24160,6 +32958,21 @@ def submit_controller_intent(
                 return copy.deepcopy(intent)
             if matches:
                 terminal = matches[0]
+                proof = _prove_exact_sbatch_and_release(
+                    state_dir,
+                    record=intent,
+                    job_id=terminal.job_id,
+                    submit_runner=runner,
+                    release_after_proof=False,
+                    now=timestamp,
+                    scheduler_job=terminal,
+                )
+                intent.update(proof)
+                _validate_exact_sbatch_record_proof(
+                    intent,
+                    job_id=terminal.job_id,
+                    context="terminal controller adoption",
+                )
                 intent["state"] = "terminal"
                 intent["job_id"] = terminal.job_id
                 intent["terminal_scheduler_state"] = normalize_scheduler_state(
@@ -24216,6 +33029,18 @@ def submit_controller_intent(
                 "intent_token": intent_token,
                 "job_token": token,
                 "sbatch_path": str(sbatch_path),
+                "sbatch_sha256": sha256_file(sbatch_path),
+                "submission_transport": EXACT_SBATCH_SUBMISSION_TRANSPORT,
+                "submission_argv": _exact_sbatch_submission_argv(
+                    token=token,
+                    dependency_job_id=dependency_job_id,
+                ),
+                "submission_argv_sha256": None,
+                "persistent_hold": bool(hold),
+                "spooled_receipt_path": None,
+                "spooled_receipt_sha256": None,
+                "released_at": None,
+                "released_timestamp": None,
                 "dependency_job_id": dependency_job_id,
                 "controller_primitives": shared_controller_primitive_contract(),
                 "hold": bool(hold),
@@ -24223,6 +33048,9 @@ def submit_controller_intent(
                 "created_timestamp": timestamp,
                 "attempts": 0,
             }
+            intent["submission_argv_sha256"] = _submission_argv_sha256(
+                intent["submission_argv"]
+            )
             role_state["submission_intent"] = intent
             append_transition(
                 state_dir,
@@ -24240,15 +33068,35 @@ def submit_controller_intent(
             _save_control(state_dir, control, now=timestamp)
         intent_copy = copy.deepcopy(intent)
 
-    sbatch_path = Path(intent_copy["sbatch_path"])
-    argv = _submit_argv(
-        sbatch_path,
-        token=str(intent_copy["job_token"]),
-        dependency_job_id=intent_copy.get("dependency_job_id"),
-        hold=bool(intent_copy.get("hold", False)),
+    sbatch_payload = _stable_readonly_preimage(
+        Path(intent_copy["sbatch_path"]),
+        description="controller sbatch at exact submission boundary",
     )
-    proc = runner(argv)
+    if (
+        hashlib.sha256(sbatch_payload).hexdigest()
+        != intent_copy["sbatch_sha256"]
+    ):
+        raise ImmutablePinError(
+            "controller sbatch changed before exact submission"
+        )
+    proc = runner(
+        _ExactSbatchInvocation(
+            intent_copy["submission_argv"],
+            sbatch_payload,
+        )
+    )
     completed_at = time.time() if now is None else timestamp
+    raw_job_id = proc.stdout.strip().split(";", 1)[0]
+    proof: dict[str, Any] | None = None
+    if proc.returncode == 0 and raw_job_id.isdigit():
+        proof = _prove_exact_sbatch_and_release(
+            state_dir,
+            record=intent_copy,
+            job_id=raw_job_id,
+            submit_runner=runner,
+            release_after_proof=not bool(intent_copy.get("hold", False)),
+            now=completed_at,
+        )
 
     # Phase two: commit acceptance.  A nonzero return is known rejection and remains a
     # retryable submitting intent.  A killed process never reaches this phase; the next
@@ -24285,7 +33133,7 @@ def submit_controller_intent(
                 f"sbatch rejected controller intent for {role}: "
                 f"{proc.stderr.strip()[:500]}"
             )
-        job_id = proc.stdout.strip().split(";", 1)[0]
+        job_id = raw_job_id
         if not job_id.isdigit():
             current_intent["last_error"] = f"invalid sbatch job id {job_id!r}"
             _save_control(state_dir, control, now=completed_at)
@@ -24297,6 +33145,8 @@ def submit_controller_intent(
         current_intent["job_id"] = job_id
         current_intent["submitted_at"] = utc_timestamp(completed_at)
         current_intent["submitted_timestamp"] = completed_at
+        assert proof is not None
+        current_intent.update(proof)
         role_state[target] = copy.deepcopy(current_intent)
         role_state["next_generation"] = max(
             int(role_state["next_generation"]), int(current_intent["generation"]) + 1
@@ -24607,15 +33457,14 @@ def _validate_watchdog_deployment_evidence(
             "external-watchdog deployment cannot bind a missing immutable release"
         )
     try:
-        capacity_contract = protected_capacity.load_contract(
-            immutable["protected_capacity_marker_path"],
-            expected_release_git_commit=str(immutable["git_commit"]),
-            expected_marker_id=str(
-                immutable["protected_capacity_marker_id"]
-            ),
-            expected_sha256=str(
-                immutable["protected_capacity_marker_sha256"]
-            ),
+        capacity_authority = effective_protected_capacity_binding(
+            control, verify_files=True
+        )
+        capacity_contract = _load_protected_capacity_contract(
+            control,
+            path=capacity_authority["path"],
+            expected_marker_id=str(capacity_authority["marker_id"]),
+            expected_sha256=str(capacity_authority["sha256"]),
         )
     except (
         KeyError,
@@ -24656,7 +33505,7 @@ def _validate_watchdog_deployment_evidence(
         or value.get("release_git_commit") != control["immutable"]["git_commit"]
         or value.get("release_tag_object")
         != capacity_contract.release_tag_object
-        or value.get("chain_namespace") != "schema5-v1.2-r2"
+        or value.get("chain_namespace") != "schema5-v1.2-r3"
         or value.get("control_sha256") != control["immutable_sha256"]
         or value.get("liveness_email") != control["alert_email"]
         or value.get("forced_command_only") is not True
@@ -24782,6 +33631,15 @@ def _validate_external_watchdog_intent(value: Mapping[str, Any]) -> None:
                 "job_id",
                 "job_token",
                 "sbatch_path",
+                "sbatch_sha256",
+                "submission_transport",
+                "submission_argv",
+                "submission_argv_sha256",
+                "persistent_hold",
+                "spooled_receipt_path",
+                "spooled_receipt_sha256",
+                "released_at",
+                "released_timestamp",
                 "dependency_job_id",
             }
             or record.get("role") not in ROLE_NAMES
@@ -24792,6 +33650,33 @@ def _validate_external_watchdog_intent(value: Mapping[str, Any]) -> None:
             or parsed_token.get("drill") != value["drill_id"]
             or parsed_token.get("role") != record.get("role")
             or not Path(str(record.get("sbatch_path", ""))).is_absolute()
+            or _SHA256_RE.fullmatch(str(record.get("sbatch_sha256", "")))
+            is None
+            or record.get("submission_transport")
+            != EXACT_SBATCH_SUBMISSION_TRANSPORT
+            or record.get("submission_argv")
+            != _exact_sbatch_submission_argv(
+                token=str(record.get("job_token", "")),
+                dependency_job_id=(
+                    str(record["dependency_job_id"])
+                    if record.get("dependency_job_id") is not None
+                    else None
+                ),
+            )
+            or record.get("submission_argv_sha256")
+            != _submission_argv_sha256(record.get("submission_argv", []))
+            or record.get("persistent_hold") is not False
+            or not Path(
+                str(record.get("spooled_receipt_path", ""))
+            ).is_absolute()
+            or _SHA256_RE.fullmatch(
+                str(record.get("spooled_receipt_sha256", ""))
+            )
+            is None
+            or not isinstance(record.get("released_timestamp"), (int, float))
+            or isinstance(record.get("released_timestamp"), bool)
+            or record.get("released_at")
+            != utc_timestamp(float(record.get("released_timestamp", -1)))
             or (
                 record["target"] == "active"
                 and record.get("dependency_job_id") is not None
@@ -25195,14 +34080,19 @@ def _render_drill_sbatch(
             "",
         ]
     )
-    if target.exists():
-        if target.read_text(encoding="utf-8") != payload:
+    if target.exists() or target.is_symlink():
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat().st_nlink != 1
+            or target.stat().st_mode & 0o222
+            or target.read_text(encoding="utf-8") != payload
+        ):
             raise ImmutablePinError(
                 f"drill sbatch already exists with different bytes: {target}"
             )
         return target
-    io.atomic_write_text(target, payload)
-    target.chmod(0o444)
+    _atomic_publish_readonly_text(target, payload)
     return target
 
 
@@ -25256,8 +34146,9 @@ def _unique_exact_drill_job(
     sbatch_path: str,
     require_active: bool | None,
     expected_dependency_job_id: str | None = None,
+    record: Mapping[str, Any] | None = None,
 ) -> SchedulerJob:
-    """Resolve one token and bind its ID, sbatch, and optional parent exactly."""
+    """Resolve one drill allocation and bind its immutable stdin/spool proof."""
 
     token_matches = _drill_token_jobs(snapshot, job_token)
     if len(token_matches) != 1:
@@ -25270,10 +34161,25 @@ def _unique_exact_drill_job(
         raise SchedulerAmbiguity(
             f"drill token maps to job {job.job_id}, not recorded exact job {job_id}"
         )
-    if not _command_binds_exact_sbatch(job.command, sbatch_path):
+    if record is None:
         raise SchedulerAmbiguity(
-            f"drill job {job_id} command does not bind recorded exact sbatch {sbatch_path}"
+            f"drill job {job_id} lacks its exact held-stdin submission record"
         )
+    if (
+        str(record.get("job_id", "")) != str(job_id)
+        or str(record.get("job_token", "")) != job_token
+        or str(Path(str(record.get("sbatch_path", ""))).resolve())
+        != str(Path(sbatch_path).resolve())
+        or record.get("dependency_job_id") != expected_dependency_job_id
+    ):
+        raise SchedulerAmbiguity(
+            f"drill job {job_id} durable submission identity drifted"
+        )
+    _validate_exact_sbatch_record_proof(
+        record,
+        job_id=str(job_id),
+        context=f"drill job {job_id}",
+    )
     if expected_dependency_job_id is not None and not _dependency_binds_exact_afterany(
         job.dependency, expected_dependency_job_id
     ):
@@ -25325,19 +34231,31 @@ def _reconcile_stopping_drill_intents(
                 )
             if matches:
                 job = matches[0]
-                if not _command_binds_exact_sbatch(
-                    job.command, str(intent.get("sbatch_path", ""))
-                ):
-                    raise SchedulerAmbiguity(
-                        f"stopping {role} intent has mismatched scheduler command"
-                    )
+                proof = _prove_exact_sbatch_and_release(
+                    state_dir,
+                    record=intent,
+                    job_id=job.job_id,
+                    submit_runner=_run_subprocess,
+                    release_after_proof=True,
+                    now=now,
+                    scheduler_job=job,
+                )
+                intent.update(proof)
                 expected_parent = intent.get("dependency_job_id")
-                if expected_parent is not None and not _dependency_binds_exact_afterany(
-                    job.dependency, str(expected_parent)
-                ):
-                    raise SchedulerAmbiguity(
-                        f"stopping {role} intent has mismatched scheduler dependency"
-                    )
+                intent["job_id"] = job.job_id
+                _unique_exact_drill_job(
+                    snapshot,
+                    job_id=job.job_id,
+                    job_token=str(intent["job_token"]),
+                    sbatch_path=str(intent["sbatch_path"]),
+                    require_active=None,
+                    expected_dependency_job_id=(
+                        str(expected_parent)
+                        if expected_parent is not None
+                        else None
+                    ),
+                    record=intent,
+                )
                 existing = row.get(target)
                 if isinstance(existing, dict) and existing.get(
                     "intent_token"
@@ -25473,6 +34391,7 @@ def _submit_drill_intent_inside_boundary(
                         if current.get("dependency_job_id") is not None
                         else None
                     ),
+                    record=current,
                 )
                 return copy.deepcopy(current)
             if matches:
@@ -25498,6 +34417,17 @@ def _submit_drill_intent_inside_boundary(
             if len(matches) > 1:
                 raise SchedulerAmbiguity("drill intent maps to multiple scheduler jobs")
             if len(matches) == 1 and matches[0].active:
+                proof = _prove_exact_sbatch_and_release(
+                    state_dir,
+                    record=intent,
+                    job_id=matches[0].job_id,
+                    submit_runner=runner,
+                    release_after_proof=True,
+                    now=timestamp,
+                    scheduler_job=matches[0],
+                )
+                intent.update(proof)
+                intent["job_id"] = matches[0].job_id
                 _unique_exact_drill_job(
                     scheduler,
                     job_id=matches[0].job_id,
@@ -25509,9 +34439,9 @@ def _submit_drill_intent_inside_boundary(
                         if intent.get("dependency_job_id") is not None
                         else None
                     ),
+                    record=intent,
                 )
                 intent["state"] = "submitted"
-                intent["job_id"] = matches[0].job_id
                 intent["adopted_from_scheduler"] = True
                 row[str(intent["target"])] = copy.deepcopy(intent)
                 row["submission_intent"] = None
@@ -25561,12 +34491,27 @@ def _submit_drill_intent_inside_boundary(
                 "intent_token": intent_token,
                 "job_token": token,
                 "sbatch_path": str(sbatch_path),
+                "sbatch_sha256": sha256_file(sbatch_path),
+                "submission_transport": EXACT_SBATCH_SUBMISSION_TRANSPORT,
+                "submission_argv": _exact_sbatch_submission_argv(
+                    token=token,
+                    dependency_job_id=dependency_job_id,
+                ),
+                "submission_argv_sha256": None,
+                "persistent_hold": False,
+                "spooled_receipt_path": None,
+                "spooled_receipt_sha256": None,
+                "released_at": None,
+                "released_timestamp": None,
                 "dependency_job_id": dependency_job_id,
                 "controller_primitives": shared_controller_primitive_contract(),
                 "created_at": utc_timestamp(timestamp),
                 "created_timestamp": timestamp,
                 "attempts": 0,
             }
+            intent["submission_argv_sha256"] = _submission_argv_sha256(
+                intent["submission_argv"]
+            )
             row["submission_intent"] = intent
             _append_drill_event(
                 state_dir,
@@ -25577,14 +34522,35 @@ def _submit_drill_intent_inside_boundary(
             )
             _save_drill_state(state_dir, state, now=timestamp)
         intent_copy = copy.deepcopy(intent)
+    sbatch_payload = _stable_readonly_preimage(
+        Path(str(intent_copy["sbatch_path"])),
+        description="controller-drill sbatch at exact submission boundary",
+    )
+    if (
+        hashlib.sha256(sbatch_payload).hexdigest()
+        != intent_copy["sbatch_sha256"]
+    ):
+        raise ImmutablePinError(
+            "controller-drill sbatch changed before exact submission"
+        )
     proc = runner(
-        _submit_argv(
-            Path(intent_copy["sbatch_path"]),
-            token=str(intent_copy["job_token"]),
-            dependency_job_id=intent_copy.get("dependency_job_id"),
+        _ExactSbatchInvocation(
+            intent_copy["submission_argv"],
+            sbatch_payload,
         )
     )
     completed = time.time() if now is None else timestamp
+    raw_job_id = proc.stdout.strip().split(";", 1)[0]
+    proof: dict[str, Any] | None = None
+    if proc.returncode == 0 and raw_job_id.isdigit():
+        proof = _prove_exact_sbatch_and_release(
+            state_dir,
+            record=intent_copy,
+            job_id=raw_job_id,
+            submit_runner=runner,
+            release_after_proof=True,
+            now=completed,
+        )
     with drill_lock(state_dir):
         state = load_drill_state(state_dir)
         _assert_drill_control_paused(
@@ -25609,9 +34575,14 @@ def _submit_drill_intent_inside_boundary(
             raise ControlError(
                 f"sbatch rejected drill intent: {current['last_error'][:500]}"
             )
-        job_id = proc.stdout.strip().split(";", 1)[0]
+        job_id = raw_job_id
         if not job_id.isdigit():
             raise SchedulerAmbiguity(f"sbatch returned invalid drill job ID {job_id!r}")
+        if proof is None:
+            raise SchedulerAmbiguity(
+                "accepted controller-drill job lacks exact spool/release proof"
+            )
+        current.update(proof)
         current["state"] = "submitted"
         current["job_id"] = job_id
         current["submitted_at"] = utc_timestamp(completed)
@@ -25797,6 +34768,18 @@ def _resolve_fenced_role_claim(
         raise ControllerFenced(
             f"{context} job {job_id} does not match recorded exact IDs {sorted(exact_ids)}"
         )
+    if context in {"production", "drill"}:
+        try:
+            for record in candidates:
+                _validate_exact_sbatch_record_proof(
+                    record,
+                    job_id=job_id,
+                    context=f"{context} job {job_id}",
+                )
+        except SchedulerAmbiguity as exc:
+            raise ControllerFenced(
+                f"{context} job {job_id} lacks its exact spool/release proof"
+            ) from exc
     active = role_state.get("active")
     if isinstance(active, dict):
         active_id = str(active.get("job_id", ""))
@@ -26124,12 +35107,17 @@ def controller_drill_status(
                 errors.append(f"scheduler ID mismatch for {role} {field}")
             if recorded_id:
                 exact = [job for job in matches if job.job_id == str(recorded_id)]
-                if exact and not _command_binds_exact_sbatch(
-                    exact[0].command, str(record.get("sbatch_path", ""))
-                ):
-                    errors.append(
-                        f"scheduler command does not bind recorded sbatch for {role} {field}"
-                    )
+                if exact:
+                    try:
+                        _validate_exact_sbatch_record_proof(
+                            record,
+                            job_id=str(recorded_id),
+                            context=f"controller drill {role} {field}",
+                        )
+                    except ControlError:
+                        errors.append(
+                            f"exact spool/release proof is invalid for {role} {field}"
+                        )
                 expected_parent = record.get("dependency_job_id")
                 if (
                     exact
@@ -26256,6 +35244,7 @@ def _external_watchdog_namespace_records(
                 sbatch_path=str(record["sbatch_path"]),
                 require_active=True,
                 expected_dependency_job_id=dependency,
+                record=record,
             )
             records.append(
                 {
@@ -26264,6 +35253,25 @@ def _external_watchdog_namespace_records(
                     "job_id": str(record["job_id"]),
                     "job_token": str(record["job_token"]),
                     "sbatch_path": str(Path(record["sbatch_path"]).resolve()),
+                    "sbatch_sha256": str(record["sbatch_sha256"]),
+                    "submission_transport": str(
+                        record["submission_transport"]
+                    ),
+                    "submission_argv": list(record["submission_argv"]),
+                    "submission_argv_sha256": str(
+                        record["submission_argv_sha256"]
+                    ),
+                    "persistent_hold": False,
+                    "spooled_receipt_path": str(
+                        Path(record["spooled_receipt_path"]).resolve()
+                    ),
+                    "spooled_receipt_sha256": str(
+                        record["spooled_receipt_sha256"]
+                    ),
+                    "released_at": str(record["released_at"]),
+                    "released_timestamp": float(
+                        record["released_timestamp"]
+                    ),
                     "dependency_job_id": dependency,
                 }
             )
@@ -26423,6 +35431,7 @@ def _reconcile_external_watchdog_cancellation(
                 if record["dependency_job_id"] is not None
                 else None
             ),
+            record=record,
         )
         terminal = normalize_scheduler_state(job.state)
         if job.active:
@@ -26498,6 +35507,7 @@ def cancel_external_watchdog_drill_namespace(
                     if record["dependency_job_id"] is not None
                     else None
                 ),
+                record=record,
             )
             terminal = normalize_scheduler_state(job.state)
             if not job.active:
@@ -26841,7 +35851,7 @@ def complete_external_watchdog_drill(
             "release_tag": PRODUCTION_OPERATIONAL_TAG,
             "release_git_commit": deployment["release_git_commit"],
             "release_tag_object": deployment["release_tag_object"],
-            "chain_namespace": "schema5-v1.2-r2",
+            "chain_namespace": "schema5-v1.2-r3",
             "deployment_id": deployment["deployment_id"],
             "watchdog_code_sha256": deployment["watchdog_code_sha256"],
             "immutable_release_sha256": deployment[
@@ -26917,6 +35927,11 @@ def kill_drill_controller(
         successor = row.get("successor")
         if isinstance(existing_kill, dict):
             kill = existing_kill
+            killed_submission = kill.get("submission_record")
+            if not isinstance(killed_submission, dict):
+                raise SchedulerAmbiguity(
+                    f"{role} persisted kill has no exact submission proof"
+                )
             sbatch_path = str(kill.get("sbatch_path", ""))
             if not sbatch_path and isinstance(active, dict):
                 sbatch_path = str(active.get("sbatch_path", ""))
@@ -26930,6 +35945,12 @@ def kill_drill_controller(
                 job_token=str(kill.get("job_token", "")),
                 sbatch_path=sbatch_path,
                 require_active=None,
+                expected_dependency_job_id=(
+                    str(killed_submission["dependency_job_id"])
+                    if killed_submission.get("dependency_job_id") is not None
+                    else None
+                ),
+                record=killed_submission,
             )
             if not target_job.active:
                 terminal_state = normalize_scheduler_state(target_job.state)
@@ -26989,6 +36010,12 @@ def kill_drill_controller(
                 job_token=str(active["job_token"]),
                 sbatch_path=str(active["sbatch_path"]),
                 require_active=True,
+                expected_dependency_job_id=(
+                    str(active["dependency_job_id"])
+                    if active.get("dependency_job_id") is not None
+                    else None
+                ),
+                record=active,
             )
             _unique_exact_drill_job(
                 snapshot,
@@ -26997,6 +36024,7 @@ def kill_drill_controller(
                 sbatch_path=str(successor["sbatch_path"]),
                 require_active=True,
                 expected_dependency_job_id=str(active["job_id"]),
+                record=successor,
             )
             kill = {
                 "state": "cancelling",
@@ -27005,10 +36033,12 @@ def kill_drill_controller(
                 "sbatch_path": str(active["sbatch_path"]),
                 "fencing_primitive": active.get("fencing_primitive"),
                 "controller_primitives": active.get("controller_primitives"),
+                "submission_record": copy.deepcopy(active),
                 "successor_job_id": str(successor["job_id"]),
                 "successor_job_token": str(successor["job_token"]),
                 "successor_sbatch_path": str(successor["sbatch_path"]),
                 "successor_dependency_job_id": str(active["job_id"]),
+                "successor_submission_record": copy.deepcopy(successor),
                 "started_at": utc_timestamp(timestamp),
                 "started_timestamp": timestamp,
             }
@@ -27115,6 +36145,7 @@ def record_drill_recovery(
             sbatch_path=expected_successor[2],
             require_active=True,
             expected_dependency_job_id=expected_successor[3],
+            record=active,
         )
         recovered_at = float(heartbeat["timestamp"])
         recovery_seconds = recovered_at - float(kill["started_timestamp"])
@@ -27215,6 +36246,7 @@ def _publish_drill_reconciliation(state_dir: Path, drill_id: str) -> tuple[Path,
     if target_present and (
         target.is_symlink()
         or not target.is_file()
+        or target.stat().st_nlink != 1
         or target.stat().st_mode & 0o222
     ):
         raise ImmutablePinError(
@@ -27237,8 +36269,7 @@ def _publish_drill_reconciliation(state_dir: Path, drill_id: str) -> tuple[Path,
     ):
         raise ControlError("cannot seal a non-clean drill reconciliation")
     if not target_present:
-        io.atomic_write_text(target, payload)
-        target.chmod(0o444)
+        _atomic_publish_readonly_text(target, payload)
     return target.resolve(), sha256_file(target)
 
 
@@ -27790,9 +36821,6 @@ def finish_controller_drill(
                 if (
                     record is None
                     or job.comment != record.get("job_token")
-                    or not _command_binds_exact_sbatch(
-                        job.command, str(record.get("sbatch_path", ""))
-                    )
                     or (
                         record.get("dependency_job_id") is not None
                         and not _dependency_binds_exact_afterany(
@@ -27803,6 +36831,16 @@ def finish_controller_drill(
                     raise SchedulerAmbiguity(
                         f"refusing drill cleanup of unmapped exact job {job.job_id}"
                     )
+                try:
+                    _validate_exact_sbatch_record_proof(
+                        record,
+                        job_id=job.job_id,
+                        context=f"drill cleanup job {job.job_id}",
+                    )
+                except ControlError as exc:
+                    raise SchedulerAmbiguity(
+                        f"refusing drill cleanup of unmapped exact job {job.job_id}"
+                    ) from exc
             new_targets = sorted(
                 (job for job in live if job.job_id not in cancelled_job_ids),
                 key=lambda item: item.job_id,
@@ -28022,6 +37060,7 @@ def _update_admission_safety_hold_locked(
             mode = str(hold["mode"])
         if not hold["active"]:
             hold["active"] = True
+            hold["activation_id"] = uuid.uuid4().hex
             hold["activated_at"] = utc_timestamp(timestamp)
             hold["activated_timestamp"] = timestamp
             event = "activated"
@@ -28082,6 +37121,7 @@ def _update_admission_safety_hold_locked(
                     "semantic_clean_after_activation": False,
                     "activated_at": None,
                     "activated_timestamp": None,
+                    "activation_id": None,
                     "acknowledged_at": None,
                     "acknowledged_timestamp": None,
                 }
@@ -28146,6 +37186,24 @@ def update_admission_safety_hold(
             "safety-hold update accepts scheduler or scheduler_reader, not both"
         )
     with admission_boundary_lock(state_dir):
+        current = load_control(state_dir)
+        if (
+            current["desired_state"] == "running"
+            and current["admission_safety_hold"]["active"]
+            and not _safety_hold_drain_complete_for_current_activation(
+                current
+            )
+        ):
+            # A clean poll is not evidence that an earlier signal failure was
+            # repaired.  Complete the exact activation/generation drain before
+            # advancing any clean counter or releasing any transient cause.
+            _ensure_safety_hold_cell_drain_locked(
+                state_dir,
+                scheduler=scheduler,
+                scheduler_reader=scheduler_reader,
+                signal_runner=signal_runner,
+                now=timestamp,
+            )
         with control_lock(state_dir):
             control = load_control(state_dir)
             was_active = bool(control["admission_safety_hold"]["active"])
@@ -28162,10 +37220,9 @@ def update_admission_safety_hold(
             is_active = bool(control["admission_safety_hold"]["active"])
         if is_active and (
             not was_active
-            or not isinstance(
-                control.get("safety_hold_drain_intent"), dict
+            or not _safety_hold_drain_complete_for_current_activation(
+                control
             )
-            or control["safety_hold_drain_intent"].get("state") != "complete"
         ):
             control = _ensure_safety_hold_cell_drain_locked(
                 state_dir,
@@ -28290,6 +37347,7 @@ def acknowledge_admission_hold(
                     "semantic_clean_after_activation": False,
                     "activated_at": None,
                     "activated_timestamp": None,
+                    "activation_id": None,
                     "updated_at": utc_timestamp(timestamp),
                     "updated_timestamp": timestamp,
                     "acknowledged_at": utc_timestamp(timestamp),
@@ -28728,6 +37786,2056 @@ def _cell_job(name: str) -> bool:
     )
 
 
+def _finalizer_status_row(
+    snapshot: SchedulerSnapshot,
+    record: Any,
+    *,
+    timestamp: float,
+    field: str,
+) -> dict[str, Any]:
+    """Project one durable finalizer identity onto current scheduler truth."""
+
+    if not isinstance(record, Mapping):
+        return {
+            "recorded": False,
+            "recorded_job_id": None,
+            "scheduler_job_id": None,
+            "attempt": None,
+            "job_token": None,
+            "sbatch_path": None,
+            "dependency_job_id": None,
+            "live": False,
+            "scheduler_state": None,
+            "identity_mismatch": False,
+            "adoptable": False,
+            "missing": False,
+            "missing_after_grace": False,
+            "visibility_pending": False,
+            "terminal": False,
+            "provenance": None,
+        }
+    job_id = record.get("job_id")
+    same_id = (
+        [job for job in snapshot.jobs if job.job_id == str(job_id)]
+        if isinstance(job_id, str) and job_id
+        else []
+    )
+    same_token = [
+        job
+        for job in snapshot.jobs
+        if job.comment == str(record.get("job_token", ""))
+    ]
+    provenance: dict[str, Any] | None = None
+    identity_mismatch = False
+    adoptable = False
+    if (
+        isinstance(job_id, str)
+        and job_id.isdigit()
+        and len(same_id) == 1
+        and len(same_token) == 1
+        and same_id[0] is same_token[0]
+    ):
+        try:
+            provenance = _finalizer_record_scheduler_observation(
+                snapshot,
+                record,
+                same_id[0],
+                require_active=None,
+                context=f"live-status {field}",
+            )
+        except (ControlError, SchedulerAmbiguity):
+            identity_mismatch = True
+    elif (
+        job_id is None
+        and len(same_token) == 1
+        and record.get("state") == "submitting"
+    ):
+        provisional = copy.deepcopy(dict(record))
+        provisional["job_id"] = same_token[0].job_id
+        try:
+            provenance = _finalizer_record_scheduler_observation(
+                snapshot,
+                provisional,
+                same_token[0],
+                require_active=None,
+                context=f"live-status adoptable {field}",
+            )
+            adoptable = True
+        except (ControlError, SchedulerAmbiguity):
+            identity_mismatch = True
+    elif same_id or same_token:
+        identity_mismatch = True
+    created = record.get(
+        "submitted_timestamp", record.get("created_timestamp")
+    )
+    age = (
+        max(0.0, timestamp - float(created))
+        if isinstance(created, (int, float)) and not isinstance(created, bool)
+        else None
+    )
+    missing = provenance is None and not identity_mismatch
+    visibility_pending = bool(
+        missing
+        and age is not None
+        and age <= SUBMISSION_VISIBILITY_GRACE_SECONDS
+        and record.get("state") in {"submitting", "submitted", "started"}
+    )
+    scheduler_job = (
+        same_id[0]
+        if len(same_id) == 1
+        else (same_token[0] if adoptable else None)
+    )
+    scheduler_state = (
+        normalize_scheduler_state(scheduler_job.state)
+        if scheduler_job is not None
+        else None
+    )
+    return {
+        "recorded": True,
+        "recorded_job_id": job_id,
+        "scheduler_job_id": (
+            scheduler_job.job_id if scheduler_job is not None else None
+        ),
+        "attempt": record.get("attempt"),
+        "job_token": record.get("job_token"),
+        "sbatch_path": record.get("sbatch_path"),
+        "dependency_job_id": record.get("dependency_job_id"),
+        "live": bool(
+            provenance is not None
+            and scheduler_state in ACTIVE_SCHEDULER_STATES
+        ),
+        "scheduler_state": scheduler_state,
+        "identity_mismatch": identity_mismatch,
+        "adoptable": adoptable,
+        "missing": missing,
+        "missing_after_grace": bool(missing and not visibility_pending),
+        "visibility_pending": visibility_pending,
+        "terminal": bool(
+            provenance is not None
+            and scheduler_state in TERMINAL_SCHEDULER_STATES
+        ),
+        "provenance": provenance,
+    }
+
+
+def _finalizer_live_status(
+    control: Mapping[str, Any],
+    snapshot: SchedulerSnapshot,
+    *,
+    timestamp: float,
+) -> dict[str, Any]:
+    """Join the autonomous-finalizer ledger to exact scheduler identities."""
+
+    raw = copy.deepcopy(control["finalization"])
+    pending_payload = (
+        _pending_finalization_request_payload(control)
+        if raw["state"] == "idle"
+        else None
+    )
+    pending_request = (
+        None
+        if pending_payload is None
+        else {
+            "validated": True,
+            "intent_id": pending_payload["intent_id"],
+            "requested_timestamp": pending_payload[
+                "requested_timestamp"
+            ],
+            "semantic_evidence_sha256": pending_payload[
+                "semantic_evidence"
+            ]["sha256"],
+            "request_payload_sha256": sha256_value(pending_payload),
+        }
+    )
+    active = _finalizer_status_row(
+        snapshot,
+        raw.get("active_job"),
+        timestamp=timestamp,
+        field="active",
+    )
+    successor = _finalizer_status_row(
+        snapshot,
+        raw.get("successor_job"),
+        timestamp=timestamp,
+        field="successor",
+    )
+    namespace_error: str | None = None
+    try:
+        namespace_active = _finalizer_namespace_active_job_ids(snapshot)
+    except SchedulerAmbiguity as exc:
+        namespace_active = sorted(
+            {
+                job.job_id
+                for job in snapshot.jobs
+                if job.active
+                and (
+                    job.comment.startswith(FINALIZER_JOB_TOKEN_PREFIX + ";")
+                    or job.job_name.startswith("asys-s5-final-")
+                )
+            }
+        )
+        namespace_error = str(exc)
+    expected_ids = {
+        str(
+            row["scheduler_job_id"]
+            if row["adoptable"]
+            else row["recorded_job_id"]
+        )
+        for row in (active, successor)
+        if isinstance(
+            (
+                row.get("scheduler_job_id")
+                if row.get("adoptable")
+                else row.get("recorded_job_id")
+            ),
+            str,
+        )
+        and str(
+            row.get("scheduler_job_id")
+            if row.get("adoptable")
+            else row.get("recorded_job_id")
+        ).isdigit()
+    }
+    unexpected = sorted(
+        set(namespace_active) - expected_ids,
+        key=int,
+    )
+    scheduler_complete = bool(
+        snapshot.squeue_ok
+        and snapshot.sacct_ok
+        and not snapshot.errors
+        and namespace_error is None
+    )
+    state = raw["state"]
+    if state == "idle":
+        chain_healthy = bool(
+            scheduler_complete
+            and pending_request is None
+            and not active["recorded"]
+            and not successor["recorded"]
+            and not namespace_active
+        )
+    elif state in ACTIVE_FINALIZATION_STATES:
+        chain_healthy = bool(
+            scheduler_complete
+            and active["live"]
+            and successor["live"]
+            and not active["identity_mismatch"]
+            and not successor["identity_mismatch"]
+            and successor["dependency_job_id"]
+            == active["recorded_job_id"]
+            and not unexpected
+        )
+    elif state == "complete":
+        chain_healthy = bool(
+            scheduler_complete
+            and pending_request is None
+            and isinstance(raw.get("completion_marker"), Mapping)
+            and active["recorded"]
+            and successor["recorded"]
+            and not active["live"]
+            and not successor["live"]
+            and not active["identity_mismatch"]
+            and not successor["identity_mismatch"]
+            and raw["successor_job"].get("state")
+            in {"terminal", "cancelled"}
+            and isinstance(raw.get("successor_retirement"), Mapping)
+            and raw["successor_retirement"].get("receipt_path") is not None
+            and not namespace_active
+        )
+    else:
+        chain_healthy = False
+    raw.update(
+        {
+            "scheduler_complete": scheduler_complete,
+            "pending_request": pending_request,
+            "active": active,
+            "successor": successor,
+            "namespace_active_job_ids": namespace_active,
+            "unexpected_active_job_ids": unexpected,
+            "scheduler_error": namespace_error,
+            "chain_healthy": chain_healthy,
+        }
+    )
+    return raw
+
+
+def _external_watchdog_mirror_root(state_dir: Path) -> Path:
+    return state_dir / EXTERNAL_WATCHDOG_MIRROR_DIRNAME
+
+
+@contextmanager
+def external_watchdog_mirror_lock(state_dir: Path) -> Iterator[None]:
+    """Serialize the cluster-side half of the external watchdog journal."""
+
+    with _file_lock(
+        state_dir / "locks" / "external-watchdog-mirror.lock"
+    ):
+        yield
+
+
+@contextmanager
+def external_watchdog_mirror_read_lock(state_dir: Path) -> Iterator[None]:
+    """Take the journal lock without mutating its diagnostic owner payload."""
+
+    path = state_dir / "locks" / "external-watchdog-mirror.lock"
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _external_watchdog_tag_object(control: Mapping[str, Any]) -> str:
+    immutable = control.get("immutable")
+    if not isinstance(immutable, Mapping):
+        raise ControlError("watchdog mirror lacks immutable release identity")
+    try:
+        capacity_authority = effective_protected_capacity_binding(
+            control, verify_files=True
+        )
+        contract = _load_protected_capacity_contract(
+            control,
+            path=capacity_authority["path"],
+            expected_marker_id=str(capacity_authority["marker_id"]),
+            expected_sha256=str(capacity_authority["sha256"]),
+        )
+    except (
+        KeyError,
+        protected_capacity.ProtectedCapacityError,
+    ) as exc:
+        raise ControlError(
+            "watchdog mirror cannot verify the release tag object"
+        ) from exc
+    if re.fullmatch(r"[0-9a-f]{40}", contract.release_tag_object) is None:
+        raise ControlError("watchdog mirror release tag object is malformed")
+    return contract.release_tag_object
+
+
+def _external_watchdog_control_identity(
+    control: Mapping[str, Any],
+) -> dict[str, Any]:
+    immutable = control.get("immutable")
+    finalization = control.get("finalization")
+    if not isinstance(immutable, Mapping) or not isinstance(
+        finalization, Mapping
+    ):
+        raise ControlError("watchdog mirror control identity is incomplete")
+    pending = finalization.get("pending_request")
+    pending_intent_id = (
+        pending.get("intent_id") if isinstance(pending, Mapping) else None
+    )
+    identity = {
+        "release_id": immutable.get("release_id"),
+        "release_tag": PRODUCTION_OPERATIONAL_TAG,
+        "release_tag_object": _external_watchdog_tag_object(control),
+        "git_commit": immutable.get("git_commit"),
+        "control_sha256": control.get("immutable_sha256"),
+        "desired_state": control.get("desired_state"),
+        "rollout_generation": control.get("rollout_generation"),
+        "finalization": {
+            "state": finalization.get("state"),
+            "intent_id": finalization.get("intent_id"),
+            "pending_request_intent_id": pending_intent_id,
+        },
+    }
+    _validate_external_watchdog_identity(
+        identity, description="watchdog mirror current control"
+    )
+    return identity
+
+
+def _validate_external_watchdog_identity(
+    identity: Any, *, description: str
+) -> None:
+    expected_fields = {
+        "release_id",
+        "release_tag",
+        "release_tag_object",
+        "git_commit",
+        "control_sha256",
+        "desired_state",
+        "rollout_generation",
+        "finalization",
+    }
+    finalization_identity = (
+        identity.get("finalization")
+        if isinstance(identity, Mapping)
+        else None
+    )
+    if (
+        not isinstance(identity, Mapping)
+        or set(identity) != expected_fields
+        or identity.get("release_id") != PRODUCTION_RELEASE_ID
+        or identity.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(identity.get("release_tag_object", ""))
+        )
+        is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(identity.get("git_commit", "")))
+        is None
+        or _SHA256_RE.fullmatch(str(identity.get("control_sha256", "")))
+        is None
+        or identity.get("desired_state") not in {"paused", "resuming", "running"}
+        or not isinstance(identity.get("rollout_generation"), int)
+        or isinstance(identity.get("rollout_generation"), bool)
+        or int(identity.get("rollout_generation", -1)) < 0
+        or not isinstance(finalization_identity, Mapping)
+        or set(finalization_identity)
+        != {"state", "intent_id", "pending_request_intent_id"}
+        or finalization_identity.get("state") not in FINALIZATION_STATES
+        or any(
+            value is not None and _SHA256_RE.fullmatch(str(value)) is None
+            for value in (
+                finalization_identity.get("intent_id"),
+                finalization_identity.get("pending_request_intent_id"),
+            )
+        )
+    ):
+        raise ControlError(f"{description} identity is invalid")
+
+
+def _watchdog_mirror_read(
+    path: Path, *, description: str, read_only: bool
+) -> tuple[dict[str, Any], bytes]:
+    value, raw = _read_stable_json(
+        path,
+        description=description,
+        require_read_only=read_only,
+    )
+    if raw != _watchdog_canonical_json(value):
+        raise ControlError(f"{description} is not canonical JSON")
+    return value, raw
+
+
+def _watchdog_predecessor(
+    record: Mapping[str, Any],
+    *,
+    id_field: str,
+    path: Path,
+) -> dict[str, Any]:
+    return {
+        "sequence": int(record["sequence"]),
+        "record_id": str(record[id_field]),
+        "sha256": sha256_file(path),
+    }
+
+
+def _watchdog_validate_predecessor(
+    value: Any,
+    *,
+    previous: tuple[dict[str, Any], Path] | None,
+    id_field: str,
+    description: str,
+) -> None:
+    if previous is None:
+        if value is not None:
+            raise ControlError(
+                f"{description} first record has a predecessor"
+            )
+        return
+    prior, prior_path = previous
+    expected = _watchdog_predecessor(
+        prior, id_field=id_field, path=prior_path
+    )
+    if value != expected:
+        raise ControlError(f"{description} predecessor chain is invalid")
+
+
+def _watchdog_sequence_files(
+    directory: Path, *, description: str
+) -> list[Path]:
+    if not directory.exists():
+        return []
+    if directory.is_symlink() or not directory.is_dir():
+        raise ControlError(f"{description} directory is unsafe")
+    paths: list[Path] = []
+    pattern = re.compile(r"(?P<sequence>[0-9]{12})-(?P<id>[0-9a-f]{64})\.json\Z")
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if path.name.startswith("."):
+            raise ControlError(
+                f"{description} has an incomplete or foreign hidden entry: {path}"
+            )
+        if pattern.fullmatch(path.name) is None:
+            raise ControlError(f"{description} has a foreign entry: {path}")
+        paths.append(path)
+    return paths
+
+
+def _recover_watchdog_publication_temps_locked(state_dir: Path) -> None:
+    """Recover only exact immutable-publisher prelinks under the journal lock."""
+
+    root = _external_watchdog_mirror_root(state_dir)
+    immutable_directories = (
+        "status_receipts",
+        "action_intents",
+        "action_receipts",
+        "cycle_intents",
+        "cycle_receipts",
+    )
+    pattern = re.compile(
+        r"^\.(?P<destination>[0-9]{12}-[0-9a-f]{64}\.json)"
+        r"\.publish\.(?P<payload>[0-9a-f]{64})"
+        r"\.(?P<owner>[0-9a-f]{32})\.tmp\Z"
+    )
+    for name in immutable_directories:
+        directory = root / name
+        if not directory.exists():
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            raise ControlError(
+                f"watchdog journal recovery directory is unsafe: {directory}"
+            )
+        descriptor = os.open(
+            directory,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            for candidate in sorted(
+                directory.iterdir(), key=lambda item: item.name
+            ):
+                if not candidate.name.startswith("."):
+                    continue
+                match = pattern.fullmatch(candidate.name)
+                if match is None or candidate.is_symlink():
+                    raise ControlError(
+                        "watchdog journal has a foreign publication preimage: "
+                        f"{candidate}"
+                    )
+                metadata = candidate.stat(follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_nlink not in {1, 2}
+                ):
+                    raise ControlError(
+                        "watchdog publication preimage identity is unsafe: "
+                        f"{candidate}"
+                    )
+                destination = directory / match.group("destination")
+                if stat.S_IMODE(metadata.st_mode) & 0o222:
+                    if metadata.st_nlink != 1:
+                        raise ControlError(
+                            "writable watchdog preimage has multiple links"
+                        )
+                    candidate.unlink()
+                    os.fsync(descriptor)
+                    continue
+                raw = candidate.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != match.group("payload"):
+                    raise ControlError(
+                        "sealed watchdog publication preimage hash drifted"
+                    )
+                if destination.exists() or destination.is_symlink():
+                    if (
+                        destination.is_symlink()
+                        or not destination.is_file()
+                        or destination.read_bytes() != raw
+                    ):
+                        raise ControlError(
+                            "watchdog publication preimage conflicts with "
+                            f"{destination}"
+                        )
+                else:
+                    if metadata.st_nlink != 1:
+                        raise ControlError(
+                            "watchdog publication preimage lost its destination"
+                        )
+                    os.link(candidate, destination, follow_symlinks=False)
+                    os.fsync(descriptor)
+                candidate.unlink()
+                os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    if root.exists():
+        for candidate in root.iterdir():
+            if not candidate.name.startswith(".LATEST.json."):
+                continue
+            if (
+                not candidate.name.endswith(".tmp")
+                or candidate.is_symlink()
+            ):
+                raise ControlError(
+                    f"watchdog pointer has a foreign temp entry: {candidate}"
+                )
+            metadata = candidate.stat(follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ControlError(
+                    f"watchdog pointer temp identity is unsafe: {candidate}"
+                )
+            candidate.unlink()
+        directory_descriptor = os.open(
+            root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+
+
+def _load_watchdog_status_observations(
+    state_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    directory = _external_watchdog_mirror_root(state_dir) / "status_receipts"
+    result: list[tuple[dict[str, Any], Path]] = []
+    previous: tuple[dict[str, Any], Path] | None = None
+    expected_fields = {
+        "schema_version",
+        "protocol",
+        "sequence",
+        "predecessor",
+        "identity",
+        "report_sha256",
+        "report_captured_timestamp",
+        "scheduler_sha256",
+        "cluster_server_timestamp",
+        "observation_id",
+    }
+    for expected_sequence, path in enumerate(
+        _watchdog_sequence_files(
+            directory, description="watchdog status journal"
+        ),
+        start=1,
+    ):
+        value, _raw = _watchdog_mirror_read(
+            path,
+            description="watchdog status receipt",
+            read_only=True,
+        )
+        scheduler_timestamp = value.get("report_captured_timestamp")
+        server_timestamp = value.get("cluster_server_timestamp")
+        if (
+            set(value) != expected_fields
+            or value.get("schema_version") != 1
+            or value.get("protocol") != EXTERNAL_WATCHDOG_STATUS_PROTOCOL
+            or value.get("sequence") != expected_sequence
+            or not isinstance(value.get("identity"), Mapping)
+            or _SHA256_RE.fullmatch(str(value.get("report_sha256", "")))
+            is None
+            or _SHA256_RE.fullmatch(str(value.get("scheduler_sha256", "")))
+            is None
+            or not isinstance(scheduler_timestamp, (int, float))
+            or isinstance(scheduler_timestamp, bool)
+            or not math.isfinite(float(scheduler_timestamp))
+            or not isinstance(server_timestamp, (int, float))
+            or isinstance(server_timestamp, bool)
+            or not math.isfinite(float(server_timestamp))
+            or float(server_timestamp) < float(scheduler_timestamp)
+            or value.get("observation_id")
+            != _watchdog_self_hash(value, "observation_id")
+            or path.name
+            != (
+                f"{expected_sequence:012d}-"
+                f"{value.get('observation_id')}.json"
+            )
+        ):
+            raise ControlError("watchdog status receipt is malformed")
+        _validate_external_watchdog_identity(
+            value["identity"], description="watchdog status receipt"
+        )
+        if previous is not None and (
+            float(value["report_captured_timestamp"])
+            <= float(previous[0]["report_captured_timestamp"])
+            or float(value["cluster_server_timestamp"])
+            <= float(previous[0]["cluster_server_timestamp"])
+        ):
+            raise ControlError(
+                "watchdog status receipt timestamps are not monotonic"
+            )
+        _watchdog_validate_predecessor(
+            value.get("predecessor"),
+            previous=previous,
+            id_field="observation_id",
+            description="watchdog status journal",
+        )
+        result.append((value, path))
+        previous = (value, path)
+    return result
+
+
+def record_external_watchdog_status_observation(
+    state_dir: Path,
+    *,
+    report: Mapping[str, Any],
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Seal the exact report returned by the fixed external status selector."""
+
+    timestamp = time.time() if now is None else float(now)
+    if not math.isfinite(timestamp):
+        raise ControlError("watchdog status server timestamp is invalid")
+    scheduler = report.get("scheduler")
+    captured = report.get("captured_timestamp")
+    if (
+        not isinstance(scheduler, Mapping)
+        or scheduler.get("squeue_ok") is not True
+        or scheduler.get("sacct_ok") is not True
+        or scheduler.get("errors") not in ([], ())
+        or not isinstance(captured, (int, float))
+        or isinstance(captured, bool)
+        or not math.isfinite(float(captured))
+        or timestamp < float(captured)
+    ):
+        raise SchedulerAmbiguity(
+            "watchdog status receipt requires complete current scheduler truth"
+        )
+    control = load_control(state_dir, verify_files=True)
+    identity = _external_watchdog_control_identity(control)
+    for field, expected in (
+        ("release_id", identity["release_id"]),
+        ("git_commit", identity["git_commit"]),
+        ("immutable_sha256", identity["control_sha256"]),
+        ("desired_state", identity["desired_state"]),
+        ("rollout_generation", identity["rollout_generation"]),
+    ):
+        if report.get(field) != expected:
+            raise ControlError(
+                f"watchdog status report {field} differs from current control"
+            )
+    finalization = report.get("finalization")
+    if (
+        not isinstance(finalization, Mapping)
+        or finalization.get("state")
+        != identity["finalization"]["state"]
+        or finalization.get("intent_id")
+        != identity["finalization"]["intent_id"]
+    ):
+        raise ControlError(
+            "watchdog status report finalization identity drifted"
+        )
+    with external_watchdog_mirror_lock(state_dir):
+        _recover_watchdog_publication_temps_locked(state_dir)
+        prior = _load_watchdog_status_observations(state_dir)
+        sequence = len(prior) + 1
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_STATUS_PROTOCOL,
+            "sequence": sequence,
+            "predecessor": (
+                _watchdog_predecessor(
+                    prior[-1][0],
+                    id_field="observation_id",
+                    path=prior[-1][1],
+                )
+                if prior
+                else None
+            ),
+            "identity": identity,
+            "report_sha256": hashlib.sha256(
+                _watchdog_canonical_json(dict(report))
+            ).hexdigest(),
+            "report_captured_timestamp": float(captured),
+            "scheduler_sha256": sha256_value(scheduler),
+            "cluster_server_timestamp": timestamp,
+        }
+        record["observation_id"] = _watchdog_self_hash(
+            record, "observation_id"
+        )
+        path = (
+            _external_watchdog_mirror_root(state_dir)
+            / "status_receipts"
+            / f"{sequence:012d}-{record['observation_id']}.json"
+        )
+        _atomic_publish_readonly_json(path, record)
+        return {
+            "sequence": sequence,
+            "observation_id": record["observation_id"],
+            "path": str(path.resolve()),
+            "sha256": sha256_file(path),
+            "report_sha256": record["report_sha256"],
+            "report_captured_timestamp": record[
+                "report_captured_timestamp"
+            ],
+        }
+
+
+def _load_watchdog_action_intents(
+    state_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    directory = _external_watchdog_mirror_root(state_dir) / "action_intents"
+    result: list[tuple[dict[str, Any], Path]] = []
+    expected_fields = {
+        "schema_version",
+        "protocol",
+        "sequence",
+        "action",
+        "identity_before",
+        "started_timestamp",
+        "intent_id",
+    }
+    for expected_sequence, path in enumerate(
+        _watchdog_sequence_files(
+            directory, description="watchdog action-intent journal"
+        ),
+        start=1,
+    ):
+        value, _raw = _watchdog_mirror_read(
+            path,
+            description="watchdog action intent",
+            read_only=True,
+        )
+        timestamp = value.get("started_timestamp")
+        if (
+            set(value) != expected_fields
+            or value.get("schema_version") != 1
+            or value.get("protocol")
+            != EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL
+            or value.get("sequence") != expected_sequence
+            or value.get("action")
+            not in {"repair-chain", "finalizer-reconcile"}
+            or not isinstance(value.get("identity_before"), Mapping)
+            or not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or not math.isfinite(float(timestamp))
+            or value.get("intent_id")
+            != _watchdog_self_hash(value, "intent_id")
+            or path.name
+            != f"{expected_sequence:012d}-{value.get('intent_id')}.json"
+        ):
+            raise ControlError("watchdog action intent is malformed")
+        _validate_external_watchdog_identity(
+            value["identity_before"],
+            description="watchdog action intent",
+        )
+        result.append((value, path))
+    return result
+
+
+def _load_watchdog_action_receipts(
+    state_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    directory = _external_watchdog_mirror_root(state_dir) / "action_receipts"
+    intents = _load_watchdog_action_intents(state_dir)
+    result: list[tuple[dict[str, Any], Path]] = []
+    previous: tuple[dict[str, Any], Path] | None = None
+    expected_fields = {
+        "schema_version",
+        "protocol",
+        "sequence",
+        "predecessor",
+        "intent",
+        "action",
+        "identity_before",
+        "identity_after",
+        "result_sha256",
+        "outcome",
+        "cluster_server_timestamp",
+        "action_receipt_id",
+    }
+    for expected_sequence, path in enumerate(
+        _watchdog_sequence_files(
+            directory, description="watchdog action-receipt journal"
+        ),
+        start=1,
+    ):
+        value, _raw = _watchdog_mirror_read(
+            path,
+            description="watchdog action receipt",
+            read_only=True,
+        )
+        timestamp = value.get("cluster_server_timestamp")
+        intent_binding = value.get("intent")
+        if (
+            expected_sequence > len(intents)
+            or set(value) != expected_fields
+            or value.get("schema_version") != 1
+            or value.get("protocol") != EXTERNAL_WATCHDOG_ACTION_PROTOCOL
+            or value.get("sequence") != expected_sequence
+            or value.get("action")
+            not in {"repair-chain", "finalizer-reconcile"}
+            or not isinstance(value.get("identity_before"), Mapping)
+            or not isinstance(value.get("identity_after"), Mapping)
+            or _SHA256_RE.fullmatch(str(value.get("result_sha256", "")))
+            is None
+            or value.get("outcome")
+            not in {"completed", "recovered_interrupted"}
+            or not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or not math.isfinite(float(timestamp))
+            or not isinstance(intent_binding, Mapping)
+            or set(intent_binding)
+            != {"path", "sha256", "intent_id", "started_timestamp"}
+            or value.get("action_receipt_id")
+            != _watchdog_self_hash(value, "action_receipt_id")
+            or path.name
+            != (
+                f"{expected_sequence:012d}-"
+                f"{value.get('action_receipt_id')}.json"
+            )
+        ):
+            raise ControlError("watchdog action receipt is malformed")
+        _validate_external_watchdog_identity(
+            value["identity_before"],
+            description="watchdog action receipt before",
+        )
+        _validate_external_watchdog_identity(
+            value["identity_after"],
+            description="watchdog action receipt after",
+        )
+        intent, intent_path = intents[expected_sequence - 1]
+        if (
+            intent_binding
+            != {
+                "path": str(intent_path.resolve()),
+                "sha256": sha256_file(intent_path),
+                "intent_id": intent["intent_id"],
+                "started_timestamp": intent["started_timestamp"],
+            }
+            or value["action"] != intent["action"]
+            or value["identity_before"] != intent["identity_before"]
+            or float(timestamp) < float(intent["started_timestamp"])
+        ):
+            raise ControlError(
+                "watchdog action receipt does not bind its exact intent"
+            )
+        _watchdog_validate_predecessor(
+            value.get("predecessor"),
+            previous=previous,
+            id_field="action_receipt_id",
+            description="watchdog action journal",
+        )
+        if previous is not None and float(timestamp) <= float(
+            previous[0]["cluster_server_timestamp"]
+        ):
+            raise ControlError(
+                "watchdog action receipt timestamps are not monotonic"
+            )
+        result.append((value, path))
+        previous = (value, path)
+    return result
+
+
+def begin_external_watchdog_action(
+    state_dir: Path,
+    *,
+    action: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    if action not in {"repair-chain", "finalizer-reconcile"}:
+        raise ControlError("watchdog action is not authorized")
+    timestamp = time.time() if now is None else float(now)
+    control = load_control(state_dir, verify_files=True)
+    identity = _external_watchdog_control_identity(control)
+    with external_watchdog_mirror_lock(state_dir):
+        _recover_watchdog_publication_temps_locked(state_dir)
+        intents = _load_watchdog_action_intents(state_dir)
+        receipts = _load_watchdog_action_receipts(state_dir)
+        if len(intents) > len(receipts):
+            pending = intents[-1][0]
+            if len(intents) != len(receipts) + 1 or pending["action"] != action:
+                raise ControlError(
+                    "a different watchdog action intent remains incomplete"
+                )
+            return pending
+        cycles = _load_watchdog_cycle_receipts(state_dir)
+        consumed = (
+            int(cycles[-1][0]["consumed_action_sequence"])
+            if cycles
+            else 0
+        )
+        if any(int(row["sequence"]) > consumed for row, _path in receipts):
+            raise ControlError(
+                "an unconsumed watchdog action receipt must be mirrored before "
+                "another action can execute"
+            )
+        sequence = len(intents) + 1
+        intent: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL,
+            "sequence": sequence,
+            "action": action,
+            "identity_before": identity,
+            "started_timestamp": timestamp,
+        }
+        intent["intent_id"] = _watchdog_self_hash(intent, "intent_id")
+        path = (
+            _external_watchdog_mirror_root(state_dir)
+            / "action_intents"
+            / f"{sequence:012d}-{intent['intent_id']}.json"
+        )
+        _atomic_publish_readonly_json(path, intent)
+        return intent
+
+
+def complete_external_watchdog_action(
+    state_dir: Path,
+    *,
+    intent: Mapping[str, Any],
+    result: Mapping[str, Any],
+    outcome: str = "completed",
+    now: float | None = None,
+) -> dict[str, Any]:
+    timestamp = time.time() if now is None else float(now)
+    if outcome not in {"completed", "recovered_interrupted"}:
+        raise ControlError("watchdog action outcome is invalid")
+    with external_watchdog_mirror_lock(state_dir):
+        _recover_watchdog_publication_temps_locked(state_dir)
+        intents = _load_watchdog_action_intents(state_dir)
+        receipts = _load_watchdog_action_receipts(state_dir)
+        sequence = int(intent.get("sequence", -1))
+        if (
+            sequence < 1
+            or sequence > len(intents)
+            or intents[sequence - 1][0] != dict(intent)
+            or len(receipts) not in {sequence - 1, sequence}
+        ):
+            raise ControlError("watchdog action intent is not the journal tail")
+        if len(receipts) == sequence:
+            existing = receipts[-1][0]
+            if existing["result_sha256"] != sha256_value(result):
+                raise ControlError(
+                    "watchdog action replay result differs from its receipt"
+                )
+            return {
+                "action": existing["action"],
+                "action_receipt_id": existing["action_receipt_id"],
+                "path": str(receipts[-1][1].resolve()),
+                "sha256": sha256_file(receipts[-1][1]),
+                "outcome": existing["outcome"],
+                "cluster_server_timestamp": existing[
+                    "cluster_server_timestamp"
+                ],
+                "identity_before": existing["identity_before"],
+                "identity_after": existing["identity_after"],
+            }
+        current = load_control(state_dir, verify_files=True)
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_ACTION_PROTOCOL,
+            "sequence": sequence,
+            "predecessor": (
+                _watchdog_predecessor(
+                    receipts[-1][0],
+                    id_field="action_receipt_id",
+                    path=receipts[-1][1],
+                )
+                if receipts
+                else None
+            ),
+            "intent": {
+                "path": str(intents[sequence - 1][1].resolve()),
+                "sha256": sha256_file(intents[sequence - 1][1]),
+                "intent_id": intent["intent_id"],
+                "started_timestamp": intent["started_timestamp"],
+            },
+            "action": intent["action"],
+            "identity_before": intent["identity_before"],
+            "identity_after": _external_watchdog_control_identity(current),
+            "result_sha256": sha256_value(result),
+            "outcome": outcome,
+            "cluster_server_timestamp": timestamp,
+        }
+        record["action_receipt_id"] = _watchdog_self_hash(
+            record, "action_receipt_id"
+        )
+        path = (
+            _external_watchdog_mirror_root(state_dir)
+            / "action_receipts"
+            / f"{sequence:012d}-{record['action_receipt_id']}.json"
+        )
+        _atomic_publish_readonly_json(path, record)
+        return {
+            "action": record["action"],
+            "action_receipt_id": record["action_receipt_id"],
+            "path": str(path.resolve()),
+            "sha256": sha256_file(path),
+            "outcome": record["outcome"],
+            "cluster_server_timestamp": record[
+                "cluster_server_timestamp"
+            ],
+            "identity_before": record["identity_before"],
+            "identity_after": record["identity_after"],
+        }
+
+
+def _recover_interrupted_watchdog_action_locked(
+    state_dir: Path, *, timestamp: float
+) -> dict[str, Any] | None:
+    intents = _load_watchdog_action_intents(state_dir)
+    receipts = _load_watchdog_action_receipts(state_dir)
+    if len(intents) == len(receipts):
+        return None
+    if len(intents) != len(receipts) + 1:
+        raise ControlError("watchdog action journal has multiple incomplete intents")
+    intent = intents[-1][0]
+    current = load_control(state_dir, verify_files=True)
+    recovered_result = {
+        "action": intent["action"],
+        "recovered_after_interruption": True,
+        "current_control_sha256": current["immutable_sha256"],
+    }
+    sequence = int(intent["sequence"])
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": EXTERNAL_WATCHDOG_ACTION_PROTOCOL,
+        "sequence": sequence,
+        "predecessor": (
+            _watchdog_predecessor(
+                receipts[-1][0],
+                id_field="action_receipt_id",
+                path=receipts[-1][1],
+            )
+            if receipts
+            else None
+        ),
+        "intent": {
+            "path": str(intents[-1][1].resolve()),
+            "sha256": sha256_file(intents[-1][1]),
+            "intent_id": intent["intent_id"],
+            "started_timestamp": intent["started_timestamp"],
+        },
+        "action": intent["action"],
+        "identity_before": intent["identity_before"],
+        "identity_after": _external_watchdog_control_identity(current),
+        "result_sha256": sha256_value(recovered_result),
+        "outcome": "recovered_interrupted",
+        "cluster_server_timestamp": timestamp,
+    }
+    record["action_receipt_id"] = _watchdog_self_hash(
+        record, "action_receipt_id"
+    )
+    path = (
+        _external_watchdog_mirror_root(state_dir)
+        / "action_receipts"
+        / f"{sequence:012d}-{record['action_receipt_id']}.json"
+    )
+    _atomic_publish_readonly_json(path, record)
+    return {
+        "sequence": sequence,
+        "action": record["action"],
+        "action_receipt_id": record["action_receipt_id"],
+        "path": str(path.resolve()),
+        "sha256": sha256_file(path),
+        "outcome": record["outcome"],
+        "cluster_server_timestamp": record["cluster_server_timestamp"],
+    }
+
+
+def adopt_pending_external_watchdog_action(
+    state_dir: Path,
+    *,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Return the exact unmirrored action, sealing an interrupted intent first."""
+
+    timestamp = time.time() if now is None else float(now)
+    with external_watchdog_mirror_lock(state_dir):
+        _recover_watchdog_publication_temps_locked(state_dir)
+        recovered = _recover_interrupted_watchdog_action_locked(
+            state_dir, timestamp=timestamp
+        )
+        actions = _load_watchdog_action_receipts(state_dir)
+        cycles = _load_watchdog_cycle_receipts(state_dir)
+        consumed = (
+            int(cycles[-1][0]["consumed_action_sequence"])
+            if cycles
+            else 0
+        )
+        pending = [
+            (row, path)
+            for row, path in actions
+            if int(row["sequence"]) > consumed
+        ]
+        if not pending:
+            return None
+        if len(pending) != 1:
+            raise ControlError(
+                "multiple unconsumed watchdog actions are ambiguous"
+            )
+        row, path = pending[0]
+        return {
+            "sequence": row["sequence"],
+            "action": row["action"],
+            "action_receipt_id": row["action_receipt_id"],
+            "path": str(path.resolve()),
+            "sha256": sha256_file(path),
+            "outcome": row["outcome"],
+            "cluster_server_timestamp": row[
+                "cluster_server_timestamp"
+            ],
+            "identity_before": row["identity_before"],
+            "identity_after": row["identity_after"],
+            "recovered_now": recovered is not None,
+        }
+
+
+def _load_watchdog_cycle_intents(
+    state_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    root = _external_watchdog_mirror_root(state_dir) / "cycle_intents"
+    result: list[tuple[dict[str, Any], Path]] = []
+    for expected_sequence, path in enumerate(
+        _watchdog_sequence_files(
+            root, description="watchdog cycle-intent journal"
+        ),
+        start=1,
+    ):
+        value, _raw = _watchdog_mirror_read(
+            path,
+            description="watchdog cycle intent",
+            read_only=True,
+        )
+        expected_fields = {
+            "schema_version",
+            "protocol",
+            "sequence",
+            "predecessor",
+            "identity",
+            "status_observations",
+            "consumed_status_sequence",
+            "action_receipt",
+            "consumed_action_sequence",
+            "cluster_server_timestamp",
+            "intent_id",
+        }
+        observations = value.get("status_observations")
+        action_binding = value.get("action_receipt")
+        predecessor = value.get("predecessor")
+        server_timestamp = value.get("cluster_server_timestamp")
+        if (
+            set(value) != expected_fields
+            or value.get("schema_version") != 1
+            or value.get("protocol")
+            != EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL
+            or value.get("sequence") != expected_sequence
+            or value.get("intent_id")
+            != _watchdog_self_hash(value, "intent_id")
+            or path.name
+            != f"{expected_sequence:012d}-{value.get('intent_id')}.json"
+            or not isinstance(observations, list)
+            or len(observations) != 2
+            or not isinstance(value.get("consumed_status_sequence"), int)
+            or isinstance(value.get("consumed_status_sequence"), bool)
+            or not isinstance(value.get("consumed_action_sequence"), int)
+            or isinstance(value.get("consumed_action_sequence"), bool)
+            or int(value.get("consumed_action_sequence", -1)) < 0
+            or (
+                predecessor is not None
+                and (
+                    not isinstance(predecessor, Mapping)
+                    or set(predecessor)
+                    != {"sequence", "record_id", "sha256"}
+                    or not isinstance(predecessor.get("sequence"), int)
+                    or isinstance(predecessor.get("sequence"), bool)
+                    or _SHA256_RE.fullmatch(
+                        str(predecessor.get("record_id", ""))
+                    )
+                    is None
+                    or _SHA256_RE.fullmatch(
+                        str(predecessor.get("sha256", ""))
+                    )
+                    is None
+                )
+            )
+            or (
+                action_binding is not None
+                and not isinstance(action_binding, Mapping)
+            )
+            or not isinstance(server_timestamp, (int, float))
+            or isinstance(server_timestamp, bool)
+            or not math.isfinite(float(server_timestamp))
+        ):
+            raise ControlError("watchdog cycle intent is malformed")
+        _validate_external_watchdog_identity(
+            value.get("identity"),
+            description="watchdog cycle intent",
+        )
+        result.append((value, path))
+    return result
+
+
+def _validate_watchdog_cycle_semantics(
+    value: Mapping[str, Any],
+    *,
+    statuses: Mapping[int, tuple[dict[str, Any], Path]],
+    actions: Mapping[int, tuple[dict[str, Any], Path]],
+    previous: tuple[dict[str, Any], Path] | None,
+    description: str,
+) -> None:
+    """Re-prove the two-cut/action transaction from immutable source receipts."""
+
+    _validate_external_watchdog_identity(
+        value.get("identity"), description=description
+    )
+    observations = value.get("status_observations")
+    if not isinstance(observations, list) or len(observations) != 2:
+        raise ControlError(f"{description} does not bind exactly two status cuts")
+    sequences = [
+        binding.get("sequence")
+        if isinstance(binding, Mapping)
+        else None
+        for binding in observations
+    ]
+    if (
+        any(
+            not isinstance(sequence, int) or isinstance(sequence, bool)
+            for sequence in sequences
+        )
+        or int(sequences[0]) >= int(sequences[1])
+        or int(sequences[0]) not in statuses
+        or int(sequences[1]) not in statuses
+    ):
+        raise ControlError(
+            f"{description} status cuts are repeated, reversed, or unavailable"
+        )
+    first = statuses[int(sequences[0])][0]
+    second = statuses[int(sequences[1])][0]
+    if (
+        first["identity"] != second["identity"]
+        or float(second["report_captured_timestamp"])
+        - float(first["report_captured_timestamp"])
+        < EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS
+        or value.get("consumed_status_sequence") != second["sequence"]
+    ):
+        raise ControlError(
+            f"{description} status identity, gap, or consumption is invalid"
+        )
+    prior_status = (
+        int(previous[0]["consumed_status_sequence"])
+        if previous is not None
+        else 0
+    )
+    prior_action = (
+        int(previous[0]["consumed_action_sequence"])
+        if previous is not None
+        else 0
+    )
+    if first["sequence"] <= prior_status or second["sequence"] <= prior_status:
+        raise ControlError(f"{description} replays consumed status evidence")
+
+    action_binding = value.get("action_receipt")
+    consumed_action = value.get("consumed_action_sequence")
+    action_timestamp: float | None = None
+    if action_binding is None:
+        if (
+            consumed_action != prior_action
+            or second["identity"] != value["identity"]
+        ):
+            raise ControlError(
+                f"{description} advances action consumption or changes identity "
+                "without a receipt"
+            )
+    else:
+        action_sequence = (
+            action_binding.get("sequence")
+            if isinstance(action_binding, Mapping)
+            else None
+        )
+        if (
+            not isinstance(action_sequence, int)
+            or isinstance(action_sequence, bool)
+            or action_sequence != prior_action + 1
+            or action_sequence not in actions
+            or consumed_action != action_sequence
+        ):
+            raise ControlError(
+                f"{description} action consumption is replayed or inconsistent"
+            )
+        action = actions[action_sequence][0]
+        action_intent_timestamp = float(
+            action["intent"]["started_timestamp"]
+        )
+        action_timestamp = float(action["cluster_server_timestamp"])
+        recovered_interrupted = (
+            action.get("outcome") == "recovered_interrupted"
+        )
+        identity_valid = (
+            (
+                recovered_interrupted
+                and second["identity"] == action["identity_after"]
+            )
+            or (
+                not recovered_interrupted
+                and second["identity"] == action["identity_before"]
+            )
+        ) and action["identity_after"] == value["identity"]
+        timing_valid = (
+            (
+                recovered_interrupted
+                and action_timestamp
+                >= float(second["cluster_server_timestamp"])
+            )
+            or (
+                not recovered_interrupted
+                and action_intent_timestamp
+                >= float(second["cluster_server_timestamp"])
+            )
+        ) and action_timestamp >= action_intent_timestamp
+        if not identity_valid or not timing_valid:
+            raise ControlError(
+                f"{description} action timing or control identity is invalid"
+            )
+    cycle_timestamp = value.get("cluster_server_timestamp")
+    if (
+        not isinstance(cycle_timestamp, (int, float))
+        or isinstance(cycle_timestamp, bool)
+        or not math.isfinite(float(cycle_timestamp))
+        or float(cycle_timestamp)
+        < float(second["cluster_server_timestamp"])
+        or (
+            action_timestamp is not None
+            and float(cycle_timestamp) < action_timestamp
+        )
+        or (
+            previous is not None
+            and float(cycle_timestamp)
+            <= float(previous[0]["cluster_server_timestamp"])
+        )
+    ):
+        raise ControlError(
+            f"{description} cluster timestamp is future-reversed or nonmonotonic"
+        )
+    _watchdog_validate_predecessor(
+        value.get("predecessor"),
+        previous=previous,
+        id_field="receipt_id",
+        description=description,
+    )
+
+
+def _load_watchdog_cycle_receipts(
+    state_dir: Path,
+) -> list[tuple[dict[str, Any], Path]]:
+    directory = _external_watchdog_mirror_root(state_dir) / "cycle_receipts"
+    intents = _load_watchdog_cycle_intents(state_dir)
+    statuses = {
+        row["sequence"]: (row, path)
+        for row, path in _load_watchdog_status_observations(state_dir)
+    }
+    actions = {
+        row["sequence"]: (row, path)
+        for row, path in _load_watchdog_action_receipts(state_dir)
+    }
+    result: list[tuple[dict[str, Any], Path]] = []
+    previous: tuple[dict[str, Any], Path] | None = None
+    expected_fields = {
+        "schema_version",
+        "protocol",
+        "sequence",
+        "predecessor",
+        "intent",
+        "identity",
+        "status_observations",
+        "consumed_status_sequence",
+        "action_receipt",
+        "consumed_action_sequence",
+        "cluster_server_timestamp",
+        "receipt_id",
+    }
+    for expected_sequence, path in enumerate(
+        _watchdog_sequence_files(
+            directory, description="watchdog cycle-receipt journal"
+        ),
+        start=1,
+    ):
+        value, _raw = _watchdog_mirror_read(
+            path,
+            description="watchdog cycle receipt",
+            read_only=True,
+        )
+        intent_binding = value.get("intent")
+        observations = value.get("status_observations")
+        if (
+            expected_sequence > len(intents)
+            or set(value) != expected_fields
+            or value.get("schema_version") != 1
+            or value.get("protocol") != EXTERNAL_WATCHDOG_CYCLE_PROTOCOL
+            or value.get("sequence") != expected_sequence
+            or not isinstance(intent_binding, Mapping)
+            or set(intent_binding)
+            != {"path", "sha256", "intent_id"}
+            or not isinstance(observations, list)
+            or len(observations) != 2
+            or value.get("receipt_id")
+            != _watchdog_self_hash(value, "receipt_id")
+            or path.name
+            != f"{expected_sequence:012d}-{value.get('receipt_id')}.json"
+        ):
+            raise ControlError("watchdog cycle receipt is malformed")
+        intent, intent_path = intents[expected_sequence - 1]
+        core_fields = {
+            "sequence",
+            "predecessor",
+            "identity",
+            "status_observations",
+            "consumed_status_sequence",
+            "action_receipt",
+            "consumed_action_sequence",
+            "cluster_server_timestamp",
+        }
+        if (
+            intent_binding
+            != {
+                "path": str(intent_path.resolve()),
+                "sha256": sha256_file(intent_path),
+                "intent_id": intent["intent_id"],
+            }
+            or any(value[field] != intent[field] for field in core_fields)
+        ):
+            raise ControlError(
+                "watchdog cycle receipt differs from its marker-first intent"
+            )
+        for binding in observations:
+            if (
+                not isinstance(binding, Mapping)
+                or set(binding)
+                != {
+                    "sequence",
+                    "path",
+                    "sha256",
+                    "observation_id",
+                    "report_sha256",
+                    "report_captured_timestamp",
+                }
+                or binding.get("sequence") not in statuses
+            ):
+                raise ControlError(
+                    "watchdog cycle status binding is malformed"
+                )
+            status, status_path = statuses[int(binding["sequence"])]
+            if binding != {
+                "sequence": status["sequence"],
+                "path": str(status_path.resolve()),
+                "sha256": sha256_file(status_path),
+                "observation_id": status["observation_id"],
+                "report_sha256": status["report_sha256"],
+                "report_captured_timestamp": status[
+                    "report_captured_timestamp"
+                ],
+            }:
+                raise ControlError(
+                    "watchdog cycle status binding drifted"
+                )
+        action_binding = value.get("action_receipt")
+        if action_binding is not None:
+            if (
+                not isinstance(action_binding, Mapping)
+                or set(action_binding)
+                != {
+                    "sequence",
+                    "path",
+                    "sha256",
+                    "action",
+                    "action_receipt_id",
+                    "cluster_server_timestamp",
+                    "identity_before",
+                    "identity_after",
+                    "outcome",
+                }
+                or action_binding.get("sequence") not in actions
+            ):
+                raise ControlError(
+                    "watchdog cycle action binding is malformed"
+                )
+            action, action_path = actions[int(action_binding["sequence"])]
+            if action_binding != {
+                "sequence": action["sequence"],
+                "path": str(action_path.resolve()),
+                "sha256": sha256_file(action_path),
+                "action": action["action"],
+                "action_receipt_id": action["action_receipt_id"],
+                "cluster_server_timestamp": action[
+                    "cluster_server_timestamp"
+                ],
+                "identity_before": action["identity_before"],
+                "identity_after": action["identity_after"],
+                "outcome": action["outcome"],
+            }:
+                raise ControlError(
+                    "watchdog cycle action binding drifted"
+                )
+        _validate_watchdog_cycle_semantics(
+            value,
+            statuses=statuses,
+            actions=actions,
+            previous=previous,
+            description="watchdog cycle journal",
+        )
+        result.append((value, path))
+        previous = (value, path)
+    return result
+
+
+def _watchdog_status_binding(
+    record: Mapping[str, Any], path: Path
+) -> dict[str, Any]:
+    return {
+        "sequence": record["sequence"],
+        "path": str(path.resolve()),
+        "sha256": sha256_file(path),
+        "observation_id": record["observation_id"],
+        "report_sha256": record["report_sha256"],
+        "report_captured_timestamp": record[
+            "report_captured_timestamp"
+        ],
+    }
+
+
+def _watchdog_action_binding(
+    record: Mapping[str, Any], path: Path
+) -> dict[str, Any]:
+    return {
+        "sequence": record["sequence"],
+        "path": str(path.resolve()),
+        "sha256": sha256_file(path),
+        "action": record["action"],
+        "action_receipt_id": record["action_receipt_id"],
+        "cluster_server_timestamp": record["cluster_server_timestamp"],
+        "identity_before": record["identity_before"],
+        "identity_after": record["identity_after"],
+        "outcome": record["outcome"],
+    }
+
+
+def _watchdog_latest_pointer_value(
+    *, receipt: Mapping[str, Any], receipt_path: Path
+) -> dict[str, Any]:
+    pointer: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": EXTERNAL_WATCHDOG_LATEST_PROTOCOL,
+        "sequence": receipt["sequence"],
+        "receipt_path": str(receipt_path.resolve()),
+        "receipt_sha256": sha256_file(receipt_path),
+        "receipt_id": receipt["receipt_id"],
+        "cluster_server_timestamp": receipt["cluster_server_timestamp"],
+    }
+    pointer["pointer_id"] = _watchdog_self_hash(pointer, "pointer_id")
+    return pointer
+
+
+def _publish_watchdog_latest_pointer(
+    state_dir: Path,
+    *,
+    receipt: Mapping[str, Any],
+    receipt_path: Path,
+) -> dict[str, Any]:
+    pointer = _watchdog_latest_pointer_value(
+        receipt=receipt, receipt_path=receipt_path
+    )
+    _atomic_write_json(
+        _external_watchdog_mirror_root(state_dir) / "LATEST.json",
+        pointer,
+    )
+    return pointer
+
+
+def _complete_watchdog_cycle_intent(
+    state_dir: Path,
+    *,
+    intent: Mapping[str, Any],
+    intent_path: Path,
+) -> tuple[dict[str, Any], Path]:
+    receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "protocol": EXTERNAL_WATCHDOG_CYCLE_PROTOCOL,
+        "sequence": intent["sequence"],
+        "predecessor": intent["predecessor"],
+        "intent": {
+            "path": str(intent_path.resolve()),
+            "sha256": sha256_file(intent_path),
+            "intent_id": intent["intent_id"],
+        },
+        "identity": intent["identity"],
+        "status_observations": intent["status_observations"],
+        "consumed_status_sequence": intent["consumed_status_sequence"],
+        "action_receipt": intent["action_receipt"],
+        "consumed_action_sequence": intent["consumed_action_sequence"],
+        "cluster_server_timestamp": intent["cluster_server_timestamp"],
+    }
+    receipt["receipt_id"] = _watchdog_self_hash(receipt, "receipt_id")
+    path = (
+        _external_watchdog_mirror_root(state_dir)
+        / "cycle_receipts"
+        / f"{int(receipt['sequence']):012d}-{receipt['receipt_id']}.json"
+    )
+    _atomic_publish_readonly_json(path, receipt)
+    return receipt, path
+
+
+def publish_external_watchdog_cycle(
+    state_dir: Path,
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Consume two server-recorded status cuts and advance the cluster mirror."""
+
+    timestamp = time.time() if now is None else float(now)
+    if not math.isfinite(timestamp):
+        raise ControlError("watchdog cycle server timestamp is invalid")
+    with external_watchdog_mirror_lock(state_dir):
+        _recover_watchdog_publication_temps_locked(state_dir)
+        # A killed action wrapper leaves a marker-first intent.  Seal the attempt
+        # before selecting a cycle so action history can never disappear.
+        _recover_interrupted_watchdog_action_locked(
+            state_dir, timestamp=timestamp
+        )
+        actions = _load_watchdog_action_receipts(state_dir)
+
+        cycle_intents = _load_watchdog_cycle_intents(state_dir)
+        cycles = _load_watchdog_cycle_receipts(state_dir)
+        if len(cycle_intents) == len(cycles) + 1:
+            _validate_watchdog_cycle_semantics(
+                cycle_intents[-1][0],
+                statuses={
+                    row["sequence"]: (row, path)
+                    for row, path in _load_watchdog_status_observations(
+                        state_dir
+                    )
+                },
+                actions={
+                    row["sequence"]: (row, path)
+                    for row, path in _load_watchdog_action_receipts(
+                        state_dir
+                    )
+                },
+                previous=cycles[-1] if cycles else None,
+                description="watchdog recovered cycle intent",
+            )
+            receipt, receipt_path = _complete_watchdog_cycle_intent(
+                state_dir,
+                intent=cycle_intents[-1][0],
+                intent_path=cycle_intents[-1][1],
+            )
+            pointer = _publish_watchdog_latest_pointer(
+                state_dir, receipt=receipt, receipt_path=receipt_path
+            )
+            return {
+                "published": True,
+                "recovered": True,
+                "receipt": receipt,
+                "pointer": pointer,
+            }
+        if len(cycle_intents) != len(cycles):
+            raise ControlError("watchdog cycle journal is inconsistent")
+        if cycles:
+            expected_pointer = _watchdog_latest_pointer_value(
+                receipt=cycles[-1][0], receipt_path=cycles[-1][1]
+            )
+            pointer_path = (
+                _external_watchdog_mirror_root(state_dir) / "LATEST.json"
+            )
+            pointer_current = False
+            if os.path.lexists(pointer_path):
+                try:
+                    observed_pointer, _raw = _watchdog_mirror_read(
+                        pointer_path,
+                        description="watchdog mirror latest pointer",
+                        read_only=False,
+                    )
+                    pointer_current = observed_pointer == expected_pointer
+                except (OSError, ControlError):
+                    pointer_current = False
+            if not pointer_current:
+                pointer = _publish_watchdog_latest_pointer(
+                    state_dir,
+                    receipt=cycles[-1][0],
+                    receipt_path=cycles[-1][1],
+                )
+                return {
+                    "published": True,
+                    "recovered": True,
+                    "receipt": cycles[-1][0],
+                    "pointer": pointer,
+                }
+
+        prior_status_sequence = (
+            int(cycles[-1][0]["consumed_status_sequence"])
+            if cycles
+            else 0
+        )
+        prior_action_sequence = (
+            int(cycles[-1][0]["consumed_action_sequence"])
+            if cycles
+            else 0
+        )
+        statuses = [
+            row
+            for row in _load_watchdog_status_observations(state_dir)
+            if int(row[0]["sequence"]) > prior_status_sequence
+        ]
+        pending_actions = [
+            row
+            for row in actions
+            if int(row[0]["sequence"]) > prior_action_sequence
+        ]
+        selected_action: tuple[dict[str, Any], Path] | None = None
+        if pending_actions:
+            selected_action = pending_actions[0]
+            before_action = [
+                row
+                for row in statuses
+                if float(row[0]["cluster_server_timestamp"])
+                <= float(selected_action[0]["cluster_server_timestamp"])
+            ]
+            if len(before_action) < 2:
+                raise ControlError(
+                    "watchdog action lacks two preceding unconsumed status cuts"
+                )
+            selected_statuses = before_action[-2:]
+        else:
+            if len(statuses) < 2:
+                raise ControlError(
+                    "watchdog observe requires two unconsumed status receipts"
+                )
+            selected_statuses = statuses[-2:]
+        first, second = selected_statuses
+        gap = float(second[0]["report_captured_timestamp"]) - float(
+            first[0]["report_captured_timestamp"]
+        )
+        current = load_control(state_dir, verify_files=True)
+        identity = _external_watchdog_control_identity(current)
+        if (
+            gap < EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS
+            or first[0]["identity"] != second[0]["identity"]
+            or (
+                selected_action is None
+                and second[0]["identity"] != identity
+            )
+        ):
+            raise ControlError(
+                "watchdog observe status cuts are too close or changed identity"
+            )
+        if selected_action is not None and (
+            selected_action[0]["identity_after"] != identity
+            or (
+                (
+                    selected_action[0]["outcome"]
+                    == "recovered_interrupted"
+                    and selected_action[0]["identity_after"]
+                    != second[0]["identity"]
+                )
+                or (
+                    selected_action[0]["outcome"] != "recovered_interrupted"
+                    and selected_action[0]["identity_before"]
+                    != second[0]["identity"]
+                )
+            )
+            or float(selected_action[0]["cluster_server_timestamp"])
+            < float(second[0]["report_captured_timestamp"])
+        ):
+            raise ControlError(
+                "watchdog action is not after cut two or changed control identity"
+            )
+        sequence = len(cycles) + 1
+        cycle_intent: dict[str, Any] = {
+            "schema_version": 1,
+            "protocol": EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL,
+            "sequence": sequence,
+            "predecessor": (
+                _watchdog_predecessor(
+                    cycles[-1][0],
+                    id_field="receipt_id",
+                    path=cycles[-1][1],
+                )
+                if cycles
+                else None
+            ),
+            "identity": identity,
+            "status_observations": [
+                _watchdog_status_binding(*first),
+                _watchdog_status_binding(*second),
+            ],
+            "consumed_status_sequence": int(second[0]["sequence"]),
+            "action_receipt": (
+                _watchdog_action_binding(*selected_action)
+                if selected_action is not None
+                else None
+            ),
+            "consumed_action_sequence": (
+                int(selected_action[0]["sequence"])
+                if selected_action is not None
+                else prior_action_sequence
+            ),
+            "cluster_server_timestamp": timestamp,
+        }
+        cycle_intent["intent_id"] = _watchdog_self_hash(
+            cycle_intent, "intent_id"
+        )
+        _validate_watchdog_cycle_semantics(
+            cycle_intent,
+            statuses={
+                row["sequence"]: (row, path)
+                for row, path in _load_watchdog_status_observations(
+                    state_dir
+                )
+            },
+            actions={
+                row["sequence"]: (row, path)
+                for row, path in _load_watchdog_action_receipts(state_dir)
+            },
+            previous=cycles[-1] if cycles else None,
+            description="watchdog cycle publication",
+        )
+        intent_path = (
+            _external_watchdog_mirror_root(state_dir)
+            / "cycle_intents"
+            / f"{sequence:012d}-{cycle_intent['intent_id']}.json"
+        )
+        _atomic_publish_readonly_json(intent_path, cycle_intent)
+        receipt, receipt_path = _complete_watchdog_cycle_intent(
+            state_dir, intent=cycle_intent, intent_path=intent_path
+        )
+        pointer = _publish_watchdog_latest_pointer(
+            state_dir, receipt=receipt, receipt_path=receipt_path
+        )
+        return {
+            "published": True,
+            "recovered": False,
+            "receipt": receipt,
+            "pointer": pointer,
+        }
+
+
+def _watchdog_mirror_required(control: Mapping[str, Any]) -> bool:
+    readiness = control.get("readiness")
+    gate = (
+        readiness.get("external_watchdog")
+        if isinstance(readiness, Mapping)
+        else None
+    )
+    return bool(isinstance(gate, Mapping) and gate.get("passed") is True)
+
+
+def external_watchdog_mirror_status(
+    state_dir: Path,
+    *,
+    control: Mapping[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Validate the complete mirror chain and project its launch-health state."""
+
+    timestamp = time.time() if now is None else float(now)
+    current = dict(control) if control is not None else load_control(state_dir)
+    required = _watchdog_mirror_required(current)
+    base: dict[str, Any] = {
+        "required": required,
+        "healthy": not required,
+        "status": "not_required",
+        "receipt_id": None,
+        "sequence": None,
+        "age_seconds": None,
+        "cluster_server_timestamp": None,
+        "latest_pointer_path": str(
+            (_external_watchdog_mirror_root(state_dir) / "LATEST.json").resolve()
+        ),
+        "error": None,
+    }
+    if not math.isfinite(timestamp):
+        base.update(
+            healthy=False if required else True,
+            status="invalid" if required else "not_required_invalid",
+            error="watchdog mirror validation time is non-finite",
+        )
+        return base
+    pointer_path = _external_watchdog_mirror_root(state_dir) / "LATEST.json"
+    if not os.path.lexists(pointer_path):
+        if required:
+            base.update(
+                healthy=False,
+                status="missing",
+                error="cluster watchdog mirror LATEST.json is missing",
+            )
+        return base
+    try:
+        with external_watchdog_mirror_read_lock(state_dir):
+            cycles = _load_watchdog_cycle_receipts(state_dir)
+            intents = _load_watchdog_cycle_intents(state_dir)
+            if len(intents) != len(cycles):
+                raise ControlError(
+                    "watchdog mirror has an incomplete marker-first cycle"
+                )
+            if not cycles:
+                raise ControlError("watchdog mirror has no cycle receipts")
+            pointer, _raw = _watchdog_mirror_read(
+                pointer_path,
+                description="watchdog mirror latest pointer",
+                read_only=False,
+            )
+            expected_pointer_fields = {
+                "schema_version",
+                "protocol",
+                "sequence",
+                "receipt_path",
+                "receipt_sha256",
+                "receipt_id",
+                "cluster_server_timestamp",
+                "pointer_id",
+            }
+            latest, latest_path = cycles[-1]
+            expected_pointer = _watchdog_latest_pointer_value(
+                receipt=latest, receipt_path=latest_path
+            )
+            if set(pointer) != expected_pointer_fields or pointer != expected_pointer:
+                raise ControlError(
+                    "watchdog mirror pointer conflicts with the journal tail"
+                )
+            identity = _external_watchdog_control_identity(current)
+            if latest["identity"] != identity:
+                raise ControlError(
+                    "watchdog mirror release/control/rollout/finalization identity drifted"
+                )
+            observed = float(latest["cluster_server_timestamp"])
+            age = timestamp - observed
+            if age < 0:
+                raise ControlError(
+                    "watchdog mirror cluster timestamp is in the future"
+                )
+            if age > EXTERNAL_WATCHDOG_MIRROR_STALE_SECONDS:
+                base.update(
+                    healthy=False,
+                    status="stale",
+                    receipt_id=latest["receipt_id"],
+                    sequence=latest["sequence"],
+                    age_seconds=age,
+                    cluster_server_timestamp=observed,
+                    error="cluster watchdog mirror is older than 600 seconds",
+                )
+                return base
+            base.update(
+                healthy=True,
+                status="fresh",
+                receipt_id=latest["receipt_id"],
+                sequence=latest["sequence"],
+                age_seconds=age,
+                cluster_server_timestamp=observed,
+                error=None,
+            )
+            return base
+    except (OSError, ControlError, ImmutablePinError) as exc:
+        base.update(
+            healthy=False if required else True,
+            status="invalid" if required else "not_required_invalid",
+            error=str(exc),
+        )
+        return base
+
+
+def require_fresh_external_watchdog_mirror(
+    state_dir: Path,
+    *,
+    control: Mapping[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    status = external_watchdog_mirror_status(
+        state_dir, control=control, now=now
+    )
+    if status.get("healthy") is not True or status.get("status") != "fresh":
+        raise ReadinessError(
+            "production resume requires a current cluster-mirrored external "
+            f"watchdog heartbeat: {status.get('status')}: {status.get('error')}"
+        )
+    return status
+
+
 def live_status(
     state_dir: Path,
     *,
@@ -28781,21 +39889,49 @@ def live_status(
         job for job in snapshot.jobs if job.active and _cell_job(job.job_name)
     ]
     ledger_path = state_dir / "ledger.json"
-    cached: dict[str, Any] = {"available": False, "path": str(ledger_path)}
-    if ledger_path.is_file():
+    cached: dict[str, Any] = {
+        "available": False,
+        "healthy": False,
+        "status": "missing",
+        "path": str(ledger_path),
+        "trusted_live_state": False,
+    }
+    if os.path.lexists(ledger_path):
         try:
-            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            raw, ledger = _production_dispatcher_ledger_preimage(
+                state_dir,
+                description="live-status dispatcher ledger",
+            )
+            updated_at = float(ledger["updated_at"])
+            age = max(0.0, float(timestamp) - updated_at)
+            stale = (
+                updated_at > float(timestamp) + 1.0
+                or age
+                > protected_capacity.MAX_DISPATCHER_LEDGER_AGE_SECONDS
+            )
             cached = {
                 "available": True,
+                "healthy": not stale,
+                "status": "stale" if stale else "fresh",
                 "path": str(ledger_path),
-                "updated_at": ledger.get("updated_at"),
-                "poll_number": ledger.get("poll_number"),
-                "cached_job_records": len(ledger.get("jobs", {})),
-                "cached_cell_records": len(ledger.get("cells", {})),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "updated_at": updated_at,
+                "age_seconds": age,
+                "poll_number": ledger["poll_number"],
+                "cached_job_records": len(ledger["jobs"]),
+                "cached_cell_records": len(ledger["cells"]),
                 "cached_state_only": True,
+                "trusted_live_state": False,
             }
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            cached = {"available": False, "path": str(ledger_path), "error": str(exc)}
+        except (OSError, SchedulerAmbiguity) as exc:
+            cached = {
+                "available": False,
+                "healthy": False,
+                "status": "invalid",
+                "path": str(ledger_path),
+                "error": str(exc),
+                "trusted_live_state": False,
+            }
     active_alerts = [
         alert for alert in control["alerts"] if alert.get("resolved_at") is None
     ]
@@ -28818,12 +39954,27 @@ def live_status(
         )
         and not controller_identity_mismatch
     )
+    finalization_status = _finalizer_live_status(
+        control, snapshot, timestamp=timestamp
+    )
+    watchdog_mirror = external_watchdog_mirror_status(
+        state_dir, control=control, now=timestamp
+    )
     healthy = (
         snapshot.squeue_ok
         and snapshot.sacct_ok
         and not snapshot.errors
         and controllers_healthy
         and not active_critical_keys
+        and finalization_status["chain_healthy"]
+        and (
+            control["desired_state"] != "running"
+            or cached["healthy"] is True
+        )
+        and (
+            watchdog_mirror["required"] is not True
+            or watchdog_mirror["healthy"] is True
+        )
     )
     configured_ceiling = int(control["admission"]["current_ceiling"])
     stage_entries = [
@@ -28867,12 +40018,17 @@ def live_status(
             if control["desired_state"] != "running"
             or control["admission_safety_hold"]["active"]
             or active_critical_keys
-            or control["finalization"]["state"] in ACTIVE_FINALIZATION_STATES
+            or control["finalization"]["state"] != "idle"
             else int(control["admission"]["current_ceiling"])
         ),
         "admission_stage_started_timestamp": admission_stage_started_timestamp,
         "admission_ramp": copy.deepcopy(control["admission_ramp"]),
         "capacity": copy.deepcopy(control["capacity"]),
+        "effective_capacity_authority": (
+            effective_protected_capacity_binding(
+                control, verify_files=True
+            )
+        ),
         "healthy": healthy,
         "scheduler": {
             "squeue_ok": snapshot.squeue_ok,
@@ -28899,7 +40055,8 @@ def live_status(
                 for cadence, row in control["monitoring"]["cadences"].items()
             },
         },
-        "finalization": copy.deepcopy(control["finalization"]),
+        "external_watchdog_mirror": watchdog_mirror,
+        "finalization": finalization_status,
         "dispatcher_cache": cached,
         "readiness": copy.deepcopy(control["readiness"]),
         "open_throughput_epoch": (
@@ -29272,13 +40429,6 @@ def _exact_live_own_successor_job(
     job = _exact_live_controller_job(snapshot, successor)
     if job is None:
         return None
-    sbatch_path = str(
-        Path(str(successor.get("sbatch_path", ""))).expanduser().resolve()
-    )
-    if not _command_binds_exact_sbatch(job.command, sbatch_path):
-        raise SchedulerAmbiguity(
-            f"controller successor {job.job_id} does not bind its immutable sbatch"
-        )
     if not _dependency_binds_exact_afterany(job.dependency, parent_job_id):
         raise SchedulerAmbiguity(
             f"controller successor {job.job_id} does not bind exact afterany parent "
@@ -30420,6 +41570,10 @@ def build_immutable_pins(
         protected_capacity_contract = protected_capacity.load_contract(
             protected_capacity_marker_path,
             expected_release_git_commit=str(fragment["git_commit"]),
+            expected_release_tag_object=str(
+                fragment["release_tag_object"]
+            ),
+            **_protected_capacity_source_expectations(fragment),
         )
     except protected_capacity.ProtectedCapacityError as exc:
         raise ImmutablePinError(
@@ -30620,6 +41774,8 @@ def publish_immutable_pins(path: Path, pins: Mapping[str, Any]) -> dict[str, Any
     target = raw_path.resolve()
     payload = json.dumps(dict(pins), indent=2, sort_keys=True, allow_nan=False) + "\n"
     if target.exists():
+        if not target.is_file():
+            raise ImmutablePinError(f"pins output is not a regular file: {target}")
         try:
             existing = target.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -30630,15 +41786,20 @@ def publish_immutable_pins(path: Path, pins: Mapping[str, Any]) -> dict[str, Any
             raise ImmutablePinError(
                 f"refusing to replace non-identical immutable pins output: {target}"
             )
+        if target.stat().st_nlink != 1 or target.stat().st_mode & 0o222:
+            _atomic_publish_readonly_text(target, payload)
     else:
-        io.atomic_write_text(target, payload)
-    target.chmod((target.stat().st_mode & 0o7777) & ~0o222)
+        _atomic_publish_readonly_text(target, payload)
     digest = sha256_file(target)
     checksum_path = target.with_name(target.name + ".sha256")
     checksum_payload = f"{digest}  {target.name}\n"
     if checksum_path.is_symlink() or checksum_path.is_dir():
         raise ImmutablePinError(f"pins checksum target is unsafe: {checksum_path}")
     if checksum_path.exists():
+        if not checksum_path.is_file():
+            raise ImmutablePinError(
+                f"pins checksum target is not a regular file: {checksum_path}"
+            )
         try:
             existing_checksum = checksum_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -30649,9 +41810,13 @@ def publish_immutable_pins(path: Path, pins: Mapping[str, Any]) -> dict[str, Any
             raise ImmutablePinError(
                 f"refusing to replace non-identical pins checksum: {checksum_path}"
             )
+        if (
+            checksum_path.stat().st_nlink != 1
+            or checksum_path.stat().st_mode & 0o222
+        ):
+            _atomic_publish_readonly_text(checksum_path, checksum_payload)
     else:
-        io.atomic_write_text(checksum_path, checksum_payload)
-    checksum_path.chmod((checksum_path.stat().st_mode & 0o7777) & ~0o222)
+        _atomic_publish_readonly_text(checksum_path, checksum_payload)
     return {
         "output": str(target),
         "sha256": digest,
@@ -30665,6 +41830,36 @@ def publish_immutable_pins(path: Path, pins: Mapping[str, Any]) -> dict[str, Any
 
 def _scheduler_for_cli(*, tolerate_errors: bool = False) -> SchedulerSnapshot:
     return query_scheduler(tolerate_errors=tolerate_errors)
+
+
+def _watchdog_status_for_cli(
+    state_dir: Path, *, snapshot: SchedulerSnapshot
+) -> dict[str, Any]:
+    drill = _load_external_watchdog_drill(state_dir)
+    return (
+        external_watchdog_drill_status(
+            state_dir,
+            snapshot=snapshot,
+            record_observation=True,
+        )
+        if drill is not None
+        and drill[1]["phase"] not in {"complete", "expired"}
+        else live_status(state_dir, snapshot=snapshot)
+    )
+
+
+def _watchdog_repair_for_cli(
+    state_dir: Path, *, snapshot: SchedulerSnapshot
+) -> dict[str, Any]:
+    drill = _load_external_watchdog_drill(state_dir)
+    if (
+        drill is not None
+        and drill[1]["phase"] not in {"complete", "expired"}
+    ):
+        return repair_external_watchdog_drill(
+            state_dir, snapshot=snapshot
+        )
+    return repair_chains(state_dir, snapshot=snapshot)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -30714,6 +41909,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "repair-chain", help="idempotently recreate missing controller chains"
     )
     repair.add_argument("--dry-run", action="store_true")
+
+    # These fixed, parameter-free commands are reachable only through the sealed SSH
+    # forced-command selector.  Ordinary operator status remains strictly read-only.
+    subparsers.add_parser("watchdog-status", help=argparse.SUPPRESS)
+    subparsers.add_parser("watchdog-observe", help=argparse.SUPPRESS)
+    subparsers.add_parser("watchdog-repair-chain", help=argparse.SUPPRESS)
+    subparsers.add_parser(
+        "watchdog-finalizer-reconcile", help=argparse.SUPPRESS
+    )
 
     attest = subparsers.add_parser(
         "attest", help="attach checksummed readiness evidence"
@@ -30778,6 +41982,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     capacity.add_argument("--fleet-contract", type=Path)
     capacity.add_argument("--fleet-contract-sha256")
+    capacity.add_argument("--protected-capacity-marker", type=Path)
+    capacity.add_argument("--protected-capacity-marker-sha256")
+    capacity.add_argument("--protected-capacity-marker-id")
+    capacity.add_argument("--static-feasibility-certificate", type=Path)
+    capacity.add_argument("--static-feasibility-certificate-sha256")
+    capacity.add_argument("--static-feasibility-certificate-id")
 
     finalize = subparsers.add_parser(
         "finalize",
@@ -30942,6 +42152,120 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        if args.command == "watchdog-status":
+            snapshot = _scheduler_for_cli(tolerate_errors=True)
+            report = _watchdog_status_for_cli(
+                state_dir, snapshot=snapshot
+            )
+            # The report bytes returned over SSH are exactly the bytes whose parsed
+            # object is bound by this server-side observation receipt.
+            record_external_watchdog_status_observation(
+                state_dir, report=report
+            )
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return 0 if report["healthy"] else 1
+        if args.command == "watchdog-observe":
+            result = publish_external_watchdog_cycle(state_dir)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.command == "watchdog-repair-chain":
+            pending = adopt_pending_external_watchdog_action(state_dir)
+            if pending is not None:
+                print(
+                    json.dumps(
+                        {
+                            "requested_action": "repair-chain",
+                            "executed": False,
+                            "result": {
+                                "deferred": True,
+                                "reason": (
+                                    "an exact prior action must be mirrored "
+                                    "before another action"
+                                ),
+                            },
+                            "watchdog_action_receipt": pending,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            intent = begin_external_watchdog_action(
+                state_dir, action="repair-chain"
+            )
+            result = _watchdog_repair_for_cli(
+                state_dir, snapshot=_scheduler_for_cli()
+            )
+            receipt = complete_external_watchdog_action(
+                state_dir, intent=intent, result=result
+            )
+            print(
+                json.dumps(
+                    {
+                        "requested_action": "repair-chain",
+                        "executed": True,
+                        "result": result,
+                        "watchdog_action_receipt": receipt,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "watchdog-finalizer-reconcile":
+            pending = adopt_pending_external_watchdog_action(state_dir)
+            if pending is not None:
+                print(
+                    json.dumps(
+                        {
+                            "requested_action": "finalizer-reconcile",
+                            "executed": False,
+                            "result": {
+                                "deferred": True,
+                                "reason": (
+                                    "an exact prior action must be mirrored "
+                                    "before another action"
+                                ),
+                            },
+                            "watchdog_action_receipt": pending,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            intent = begin_external_watchdog_action(
+                state_dir, action="finalizer-reconcile"
+            )
+            drill = _load_external_watchdog_drill(state_dir)
+            if (
+                drill is not None
+                and drill[1]["phase"] not in {"complete", "expired"}
+            ):
+                raise ControlError(
+                    "finalizer reconciliation is fenced by the active "
+                    "external-watchdog drill"
+                )
+            result = reconcile_autonomous_finalization(
+                state_dir,
+                snapshot=_scheduler_for_cli(tolerate_errors=False),
+            )
+            receipt = complete_external_watchdog_action(
+                state_dir, intent=intent, result=result
+            )
+            print(
+                json.dumps(
+                    {
+                        "requested_action": "finalizer-reconcile",
+                        "executed": True,
+                        "result": result,
+                        "watchdog_action_receipt": receipt,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         if args.command == "status":
             snapshot = _scheduler_for_cli(tolerate_errors=True)
             drill = _load_external_watchdog_drill(state_dir)
@@ -31058,6 +42382,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 action=args.action,
                 fleet_contract_path=args.fleet_contract,
                 fleet_contract_sha256=args.fleet_contract_sha256,
+                protected_capacity_marker_path=(
+                    args.protected_capacity_marker
+                ),
+                protected_capacity_marker_sha256=(
+                    args.protected_capacity_marker_sha256
+                ),
+                protected_capacity_marker_id=(
+                    args.protected_capacity_marker_id
+                ),
+                static_feasibility_certificate_path=(
+                    args.static_feasibility_certificate
+                ),
+                static_feasibility_certificate_sha256=(
+                    args.static_feasibility_certificate_sha256
+                ),
+                static_feasibility_certificate_id=(
+                    args.static_feasibility_certificate_id
+                ),
                 scheduler_reader=lambda: _scheduler_for_cli(
                     tolerate_errors=False
                 ),

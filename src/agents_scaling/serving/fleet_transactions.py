@@ -17,6 +17,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -37,13 +38,20 @@ from agents_scaling.experiment import io
 STATE_SCHEMA_VERSION = 1
 STATE_DIRECTORY = ".fleet-transactions-v1"
 LEDGERS_DIRECTORY = "ledgers"
+ABSENCE_RECEIPTS_DIRECTORY = "submission-absence-receipts"
 CURRENT_FILENAME = "CURRENT.json"
 ALERTS_FILENAME = "alerts.jsonl"
 LOCK_FILENAME = "fleet.lock"
 SAVE_INTENT_FILENAME = "ledger-save-intent.json"
 DEFAULT_VISIBILITY_GRACE_SECONDS = 300.0
+STDIN_EXACT_SUBMISSION_TRANSPORT = "stdin_exact_bytes_v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+_ABSENCE_RECEIPT_REFERENCE_RE = re.compile(
+    r"^proven not accepted after complete squeue\+sacct visibility grace; "
+    r"absence_receipt_path=(?P<path>[^;\n\r]+);"
+    r"absence_receipt_sha256=(?P<sha256>[0-9a-f]{64})$"
+)
 
 
 class FleetTransactionError(RuntimeError):
@@ -67,6 +75,10 @@ class SchedulerRow:
     # for terminal sacct-only history; every active allocation must be joined to the
     # squeue view, where an empty string means "no dependency".
     dependency: str | None = ""
+    # Exact scheduler QOS is placement authority.  Keep this final/defaulted so
+    # legacy positional construction cannot silently shift another field into it;
+    # production reconciliation nevertheless requires a non-empty exact value.
+    qos: str = ""
 
 
 @dataclass(frozen=True)
@@ -208,16 +220,12 @@ def committed_endpoint_admission(
         raise FleetTransactionError(
             f"endpoint intent for {replica_id} job {slurm_job_id} is not committed"
         )
-    script_path = Path(str(material["sbatch_path"]))
-    if (
-        script_path.is_symlink()
-        or not script_path.is_file()
-        or stat.S_IMODE(script_path.stat().st_mode) & 0o222
-    ):
-        raise FleetTransactionError(
-            f"endpoint local script is unsafe for {replica_id}"
-        )
-    script_sha256 = hashlib.sha256(script_path.read_bytes()).hexdigest()
+    script_path, script_raw = _stable_regular_preimage(
+        str(material["sbatch_path"]),
+        description=f"endpoint local script for {replica_id}",
+        read_only=True,
+    )
+    script_sha256 = hashlib.sha256(script_raw).hexdigest()
     if script_sha256 != material["sbatch_sha256"]:
         raise FleetTransactionError(
             f"endpoint local script hash drifted for {replica_id}"
@@ -241,7 +249,7 @@ def committed_endpoint_admission(
         scheduler_comment=str(material["scheduler_comment"]),
         launch_kind=str(material["launch_kind"]),
         lifecycle=str(material["lifecycle"]),
-        sbatch_path=script_path.resolve(),
+        sbatch_path=script_path,
         sbatch_sha256=script_sha256,
     )
 
@@ -256,6 +264,76 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _lexical_absolute_path(path: str | Path, *, description: str) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        raise FleetTransactionError(f"{description} is not an absolute path")
+    return Path(os.path.abspath(os.fspath(candidate)))
+
+
+def _stable_regular_preimage(
+    path: str | Path,
+    *,
+    description: str,
+    read_only: bool,
+) -> tuple[Path, bytes]:
+    """Read one exact regular-file inode without following a symlink or race."""
+
+    lexical = _lexical_absolute_path(path, description=description)
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise FleetTransactionError(f"{description} is unavailable: {exc}") from exc
+    if resolved != lexical or lexical.is_symlink():
+        raise FleetTransactionError(f"{description} traverses a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise FleetTransactionError(f"cannot open {description}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise FleetTransactionError(
+            f"{description} disappeared after its stable read: {exc}"
+        ) from exc
+
+    def identity(item: os.stat_result) -> tuple[int, ...]:
+        return (
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+        or (read_only and stat.S_IMODE(before.st_mode) & 0o222)
+        or (read_only and stat.S_IMODE(current.st_mode) & 0o222)
+    ):
+        qualifier = "read-only " if read_only else ""
+        raise FleetTransactionError(
+            f"{description} changed or is not a one-link {qualifier}regular file"
+        )
+    return lexical, b"".join(blocks)
 
 
 @contextmanager
@@ -350,13 +428,28 @@ def _strict_json_loads(payload: str, *, artifact: str) -> Any:
         raise ValueError(f"non-finite JSON number {value!r}")
 
     try:
-        return json.loads(
+        material = json.loads(
             payload,
             object_pairs_hook=unique_object,
             parse_constant=invalid_constant,
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise FleetTransactionError(f"cannot parse {artifact}: {exc}") from exc
+
+    def reject_nonfinite(value: Any, *, location: str) -> None:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise FleetTransactionError(
+                f"cannot parse {artifact}: non-finite JSON number at {location}"
+            )
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                reject_nonfinite(item, location=f"{location}[{index}]")
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                reject_nonfinite(item, location=f"{location}.{key}")
+
+    reject_nonfinite(material, location="$")
+    return material
 
 
 def ledger_path(directory: Path, rollout_generation: int) -> Path:
@@ -637,6 +730,8 @@ def _validate_attempt(
         "submission_attempts",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
         "scheduler_comment",
         "job_id",
         "submitted_at",
@@ -738,21 +833,41 @@ def _validate_attempt(
         attempt["sbatch_path"]
     ).is_absolute():
         raise FleetTransactionError(f"non-absolute sbatch path for {replica_id}")
-    expected_parent = (directory / "sbatch" / f"g{generation:06d}").resolve()
-    observed_path = Path(attempt["sbatch_path"])
-    try:
-        observed_path.parent.resolve().relative_to(expected_parent)
-    except ValueError as exc:
+    expected_parent = _lexical_absolute_path(
+        directory / "sbatch" / f"g{generation:06d}",
+        description=f"fleet sbatch directory for {replica_id}",
+    )
+    observed_path = _lexical_absolute_path(
+        attempt["sbatch_path"],
+        description=f"fleet sbatch path for {replica_id}",
+    )
+    if observed_path.parent != expected_parent:
         raise FleetTransactionError(
             f"sbatch path escapes fleet transaction root for {replica_id}"
+        )
+    try:
+        resolved_parent = observed_path.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise FleetTransactionError(
+            f"sbatch parent is unavailable for {replica_id}: {exc}"
         ) from exc
-    if observed_path.parent.resolve() != expected_parent:
-        raise FleetTransactionError(f"sbatch path nesting drifted for {replica_id}")
+    if resolved_parent != expected_parent or observed_path.parent.is_symlink():
+        raise FleetTransactionError(
+            f"sbatch path traverses a symlink for {replica_id}"
+        )
     safe_replica = re.sub(r"[^A-Za-z0-9_.-]+", "_", replica_id)
     if observed_path.name != f"{safe_replica}.{token}.sbatch":
         raise FleetTransactionError(f"sbatch filename does not bind intent for {replica_id}")
     if _SHA256_RE.fullmatch(str(attempt["sbatch_sha256"])) is None:
         raise FleetTransactionError(f"invalid sbatch hash for {replica_id}")
+    if (
+        attempt["submission_transport"] != STDIN_EXACT_SUBMISSION_TRANSPORT
+        or attempt["submission_argv_sha256"]
+        != submission_argv_sha256(str(attempt["scheduler_comment"]))
+    ):
+        raise FleetTransactionError(
+            f"fleet submission transport drifted for {replica_id}"
+        )
     for field in (
         "created_at",
         "submit_started_at",
@@ -779,6 +894,10 @@ def _validate_attempt(
         attempt["retire_error"], str
     ):
         raise FleetTransactionError(f"invalid retire_error for {replica_id}")
+    if attempt["last_error"] is not None and not isinstance(
+        attempt["last_error"], str
+    ):
+        raise FleetTransactionError(f"invalid last_error for {replica_id}")
     if attempt["lifecycle"] == "standby" and attempt["promoted_at"] is not None:
         raise FleetTransactionError(
             f"standby unexpectedly has promotion time for {replica_id}"
@@ -937,6 +1056,21 @@ def _validate_ledger_material(
             ):
                 raise FleetTransactionError(
                     f"scheduler comment does not bind fleet intent for {replica_id}"
+                )
+            receipt_path = _submission_absence_receipt_path(
+                directory,
+                generation=rollout_generation,
+                replica_id=replica_id,
+                intent_token=str(attempt["intent_token"]),
+            )
+            receipt_reference = _absence_receipt_reference(attempt)
+            if os.path.lexists(receipt_path) or receipt_reference is not None:
+                _validate_submission_absence_receipt(
+                    directory,
+                    ledger,
+                    replica_id=replica_id,
+                    attempt=attempt,
+                    require_reference=receipt_reference is not None,
                 )
             if attempt["intent_token"] in tokens:
                 raise FleetTransactionError(
@@ -1232,6 +1366,7 @@ def reconcile_scheduler_rows(
     fleet_sha256: str,
     replica_profiles: Mapping[str, str],
     replica_job_names: Mapping[str, str],
+    replica_qos: Mapping[str, str] | None = None,
 ) -> FleetReconciliation:
     """Bind joined scheduler truth to durable intents without changing either side."""
 
@@ -1240,6 +1375,19 @@ def reconcile_scheduler_rows(
         not expected_ids
         or set(replica_job_names) != expected_ids
         or len(set(replica_job_names.values())) != len(replica_job_names)
+        or (
+            replica_qos is not None
+            and (
+                set(replica_qos) != expected_ids
+                or any(
+                    re.fullmatch(
+                        r"[A-Za-z0-9_.-]+", str(replica_qos[item])
+                    )
+                    is None
+                    for item in expected_ids
+                )
+            )
+        )
     ):
         raise FleetTransactionError("fleet reconciliation identities are not bijective")
     attempts_by_token: dict[
@@ -1283,12 +1431,21 @@ def reconcile_scheduler_rows(
                         raise FleetTransactionError(
                             f"fleet job id {job_id} is bound to multiple intents"
                         )
-                sbatch_path = Path(str(attempt["sbatch_path"]))
+                try:
+                    _sbatch_path, sbatch_raw = _stable_regular_preimage(
+                        str(attempt["sbatch_path"]),
+                        description=(
+                            f"immutable sbatch provenance for {replica_id}"
+                        ),
+                        read_only=True,
+                    )
+                except FleetTransactionError as exc:
+                    raise FleetTransactionError(
+                        f"immutable sbatch provenance drift for {replica_id}: "
+                        f"{exc}"
+                    ) from exc
                 if (
-                    sbatch_path.is_symlink()
-                    or not sbatch_path.is_file()
-                    or sbatch_path.stat().st_mode & 0o222
-                    or hashlib.sha256(sbatch_path.read_bytes()).hexdigest()
+                    hashlib.sha256(sbatch_raw).hexdigest()
                     != attempt["sbatch_sha256"]
                 ):
                     raise FleetTransactionError(
@@ -1341,7 +1498,13 @@ def reconcile_scheduler_rows(
             )
         if (
             row.job_name != replica_job_names[replica_id]
-            or not command_binds_sbatch(row.command, str(attempt["sbatch_path"]))
+            or (
+                replica_qos is not None
+                and row.qos != replica_qos[replica_id]
+            )
+            or not command_binds_stdin_submission(
+                row.command, str(attempt["scheduler_comment"])
+            )
         ):
             raise FleetTransactionError(
                 f"scheduler provenance drift for fleet job {row.job_id}"
@@ -1482,6 +1645,36 @@ def parse_intent_comment(comment: str) -> dict[str, str] | None:
     return fields
 
 
+def submission_argv(scheduler_comment: str) -> list[str]:
+    return ["sbatch", "--parsable", f"--comment={scheduler_comment}"]
+
+
+def submission_argv_sha256(scheduler_comment: str) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            submission_argv(scheduler_comment),
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def command_binds_stdin_submission(
+    command: str, scheduler_comment: str
+) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    normalized = [
+        "sbatch" if Path(tokens[0]).name == "sbatch" else tokens[0],
+        *tokens[1:],
+    ]
+    return normalized == submission_argv(scheduler_comment)
+
+
 def prepare_attempt(
     directory: Path,
     ledger: dict[str, Any],
@@ -1569,7 +1762,10 @@ def prepare_attempt(
         fleet_sha256=fleet_sha256,
     )
     safe_replica = re.sub(r"[^A-Za-z0-9_.-]+", "_", replica_id)
-    sbatch_dir = directory / "sbatch" / f"g{rollout_generation:06d}"
+    sbatch_dir = _lexical_absolute_path(
+        directory / "sbatch" / f"g{rollout_generation:06d}",
+        description=f"fleet sbatch directory for {replica_id}",
+    )
     if sbatch_dir.is_symlink() or sbatch_dir.parent.is_symlink():
         raise FleetTransactionError("fleet sbatch directory is symlinked")
     sbatch_dir.mkdir(parents=True, exist_ok=True)
@@ -1577,12 +1773,26 @@ def prepare_attempt(
     payload = sbatch_text.encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
     if sbatch_path.exists():
-        if sbatch_path.is_symlink() or sbatch_path.read_bytes() != payload:
+        _existing_path, existing_payload = _stable_regular_preimage(
+            sbatch_path,
+            description=f"fleet sbatch script for {replica_id}",
+            read_only=True,
+        )
+        if existing_payload != payload:
             raise FleetTransactionError(f"immutable fleet script collision: {sbatch_path}")
     else:
         io.atomic_write_text(sbatch_path, sbatch_text)
         sbatch_path.chmod(stat.S_IMODE(sbatch_path.stat().st_mode) & ~0o222)
         _fsync_directory(sbatch_path.parent)
+    sealed_path, sealed_payload = _stable_regular_preimage(
+        sbatch_path,
+        description=f"fleet sbatch script for {replica_id}",
+        read_only=True,
+    )
+    if hashlib.sha256(sealed_payload).hexdigest() != digest:
+        raise FleetTransactionError(
+            f"immutable fleet script hash drifted for {replica_id}"
+        )
     attempt = {
         "intent_token": token,
         "rollout_generation": rollout_generation,
@@ -1590,8 +1800,10 @@ def prepare_attempt(
         "created_at": float(now),
         "submit_started_at": None,
         "submission_attempts": 0,
-        "sbatch_path": str(sbatch_path.resolve()),
+        "sbatch_path": str(sealed_path),
         "sbatch_sha256": digest,
+        "submission_transport": STDIN_EXACT_SUBMISSION_TRANSPORT,
+        "submission_argv_sha256": submission_argv_sha256(comment),
         "scheduler_comment": comment,
         "job_id": None,
         "submitted_at": None,
@@ -1623,6 +1835,468 @@ def prepare_attempt(
     return attempt
 
 
+def _require_exact_attempt_owner(
+    directory: Path,
+    ledger: Mapping[str, Any],
+    *,
+    replica_id: str,
+    attempt: Mapping[str, Any],
+) -> int:
+    generation = ledger.get("rollout_generation")
+    replicas = ledger.get("replicas")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+        or not isinstance(replicas, Mapping)
+        or not isinstance(replicas.get(replica_id), Mapping)
+        or not isinstance(replicas[replica_id].get("attempts"), list)
+    ):
+        raise FleetTransactionError(
+            f"fleet submission ledger identity is invalid for {replica_id}"
+        )
+    owned = [
+        candidate
+        for candidate in replicas[replica_id]["attempts"]
+        if candidate is attempt
+    ]
+    if len(owned) != 1:
+        raise FleetTransactionError(
+            f"fleet submission is not the exact ledger attempt for {replica_id}"
+        )
+    _validate_attempt(
+        attempt,
+        replica_id=replica_id,
+        generation=generation,
+        directory=directory,
+    )
+    parsed = parse_intent_comment(str(attempt["scheduler_comment"]))
+    if (
+        parsed is None
+        or parsed["pool"] != str(ledger.get("pool_id"))
+        or parsed["replica"] != replica_id
+        or parsed["generation"] != str(generation)
+        or parsed["intent"] != str(attempt["intent_token"])
+        or parsed["fleet"] != str(ledger.get("fleet_sha256"))
+    ):
+        raise FleetTransactionError(
+            f"fleet submission comment does not bind the intent for {replica_id}"
+        )
+    return generation
+
+
+def _verify_persisted_ledger_preimage(
+    directory: Path,
+    ledger: Mapping[str, Any],
+    *,
+    generation: int,
+) -> None:
+    """Prove the full in-memory transaction is the durable ledger preimage."""
+
+    _path, observed = _stable_regular_preimage(
+        ledger_path(directory, generation),
+        description=f"fleet generation g{generation:06d} ledger",
+        read_only=False,
+    )
+    expected = _canonical_json(ledger).encode("utf-8")
+    if observed != expected:
+        raise FleetTransactionError(
+            f"fleet generation g{generation:06d} durable ledger drifted"
+        )
+
+
+def _submission_absence_receipt_path(
+    directory: Path,
+    *,
+    generation: int,
+    replica_id: str,
+    intent_token: str,
+) -> Path:
+    safe_replica = re.sub(r"[^A-Za-z0-9_.-]+", "_", replica_id)
+    return _lexical_absolute_path(
+        directory
+        / ABSENCE_RECEIPTS_DIRECTORY
+        / f"g{generation:06d}"
+        / f"{safe_replica}.{intent_token}.json",
+        description=f"submission-absence receipt for {replica_id}",
+    )
+
+
+def _scheduler_row_receipt_payload(row: SchedulerRow) -> dict[str, Any]:
+    return {
+        "job_id": str(row.job_id),
+        "job_name": str(row.job_name),
+        "state": str(row.state),
+        "partition": str(row.partition),
+        "qos": str(row.qos),
+        "node": str(row.node),
+        "command": str(row.command),
+        "comment": str(row.comment),
+        "source": str(row.source),
+        "start_timestamp": row.start_timestamp,
+        "end_timestamp": row.end_timestamp,
+        "time_limit_seconds": row.time_limit_seconds,
+        "dependency": row.dependency,
+    }
+
+
+def _absence_receipt_reference(
+    attempt: Mapping[str, Any],
+) -> tuple[Path, str] | None:
+    last_error = attempt.get("last_error")
+    if not isinstance(last_error, str):
+        return None
+    match = _ABSENCE_RECEIPT_REFERENCE_RE.fullmatch(last_error)
+    if match is None:
+        if "absence_receipt_" in last_error:
+            raise FleetTransactionError(
+                "fleet submission-absence receipt reference is malformed"
+            )
+        return None
+    return (
+        _lexical_absolute_path(
+            match.group("path"),
+            description="fleet submission-absence receipt reference",
+        ),
+        match.group("sha256"),
+    )
+
+
+def _validate_submission_absence_receipt(
+    directory: Path,
+    ledger: Mapping[str, Any],
+    *,
+    replica_id: str,
+    attempt: Mapping[str, Any],
+    require_reference: bool,
+) -> tuple[Path, str, dict[str, Any]]:
+    generation = int(attempt["rollout_generation"])
+    token = str(attempt["intent_token"])
+    expected_path = _submission_absence_receipt_path(
+        directory,
+        generation=generation,
+        replica_id=replica_id,
+        intent_token=token,
+    )
+    reference = _absence_receipt_reference(attempt)
+    if require_reference and reference is None:
+        raise FleetTransactionError(
+            "proven submission absence lacks its sealed receipt reference"
+        )
+    if reference is not None and reference[0] != expected_path:
+        raise FleetTransactionError(
+            "submission-absence receipt path does not bind the fleet intent"
+        )
+    observed_path, raw = _stable_regular_preimage(
+        expected_path,
+        description=f"submission-absence receipt for {replica_id}",
+        read_only=True,
+    )
+    digest = hashlib.sha256(raw).hexdigest()
+    if reference is not None and reference[1] != digest:
+        raise FleetTransactionError(
+            "submission-absence receipt hash differs from its ledger binding"
+        )
+    try:
+        payload = _strict_json_loads(
+            raw.decode("utf-8"),
+            artifact=f"submission-absence receipt {observed_path}",
+        )
+    except UnicodeError as exc:
+        raise FleetTransactionError(
+            f"cannot decode submission-absence receipt: {exc}"
+        ) from exc
+    required = {
+        "schema_version",
+        "protocol",
+        "pool_root",
+        "pool_id",
+        "fleet_sha256",
+        "replica_id",
+        "rollout_generation",
+        "intent_token",
+        "scheduler_comment",
+        "sbatch_path",
+        "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
+        "submit_started_at",
+        "captured_at",
+        "recorded_at",
+        "squeue_ok",
+        "sacct_ok",
+        "errors",
+        "rows",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise FleetTransactionError(
+            "submission-absence receipt fields are invalid"
+        )
+    immutable_expected = {
+        "schema_version": 1,
+        "protocol": "schema5-fleet-submit-absence-v1",
+        "pool_root": ledger.get("pool_root"),
+        "pool_id": ledger.get("pool_id"),
+        "fleet_sha256": ledger.get("fleet_sha256"),
+        "replica_id": replica_id,
+        "rollout_generation": generation,
+        "intent_token": token,
+        "scheduler_comment": attempt.get("scheduler_comment"),
+        "sbatch_path": attempt.get("sbatch_path"),
+        "sbatch_sha256": attempt.get("sbatch_sha256"),
+        "submission_transport": attempt.get("submission_transport"),
+        "submission_argv_sha256": attempt.get("submission_argv_sha256"),
+    }
+    if any(payload.get(key) != value for key, value in immutable_expected.items()):
+        raise FleetTransactionError(
+            "submission-absence receipt identity differs from its fleet intent"
+        )
+    captured_at = payload.get("captured_at")
+    recorded_at = payload.get("recorded_at")
+    submit_started_at = payload.get("submit_started_at")
+    rows = payload.get("rows")
+    if (
+        payload.get("squeue_ok") is not True
+        or payload.get("sacct_ok") is not True
+        or payload.get("errors") != []
+        or not isinstance(rows, list)
+        or not isinstance(captured_at, (int, float))
+        or isinstance(captured_at, bool)
+        or not isinstance(recorded_at, (int, float))
+        or isinstance(recorded_at, bool)
+        or not isinstance(submit_started_at, (int, float))
+        or isinstance(submit_started_at, bool)
+        or not isinstance(attempt.get("submit_started_at"), (int, float))
+        or isinstance(attempt.get("submit_started_at"), bool)
+        or float(submit_started_at)
+        > float(attempt["submit_started_at"])
+        or (
+            attempt.get("state") == "submission_failed"
+            and reference is not None
+            and float(submit_started_at)
+            != float(attempt["submit_started_at"])
+        )
+        or float(captured_at) - float(submit_started_at)
+        < DEFAULT_VISIBILITY_GRACE_SECONDS
+        or not (0.0 <= float(recorded_at) - float(captured_at) <= 60.0)
+    ):
+        raise FleetTransactionError(
+            "submission-absence receipt scheduler proof is invalid"
+        )
+    row_ids: set[str] = set()
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row)
+            != {
+                "job_id",
+                "job_name",
+                "state",
+                "partition",
+                "qos",
+                "node",
+                "command",
+                "comment",
+                "source",
+                "start_timestamp",
+                "end_timestamp",
+                "time_limit_seconds",
+                "dependency",
+            }
+            or not isinstance(row.get("job_id"), str)
+            or not row["job_id"]
+            or row["job_id"] in row_ids
+            or row.get("source") not in {"squeue", "sacct"}
+        ):
+            raise FleetTransactionError(
+                "submission-absence receipt scheduler rows are invalid"
+            )
+        row_ids.add(row["job_id"])
+        if (
+            token in str(row.get("comment"))
+            or token in str(row.get("command"))
+            or (
+                attempt.get("job_id") is not None
+                and row["job_id"] == str(attempt["job_id"])
+            )
+        ):
+            raise FleetTransactionError(
+                "submission-absence receipt contains the immutable intent"
+            )
+    return observed_path, digest, payload
+
+
+def _publish_submission_absence_receipt(
+    directory: Path,
+    ledger: Mapping[str, Any],
+    *,
+    replica_id: str,
+    attempt: Mapping[str, Any],
+    snapshot: SchedulerSnapshot,
+    now: float,
+) -> tuple[Path, str]:
+    generation = int(attempt["rollout_generation"])
+    path = _submission_absence_receipt_path(
+        directory,
+        generation=generation,
+        replica_id=replica_id,
+        intent_token=str(attempt["intent_token"]),
+    )
+    if path.exists() or path.is_symlink():
+        observed_path, digest, _payload = (
+            _validate_submission_absence_receipt(
+                directory,
+                ledger,
+                replica_id=replica_id,
+                attempt=attempt,
+                require_reference=False,
+            )
+        )
+        return observed_path, digest
+    receipt_dir = path.parent
+    if receipt_dir.is_symlink() or receipt_dir.parent.is_symlink():
+        raise FleetTransactionError(
+            "submission-absence receipt directory is symlinked"
+        )
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "protocol": "schema5-fleet-submit-absence-v1",
+        "pool_root": ledger.get("pool_root"),
+        "pool_id": ledger.get("pool_id"),
+        "fleet_sha256": ledger.get("fleet_sha256"),
+        "replica_id": replica_id,
+        "rollout_generation": generation,
+        "intent_token": str(attempt["intent_token"]),
+        "scheduler_comment": attempt.get("scheduler_comment"),
+        "sbatch_path": attempt.get("sbatch_path"),
+        "sbatch_sha256": attempt.get("sbatch_sha256"),
+        "submission_transport": attempt.get("submission_transport"),
+        "submission_argv_sha256": attempt.get("submission_argv_sha256"),
+        "submit_started_at": attempt.get("submit_started_at"),
+        "captured_at": float(snapshot.captured_at),
+        "recorded_at": float(now),
+        "squeue_ok": snapshot.squeue_ok,
+        "sacct_ok": snapshot.sacct_ok,
+        "errors": list(snapshot.errors),
+        "rows": [
+            _scheduler_row_receipt_payload(row)
+            for row in sorted(snapshot.rows, key=lambda item: item.job_id)
+        ],
+    }
+    io.atomic_write_text(path, _canonical_json(payload))
+    path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+    _fsync_directory(path.parent)
+    observed_path, digest, _validated = _validate_submission_absence_receipt(
+        directory,
+        ledger,
+        replica_id=replica_id,
+        attempt=attempt,
+        require_reference=False,
+    )
+    return observed_path, digest
+
+
+def record_proven_submission_absence(
+    directory: Path,
+    ledger: dict[str, Any],
+    *,
+    replica_id: str,
+    attempt: dict[str, Any],
+    snapshot: SchedulerSnapshot,
+    now: float,
+) -> str:
+    """Durably make an ambiguous submit retryable after complete scheduler absence.
+
+    ``submitting`` means the prior process may have died after Slurm accepted the
+    request.  It is therefore never a directly admissible input to
+    :func:`submit_attempt`.  This transition is the sole low-level retry bridge: it
+    requires complete joined queue/accounting truth, the full visibility grace, and
+    absence of the exact immutable intent token.
+    """
+
+    generation = _require_exact_attempt_owner(
+        directory,
+        ledger,
+        replica_id=replica_id,
+        attempt=attempt,
+    )
+    if attempt["state"] != "submitting":
+        raise FleetTransactionError(
+            "submission-absence proof requires an ambiguous submitting intent"
+        )
+    if not snapshot.squeue_ok or not snapshot.sacct_ok or snapshot.errors:
+        raise FleetTransactionError(
+            "submission-absence proof requires complete squeue+sacct truth"
+        )
+    captured_at = snapshot.captured_at
+    if (
+        not isinstance(captured_at, (int, float))
+        or isinstance(captured_at, bool)
+        or not isinstance(now, (int, float))
+        or isinstance(now, bool)
+        or not (0.0 <= float(now) - float(captured_at) <= 60.0)
+    ):
+        raise FleetTransactionError(
+            "submission-absence proof requires a fresh scheduler capture"
+        )
+    basis = attempt.get("submit_started_at")
+    if (
+        not isinstance(basis, (int, float))
+        or isinstance(basis, bool)
+        or float(captured_at) - float(basis)
+        < DEFAULT_VISIBILITY_GRACE_SECONDS
+    ):
+        raise FleetTransactionError(
+            "submission-absence proof precedes the visibility grace"
+        )
+    token = str(attempt["intent_token"])
+    job_id = attempt.get("job_id")
+    matching_rows = [
+        row.job_id
+        for row in snapshot.rows
+        if (
+            token in str(row.comment)
+            or token in str(row.command)
+            or (job_id is not None and str(row.job_id) == str(job_id))
+        )
+    ]
+    if matching_rows:
+        raise FleetTransactionError(
+            "submission-absence proof found the immutable intent in scheduler "
+            f"truth: {sorted(matching_rows)}"
+        )
+    row_ids = [str(row.job_id) for row in snapshot.rows]
+    if (
+        len(row_ids) != len(set(row_ids))
+        or any(row.source not in {"squeue", "sacct"} for row in snapshot.rows)
+    ):
+        raise FleetTransactionError(
+            "submission-absence proof has invalid joined scheduler rows"
+        )
+    receipt_path, evidence_sha256 = _publish_submission_absence_receipt(
+        directory,
+        ledger,
+        replica_id=replica_id,
+        attempt=attempt,
+        snapshot=snapshot,
+        now=float(now),
+    )
+    attempt["state"] = "submission_failed"
+    attempt["last_error"] = (
+        "proven not accepted after complete squeue+sacct visibility grace; "
+        f"absence_receipt_path={receipt_path};"
+        f"absence_receipt_sha256={evidence_sha256}"
+    )
+    save_ledger(directory, ledger, now=now)
+    _verify_persisted_ledger_preimage(
+        directory,
+        ledger,
+        generation=generation,
+    )
+    return evidence_sha256
+
+
 def submit_attempt(
     directory: Path,
     ledger: dict[str, Any],
@@ -1638,36 +2312,90 @@ def submit_attempt(
         raise FleetTransactionError(
             "pytest fleet submissions must provide an injected non-Slurm runner"
         )
-    if attempt["state"] not in {"prepared", "submitting", "submission_failed"}:
+    generation = _require_exact_attempt_owner(
+        directory,
+        ledger,
+        replica_id=replica_id,
+        attempt=attempt,
+    )
+    if attempt["state"] not in {"prepared", "submission_failed"}:
         raise FleetTransactionError(
             f"cannot submit fleet intent in state {attempt['state']!r}"
         )
-    path = Path(attempt["sbatch_path"])
-    if (
-        path.is_symlink()
-        or not path.is_file()
-        or hashlib.sha256(path.read_bytes()).hexdigest() != attempt["sbatch_sha256"]
-        or stat.S_IMODE(path.stat().st_mode) & 0o222
+    absence_reference = _absence_receipt_reference(attempt)
+    deterministic_receipt = _submission_absence_receipt_path(
+        directory,
+        generation=generation,
+        replica_id=replica_id,
+        intent_token=str(attempt["intent_token"]),
+    )
+    if absence_reference is not None or os.path.lexists(
+        deterministic_receipt
     ):
-        raise FleetTransactionError(f"immutable fleet script drifted: {path}")
+        _validate_submission_absence_receipt(
+            directory,
+            ledger,
+            replica_id=replica_id,
+            attempt=attempt,
+            require_reference=True,
+        )
+    path = _lexical_absolute_path(
+        attempt["sbatch_path"],
+        description=f"fleet sbatch script for {replica_id}",
+    )
     attempt["state"] = "submitting"
     attempt["submit_started_at"] = float(now)
     attempt["submission_attempts"] += 1
-    attempt["last_error"] = None
+    # Preserve the sealed absence receipt reference as durable authorization for
+    # this retry.  Ordinary explicit rejections have no such audit fact to retain.
+    if absence_reference is None:
+        attempt["last_error"] = None
     save_ledger(directory, ledger, now=now)
+    try:
+        _verify_persisted_ledger_preimage(
+            directory,
+            ledger,
+            generation=generation,
+        )
+        stable_path, payload = _stable_regular_preimage(
+            path,
+            description=f"fleet sbatch script for {replica_id}",
+            read_only=True,
+        )
+        if (
+            stable_path != path
+            or hashlib.sha256(payload).hexdigest()
+            != attempt["sbatch_sha256"]
+        ):
+            raise FleetTransactionError(
+                f"immutable fleet script hash drifted for {replica_id}"
+            )
+    except FleetTransactionError as exc:
+        # No external invocation has occurred.  Persist a deterministic rejection
+        # state instead of conflating local provenance failure with an ambiguous
+        # post-sbatch transport outcome.
+        attempt["state"] = "submission_failed"
+        attempt["last_error"] = f"pre-sbatch provenance failure: {exc}"
+        save_ledger(directory, ledger, now=now)
+        raise FleetTransactionError(attempt["last_error"]) from exc
     invoke = runner or subprocess.run
     try:
+        submission_text = payload.decode("utf-8")
+    except UnicodeError as exc:
+        attempt["state"] = "submission_failed"
+        attempt["last_error"] = (
+            f"pre-sbatch provenance failure: fleet script is not UTF-8: {exc}"
+        )
+        save_ledger(directory, ledger, now=now)
+        raise FleetTransactionError(attempt["last_error"]) from exc
+    try:
         proc = invoke(
-            [
-                "sbatch",
-                "--parsable",
-                f"--comment={attempt['scheduler_comment']}",
-                str(path),
-            ],
+            submission_argv(str(attempt["scheduler_comment"])),
             capture_output=True,
             text=True,
             check=False,
             timeout=60.0,
+            input=submission_text,
         )
     except BaseException:
         # The process may have died after Slurm accepted the request.  Leave the durable
@@ -1684,6 +2412,49 @@ def submit_attempt(
     if not job_id.isdigit():
         attempt["state"] = "submitting"
         attempt["last_error"] = f"sbatch returned invalid job id {job_id!r}"
+        save_ledger(directory, ledger, now=now)
+        raise FleetTransactionError(attempt["last_error"])
+    try:
+        spool = invoke(
+            ["scontrol", "write", "batch_script", job_id, "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15.0,
+        )
+    except BaseException:
+        # Slurm accepted the exact stdin payload, but the reply/spooled-script
+        # proof is incomplete.  Preserve the ambiguous fence for reconciliation.
+        raise
+    if (
+        spool.returncode != 0
+        or not isinstance(spool.stdout, str)
+        or spool.stdout.encode("utf-8") != payload
+    ):
+        attempt["state"] = "submitting"
+        attempt["last_error"] = (
+            "accepted fleet allocation lacks exact Slurm-spooled script proof"
+        )
+        save_ledger(directory, ledger, now=now)
+        raise FleetTransactionError(attempt["last_error"])
+    try:
+        post_path, post_payload = _stable_regular_preimage(
+            path,
+            description=f"fleet sbatch script after submission for {replica_id}",
+            read_only=True,
+        )
+    except FleetTransactionError as exc:
+        attempt["state"] = "submitting"
+        attempt["last_error"] = (
+            f"fleet script changed across external submission: {exc}"
+        )
+        save_ledger(directory, ledger, now=now)
+        raise FleetTransactionError(attempt["last_error"]) from exc
+    if post_path != path or post_payload != payload:
+        attempt["state"] = "submitting"
+        attempt["last_error"] = (
+            "fleet script changed across external submission"
+        )
         save_ledger(directory, ledger, now=now)
         raise FleetTransactionError(attempt["last_error"])
     attempt["state"] = "submitted"
@@ -1780,21 +2551,42 @@ def _parse_rows(text: str, *, source: str) -> list[SchedulerRow]:
         if not raw.strip():
             continue
         fields = raw.rstrip("\n").split("|")
-        allowed_arities = {7, 10} if source == "sacct" else {7, 11}
+        # QOS was added after the original fleet transaction format.  Retain
+        # parsing of sealed historical/fixture rows, with an empty QOS that the
+        # production contract rejects, while every newly queried row must carry
+        # the exact scheduler-owned QOS field.
+        legacy_arities = {7, 10} if source == "sacct" else {7, 11}
+        qos_arities = {8, 11} if source == "sacct" else {8, 12}
+        allowed_arities = legacy_arities | qos_arities
         if source not in {"sacct", "squeue"} or len(fields) not in allowed_arities:
             raise FleetTransactionError(
                 f"malformed {source} fleet row {line_number}: {raw!r}"
             )
-        (
-            job_id,
-            name,
-            state,
-            partition,
-            node,
-            command,
-            comment,
-            *timing,
-        ) = (field.strip() for field in fields)
+        normalized_fields = [field.strip() for field in fields]
+        if len(fields) in qos_arities:
+            (
+                job_id,
+                name,
+                state,
+                partition,
+                qos,
+                node,
+                command,
+                comment,
+                *timing,
+            ) = normalized_fields
+        else:
+            (
+                job_id,
+                name,
+                state,
+                partition,
+                node,
+                command,
+                comment,
+                *timing,
+            ) = normalized_fields
+            qos = ""
         start_timestamp: float | None = None
         end_timestamp: float | None = None
         time_limit_seconds: int | None = None
@@ -1875,6 +2667,7 @@ def _parse_rows(text: str, *, source: str) -> list[SchedulerRow]:
                 end_timestamp,
                 time_limit_seconds,
                 dependency,
+                qos,
             )
         )
     return rows
@@ -1906,8 +2699,8 @@ def query_scheduler(
                 "-S",
                 time.strftime("%Y-%m-%d", time.localtime(timestamp - 7 * 86_400)),
                 (
-                    "--format=JobIDRaw,JobName,State,Partition,NodeList,SubmitLine,"
-                    "Comment,Start,End,TimelimitRaw"
+                    "--format=JobIDRaw,JobName,State,Partition,QOS,NodeList,"
+                    "SubmitLine,Comment,Start,End,TimelimitRaw"
                 ),
             ],
         ),
@@ -1920,7 +2713,7 @@ def query_scheduler(
                 "-h",
                 "-r",
                 "-o",
-                "%i|%j|%T|%P|%N|%o|%k|%S|%e|%l|%E",
+                "%i|%j|%T|%P|%q|%N|%o|%k|%S|%e|%l|%E",
             ],
         ),
     )
@@ -1950,6 +2743,7 @@ def query_scheduler(
             if prior is not None and (
                 prior.job_name != row.job_name
                 or prior.partition != row.partition
+                or prior.qos != row.qos
                 or prior.comment != row.comment
             ):
                 raise FleetTransactionError(

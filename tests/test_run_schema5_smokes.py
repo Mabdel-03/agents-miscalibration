@@ -28,6 +28,21 @@ def _capacity_readiness_control(tmp_path: Path):
         "sha256": "b" * 64,
         "marker_path": str((tmp_path / "overlay.complete.json").resolve()),
         "marker_sha256": "c" * 64,
+        "protected_capacity_marker_path": str(
+            (tmp_path / "protected-capacity.json").resolve()
+        ),
+        "protected_capacity_marker_sha256": "d" * 64,
+        "protected_capacity_marker_id": "e" * 64,
+        "static_feasibility_certificate_path": str(
+            (tmp_path / "capacity-certificate.json").resolve()
+        ),
+        "static_feasibility_certificate_sha256": "f" * 64,
+        "static_feasibility_certificate_id": "1" * 64,
+        "base_fleet_contract_sha256": "2" * 64,
+        "additive_overlay_contract_path": str(
+            (tmp_path / "overlay.json").resolve()
+        ),
+        "additive_overlay_contract_sha256": "b" * 64,
         "fleet_id": "schema5-v1",
         "logical_replicas": 23,
         "allocated_gpus": 25,
@@ -615,8 +630,38 @@ def test_preproduction_smoke_rejects_live_or_draining_control(
         smoke._validate_preproduction_rollout_generation(control, 1)
 
 
-def test_preproduction_smoke_allows_exact_capacity_readiness_drain(tmp_path):
+def test_preproduction_smoke_allows_exact_capacity_readiness_drain(
+    tmp_path, monkeypatch
+):
     control = _capacity_readiness_control(tmp_path)
+    contract = control["capacity"]["current_contract"]
+    monkeypatch.setattr(
+        schema5_control,
+        "_load_protected_capacity_contract",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            capacity_generation=2,
+            static_feasibility_certificate_path=Path(
+                contract["static_feasibility_certificate_path"]
+            ),
+            static_feasibility_certificate_sha256=contract[
+                "static_feasibility_certificate_sha256"
+            ],
+            static_feasibility_certificate_id=contract[
+                "static_feasibility_certificate_id"
+            ],
+            effective_fleet_contract_path=Path(contract["path"]),
+            effective_fleet_contract_sha256=contract["sha256"],
+            base_fleet_contract_sha256=contract[
+                "base_fleet_contract_sha256"
+            ],
+            additive_overlay_contract_path=Path(
+                contract["additive_overlay_contract_path"]
+            ),
+            additive_overlay_contract_sha256=contract[
+                "additive_overlay_contract_sha256"
+            ],
+        ),
+    )
     smoke._validate_preproduction_rollout_generation(control, 4)
     control["readiness"]["fleet"]["capacity_generation"] = 1
     with pytest.raises(smoke.SmokeRunError, match="fresh generation fleet gate"):
@@ -694,7 +739,9 @@ def test_smoke_status_passes_exact_trusted_tuple_allowlist_to_semantic_validator
     assert observed["trusted"] is trusted
 
 
-def test_smoke_evidence_exactly_satisfies_typed_control_contract(tmp_path: Path):
+def test_smoke_evidence_exactly_satisfies_typed_control_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     immutable = _immutable(tmp_path)
     catalog = _trusted_catalog(tmp_path, immutable)
     attempt_binding = {
@@ -772,6 +819,15 @@ def test_smoke_evidence_exactly_satisfies_typed_control_contract(tmp_path: Path)
     digest = hashlib.sha256(evidence.read_bytes()).hexdigest()
     assert (attempt_root / "smoke_runs.sha256").read_text() == (
         f"{digest}  smoke_runs.json\n"
+    )
+    monkeypatch.setattr(
+        schema5_control,
+        "effective_fleet_contract_binding",
+        lambda _control, *, verify_files: {
+            "capacity_generation": 1,
+            "path": immutable["fleet_contract_path"],
+            "sha256": immutable["fleet_contract_sha256"],
+        },
     )
     schema5_control._validate_attestation(
         {"immutable_sha256": IMMUTABLE_SHA, "immutable": immutable},

@@ -49,6 +49,9 @@ WATCHDOG_INTERVAL_SECONDS = _RUNTIME.WATCHDOG_INTERVAL_SECONDS
 WATCHDOG_OBSERVATION_GAP_SECONDS = _RUNTIME.WATCHDOG_OBSERVATION_GAP_SECONDS
 WATCHDOG_PROTOCOL = _RUNTIME.WATCHDOG_PROTOCOL
 WATCHDOG_SCHEMA_VERSION = _RUNTIME.WATCHDOG_SCHEMA_VERSION
+WATCHDOG_RELEASE_TAG = _RUNTIME.WATCHDOG_RELEASE_TAG
+WATCHDOG_CLUSTER_CYCLE_PROTOCOL = _RUNTIME.WATCHDOG_CLUSTER_CYCLE_PROTOCOL
+WATCHDOG_CLUSTER_LATEST_PROTOCOL = _RUNTIME.WATCHDOG_CLUSTER_LATEST_PROTOCOL
 WatchdogError = _RUNTIME.WatchdogError
 decide = _RUNTIME.decide
 
@@ -288,7 +291,12 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def _ssh_argv(config: Mapping[str, Any], selector: str) -> list[str]:
-    if selector not in {"status", "repair-chain", "finalizer-reconcile"}:
+    if selector not in {
+        "status",
+        "observe",
+        "repair-chain",
+        "finalizer-reconcile",
+    }:
         raise WatchdogError(f"watchdog selector is not allowed: {selector}")
     remote = config["remote"]
     return [
@@ -333,6 +341,279 @@ def _remote_json(
         )
     except WatchdogError as exc:
         raise WatchdogError(f"remote {selector} returned invalid JSON: {exc}") from exc
+
+
+def _self_hash(value: Mapping[str, Any], field: str) -> str:
+    identity = dict(value)
+    identity.pop(field, None)
+    return hashlib.sha256(_canonical(identity)).hexdigest()
+
+
+def _validate_cluster_mirror(
+    value: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any],
+    first: Mapping[str, Any],
+    second: Mapping[str, Any],
+    action: str | None,
+    action_result: Mapping[str, Any] | None,
+    allow_recovered_prior_action: bool = False,
+) -> dict[str, Any]:
+    """Require the cluster journal to bind this exact two-cut VM transaction."""
+
+    if set(value) != {"published", "recovered", "receipt", "pointer"}:
+        raise WatchdogError("cluster mirror response fields differ from the closed schema")
+    receipt = value.get("receipt")
+    pointer = value.get("pointer")
+    if (
+        value.get("published") is not True
+        or not isinstance(value.get("recovered"), bool)
+        or not isinstance(receipt, Mapping)
+        or not isinstance(pointer, Mapping)
+    ):
+        raise WatchdogError("cluster mirror response is incomplete")
+    expected_receipt_fields = {
+        "schema_version",
+        "protocol",
+        "sequence",
+        "predecessor",
+        "intent",
+        "identity",
+        "status_observations",
+        "consumed_status_sequence",
+        "action_receipt",
+        "consumed_action_sequence",
+        "cluster_server_timestamp",
+        "receipt_id",
+    }
+    identity = receipt.get("identity")
+    finalization = identity.get("finalization") if isinstance(identity, Mapping) else None
+    observations = receipt.get("status_observations")
+    action_binding = receipt.get("action_receipt")
+
+    def matches_status_identity(
+        candidate: Any, status: Mapping[str, Any]
+    ) -> bool:
+        status_finalization = status.get("finalization")
+        candidate_finalization = (
+            candidate.get("finalization")
+            if isinstance(candidate, Mapping)
+            else None
+        )
+        return bool(
+            isinstance(candidate, Mapping)
+            and candidate.get("release_id") == config["release_id"]
+            and candidate.get("release_tag") == WATCHDOG_RELEASE_TAG
+            and candidate.get("release_tag_object")
+            == config["release_tag_object"]
+            and candidate.get("git_commit") == config["git_commit"]
+            and candidate.get("control_sha256") == config["control_sha256"]
+            and candidate.get("desired_state") == status.get("desired_state")
+            and candidate.get("rollout_generation")
+            == status.get("rollout_generation")
+            and isinstance(candidate_finalization, Mapping)
+            and isinstance(status_finalization, Mapping)
+            and candidate_finalization.get("state")
+            == status_finalization.get("state")
+            and candidate_finalization.get("intent_id")
+            == status_finalization.get("intent_id")
+        )
+
+    def matches_release_identity(candidate: Any) -> bool:
+        return bool(
+            isinstance(candidate, Mapping)
+            and candidate.get("release_id") == config["release_id"]
+            and candidate.get("release_tag") == WATCHDOG_RELEASE_TAG
+            and candidate.get("release_tag_object")
+            == config["release_tag_object"]
+            and candidate.get("git_commit") == config["git_commit"]
+            and candidate.get("control_sha256") == config["control_sha256"]
+        )
+
+    first_hash = hashlib.sha256(_canonical(dict(first))).hexdigest()
+    second_hash = hashlib.sha256(_canonical(dict(second))).hexdigest()
+    exact_status_cuts = bool(
+        isinstance(observations, list)
+        and len(observations) == 2
+        and observations[0].get("report_sha256") == first_hash
+        and observations[1].get("report_sha256") == second_hash
+        and observations[0].get("report_captured_timestamp")
+        == first.get("captured_timestamp")
+        and observations[1].get("report_captured_timestamp")
+        == second.get("captured_timestamp")
+    )
+    if (
+        set(receipt) != expected_receipt_fields
+        or receipt.get("schema_version") != 1
+        or receipt.get("protocol") != WATCHDOG_CLUSTER_CYCLE_PROTOCOL
+        or receipt.get("receipt_id") != _self_hash(receipt, "receipt_id")
+        or not isinstance(identity, Mapping)
+        or identity.get("release_id") != config["release_id"]
+        or identity.get("release_tag") != WATCHDOG_RELEASE_TAG
+        or identity.get("release_tag_object") != config["release_tag_object"]
+        or identity.get("git_commit") != config["git_commit"]
+        or identity.get("control_sha256") != config["control_sha256"]
+        or not isinstance(finalization, Mapping)
+        or not isinstance(observations, list)
+        or len(observations) != 2
+    ):
+        raise WatchdogError(
+            "cluster mirror did not bind the exact release and two status cuts"
+        )
+    if action_binding is None:
+        if not matches_status_identity(identity, second):
+            raise WatchdogError(
+                "cluster mirror no-action identity differs from cut two"
+            )
+    else:
+        expected_action_fields = {
+            "sequence",
+            "path",
+            "sha256",
+            "action",
+            "action_receipt_id",
+            "cluster_server_timestamp",
+            "identity_before",
+            "identity_after",
+            "outcome",
+        }
+        if (
+            not isinstance(action_binding, Mapping)
+            or set(action_binding) != expected_action_fields
+            or not (
+                (
+                    matches_status_identity(
+                        action_binding.get("identity_after"), second
+                    )
+                    if action_binding.get("outcome")
+                    == "recovered_interrupted"
+                    else matches_status_identity(
+                        action_binding.get("identity_before"), second
+                    )
+                )
+                if exact_status_cuts
+                else matches_release_identity(
+                    action_binding.get("identity_before")
+                )
+            )
+            or action_binding.get("identity_after") != identity
+        ):
+            raise WatchdogError(
+                "cluster mirror action transition identity is invalid"
+            )
+    action_executed = bool(
+        action is not None
+        and isinstance(action_result, Mapping)
+        and action_result.get("executed", True) is True
+    )
+    external_binding = (
+        action_result.get("watchdog_action_receipt")
+        if isinstance(action_result, Mapping)
+        else None
+    )
+    external_binding_matches = bool(
+        isinstance(external_binding, Mapping)
+        and isinstance(action_binding, Mapping)
+        and action_binding.get("action")
+        == external_binding.get("action")
+        and action_binding.get("action_receipt_id")
+        == external_binding.get("action_receipt_id")
+        and action_binding.get("sha256")
+        == external_binding.get("sha256")
+        and action_binding.get("path")
+        == external_binding.get("path")
+    )
+    recovered_current_interrupted = bool(
+        exact_status_cuts
+        and not action_executed
+        and isinstance(action_binding, Mapping)
+        and action_binding.get("outcome") == "recovered_interrupted"
+        and external_binding_matches
+    )
+    recovered_prior_action = bool(
+        allow_recovered_prior_action
+        and not exact_status_cuts
+        and isinstance(action_binding, Mapping)
+        and (
+            action is None
+            or not action_executed
+        )
+        and isinstance(action_binding.get("cluster_server_timestamp"), (int, float))
+        and not isinstance(action_binding.get("cluster_server_timestamp"), bool)
+        and float(action_binding["cluster_server_timestamp"])
+        <= float(first["captured_timestamp"])
+        and (
+            external_binding is None
+            or external_binding_matches
+        )
+    )
+    if recovered_prior_action:
+        pass
+    elif recovered_current_interrupted:
+        pass
+    elif not exact_status_cuts:
+        raise WatchdogError(
+            "cluster mirror did not bind this VM cycle's exact status cuts"
+        )
+    elif action is None:
+        if action_binding is not None:
+            raise WatchdogError(
+                "cluster mirror bound an action not performed by this VM cycle"
+            )
+    elif action_executed:
+        if (
+            not isinstance(external_binding, Mapping)
+            or not isinstance(action_binding, Mapping)
+            or action_binding.get("action") != action
+            or action_binding.get("action_receipt_id")
+            != external_binding.get("action_receipt_id")
+            or action_binding.get("sha256") != external_binding.get("sha256")
+            or action_binding.get("path") != external_binding.get("path")
+        ):
+            raise WatchdogError(
+                "cluster mirror action binding differs from the action receipt"
+            )
+    else:
+        raise WatchdogError(
+            "a deferred action must first mirror its prior action receipt"
+        )
+    expected_pointer_fields = {
+        "schema_version",
+        "protocol",
+        "sequence",
+        "receipt_path",
+        "receipt_sha256",
+        "receipt_id",
+        "cluster_server_timestamp",
+        "pointer_id",
+    }
+    if (
+        set(pointer) != expected_pointer_fields
+        or pointer.get("schema_version") != 1
+        or pointer.get("protocol") != WATCHDOG_CLUSTER_LATEST_PROTOCOL
+        or pointer.get("sequence") != receipt.get("sequence")
+        or pointer.get("receipt_id") != receipt.get("receipt_id")
+        or pointer.get("cluster_server_timestamp")
+        != receipt.get("cluster_server_timestamp")
+        or pointer.get("pointer_id") != _self_hash(pointer, "pointer_id")
+        or not isinstance(pointer.get("receipt_path"), str)
+        or not Path(str(pointer["receipt_path"])).is_absolute()
+        or _SHA256.fullmatch(str(pointer.get("receipt_sha256", ""))) is None
+    ):
+        raise WatchdogError("cluster mirror latest pointer is invalid")
+    return {
+        "receipt_id": receipt["receipt_id"],
+        "sequence": receipt["sequence"],
+        "cluster_server_timestamp": receipt["cluster_server_timestamp"],
+        "pointer_id": pointer["pointer_id"],
+        "action_receipt_id": (
+            action_binding.get("action_receipt_id")
+            if isinstance(action_binding, Mapping)
+            else None
+        ),
+        "recovered_prior_action": recovered_prior_action,
+        "recovered_current_interrupted": recovered_current_interrupted,
+    }
 
 
 def _maybe_send_liveness_email(
@@ -491,6 +772,37 @@ def run_once(
         if decision.action is not None
         else None
     )
+    mirror_response = _remote_json(config, "observe", runner=runner)
+    first_mirror = _validate_cluster_mirror(
+        mirror_response,
+        config=config,
+        first=first,
+        second=second,
+        action=decision.action,
+        action_result=action_result,
+        allow_recovered_prior_action=True,
+    )
+    if first_mirror["recovered_prior_action"]:
+        current_mirror_response = _remote_json(
+            config, "observe", runner=runner
+        )
+        current_mirror = _validate_cluster_mirror(
+            current_mirror_response,
+            config=config,
+            first=first,
+            second=second,
+            action=None,
+            action_result=None,
+        )
+        mirror: dict[str, Any] = {
+            "current": current_mirror,
+            "recovered_prior_action": first_mirror,
+        }
+    else:
+        mirror = {
+            "current": first_mirror,
+            "recovered_prior_action": None,
+        }
     timestamp = float(now())
     record: dict[str, Any] = {
         "schema_version": 1,
@@ -503,10 +815,16 @@ def run_once(
         "first_status_sha256": hashlib.sha256(_canonical(first)).hexdigest(),
         "second_status_sha256": hashlib.sha256(_canonical(second)).hexdigest(),
         "action": decision.action,
+        "action_executed": bool(
+            decision.action is not None
+            and isinstance(action_result, Mapping)
+            and action_result.get("executed", True) is True
+        ),
         "reason": decision.reason,
         "desired_state": decision.desired_state,
         "finalization_state": decision.finalization_state,
         "action_result": action_result,
+        "cluster_mirror": mirror,
     }
     without_id = dict(record)
     record["heartbeat_id"] = hashlib.sha256(_canonical(without_id)).hexdigest()

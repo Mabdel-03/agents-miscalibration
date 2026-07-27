@@ -31,7 +31,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 from agents_scaling.config import DEFAULT_RESULTS_ROOT
 from agents_scaling.experiment import io
@@ -64,6 +64,19 @@ class Target:
 # Public compatibility for the existing focused tests and forensic helpers.  Production
 # rows now come from a joined squeue+sacct snapshot rather than current squeue alone.
 FleetQueueRow = fleet_tx.SchedulerRow
+
+
+class FleetQueueTruth(tuple):
+    """Tuple-compatible rows retaining their exact complete scheduler snapshot."""
+
+    scheduler_snapshot: fleet_tx.SchedulerSnapshot
+
+    def __new__(
+        cls, snapshot: fleet_tx.SchedulerSnapshot
+    ) -> "FleetQueueTruth":
+        material = super().__new__(cls, snapshot.rows)
+        material.scheduler_snapshot = snapshot
+        return material
 
 
 @dataclass(frozen=True)
@@ -959,7 +972,7 @@ def _query_fleet_queue() -> tuple[FleetQueueRow, ...]:
     """
 
     try:
-        return fleet_tx.query_scheduler().rows
+        return FleetQueueTruth(fleet_tx.query_scheduler())
     except fleet_tx.FleetTransactionError as exc:
         raise FleetContractError(str(exc)) from exc
 
@@ -977,6 +990,181 @@ def _rollout_generation(launch_options: dict[str, str | int | None]) -> int:
     if generation < 1:
         raise FleetContractError("canonical fleet rollout generation must be positive")
     return generation
+
+
+def _capacity_generation(launch_options: Mapping[str, str | int | None]) -> int:
+    raw = launch_options.get("capacity_generation")
+    if raw is None:
+        raw = os.environ.get("ASYS_CAPACITY_GENERATION")
+    try:
+        generation = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise FleetContractError(
+            "canonical fleet admission requires ASYS_CAPACITY_GENERATION"
+        ) from exc
+    if generation < 1:
+        raise FleetContractError("canonical fleet capacity generation must be positive")
+    return generation
+
+
+def _load_current_fleet_authority(
+    control_state_dir: str | Path,
+    *,
+    fleet: FrozenFleetContract,
+    capacity_generation: int,
+    rollout_generation: int,
+    expected_protected_binding: Mapping[str, str] | None = None,
+    expected_protected_capacity_contract: (
+        protected_capacity.ProtectedCapacityContract | None
+    ) = None,
+) -> tuple[dict[str, Any], protected_capacity.ProtectedCapacityContract]:
+    """Reload and exactly bind one production fleet turn to current control.
+
+    A positive launch-script generation is not authority by itself.  Every turn and
+    every external ``sbatch`` boundary must join it to the current control generations,
+    effective fleet, and generation-scoped protected-capacity marker.
+    """
+
+    if (
+        type(capacity_generation) is not int
+        or capacity_generation < 1
+        or type(rollout_generation) is not int
+        or rollout_generation < 1
+    ):
+        raise FleetContractError(
+            "production fleet generations must be positive integers"
+        )
+    try:
+        from slurm import schema5_control as control_plane
+    except (ImportError, OSError) as exc:
+        raise FleetContractError(
+            f"cannot import current production fleet authority: {exc}"
+        ) from exc
+
+    try:
+        state_dir = Path(control_state_dir).expanduser().resolve()
+        control_state = control_plane.load_control(
+            state_dir,
+            verify_files=True,
+        )
+        control_capacity = control_state.get("capacity", {}).get(
+            "current_generation"
+        )
+        control_rollout = control_state.get("rollout_generation")
+        fleet_binding = control_plane.effective_fleet_contract_binding(
+            control_state,
+            verify_files=True,
+        )
+        protected_binding = (
+            control_plane.effective_protected_capacity_binding(
+                control_state,
+                verify_files=True,
+            )
+        )
+        current_fleet = control_plane.load_effective_fleet_contract(
+            control_state,
+            verify_files=True,
+        )
+        current_protected = (
+            control_plane.load_effective_protected_capacity_contract(
+                control_state,
+                verify_files=True,
+            )
+        )
+
+        expected_fleet_path = fleet.path.expanduser().resolve()
+        observed_fleet_path = Path(str(fleet_binding["path"])).resolve()
+        observed_contract_path = current_fleet.path.expanduser().resolve()
+        if (
+            control_capacity != capacity_generation
+            or control_rollout != rollout_generation
+            or fleet_binding.get("capacity_generation")
+            != capacity_generation
+            or protected_binding.get("capacity_generation")
+            != capacity_generation
+            or current_protected.capacity_generation
+            != capacity_generation
+            or observed_fleet_path != expected_fleet_path
+            or observed_contract_path != expected_fleet_path
+            or fleet_binding.get("sha256") != fleet.sha256
+            or current_fleet.sha256 != fleet.sha256
+            or Path(
+                str(protected_binding["effective_fleet_contract_path"])
+            ).resolve()
+            != expected_fleet_path
+            or protected_binding.get("effective_fleet_contract_sha256")
+            != fleet.sha256
+            or current_protected.effective_fleet_contract_path.resolve()
+            != expected_fleet_path
+            or current_protected.effective_fleet_contract_sha256
+            != fleet.sha256
+        ):
+            raise FleetContractError(
+                "production fleet launch authority differs from the current "
+                "capacity/rollout generation or effective fleet"
+            )
+
+        observed_protected = {
+            "path": str(Path(str(protected_binding["path"])).resolve()),
+            "sha256": str(protected_binding["sha256"]),
+            "marker_id": str(protected_binding["marker_id"]),
+        }
+        if (
+            expected_protected_binding is not None
+            and observed_protected
+            != {
+                "path": str(
+                    Path(str(expected_protected_binding["path"]))
+                    .expanduser()
+                    .resolve()
+                ),
+                "sha256": str(expected_protected_binding["sha256"]),
+                "marker_id": str(expected_protected_binding["marker_id"]),
+            }
+        ):
+            raise FleetContractError(
+                "production fleet protected-capacity binding differs from "
+                "current control"
+            )
+        if expected_protected_capacity_contract is not None and (
+            current_protected.path.resolve()
+            != expected_protected_capacity_contract.path.resolve()
+            or current_protected.sha256
+            != expected_protected_capacity_contract.sha256
+            or current_protected.marker_id
+            != expected_protected_capacity_contract.marker_id
+            or current_protected.capacity_generation
+            != expected_protected_capacity_contract.capacity_generation
+            or current_protected.effective_fleet_contract_path.resolve()
+            != (
+                expected_protected_capacity_contract
+                .effective_fleet_contract_path.resolve()
+            )
+            or current_protected.effective_fleet_contract_sha256
+            != (
+                expected_protected_capacity_contract
+                .effective_fleet_contract_sha256
+            )
+        ):
+            raise FleetContractError(
+                "production fleet cached protected-capacity marker is no "
+                "longer current"
+            )
+        protected_capacity.authorize_fleet(fleet, current_protected)
+        return control_state, current_protected
+    except FleetContractError:
+        raise
+    except (
+        control_plane.ControlError,
+        protected_capacity.ProtectedCapacityError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise FleetContractError(
+            f"cannot establish current production fleet authority: {exc}"
+        ) from exc
 
 
 def _expected_fleet_script(
@@ -1177,11 +1365,18 @@ def _validate_scheduler_row(
     if (
         row.job_name != replica.scheduler_job_name
         or row.partition != replica.partition
+        or row.qos != replica.qos
         or parsed["pool"] != replica.pool_id
         or parsed["profile"] != replica.serving_profile
         or parsed["replica"] != replica.replica_id
         or parsed["fleet"] != fleet.sha256
-        or not fleet_tx.command_binds_sbatch(row.command, attempt["sbatch_path"])
+        or attempt.get("submission_transport")
+        != fleet_tx.STDIN_EXACT_SUBMISSION_TRANSPORT
+        or attempt.get("submission_argv_sha256")
+        != fleet_tx.submission_argv_sha256(expected_comment)
+        or not fleet_tx.command_binds_stdin_submission(
+            row.command, expected_comment
+        )
     ):
         raise FleetContractError(
             f"scheduler provenance drift for fleet job {row.job_id}"
@@ -1481,6 +1676,10 @@ def reconcile_fleet_read_only(
                     replica.replica_id: replica.scheduler_job_name
                     for replica in fleet.replicas
                 },
+                replica_qos={
+                    replica.replica_id: replica.qos
+                    for replica in fleet.replicas
+                },
             )
             physical = reconciled.active_allocations
             active = reconciled.logical_allocations
@@ -1644,6 +1843,61 @@ def reconcile_fleet_read_only(
             sorted(sealed_terminal_ids, key=int)
         ),
     )
+
+
+def trusted_scientific_fleet_bindings(
+    snapshot: ReadOnlyFleetSnapshot,
+) -> dict[str, dict[str, Any]]:
+    """Export exact fleet IDs only from a fully validated read-only transaction join."""
+
+    bindings: dict[str, dict[str, Any]] = {}
+    for allocation in snapshot.allocations:
+        job_id = str(allocation.row.job_id)
+        parsed = fleet_tx.parse_intent_comment(allocation.row.comment)
+        if (
+            not job_id.isdigit()
+            or allocation.attempt_state != "committed"
+            or parsed is None
+            or parsed.get("intent") != allocation.intent_token
+            or parsed.get("replica") != allocation.replica_id
+            or parsed.get("generation")
+            != str(allocation.ledger_generation)
+            or job_id in bindings
+        ):
+            raise FleetContractError(
+                "trusted fleet export encountered an ambiguous allocation"
+            )
+        transaction_directory = Path(allocation.sbatch_path).parents[2]
+        generation_ledger_path = fleet_tx.ledger_path(
+            transaction_directory,
+            allocation.ledger_generation,
+        )
+        try:
+            if (
+                generation_ledger_path.is_symlink()
+                or not generation_ledger_path.is_file()
+                or generation_ledger_path.stat().st_nlink != 1
+            ):
+                raise OSError("fleet generation ledger is unsafe")
+            generation_ledger_raw = generation_ledger_path.read_bytes()
+        except OSError as exc:
+            raise FleetContractError(
+                f"cannot bind exact fleet generation ledger: {exc}"
+            ) from exc
+        bindings[job_id] = {
+            "job_name": allocation.row.job_name,
+            "comment": allocation.row.comment,
+            "sbatch_path": allocation.sbatch_path,
+            "sbatch_sha256": allocation.sbatch_sha256,
+            "intent_token": allocation.intent_token,
+            "replica_id": allocation.replica_id,
+            "ledger_generation": allocation.ledger_generation,
+            "ledger_path": str(generation_ledger_path.resolve()),
+            "ledger_sha256": hashlib.sha256(
+                generation_ledger_raw
+            ).hexdigest(),
+        }
+    return dict(sorted(bindings.items(), key=lambda item: int(item[0])))
 
 
 HUNG_MIN_FAILURES = 3
@@ -2427,14 +2681,19 @@ def tick_fleet(
     protected_capacity_contract: (
         protected_capacity.ProtectedCapacityContract | None
     ) = None,
+    control_state_dir: str | Path | None = None,
 ) -> None:
     """Transactionally reconcile, validate, probe, and recover every frozen replica."""
 
     canonical_root = fleet.verify_pool_root(run_root)
     generation = _rollout_generation(launch_options)
+    capacity_generation: int | None = None
     timestamp = time.time() if now is None else float(now)
     try:
         with fleet_tx.transaction_lock(canonical_root) as directory:
+            replica_contracts = {
+                replica.replica_id: replica for replica in fleet.replicas
+            }
             if scheduler_safety_contract is not None:
                 if protected_capacity_contract is None:
                     raise FleetContractError(
@@ -2470,6 +2729,88 @@ def tick_fleet(
                     runner=scheduler_safety_runner,
                     captured_timestamp=timestamp,
                 )
+                capacity_generation = _capacity_generation(
+                    launch_options
+                )
+                if control_state_dir is None or capacity_generation is None:
+                    raise FleetContractError(
+                        "protected fleet supervision lacks its current "
+                        "control/generation authority"
+                    )
+                _, protected_capacity_contract = _load_current_fleet_authority(
+                    control_state_dir,
+                    fleet=fleet,
+                    capacity_generation=capacity_generation,
+                    rollout_generation=generation,
+                    expected_protected_capacity_contract=(
+                        protected_capacity_contract
+                    ),
+                )
+
+            def current_fleet_bindings() -> dict[str, dict[str, Any]]:
+                bindings: dict[str, dict[str, Any]] = {}
+                for replica_id, replica_rows in active_rows.items():
+                    replica = replica_contracts.get(replica_id)
+                    if replica is None:
+                        raise FleetContractError(
+                            f"trusted fleet binding references unknown replica "
+                            f"{replica_id}"
+                        )
+                    for row, owner_ledger, attempt, _provenance in replica_rows:
+                        job_id = str(row.job_id)
+                        if job_id in bindings:
+                            raise FleetContractError(
+                                f"trusted fleet binding repeats job {job_id}"
+                            )
+                        owner_generation = int(
+                            owner_ledger["rollout_generation"]
+                        )
+                        owner_ledger_path = fleet_tx.ledger_path(
+                            directory,
+                            owner_generation,
+                        )
+                        try:
+                            (
+                                stable_owner_ledger_path,
+                                owner_ledger_raw,
+                            ) = fleet_tx._stable_regular_preimage(  # noqa: SLF001
+                                owner_ledger_path,
+                                description=(
+                                    f"trusted fleet generation ledger "
+                                    f"g{owner_generation:06d}"
+                                ),
+                                read_only=False,
+                            )
+                        except fleet_tx.FleetTransactionError as exc:
+                            raise FleetContractError(str(exc)) from exc
+                        allocated_gpus = attempt.get("allocated_gpus")
+                        if (
+                            type(allocated_gpus) is not int
+                            or allocated_gpus != replica.gpus_per_replica
+                        ):
+                            raise FleetContractError(
+                                f"trusted fleet attempt GPU allocation drifted "
+                                f"for {replica_id}"
+                            )
+                        bindings[job_id] = {
+                            "job_name": row.job_name,
+                            "comment": row.comment,
+                            "sbatch_path": str(attempt["sbatch_path"]),
+                            "sbatch_sha256": str(attempt["sbatch_sha256"]),
+                            "intent_token": str(attempt["intent_token"]),
+                            "replica_id": str(replica_id),
+                            "serving_profile": replica.serving_profile,
+                            "ledger_generation": owner_generation,
+                            "ledger_path": str(stable_owner_ledger_path),
+                            "ledger_sha256": hashlib.sha256(
+                                owner_ledger_raw
+                            ).hexdigest(),
+                            "partition": replica.partition,
+                            "qos": replica.qos,
+                            "allocated_gpus": allocated_gpus,
+                            "gpu_type": replica.gpu_type,
+                        }
+                return bindings
 
             def verify_submit_placement(replica) -> None:
                 if protected_capacity_contract is None:
@@ -2478,19 +2819,67 @@ def tick_fleet(
                             "protected capacity disappeared before fleet sbatch"
                         )
                     return
+                if control_state_dir is None:
+                    raise FleetContractError(
+                        "protected fleet submission lacks the shared control-state "
+                        "directory required for exact dispatcher/fleet occupancy"
+                    )
                 try:
+                    from slurm import schema5_control as control_plane
+                except (ImportError, OSError) as exc:
+                    raise FleetContractError(
+                        "protected fleet submission cannot import its current "
+                        f"control authority: {exc}"
+                    ) from exc
+
+                try:
+                    if capacity_generation is None:
+                        raise FleetContractError(
+                            "protected fleet submission lacks its capacity generation"
+                        )
+                    (
+                        control_state,
+                        current_protected_contract,
+                    ) = _load_current_fleet_authority(
+                        control_state_dir,
+                        fleet=fleet,
+                        capacity_generation=capacity_generation,
+                        rollout_generation=generation,
+                        expected_protected_capacity_contract=(
+                            protected_capacity_contract
+                        ),
+                    )
+                    boundary_now = (
+                        timestamp if now is not None else time.time()
+                    )
+                    trusted_provenance = (
+                        control_plane.reconcile_trusted_scientific_job_provenance(
+                            Path(control_state_dir),
+                            fleet_bindings=current_fleet_bindings(),
+                            fleet_contract_sha256=fleet.sha256,
+                            fleet_generation=generation,
+                            now=boundary_now,
+                            allow_exact_cell_quiescence=(
+                                control_state.get("desired_state") != "running"
+                            ),
+                        )
+                    )
                     protected_capacity.verify_live_placements(
-                        protected_capacity_contract,
+                        current_protected_contract,
                         role="server",
                         placements=[(replica.partition, replica.qos)],
                         required_time_limits_seconds={
-                            replica.partition: scheduler_safety.slurm_time_limit_seconds(
-                                replica.time_limit
+                            replica.partition: (
+                                protected_capacity.MIN_SCIENTIFIC_WALL_SECONDS
                             )
                         },
+                        trusted_scientific_job_provenance=trusted_provenance,
                         runner=scheduler_safety_runner,
                     )
-                except protected_capacity.ProtectedCapacityError as exc:
+                except (
+                    control_plane.ControlError,
+                    protected_capacity.ProtectedCapacityError,
+                ) as exc:
                     raise FleetContractError(
                         f"live protected placement rejected "
                         f"{replica.replica_id} before sbatch: {exc}"
@@ -2505,7 +2894,11 @@ def tick_fleet(
                 now=timestamp,
             )
             ledger = ledgers[-1]
-            rows = _query_fleet_queue()
+            queue_truth = _query_fleet_queue()
+            rows = tuple(queue_truth)
+            scheduler_snapshot = getattr(
+                queue_truth, "scheduler_snapshot", None
+            )
             reconciled = fleet_tx.reconcile_scheduler_rows(
                 rows,
                 ledgers,
@@ -2517,6 +2910,10 @@ def tick_fleet(
                 },
                 replica_job_names={
                     replica.replica_id: replica.scheduler_job_name
+                    for replica in fleet.replicas
+                },
+                replica_qos={
+                    replica.replica_id: replica.qos
                     for replica in fleet.replicas
                 },
             )
@@ -2656,21 +3053,40 @@ def tick_fleet(
                             )
                         elif state == "submitting" and age >= grace:
                             # Old-generation scripts are never resubmitted after a
-                            # pause/resume.  Current generation retries the same token and
-                            # path after complete joined-scheduler absence.
-                            attempt["state"] = (
-                                "submission_failed"
-                                if owner_generation == generation
-                                else "terminal"
-                            )
-                            attempt["terminal_at"] = (
-                                None if owner_generation == generation else timestamp
-                            )
-                            attempt["last_error"] = (
-                                "absent from complete squeue+sacct truth after "
-                                "visibility grace"
-                            )
-                            changed = True
+                            # pause/resume.  A current-generation retry must cross the
+                            # one typed absence transition so its complete joined
+                            # scheduler proof remains independently auditable.
+                            if owner_generation != generation:
+                                attempt["state"] = "terminal"
+                                attempt["terminal_at"] = timestamp
+                                attempt["last_error"] = (
+                                    "old-generation ambiguous submission absent "
+                                    "from complete scheduler truth after visibility "
+                                    "grace"
+                                )
+                                changed = True
+                            else:
+                                if not isinstance(
+                                    scheduler_snapshot,
+                                    fleet_tx.SchedulerSnapshot,
+                                ):
+                                    raise FleetContractError(
+                                        "ambiguous fleet submission retry lacks "
+                                        "its exact complete scheduler snapshot"
+                                    )
+                                absence_timestamp = (
+                                    time.time()
+                                    if now is None
+                                    else timestamp
+                                )
+                                fleet_tx.record_proven_submission_absence(
+                                    directory,
+                                    owner_ledger,
+                                    replica_id=replica.replica_id,
+                                    attempt=attempt,
+                                    snapshot=scheduler_snapshot,
+                                    now=absence_timestamp,
+                                )
                         elif state in {"committed", "missing"}:
                             if attempt["missing_since"] is None:
                                 attempt["state"] = "missing"
@@ -2800,6 +3216,7 @@ def tick_fleet(
                     # its visibility/backoff window; never create a second token.
                     if failed:
                         continue
+                    verify_submit_placement(replica)
                     attempt = fleet_tx.prepare_attempt(
                         directory,
                         ledger,
@@ -3045,6 +3462,7 @@ def tick_fleet(
                 required = replica.gpus_per_replica
                 if overlap_gpus + required > HANDOFF_MAX_OVERLAP_GPUS:
                     continue
+                verify_submit_placement(replica)
                 handoff_script = _expected_fleet_script(
                     replica,
                     str(canonical_root),
@@ -3185,6 +3603,14 @@ def main() -> None:
         default=os.environ.get("ASYS_PROTECTED_CAPACITY_MARKER_ID"),
     )
     ap.add_argument(
+        "--control-state-dir",
+        default=os.environ.get("ASYS_CONTROL_STATE_DIR"),
+        help=(
+            "shared schema-5 control/dispatcher state used to reconcile exact "
+            "scientific occupancy before every fleet sbatch"
+        ),
+    )
+    ap.add_argument(
         "--harness-environment-prefix",
         default=os.environ.get("ASYS_HARNESS_ENVIRONMENT_PREFIX"),
     )
@@ -3259,6 +3685,7 @@ def main() -> None:
                 args.protected_capacity_marker_sha256
             ),
             "protected_capacity_marker_id": args.protected_capacity_marker_id,
+            "control_state_dir": args.control_state_dir,
             "release_git_commit": os.environ.get("ASYS_RELEASE_GIT_COMMIT"),
             "release_fleet_contract_sha256": os.environ.get(
                 "ASYS_RELEASE_FLEET_CONTRACT_SHA256"
@@ -3274,6 +3701,9 @@ def main() -> None:
             ),
             "capacity_generation": os.environ.get(
                 "ASYS_CAPACITY_GENERATION"
+            ),
+            "rollout_generation": os.environ.get(
+                "ASYS_ROLLOUT_GENERATION"
             ),
             "harness_environment_prefix": args.harness_environment_prefix,
             "serving_environment_prefix": args.serving_environment_prefix,
@@ -3339,21 +3769,62 @@ def main() -> None:
             expected_sha256=args.fleet_contract_sha256,
             allow_capacity_layout=True,
         )
+        # The control plane owns the generation-scoped annotated-tag and
+        # frozen-source authority.  Loading the marker directly here would let a
+        # syntactically valid self-hashed marker authenticate on commit alone.
         try:
-            protected_contract = protected_capacity.load_contract(
-                str(args.protected_capacity_marker),
-                expected_release_git_commit=str(
-                    required["release_git_commit"]
-                ),
-                expected_marker_id=str(
-                    args.protected_capacity_marker_id
-                ),
-                expected_sha256=str(
-                    args.protected_capacity_marker_sha256
-                ),
+            import sys
+
+            release_root = Path(__file__).resolve().parent.parent
+            if str(release_root) not in sys.path:
+                sys.path.insert(0, str(release_root))
+            from slurm import schema5_control as control_plane
+        except (ImportError, OSError) as exc:
+            ap.error(
+                "production fleet cannot import the frozen control authority: "
+                + str(exc)
             )
-            protected_capacity.authorize_fleet(fleet, protected_contract)
-        except protected_capacity.ProtectedCapacityError as exc:
+
+        try:
+            supplied_binding = {
+                "path": str(
+                    Path(str(args.protected_capacity_marker))
+                    .expanduser()
+                    .resolve()
+                ),
+                "sha256": str(args.protected_capacity_marker_sha256),
+                "marker_id": str(args.protected_capacity_marker_id),
+            }
+            capacity_generation = _capacity_generation(
+                {
+                    "capacity_generation": required[
+                        "capacity_generation"
+                    ]
+                }
+            )
+            rollout_generation = _rollout_generation(
+                {
+                    "rollout_generation": required[
+                        "rollout_generation"
+                    ]
+                }
+            )
+            _control_state, protected_contract = (
+                _load_current_fleet_authority(
+                    str(required["control_state_dir"]),
+                    fleet=fleet,
+                    capacity_generation=capacity_generation,
+                    rollout_generation=rollout_generation,
+                    expected_protected_binding=supplied_binding,
+                )
+            )
+        except (
+            protected_capacity.ProtectedCapacityError,
+            control_plane.ControlError,
+            FleetContractError,
+            OSError,
+            ValueError,
+        ) as exc:
             ap.error(
                 "production fleet is not covered by protected capacity: "
                 + str(exc)
@@ -3376,10 +3847,9 @@ def main() -> None:
                 "ASYS_RELEASE_FLEET_CONTRACT_SHA256"
             ),
             "capacity_generation": (
-                None
-                if os.environ.get("ASYS_CAPACITY_GENERATION") is None
-                else int(os.environ["ASYS_CAPACITY_GENERATION"])
+                capacity_generation
             ),
+            "rollout_generation": rollout_generation,
             "hf_home": args.hf_home,
         }
         print(
@@ -3402,6 +3872,7 @@ def main() -> None:
                     ),
                 },
                 protected_capacity_contract=protected_contract,
+                control_state_dir=args.control_state_dir,
             )
             if args.once:
                 return

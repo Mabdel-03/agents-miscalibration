@@ -14,6 +14,11 @@ import pytest
 
 from scripts import build_schema5_protected_capacity_evidence as builder
 from scripts import publish_schema5_protected_capacity as publisher
+from scripts import run_schema5_throughput_qualification as qualification
+from agents_scaling.serving.fleet_contract import (
+    expected_replica_id,
+    expected_scheduler_job_name,
+)
 
 
 COMMIT = "1" * 40
@@ -24,6 +29,184 @@ FLEET_PATH = REPOSITORY_ROOT / "configs" / "schema5_fleet.v1.json"
 MODEL_PATH = REPOSITORY_ROOT / "configs" / "model_contracts.v1.json"
 FLEET_SHA256 = builder.sha256_file(FLEET_PATH)
 MODEL_SHA256 = builder.sha256_file(MODEL_PATH)
+
+
+def _capacity_authority(parent: Path) -> dict[str, object]:
+    """Materialize one real, solver-certified 40-replica test authority."""
+
+    authority = parent / "capacity-authority"
+    authority.mkdir(parents=True, exist_ok=True)
+    release_worktree = authority / "release-worktree"
+    (release_worktree / "configs").mkdir(parents=True, exist_ok=True)
+    (release_worktree / "scripts").mkdir(parents=True, exist_ok=True)
+    (release_worktree / "slurm").mkdir(parents=True, exist_ok=True)
+    base = release_worktree / "configs" / "schema5_fleet.v1.json"
+    base_raw = FLEET_PATH.read_bytes()
+    if not base.exists():
+        base.write_bytes(base_raw)
+        base.chmod(0o444)
+    assert base.read_bytes() == base_raw
+    model = release_worktree / "configs" / "model_contracts.v1.json"
+    model_raw = MODEL_PATH.read_bytes()
+    if not model.exists():
+        model.write_bytes(model_raw)
+        model.chmod(0o444)
+    assert model.read_bytes() == model_raw
+    for source in (
+        FLEET_PATH.with_suffix(".sha256"),
+        MODEL_PATH.with_suffix(".sha256"),
+    ):
+        target = release_worktree / "configs" / source.name
+        raw_sidecar = source.read_bytes()
+        if not target.exists():
+            target.write_bytes(raw_sidecar)
+            target.chmod(0o444)
+        assert target.read_bytes() == raw_sidecar
+    for source in (
+        Path(builder.__file__),
+        Path(publisher.__file__),
+        Path(qualification.__file__),
+    ):
+        target = release_worktree / "scripts" / source.name
+        raw_source = source.read_bytes()
+        if not target.exists():
+            target.write_bytes(raw_source)
+            target.chmod(0o444)
+        assert target.read_bytes() == raw_source
+    dispatcher_source = REPOSITORY_ROOT / "slurm" / "dispatch_sweeps.py"
+    tagged_dispatcher = release_worktree / "slurm" / dispatcher_source.name
+    dispatcher_raw = dispatcher_source.read_bytes()
+    if not tagged_dispatcher.exists():
+        tagged_dispatcher.write_bytes(dispatcher_raw)
+        tagged_dispatcher.chmod(0o444)
+    assert tagged_dispatcher.read_bytes() == dispatcher_raw
+    control_source = REPOSITORY_ROOT / "slurm" / "schema5_control.py"
+    tagged_control = release_worktree / "slurm" / control_source.name
+    control_raw = control_source.read_bytes()
+    if not tagged_control.exists():
+        tagged_control.write_bytes(control_raw)
+        tagged_control.chmod(0o444)
+    assert tagged_control.read_bytes() == control_raw
+    source_tree_sha256 = builder.sha256_tree(release_worktree)
+    dispatcher_source_sha256 = builder.sha256_file(tagged_dispatcher)
+    qualification_runner_source_sha256 = builder.sha256_file(
+        release_worktree / "scripts" / Path(qualification.__file__).name
+    )
+    effective = authority / "schema5_fleet.capacity-v1.json"
+    payload = json.loads(FLEET_PATH.read_text(encoding="utf-8"))
+    additions = {
+        "0.6B": 3,
+        "1.7B": 3,
+        "4B": 3,
+        "8B": 2,
+        "14B": 3,
+        "32B": 4,
+    }
+    for profile in payload["profiles"]:
+        name = profile["serving_profile"]
+        for _ in range(additions.get(name, 0)):
+            index = len(profile["replicas"])
+            added = dict(profile["replicas"][-1])
+            added.update(
+                {
+                    "replica_index": index,
+                    "replica_id": expected_replica_id(name, index),
+                    "scheduler_job_name": expected_scheduler_job_name(
+                        name, index
+                    ),
+                }
+            )
+            profile["replicas"].append(added)
+    payload["logical_replica_count"] = sum(
+        len(profile["replicas"]) for profile in payload["profiles"]
+    )
+    payload["allocated_gpu_count"] = sum(
+        int(profile["tensor_parallel_size"]) * len(profile["replicas"])
+        for profile in payload["profiles"]
+    )
+    raw = builder.canonical_bytes(payload)
+    if not effective.exists():
+        effective.write_bytes(raw)
+        effective.chmod(0o444)
+    assert effective.read_bytes() == raw
+    effective_sha256 = builder.sha256_file(effective)
+    sidecar = effective.with_suffix(".sha256")
+    sidecar.write_text(
+        f"{effective_sha256}  {effective.name}\n",
+        encoding="utf-8",
+    )
+    base_counts = {
+        profile["serving_profile"]: len(profile["replicas"])
+        for profile in json.loads(FLEET_PATH.read_text(encoding="utf-8"))[
+            "profiles"
+        ]
+    }
+    effective_counts = {
+        profile["serving_profile"]: len(profile["replicas"])
+        for profile in payload["profiles"]
+    }
+    certificate = qualification.build_preflight_capacity_certificate(
+        capacity_generation=1,
+        release_git_commit=COMMIT,
+        source_tree_sha256=source_tree_sha256,
+        release_fleet_contract_sha256=FLEET_SHA256,
+        base_fleet_contract_sha256=FLEET_SHA256,
+        proposed_effective_fleet_contract_sha256=effective_sha256,
+        additive_overlay_contract_sha256=effective_sha256,
+        base_profile_replicas=base_counts,
+        effective_profile_replicas=effective_counts,
+        dispatcher_source_sha256=dispatcher_source_sha256,
+        qualification_runner_source_sha256=(
+            qualification_runner_source_sha256
+        ),
+    )
+    certificate_path = (
+        authority / builder.runtime_capacity.STATIC_FEASIBILITY_FILENAME
+    )
+    certificate_raw = builder.canonical_bytes(certificate)
+    if not certificate_path.exists():
+        certificate_path.write_bytes(certificate_raw)
+        certificate_path.chmod(0o444)
+    assert certificate_path.read_bytes() == certificate_raw
+    return {
+        "release_worktree": release_worktree,
+        "base_fleet_contract_path": base,
+        "base_fleet_contract_sha256": FLEET_SHA256,
+        "model_contract_path": model,
+        "model_contract_sha256": MODEL_SHA256,
+        "effective_fleet_contract_path": effective,
+        "effective_fleet_contract_sha256": effective_sha256,
+        "additive_overlay_contract_path": effective,
+        "additive_overlay_contract_sha256": effective_sha256,
+        "static_feasibility_certificate_path": certificate_path,
+        "static_feasibility_certificate_sha256": builder.sha256_file(
+            certificate_path
+        ),
+        "static_feasibility_certificate_id": certificate["certificate_id"],
+        "capacity_generation": 1,
+    }
+
+
+def _capacity_cli_arguments(parent: Path) -> list[str]:
+    authority = _capacity_authority(parent)
+    return [
+        "--effective-fleet-contract",
+        str(authority["effective_fleet_contract_path"]),
+        "--effective-fleet-contract-sha256",
+        str(authority["effective_fleet_contract_sha256"]),
+        "--additive-overlay-contract",
+        str(authority["additive_overlay_contract_path"]),
+        "--additive-overlay-contract-sha256",
+        str(authority["additive_overlay_contract_sha256"]),
+        "--static-feasibility-certificate",
+        str(authority["static_feasibility_certificate_path"]),
+        "--static-feasibility-certificate-sha256",
+        str(authority["static_feasibility_certificate_sha256"]),
+        "--static-feasibility-certificate-id",
+        str(authority["static_feasibility_certificate_id"]),
+        "--capacity-generation",
+        str(authority["capacity_generation"]),
+    ]
 
 
 def test_sacct_start_times_use_scheduler_local_wall_time(
@@ -112,7 +295,41 @@ def _identity_runner(
     return subprocess.CompletedProcess(argv, 0, f"{output}\n", "")
 
 
+def _mock_release_identity(parent: Path) -> dict[str, str]:
+    authority = _capacity_authority(parent)
+    certificate = json.loads(
+        Path(
+            str(authority["static_feasibility_certificate_path"])
+        ).read_text(encoding="utf-8")
+    )
+    return {
+        "release_worktree": str(REPOSITORY_ROOT),
+        "source_tree_sha256": str(certificate["source_tree_sha256"]),
+        "builder_source_path": str(Path(builder.__file__).resolve()),
+        "builder_source_sha256": builder.sha256_file(
+            Path(builder.__file__).resolve()
+        ),
+        "publisher_source_path": str(Path(publisher.__file__).resolve()),
+        "publisher_source_sha256": builder.sha256_file(
+            Path(publisher.__file__).resolve()
+        ),
+        "dispatcher_source_path": str(
+            REPOSITORY_ROOT / "slurm" / "dispatch_sweeps.py"
+        ),
+        "dispatcher_source_sha256": str(
+            certificate["dispatcher_source_sha256"]
+        ),
+        "qualification_runner_source_path": str(
+            Path(qualification.__file__).resolve()
+        ),
+        "qualification_runner_source_sha256": str(
+            certificate["qualification_runner_source_sha256"]
+        ),
+    }
+
+
 def _plan(root: Path) -> dict[str, object]:
+    capacity = _capacity_authority(root.parent)
     return builder.build_plan(
         root=root,
         release_git_commit=COMMIT,
@@ -121,11 +338,12 @@ def _plan(root: Path) -> dict[str, object]:
         qos="normal",
         scheduler_user="tester",
         token=TOKEN,
-        fleet_contract_path=FLEET_PATH,
-        fleet_contract_sha256=FLEET_SHA256,
-        model_contract_path=MODEL_PATH,
-        model_contract_sha256=MODEL_SHA256,
-        release_worktree=REPOSITORY_ROOT,
+        fleet_contract_path=capacity.pop("base_fleet_contract_path"),
+        fleet_contract_sha256=capacity.pop("base_fleet_contract_sha256"),
+        model_contract_path=capacity.pop("model_contract_path"),
+        model_contract_sha256=capacity.pop("model_contract_sha256"),
+        release_worktree=capacity.pop("release_worktree"),
+        **capacity,
         identity_runner=_identity_runner,
     )
 
@@ -287,15 +505,34 @@ class FakeScheduler:
         root: Path,
         *,
         client_memory: str = "4G",
+        association_max_jobs: int | None = None,
         association_max_submit: int = 448,
+        qos_max_jobs: int | None = None,
         qos_max_submit: int | None = None,
-        existing_jobs: tuple[tuple[str, str, str], ...] = (),
+        qos_max_wall: str = "1-00:00:00",
+        existing_jobs: tuple[tuple[str, ...], ...] = (),
     ) -> None:
         self.root = root
         self.client_memory = client_memory
+        self.association_max_jobs = association_max_jobs
         self.association_max_submit = association_max_submit
+        self.qos_max_jobs = qos_max_jobs
         self.qos_max_submit = qos_max_submit
-        self.existing_jobs = existing_jobs
+        self.qos_max_wall = qos_max_wall
+        self.existing_jobs = tuple(
+            (
+                job_id,
+                state,
+                "account",
+                "normal",
+                comment,
+            )
+            if len(row) == 3
+            else row
+            for row in existing_jobs
+            for job_id, state, *rest in (row,)
+            for comment in (rest[-1],)
+        )
         self.next_job_id = 20_000
         self.submissions: list[list[str]] = []
         self.cancellations: list[str] = []
@@ -397,12 +634,19 @@ class FakeScheduler:
             return subprocess.CompletedProcess(
                 argv,
                 0,
-                "normal|cluster||"
+                "normal|cluster|"
+                + (
+                    ""
+                    if self.qos_max_jobs is None
+                    else str(self.qos_max_jobs)
+                )
+                + "|"
                 + (
                     ""
                     if self.qos_max_submit is None
                     else str(self.qos_max_submit)
                 )
+                + f"|{self.qos_max_wall}"
                 + "\n",
                 "",
             )
@@ -411,18 +655,24 @@ class FakeScheduler:
                 argv,
                 0,
                 (
-                    "cluster|account|tester|normal||"
+                    "cluster|account|tester|normal|"
+                    + (
+                        ""
+                        if self.association_max_jobs is None
+                        else str(self.association_max_jobs)
+                    )
+                    + "|"
                     f"{self.association_max_submit}\n"
                 ),
                 "",
             )
         if (
             argv[:5] == ["squeue", "-h", "-r", "-u", "tester"]
-            and argv[-2:] == ["-o", "%i|%T|%k"]
+            and argv[-2:] == ["-o", "%i|%T|%a|%q|%k"]
         ):
             rows = [
-                f"{job_id}|{state}|{comment}"
-                for job_id, state, comment in self.existing_jobs
+                f"{job_id}|{state}|{account}|{qos}|{comment}"
+                for job_id, state, account, qos, comment in self.existing_jobs
             ]
             return subprocess.CompletedProcess(
                 argv,
@@ -433,7 +683,8 @@ class FakeScheduler:
         if (
             argv
             and argv[0] == "sacct"
-            and argv[-2:] == ["-o", "JobID,State,Comment"]
+            and argv[-2:]
+            == ["-o", "JobID,State,Account,QOS,Comment"]
         ):
             requested = (
                 None
@@ -441,8 +692,8 @@ class FakeScheduler:
                 else set(argv[argv.index("-j") + 1].split(","))
             )
             rows = [
-                f"{job_id}|{state}|{comment}"
-                for job_id, state, comment in self.existing_jobs
+                f"{job_id}|{state}|{account}|{qos}|{comment}"
+                for job_id, state, account, qos, comment in self.existing_jobs
                 if requested is None or job_id in requested
             ]
             return subprocess.CompletedProcess(
@@ -458,6 +709,7 @@ class FakeScheduler:
                 argv,
                 0,
                 f"JobId={job_id} ArrayJobId={job_id} Requeue=0 "
+                f"TimeLimit={record['time_limit']} "
                 f"Comment={record['comment']}\n",
                 "",
             )
@@ -498,7 +750,7 @@ class FakeScheduler:
                     "-o",
                     (
                         "JobID,State,Partition,QOS,ReqCPUS,ReqMem,"
-                        "ReqTRES,Comment"
+                        "ReqTRES,Timelimit,Comment"
                     ),
                 ]
                 # Real Slurm may retain a consolidated array-parent row alongside
@@ -508,13 +760,15 @@ class FakeScheduler:
                     f"{job_id}|{state}|ou_bcs_normal|normal|"
                     f"{record['cpus']}|{record['memory_mib']}M|"
                     f"cpu={record['cpus']},mem={record['memory_mib']}M|"
+                    f"{record['time_limit']}|"
                     f"{record['comment']}"
                 )
             for task_id in range(tasks):
                 if argv[0] == "squeue":
                     rows.append(
                         f"{job_id}|{task_id}|{state}|ou_bcs_normal|normal|"
-                        f"{cpus_per_task}|{memory}|{tres}|{record['comment']}"
+                        f"{cpus_per_task}|{memory}|{tres}|"
+                        f"{record['time_limit']}|{record['comment']}"
                     )
                 else:
                     req_tres = (
@@ -526,7 +780,7 @@ class FakeScheduler:
                     rows.append(
                         f"{job_id}_{task_id}|{state}|ou_bcs_normal|normal|"
                         f"{cpus_per_task}|{memory}|{req_tres}|"
-                        f"{record['comment']}"
+                        f"{record['time_limit']}|{record['comment']}"
                     )
             return subprocess.CompletedProcess(
                 argv, 0, "\n".join(rows) + "\n", ""
@@ -546,25 +800,51 @@ def test_dry_run_is_nonmutating_and_every_array_is_at_most_24(
     assert not root.exists()
     roles = report["plan"]["roles"]
     expected_chunks = {
-        "server_active": 22,
+        "server_active": 40,
         "server_warm": 3,
         "client": 16,
-        "reserve": 2,
+        "reserve": 1,
     }
     assert {
         role: len(record["chunks"]) for role, record in roles.items()
     } == expected_chunks
-    assert roles["server_active"]["tasks"] == 22
+    assert roles["server_active"]["tasks"] == 40
     assert roles["server_warm"]["tasks"] == 3
     assert roles["client"]["tasks"] == 384
-    assert roles["reserve"]["tasks"] == 39
+    assert roles["reserve"]["tasks"] == 21
     assert sum(record["tasks"] for record in roles.values()) == 448
     assert report["plan"]["expected_total_job_elements"] == 448
+    release_worktree = Path(str(plan["release_worktree"]))
+    assert plan["source_tree_sha256"] == builder.sha256_tree(
+        release_worktree
+    )
+    assert plan["dispatcher_source_sha256"] == builder.sha256_file(
+        release_worktree / "slurm" / "dispatch_sweeps.py"
+    )
+    assert plan["qualification_runner_source_sha256"] == builder.sha256_file(
+        release_worktree
+        / "scripts"
+        / "run_schema5_throughput_qualification.py"
+    )
+    certificate = json.loads(
+        Path(
+            str(plan["static_feasibility_certificate"]["path"])
+        ).read_text(encoding="utf-8")
+    )
+    assert certificate["source_tree_sha256"] == plan["source_tree_sha256"]
+    assert (
+        certificate["dispatcher_source_sha256"]
+        == plan["dispatcher_source_sha256"]
+    )
+    assert (
+        certificate["qualification_runner_source_sha256"]
+        == plan["qualification_runner_source_sha256"]
+    )
     assert report["plan"]["job_element_accounting"] == {
         "cell_job_elements": 384,
-        "active_server_job_elements": 22,
+        "active_server_job_elements": 40,
         "warm_turnover_job_elements": 3,
-        "controller_monitor_other_held_job_elements": 39,
+        "controller_monitor_other_held_job_elements": 21,
         "total_non_cell_reserve_job_elements": 64,
         "total_canary_job_elements": 448,
     }
@@ -580,9 +860,44 @@ def test_dry_run_is_nonmutating_and_every_array_is_at_most_24(
             assert "#SBATCH --qos=normal" in script
             assert "#SBATCH --no-requeue" in script
             assert (
+                "#SBATCH --time=1-00:00:00" in script
+                if role in {"server_active", "server_warm"}
+                else "#SBATCH --time=12:00:00" in script
+            )
+            assert (
                 f"#SBATCH --array=0-{chunk['tasks'] - 1}%{chunk['tasks']}"
                 in script
             )
+
+
+def test_builder_supplies_all_frozen_source_hashes_to_certificate_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+    original = builder.runtime_capacity.load_static_feasibility_certificate
+
+    def load(*args, **kwargs):
+        observed.append(dict(kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        builder.runtime_capacity,
+        "load_static_feasibility_certificate",
+        load,
+    )
+    plan = _plan(tmp_path / "capacity")
+
+    assert len(observed) == 1
+    assert observed[0]["expected_source_tree_sha256"] == plan[
+        "source_tree_sha256"
+    ]
+    assert observed[0]["expected_dispatcher_source_sha256"] == plan[
+        "dispatcher_source_sha256"
+    ]
+    assert observed[0][
+        "expected_qualification_runner_source_sha256"
+    ] == plan["qualification_runner_source_sha256"]
 
 
 def test_prepare_is_idempotent_and_persists_all_chunk_intents(
@@ -595,10 +910,10 @@ def test_prepare_is_idempotent_and_persists_all_chunk_intents(
     ledger = json.loads(
         (root / builder.LEDGER_FILENAME).read_text(encoding="utf-8")
     )
-    assert len(ledger["jobs"]) == 43
-    assert len({row["comment"] for row in ledger["jobs"].values()}) == 43
+    assert len(ledger["jobs"]) == 60
+    assert len({row["comment"] for row in ledger["jobs"].values()}) == 60
     scripts = sorted((root / "sbatch").glob("*.sbatch"))
-    assert len(scripts) == 43
+    assert len(scripts) == 60
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o444 for path in scripts)
     intent_path = root / builder.INTENT_FILENAME
     assert stat.S_IMODE(intent_path.stat().st_mode) == 0o444
@@ -612,7 +927,10 @@ def test_prepare_is_idempotent_and_persists_all_chunk_intents(
     assert intent["publisher_source_sha256"] == builder.sha256_file(
         Path(publisher.__file__).resolve()
     )
-    assert intent["fleet_contract_sha256"] == FLEET_SHA256
+    assert intent["fleet_contract_sha256"] == intent[
+        "effective_fleet_contract_sha256"
+    ]
+    assert intent["base_fleet_contract_sha256"] == FLEET_SHA256
 
 
 def test_apply_submits_and_observes_full_concurrent_capacity_then_publishes(
@@ -634,13 +952,13 @@ def test_apply_submits_and_observes_full_concurrent_capacity_then_publishes(
     )
 
     assert report["status"] == "complete"
-    assert len(scheduler.submissions) == 43
+    assert len(scheduler.submissions) == 60
     assert sum(
         int(chunk["gpus"])
         for record in plan["roles"].values()
         for chunk in record["chunks"]
         if record["gpus"]
-    ) == 28
+    ) == 46
     assert sum(
         int(chunk["tasks"])
         for chunk in plan["roles"]["client"]["chunks"]
@@ -648,17 +966,24 @@ def test_apply_submits_and_observes_full_concurrent_capacity_then_publishes(
     assert sum(
         int(chunk["tasks"])
         for chunk in plan["roles"]["reserve"]["chunks"]
-    ) == 39
+    ) == 21
     assert sum(
         int(record["tasks"]) for record in plan["roles"].values()
     ) == 448
-    assert len(scheduler.cancellations) == 2
+    assert len(scheduler.cancellations) == 1
     marker = publisher.verify_marker(
         recovery_root,
         expected_release_git_commit=COMMIT,
         expected_release_tag_object=TAG_OBJECT,
+        expected_source_tree_sha256=str(plan["source_tree_sha256"]),
+        expected_dispatcher_source_sha256=str(
+            plan["dispatcher_source_sha256"]
+        ),
+        expected_qualification_runner_source_sha256=str(
+            plan["qualification_runner_source_sha256"]
+        ),
     )
-    assert marker["active_gpus"] == 24
+    assert marker["active_gpus"] == 42
     assert marker["warm_headroom_gpus"] == 4
     assert marker["cell_ceiling"] == 384
     assert marker["reserve_jobs"] == 64
@@ -716,6 +1041,13 @@ def test_higher_association_limit_still_runs_exact_448_element_canary(
         recovery_root,
         expected_release_git_commit=COMMIT,
         expected_release_tag_object=TAG_OBJECT,
+        expected_source_tree_sha256=str(plan["source_tree_sha256"]),
+        expected_dispatcher_source_sha256=str(
+            plan["dispatcher_source_sha256"]
+        ),
+        expected_qualification_runner_source_sha256=str(
+            plan["qualification_runner_source_sha256"]
+        ),
     )
     assert marker["submit_headroom"] == 448
 
@@ -747,7 +1079,7 @@ def test_exact_448_canary_includes_existing_global_occupancy(
     )
 
     assert report["status"] == "complete"
-    assert len(scheduler.submissions) == 43
+    assert len(scheduler.submissions) == 60
     ledger = builder._load_ledger(root, plan=builder._load_plan(root))
     preflight = ledger["occupancy_preflight"]
     assert preflight["existing_job_elements"] == 52
@@ -847,13 +1179,19 @@ def test_occupancy_drift_between_complete_observations_fails_closed(
         nonlocal queue_observations
         if (
             argv[:5] == ["squeue", "-h", "-r", "-u", "tester"]
-            and argv[-2:] == ["-o", "%i|%T|%k"]
+            and argv[-2:] == ["-o", "%i|%T|%a|%q|%k"]
         ):
-            queue_observations += 1
-            if queue_observations == 2:
-                scheduler.existing_jobs = (
-                    ("19000", "RUNNING", "unrelated:new"),
-                )
+                queue_observations += 1
+                if queue_observations == 2:
+                    scheduler.existing_jobs = (
+                        (
+                            "19000",
+                            "RUNNING",
+                            "account",
+                            "normal",
+                            "unrelated:new",
+                        ),
+                    )
         return scheduler(argv, timeout=timeout)
 
     with pytest.raises(
@@ -883,16 +1221,19 @@ def test_occupancy_uses_expanded_logical_array_ids_and_ignores_parent_summary(
         del timeout
         commands.append(list(argv))
         if argv[0] == "squeue":
-            assert argv[-2:] == ["-o", "%i|%T|%k"]
+            assert argv[-2:] == ["-o", "%i|%T|%a|%q|%k"]
             return subprocess.CompletedProcess(
                 argv,
                 0,
-                "700_0|PENDING|unrelated:array\n"
-                "700_1|RUNNING|unrelated:array\n",
+                "700_0|PENDING|account|normal|unrelated:array\n"
+                "700_1|RUNNING|account|normal|unrelated:array\n",
                 "",
             )
         assert argv[:4] == ["sacct", "-nP", "-X", "--array"]
-        assert argv[-2:] == ["-o", "JobID,State,Comment"]
+        assert argv[-2:] == [
+            "-o",
+            "JobID,State,Account,QOS,Comment",
+        ]
         assert "JobIDRaw" not in argv[-1]
         # This is shaped like `sacct --array`: one optional consolidated parent
         # plus the scheduler-logical array_jobid_taskid rows.  Raw allocation IDs
@@ -900,9 +1241,9 @@ def test_occupancy_uses_expanded_logical_array_ids_and_ignores_parent_summary(
         return subprocess.CompletedProcess(
             argv,
             0,
-            "700|PENDING|unrelated:array\n"
-            "700_0|PENDING|unrelated:array\n"
-            "700_1|RUNNING|unrelated:array\n",
+            "700|PENDING|account|normal|unrelated:array\n"
+            "700_0|PENDING|account|normal|unrelated:array\n"
+            "700_1|RUNNING|account|normal|unrelated:array\n",
             "",
         )
 
@@ -981,17 +1322,7 @@ def test_cli_plan_is_an_explicit_nonmutating_operation(
     monkeypatch.setattr(
         builder,
         "_verify_release_checkout",
-        lambda **_kwargs: {
-            "release_worktree": str(REPOSITORY_ROOT),
-            "builder_source_path": str(Path(builder.__file__).resolve()),
-            "builder_source_sha256": builder.sha256_file(
-                Path(builder.__file__).resolve()
-            ),
-            "publisher_source_path": str(Path(publisher.__file__).resolve()),
-            "publisher_source_sha256": builder.sha256_file(
-                Path(publisher.__file__).resolve()
-            ),
-        },
+        lambda **_kwargs: _mock_release_identity(tmp_path),
     )
 
     assert (
@@ -1012,6 +1343,7 @@ def test_cli_plan_is_an_explicit_nonmutating_operation(
                 str(FLEET_PATH),
                 "--fleet-contract-sha256",
                 FLEET_SHA256,
+                *_capacity_cli_arguments(tmp_path),
                 "--model-contract",
                 str(MODEL_PATH),
                 "--model-contract-sha256",
@@ -1045,17 +1377,7 @@ def test_cli_run_routes_to_the_resumable_real_operation(
     monkeypatch.setattr(
         builder,
         "_verify_release_checkout",
-        lambda **_kwargs: {
-            "release_worktree": str(REPOSITORY_ROOT),
-            "builder_source_path": str(Path(builder.__file__).resolve()),
-            "builder_source_sha256": builder.sha256_file(
-                Path(builder.__file__).resolve()
-            ),
-            "publisher_source_path": str(Path(publisher.__file__).resolve()),
-            "publisher_source_sha256": builder.sha256_file(
-                Path(publisher.__file__).resolve()
-            ),
-        },
+        lambda **_kwargs: _mock_release_identity(tmp_path),
     )
 
     assert (
@@ -1078,6 +1400,7 @@ def test_cli_run_routes_to_the_resumable_real_operation(
                 str(FLEET_PATH),
                 "--fleet-contract-sha256",
                 FLEET_SHA256,
+                *_capacity_cli_arguments(tmp_path),
                 "--model-contract",
                 str(MODEL_PATH),
                 "--model-contract-sha256",
@@ -1108,17 +1431,7 @@ def test_run_without_apply_is_nonmutating(
     monkeypatch.setattr(
         builder,
         "_verify_release_checkout",
-        lambda **_kwargs: {
-            "release_worktree": str(REPOSITORY_ROOT),
-            "builder_source_path": str(Path(builder.__file__).resolve()),
-            "builder_source_sha256": builder.sha256_file(
-                Path(builder.__file__).resolve()
-            ),
-            "publisher_source_path": str(Path(publisher.__file__).resolve()),
-            "publisher_source_sha256": builder.sha256_file(
-                Path(publisher.__file__).resolve()
-            ),
-        },
+        lambda **_kwargs: _mock_release_identity(tmp_path),
     )
     arguments = [
         "run",
@@ -1144,6 +1457,7 @@ def test_run_without_apply_is_nonmutating(
         MODEL_SHA256,
         "--release-worktree",
         str(REPOSITORY_ROOT),
+        *_capacity_cli_arguments(tmp_path),
     ]
 
     assert builder.main(arguments) == 0
@@ -1295,6 +1609,12 @@ def test_mutable_ledger_rejects_duplicate_and_nonfinite_json(
 def test_release_worktree_symlink_traversal_is_rejected(tmp_path: Path) -> None:
     release_link = tmp_path / "release"
     release_link.symlink_to(REPOSITORY_ROOT, target_is_directory=True)
+    capacity = _capacity_authority(tmp_path)
+    capacity.pop("base_fleet_contract_path")
+    capacity.pop("base_fleet_contract_sha256")
+    capacity.pop("model_contract_path")
+    capacity.pop("model_contract_sha256")
+    capacity.pop("release_worktree")
 
     with pytest.raises(
         builder.ProtectedCapacityBuildError,
@@ -1313,6 +1633,7 @@ def test_release_worktree_symlink_traversal_is_rejected(tmp_path: Path) -> None:
             model_contract_path=MODEL_PATH,
             model_contract_sha256=MODEL_SHA256,
             release_worktree=release_link,
+            **capacity,
             identity_runner=_identity_runner,
         )
 
@@ -1320,6 +1641,12 @@ def test_release_worktree_symlink_traversal_is_rejected(tmp_path: Path) -> None:
 def test_release_contract_symlink_traversal_is_rejected(tmp_path: Path) -> None:
     fleet_link = tmp_path / "schema5_fleet.v1.json"
     fleet_link.symlink_to(FLEET_PATH)
+    capacity = _capacity_authority(tmp_path)
+    capacity.pop("base_fleet_contract_path")
+    capacity.pop("base_fleet_contract_sha256")
+    capacity.pop("model_contract_path")
+    capacity.pop("model_contract_sha256")
+    capacity.pop("release_worktree")
 
     with pytest.raises(
         builder.ProtectedCapacityBuildError,
@@ -1338,6 +1665,7 @@ def test_release_contract_symlink_traversal_is_rejected(tmp_path: Path) -> None:
             model_contract_path=MODEL_PATH,
             model_contract_sha256=MODEL_SHA256,
             release_worktree=REPOSITORY_ROOT,
+            **capacity,
             identity_runner=_identity_runner,
         )
 
@@ -1357,6 +1685,12 @@ def test_exact_tag_and_clean_checkout_are_required(tmp_path: Path) -> None:
             return subprocess.CompletedProcess(argv, 0, " M dirty.py\n", "")
         return result
 
+    capacity = _capacity_authority(tmp_path)
+    capacity.pop("base_fleet_contract_path")
+    capacity.pop("base_fleet_contract_sha256")
+    capacity.pop("model_contract_path")
+    capacity.pop("model_contract_sha256")
+    capacity.pop("release_worktree")
     with pytest.raises(
         builder.ProtectedCapacityBuildError,
         match="exact clean annotated",
@@ -1374,9 +1708,48 @@ def test_exact_tag_and_clean_checkout_are_required(tmp_path: Path) -> None:
             model_contract_path=MODEL_PATH,
             model_contract_sha256=MODEL_SHA256,
             release_worktree=REPOSITORY_ROOT,
+            **capacity,
             identity_runner=dirty_runner,
         )
     assert not (tmp_path / "capacity").exists()
+
+
+def test_release_identity_replay_rejects_concurrent_tag_ref_move(
+    tmp_path: Path,
+) -> None:
+    authority = _capacity_authority(tmp_path)
+    release_worktree = Path(str(authority["release_worktree"]))
+    tag_reads = 0
+
+    def moved_tag_runner(
+        argv: list[str],
+        *,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal tag_reads
+        arguments = argv[3:]
+        if arguments == [
+            "rev-parse",
+            f"refs/tags/{publisher.RELEASE_TAG}",
+        ]:
+            tag_reads += 1
+            value = TAG_OBJECT if tag_reads == 1 else "9" * 40
+            return subprocess.CompletedProcess(argv, 0, f"{value}\n", "")
+        if arguments == ["cat-file", "-t", "9" * 40]:
+            return subprocess.CompletedProcess(argv, 0, "tag\n", "")
+        return _identity_runner(argv, timeout=timeout)
+
+    with pytest.raises(
+        builder.ProtectedCapacityBuildError,
+        match="release tree drifted",
+    ):
+        builder._verify_release_checkout(
+            release_worktree=release_worktree,
+            release_git_commit=COMMIT,
+            release_tag_object=TAG_OBJECT,
+            runner=moved_tag_runner,
+        )
+    assert tag_reads == 2
 
 
 def test_stale_and_unexpected_ready_receipts_fail_closed(tmp_path: Path) -> None:
@@ -1548,6 +1921,11 @@ def test_cleanup_reconciles_scancel_crash_and_is_idempotent(
             }
         )
     builder._atomic_json(root / builder.LEDGER_FILENAME, ledger)
+    expected_cancel_calls = sum(
+        1
+        for record in ledger["jobs"].values()
+        if record["role"] == "reserve"
+    )
     terminal: dict[str, tuple[str, str]] = {}
     scancel_calls: list[str] = []
 
@@ -1593,7 +1971,7 @@ def test_cleanup_reconciles_scancel_crash_and_is_idempotent(
         now=lambda: 1_001.0,
     )
 
-    assert call_count == 2
+    assert call_count == expected_cancel_calls
     assert len(scancel_calls) == call_count
     assert first == second
     assert {

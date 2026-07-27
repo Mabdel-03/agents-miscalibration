@@ -66,7 +66,11 @@ from agents_scaling.experiment.completion import (
 )
 from agents_scaling.experiment.manifest import ManifestSnapshot, load_manifest
 from agents_scaling.serving import healthcheck
-from agents_scaling.serving import protected_capacity, scheduler_safety
+from agents_scaling.serving import (
+    fleet_transactions,
+    protected_capacity,
+    scheduler_safety,
+)
 from agents_scaling.serving.registry import (
     ServerEntry,
     active_slurm_allocations,
@@ -88,7 +92,8 @@ from agents_scaling import runtime_integrity
 
 
 ARRAY_TEMPLATE = REPO / "slurm" / "run_dispatch_batch.sbatch.tmpl"
-LEDGER_SCHEMA_VERSION = 1
+LEGACY_LEDGER_SCHEMA_VERSION = 1
+LEDGER_SCHEMA_VERSION = 2
 QOS_LIMIT_DEFAULT = 448
 QOS_RESERVE_DEFAULT = 64
 MAX_BATCH_DEFAULT = 24
@@ -98,6 +103,12 @@ CELL_CPUS_DEFAULT = 1
 # Keep 2G available for explicit low-memory pilots, but use 4G for production.
 CELL_MEM_DEFAULT = "4G"
 CELL_TIME_DEFAULT = "12:00:00"
+STDIN_EXACT_SUBMISSION_TRANSPORT = "stdin_exact_bytes_v1"
+INTEGRITY_RETIREMENT_DIRNAME = "integrity-retirements"
+INTEGRITY_RETIREMENT_INTENT_FILENAME = "RETIREMENT_INTENT.json"
+INTEGRITY_RETIREMENT_SCHEDULER_FILENAME = "SCHEDULER_ABSENCE.json"
+INTEGRITY_RETIREMENT_COMPLETE_FILENAME = "RETIREMENT_COMPLETE.json"
+INTEGRITY_RETIREMENT_SCHEMA_VERSION = 1
 CELL_JOB_PREFIXES = ("asys-cells", "asys-dispatch-")
 AUTHORITATIVE_SCHEMA5_RUN_IDS = frozenset(
     {
@@ -107,8 +118,9 @@ AUTHORITATIVE_SCHEMA5_RUN_IDS = frozenset(
     }
 )
 QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL = (
-    "schema5-v1.2-r2-throughput-qualification-execution-authority-v1"
+    "schema5-v1.2-r3-throughput-qualification-execution-authority-v2"
 )
+QUALIFICATION_EXECUTION_AUTHORITY_SCHEMA_VERSION = 2
 ELIGIBLE_STATES = {
     CompletionState.MISSING.value,
     CompletionState.PARTIAL.value,
@@ -146,6 +158,18 @@ ProfileKey = tuple[str, str]  # canonical server-pool root, serving profile
 
 class DispatcherError(RuntimeError):
     """An admission invariant was violated."""
+
+
+class SubmissionPreflightError(DispatcherError):
+    """Immutable local admission provenance failed before invoking Slurm."""
+
+
+class SubmissionRejectedError(DispatcherError):
+    """Slurm returned an explicit non-acceptance response."""
+
+
+class SubmissionAmbiguousError(DispatcherError):
+    """The external submission may have been accepted without a usable reply."""
 
 
 class SingletonAlreadyRunning(DispatcherError):
@@ -207,6 +231,8 @@ class QueueRow:
     state: str
     command: str = ""
     comment: str = ""
+    partition: str = ""
+    qos: str = ""
 
 
 @dataclass(frozen=True)
@@ -591,26 +617,40 @@ def update_starvation_counters(
 
 
 def parse_squeue(text: str) -> list[QueueRow]:
-    """Parse ``squeue -o '%F|%K|%i|%j|%T|%o'`` output.
+    """Parse ``squeue -o '%F|%K|%i|%j|%T|%o|%P|%q'`` output.
 
-    Five-column input remains accepted for isolated unit tests/backward compatibility,
+    Five/six-column input remains accepted for isolated tests/backward compatibility,
     but live queries always include ``%o`` so bare legacy job names can be resolved from
-    their run-scoped sbatch path.
+    their run-scoped sbatch path, plus exact partition and QOS placement.
     """
     rows: list[QueueRow] = []
     for line_number, raw in enumerate(text.splitlines(), start=1):
         if not raw.strip():
             continue
-        fields = raw.rstrip("\n").split("|", 5)
-        if len(fields) not in {5, 6}:
+        fields = raw.rstrip("\n").split("|", 7)
+        if len(fields) not in {5, 6, 8}:
             raise DispatcherError(f"malformed squeue row {line_number}: {raw!r}")
         if len(fields) == 5:
             fields.append("")
-        array_job_id, task, job_id, name, state, command = (
+        if len(fields) == 6:
+            fields.extend(("", ""))
+        array_job_id, task, job_id, name, state, command, partition, qos = (
             field.strip() for field in fields
         )
         task_id = None if task in {"", "N/A"} else int(task)
-        rows.append(QueueRow(array_job_id, task_id, job_id, name, state, command))
+        rows.append(
+            QueueRow(
+                array_job_id,
+                task_id,
+                job_id,
+                name,
+                state,
+                command,
+                "",
+                partition,
+                qos,
+            )
+        )
     return rows
 
 
@@ -657,7 +697,10 @@ def validate_ledger_structure(
 
     if not isinstance(value, dict):
         raise DispatcherError(f"{source} must be a JSON object")
-    if value.get("schema_version") != LEDGER_SCHEMA_VERSION:
+    if value.get("schema_version") not in {
+        LEGACY_LEDGER_SCHEMA_VERSION,
+        LEDGER_SCHEMA_VERSION,
+    }:
         raise DispatcherError(
             f"unsupported dispatcher ledger schema in {source}: "
             f"{value.get('schema_version')!r}"
@@ -683,14 +726,984 @@ def validate_ledger_structure(
     return normalized
 
 
+def validate_production_ledger_structure(
+    value: Any, *, source: str = "production dispatcher ledger"
+) -> dict[str, Any]:
+    """Validate every admission-relevant transaction field fail closed."""
+
+    normalized = validate_ledger_structure(value, source=source)
+    if normalized.get("schema_version") != LEDGER_SCHEMA_VERSION:
+        raise DispatcherError(
+            f"{source} uses legacy dispatcher schema "
+            f"{normalized.get('schema_version')!r}; production requires "
+            f"schema {LEDGER_SCHEMA_VERSION}"
+        )
+
+    def finite_number(item: Any) -> bool:
+        return (
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+        )
+
+    if (
+        not finite_number(normalized.get("created_at"))
+        or not finite_number(normalized.get("updated_at"))
+        or not isinstance(normalized.get("poll_number"), int)
+        or isinstance(normalized.get("poll_number"), bool)
+        or normalized["poll_number"] < 0
+    ):
+        raise DispatcherError(
+            f"{source} has invalid creation/update/poll metadata"
+        )
+    fairness = normalized["fairness"]
+    if (
+        set(fairness) != {"cursor", "deficits"}
+        or not isinstance(fairness["cursor"], int)
+        or isinstance(fairness["cursor"], bool)
+        or fairness["cursor"] < 0
+        or not isinstance(fairness["deficits"], dict)
+        or any(
+            not isinstance(run_id, str)
+            or not run_id
+            or not finite_number(deficit)
+            for run_id, deficit in fairness["deficits"].items()
+        )
+    ):
+        raise DispatcherError(f"{source} has invalid fairness state")
+    validation_fairness = normalized["validation_fairness"]
+    validation_fairness_allowed = {
+        "next_run_id",
+        "last_budget",
+        "last_demand",
+        "last_allocations",
+        "last_run_order",
+        "last_used",
+        "last_planned_at",
+    }
+    if (
+        "next_run_id" not in validation_fairness
+        or not set(validation_fairness) <= validation_fairness_allowed
+        or (
+            validation_fairness["next_run_id"] is not None
+            and (
+                not isinstance(validation_fairness["next_run_id"], str)
+                or not validation_fairness["next_run_id"]
+            )
+        )
+    ):
+        raise DispatcherError(
+            f"{source} has invalid validation-fairness state"
+        )
+    if set(validation_fairness) != {"next_run_id"}:
+        demand = validation_fairness.get("last_demand")
+        allocations = validation_fairness.get("last_allocations")
+        run_order = validation_fairness.get("last_run_order")
+        if (
+            not isinstance(validation_fairness.get("last_budget"), int)
+            or isinstance(validation_fairness.get("last_budget"), bool)
+            or validation_fairness["last_budget"] < 0
+            or not isinstance(demand, dict)
+            or not isinstance(allocations, dict)
+            or set(demand) != set(allocations)
+            or any(
+                not isinstance(run_id, str)
+                or not run_id
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+                for mapping in (demand, allocations)
+                for run_id, count in mapping.items()
+            )
+            or not isinstance(run_order, list)
+            or not all(
+                isinstance(run_id, str) and run_id in demand
+                for run_id in run_order
+            )
+            or not isinstance(validation_fairness.get("last_used"), int)
+            or isinstance(validation_fairness.get("last_used"), bool)
+            or validation_fairness["last_used"] < 0
+            or not finite_number(
+                validation_fairness.get("last_planned_at")
+            )
+        ):
+            raise DispatcherError(
+                f"{source} has malformed validation allocation history"
+            )
+
+    run_required = {
+        "run_root",
+        "manifest_path",
+        "manifest_sha256",
+        "manifest_cells",
+        "benchmark_contracts_sha256",
+        "server_pool_arg",
+        "server_pool_root",
+        "weight",
+        "backlogged_polls_without_admission",
+    }
+    run_optional = {
+        "last_admitted_poll",
+        "last_starvation_warning_poll",
+    }
+    for run_id, record in normalized["runs"].items():
+        if (
+            not run_id
+            or not run_required <= set(record)
+            or not set(record) <= run_required | run_optional
+            or not isinstance(record["run_root"], str)
+            or not Path(record["run_root"]).is_absolute()
+            or not isinstance(record["manifest_path"], str)
+            or not Path(record["manifest_path"]).is_absolute()
+            or re.fullmatch(
+                r"[0-9a-f]{64}", str(record["manifest_sha256"])
+            )
+            is None
+            or not isinstance(record["manifest_cells"], int)
+            or isinstance(record["manifest_cells"], bool)
+            or record["manifest_cells"] < 1
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(record["benchmark_contracts_sha256"]),
+            )
+            is None
+            or (
+                record["server_pool_arg"] is not None
+                and not isinstance(record["server_pool_arg"], str)
+            )
+            or not isinstance(record["server_pool_root"], str)
+            or not Path(record["server_pool_root"]).is_absolute()
+            or not finite_number(record["weight"])
+            or float(record["weight"]) <= 0
+            or not isinstance(
+                record["backlogged_polls_without_admission"], int
+            )
+            or isinstance(
+                record["backlogged_polls_without_admission"], bool
+            )
+            or record["backlogged_polls_without_admission"] < 0
+            or any(
+                not isinstance(record[field], int)
+                or isinstance(record[field], bool)
+                or record[field] < 0
+                for field in run_optional & set(record)
+            )
+        ):
+            raise DispatcherError(
+                f"{source} run {run_id!r} is not a closed manifest record"
+            )
+
+    task_required = {
+        "run_id",
+        "run_root",
+        "source_index",
+        "cell_id",
+        "config_hash",
+        "manifest_sha256",
+        "benchmark_contracts_sha256",
+        "model_size",
+        "serving_profile",
+        "fanout_cost",
+        "server_pool_id",
+        "server_run_id",
+        "server_pool_root",
+    }
+
+    def validate_task(task: Any, *, context: str) -> None:
+        if (
+            not isinstance(task, dict)
+            or not task_required <= set(task)
+            or not set(task) <= task_required | {"runtime_environment"}
+            or not isinstance(task["run_id"], str)
+            or not task["run_id"]
+            or not isinstance(task["run_root"], str)
+            or not Path(task["run_root"]).is_absolute()
+            or not isinstance(task["source_index"], int)
+            or isinstance(task["source_index"], bool)
+            or task["source_index"] < 0
+            or not isinstance(task["cell_id"], str)
+            or not task["cell_id"]
+            or re.fullmatch(r"[0-9a-f]{12}", str(task["config_hash"]))
+            is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}", str(task["manifest_sha256"])
+            )
+            is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(task["benchmark_contracts_sha256"]),
+            )
+            is None
+            or not isinstance(task["model_size"], str)
+            or not task["model_size"]
+            or not isinstance(task["serving_profile"], str)
+            or not task["serving_profile"]
+            or not isinstance(task["fanout_cost"], int)
+            or isinstance(task["fanout_cost"], bool)
+            or task["fanout_cost"] < 1
+            or (
+                task["server_pool_id"] is not None
+                and not isinstance(task["server_pool_id"], str)
+            )
+            or (
+                task["server_run_id"] is not None
+                and not isinstance(task["server_run_id"], str)
+            )
+            or not isinstance(task["server_pool_root"], str)
+            or not Path(task["server_pool_root"]).is_absolute()
+            or (
+                "runtime_environment" in task
+                and (
+                    not isinstance(task["runtime_environment"], dict)
+                    or not all(
+                        isinstance(key, str)
+                        and key
+                        and isinstance(item, str)
+                        for key, item in task["runtime_environment"].items()
+                    )
+                )
+            )
+        ):
+            raise DispatcherError(f"{context} has invalid coordinate identity")
+
+    allowed_intent_states = {
+        "prepared",
+        "submitting",
+        "submitted",
+        "reconciled",
+        "not_accepted",
+        "submission_rejected",
+        "integrity_blocked",
+        "integrity_retired",
+    }
+    accepted_intent_states = {"submitted", "reconciled"}
+    intent_common_required = {
+        "state",
+        "created_at",
+        "batch_manifest",
+        "batch_manifest_sha256",
+        "sbatch_path",
+        "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
+        "tasks",
+        "fairness_after",
+        "fairness_committed",
+    }
+    intent_common_optional = {
+        "task_count",
+        "protected_capacity_authority",
+        "qualification_execution_authority",
+    }
+    intent_state_required = {
+        "prepared": set(),
+        "submitting": {"submit_started_at"},
+        "submitted": {
+            "submit_started_at",
+            "submitted_at",
+            "job_id",
+            "spooled_sbatch_sha256",
+            "spooled_receipt_path",
+            "spooled_receipt_sha256",
+        },
+        "reconciled": {
+            "submit_started_at",
+            "reconciled_at",
+            "job_id",
+            "spooled_sbatch_sha256",
+            "spooled_receipt_path",
+            "spooled_receipt_sha256",
+        },
+        "not_accepted": {"reconciled_at", "error"},
+        "submission_rejected": {
+            "submit_started_at",
+            "error",
+            "last_submit_error_at",
+        },
+        "integrity_blocked": {
+            "error",
+            "integrity_blocked_at",
+            "integrity_alert_key",
+        },
+        "integrity_retired": {
+            "error",
+            "integrity_blocked_at",
+            "integrity_alert_key",
+            "integrity_retired_at",
+            "retirement_id",
+            "retirement_receipt_path",
+            "retirement_receipt_sha256",
+            "retirement_semantic_report_path",
+            "retirement_semantic_report_sha256",
+            "retirement_scheduler_absence_sha256",
+            "retirement_operator_note_sha256",
+            "retirement_identity_changes",
+        },
+    }
+    intent_state_optional = {
+        "prepared": {"error"},
+        "submitting": {"error", "last_submit_error_at"},
+        "submitted": set(),
+        # A reconciled scheduler adoption may either follow a locally receipted
+        # submission or recover a lost reply.  ``submitted_at`` is retained only in
+        # the former case and is never synthesized during adoption.
+        "reconciled": {"submitted_at"},
+        # Prepared work can be proven absent without ever crossing sbatch.  A
+        # submitting intent additionally retains its exact boundary timestamp.
+        "not_accepted": {"submit_started_at"},
+        "submission_rejected": set(),
+        "integrity_blocked": set(),
+        "integrity_retired": set(),
+    }
+    intents = normalized["intents"]
+    for batch_id, intent in intents.items():
+        state = intent.get("state")
+        tasks = intent.get("tasks")
+        manifest_path = intent.get("batch_manifest")
+        sbatch_path = intent.get("sbatch_path")
+        manifest_sha256 = intent.get("batch_manifest_sha256")
+        sbatch_sha256 = intent.get("sbatch_sha256")
+        fairness_after = intent.get("fairness_after")
+        required_fields = (
+            intent_common_required
+            | intent_state_required.get(str(state), set())
+        )
+        allowed_fields = (
+            required_fields
+            | intent_common_optional
+            | intent_state_optional.get(str(state), set())
+        )
+        if state == "integrity_blocked" and (
+            set(intent)
+            & {
+                "job_id",
+                "submit_started_at",
+                "submitted_at",
+                "reconciled_at",
+                "spooled_sbatch_sha256",
+                "spooled_receipt_path",
+                "spooled_receipt_sha256",
+            }
+            or any(
+                isinstance(job, dict) and job.get("batch_id") == batch_id
+                for job in normalized["jobs"].values()
+            )
+        ):
+            raise DispatcherError(
+                f"{source} integrity-blocked intent {batch_id!r} is not a "
+                "pre-boundary durable incident"
+            )
+        if (
+            not batch_id
+            or any(character in batch_id for character in "|;\n\r")
+            or state not in allowed_intent_states
+            or not required_fields <= set(intent)
+            or not set(intent) <= allowed_fields
+            or not finite_number(intent.get("created_at"))
+            or not isinstance(tasks, list)
+            or not isinstance(manifest_path, str)
+            or not Path(manifest_path).is_absolute()
+            or not isinstance(sbatch_path, str)
+            or not Path(sbatch_path).is_absolute()
+            or Path(manifest_path) != Path(sbatch_path).with_suffix(".json")
+            or re.fullmatch(r"[0-9a-f]{64}", str(manifest_sha256 or ""))
+            is None
+            or re.fullmatch(r"[0-9a-f]{64}", str(sbatch_sha256 or ""))
+            is None
+            or intent.get("submission_transport")
+            != STDIN_EXACT_SUBMISSION_TRANSPORT
+            or intent.get("submission_argv_sha256")
+            != _stdin_submission_argv_sha256(batch_id)
+            or not isinstance(fairness_after, dict)
+            or set(fairness_after) != {"cursor", "deficits"}
+            or not isinstance(fairness_after["cursor"], int)
+            or isinstance(fairness_after["cursor"], bool)
+            or fairness_after["cursor"] < 0
+            or not isinstance(fairness_after["deficits"], dict)
+            or any(
+                not isinstance(run_id, str)
+                or not run_id
+                or not finite_number(deficit)
+                for run_id, deficit in fairness_after["deficits"].items()
+            )
+            or not isinstance(intent.get("fairness_committed"), bool)
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} is not a closed transaction record"
+            )
+        for authority_field in (
+            "protected_capacity_authority",
+            "qualification_execution_authority",
+        ):
+            authority = intent.get(authority_field)
+            if authority is not None and not isinstance(authority, dict):
+                raise DispatcherError(
+                    f"{source} intent {batch_id!r} has malformed "
+                    f"{authority_field}"
+                )
+        for task_index, task in enumerate(tasks):
+            validate_task(
+                task,
+                context=(
+                    f"{source} intent {batch_id!r} task {task_index}"
+                ),
+            )
+        task_count = intent.get("task_count")
+        if task_count is not None and (
+            not isinstance(task_count, int)
+            or isinstance(task_count, bool)
+            or task_count != len(tasks)
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} has invalid task_count"
+            )
+        if (
+            "submit_started_at" in intent
+            and not finite_number(intent.get("submit_started_at"))
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} has an invalid "
+                "scheduler-boundary timestamp"
+            )
+        if (
+            "submitted_at" in intent
+            and not finite_number(intent.get("submitted_at"))
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} has an invalid submitted timestamp"
+            )
+        if (
+            "error" in intent
+            and (
+                not isinstance(intent["error"], str)
+                or not intent["error"]
+            )
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} has an invalid error record"
+            )
+        if (
+            "last_submit_error_at" in intent
+            and not finite_number(intent.get("last_submit_error_at"))
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} has an invalid submission-error "
+                "timestamp"
+            )
+        if state == "submitting" and (
+            ("error" in intent) != ("last_submit_error_at" in intent)
+        ):
+            raise DispatcherError(
+                f"{source} submitting intent {batch_id!r} has an incomplete "
+                "ambiguous-outcome record"
+            )
+        recorded_job_id = intent.get("job_id")
+        if recorded_job_id is not None and (
+            not isinstance(recorded_job_id, str)
+            or not recorded_job_id.isdigit()
+        ):
+            raise DispatcherError(
+                f"{source} intent {batch_id!r} has an invalid job ID"
+            )
+        if state in accepted_intent_states:
+            if (
+                recorded_job_id is None
+                or intent.get("fairness_committed") is not True
+                or intent.get("spooled_sbatch_sha256") != sbatch_sha256
+                or not isinstance(intent.get("spooled_receipt_path"), str)
+                or not Path(intent["spooled_receipt_path"]).is_absolute()
+                or Path(intent["spooled_receipt_path"])
+                != Path(sbatch_path).with_suffix(".spooled.json")
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(intent.get("spooled_receipt_sha256", "")),
+                )
+                is None
+            ):
+                raise DispatcherError(
+                    f"{source} accepted intent {batch_id!r} lacks sealed spool proof"
+                )
+            state_timestamp = (
+                intent.get("submitted_at")
+                if state == "submitted"
+                else intent.get("reconciled_at")
+            )
+            if not finite_number(state_timestamp):
+                raise DispatcherError(
+                    f"{source} accepted intent {batch_id!r} lacks its "
+                    f"{state} timestamp"
+                )
+        elif intent.get("fairness_committed") is not False:
+            raise DispatcherError(
+                f"{source} unaccepted intent {batch_id!r} committed fairness"
+            )
+        if state in {
+            "not_accepted",
+            "submission_rejected",
+            "integrity_blocked",
+        } and (
+            not isinstance(intent.get("error"), str)
+            or not intent["error"]
+        ):
+            raise DispatcherError(
+                f"{source} failed intent {batch_id!r} lacks its error"
+            )
+        if state == "not_accepted" and not finite_number(
+            intent.get("reconciled_at")
+        ):
+            raise DispatcherError(
+                f"{source} proven-absent intent {batch_id!r} lacks its "
+                "reconciliation timestamp"
+            )
+        if state == "submission_rejected" and not finite_number(
+            intent.get("last_submit_error_at")
+        ):
+            raise DispatcherError(
+                f"{source} explicitly rejected intent {batch_id!r} lacks its "
+                "failure timestamp"
+            )
+        if state == "integrity_blocked" and (
+            not finite_number(intent.get("integrity_blocked_at"))
+            or intent.get("integrity_alert_key")
+            != DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+            or intent.get("fairness_committed") is not False
+            or any(
+                intent.get(field) is not None
+                for field in (
+                    "job_id",
+                    "submit_started_at",
+                    "submitted_at",
+                    "reconciled_at",
+                    "spooled_sbatch_sha256",
+                    "spooled_receipt_path",
+                    "spooled_receipt_sha256",
+                )
+            )
+            or any(
+                isinstance(job, dict) and job.get("batch_id") == batch_id
+                for job in normalized["jobs"].values()
+            )
+        ):
+            raise DispatcherError(
+                f"{source} integrity-blocked intent {batch_id!r} is not a "
+                "pre-boundary durable incident"
+            )
+        if state == "integrity_retired":
+            identity_changes = intent.get("retirement_identity_changes")
+            if (
+                not finite_number(intent.get("integrity_blocked_at"))
+                or intent.get("integrity_alert_key")
+                != DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+                or not finite_number(intent.get("integrity_retired_at"))
+                or re.fullmatch(
+                    r"[0-9a-f]{64}", str(intent.get("retirement_id", ""))
+                )
+                is None
+                or not isinstance(intent.get("retirement_receipt_path"), str)
+                or not Path(intent["retirement_receipt_path"]).is_absolute()
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(intent.get("retirement_receipt_sha256", "")),
+                )
+                is None
+                or not isinstance(
+                    intent.get("retirement_semantic_report_path"), str
+                )
+                or not Path(
+                    intent["retirement_semantic_report_path"]
+                ).is_absolute()
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(intent.get("retirement_semantic_report_sha256", "")),
+                )
+                is None
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(intent.get("retirement_scheduler_absence_sha256", "")),
+                )
+                is None
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(intent.get("retirement_operator_note_sha256", "")),
+                )
+                is None
+                or not isinstance(identity_changes, list)
+                or not identity_changes
+                or identity_changes != sorted(set(identity_changes))
+                or not all(
+                    isinstance(field, str) and field
+                    for field in identity_changes
+                )
+            ):
+                raise DispatcherError(
+                    f"{source} integrity-retired intent {batch_id!r} lacks its "
+                    "sealed remediation receipt"
+                )
+        linked_job_ids = {
+            str(job_id)
+            for job_id, record in normalized["jobs"].items()
+            if record.get("batch_id") == batch_id
+        }
+        if state in accepted_intent_states:
+            if linked_job_ids != {str(recorded_job_id)}:
+                raise DispatcherError(
+                    f"{source} accepted intent {batch_id!r} does not bind "
+                    "exactly one matching job record"
+                )
+        elif linked_job_ids:
+            raise DispatcherError(
+                f"{source} unaccepted intent {batch_id!r} retains accepted "
+                "job artifacts"
+            )
+
+    allowed_job_states = {
+        "submitted",
+        "active",
+        "inactive",
+        "terminal",
+        "visibility_grace",
+    }
+    job_required = {
+        "job_id",
+        "batch_id",
+        "batch_manifest",
+        "batch_manifest_sha256",
+        "sbatch_path",
+        "sbatch_sha256",
+        "spooled_sbatch_sha256",
+        "spooled_receipt_path",
+        "spooled_receipt_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
+        "submitted_at",
+        "last_seen_at",
+        "state",
+        "task_count",
+        "tasks",
+    }
+    job_optional = {
+        "reconciled_at",
+        "scheduler_states",
+        "inactive_since_at",
+    }
+    for job_id, record in normalized["jobs"].items():
+        batch_id = record.get("batch_id")
+        intent = intents.get(batch_id)
+        tasks = record.get("tasks")
+        if (
+            not job_id.isdigit()
+            or not job_required <= set(record)
+            or not set(record) <= job_required | job_optional
+            or record.get("job_id") != job_id
+            or record.get("state") not in allowed_job_states
+            or not isinstance(batch_id, str)
+            or not isinstance(intent, dict)
+            or not isinstance(tasks, list)
+            or tasks != intent.get("tasks")
+            or record.get("task_count") != len(tasks)
+            or record.get("batch_manifest") != intent.get("batch_manifest")
+            or record.get("batch_manifest_sha256")
+            != intent.get("batch_manifest_sha256")
+            or record.get("sbatch_path") != intent.get("sbatch_path")
+            or record.get("sbatch_sha256") != intent.get("sbatch_sha256")
+            or record.get("spooled_sbatch_sha256")
+            != intent.get("sbatch_sha256")
+            or not finite_number(record.get("submitted_at"))
+            or not finite_number(record.get("last_seen_at"))
+            or (
+                record.get("reconciled_at") is not None
+                and not finite_number(record.get("reconciled_at"))
+            )
+            or (
+                record.get("scheduler_states") is not None
+                and (
+                    not isinstance(record["scheduler_states"], list)
+                    or not record["scheduler_states"]
+                    or not all(
+                        isinstance(state, str) and state
+                        for state in record["scheduler_states"]
+                    )
+                )
+            )
+            or (
+                record.get("state") == "inactive"
+                and not finite_number(record.get("inactive_since_at"))
+            )
+            or record.get("submission_transport")
+            != STDIN_EXACT_SUBMISSION_TRANSPORT
+            or record.get("submission_argv_sha256")
+            != _stdin_submission_argv_sha256(batch_id)
+            or not isinstance(record.get("spooled_receipt_path"), str)
+            or record.get("spooled_receipt_path")
+            != str(Path(str(record["sbatch_path"])).with_suffix(".spooled.json"))
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(record.get("spooled_receipt_sha256", "")),
+            )
+            is None
+        ):
+            raise DispatcherError(
+                f"{source} job {job_id!r} is not a closed accepted transaction"
+            )
+
+    allowed_cell_states = {
+        *(state.value for state in CompletionState),
+        "unvalidated",
+        "validation_error",
+    }
+    cell_required = {
+        "run_id",
+        "cell_id",
+        "source_index",
+        "model_size",
+        "serving_profile",
+        "fanout_cost",
+        "completion_state",
+        "next_eligible_at",
+        "last_checked_at",
+    }
+    cell_optional = {
+        "artifact_fingerprint",
+        "validation_context",
+        "eligible_for_retry",
+        "validation_retry_at",
+        "submission_attempts",
+        "last_job_id",
+        "last_submitted_at",
+    }
+    for cell_key, record in normalized["cells"].items():
+        if (
+            not cell_required <= set(record)
+            or not set(record) <= cell_required | cell_optional
+            or cell_key != _key((record["run_id"], record["cell_id"]))
+            or record["run_id"] not in normalized["runs"]
+            or not isinstance(record["source_index"], int)
+            or isinstance(record["source_index"], bool)
+            or record["source_index"] < 0
+            or not isinstance(record["model_size"], str)
+            or not record["model_size"]
+            or not isinstance(record["serving_profile"], str)
+            or not record["serving_profile"]
+            or not isinstance(record["fanout_cost"], int)
+            or isinstance(record["fanout_cost"], bool)
+            or record["fanout_cost"] < 1
+            or record["completion_state"] not in allowed_cell_states
+            or (
+                record["next_eligible_at"] is not None
+                and not finite_number(record["next_eligible_at"])
+            )
+            or not finite_number(record["last_checked_at"])
+            or (
+                "eligible_for_retry" in record
+                and not isinstance(record["eligible_for_retry"], bool)
+            )
+            or (
+                "validation_retry_at" in record
+                and not finite_number(record["validation_retry_at"])
+            )
+            or (
+                "submission_attempts" in record
+                and (
+                    not isinstance(record["submission_attempts"], int)
+                    or isinstance(record["submission_attempts"], bool)
+                    or record["submission_attempts"] < 0
+                )
+            )
+            or (
+                "last_job_id" in record
+                and (
+                    not isinstance(record["last_job_id"], str)
+                    or not record["last_job_id"].isdigit()
+                )
+            )
+            or (
+                "last_submitted_at" in record
+                and not finite_number(record["last_submitted_at"])
+            )
+        ):
+            raise DispatcherError(
+                f"{source} cell {cell_key!r} is not a closed retry record"
+            )
+        fingerprint = record.get("artifact_fingerprint")
+        if fingerprint is not None and (
+            not isinstance(fingerprint, list)
+            or len(fingerprint) != 3
+            or [item[0] for item in fingerprint if isinstance(item, list)]
+            != ["results.jsonl", "meta.json", "failure.json"]
+            or any(
+                not isinstance(item, list)
+                or len(item) != 3
+                or not isinstance(item[1], int)
+                or isinstance(item[1], bool)
+                or not isinstance(item[2], int)
+                or isinstance(item[2], bool)
+                for item in fingerprint
+            )
+        ):
+            raise DispatcherError(
+                f"{source} cell {cell_key!r} has an invalid artifact fingerprint"
+            )
+        validation_context = record.get("validation_context")
+        if validation_context is not None and (
+            not isinstance(validation_context, dict)
+            or set(validation_context)
+            != {
+                "manifest_sha256",
+                "benchmark_contracts_sha256",
+                "serving_profile",
+                "code_version",
+                "server_pool_generation",
+            }
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(validation_context["manifest_sha256"]),
+            )
+            is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(validation_context["benchmark_contracts_sha256"]),
+            )
+            is None
+            or validation_context["serving_profile"]
+            != record["serving_profile"]
+            or (
+                validation_context["code_version"] is not None
+                and not isinstance(validation_context["code_version"], str)
+            )
+            or (
+                validation_context["server_pool_generation"] is not None
+                and not isinstance(
+                    validation_context["server_pool_generation"], str
+                )
+            )
+        ):
+            raise DispatcherError(
+                f"{source} cell {cell_key!r} has invalid validation provenance"
+            )
+        if (
+            record["completion_state"] == "validation_error"
+            and (
+                fingerprint is None
+                or validation_context is None
+                or record.get("eligible_for_retry") is not False
+                or not finite_number(record.get("validation_retry_at"))
+            )
+        ):
+            raise DispatcherError(
+                f"{source} validation-error cell {cell_key!r} lacks retry fencing"
+            )
+    return normalized
+
+
 def _load_ledger(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if not os.path.lexists(lexical):
         return _empty_ledger()
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise DispatcherError(f"cannot read dispatcher ledger {path}: {exc}") from exc
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise DispatcherError(
+            f"cannot resolve dispatcher ledger {lexical}: {exc}"
+        ) from exc
+    if resolved != lexical or lexical.is_symlink():
+        raise DispatcherError(
+            f"dispatcher ledger traverses a symlink: {lexical}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise DispatcherError(
+            f"cannot open dispatcher ledger {lexical}: {exc}"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise DispatcherError(
+            f"dispatcher ledger disappeared after read: {exc}"
+        ) from exc
+
+    def identity(item: os.stat_result) -> tuple[int, ...]:
+        return (
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+    ):
+        raise DispatcherError(
+            "dispatcher ledger changed or is not a one-link regular file"
+        )
+    raw = b"".join(blocks)
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise DispatcherError(
+                    f"dispatcher ledger repeats JSON field {key!r}"
+                )
+            result[key] = item
+        return result
+
+    def finite_float(token: str) -> float:
+        value = float(token)
+        if not math.isfinite(value):
+            raise DispatcherError(
+                "dispatcher ledger contains non-finite JSON number "
+                f"{token!r}"
+            )
+        return value
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_float=finite_float,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                DispatcherError(
+                    "dispatcher ledger contains non-finite JSON number "
+                    f"{token!r}"
+                )
+            ),
+        )
+    except DispatcherError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise DispatcherError(
+            f"cannot read dispatcher ledger {lexical}: {exc}"
+        ) from exc
     return validate_ledger_structure(value, source=str(path))
+
+
+def load_production_ledger(path: Path) -> dict[str, Any]:
+    """Load one mandatory descriptor-stable schema-5 production ledger."""
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if not os.path.lexists(lexical):
+        raise FileNotFoundError(lexical)
+    return validate_production_ledger_structure(
+        _load_ledger(lexical), source=str(lexical)
+    )
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -716,15 +1729,401 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
-def _sealed_artifact_sha256(path: Path) -> str:
-    """Hash one regular, non-symlink, read-only dispatcher transaction artifact."""
+def _publish_readonly_json_once(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    compatible_orphan: Any | None = None,
+) -> None:
+    """Publish a complete, sealed JSON artifact without clobbering a winner.
 
-    if path.is_symlink() or not path.is_file():
-        raise DispatcherError(f"dispatcher transaction artifact is unsafe: {path}")
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o222:
-        raise DispatcherError(f"dispatcher transaction artifact is writable: {path}")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    The temporary inode is fully written, fsynced, and made read-only before its
+    name becomes visible.  ``link(2)`` supplies a no-clobber publication point:
+    concurrent owners may race, but only the first complete inode can win.  A
+    process death after the link and before temporary-name cleanup leaves two
+    names for the same sealed inode; replay safely removes only our
+    deterministic temporary-link namespace before descriptor-stable validation.
+    """
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    parent = lexical.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if parent.resolve(strict=True) != parent or parent.is_symlink():
+            raise DispatcherError(
+                f"read-only artifact directory traverses a symlink: {parent}"
+            )
+    except (OSError, RuntimeError) as exc:
+        raise DispatcherError(
+            f"cannot verify read-only artifact directory {parent}: {exc}"
+        ) from exc
+
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _publish_readonly_bytes_once(
+        lexical,
+        payload,
+        compatible_orphan=compatible_orphan,
+    )
+
+
+def _fsync_directory_path(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _publish_readonly_bytes_once(
+    path: Path,
+    payload: bytes,
+    *,
+    compatible_orphan: Any | None = None,
+    crash_hook: Any | None = None,
+) -> None:
+    """Publish exact bytes through a marker-first private transaction directory."""
+
+    if not isinstance(payload, bytes):
+        raise DispatcherError("read-only artifact payload must be exact bytes")
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    parent = lexical.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if parent.resolve(strict=True) != parent or parent.is_symlink():
+            raise DispatcherError(
+                f"read-only artifact directory traverses a symlink: {parent}"
+            )
+    except (OSError, RuntimeError) as exc:
+        raise DispatcherError(
+            f"cannot verify read-only artifact directory {parent}: {exc}"
+        ) from exc
+
+    _recover_prelink_readonly_publish(
+        lexical,
+        expected_payload=payload,
+        compatible_orphan=compatible_orphan,
+    )
+    if os.path.lexists(lexical):
+        _observed_path, observed = _stable_readonly_artifact(
+            lexical, description=f"published read-only artifact {lexical}"
+        )
+        compatible = (
+            observed == payload
+            if compatible_orphan is None
+            else bool(compatible_orphan(observed))
+        )
+        if not compatible:
+            raise DispatcherError(
+                f"published read-only artifact conflicts with {lexical}"
+            )
+        return
+
+    transaction = parent / (
+        f".{lexical.name}.publish.{os.getpid()}.{uuid.uuid4().hex}.txn"
+    )
+    transaction.mkdir(mode=0o700)
+    _fsync_directory_path(parent)
+    temporary = transaction / "PAYLOAD"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(
+        os, "O_CLOEXEC", 0
+    )
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600)
+    if crash_hook is not None:
+        crash_hook("open")
+    try:
+        offset = 0
+        first_write = True
+        while offset < len(payload):
+            remaining = len(payload) - offset
+            requested = (
+                max(1, remaining // 2)
+                if first_write and remaining > 1
+                else remaining
+            )
+            written = os.write(
+                descriptor, payload[offset : offset + requested]
+            )
+            if written <= 0:
+                raise DispatcherError(
+                    "temporary read-only artifact write made no progress"
+                )
+            offset += written
+            if first_write:
+                first_write = False
+                if crash_hook is not None:
+                    crash_hook("partial_write")
+        os.fsync(descriptor)
+        if crash_hook is not None:
+            crash_hook("post_fsync")
+            crash_hook("pre_fchmod")
+        os.fchmod(descriptor, 0o444)
+        if crash_hook is not None:
+            crash_hook("post_fchmod")
+        os.fsync(descriptor)
+        sealed = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(sealed.st_mode)
+            or sealed.st_nlink != 1
+            or stat.S_IMODE(sealed.st_mode) != 0o444
+            or sealed.st_size != len(payload)
+        ):
+            raise DispatcherError(
+                "temporary read-only artifact did not seal as one regular inode"
+            )
+    finally:
+        os.close(descriptor)
+
+    if crash_hook is not None:
+        crash_hook("prelink")
+    try:
+        os.link(temporary, lexical, follow_symlinks=False)
+    except FileExistsError:
+        pass
+    _fsync_directory_path(parent)
+    if crash_hook is not None:
+        crash_hook("postlink")
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        transaction.rmdir()
+    except FileNotFoundError:
+        pass
+    _fsync_directory_path(parent)
+    _recover_prelink_readonly_publish(
+        lexical,
+        expected_payload=payload,
+        compatible_orphan=compatible_orphan,
+    )
+    _observed_path, observed = _stable_readonly_artifact(
+        lexical, description=f"published read-only artifact {lexical}"
+    )
+    compatible = (
+        observed == payload
+        if compatible_orphan is None
+        else bool(compatible_orphan(observed))
+    )
+    if not compatible:
+        raise DispatcherError(
+            f"published read-only artifact conflicts with {lexical}"
+        )
+
+
+def _recover_prelink_readonly_publish(
+    path: Path,
+    *,
+    expected_payload: bytes,
+    compatible_orphan: Any | None,
+) -> None:
+    """Adopt a sealed owned transaction or remove an incomplete owned payload."""
+
+    prefix = f".{path.name}.publish."
+    candidates: list[tuple[Path, Path, bytes]] = []
+    try:
+        entries = tuple(os.scandir(path.parent))
+    except OSError as exc:
+        raise DispatcherError(
+            f"cannot inspect interrupted publication for {path}: {exc}"
+        ) from exc
+    for entry in sorted(entries, key=lambda item: item.name):
+        if not entry.name.startswith(prefix):
+            continue
+        transaction = path.parent / entry.name
+        if (
+            not entry.name.endswith(".txn")
+            or entry.is_symlink()
+            or not entry.is_dir(follow_symlinks=False)
+        ):
+            raise DispatcherError(
+                "interrupted publication contains a foreign namespace entry: "
+                f"{transaction}"
+            )
+        transaction_info = transaction.stat(follow_symlinks=False)
+        if stat.S_IMODE(transaction_info.st_mode) != 0o700:
+            raise DispatcherError(
+                f"interrupted publication transaction is not private: "
+                f"{transaction}"
+            )
+        children = tuple(transaction.iterdir())
+        if not children:
+            transaction.rmdir()
+            continue
+        if len(children) != 1 or children[0].name != "PAYLOAD":
+            raise DispatcherError(
+                f"interrupted publication transaction has foreign entries: "
+                f"{transaction}"
+            )
+        candidate = children[0]
+        try:
+            info = candidate.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise DispatcherError(
+                f"cannot inspect interrupted publication payload: {exc}"
+            ) from exc
+        if candidate.is_symlink() or not stat.S_ISREG(info.st_mode):
+            raise DispatcherError(
+                f"interrupted publication payload is unsafe: {candidate}"
+            )
+        raw = candidate.read_bytes()
+        sealed = (
+            stat.S_IMODE(info.st_mode) == 0o444
+            and info.st_nlink in {1, 2}
+        )
+        compatible = (
+            raw == expected_payload
+            if compatible_orphan is None
+            else bool(compatible_orphan(raw))
+        )
+        if not sealed:
+            candidate.unlink()
+            transaction.rmdir()
+            continue
+        if not compatible:
+            raise DispatcherError(
+                f"interrupted publication temp conflicts with {path}"
+            )
+        candidates.append((transaction, candidate, raw))
+    if not candidates:
+        _fsync_directory_path(path.parent)
+        return
+    if not os.path.lexists(path):
+        try:
+            os.link(candidates[0][1], path, follow_symlinks=False)
+        except FileExistsError:
+            pass
+    # The destination, whether adopted here or won concurrently, is validated by
+    # the caller.  Remove only compatible, sealed files in our private namespace.
+    for transaction, candidate, _raw in candidates:
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            transaction.rmdir()
+        except FileNotFoundError:
+            pass
+    _fsync_directory_path(path.parent)
+
+
+def _finish_interrupted_readonly_publish(path: Path) -> None:
+    """Remove only stale owned hardlinks to an already-published inode."""
+
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    try:
+        target = lexical.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if lexical.is_symlink() or not stat.S_ISREG(target.st_mode):
+        return
+    prefix = f".{lexical.name}.publish."
+    removed = False
+    try:
+        entries = tuple(os.scandir(lexical.parent))
+    except OSError as exc:
+        raise DispatcherError(
+            f"cannot inspect interrupted publication for {lexical}: {exc}"
+        ) from exc
+    for entry in entries:
+        if not entry.name.startswith(prefix) or not entry.name.endswith(".txn"):
+            continue
+        transaction = lexical.parent / entry.name
+        if (
+            entry.is_symlink()
+            or not entry.is_dir(follow_symlinks=False)
+            or stat.S_IMODE(
+                transaction.stat(follow_symlinks=False).st_mode
+            )
+            != 0o700
+        ):
+            continue
+        children = tuple(transaction.iterdir())
+        if len(children) != 1 or children[0].name != "PAYLOAD":
+            continue
+        candidate = children[0]
+        try:
+            observed = candidate.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISREG(observed.st_mode)
+            and observed.st_dev == target.st_dev
+            and observed.st_ino == target.st_ino
+            and stat.S_IMODE(observed.st_mode) & 0o222 == 0
+        ):
+            candidate.unlink()
+            transaction.rmdir()
+            removed = True
+    if removed:
+        _fsync_directory_path(lexical.parent)
+
+
+def _stable_readonly_artifact(
+    path: Path, *, description: str
+) -> tuple[Path, bytes]:
+    lexical = Path(os.path.abspath(os.fspath(path.expanduser())))
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise DispatcherError(f"{description} is unavailable: {exc}") from exc
+    if resolved != lexical or lexical.is_symlink():
+        raise DispatcherError(f"{description} traverses a symlink")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lexical, flags)
+    except OSError as exc:
+        raise DispatcherError(f"cannot open {description}: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        blocks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            blocks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = lexical.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise DispatcherError(
+            f"{description} disappeared after read: {exc}"
+        ) from exc
+
+    def identity(item: os.stat_result) -> tuple[int, ...]:
+        return (
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) & 0o222
+        or identity(before) != identity(after)
+        or identity(current) != identity(after)
+        or stat.S_IMODE(current.st_mode) & 0o222
+    ):
+        raise DispatcherError(
+            f"{description} changed or is not a one-link read-only regular file"
+        )
+    return lexical, b"".join(blocks)
+
+
+def _sealed_artifact_sha256(path: Path) -> str:
+    """Hash one descriptor-stable sealed dispatcher transaction artifact."""
+
+    _lexical, raw = _stable_readonly_artifact(
+        path, description="dispatcher transaction artifact"
+    )
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _seal_dispatch_artifact(path: Path) -> str:
@@ -912,7 +2311,15 @@ def _query_squeue() -> list[QueueRow]:
     if not user:
         raise DispatcherError("USER is unset; cannot scope squeue safely")
     proc = subprocess.run(
-        ["squeue", "-u", user, "-h", "-r", "-o", "%F|%K|%i|%j|%T|%o"],
+        [
+            "squeue",
+            "-u",
+            user,
+            "-h",
+            "-r",
+            "-o",
+            "%F|%K|%i|%j|%T|%o|%P|%q",
+        ],
         capture_output=True,
         text=True,
     )
@@ -943,6 +2350,8 @@ def _queue_rows_from_scheduler_snapshot(snapshot: Any) -> list[QueueRow]:
                 state=str(job.state),
                 command=str(job.command),
                 comment=str(job.comment),
+                partition=str(job.partition),
+                qos=str(job.qos),
             )
         )
     return rows
@@ -963,13 +2372,68 @@ def _complete_scheduler_rows(
         raise DispatcherError(
             f"{observation} lacks complete squeue+sacct scheduler truth"
         )
+    snapshot_jobs = tuple(getattr(snapshot, "jobs", ()))
+    live_squeue_ids = {
+        str(job.job_id)
+        for job in snapshot_jobs
+        if str(getattr(job, "source", "")) == "squeue"
+        and bool(getattr(job, "active", False))
+    }
+    active_sacct_only = []
+    for job in snapshot_jobs:
+        if (
+            str(getattr(job, "source", "")) != "sacct"
+            or not bool(getattr(job, "active", False))
+        ):
+            continue
+        prefix = str(job.job_id) + "_"
+        if not any(
+            live_id.startswith(prefix)
+            and live_id[len(prefix) :].isdigit()
+            for live_id in live_squeue_ids
+        ):
+            active_sacct_only.append(str(job.job_id))
+    if active_sacct_only:
+        raise DispatcherError(
+            f"{observation} exposes active sacct-only jobs absent from live "
+            "squeue truth: " + ", ".join(sorted(active_sacct_only)[:8])
+        )
     rows = tuple(_queue_rows_from_scheduler_snapshot(snapshot))
+    unsafe_placement = [
+        row.job_id
+        for row in rows
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", row.partition) is None
+        or re.fullmatch(r"[A-Za-z0-9_.-]+", row.qos) is None
+    ]
+    if unsafe_placement:
+        raise DispatcherError(
+            f"{observation} lacks exact partition/QOS placement for live jobs: "
+            + ", ".join(sorted(unsafe_placement)[:8])
+        )
     live_ids = tuple(sorted(row.job_id for row in rows))
     if len(live_ids) != len(set(live_ids)):
         raise DispatcherError(
             f"{observation} repeats a live logical Slurm job element"
         )
     return rows, live_ids
+
+
+def _scheduler_occupancy_bindings(
+    rows: Sequence[QueueRow],
+) -> dict[str, tuple[str, str, str, str, str, str]]:
+    """Return the immutable/relevant scheduler view bracketing one usage query."""
+
+    return {
+        row.job_id: (
+            row.job_name,
+            row.comment,
+            row.command,
+            row.partition,
+            row.qos,
+            row.state.upper(),
+        )
+        for row in rows
+    }
 
 
 def _capture_stable_admission_occupancy(
@@ -980,7 +2444,7 @@ def _capture_stable_admission_occupancy(
     scheduler_reader: Any | None = None,
     usage_reader: Any | None = None,
 ) -> StableAdmissionOccupancy:
-    """Bracket target TRES usage with identical global logical job-element IDs.
+    """Bracket target TRES usage with identical global job-element bindings.
 
     The partition usage query and the global squeue+sacct join are separate Slurm
     RPCs.  A job admitted between them could otherwise be charged to only the global
@@ -1008,7 +2472,7 @@ def _capture_stable_admission_occupancy(
     last_churn = "unknown scheduler churn"
     for attempt in range(1, max_attempts + 1):
         first = scheduler_reader()
-        _first_rows, first_ids = _complete_scheduler_rows(
+        first_rows, first_ids = _complete_scheduler_rows(
             first,
             observation=f"stable occupancy attempt {attempt} first observation",
         )
@@ -1029,11 +2493,52 @@ def _capture_stable_admission_occupancy(
         usage_ids = {
             str(row["job_id"]) for row in usage_summary["jobs"]
         }
+        usage_by_id = {
+            str(row["job_id"]): row for row in usage_summary["jobs"]
+        }
         stable_ids = set(second_ids)
+        target_ids = {
+            row.job_id for row in second_rows if row.partition == partition
+        }
         added = sorted(stable_ids - set(first_ids))
         removed = sorted(set(first_ids) - stable_ids)
         usage_only = sorted(usage_ids - stable_ids)
-        if not added and not removed and not usage_only:
+        target_missing_usage = sorted(target_ids - usage_ids)
+        first_bindings = _scheduler_occupancy_bindings(first_rows)
+        second_bindings = _scheduler_occupancy_bindings(second_rows)
+        changed = sorted(
+            job_id
+            for job_id in set(first_bindings) & set(second_bindings)
+            if first_bindings[job_id] != second_bindings[job_id]
+        )
+        second_by_id = {row.job_id: row for row in second_rows}
+        inconsistent_usage = sorted(
+            job_id
+            for job_id in usage_ids & stable_ids
+            if (
+                second_by_id[job_id].partition != partition
+                or second_by_id[job_id].job_name
+                != usage_by_id[job_id]["job_name"]
+                or second_by_id[job_id].comment
+                != usage_by_id[job_id]["comment"]
+                or second_by_id[job_id].qos
+                != usage_by_id[job_id]["qos"]
+            )
+        )
+        usage_partition = (
+            usage.get("partition")
+            if isinstance(usage, Mapping)
+            else None
+        )
+        if (
+            usage_partition == partition
+            and not added
+            and not removed
+            and not changed
+            and not usage_only
+            and not target_missing_usage
+            and not inconsistent_usage
+        ):
             return StableAdmissionOccupancy(
                 scheduler_snapshot=second,
                 rows=second_rows,
@@ -1044,7 +2549,10 @@ def _capture_stable_admission_occupancy(
             )
         last_churn = (
             f"added={added[:8]}, removed={removed[:8]}, "
-            f"target_usage_only={usage_only[:8]}"
+            f"changed={changed[:8]}, target_usage_only={usage_only[:8]}, "
+            f"target_missing_usage={target_missing_usage[:8]}, "
+            f"target_usage_mismatch={inconsistent_usage[:8]}, "
+            f"target_partition={usage_partition!r}"
         )
     raise DispatcherError(
         "scheduler occupancy changed across the target-usage admission "
@@ -1054,15 +2562,55 @@ def _capture_stable_admission_occupancy(
 
 def _command_binds_exact_sbatch(command: str, expected_path: str) -> bool:
     try:
-        expected = str(Path(expected_path).expanduser().resolve())
-        return any(
-            Path(token).is_absolute()
-            and str(Path(token).expanduser().resolve()) == expected
-            for token in shlex.split(command)
-            if token.endswith(".sbatch")
+        expected_candidate = Path(expected_path).expanduser()
+        if not expected_candidate.is_absolute():
+            return False
+        expected = str(
+            Path(os.path.abspath(os.fspath(expected_candidate)))
         )
+        candidates = [
+            str(
+                Path(
+                    os.path.abspath(
+                        os.fspath(Path(token).expanduser())
+                    )
+                )
+            )
+            for token in shlex.split(command)
+            if token.endswith(".sbatch") and Path(token).is_absolute()
+        ]
+        return candidates == [expected]
     except (OSError, ValueError):
         return False
+
+
+def _stdin_submission_argv(batch_id: str) -> list[str]:
+    return [
+        "sbatch",
+        "--parsable",
+        f"--comment=asys-schema5-intent:{batch_id}",
+    ]
+
+
+def _stdin_submission_argv_sha256(batch_id: str) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            _stdin_submission_argv(batch_id),
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _command_binds_stdin_submission(command: str, batch_id: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    normalized = ["sbatch" if Path(tokens[0]).name == "sbatch" else tokens[0], *tokens[1:]]
+    return normalized == _stdin_submission_argv(batch_id)
 
 
 def _intent_visibility_started_at(intent: Mapping[str, Any]) -> float | None:
@@ -1126,12 +2674,132 @@ def _invisible_reservation_count(
     return job_reservations + intent_reservations
 
 
+def _spooled_script_receipt(
+    *,
+    batch_id: str,
+    job_id: str,
+    expected_name: str,
+    expected_comment: str,
+    sbatch_path: Path,
+    sbatch_sha256: str,
+    spooled_script_reader: Any | None,
+    now: float,
+) -> tuple[str, str]:
+    """Publish/replay one immutable proof that Slurm spooled the validated bytes."""
+
+    receipt_path = sbatch_path.with_suffix(".spooled.json")
+    expected_identity = {
+        "schema_version": 1,
+        "kind": "schema5_dispatch_spooled_script_receipt",
+        "batch_id": batch_id,
+        "job_id": job_id,
+        "job_name": expected_name,
+        "scheduler_comment": expected_comment,
+        "sbatch_path": str(sbatch_path),
+        "sbatch_sha256": sbatch_sha256,
+        "spooled_sbatch_sha256": sbatch_sha256,
+    }
+    def parse_receipt(raw: bytes) -> dict[str, Any]:
+        def unique_object(
+            pairs: list[tuple[str, Any]],
+        ) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise DispatcherError(
+                        f"spooled-script receipt repeats field {key!r}"
+                    )
+                value[key] = item
+            return value
+
+        try:
+            value = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=unique_object,
+                parse_constant=lambda token: (_ for _ in ()).throw(
+                    DispatcherError(
+                        "spooled-script receipt contains non-finite "
+                        f"number {token!r}"
+                    )
+                ),
+            )
+        except DispatcherError:
+            raise
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise DispatcherError(
+                f"spooled-script receipt is invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise DispatcherError(
+                "spooled-script receipt is not a JSON object"
+            )
+        return value
+
+    def compatible_receipt(raw: bytes) -> bool:
+        try:
+            receipt = parse_receipt(raw)
+        except DispatcherError:
+            return False
+        return bool(
+            set(receipt) == set(expected_identity) | {"verified_at"}
+            and all(
+                receipt.get(key) == value
+                for key, value in expected_identity.items()
+            )
+            and isinstance(receipt.get("verified_at"), (int, float))
+            and not isinstance(receipt.get("verified_at"), bool)
+            and math.isfinite(float(receipt["verified_at"]))
+        )
+
+    _finish_interrupted_readonly_publish(receipt_path)
+    _recover_prelink_readonly_publish(
+        receipt_path,
+        expected_payload=b"",
+        compatible_orphan=compatible_receipt,
+    )
+    if not os.path.lexists(receipt_path):
+        spool_raw = (
+            _read_spooled_batch_script(job_id)
+            if spooled_script_reader is None
+            else spooled_script_reader(job_id)
+        )
+        if not isinstance(spool_raw, (bytes, bytearray)):
+            raise DispatcherError(
+                "spooled-script reader returned a non-byte payload"
+            )
+        if hashlib.sha256(bytes(spool_raw)).hexdigest() != sbatch_sha256:
+            raise DispatcherError(
+                "Slurm-spooled script differs from the durable intent"
+            )
+        _publish_readonly_json_once(
+            receipt_path,
+            {
+                **expected_identity,
+                "verified_at": float(now),
+            },
+            compatible_orphan=compatible_receipt,
+        )
+    _finish_interrupted_readonly_publish(receipt_path)
+    lexical, raw = _stable_readonly_artifact(
+        receipt_path,
+        description=f"intent {batch_id} spooled-script receipt",
+    )
+    if lexical != receipt_path:
+        raise DispatcherError("spooled-script receipt lexical identity drifted")
+    if not compatible_receipt(raw):
+        raise DispatcherError(
+            f"spooled-script receipt identity drifted for intent {batch_id}"
+        )
+    return str(receipt_path), hashlib.sha256(raw).hexdigest()
+
+
 def _reconcile_schema5_intents(
     ledger: dict[str, Any],
     *,
     scheduler_snapshot: Any,
     now: float,
     visibility_grace_s: float = 300.0,
+    spooled_script_reader: Any | None = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve every pre-sbatch intent through joined squeue+sacct authority."""
 
@@ -1153,49 +2821,80 @@ def _reconcile_schema5_intents(
             )
             continue
         expected_comment = f"asys-schema5-intent:{batch_id}"
-        expected_path = str(Path(str(intent.get("sbatch_path", ""))).resolve())
         expected_name = f"asys-dispatch-{batch_id[-10:]}"
+        if (
+            intent.get("submission_transport")
+            != STDIN_EXACT_SUBMISSION_TRANSPORT
+            or intent.get("submission_argv_sha256")
+            != _stdin_submission_argv_sha256(batch_id)
+        ):
+            errors.append(
+                f"intent {batch_id} lacks the closed exact-stdin submission "
+                "transport contract"
+            )
+            continue
         artifacts = (
             ("batch_manifest", "batch_manifest_sha256"),
             ("sbatch_path", "sbatch_sha256"),
         )
-        artifact_error: str | None = None
-        for path_field, hash_field in artifacts:
-            expected_hash = intent.get(hash_field)
-            try:
-                observed_hash = _sealed_artifact_sha256(
-                    Path(str(intent.get(path_field, ""))).expanduser().resolve()
-                )
-            except (DispatcherError, OSError) as exc:
-                artifact_error = str(exc)
-                break
-            if (
-                not isinstance(expected_hash, str)
-                or len(expected_hash) != 64
-                or any(character not in "0123456789abcdef" for character in expected_hash)
-                or observed_hash != expected_hash
-            ):
-                artifact_error = f"{path_field} bytes differ from durable intent"
-                break
+        stable_artifact_paths: dict[str, Path] = {}
+
+        def verify_artifacts() -> str | None:
+            observed_paths: dict[str, Path] = {}
+            for path_field, hash_field in artifacts:
+                expected_hash = intent.get(hash_field)
+                raw_path = intent.get(path_field)
+                if (
+                    not isinstance(raw_path, str)
+                    or not Path(raw_path).is_absolute()
+                ):
+                    return f"{path_field} is not a lexical absolute path"
+                try:
+                    lexical, raw = _stable_readonly_artifact(
+                        Path(raw_path),
+                        description=(
+                            f"intent {batch_id} {path_field} artifact"
+                        ),
+                    )
+                except (DispatcherError, OSError) as exc:
+                    return str(exc)
+                if str(lexical) != raw_path:
+                    return f"{path_field} lexical identity drifted"
+                if (
+                    not isinstance(expected_hash, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None
+                    or hashlib.sha256(raw).hexdigest() != expected_hash
+                ):
+                    return (
+                        f"{path_field} bytes differ from durable intent"
+                    )
+                observed_paths[path_field] = lexical
+            if observed_paths["batch_manifest"] != observed_paths[
+                "sbatch_path"
+            ].with_suffix(".json"):
+                return "batch manifest is not the exact sbatch sibling"
+            stable_artifact_paths.clear()
+            stable_artifact_paths.update(observed_paths)
+            return None
+
+        artifact_error = verify_artifacts()
         if artifact_error is not None:
             errors.append(f"intent {batch_id} artifact drift: {artifact_error}")
             continue
         matching_by_base: dict[str, list[Any]] = defaultdict(list)
         for job in scheduler_snapshot.jobs:
             comment = str(job.comment)
-            path_matches = _command_binds_exact_sbatch(
-                str(job.command), expected_path
-            )
             namespace_match = (
                 comment == expected_comment
-                or path_matches
                 or str(job.job_name) == expected_name
             )
             if not namespace_match:
                 continue
             if (
                 str(job.job_name) != expected_name
-                or not path_matches
+                or not _command_binds_stdin_submission(
+                    str(job.command), batch_id
+                )
                 or (comment and comment != expected_comment)
                 or (str(job.source) == "squeue" and comment != expected_comment)
             ):
@@ -1233,6 +2932,30 @@ def _reconcile_schema5_intents(
                     )
                 continue
             if age >= visibility_grace_s:
+                if intent_state == "submitting":
+                    accounting_start = getattr(
+                        scheduler_snapshot,
+                        "accounting_start_timestamp",
+                        None,
+                    )
+                    submit_started = intent.get("submit_started_at")
+                    if (
+                        not isinstance(accounting_start, (int, float))
+                        or isinstance(accounting_start, bool)
+                        or not math.isfinite(float(accounting_start))
+                        or not isinstance(submit_started, (int, float))
+                        or isinstance(submit_started, bool)
+                        or float(accounting_start) > float(submit_started)
+                    ):
+                        intent["error"] = (
+                            "scheduler absence is not authoritative: the complete "
+                            "sacct window does not cover submit_started_at"
+                        )
+                        errors.append(
+                            f"intent {batch_id} remains integrity-ambiguous because "
+                            "complete accounting does not cover its submission boundary"
+                        )
+                        continue
                 intent.update(
                     {
                         "state": "not_accepted",
@@ -1240,9 +2963,43 @@ def _reconcile_schema5_intents(
                         "error": "absent from complete squeue+sacct transaction history",
                     }
                 )
+                for field in (
+                    "job_id",
+                    "submitted_at",
+                    "spooled_sbatch_sha256",
+                    "spooled_receipt_path",
+                    "spooled_receipt_sha256",
+                    "last_submit_error_at",
+                ):
+                    intent.pop(field, None)
                 warnings.append(f"intent {batch_id} was not accepted by Slurm")
             continue
+        artifact_error = verify_artifacts()
+        if artifact_error is not None:
+            errors.append(
+                f"intent {batch_id} artifact drift before adoption: "
+                f"{artifact_error}"
+            )
+            continue
         job_id, matching = next(iter(matching_by_base.items()))
+        try:
+            spooled_sha256 = str(intent.get("sbatch_sha256"))
+            receipt_path, receipt_sha256 = _spooled_script_receipt(
+                batch_id=batch_id,
+                job_id=job_id,
+                expected_name=expected_name,
+                expected_comment=expected_comment,
+                sbatch_path=stable_artifact_paths["sbatch_path"],
+                sbatch_sha256=spooled_sha256,
+                spooled_script_reader=spooled_script_reader,
+                now=now,
+            )
+        except (DispatcherError, OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(
+                f"intent {batch_id} lacks exact Slurm-spooled script proof "
+                f"for job {job_id}: {exc}"
+            )
+            continue
         recorded_job_id = intent.get("job_id")
         if recorded_job_id is not None and str(recorded_job_id) != job_id:
             errors.append(
@@ -1264,6 +3021,11 @@ def _reconcile_schema5_intents(
             "batch_manifest_sha256": str(intent.get("batch_manifest_sha256")),
             "sbatch_path": str(intent.get("sbatch_path")),
             "sbatch_sha256": str(intent.get("sbatch_sha256")),
+            "spooled_sbatch_sha256": spooled_sha256,
+            "spooled_receipt_path": receipt_path,
+            "spooled_receipt_sha256": receipt_sha256,
+            "submission_transport": STDIN_EXACT_SUBMISSION_TRANSPORT,
+            "submission_argv_sha256": _stdin_submission_argv_sha256(batch_id),
             "submitted_at": float(intent.get("created_at", now)),
             "last_seen_at": now,
             "reconciled_at": now,
@@ -1278,6 +3040,13 @@ def _reconcile_schema5_intents(
             or record.get("batch_manifest_sha256")
             != intent.get("batch_manifest_sha256")
             or record.get("sbatch_sha256") != intent.get("sbatch_sha256")
+            or record.get("spooled_sbatch_sha256") != spooled_sha256
+            or record.get("spooled_receipt_path") != receipt_path
+            or record.get("spooled_receipt_sha256") != receipt_sha256
+            or record.get("submission_transport")
+            != STDIN_EXACT_SUBMISSION_TRANSPORT
+            or record.get("submission_argv_sha256")
+            != _stdin_submission_argv_sha256(batch_id)
         ):
             errors.append(f"job {job_id} conflicts with intent {batch_id}")
             continue
@@ -1297,8 +3066,13 @@ def _reconcile_schema5_intents(
                 "state": "reconciled",
                 "job_id": job_id,
                 "reconciled_at": now,
+                "spooled_sbatch_sha256": spooled_sha256,
+                "spooled_receipt_path": receipt_path,
+                "spooled_receipt_sha256": receipt_sha256,
             }
         )
+        intent.pop("error", None)
+        intent.pop("last_submit_error_at", None)
         _commit_intent_fairness(ledger, batch_id)
         warnings.append(f"reconciled intent {batch_id} to Slurm job {job_id}")
     return warnings, errors
@@ -1403,27 +3177,22 @@ def _active_cells(
     # One immutable sbatch/intent may map to exactly one Slurm array allocation.  Array
     # task rows legitimately repeat the same base id; two distinct base ids for the same
     # script are an ambiguous duplicate admission and globally fence new work.
-    dispatcher_jobs_by_sbatch: dict[str, set[str]] = defaultdict(set)
+    dispatcher_jobs_by_intent: dict[str, set[str]] = defaultdict(set)
     for row in rows:
         if not row.job_name.startswith("asys-dispatch-"):
             continue
-        try:
-            sbatch_path = next(
-                str(Path(part).expanduser().resolve())
-                for part in shlex.split(row.command)
-                if part.endswith(".sbatch")
-            )
-        except (StopIteration, OSError, ValueError):
+        if not row.comment.startswith("asys-schema5-intent:"):
             continue
-        dispatcher_jobs_by_sbatch[sbatch_path].add(row.array_job_id)
-    ambiguous_sbatch_paths = {
-        path: sorted(job_ids)
-        for path, job_ids in dispatcher_jobs_by_sbatch.items()
+        intent_id = row.comment[len("asys-schema5-intent:") :]
+        dispatcher_jobs_by_intent[intent_id].add(row.array_job_id)
+    ambiguous_intents = {
+        intent_id: sorted(job_ids)
+        for intent_id, job_ids in dispatcher_jobs_by_intent.items()
         if len(job_ids) > 1
     }
-    for path, job_ids in sorted(ambiguous_sbatch_paths.items()):
+    for intent_id, job_ids in sorted(ambiguous_intents.items()):
         unmappable.append(
-            f"ambiguous duplicate dispatcher intent {path}: jobs {job_ids}"
+            f"ambiguous duplicate dispatcher intent {intent_id}: jobs {job_ids}"
         )
 
     def add_active(candidate: Candidate) -> None:
@@ -1453,24 +3222,24 @@ def _active_cells(
         record["state"] = "active" if job_id in live_array_ids else "inactive"
         if job_id in live_array_ids:
             record["last_seen_at"] = now
+            record.pop("inactive_since_at", None)
         elif (
             prior_state in {"submitted", "active"}
             and now - float(record.get("submitted_at", 0.0)) < visibility_grace_s
         ):
             record["state"] = "visibility_grace"
             reserve_tasks(record.get("tasks"), f"job {job_id} visibility reservation")
+        elif prior_state != "inactive":
+            record["inactive_since_at"] = now
 
     for row in rows:
         if row.job_name.startswith("asys-dispatch-"):
-            try:
-                row_sbatch = next(
-                    str(Path(part).expanduser().resolve())
-                    for part in shlex.split(row.command)
-                    if part.endswith(".sbatch")
-                )
-            except (StopIteration, OSError, ValueError):
-                row_sbatch = None
-            if row_sbatch in ambiguous_sbatch_paths:
+            row_intent = (
+                row.comment[len("asys-schema5-intent:") :]
+                if row.comment.startswith("asys-schema5-intent:")
+                else None
+            )
+            if row_intent in ambiguous_intents:
                 continue
         job_record = ledger["jobs"].get(row.array_job_id)
         if job_record is None and row.job_name.startswith("asys-dispatch-"):
@@ -1547,14 +3316,57 @@ def _active_cells(
                                 f"{path_field} differs from its durable hash"
                             )
                             break
+                    if artifact_error is None:
+                        try:
+                            (
+                                observed_receipt_path,
+                                observed_receipt_sha256,
+                            ) = _spooled_script_receipt(
+                                batch_id=batch_id,
+                                job_id=row.array_job_id,
+                                expected_name=expected_name,
+                                expected_comment=expected_comment,
+                                sbatch_path=Path(
+                                    str(job_record.get("sbatch_path", ""))
+                                ),
+                                sbatch_sha256=str(
+                                    job_record.get("sbatch_sha256", "")
+                                ),
+                                spooled_script_reader=lambda _job_id: (
+                                    _ for _ in ()
+                                ).throw(
+                                    DispatcherError(
+                                        "sealed spooled-script receipt is missing"
+                                    )
+                                ),
+                                now=now,
+                            )
+                            if (
+                                observed_receipt_path
+                                != job_record.get("spooled_receipt_path")
+                                or observed_receipt_sha256
+                                != job_record.get("spooled_receipt_sha256")
+                            ):
+                                artifact_error = (
+                                    "spooled-script receipt differs from its "
+                                    "durable job record"
+                                )
+                        except DispatcherError as exc:
+                            artifact_error = str(exc)
                     verified_job_artifacts[row.array_job_id] = artifact_error
                 if (
                     not batch_id
                     or row.job_name != expected_name
                     or row.comment != expected_comment
                     or artifact_error is not None
-                    or not _command_binds_exact_sbatch(
-                        row.command, str(job_record.get("sbatch_path", ""))
+                    or job_record.get("spooled_sbatch_sha256")
+                    != job_record.get("sbatch_sha256")
+                    or job_record.get("submission_transport")
+                    != STDIN_EXACT_SUBMISSION_TRANSPORT
+                    or job_record.get("submission_argv_sha256")
+                    != _stdin_submission_argv_sha256(batch_id)
+                    or not _command_binds_stdin_submission(
+                        row.command, batch_id
                     )
                 ):
                     unmappable.append(
@@ -1577,6 +3389,15 @@ def _active_cells(
                 binding = {
                     "job_name": row.job_name,
                     "comment": row.comment,
+                    "sbatch_path": str(job_record["sbatch_path"]),
+                    "sbatch_sha256": str(job_record["sbatch_sha256"]),
+                    "batch_id": str(job_record["batch_id"]),
+                    "submission_transport": str(
+                        job_record["submission_transport"]
+                    ),
+                    "submission_argv_sha256": str(
+                        job_record["submission_argv_sha256"]
+                    ),
                 }
                 prior = trusted_cell_bindings.setdefault(row.job_id, binding)
                 if prior != binding:
@@ -1647,6 +3468,12 @@ def _active_cells(
     # its job id is known, reserve the tasks briefly; if sbatch actually succeeded, %o
     # reconciliation above adopts the array.  A rejected/abandoned intent is not held.
     for intent_id, intent in ledger.get("intents", {}).items():
+        if intent.get("state") == "integrity_blocked":
+            # A deterministic local provenance failure occurred before Slurm was
+            # invoked.  Keep the exact coordinates fenced indefinitely while the
+            # scientific-integrity safety hold awaits explicit acknowledgement.
+            reserve_tasks(intent.get("tasks"), f"blocked intent {intent_id}")
+            continue
         if intent.get("state") not in {"prepared", "submitting"}:
             continue
         visibility_started_at = _intent_visibility_started_at(intent)
@@ -1710,11 +3537,15 @@ def _trusted_server_scheduler_bindings(
     expected_fleet_sha256: str,
     frozen_fleet: FrozenFleetContract | None,
     scheduler_rows: Sequence[QueueRow],
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, Any]]:
     """Classify only servers with an immutable job/name/comment preimage."""
 
     if re.fullmatch(r"[0-9a-f]{64}", expected_fleet_sha256 or "") is None:
         raise DispatcherError("trusted server classification lacks a fleet hash")
+    if frozen_fleet is None:
+        raise DispatcherError(
+            "trusted server classification lacks the frozen placement contract"
+        )
     live_by_id: dict[str, QueueRow] = {}
     for row in scheduler_rows:
         if row.job_id in live_by_id:
@@ -1732,7 +3563,7 @@ def _trusted_server_scheduler_bindings(
             for cell in spec.manifest.cells
         }
     )
-    bindings: dict[str, dict[str, str]] = {}
+    bindings: dict[str, dict[str, Any]] = {}
     try:
         for pool_text, profile in keys:
             pool_root = Path(pool_text)
@@ -1752,16 +3583,74 @@ def _trusted_server_scheduler_bindings(
                 row = live_by_id.get(str(entry.slurm_job_id))
                 if row is None:
                     continue
+                if not isinstance(entry.replica_index, int) or isinstance(
+                    entry.replica_index, bool
+                ):
+                    continue
+                replica = frozen_fleet.for_replica(
+                    profile, entry.replica_index
+                )
+                if not isinstance(replica.qos, str) or not replica.qos:
+                    raise DispatcherError(
+                        f"frozen fleet replica {replica.replica_id} lacks an "
+                        "exact protected QOS"
+                    )
                 binding = {
                     "job_name": str(history.binding["scheduler_job_name"]),
                     "comment": str(history.binding["scheduler_comment"]),
+                    "sbatch_path": str(history.binding["local_script_path"]),
+                    "sbatch_sha256": str(
+                        history.binding["local_script_sha256"]
+                    ),
+                    "intent_token": str(history.binding["intent_token"]),
+                    "replica_id": str(history.binding["replica_id"]),
+                    "serving_profile": replica.serving_profile,
+                    "ledger_generation": int(
+                        history.binding["ledger_generation"]
+                    ),
+                    "partition": replica.partition,
+                    "qos": replica.qos,
+                    "allocated_gpus": replica.gpus_per_replica,
+                    "gpu_type": replica.gpu_type,
                 }
+                transaction_directory = Path(
+                    binding["sbatch_path"]
+                ).parents[2]
+                generation_ledger_path = Path(
+                    os.path.abspath(
+                        os.fspath(
+                            fleet_transactions.ledger_path(
+                                transaction_directory,
+                                binding["ledger_generation"],
+                            ).expanduser()
+                        )
+                    )
+                )
+                try:
+                    generation_ledger_raw = (
+                        generation_ledger_path.read_bytes()
+                    )
+                except OSError as exc:
+                    raise DispatcherError(
+                        "server job "
+                        f"{entry.slurm_job_id} lacks its generation fleet "
+                        f"ledger: {exc}"
+                    ) from exc
+                binding.update(
+                    {
+                        "ledger_path": str(generation_ledger_path),
+                        "ledger_sha256": hashlib.sha256(
+                            generation_ledger_raw
+                        ).hexdigest(),
+                    }
+                )
                 if (
                     row.job_name != binding["job_name"]
                     or row.comment != binding["comment"]
-                    or not _command_binds_exact_sbatch(
-                        row.command,
-                        str(history.binding["local_script_path"]),
+                    or row.partition != binding["partition"]
+                    or row.qos != binding["qos"]
+                    or not fleet_transactions.command_binds_stdin_submission(
+                        row.command, binding["comment"]
                     )
                 ):
                     continue
@@ -1771,11 +3660,132 @@ def _trusted_server_scheduler_bindings(
                     raise DispatcherError(
                         f"server job {job_id} has conflicting immutable provenance"
                     )
-    except (OSError, TypeError, ValueError, FleetContractError) as exc:
+    except (
+        IndexError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        FleetContractError,
+    ) as exc:
         raise DispatcherError(
             f"cannot classify protected server allocations: {exc}"
         ) from exc
+    unbound = sorted(
+        row.job_id
+        for row in scheduler_rows
+        if row.job_name.startswith("asys-s5-serve-")
+        and row.job_id not in bindings
+    )
+    if unbound:
+        raise DispatcherError(
+            "live scientific fleet jobs lack exact ledger/registry/history "
+            f"provenance: {unbound}"
+        )
     return bindings
+
+
+def _require_exact_trusted_scientific_binding_sets(
+    provenance: protected_capacity.TrustedScientificJobProvenance,
+    *,
+    client_bindings: Mapping[str, Any],
+    nonclient_bindings: Mapping[str, Any],
+) -> None:
+    """Keep residual MaxJobs and TRES headroom on one exact scientific set."""
+
+    if (
+        set(provenance.payload["trusted_cell_job_ids"])
+        != set(client_bindings)
+        or set(provenance.payload["trusted_fleet_job_ids"])
+        != set(nonclient_bindings)
+    ):
+        raise DispatcherError(
+            "shared trusted scientific reconciliation differs from the "
+            "dispatcher's exact active mappings"
+        )
+
+
+def _scheduler_headroom_binding_projection(
+    bindings: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Project rich ledger provenance onto scheduler_safety's closed ABI."""
+
+    projected: dict[str, dict[str, str]] = {}
+    for job_id, binding in bindings.items():
+        if (
+            not isinstance(job_id, str)
+            or not isinstance(binding, Mapping)
+            or not isinstance(binding.get("job_name"), str)
+            or not binding["job_name"]
+            or not isinstance(binding.get("comment"), str)
+            or not binding["comment"]
+        ):
+            raise DispatcherError(
+                "cannot project malformed trusted scientific scheduler binding"
+            )
+        projected[job_id] = {
+            "job_name": str(binding["job_name"]),
+            "comment": str(binding["comment"]),
+        }
+    return projected
+
+
+def _require_trusted_client_target_placement(
+    occupancy: StableAdmissionOccupancy,
+    *,
+    trusted_client_bindings: Mapping[str, Mapping[str, Any]],
+    expected_partition: str,
+    expected_qos: str,
+) -> None:
+    """Prove every trusted client consumes the exact attested client envelope."""
+
+    try:
+        usage = scheduler_safety.validate_user_partition_usage(occupancy.usage)
+    except scheduler_safety.SchedulerSafetyError as exc:
+        raise DispatcherError(
+            f"trusted client target-placement evidence is invalid: {exc}"
+        ) from exc
+    if (
+        occupancy.usage.get("partition") != expected_partition
+        or re.fullmatch(r"[A-Za-z0-9_.-]+", expected_qos) is None
+    ):
+        raise DispatcherError(
+            "trusted client target-placement authority differs from the expected "
+            "partition/QOS"
+        )
+    scheduler_by_id = {row.job_id: row for row in occupancy.rows}
+    usage_by_id = {str(row["job_id"]): row for row in usage["jobs"]}
+    if len(scheduler_by_id) != len(occupancy.rows) or len(usage_by_id) != len(
+        usage["jobs"]
+    ):
+        raise DispatcherError(
+            "trusted client target-placement evidence repeats scheduler identities"
+        )
+    errors: list[str] = []
+    for job_id, binding in sorted(trusted_client_bindings.items()):
+        scheduler_row = scheduler_by_id.get(job_id)
+        usage_row = usage_by_id.get(job_id)
+        if (
+            scheduler_row is None
+            or usage_row is None
+            or scheduler_row.partition != expected_partition
+            or scheduler_row.qos != expected_qos
+            or scheduler_row.job_name != binding.get("job_name")
+            or scheduler_row.comment != binding.get("comment")
+            or usage_row["job_name"] != binding.get("job_name")
+            or usage_row["comment"] != binding.get("comment")
+            or usage_row["qos"] != expected_qos
+            or usage_row["state"] != scheduler_row.state.upper()
+            or usage_row["cpus"] != CELL_CPUS_DEFAULT
+            or usage_row["memory_mib"] != 4 * 1024
+        ):
+            errors.append(job_id)
+    if errors:
+        raise DispatcherError(
+            "trusted client jobs drifted from their exact protected "
+            "partition/QOS/name/comment/1-CPU/4096-MiB placement: "
+            + ", ".join(errors[:8])
+        )
 
 
 def discover_capacity(
@@ -2424,56 +4434,883 @@ def _write_batch(
     return batch_id, manifest_path, sbatch_path, batch
 
 
-def _submit_sbatch(path: Path) -> str:
-    if not path.name.startswith("batch-") or path.suffix != ".sbatch":
-        raise DispatcherError(f"dispatcher sbatch path lacks an intent identity: {path}")
-    batch_id = path.name[len("batch-") : -len(".sbatch")]
-    if not batch_id or any(character in batch_id for character in "|;\n\r"):
-        raise DispatcherError(f"unsafe dispatcher batch intent {batch_id!r}")
-    proc = subprocess.run(
-        [
-            "sbatch",
-            "--parsable",
-            f"--comment=asys-schema5-intent:{batch_id}",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60.0,
-    )
-    if proc.returncode != 0:
+def _read_spooled_batch_script(
+    job_id: str,
+    *,
+    runner: Any | None = None,
+) -> bytes:
+    if not isinstance(job_id, str) or not job_id.isdigit():
+        raise DispatcherError("spooled-script proof requires a numeric Slurm job id")
+    invoke = subprocess.run if runner is None else runner
+    try:
+        proc = invoke(
+            ["scontrol", "write", "batch_script", job_id, "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
         raise DispatcherError(
-            f"sbatch rejected {path.name} (rc={proc.returncode}): {proc.stderr.strip()[:500]}"
+            f"cannot retrieve Slurm-spooled script for job {job_id}: {exc}"
+        ) from exc
+    if proc.returncode != 0 or not isinstance(proc.stdout, str):
+        raise DispatcherError(
+            f"cannot retrieve Slurm-spooled script for job {job_id}: "
+            f"rc={proc.returncode}, stderr={str(proc.stderr)[:500]}"
+        )
+    return proc.stdout.encode("utf-8")
+
+
+def _submit_sbatch(
+    path: Path,
+    *,
+    expected_sbatch_sha256: str,
+    batch_manifest_path: Path,
+    expected_batch_manifest_sha256: str,
+) -> str:
+    try:
+        lexical_path, sbatch_raw = _stable_readonly_artifact(
+            path, description="dispatcher sbatch at external submission boundary"
+        )
+        lexical_manifest, manifest_raw = _stable_readonly_artifact(
+            batch_manifest_path,
+            description="dispatcher batch manifest at external submission boundary",
+        )
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", expected_sbatch_sha256) is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}", expected_batch_manifest_sha256
+            )
+            is None
+            or hashlib.sha256(sbatch_raw).hexdigest()
+            != expected_sbatch_sha256
+            or hashlib.sha256(manifest_raw).hexdigest()
+            != expected_batch_manifest_sha256
+        ):
+            raise DispatcherError(
+                "dispatcher transaction artifacts drifted immediately before sbatch"
+            )
+        if (
+            not lexical_path.name.startswith("batch-")
+            or lexical_path.suffix != ".sbatch"
+            or lexical_manifest != lexical_path.with_suffix(".json")
+        ):
+            raise DispatcherError(
+                f"dispatcher sbatch path lacks an intent identity: {path}"
+            )
+        batch_id = lexical_path.name[len("batch-") : -len(".sbatch")]
+        if not batch_id or any(character in batch_id for character in "|;\n\r"):
+            raise DispatcherError(f"unsafe dispatcher batch intent {batch_id!r}")
+    except DispatcherError as exc:
+        raise SubmissionPreflightError(str(exc)) from exc
+
+    argv = _stdin_submission_argv(batch_id)
+    try:
+        submission_text = sbatch_raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise SubmissionPreflightError(
+            f"dispatcher sbatch is not UTF-8: {exc}"
+        ) from exc
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+            input=submission_text,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SubmissionAmbiguousError(
+            f"sbatch reply was unavailable for {lexical_path.name}: {exc}"
+        ) from exc
+    if proc.returncode != 0:
+        raise SubmissionRejectedError(
+            f"sbatch rejected {lexical_path.name} (rc={proc.returncode}): "
+            f"{proc.stderr.strip()[:500]}"
         )
     job_id = proc.stdout.strip().split(";", 1)[0]
     if not job_id.isdigit():
-        raise DispatcherError(f"sbatch returned invalid job id {job_id!r} for {path}")
+        raise SubmissionAmbiguousError(
+            f"sbatch returned invalid job id {job_id!r} for {lexical_path}"
+        )
+    try:
+        spooled = _read_spooled_batch_script(job_id)
+    except DispatcherError as exc:
+        raise SubmissionAmbiguousError(str(exc)) from exc
+    if spooled != sbatch_raw:
+        raise SubmissionAmbiguousError(
+            f"Slurm-spooled script differs from validated bytes for job {job_id}"
+        )
+    try:
+        post_path, post_raw = _stable_readonly_artifact(
+            lexical_path,
+            description="dispatcher sbatch after external submission boundary",
+        )
+    except DispatcherError as exc:
+        raise SubmissionAmbiguousError(str(exc)) from exc
+    if post_path != lexical_path or post_raw != sbatch_raw:
+        raise SubmissionAmbiguousError(
+            "dispatcher sbatch lexical artifact changed across submission"
+        )
+    try:
+        _spooled_script_receipt(
+            batch_id=batch_id,
+            job_id=job_id,
+            expected_name=f"asys-dispatch-{batch_id[-10:]}",
+            expected_comment=f"asys-schema5-intent:{batch_id}",
+            sbatch_path=lexical_path,
+            sbatch_sha256=expected_sbatch_sha256,
+            spooled_script_reader=lambda _job_id: spooled,
+            now=time.time(),
+        )
+    except DispatcherError as exc:
+        raise SubmissionAmbiguousError(
+            f"cannot seal Slurm-spooled script proof for job {job_id}: {exc}"
+        ) from exc
     return job_id
 
 
-def _queue_successor(path: Path) -> str:
-    """Queue exactly one afterany successor after the singleton lock is acquired."""
-    current_job = os.environ.get("SLURM_JOB_ID")
-    if not current_job:
-        raise DispatcherError("--successor-sbatch requires SLURM_JOB_ID")
-    proc = subprocess.run(
-        [
-            "sbatch",
-            "--parsable",
-            f"--dependency=afterany:{current_job}",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
+def _successor_submission_argv(
+    *, current_job: str, scheduler_comment: str
+) -> list[str]:
+    return [
+        "sbatch",
+        "--parsable",
+        "--hold",
+        f"--dependency=afterany:{current_job}",
+        f"--comment={scheduler_comment}",
+    ]
+
+
+def _successor_command_matches(
+    command: str, *, current_job: str, scheduler_comment: str
+) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    normalized = [
+        "sbatch" if Path(tokens[0]).name == "sbatch" else tokens[0],
+        *tokens[1:],
+    ]
+    return normalized == _successor_submission_argv(
+        current_job=current_job,
+        scheduler_comment=scheduler_comment,
     )
-    if proc.returncode != 0:
+
+
+def _verify_successor_release_complete(
+    path: Path,
+    *,
+    job_id: str,
+    release_intent_path: Path,
+    release_intent_sha256: str,
+) -> str:
+    value, raw = _strict_readonly_json_artifact(
+        path, description="dispatcher successor release completion"
+    )
+    required = {
+        "schema_version",
+        "kind",
+        "job_id",
+        "release_intent_path",
+        "release_intent_sha256",
+        "release_attempt_path",
+        "release_attempt_sha256",
+        "release_result_path",
+        "release_result_sha256",
+        "scheduler_job_ids",
+        "scheduler_states",
+        "released_this_call",
+        "completed_at",
+    }
+    if (
+        set(value) != required
+        or value.get("schema_version") != 1
+        or value.get("kind")
+        != "schema5_dispatcher_successor_release_complete"
+        or value.get("job_id") != job_id
+        or value.get("release_intent_path")
+        != str(release_intent_path.resolve())
+        or value.get("release_intent_sha256") != release_intent_sha256
+        or not isinstance(value.get("scheduler_job_ids"), list)
+        or job_id
+        not in {
+            _array_identity(str(observed))[0]
+            for observed in value["scheduler_job_ids"]
+        }
+        or not isinstance(value.get("scheduler_states"), list)
+        or not isinstance(value.get("released_this_call"), bool)
+        or not isinstance(value.get("completed_at"), (int, float))
+        or isinstance(value.get("completed_at"), bool)
+    ):
         raise DispatcherError(
-            f"failed to queue dispatcher successor: {proc.stderr.strip()[:500]}"
+            "dispatcher successor release completion is malformed"
         )
-    successor = proc.stdout.strip().split(";", 1)[0]
-    if not successor:
-        raise DispatcherError("sbatch returned no dispatcher successor job id")
-    return successor
+    for prefix in ("release_attempt", "release_result"):
+        artifact_path = value.get(f"{prefix}_path")
+        artifact_sha256 = value.get(f"{prefix}_sha256")
+        if artifact_path is None:
+            if artifact_sha256 is not None:
+                raise DispatcherError(
+                    "dispatcher successor release completion has a partial "
+                    f"{prefix} binding"
+                )
+            continue
+        lexical = Path(str(artifact_path))
+        if (
+            not lexical.is_absolute()
+            or lexical.parent != path.parent
+            or re.fullmatch(r"[0-9a-f]{64}", str(artifact_sha256 or ""))
+            is None
+            or _sealed_artifact_sha256(lexical) != artifact_sha256
+        ):
+            raise DispatcherError(
+                f"dispatcher successor release {prefix} binding drifted"
+            )
+    if value["release_attempt_path"] is None:
+        raise DispatcherError(
+            "dispatcher successor release completion lacks its durable attempt"
+        )
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _queue_successor(
+    path: Path,
+    *,
+    state_dir: Path | None = None,
+    runner: Any | None = None,
+    scheduler_reader: Any | None = None,
+    now: float | None = None,
+    crash_hook: Any | None = None,
+) -> str:
+    """Queue/adopt one held, exact-stdin afterany successor transaction."""
+
+    current_job = os.environ.get("SLURM_JOB_ID")
+    if not current_job or not current_job.isdigit():
+        raise DispatcherError("--successor-sbatch requires numeric SLURM_JOB_ID")
+    timestamp = time.time() if now is None else float(now)
+    invoke = subprocess.run if runner is None else runner
+    lexical, script_raw = _stable_readonly_artifact(
+        path, description="dispatcher successor sbatch"
+    )
+    script_sha256 = hashlib.sha256(script_raw).hexdigest()
+    try:
+        script_text = script_raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise DispatcherError(
+            f"dispatcher successor sbatch is not UTF-8: {exc}"
+        ) from exc
+    transaction_root = (
+        (state_dir or lexical.parent)
+        / "successor-transactions"
+        / f"after-{current_job}"
+    ).resolve()
+    transaction_root.mkdir(parents=True, exist_ok=True)
+    intent_path = transaction_root / "INTENT.json"
+    if intent_path.exists():
+        if (
+            intent_path.is_symlink()
+            or not intent_path.is_file()
+            or intent_path.stat(follow_symlinks=False).st_nlink != 1
+        ):
+            raise DispatcherError(
+                "dispatcher successor intent is not a one-link regular file"
+            )
+        try:
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise DispatcherError(
+                f"cannot read dispatcher successor intent: {exc}"
+            ) from exc
+        if not isinstance(intent, dict):
+            raise DispatcherError(
+                "dispatcher successor intent must be one JSON object"
+            )
+    else:
+        token = uuid.uuid4().hex
+        comment = f"asys-schema5-successor:{current_job}:{token}"
+        argv = _successor_submission_argv(
+            current_job=current_job,
+            scheduler_comment=comment,
+        )
+        intent = {
+            "schema_version": 1,
+            "kind": "schema5_dispatcher_successor_intent",
+            "state": "prepared",
+            "created_at": timestamp,
+            "current_job_id": current_job,
+            "intent_token": token,
+            "scheduler_comment": comment,
+            "sbatch_path": str(lexical),
+            "sbatch_sha256": script_sha256,
+            "submission_transport": STDIN_EXACT_SUBMISSION_TRANSPORT,
+            "submission_argv": argv,
+            "submission_argv_sha256": hashlib.sha256(
+                json.dumps(argv, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "job_id": None,
+            "submit_started_at": None,
+            "spooled_path": None,
+            "spooled_sha256": None,
+            "release_intent_path": None,
+            "release_intent_sha256": None,
+            "release_complete_path": None,
+            "release_complete_sha256": None,
+            "released_at": None,
+            "last_error": None,
+        }
+        _atomic_write_json(intent_path, intent)
+    expected_argv = _successor_submission_argv(
+        current_job=current_job,
+        scheduler_comment=str(intent.get("scheduler_comment", "")),
+    )
+    if (
+        intent.get("schema_version") != 1
+        or intent.get("kind") != "schema5_dispatcher_successor_intent"
+        or intent.get("current_job_id") != current_job
+        or intent.get("sbatch_path") != str(lexical)
+        or intent.get("sbatch_sha256") != script_sha256
+        or intent.get("submission_transport")
+        != STDIN_EXACT_SUBMISSION_TRANSPORT
+        or intent.get("submission_argv") != expected_argv
+        or intent.get("submission_argv_sha256")
+        != hashlib.sha256(
+            json.dumps(expected_argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        or re.fullmatch(r"[0-9a-f]{32}", str(intent.get("intent_token", "")))
+        is None
+    ):
+        raise DispatcherError("dispatcher successor intent identity drifted")
+    if intent.get("state") == "committed":
+        job_id = str(intent.get("job_id", ""))
+        spool_path = Path(str(intent.get("spooled_path", "")))
+        release_complete_path = Path(
+            str(intent.get("release_complete_path", ""))
+        )
+        release_intent_path = Path(
+            str(intent.get("release_intent_path", ""))
+        )
+        release_intent_sha256 = str(
+            intent.get("release_intent_sha256", "")
+        )
+        if (
+            not job_id.isdigit()
+            or _sealed_artifact_sha256(spool_path) != script_sha256
+            or intent.get("spooled_sha256") != script_sha256
+            or not isinstance(intent.get("released_at"), (int, float))
+            or _sealed_artifact_sha256(release_intent_path)
+            != release_intent_sha256
+            or _verify_successor_release_complete(
+                release_complete_path,
+                job_id=job_id,
+                release_intent_path=release_intent_path,
+                release_intent_sha256=release_intent_sha256,
+            )
+            != intent.get("release_complete_sha256")
+        ):
+            raise DispatcherError(
+                "committed dispatcher successor proof drifted"
+            )
+        return job_id
+
+    adopted_job_id: str | None = None
+    if intent.get("state") == "integrity_blocked":
+        raise DispatcherError(
+            f"dispatcher successor integrity remains blocked: "
+            f"{intent.get('last_error')}"
+        )
+    accepted_held_replay = intent.get("state") == "accepted_held"
+    if accepted_held_replay:
+        adopted_job_id = str(intent.get("job_id", ""))
+        spool_path = Path(str(intent.get("spooled_path", "")))
+        if (
+            not adopted_job_id.isdigit()
+            or intent.get("spooled_sha256") != script_sha256
+            or _sealed_artifact_sha256(spool_path) != script_sha256
+        ):
+            raise DispatcherError(
+                "accepted dispatcher successor spool proof drifted"
+            )
+    if intent.get("state") == "submitting":
+        if scheduler_reader is None:
+            from slurm.schema5_control import query_scheduler
+
+            scheduler_reader = query_scheduler
+        snapshot = scheduler_reader()
+        if (
+            getattr(snapshot, "squeue_ok", False) is not True
+            or getattr(snapshot, "sacct_ok", False) is not True
+            or getattr(snapshot, "errors", ())
+        ):
+            raise DispatcherError(
+                "dispatcher successor recovery lacks complete scheduler truth"
+            )
+        matches = [
+            job
+            for job in snapshot.jobs
+            if str(job.comment) == intent["scheduler_comment"]
+        ]
+        base_ids = {_array_identity(str(job.job_id))[0] for job in matches}
+        if len(base_ids) > 1:
+            raise DispatcherError(
+                "dispatcher successor intent maps to duplicate scheduler jobs"
+            )
+        if matches:
+            adopted_job_id = next(iter(base_ids))
+            if any(
+                not _successor_command_matches(
+                    str(job.command),
+                    current_job=current_job,
+                    scheduler_comment=intent["scheduler_comment"],
+                )
+                for job in matches
+            ):
+                raise DispatcherError(
+                    "dispatcher successor scheduler provenance drifted"
+                )
+        else:
+            submit_started = intent.get("submit_started_at")
+            if (
+                not isinstance(submit_started, (int, float))
+                or timestamp - float(submit_started) < 300.0
+            ):
+                raise DispatcherError(
+                    "dispatcher successor acceptance remains inside visibility grace"
+                )
+            accounting_start = getattr(
+                snapshot, "accounting_start_timestamp", None
+            )
+            if (
+                not isinstance(accounting_start, (int, float))
+                or float(accounting_start) > float(submit_started)
+            ):
+                raise DispatcherError(
+                    "dispatcher successor absence is outside accounting coverage"
+                )
+            intent["state"] = "prepared"
+            intent["last_error"] = (
+                "prior exact submission proven absent by complete accounting"
+            )
+            _atomic_write_json(intent_path, intent)
+
+    if adopted_job_id is None and intent.get("state") == "prepared":
+        intent["state"] = "submitting"
+        intent["submit_started_at"] = timestamp
+        intent["last_error"] = None
+        _atomic_write_json(intent_path, intent)
+        if crash_hook is not None:
+            crash_hook("after_submitting")
+        try:
+            proc = invoke(
+                expected_argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60.0,
+                input=script_text,
+            )
+        except BaseException:
+            raise
+        if proc.returncode != 0:
+            intent["state"] = "rejected"
+            intent["last_error"] = proc.stderr.strip()[:500]
+            _atomic_write_json(intent_path, intent)
+            raise DispatcherError(
+                f"failed to queue dispatcher successor: {intent['last_error']}"
+            )
+        adopted_job_id = proc.stdout.strip().split(";", 1)[0]
+        if not adopted_job_id.isdigit():
+            raise DispatcherError(
+                "dispatcher successor sbatch returned an ambiguous job id"
+            )
+        if crash_hook is not None:
+            crash_hook("after_acceptance")
+
+    if adopted_job_id is None:
+        raise DispatcherError(
+            f"dispatcher successor transaction is blocked in state "
+            f"{intent.get('state')!r}"
+        )
+    if accepted_held_replay:
+        spool_path = Path(str(intent["spooled_path"]))
+        spooled = _stable_readonly_artifact(
+            spool_path,
+            description="sealed dispatcher successor spooled script",
+        )[1]
+    else:
+        spooled = _read_spooled_batch_script(
+            adopted_job_id, runner=invoke
+        )
+        if spooled != script_raw:
+            intent["state"] = "integrity_blocked"
+            intent["job_id"] = adopted_job_id
+            intent["last_error"] = "Slurm-spooled successor script differs"
+            _atomic_write_json(intent_path, intent)
+            raise DispatcherError(intent["last_error"])
+    post_path, post_raw = _stable_readonly_artifact(
+        lexical, description="dispatcher successor sbatch after submission"
+    )
+    if post_path != lexical or post_raw != script_raw:
+        raise DispatcherError(
+            "dispatcher successor sbatch changed across submission boundary"
+        )
+    spool_path = transaction_root / "SPOOLED_SCRIPT.sbatch"
+    _publish_readonly_bytes_once(spool_path, spooled)
+    if not accepted_held_replay:
+        show = invoke(
+            ["scontrol", "show", "job", "-o", adopted_job_id],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30.0,
+        )
+        if (
+            show.returncode != 0
+            or "Reason=JobHeldUser" not in show.stdout
+            or re.search(
+                rf"Dependency=[^ ]*afterany:{re.escape(current_job)}",
+                show.stdout,
+            )
+            is None
+        ):
+            raise DispatcherError(
+                "dispatcher successor was not held with its exact afterany "
+                "dependency"
+            )
+        intent.update(
+            {
+                "state": "accepted_held",
+                "job_id": adopted_job_id,
+                "spooled_path": str(spool_path.resolve()),
+                "spooled_sha256": script_sha256,
+            }
+        )
+        _atomic_write_json(intent_path, intent)
+
+    release_argv = ["scontrol", "release", adopted_job_id]
+    release_intent_path = transaction_root / "RELEASE_INTENT.json"
+    release_intent = {
+        "schema_version": 1,
+        "kind": "schema5_dispatcher_successor_release_intent",
+        "job_id": adopted_job_id,
+        "current_job_id": current_job,
+        "scheduler_comment": intent["scheduler_comment"],
+        "dependency": f"afterany:{current_job}",
+        "spooled_path": str(spool_path.resolve()),
+        "spooled_sha256": script_sha256,
+        "command": release_argv,
+        "created_at": float(intent.get("submit_started_at") or timestamp),
+    }
+    _publish_readonly_json_once(release_intent_path, release_intent)
+    release_intent_sha256 = _sealed_artifact_sha256(release_intent_path)
+    intent["release_intent_path"] = str(release_intent_path.resolve())
+    intent["release_intent_sha256"] = release_intent_sha256
+    _atomic_write_json(intent_path, intent)
+
+    def show_successor() -> subprocess.CompletedProcess[str]:
+        return invoke(
+            ["scontrol", "show", "job", "-o", adopted_job_id],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30.0,
+        )
+
+    def exact_scheduler_rows() -> tuple[Any, ...]:
+        reader = scheduler_reader
+        if reader is None:
+            from slurm.schema5_control import query_scheduler
+
+            reader = query_scheduler
+        snapshot = reader()
+        if (
+            getattr(snapshot, "squeue_ok", False) is not True
+            or getattr(snapshot, "sacct_ok", False) is not True
+            or getattr(snapshot, "errors", ())
+        ):
+            raise DispatcherError(
+                "dispatcher successor release recovery lacks complete "
+                "scheduler truth"
+            )
+        matching = tuple(
+            job
+            for job in snapshot.jobs
+            if _array_identity(str(job.job_id))[0] == adopted_job_id
+            and str(job.comment) == intent["scheduler_comment"]
+        )
+        if not matching or any(
+            not _successor_command_matches(
+                str(job.command),
+                current_job=current_job,
+                scheduler_comment=intent["scheduler_comment"],
+            )
+            for job in matching
+        ):
+            raise DispatcherError(
+                "dispatcher successor release scheduler provenance drifted"
+            )
+        return matching
+
+    release_attempt_path = transaction_root / "RELEASE_ATTEMPT.json"
+    release_result_path = transaction_root / "RELEASE_RESULT.json"
+    prior_release_attempt: dict[str, Any] | None = None
+    if release_attempt_path.exists():
+        prior_release_attempt, _attempt_raw = (
+            _strict_readonly_json_artifact(
+                release_attempt_path,
+                description="dispatcher successor release attempt",
+            )
+        )
+        if (
+            set(prior_release_attempt)
+            != {
+                "schema_version",
+                "kind",
+                "job_id",
+                "release_intent_path",
+                "release_intent_sha256",
+                "command",
+                "started_at",
+            }
+            or prior_release_attempt.get("schema_version") != 1
+            or prior_release_attempt.get("kind")
+            != "schema5_dispatcher_successor_release_attempt"
+            or prior_release_attempt.get("job_id") != adopted_job_id
+            or prior_release_attempt.get("release_intent_path")
+            != str(release_intent_path.resolve())
+            or prior_release_attempt.get("release_intent_sha256")
+            != release_intent_sha256
+            or prior_release_attempt.get("command") != release_argv
+            or not isinstance(
+                prior_release_attempt.get("started_at"), (int, float)
+            )
+            or isinstance(prior_release_attempt.get("started_at"), bool)
+        ):
+            raise DispatcherError(
+                "dispatcher successor release attempt drifted"
+            )
+    prior_release_result: dict[str, Any] | None = None
+    if release_result_path.exists():
+        prior_release_result, _result_raw = _strict_readonly_json_artifact(
+            release_result_path,
+            description="dispatcher successor release result",
+        )
+        if (
+            set(prior_release_result)
+            != {
+                "schema_version",
+                "kind",
+                "job_id",
+                "attempt_sha256",
+                "returncode",
+                "stdout",
+                "stderr",
+                "completed_at",
+            }
+            or prior_release_result.get("schema_version") != 1
+            or prior_release_result.get("kind")
+            != "schema5_dispatcher_successor_release_result"
+            or prior_release_result.get("job_id") != adopted_job_id
+            or prior_release_attempt is None
+            or prior_release_result.get("attempt_sha256")
+            != _sealed_artifact_sha256(release_attempt_path)
+            or prior_release_result.get("returncode") != 0
+            or not isinstance(prior_release_result.get("stdout"), str)
+            or not isinstance(prior_release_result.get("stderr"), str)
+            or not isinstance(
+                prior_release_result.get("completed_at"), (int, float)
+            )
+            or isinstance(prior_release_result.get("completed_at"), bool)
+        ):
+            raise DispatcherError(
+                "dispatcher successor release result drifted"
+            )
+    before = show_successor()
+    held = (
+        before.returncode == 0
+        and "Reason=JobHeldUser" in before.stdout
+        and re.search(
+            rf"Dependency=[^ ]*afterany:{re.escape(current_job)}",
+            before.stdout,
+        )
+        is not None
+    )
+    released_this_call = False
+    should_release = False
+    if held and not os.path.lexists(release_attempt_path):
+        _publish_readonly_json_once(
+            release_attempt_path,
+            {
+                "schema_version": 1,
+                "kind": "schema5_dispatcher_successor_release_attempt",
+                "job_id": adopted_job_id,
+                "release_intent_path": str(release_intent_path.resolve()),
+                "release_intent_sha256": release_intent_sha256,
+                "command": release_argv,
+                "started_at": timestamp,
+            },
+        )
+        should_release = True
+    elif held and prior_release_result is None:
+        assert prior_release_attempt is not None
+        started_at = prior_release_attempt.get("started_at")
+        if (
+            not isinstance(started_at, (int, float))
+            or isinstance(started_at, bool)
+            or timestamp - float(started_at) < 300.0
+        ):
+            raise DispatcherError(
+                "dispatcher successor release remains inside scheduler "
+                "visibility grace"
+            )
+        should_release = True
+    if should_release:
+        if crash_hook is not None:
+            crash_hook("before_release")
+        release = invoke(
+            release_argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30.0,
+        )
+        released_this_call = True
+        if crash_hook is not None:
+            crash_hook("after_release_command")
+        if release.returncode != 0:
+            raise DispatcherError(
+                f"failed to release exact dispatcher successor "
+                f"{adopted_job_id}: {release.stderr.strip()[:500]}"
+            )
+        _publish_readonly_json_once(
+            release_result_path,
+            {
+                "schema_version": 1,
+                "kind": "schema5_dispatcher_successor_release_result",
+                "job_id": adopted_job_id,
+                "attempt_sha256": _sealed_artifact_sha256(
+                    release_attempt_path
+                ),
+                "returncode": int(release.returncode),
+                "stdout": release.stdout,
+                "stderr": release.stderr,
+                "completed_at": timestamp,
+            },
+        )
+        if crash_hook is not None:
+            crash_hook("after_release")
+        before = show_successor()
+        held = (
+            before.returncode == 0
+            and "Reason=JobHeldUser" in before.stdout
+        )
+    elif held and prior_release_attempt is not None:
+        raise DispatcherError(
+            "dispatcher successor release was attempted but remains held; "
+            "waiting for unambiguous scheduler reconciliation"
+        )
+    elif not held and prior_release_attempt is None:
+        raise DispatcherError(
+            "dispatcher successor became unheld without its durable exact "
+            "release attempt"
+        )
+
+    scheduler_rows = (
+        ()
+        if released_this_call and not accepted_held_replay
+        else exact_scheduler_rows()
+    )
+    if held:
+        raise DispatcherError(
+            "dispatcher successor remains user-held after exact release"
+        )
+    if before.returncode == 0:
+        if re.search(
+            rf"Dependency=[^ ]*afterany:{re.escape(current_job)}",
+            before.stdout,
+        ) is None:
+            raise DispatcherError(
+                "released dispatcher successor lost its exact dependency"
+            )
+    elif any(bool(getattr(job, "active", False)) for job in scheduler_rows):
+        raise DispatcherError(
+            "active dispatcher successor disappeared from scontrol truth"
+        )
+
+    release_complete_path = transaction_root / "RELEASE_COMPLETE.json"
+    if release_complete_path.exists():
+        release_complete, _release_complete_raw = (
+            _strict_readonly_json_artifact(
+                release_complete_path,
+                description="dispatcher successor release completion",
+            )
+        )
+        release_complete_sha256 = _verify_successor_release_complete(
+            release_complete_path,
+            job_id=adopted_job_id,
+            release_intent_path=release_intent_path,
+            release_intent_sha256=release_intent_sha256,
+        )
+    else:
+        release_complete = {
+            "schema_version": 1,
+            "kind": "schema5_dispatcher_successor_release_complete",
+            "job_id": adopted_job_id,
+            "release_intent_path": str(release_intent_path.resolve()),
+            "release_intent_sha256": release_intent_sha256,
+            "release_attempt_path": (
+                str(release_attempt_path.resolve())
+                if release_attempt_path.exists()
+                else None
+            ),
+            "release_attempt_sha256": (
+                _sealed_artifact_sha256(release_attempt_path)
+                if release_attempt_path.exists()
+                else None
+            ),
+            "release_result_path": (
+                str(release_result_path.resolve())
+                if release_result_path.exists()
+                else None
+            ),
+            "release_result_sha256": (
+                _sealed_artifact_sha256(release_result_path)
+                if release_result_path.exists()
+                else None
+            ),
+            "scheduler_job_ids": (
+                sorted({str(job.job_id) for job in scheduler_rows})
+                or [adopted_job_id]
+            ),
+            "scheduler_states": sorted(
+                {str(getattr(job, "state", "")) for job in scheduler_rows}
+            ),
+            "released_this_call": released_this_call,
+            "completed_at": timestamp,
+        }
+        _publish_readonly_json_once(
+            release_complete_path, release_complete
+        )
+        release_complete_sha256 = _verify_successor_release_complete(
+            release_complete_path,
+            job_id=adopted_job_id,
+            release_intent_path=release_intent_path,
+            release_intent_sha256=release_intent_sha256,
+        )
+    intent.update(
+        {
+            "state": "committed",
+            "released_at": timestamp,
+            "release_complete_path": str(release_complete_path.resolve()),
+            "release_complete_sha256": release_complete_sha256,
+        }
+    )
+    _atomic_write_json(intent_path, intent)
+    return adopted_job_id
 
 
 def _record_submission(
@@ -2490,6 +5327,12 @@ def _record_submission(
     intent = ledger.get("intents", {}).get(batch_id)
     if not isinstance(intent, dict):
         raise DispatcherError(f"submission {batch_id} lacks its durable intent")
+    receipt_path = sbatch_path.with_suffix(".spooled.json")
+    _receipt_lexical, receipt_raw = _stable_readonly_artifact(
+        receipt_path,
+        description=f"submission {batch_id} spooled-script receipt",
+    )
+    receipt_sha256 = hashlib.sha256(receipt_raw).hexdigest()
     ledger["jobs"][job_id] = {
         "job_id": job_id,
         "batch_id": batch_id,
@@ -2497,6 +5340,11 @@ def _record_submission(
         "batch_manifest_sha256": str(intent.get("batch_manifest_sha256")),
         "sbatch_path": str(sbatch_path),
         "sbatch_sha256": str(intent.get("sbatch_sha256")),
+        "spooled_sbatch_sha256": str(intent.get("sbatch_sha256")),
+        "spooled_receipt_path": str(receipt_path),
+        "spooled_receipt_sha256": receipt_sha256,
+        "submission_transport": STDIN_EXACT_SUBMISSION_TRANSPORT,
+        "submission_argv_sha256": _stdin_submission_argv_sha256(batch_id),
         "submitted_at": now,
         "last_seen_at": now,
         "state": "submitted",
@@ -2505,8 +5353,19 @@ def _record_submission(
     }
     if batch_id in ledger.get("intents", {}):
         ledger["intents"][batch_id].update(
-            {"state": "submitted", "job_id": job_id, "submitted_at": now}
+            {
+                "state": "submitted",
+                "job_id": job_id,
+                "submitted_at": now,
+                "spooled_sbatch_sha256": str(
+                    intent.get("sbatch_sha256")
+                ),
+                "spooled_receipt_path": str(receipt_path),
+                "spooled_receipt_sha256": receipt_sha256,
+            }
         )
+        ledger["intents"][batch_id].pop("error", None)
+        ledger["intents"][batch_id].pop("last_submit_error_at", None)
         _commit_intent_fairness(ledger, batch_id)
     for task in tasks:
         cell_key = _key((str(task["run_id"]), str(task["cell_id"])))
@@ -2549,6 +5408,7 @@ def _profile_headroom(
 
 
 DISPATCHER_SCHEDULER_AMBIGUITY_ALERT = "dispatcher:scheduler-ambiguity"
+DISPATCHER_SUBMISSION_INTEGRITY_ALERT = "dispatcher:submission-integrity"
 
 
 def _dispatcher_safety_findings(
@@ -2650,6 +5510,1368 @@ def _persist_dispatcher_safety_findings(
         )
 
 
+def _persist_dispatcher_submission_integrity_hold(
+    state_dir: Path,
+    *,
+    message: str,
+    now: float,
+) -> None:
+    """Latch artifact drift as a human-acknowledged scientific-integrity hold."""
+
+    from slurm.schema5_control import record_alert
+
+    record_alert(
+        state_dir,
+        kind="dispatcher-submission-integrity",
+        severity="critical",
+        message=message,
+        dedupe_key=DISPATCHER_SUBMISSION_INTEGRITY_ALERT,
+        send_email=True,
+        now=now,
+    )
+
+
+def _strict_readonly_json_artifact(
+    path: Path, *, description: str
+) -> tuple[dict[str, Any], bytes]:
+    _lexical, raw = _stable_readonly_artifact(path, description=description)
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise DispatcherError(
+                    f"{description} repeats JSON field {key!r}"
+                )
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                DispatcherError(
+                    f"{description} contains non-finite number {token!r}"
+                )
+            ),
+        )
+    except DispatcherError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise DispatcherError(f"cannot parse {description}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise DispatcherError(f"{description} must be one JSON object")
+    return value, raw
+
+
+def _integrity_retirement_root(state_dir: Path, batch_id: str) -> Path:
+    if (
+        not isinstance(batch_id, str)
+        or not batch_id
+        or re.fullmatch(r"[A-Za-z0-9_.-]+", batch_id) is None
+    ):
+        raise DispatcherError("integrity retirement batch ID is unsafe")
+    lexical_state = Path(
+        os.path.abspath(os.fspath(state_dir.expanduser()))
+    )
+    return (
+        lexical_state / INTEGRITY_RETIREMENT_DIRNAME / batch_id
+    )
+
+
+def _ensure_integrity_retirement_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        if (
+            path.is_symlink()
+            or not path.is_dir()
+            or path.resolve(strict=True) != path
+        ):
+            raise DispatcherError(
+                f"integrity retirement directory is unsafe: {path}"
+            )
+    except (OSError, RuntimeError) as exc:
+        raise DispatcherError(
+            f"cannot verify integrity retirement directory {path}: {exc}"
+        ) from exc
+
+
+def _seal_integrity_retirement_tree(root: Path) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise DispatcherError("integrity retirement tree is missing or unsafe")
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            raise DispatcherError(
+                f"integrity retirement tree contains symlink {path}"
+            )
+        if path.is_file():
+            path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+        elif path.is_dir():
+            path.chmod(0o555)
+        else:
+            raise DispatcherError(
+                f"integrity retirement tree contains special object {path}"
+            )
+    root.chmod(0o555)
+    directory_fd = os.open(root.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _blocked_integrity_runtime_identities(
+    intent: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    identities: list[dict[str, Any]] = []
+    tasks = intent.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise DispatcherError("integrity-blocked intent has no coordinates")
+    for index, task in enumerate(tasks):
+        if not isinstance(task, Mapping):
+            raise DispatcherError(
+                f"integrity-blocked task {index} is not an object"
+            )
+        environment = _runtime_environment(task)
+        if not environment:
+            raise DispatcherError(
+                "production integrity retirement requires schema-5 runtime identity"
+            )
+        identities.append(
+            {
+                "task_index": index,
+                "run_id": str(task.get("run_id", "")),
+                "cell_id": str(task.get("cell_id", "")),
+                "serving_profile": str(task.get("serving_profile", "")),
+                "runtime_environment": {
+                    key: environment[key]
+                    for key in sorted(PRODUCTION_ENVIRONMENT_KEYS)
+                },
+            }
+        )
+    return identities
+
+
+def _current_integrity_runtime_identities(
+    control_state: Mapping[str, Any],
+    blocked: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    from slurm import schema5_control as control
+
+    current: list[dict[str, Any]] = []
+    for identity in blocked:
+        run_id = str(identity["run_id"])
+        environment = control.production_environment(
+            control_state, run_id=run_id
+        )
+        missing = sorted(PRODUCTION_ENVIRONMENT_KEYS - set(environment))
+        if missing:
+            raise DispatcherError(
+                "current schema-5 runtime identity is incomplete: "
+                + ", ".join(missing)
+            )
+        current.append(
+            {
+                "task_index": int(identity["task_index"]),
+                "run_id": run_id,
+                "cell_id": str(identity["cell_id"]),
+                "serving_profile": str(identity["serving_profile"]),
+                "runtime_environment": {
+                    key: str(environment[key])
+                    for key in sorted(PRODUCTION_ENVIRONMENT_KEYS)
+                },
+            }
+        )
+    return current
+
+
+def _integrity_identity_changes(
+    blocked: Sequence[Mapping[str, Any]],
+    current: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    if len(blocked) != len(current):
+        raise DispatcherError("integrity retirement task identity cardinality drifted")
+    changes: list[str] = []
+    for old, new in zip(blocked, current, strict=True):
+        if (
+            old.get("task_index") != new.get("task_index")
+            or old.get("run_id") != new.get("run_id")
+            or old.get("cell_id") != new.get("cell_id")
+        ):
+            raise DispatcherError(
+                "integrity retirement coordinate identity changed unexpectedly"
+            )
+        task_changes: list[str] = []
+        if old.get("serving_profile") != new.get("serving_profile"):
+            task_changes.append("serving_profile")
+        old_environment = old.get("runtime_environment")
+        new_environment = new.get("runtime_environment")
+        if not isinstance(old_environment, Mapping) or not isinstance(
+            new_environment, Mapping
+        ):
+            raise DispatcherError("integrity retirement runtime identity is malformed")
+        task_changes.extend(
+            key
+            for key in sorted(PRODUCTION_ENVIRONMENT_KEYS)
+            if old_environment.get(key) != new_environment.get(key)
+        )
+        if not task_changes:
+            raise DispatcherError(
+                "integrity-blocked coordinates cannot be retired until their "
+                "release, rollout, fleet, environment, policy, or profile identity "
+                "changes"
+            )
+        prefix = (
+            f"{int(old['task_index'])}:{old['run_id']}:{old['cell_id']}:"
+        )
+        changes.extend(prefix + field for field in task_changes)
+    return sorted(set(changes))
+
+
+def _validated_integrity_retirement_semantic_evidence(
+    control_state_dir: Path,
+    *,
+    evidence_path: Path,
+    expected_sha256: str,
+    blocked_at: float,
+) -> dict[str, Any]:
+    from slurm import schema5_control as control
+
+    report, observation, observed_sha256 = control._read_admission_ramp_evidence(
+        control_state_dir,
+        evidence_path,
+        expected_sha256,
+    )
+    if (
+        observation.get("cadence") not in {"semantic", "daily"}
+        or observation.get("semantic_integrity_clean") is not True
+        or float(observation.get("committed_timestamp", -1)) < blocked_at
+    ):
+        raise DispatcherError(
+            "integrity retirement requires a clean sealed semantic scan after "
+            "the blocked admission incident"
+        )
+    return {
+        "path": str(evidence_path.expanduser().resolve()),
+        "sha256": observed_sha256,
+        "captured_timestamp": float(observation["captured_timestamp"]),
+        "committed_timestamp": float(observation["committed_timestamp"]),
+        "cadence": str(observation["cadence"]),
+        "control_immutable_sha256": str(
+            observation["control_immutable_sha256"]
+        ),
+        "rollout_generation": int(observation["rollout_generation"]),
+        "fleet_generation": str(observation["fleet_generation"]),
+        "report_sha256": hashlib.sha256(
+            (json.dumps(report, indent=2, sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+    }
+
+
+def _bind_integrity_retirement_semantic_to_current_control(
+    control_state: Mapping[str, Any],
+    semantic_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a clean scan to the exact post-remediation control/fleet identity."""
+
+    immutable_sha256 = str(control_state.get("immutable_sha256", ""))
+    rollout_generation = control_state.get("rollout_generation")
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", immutable_sha256) is None
+        or not isinstance(rollout_generation, int)
+        or isinstance(rollout_generation, bool)
+        or rollout_generation < 1
+        or semantic_evidence.get("control_immutable_sha256")
+        != immutable_sha256
+        or semantic_evidence.get("rollout_generation")
+        != rollout_generation
+    ):
+        raise DispatcherError(
+            "integrity retirement semantic scan does not bind the current "
+            "immutable control and rollout generation"
+        )
+
+    open_epochs = [
+        epoch
+        for epoch in control_state.get("throughput_epochs", [])
+        if isinstance(epoch, Mapping) and epoch.get("closed_at") is None
+    ]
+    if len(open_epochs) != 1:
+        raise DispatcherError(
+            "integrity retirement requires exactly one current throughput epoch"
+        )
+    epoch = open_epochs[0]
+    fleet_generation = semantic_evidence.get("fleet_generation")
+    if (
+        not isinstance(fleet_generation, str)
+        or not fleet_generation
+        or epoch.get("fleet_generation") != fleet_generation
+        or epoch.get("rollout_generation") != rollout_generation
+        or not isinstance(epoch.get("started_timestamp"), (int, float))
+        or isinstance(epoch.get("started_timestamp"), bool)
+    ):
+        raise DispatcherError(
+            "integrity retirement semantic scan does not bind the current "
+            "fleet generation"
+        )
+
+    ramp = control_state.get("admission_ramp")
+    last_observation = (
+        ramp.get("last_observation") if isinstance(ramp, Mapping) else None
+    )
+    if (
+        not isinstance(last_observation, Mapping)
+        or last_observation.get("path") != semantic_evidence.get("path")
+        or last_observation.get("sha256") != semantic_evidence.get("sha256")
+        or last_observation.get("cadence") != semantic_evidence.get("cadence")
+        or last_observation.get("captured_timestamp")
+        != semantic_evidence.get("captured_timestamp")
+        or last_observation.get("timestamp")
+        != semantic_evidence.get("committed_timestamp")
+    ):
+        raise DispatcherError(
+            "integrity retirement semantic scan is not the current sealed "
+            "control observation"
+        )
+
+    identity_timestamps: list[float] = []
+    created_timestamp = control_state.get("created_timestamp")
+    if (
+        isinstance(created_timestamp, (int, float))
+        and not isinstance(created_timestamp, bool)
+        and math.isfinite(float(created_timestamp))
+    ):
+        identity_timestamps.append(float(created_timestamp))
+    resume_intent = control_state.get("resume_intent")
+    if (
+        isinstance(resume_intent, Mapping)
+        and resume_intent.get("rollout_generation") == rollout_generation
+        and isinstance(resume_intent.get("created_timestamp"), (int, float))
+        and not isinstance(resume_intent.get("created_timestamp"), bool)
+    ):
+        identity_timestamps.append(float(resume_intent["created_timestamp"]))
+    capacity = control_state.get("capacity")
+    current_contract = (
+        capacity.get("current_contract")
+        if isinstance(capacity, Mapping)
+        else None
+    )
+    if isinstance(current_contract, Mapping):
+        activated_timestamp = current_contract.get("activated_timestamp")
+        if (
+            not isinstance(activated_timestamp, (int, float))
+            or isinstance(activated_timestamp, bool)
+            or not math.isfinite(float(activated_timestamp))
+        ):
+            raise DispatcherError(
+                "current capacity contract lacks its activation timestamp"
+            )
+        identity_timestamps.append(float(activated_timestamp))
+    if not identity_timestamps:
+        raise DispatcherError(
+            "current post-remediation control identity has no durable start time"
+        )
+    identity_effective_timestamp = max(identity_timestamps)
+    captured = float(semantic_evidence["captured_timestamp"])
+    committed = float(semantic_evidence["committed_timestamp"])
+    if (
+        captured < identity_effective_timestamp
+        or committed < identity_effective_timestamp
+        or committed < float(epoch["started_timestamp"])
+    ):
+        raise DispatcherError(
+            "integrity retirement semantic scan predates the current "
+            "post-remediation identity"
+        )
+    return {
+        **copy.deepcopy(dict(semantic_evidence)),
+        "identity_effective_timestamp": identity_effective_timestamp,
+        "throughput_epoch": int(epoch["epoch"]),
+        "throughput_epoch_started_timestamp": float(
+            epoch["started_timestamp"]
+        ),
+    }
+
+
+def _matching_integrity_acknowledgement(
+    control_state: Mapping[str, Any],
+    *,
+    note: str,
+    blocked_at: float,
+    semantic_committed_at: float,
+) -> dict[str, Any] | None:
+    matches: list[dict[str, Any]] = []
+    for row in control_state.get("transition_history", []):
+        details = row.get("details") if isinstance(row, Mapping) else None
+        timestamp = row.get("timestamp") if isinstance(row, Mapping) else None
+        if (
+            row.get("event") != "admission_safety_hold_acknowledged"
+            or not isinstance(details, Mapping)
+            or not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or float(timestamp) < max(blocked_at, semantic_committed_at)
+            or details.get("operator_note") != note
+            or DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+            not in details.get("previous_reasons", [])
+        ):
+            continue
+        matches.append(
+            {
+                "timestamp": float(timestamp),
+                "at": str(row.get("at", "")),
+                "operator_note": note,
+                "transition_sha256": hashlib.sha256(
+                    (
+                        json.dumps(row, sort_keys=True, separators=(",", ":"))
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    if len(matches) > 1:
+        raise DispatcherError(
+            "multiple integrity acknowledgements ambiguously match this incident"
+        )
+    return None if not matches else matches[0]
+
+
+def _ensure_integrity_retirement_acknowledgement(
+    control_state_dir: Path,
+    *,
+    note: str,
+    blocked_at: float,
+    semantic_evidence: Mapping[str, Any],
+    now: float,
+) -> dict[str, Any]:
+    """Use the ordinary integrity-hold workflow and return its exact audit binding."""
+
+    from slurm import schema5_control as control
+
+    current = control.load_control(control_state_dir, verify_files=True)
+    prior = _matching_integrity_acknowledgement(
+        current,
+        note=note,
+        blocked_at=blocked_at,
+        semantic_committed_at=float(
+            semantic_evidence["committed_timestamp"]
+        ),
+    )
+    if prior is not None:
+        return prior
+    hold = current.get("admission_safety_hold")
+    if (
+        not isinstance(hold, Mapping)
+        or hold.get("active") is not True
+        or DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+        not in hold.get("reasons", [])
+    ):
+        raise DispatcherError(
+            "integrity retirement lacks an active or previously acknowledged "
+            "dispatcher integrity hold"
+        )
+    control.resolve_alert(
+        control_state_dir,
+        dedupe_key=DISPATCHER_SUBMISSION_INTEGRITY_ALERT,
+        now=now,
+    )
+    control.update_admission_safety_hold(
+        control_state_dir,
+        semantic_scan_clean=True,
+        now=now,
+    )
+    control.acknowledge_admission_hold(
+        control_state_dir,
+        note=note,
+        now=now,
+    )
+    current = control.load_control(control_state_dir, verify_files=True)
+    acknowledgement = _matching_integrity_acknowledgement(
+        current,
+        note=note,
+        blocked_at=blocked_at,
+        semantic_committed_at=float(
+            semantic_evidence["committed_timestamp"]
+        ),
+    )
+    if acknowledgement is None:
+        raise DispatcherError(
+            "integrity-hold acknowledgement was not durably recorded"
+        )
+    return acknowledgement
+
+
+def _integrity_scheduler_absence(
+    batch_id: str,
+    *,
+    scheduler_snapshot: Any,
+) -> dict[str, Any]:
+    rows, live_ids = _complete_scheduler_rows(
+        scheduler_snapshot,
+        observation=f"integrity retirement {batch_id}",
+    )
+    expected_name = f"asys-dispatch-{batch_id[-10:]}"
+    expected_comment = f"asys-schema5-intent:{batch_id}"
+    related: list[str] = []
+    normalized_jobs: list[dict[str, Any]] = []
+    for job in tuple(getattr(scheduler_snapshot, "jobs", ())):
+        row = {
+            "job_id": str(getattr(job, "job_id", "")),
+            "source": str(getattr(job, "source", "")),
+            "active": bool(getattr(job, "active", False)),
+            "job_name": str(getattr(job, "job_name", "")),
+            "comment": str(getattr(job, "comment", "")),
+            "command": str(getattr(job, "command", "")),
+        }
+        normalized_jobs.append(row)
+        if (
+            row["job_name"] == expected_name
+            or row["comment"] == expected_comment
+            or _command_binds_stdin_submission(row["command"], batch_id)
+        ):
+            related.append(f"{row['source']}:{row['job_id']}")
+    if related:
+        raise DispatcherError(
+            "integrity retirement cannot prove the blocked admission absent "
+            "from joined scheduler truth: " + ", ".join(sorted(related))
+        )
+    normalized_jobs.sort(
+        key=lambda row: (
+            row["job_id"],
+            row["source"],
+            row["job_name"],
+            row["comment"],
+            row["command"],
+        )
+    )
+    captured_at = float(getattr(scheduler_snapshot, "captured_at"))
+    return {
+        "schema_version": INTEGRITY_RETIREMENT_SCHEMA_VERSION,
+        "kind": "schema5_dispatch_integrity_scheduler_absence",
+        "batch_id": batch_id,
+        "expected_job_name": expected_name,
+        "expected_scheduler_comment": expected_comment,
+        "expected_submission_argv": _stdin_submission_argv(batch_id),
+        "expected_submission_argv_sha256": _stdin_submission_argv_sha256(
+            batch_id
+        ),
+        "captured_at": captured_at,
+        "squeue_ok": True,
+        "sacct_ok": True,
+        "related_job_ids": [],
+        "live_job_ids": list(live_ids),
+        "live_row_count": len(rows),
+        "joined_scheduler_identity_sha256": hashlib.sha256(
+            json.dumps(
+                normalized_jobs,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _verify_integrity_retirement_receipt(
+    batch_id: str,
+    intent: Mapping[str, Any],
+) -> dict[str, Any]:
+    receipt_path = Path(str(intent.get("retirement_receipt_path", "")))
+    receipt, receipt_raw = _strict_readonly_json_artifact(
+        receipt_path,
+        description=f"integrity retirement receipt {batch_id}",
+    )
+    retirement_root = receipt_path.parent
+    expected_root = _integrity_retirement_root(
+        retirement_root.parent.parent, batch_id
+    )
+    if retirement_root != expected_root:
+        raise DispatcherError(
+            f"integrity retirement receipt {batch_id} escaped its state root"
+        )
+    required = {
+        "schema_version",
+        "kind",
+        "retirement_id",
+        "batch_id",
+        "retirement_intent_path",
+        "retirement_intent_sha256",
+        "scheduler_absence_path",
+        "scheduler_absence_sha256",
+        "semantic_evidence",
+        "acknowledgement",
+        "identity_changes",
+        "archived_preimages",
+        "completed_at",
+        "completed_timestamp",
+        "completion_id",
+    }
+    stable = dict(receipt)
+    completion_id = stable.pop("completion_id", None)
+    if (
+        set(receipt) != required
+        or receipt.get("schema_version")
+        != INTEGRITY_RETIREMENT_SCHEMA_VERSION
+        or receipt.get("kind")
+        != "schema5_dispatch_integrity_retirement"
+        or receipt.get("batch_id") != batch_id
+        or receipt.get("retirement_id") != intent.get("retirement_id")
+        or completion_id
+        != hashlib.sha256(
+            json.dumps(
+                stable, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        or hashlib.sha256(receipt_raw).hexdigest()
+        != intent.get("retirement_receipt_sha256")
+    ):
+        raise DispatcherError(
+            f"integrity retirement receipt {batch_id} identity drifted"
+        )
+    root_objects = (
+        (
+            "retirement intent",
+            receipt.get("retirement_intent_path"),
+            receipt.get("retirement_intent_sha256"),
+        ),
+        (
+            "scheduler absence",
+            receipt.get("scheduler_absence_path"),
+            receipt.get("scheduler_absence_sha256"),
+        ),
+    )
+    loaded_root_objects: dict[str, dict[str, Any]] = {}
+    for description, path_value, expected_sha256 in root_objects:
+        path = Path(str(path_value))
+        if path.parent != retirement_root:
+            raise DispatcherError(
+                f"integrity retirement {description} escaped its archive"
+            )
+        value, raw = _strict_readonly_json_artifact(
+            path, description=f"{description} {batch_id}"
+        )
+        loaded_root_objects[description] = value
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise DispatcherError(
+                f"integrity retirement {description} hash drifted"
+            )
+    retirement_intent = loaded_root_objects["retirement intent"]
+    scheduler_absence = loaded_root_objects["scheduler absence"]
+    if (
+        retirement_intent.get("kind")
+        != "schema5_dispatch_integrity_retirement_intent"
+        or retirement_intent.get("batch_id") != batch_id
+        or retirement_intent.get("retirement_id")
+        != receipt.get("retirement_id")
+        or scheduler_absence.get("kind")
+        != "schema5_dispatch_integrity_scheduler_absence"
+        or scheduler_absence.get("batch_id") != batch_id
+        or scheduler_absence.get("related_job_ids") != []
+        or scheduler_absence.get("squeue_ok") is not True
+        or scheduler_absence.get("sacct_ok") is not True
+        or scheduler_absence.get("expected_submission_argv_sha256")
+        != _stdin_submission_argv_sha256(batch_id)
+    ):
+        raise DispatcherError(
+            f"integrity retirement {batch_id} evidence contract drifted"
+        )
+    semantic = receipt.get("semantic_evidence")
+    semantic_required = {
+        "path",
+        "sha256",
+        "captured_timestamp",
+        "committed_timestamp",
+        "cadence",
+        "control_immutable_sha256",
+        "rollout_generation",
+        "fleet_generation",
+        "report_sha256",
+        "identity_effective_timestamp",
+        "throughput_epoch",
+        "throughput_epoch_started_timestamp",
+    }
+    if (
+        not isinstance(semantic, Mapping)
+        or set(semantic) != semantic_required
+        or retirement_intent.get("semantic_evidence") != semantic
+        or not isinstance(semantic.get("path"), str)
+        or not Path(semantic["path"]).is_absolute()
+        or re.fullmatch(r"[0-9a-f]{64}", str(semantic.get("sha256", "")))
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(semantic.get("control_immutable_sha256", "")),
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(semantic.get("report_sha256", ""))
+        )
+        is None
+        or semantic.get("cadence") not in {"semantic", "daily"}
+        or not isinstance(semantic.get("rollout_generation"), int)
+        or isinstance(semantic.get("rollout_generation"), bool)
+        or semantic["rollout_generation"] < 1
+        or not isinstance(semantic.get("fleet_generation"), str)
+        or not semantic["fleet_generation"]
+        or not isinstance(semantic.get("throughput_epoch"), int)
+        or isinstance(semantic.get("throughput_epoch"), bool)
+        or semantic["throughput_epoch"] < 1
+        or any(
+            not isinstance(semantic.get(field), (int, float))
+            or isinstance(semantic.get(field), bool)
+            or not math.isfinite(float(semantic[field]))
+            for field in (
+                "captured_timestamp",
+                "committed_timestamp",
+                "identity_effective_timestamp",
+                "throughput_epoch_started_timestamp",
+            )
+        )
+        or float(semantic["captured_timestamp"])
+        < float(semantic["identity_effective_timestamp"])
+        or float(semantic["committed_timestamp"])
+        < float(semantic["captured_timestamp"])
+        or float(semantic["committed_timestamp"])
+        < float(semantic["throughput_epoch_started_timestamp"])
+    ):
+        raise DispatcherError(
+            f"integrity retirement {batch_id} semantic binding is invalid"
+        )
+    _semantic_value, semantic_raw = _strict_readonly_json_artifact(
+        Path(semantic["path"]),
+        description=f"integrity retirement semantic evidence {batch_id}",
+    )
+    if hashlib.sha256(semantic_raw).hexdigest() != semantic["sha256"]:
+        raise DispatcherError(
+            f"integrity retirement {batch_id} semantic evidence drifted"
+        )
+    archived = receipt.get("archived_preimages")
+    if not isinstance(archived, list) or len(archived) != 3:
+        raise DispatcherError(
+            f"integrity retirement {batch_id} has incomplete preimages"
+        )
+    observed_names: set[str] = set()
+    for record in archived:
+        if not isinstance(record, Mapping) or set(record) != {
+            "logical_name",
+            "source_path",
+            "source_sha256",
+            "source_size",
+            "archive_path",
+            "archive_sha256",
+            "archive_size",
+        }:
+            raise DispatcherError(
+                f"integrity retirement {batch_id} preimage record is malformed"
+            )
+        name = str(record["logical_name"])
+        archive_path = Path(str(record["archive_path"]))
+        if (
+            name in observed_names
+            or archive_path.parent != retirement_root / "preimages"
+            or record["archive_sha256"] != record["source_sha256"]
+            or record["archive_size"] != record["source_size"]
+        ):
+            raise DispatcherError(
+                f"integrity retirement {batch_id} preimage identity drifted"
+            )
+        observed_names.add(name)
+        _lexical, raw = _stable_readonly_artifact(
+            archive_path,
+            description=f"integrity retirement {name} preimage",
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() != record["archive_sha256"]
+            or len(raw) != record["archive_size"]
+        ):
+            raise DispatcherError(
+                f"integrity retirement {batch_id} preimage hash drifted"
+            )
+    if observed_names != {"blocked_intent", "batch_manifest", "sbatch"}:
+        raise DispatcherError(
+            f"integrity retirement {batch_id} preimage set drifted"
+        )
+    for directory in (retirement_root, retirement_root / "preimages"):
+        if (
+            directory.is_symlink()
+            or not directory.is_dir()
+            or stat.S_IMODE(directory.stat().st_mode) & 0o222
+        ):
+            raise DispatcherError(
+                f"integrity retirement {batch_id} archive is not sealed"
+            )
+    return receipt
+
+
+def retire_integrity_blocked_intent(
+    state_dir: Path,
+    *,
+    control_state_dir: Path,
+    batch_id: str,
+    semantic_evidence_path: Path,
+    semantic_evidence_sha256: str,
+    operator_note: str,
+    scheduler_reader: Any | None = None,
+    now: float | None = None,
+    crash_hook: Any | None = None,
+) -> dict[str, Any]:
+    """Evidence-preservingly retire one deterministic pre-sbatch failure."""
+
+    from slurm import schema5_control as control
+
+    if not isinstance(operator_note, str) or not operator_note.strip():
+        raise DispatcherError("integrity retirement requires an operator note")
+    note = operator_note.strip()
+    timestamp = time.time() if now is None else float(now)
+    state_dir = Path(
+        os.path.abspath(os.fspath(state_dir.expanduser()))
+    )
+    control_state_dir = Path(
+        os.path.abspath(os.fspath(control_state_dir.expanduser()))
+    )
+    ledger_path = state_dir / "ledger.json"
+    initial = load_production_ledger(ledger_path)
+    initial_intent = initial.get("intents", {}).get(batch_id)
+    if not isinstance(initial_intent, Mapping):
+        raise DispatcherError(f"unknown dispatcher intent {batch_id!r}")
+    if initial_intent.get("state") == "integrity_retired":
+        return _verify_integrity_retirement_receipt(batch_id, initial_intent)
+    if initial_intent.get("state") != "integrity_blocked":
+        raise DispatcherError(
+            f"dispatcher intent {batch_id!r} is not integrity-blocked"
+        )
+    blocked_at = float(initial_intent["integrity_blocked_at"])
+    semantic_source = _validated_integrity_retirement_semantic_evidence(
+        control_state_dir,
+        evidence_path=semantic_evidence_path,
+        expected_sha256=semantic_evidence_sha256,
+        blocked_at=blocked_at,
+    )
+    acknowledgement = _ensure_integrity_retirement_acknowledgement(
+        control_state_dir,
+        note=note,
+        blocked_at=blocked_at,
+        semantic_evidence=semantic_source,
+        now=timestamp,
+    )
+
+    with global_dispatcher_lock(state_dir.parent):
+        with singleton_lock(state_dir):
+            with control.admission_boundary_lock(control_state_dir):
+                ledger = load_production_ledger(ledger_path)
+                blocked_intent = ledger.get("intents", {}).get(batch_id)
+                if not isinstance(blocked_intent, Mapping):
+                    raise DispatcherError(
+                        f"dispatcher intent {batch_id!r} disappeared"
+                    )
+                if blocked_intent.get("state") == "integrity_retired":
+                    return _verify_integrity_retirement_receipt(
+                        batch_id, blocked_intent
+                    )
+                if blocked_intent.get("state") != "integrity_blocked":
+                    raise DispatcherError(
+                        f"dispatcher intent {batch_id!r} changed state"
+                    )
+                if dict(blocked_intent) != dict(initial_intent):
+                    raise DispatcherError(
+                        "integrity-blocked intent changed during remediation"
+                    )
+                control_state = control.load_control(
+                    control_state_dir, verify_files=True
+                )
+                fresh_semantic_source = (
+                    _validated_integrity_retirement_semantic_evidence(
+                        control_state_dir,
+                        evidence_path=semantic_evidence_path,
+                        expected_sha256=semantic_evidence_sha256,
+                        blocked_at=blocked_at,
+                    )
+                )
+                if fresh_semantic_source != semantic_source:
+                    raise DispatcherError(
+                        "integrity retirement semantic evidence changed before "
+                        "the admission-locked transaction"
+                    )
+                semantic = (
+                    _bind_integrity_retirement_semantic_to_current_control(
+                        control_state,
+                        fresh_semantic_source,
+                    )
+                )
+                confirmed_ack = _matching_integrity_acknowledgement(
+                    control_state,
+                    note=note,
+                    blocked_at=blocked_at,
+                    semantic_committed_at=float(
+                        semantic["committed_timestamp"]
+                    ),
+                )
+                if confirmed_ack != acknowledgement:
+                    raise DispatcherError(
+                        "integrity acknowledgement changed before retirement"
+                    )
+                blocked_identities = _blocked_integrity_runtime_identities(
+                    blocked_intent
+                )
+                current_identities = _current_integrity_runtime_identities(
+                    control_state, blocked_identities
+                )
+                identity_changes = _integrity_identity_changes(
+                    blocked_identities, current_identities
+                )
+                manifest_path, manifest_raw = _stable_readonly_artifact(
+                    Path(str(blocked_intent["batch_manifest"])),
+                    description=f"blocked batch {batch_id} manifest",
+                )
+                sbatch_path, sbatch_raw = _stable_readonly_artifact(
+                    Path(str(blocked_intent["sbatch_path"])),
+                    description=f"blocked batch {batch_id} sbatch",
+                )
+                blocked_raw = (
+                    json.dumps(
+                        dict(blocked_intent), indent=2, sort_keys=True
+                    )
+                    + "\n"
+                ).encode("utf-8")
+                source_preimages = (
+                    (
+                        "blocked_intent",
+                        str(ledger_path),
+                        blocked_raw,
+                        "blocked_intent.json",
+                    ),
+                    (
+                        "batch_manifest",
+                        str(manifest_path),
+                        manifest_raw,
+                        "batch_manifest.preimage",
+                    ),
+                    (
+                        "sbatch",
+                        str(sbatch_path),
+                        sbatch_raw,
+                        "sbatch.preimage",
+                    ),
+                )
+                root = _integrity_retirement_root(state_dir, batch_id)
+                _ensure_integrity_retirement_directory(root)
+                preimages_root = root / "preimages"
+                _ensure_integrity_retirement_directory(preimages_root)
+                source_records = [
+                    {
+                        "logical_name": logical_name,
+                        "source_path": source_path,
+                        "source_sha256": hashlib.sha256(raw).hexdigest(),
+                        "source_size": len(raw),
+                        "archive_path": str(preimages_root / archive_name),
+                    }
+                    for logical_name, source_path, raw, archive_name
+                    in source_preimages
+                ]
+                intent_identity = {
+                    "schema_version": INTEGRITY_RETIREMENT_SCHEMA_VERSION,
+                    "kind": "schema5_dispatch_integrity_retirement_intent",
+                    "batch_id": batch_id,
+                    "blocked_at": blocked_at,
+                    "blocked_intent_sha256": hashlib.sha256(
+                        blocked_raw
+                    ).hexdigest(),
+                    "source_preimages": source_records,
+                    "semantic_evidence": semantic,
+                    "acknowledgement": acknowledgement,
+                    "operator_note": note,
+                    "operator_note_sha256": hashlib.sha256(
+                        note.encode("utf-8")
+                    ).hexdigest(),
+                    "blocked_runtime_identities": blocked_identities,
+                    "current_runtime_identities": current_identities,
+                    "identity_changes": identity_changes,
+                    "control_immutable_sha256": str(
+                        control_state["immutable_sha256"]
+                    ),
+                    "control_rollout_generation": int(
+                        control_state["rollout_generation"]
+                    ),
+                    "expected_scheduler_comment": (
+                        f"asys-schema5-intent:{batch_id}"
+                    ),
+                    "expected_submission_argv_sha256": (
+                        _stdin_submission_argv_sha256(batch_id)
+                    ),
+                }
+                retirement_id = hashlib.sha256(
+                    json.dumps(
+                        intent_identity,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                retirement_intent = {
+                    **intent_identity,
+                    "retirement_id": retirement_id,
+                    # A retry must render the exact same marker-first intent.
+                    "created_at": float(acknowledgement["timestamp"]),
+                }
+                retirement_intent_path = (
+                    root / INTEGRITY_RETIREMENT_INTENT_FILENAME
+                )
+                _publish_readonly_json_once(
+                    retirement_intent_path, retirement_intent
+                )
+                observed_retirement_intent, retirement_intent_raw = (
+                    _strict_readonly_json_artifact(
+                        retirement_intent_path,
+                        description=f"integrity retirement intent {batch_id}",
+                    )
+                )
+                if observed_retirement_intent != retirement_intent:
+                    raise DispatcherError(
+                        "integrity retirement intent conflicts with replay"
+                    )
+                if crash_hook is not None:
+                    crash_hook("after_intent")
+                archived_records: list[dict[str, Any]] = []
+                for (
+                    logical_name,
+                    source_path,
+                    raw,
+                    archive_name,
+                ) in source_preimages:
+                    archive_path = preimages_root / archive_name
+                    _publish_readonly_bytes_once(archive_path, raw)
+                    _lexical, archived_raw = _stable_readonly_artifact(
+                        archive_path,
+                        description=(
+                            f"integrity retirement {logical_name} preimage"
+                        ),
+                    )
+                    if archived_raw != raw:
+                        raise DispatcherError(
+                            f"integrity retirement {logical_name} preimage drifted"
+                        )
+                    digest = hashlib.sha256(raw).hexdigest()
+                    archived_records.append(
+                        {
+                            "logical_name": logical_name,
+                            "source_path": source_path,
+                            "source_sha256": digest,
+                            "source_size": len(raw),
+                            "archive_path": str(archive_path),
+                            "archive_sha256": digest,
+                            "archive_size": len(raw),
+                        }
+                    )
+                archived_records.sort(key=lambda row: row["logical_name"])
+                if crash_hook is not None:
+                    crash_hook("after_preimages")
+                snapshot = (
+                    control.query_scheduler(tolerate_errors=False)
+                    if scheduler_reader is None
+                    else scheduler_reader()
+                )
+                fresh_scheduler_absence = _integrity_scheduler_absence(
+                    batch_id, scheduler_snapshot=snapshot
+                )
+                scheduler_path = (
+                    root / INTEGRITY_RETIREMENT_SCHEDULER_FILENAME
+                )
+                if os.path.lexists(scheduler_path):
+                    scheduler_absence, scheduler_raw = (
+                        _strict_readonly_json_artifact(
+                            scheduler_path,
+                            description=(
+                                "integrity retirement scheduler absence "
+                                f"{batch_id}"
+                            ),
+                        )
+                    )
+                    stable_scheduler_fields = {
+                        "schema_version",
+                        "kind",
+                        "batch_id",
+                        "expected_job_name",
+                        "expected_scheduler_comment",
+                        "expected_submission_argv",
+                        "expected_submission_argv_sha256",
+                        "squeue_ok",
+                        "sacct_ok",
+                        "related_job_ids",
+                    }
+                    if any(
+                        scheduler_absence.get(field)
+                        != fresh_scheduler_absence.get(field)
+                        for field in stable_scheduler_fields
+                    ):
+                        raise DispatcherError(
+                            "integrity retirement scheduler evidence identity "
+                            "drifted on replay"
+                        )
+                else:
+                    scheduler_absence = fresh_scheduler_absence
+                    _publish_readonly_json_once(
+                        scheduler_path, scheduler_absence
+                    )
+                    observed_scheduler, scheduler_raw = (
+                        _strict_readonly_json_artifact(
+                            scheduler_path,
+                            description=(
+                                "integrity retirement scheduler absence "
+                                f"{batch_id}"
+                            ),
+                        )
+                    )
+                    if observed_scheduler != scheduler_absence:
+                        raise DispatcherError(
+                            "integrity retirement scheduler evidence conflicts "
+                            "with replay"
+                        )
+                if crash_hook is not None:
+                    crash_hook("after_scheduler_absence")
+                # Re-read every source after the external observation.  A path
+                # replacement cannot inherit authority from the archived preimage.
+                if (
+                    _stable_readonly_artifact(
+                        manifest_path,
+                        description=f"blocked batch {batch_id} manifest replay",
+                    )[1]
+                    != manifest_raw
+                    or _stable_readonly_artifact(
+                        sbatch_path,
+                        description=f"blocked batch {batch_id} sbatch replay",
+                    )[1]
+                    != sbatch_raw
+                ):
+                    raise DispatcherError(
+                        "blocked dispatcher artifacts changed during retirement"
+                    )
+                final_semantic_source = (
+                    _validated_integrity_retirement_semantic_evidence(
+                        control_state_dir,
+                        evidence_path=semantic_evidence_path,
+                        expected_sha256=semantic_evidence_sha256,
+                        blocked_at=blocked_at,
+                    )
+                )
+                final_semantic = (
+                    _bind_integrity_retirement_semantic_to_current_control(
+                        control_state,
+                        final_semantic_source,
+                    )
+                )
+                if (
+                    final_semantic_source != semantic_source
+                    or final_semantic != semantic
+                ):
+                    raise DispatcherError(
+                        "integrity retirement semantic/current-control binding "
+                        "changed before receipt publication"
+                    )
+                stable = {
+                    "schema_version": INTEGRITY_RETIREMENT_SCHEMA_VERSION,
+                    "kind": "schema5_dispatch_integrity_retirement",
+                    "retirement_id": retirement_id,
+                    "batch_id": batch_id,
+                    "retirement_intent_path": str(
+                        retirement_intent_path
+                    ),
+                    "retirement_intent_sha256": hashlib.sha256(
+                        retirement_intent_raw
+                    ).hexdigest(),
+                    "scheduler_absence_path": str(scheduler_path),
+                    "scheduler_absence_sha256": hashlib.sha256(
+                        scheduler_raw
+                    ).hexdigest(),
+                    "semantic_evidence": semantic,
+                    "acknowledgement": acknowledgement,
+                    "identity_changes": identity_changes,
+                    "archived_preimages": archived_records,
+                    "completed_at": float(scheduler_absence["captured_at"]),
+                    "completed_timestamp": float(
+                        scheduler_absence["captured_at"]
+                    ),
+                }
+                receipt = {
+                    **stable,
+                    "completion_id": hashlib.sha256(
+                        json.dumps(
+                            stable,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                }
+                receipt_path = (
+                    root / INTEGRITY_RETIREMENT_COMPLETE_FILENAME
+                )
+                _publish_readonly_json_once(receipt_path, receipt)
+                _seal_integrity_retirement_tree(root)
+                if crash_hook is not None:
+                    crash_hook("after_receipt")
+                receipt_raw = _stable_readonly_artifact(
+                    receipt_path,
+                    description=f"integrity retirement receipt {batch_id}",
+                )[1]
+                updated = copy.deepcopy(ledger)
+                target = updated["intents"][batch_id]
+                if target.get("fairness_committed") is not False:
+                    raise DispatcherError(
+                        "integrity retirement cannot preserve committed fairness"
+                    )
+                target.update(
+                    {
+                        "state": "integrity_retired",
+                        "integrity_retired_at": timestamp,
+                        "retirement_id": retirement_id,
+                        "retirement_receipt_path": str(receipt_path),
+                        "retirement_receipt_sha256": hashlib.sha256(
+                            receipt_raw
+                        ).hexdigest(),
+                        "retirement_semantic_report_path": semantic["path"],
+                        "retirement_semantic_report_sha256": semantic["sha256"],
+                        "retirement_scheduler_absence_sha256": (
+                            receipt["scheduler_absence_sha256"]
+                        ),
+                        "retirement_operator_note_sha256": hashlib.sha256(
+                            note.encode("utf-8")
+                        ).hexdigest(),
+                        "retirement_identity_changes": identity_changes,
+                    }
+                )
+                updated["updated_at"] = timestamp
+                validate_production_ledger_structure(
+                    updated, source=str(ledger_path)
+                )
+                _atomic_write_json(ledger_path, updated)
+                persisted = load_production_ledger(ledger_path)
+                persisted_intent = persisted["intents"][batch_id]
+                verified = _verify_integrity_retirement_receipt(
+                    batch_id, persisted_intent
+                )
+                return verified
+
+
+def _recover_dispatcher_submission_integrity_hold(
+    state_dir: Path,
+    *,
+    ledger: Mapping[str, Any],
+    now: float,
+) -> tuple[str, ...]:
+    """Reconstruct the global hold from every durable blocked admission intent.
+
+    The intent is written while the dispatcher owns the admission boundary, whereas
+    alert persistence acquires that boundary itself.  A hard kill between those two
+    transactions is therefore recoverable only if every later production poll checks
+    the ledger *before* reading capacity or planning WDRR.  Malformed blocked records
+    fail closed instead of being silently ignored.
+    """
+
+    blocked: list[str] = []
+    for batch_id, intent in ledger.get("intents", {}).items():
+        if not isinstance(intent, Mapping):
+            continue
+        if intent.get("state") == "integrity_retired":
+            try:
+                _verify_integrity_retirement_receipt(batch_id, intent)
+            except DispatcherError as exc:
+                _persist_dispatcher_submission_integrity_hold(
+                    state_dir,
+                    message=(
+                        "dispatcher retired-integrity archive failed sealed "
+                        f"verification for {batch_id}; admission remains fenced: {exc}"
+                    ),
+                    now=now,
+                )
+                raise SubmissionPreflightError(str(exc)) from exc
+            continue
+        if intent.get("state") != "integrity_blocked":
+            continue
+        if (
+            not isinstance(batch_id, str)
+            or not batch_id
+            or intent.get("integrity_alert_key")
+            != DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+            or not isinstance(intent.get("error"), str)
+            or not intent["error"]
+            or not isinstance(intent.get("tasks"), list)
+            or not intent["tasks"]
+        ):
+            raise SubmissionPreflightError(
+                "durable integrity-blocked dispatcher intent is malformed"
+            )
+        blocked.append(batch_id)
+    if not blocked:
+        return ()
+    _persist_dispatcher_submission_integrity_hold(
+        state_dir,
+        message=(
+            "dispatcher recovered durable immutable-admission provenance "
+            "failures before admission; exact coordinates remain fenced for "
+            "human review: "
+            + ", ".join(sorted(blocked))
+        ),
+        now=now,
+    )
+    return tuple(sorted(blocked))
+
+
+def _load_qualification_capacity_contract(
+    values: Mapping[str, Any],
+    authority: QualificationExecutionAuthority,
+) -> protected_capacity.ProtectedCapacityContract:
+    """Join the isolated qualification marker to its frozen execution source.
+
+    Qualification runs intentionally have no production control directory, so their
+    sealed execution authority is the sole equivalent of immutable control pins.  The
+    marker CLI binding must agree exactly with that authority before the certificate
+    may authenticate the annotated tag, full source tree, dispatcher, and
+    qualification-runner bytes.
+    """
+
+    protected = authority.payload.get("protected_capacity")
+    if not isinstance(protected, Mapping):
+        raise DispatcherError(
+            "qualification execution authority has no protected-capacity binding"
+        )
+    try:
+        supplied_path = Path(str(values["path"])).expanduser().resolve()
+        authorized_path = Path(str(protected["path"])).expanduser().resolve()
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise DispatcherError(
+            f"qualification protected-capacity path binding is invalid: {exc}"
+        ) from exc
+    if (
+        supplied_path != authorized_path
+        or str(values.get("sha256")) != str(protected.get("sha256"))
+        or str(values.get("marker_id")) != str(protected.get("marker_id"))
+        or str(values.get("release_git_commit"))
+        != str(authority.payload.get("release_git_commit"))
+    ):
+        raise DispatcherError(
+            "qualification protected-capacity CLI differs from the sealed "
+            "execution authority"
+        )
+    return protected_capacity.load_contract(
+        authorized_path,
+        expected_release_git_commit=str(
+            authority.payload["release_git_commit"]
+        ),
+        expected_release_tag_object=str(
+            authority.payload["release_tag_object"]
+        ),
+        expected_marker_id=str(protected["marker_id"]),
+        expected_sha256=str(protected["sha256"]),
+        expected_source_tree_sha256=str(
+            authority.payload["source_tree_sha256"]
+        ),
+        expected_dispatcher_source_sha256=str(
+            authority.execution["dispatcher_script_sha256"]
+        ),
+        expected_qualification_runner_source_sha256=str(
+            authority.execution["qualification_runner_script_sha256"]
+        ),
+    )
+
+
 def _dispatch_poll(
     args: argparse.Namespace,
     specs: Sequence[RunSpec],
@@ -2681,9 +6903,24 @@ def _dispatch_poll(
     protected_task_headroom: int | None = None
     control_state_dir = getattr(args, "control_state_dir", None)
     if control_state_dir is not None:
+        ledger = validate_production_ledger_structure(
+            ledger,
+            source=str(Path(control_state_dir) / "ledger.json"),
+        )
+    if control_state_dir is not None and not dry_run:
+        # This recovery cut must precede even the first admission-contract read.
+        # Thus a crash after the blocked intent fsync but before alert publication
+        # cannot let a successor observe the old nonzero ceiling or admit other cells.
+        _recover_dispatcher_submission_integrity_hold(
+            Path(control_state_dir),
+            ledger=ledger,
+            now=now,
+        )
+    if control_state_dir is not None:
         from slurm.schema5_control import (
             admission_contract_from_state,
             effective_fleet_contract_binding,
+            load_effective_protected_capacity_contract,
             load_control,
             production_environment_from_state,
         )
@@ -2691,13 +6928,21 @@ def _dispatch_poll(
         production_contract = admission_contract_from_state(control_state_dir)
         control = load_control(control_state_dir, verify_files=True)
         immutable = control["immutable"]
-        protected_ref = production_contract["protected_capacity"]
-        production_capacity_contract = protected_capacity.load_contract(
-            protected_ref["path"],
-            expected_release_git_commit=str(immutable["git_commit"]),
-            expected_marker_id=str(protected_ref["marker_id"]),
-            expected_sha256=str(protected_ref["sha256"]),
+        production_capacity_contract = (
+            load_effective_protected_capacity_contract(
+                control, verify_files=True
+            )
         )
+        protected_ref = production_contract["protected_capacity"]
+        if {
+            "path": str(production_capacity_contract.path),
+            "sha256": production_capacity_contract.sha256,
+            "marker_id": production_capacity_contract.marker_id,
+        } != protected_ref:
+            raise DispatcherError(
+                "production admission and live protected-capacity authorities "
+                "changed across the control read"
+            )
         fleet_binding = effective_fleet_contract_binding(
             control, verify_files=True
         )
@@ -2829,13 +7074,16 @@ def _dispatch_poll(
                 "exactly 384 scientific-client slots"
             )
         try:
-            qualification_capacity_contract = protected_capacity.load_contract(
-                qualification_values["path"],
-                expected_release_git_commit=str(
-                    qualification_values["release_git_commit"]
-                ),
-                expected_marker_id=str(qualification_values["marker_id"]),
-                expected_sha256=str(qualification_values["sha256"]),
+            qualification_execution_authority = (
+                load_qualification_execution_authority(
+                    str(qualification_execution_path)
+                )
+            )
+            qualification_capacity_contract = (
+                _load_qualification_capacity_contract(
+                    qualification_values,
+                    qualification_execution_authority,
+                )
             )
             qualification_client_placement = protected_capacity.authorize_client(
                 qualification_capacity_contract,
@@ -2844,36 +7092,39 @@ def _dispatch_poll(
                 required_slots=384,
                 required_reserve_jobs=64,
             )
-            protected_capacity.verify_live_placements(
-                qualification_capacity_contract,
-                role="client",
-                placements=[
-                    (str(args.cell_partition), str(qualification_qos))
+            qualification_release_root = Path(
+                qualification_execution_authority.execution[
+                    "release_worktree"
+                ]
+            )
+            qualification_model_contracts = load_model_contracts(
+                qualification_release_root / "configs" / "model_contracts.v1.json",
+                expected_sha256=(
+                    qualification_execution_authority.runtime_environment[
+                        "ASYS_MODEL_CONTRACT_SHA256"
+                    ]
+                ),
+            )
+            production_fleet = load_fleet_contract(
+                qualification_execution_authority.runtime_environment[
+                    "ASYS_FLEET_CONTRACT_PATH"
                 ],
-                required_time_limits_seconds={
-                    str(args.cell_partition): (
-                        scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                    )
-                },
+                model_contracts=qualification_model_contracts,
+                expected_sha256=(
+                    qualification_execution_authority.runtime_environment[
+                        "ASYS_FLEET_CONTRACT_SHA256"
+                    ]
+                ),
+                allow_capacity_layout=True,
             )
-            qualification_client_capacity = (
-                protected_capacity.capture_live_client_capacity(
-                    qualification_capacity_contract,
-                    partition=str(args.cell_partition),
-                    qos=str(qualification_qos),
-                    required_time_limit_seconds=(
-                        scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                    ),
-                    captured_timestamp=now,
-                )
-            )
-            qualification_execution_authority = (
-                load_qualification_execution_authority(
-                    str(qualification_execution_path)
-                )
-            )
+            for qualification_pool in {
+                spec.server_pool_root.resolve() for spec in specs
+            }:
+                production_fleet.verify_pool_root(qualification_pool)
         except (
             DispatcherError,
+            FleetContractError,
+            ModelContractError,
             scheduler_safety.SchedulerSafetyError,
             protected_capacity.ProtectedCapacityError,
         ) as exc:
@@ -3019,26 +7270,6 @@ def _dispatch_poll(
                 raise DispatcherError(
                     "schema-5 admission contract lacks client-capacity authority"
                 )
-            try:
-                assert production_capacity_contract is not None
-                production_client_capacity = (
-                    protected_capacity.capture_live_client_capacity(
-                        production_capacity_contract,
-                        partition=str(client_contract["partition"]),
-                        qos=str(client_contract["qos"]),
-                        required_time_limit_seconds=(
-                            scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                        ),
-                        captured_timestamp=now,
-                    )
-                )
-            except (
-                scheduler_safety.SchedulerSafetyError,
-                protected_capacity.ProtectedCapacityError,
-            ) as exc:
-                raise DispatcherError(
-                    f"schema-5 client QOS/TRES authority failed closed: {exc}"
-                ) from exc
             occupancy_partition = str(client_contract["partition"])
         else:
             scheduler_user = os.environ.get("USER", "")
@@ -3135,7 +7366,14 @@ def _dispatch_poll(
         model_contract_path=production_model_contract_path,
         validation_budget=args.validation_budget,
     )
-    trusted_nonclient_bindings: dict[str, dict[str, str]] = {}
+    if protected_admission and not dry_run:
+        # The shared protected-capacity reconciler accepts only the stable
+        # descriptor preimage on disk.  Publish this poll's fully reconciled state
+        # before asking it to discount any scientific allocation; an in-memory poll
+        # number or timestamp is never capacity evidence.
+        work["updated_at"] = time.time()
+        _atomic_write_json(args.ledger_path, work)
+    trusted_nonclient_bindings: dict[str, dict[str, Any]] = {}
     if protected_admission:
         if production_fleet is not None:
             expected_fleet_sha256 = production_fleet.sha256
@@ -3165,9 +7403,178 @@ def _dispatch_poll(
             scheduler_rows=rows,
         )
 
+        def trusted_scientific_provenance(
+            scheduler_rows: Sequence[QueueRow],
+            *,
+            client_bindings: Mapping[str, Any],
+            nonclient_bindings: Mapping[str, Any],
+            scheduler_snapshot: Any,
+            reconciled_at: float,
+        ) -> protected_capacity.TrustedScientificJobProvenance:
+            from slurm.schema5_control import (
+                SchedulerAmbiguity,
+                reconcile_trusted_scientific_job_provenance,
+            )
+
+            if production_contract is not None:
+                assert control is not None
+                fleet_generation = int(control["rollout_generation"])
+            else:
+                generations = {
+                    dict(spec.runtime_environment).get(
+                        "ASYS_ROLLOUT_GENERATION"
+                    )
+                    for spec in specs
+                }
+                if (
+                    len(generations) != 1
+                    or not str(next(iter(generations), "")).isdigit()
+                ):
+                    raise DispatcherError(
+                        "qualification scientific provenance lacks one rollout "
+                        "generation"
+                    )
+                fleet_generation = int(next(iter(generations)))
+            try:
+                snapshot_ids = {
+                    str(job.job_id)
+                    for job in scheduler_snapshot.jobs
+                    if job.source == "squeue" and job.active
+                }
+                row_ids = {row.job_id for row in scheduler_rows}
+                if row_ids != snapshot_ids:
+                    raise DispatcherError(
+                        "trusted scientific scheduler rows differ from the "
+                        "stable scheduler snapshot"
+                    )
+                provenance = (
+                    reconcile_trusted_scientific_job_provenance(
+                        args.state_dir,
+                        fleet_bindings=nonclient_bindings,
+                        fleet_contract_sha256=expected_fleet_sha256,
+                        fleet_generation=fleet_generation,
+                        scheduler_snapshot=scheduler_snapshot,
+                        now=reconciled_at,
+                        allow_exact_cell_quiescence=False,
+                    )
+                )
+                _require_exact_trusted_scientific_binding_sets(
+                    provenance,
+                    client_bindings=client_bindings,
+                    nonclient_bindings=nonclient_bindings,
+                )
+                return provenance
+            except (
+                SchedulerAmbiguity,
+                protected_capacity.ProtectedCapacityError,
+            ) as exc:
+                raise DispatcherError(
+                    f"trusted scientific scheduler provenance failed: {exc}"
+                ) from exc
+
+        initial_boundary_now = time.time()
+        initial_trusted_provenance = trusted_scientific_provenance(
+            rows,
+            client_bindings=trusted_cell_bindings,
+            nonclient_bindings=trusted_nonclient_bindings,
+            scheduler_snapshot=initial_occupancy.scheduler_snapshot,
+            reconciled_at=initial_boundary_now,
+        )
+        initial_client_partition = (
+            str(production_contract["client_capacity"]["partition"])
+            if production_contract is not None
+            else str(args.cell_partition)
+        )
+        initial_client_qos = (
+            str(production_contract["client_capacity"]["qos"])
+            if production_contract is not None
+            else str(args.cell_qos)
+        )
+        _require_trusted_client_target_placement(
+            initial_occupancy,
+            trusted_client_bindings=trusted_cell_bindings,
+            expected_partition=initial_client_partition,
+            expected_qos=initial_client_qos,
+        )
+        try:
+            if production_contract is not None:
+                assert production_capacity_contract is not None
+                client_contract = production_contract["client_capacity"]
+                protected_capacity.verify_live_placements(
+                    production_capacity_contract,
+                    role="client",
+                    placements=[
+                        (
+                            str(client_contract["partition"]),
+                            str(client_contract["qos"]),
+                        )
+                    ],
+                    required_time_limits_seconds={
+                        str(client_contract["partition"]): (
+                            scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                        )
+                    },
+                    trusted_scientific_job_provenance=(
+                        initial_trusted_provenance
+                    ),
+                )
+                production_client_capacity = (
+                    protected_capacity.capture_live_client_capacity(
+                        production_capacity_contract,
+                        partition=str(client_contract["partition"]),
+                        qos=str(client_contract["qos"]),
+                        required_time_limit_seconds=(
+                            scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                        ),
+                        trusted_scientific_job_provenance=(
+                            initial_trusted_provenance
+                        ),
+                        captured_timestamp=initial_boundary_now,
+                    )
+                )
+            else:
+                assert qualification_capacity_contract is not None
+                protected_capacity.verify_live_placements(
+                    qualification_capacity_contract,
+                    role="client",
+                    placements=[
+                        (str(args.cell_partition), str(args.cell_qos))
+                    ],
+                    required_time_limits_seconds={
+                        str(args.cell_partition): (
+                            scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                        )
+                    },
+                    trusted_scientific_job_provenance=(
+                        initial_trusted_provenance
+                    ),
+                )
+                qualification_client_capacity = (
+                    protected_capacity.capture_live_client_capacity(
+                        qualification_capacity_contract,
+                        partition=str(args.cell_partition),
+                        qos=str(args.cell_qos),
+                        required_time_limit_seconds=(
+                            scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                        ),
+                        trusted_scientific_job_provenance=(
+                            initial_trusted_provenance
+                        ),
+                        captured_timestamp=initial_boundary_now,
+                    )
+                )
+        except (
+            scheduler_safety.SchedulerSafetyError,
+            protected_capacity.ProtectedCapacityError,
+        ) as exc:
+            raise DispatcherError(
+                f"schema-5 client QOS/TRES/MaxJobs authority failed closed: {exc}"
+            ) from exc
+
         def capture_protected_boundary(
             *,
             partition: str,
+            qos: str,
             cpu_limit: int,
             memory_limit_mib: int,
             max_submit_jobs: int,
@@ -3178,7 +7585,7 @@ def _dispatch_poll(
             int,
             int,
             dict[str, dict[str, str]],
-            dict[str, dict[str, str]],
+            dict[str, dict[str, Any]],
         ]:
             """Recompute one complete protected headroom decision from stable truth."""
 
@@ -3219,6 +7626,12 @@ def _dispatch_poll(
                 frozen_fleet=production_fleet,
                 scheduler_rows=stable.rows,
             )
+            _require_trusted_client_target_placement(
+                stable,
+                trusted_client_bindings=fresh_client_bindings,
+                expected_partition=partition,
+                expected_qos=qos,
+            )
             boundary_now = time.time()
             boundary_invisible = _invisible_reservation_count(
                 boundary_work,
@@ -3237,8 +7650,12 @@ def _dispatch_poll(
                 cell_ceiling=384,
                 absolute_job_ceiling=448,
                 live_user_job_elements=len(stable.rows),
-                trusted_client_jobs=fresh_client_bindings,
-                trusted_nonclient_jobs=fresh_nonclient_bindings,
+                trusted_client_jobs=_scheduler_headroom_binding_projection(
+                    fresh_client_bindings
+                ),
+                trusted_nonclient_jobs=_scheduler_headroom_binding_projection(
+                    fresh_nonclient_bindings
+                ),
             )
             active_cells_at_boundary = (
                 len(fresh_client_bindings) + boundary_invisible
@@ -3308,8 +7725,12 @@ def _dispatch_poll(
             cell_ceiling=384,
             absolute_job_ceiling=448,
             live_user_job_elements=total_jobs - invisible_reservations,
-            trusted_client_jobs=trusted_cell_bindings,
-            trusted_nonclient_jobs=trusted_nonclient_bindings,
+            trusted_client_jobs=_scheduler_headroom_binding_projection(
+                trusted_cell_bindings
+            ),
+            trusted_nonclient_jobs=_scheduler_headroom_binding_projection(
+                trusted_nonclient_bindings
+            ),
         )
         slots = min(slots, protected_task_headroom)
     elif qualification_capacity_contract is not None:
@@ -3336,8 +7757,12 @@ def _dispatch_poll(
             cell_ceiling=384,
             absolute_job_ceiling=448,
             live_user_job_elements=total_jobs - invisible_reservations,
-            trusted_client_jobs=trusted_cell_bindings,
-            trusted_nonclient_jobs=trusted_nonclient_bindings,
+            trusted_client_jobs=_scheduler_headroom_binding_projection(
+                trusted_cell_bindings
+            ),
+            trusted_nonclient_jobs=_scheduler_headroom_binding_projection(
+                trusted_nonclient_bindings
+            ),
         )
         slots = min(slots, protected_task_headroom)
     if safety_findings:
@@ -3352,6 +7777,22 @@ def _dispatch_poll(
         join_warnings.append(
             "global admission disabled because active cell jobs could not be mapped: "
             + "; ".join(unmappable_jobs[:10])
+        )
+    unresolved_admission_intents = sorted(
+        intent_id
+        for intent_id, intent in work.get("intents", {}).items()
+        if isinstance(intent, Mapping)
+        and intent.get("state") in {"prepared", "submitting"}
+    )
+    if unresolved_admission_intents:
+        # Fairness is committed only after scheduler acceptance.  A second intent
+        # planned from the old fairness snapshot could otherwise commit first and
+        # then be overwritten when this older intent is adopted.  Serialize the
+        # unresolved external boundary instead of trying to compose stale snapshots.
+        slots = 0
+        join_warnings.append(
+            "global admission fenced until unresolved intent(s) reconcile: "
+            + ", ".join(unresolved_admission_intents[:8])
         )
     fairness = work["fairness"]
     admission = plan_admission(
@@ -3369,6 +7810,7 @@ def _dispatch_poll(
     selected = admission.selected
     submission: dict[str, Any] | None = None
     submission_error: str | None = None
+    submission_integrity_error: str | None = None
     submitted = False
     if selected and not dry_run:
         # The production pause path owns this same cross-node lock before taking its
@@ -3398,24 +7840,15 @@ def _dispatch_poll(
                 try:
                     client_contract = fresh_contract["client_capacity"]
                     assert production_capacity_contract is not None
-                    fresh_client_capacity = (
-                        protected_capacity.capture_live_client_capacity(
-                            production_capacity_contract,
-                            partition=str(client_contract["partition"]),
-                            qos=str(client_contract["qos"]),
-                            required_time_limit_seconds=(
-                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                            ),
-                        )
-                    )
                     (
                         fresh_occupancy,
                         fresh_resource_slots,
                         fresh_active_cell_jobs,
-                        _fresh_client_bindings,
-                        _fresh_nonclient_bindings,
+                        fresh_client_bindings,
+                        fresh_nonclient_bindings,
                     ) = capture_protected_boundary(
                         partition=str(client_contract["partition"]),
+                        qos=str(client_contract["qos"]),
                         cpu_limit=int(client_contract["cpu_limit"]),
                         memory_limit_mib=int(
                             client_contract["memory_limit_mib"]
@@ -3424,6 +7857,29 @@ def _dispatch_poll(
                             client_contract["max_submit_jobs"]
                         ),
                         reserve_jobs=int(client_contract["reserve_jobs"]),
+                    )
+                    fresh_client_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            production_capacity_contract,
+                            partition=str(client_contract["partition"]),
+                            qos=str(client_contract["qos"]),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                            trusted_scientific_job_provenance=(
+                                trusted_scientific_provenance(
+                                    fresh_occupancy.rows,
+                                    client_bindings=fresh_client_bindings,
+                                    nonclient_bindings=(
+                                        fresh_nonclient_bindings
+                                    ),
+                                    scheduler_snapshot=(
+                                        fresh_occupancy.scheduler_snapshot
+                                    ),
+                                    reconciled_at=time.time(),
+                                )
+                            ),
+                        )
                     )
                 except (
                     DispatcherError,
@@ -3453,24 +7909,15 @@ def _dispatch_poll(
             elif qualification_capacity_contract is not None:
                 assert qualification_client_placement is not None
                 try:
-                    fresh_qualification_capacity = (
-                        protected_capacity.capture_live_client_capacity(
-                            qualification_capacity_contract,
-                            partition=str(args.cell_partition),
-                            qos=str(args.cell_qos),
-                            required_time_limit_seconds=(
-                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                            ),
-                        )
-                    )
                     (
                         fresh_qualification_occupancy,
                         fresh_resource_slots,
                         _fresh_active_cell_jobs,
-                        _fresh_client_bindings,
-                        _fresh_nonclient_bindings,
+                        fresh_client_bindings,
+                        fresh_nonclient_bindings,
                     ) = capture_protected_boundary(
                         partition=str(args.cell_partition),
+                        qos=str(args.cell_qos),
                         cpu_limit=int(
                             qualification_client_placement.capacity["cpus"]
                         ),
@@ -3485,6 +7932,29 @@ def _dispatch_poll(
                             ]
                         ),
                         reserve_jobs=64,
+                    )
+                    fresh_qualification_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            qualification_capacity_contract,
+                            partition=str(args.cell_partition),
+                            qos=str(args.cell_qos),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                            trusted_scientific_job_provenance=(
+                                trusted_scientific_provenance(
+                                    fresh_qualification_occupancy.rows,
+                                    client_bindings=fresh_client_bindings,
+                                    nonclient_bindings=(
+                                        fresh_nonclient_bindings
+                                    ),
+                                    scheduler_snapshot=(
+                                        fresh_qualification_occupancy.scheduler_snapshot
+                                    ),
+                                    reconciled_at=time.time(),
+                                )
+                            ),
+                        )
                     )
                 except (
                     DispatcherError,
@@ -3537,6 +8007,10 @@ def _dispatch_poll(
                 "batch_manifest_sha256": _sealed_artifact_sha256(manifest_path),
                 "sbatch_path": str(sbatch_path),
                 "sbatch_sha256": _sealed_artifact_sha256(sbatch_path),
+                "submission_transport": STDIN_EXACT_SUBMISSION_TRANSPORT,
+                "submission_argv_sha256": _stdin_submission_argv_sha256(
+                    batch_id
+                ),
                 "tasks": list(batch["tasks"]),
                 "fairness_after": {
                     "cursor": admission.cursor,
@@ -3559,18 +8033,34 @@ def _dispatch_poll(
             # Persist the exact task reservation before crossing the external sbatch
             # boundary.  If the process dies after acceptance, the next coordinator
             # joins the array through the intent token and exact immutable sbatch path.
+            work["updated_at"] = time.time()
+            _atomic_write_json(args.ledger_path, work)
+            # Fence the ambiguous external-call boundary before the final stable
+            # scheduler/resource cut.  A crash during that cut may conservatively
+            # wait out visibility grace, but can never redraw tasks accepted by an
+            # unobserved sbatch.  The shared provenance reconciler below therefore
+            # hashes this exact last durable ``submitting`` preimage.
+            work["intents"][batch_id]["state"] = "submitting"
+            work["intents"][batch_id]["submit_started_at"] = time.time()
+            work["updated_at"] = time.time()
             _atomic_write_json(args.ledger_path, work)
             if production_contract is not None:
                 try:
                     protected_ref = production_contract["protected_capacity"]
-                    live_contract = protected_capacity.load_contract(
-                        protected_ref["path"],
-                        expected_release_git_commit=str(
-                            control["immutable"]["git_commit"]
-                        ),
-                        expected_marker_id=str(protected_ref["marker_id"]),
-                        expected_sha256=str(protected_ref["sha256"]),
+                    live_contract = (
+                        load_effective_protected_capacity_contract(
+                            control, verify_files=True
+                        )
                     )
+                    if {
+                        "path": str(live_contract.path),
+                        "sha256": live_contract.sha256,
+                        "marker_id": live_contract.marker_id,
+                    } != protected_ref:
+                        raise DispatcherError(
+                            "protected-capacity authority changed immediately "
+                            "before sbatch"
+                        )
                     client_contract = production_contract["client_capacity"]
                     protected_capacity.authorize_client(
                         live_contract,
@@ -3583,24 +8073,15 @@ def _dispatch_poll(
                             production_contract["reserve"]
                         ),
                     )
-                    fresh_production_capacity = (
-                        protected_capacity.capture_live_client_capacity(
-                            live_contract,
-                            partition=str(client_contract["partition"]),
-                            qos=str(client_contract["qos"]),
-                            required_time_limit_seconds=(
-                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                            ),
-                        )
-                    )
                     (
                         fresh_production_occupancy,
                         fresh_headroom,
                         fresh_active_cell_jobs,
-                        _fresh_client_bindings,
-                        _fresh_nonclient_bindings,
+                        fresh_client_bindings,
+                        fresh_nonclient_bindings,
                     ) = capture_protected_boundary(
                         partition=str(client_contract["partition"]),
+                        qos=str(client_contract["qos"]),
                         cpu_limit=int(client_contract["cpu_limit"]),
                         memory_limit_mib=int(
                             client_contract["memory_limit_mib"]
@@ -3610,6 +8091,29 @@ def _dispatch_poll(
                         ),
                         reserve_jobs=int(client_contract["reserve_jobs"]),
                         exclude_intent_ids=frozenset({batch_id}),
+                    )
+                    fresh_production_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            live_contract,
+                            partition=str(client_contract["partition"]),
+                            qos=str(client_contract["qos"]),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                            trusted_scientific_job_provenance=(
+                                trusted_scientific_provenance(
+                                    fresh_production_occupancy.rows,
+                                    client_bindings=fresh_client_bindings,
+                                    nonclient_bindings=(
+                                        fresh_nonclient_bindings
+                                    ),
+                                    scheduler_snapshot=(
+                                        fresh_production_occupancy.scheduler_snapshot
+                                    ),
+                                    reconciled_at=time.time(),
+                                )
+                            ),
+                        )
                     )
                     if fresh_active_cell_jobs + len(selected) > int(
                         production_contract["current_ceiling"]
@@ -3634,7 +8138,10 @@ def _dispatch_poll(
                     scheduler_safety.SchedulerSafetyError,
                     protected_capacity.ProtectedCapacityError,
                 ) as exc:
-                    work["intents"][batch_id].update(
+                    prepared_intent = work["intents"][batch_id]
+                    prepared_intent.pop("submit_started_at", None)
+                    prepared_intent.pop("last_submit_error_at", None)
+                    prepared_intent.update(
                         {
                             "state": "prepared",
                             "error": (
@@ -3643,6 +8150,7 @@ def _dispatch_poll(
                             ),
                         }
                     )
+                    work["updated_at"] = time.time()
                     _atomic_write_json(args.ledger_path, work)
                     raise DispatcherError(
                         "protected client partition/QOS drifted immediately "
@@ -3670,17 +8178,9 @@ def _dispatch_poll(
                             "planning"
                         )
                     qualification_capacity_contract = (
-                        protected_capacity.load_contract(
-                            qualification_values["path"],
-                            expected_release_git_commit=str(
-                                qualification_values["release_git_commit"]
-                            ),
-                            expected_marker_id=str(
-                                qualification_values["marker_id"]
-                            ),
-                            expected_sha256=str(
-                                qualification_values["sha256"]
-                            ),
+                        _load_qualification_capacity_contract(
+                            qualification_values,
+                            fresh_execution_authority,
                         )
                     )
                     protected_capacity.authorize_client(
@@ -3690,24 +8190,15 @@ def _dispatch_poll(
                         required_slots=384,
                         required_reserve_jobs=64,
                     )
-                    fresh_qualification_capacity = (
-                        protected_capacity.capture_live_client_capacity(
-                            qualification_capacity_contract,
-                            partition=str(args.cell_partition),
-                            qos=str(args.cell_qos),
-                            required_time_limit_seconds=(
-                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
-                            ),
-                        )
-                    )
                     (
                         fresh_qualification_occupancy,
                         fresh_headroom,
                         _fresh_active_cell_jobs,
-                        _fresh_client_bindings,
-                        _fresh_nonclient_bindings,
+                        fresh_client_bindings,
+                        fresh_nonclient_bindings,
                     ) = capture_protected_boundary(
                         partition=str(args.cell_partition),
+                        qos=str(args.cell_qos),
                         cpu_limit=int(
                             qualification_client_placement.capacity["cpus"]
                         ),
@@ -3723,6 +8214,29 @@ def _dispatch_poll(
                         ),
                         reserve_jobs=64,
                         exclude_intent_ids=frozenset({batch_id}),
+                    )
+                    fresh_qualification_capacity = (
+                        protected_capacity.capture_live_client_capacity(
+                            qualification_capacity_contract,
+                            partition=str(args.cell_partition),
+                            qos=str(args.cell_qos),
+                            required_time_limit_seconds=(
+                                scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                            ),
+                            trusted_scientific_job_provenance=(
+                                trusted_scientific_provenance(
+                                    fresh_qualification_occupancy.rows,
+                                    client_bindings=fresh_client_bindings,
+                                    nonclient_bindings=(
+                                        fresh_nonclient_bindings
+                                    ),
+                                    scheduler_snapshot=(
+                                        fresh_qualification_occupancy.scheduler_snapshot
+                                    ),
+                                    reconciled_at=time.time(),
+                                )
+                            ),
+                        )
                     )
                     if len(selected) > fresh_headroom:
                         raise scheduler_safety.SchedulerSafetyError(
@@ -3741,7 +8255,10 @@ def _dispatch_poll(
                     scheduler_safety.SchedulerSafetyError,
                     protected_capacity.ProtectedCapacityError,
                 ) as exc:
-                    work["intents"][batch_id].update(
+                    prepared_intent = work["intents"][batch_id]
+                    prepared_intent.pop("submit_started_at", None)
+                    prepared_intent.pop("last_submit_error_at", None)
+                    prepared_intent.update(
                         {
                             "state": "prepared",
                             "error": (
@@ -3751,18 +8268,81 @@ def _dispatch_poll(
                             ),
                         }
                     )
+                    work["updated_at"] = time.time()
                     _atomic_write_json(args.ledger_path, work)
                     raise DispatcherError(
                         "protected qualification partition/QOS drifted "
                         f"immediately before sbatch: {exc}"
                     ) from exc
-            work["intents"][batch_id]["state"] = "submitting"
-            work["intents"][batch_id]["submit_started_at"] = time.time()
-            _atomic_write_json(args.ledger_path, work)
             try:
-                job_id = _submit_sbatch(sbatch_path)
-            except (DispatcherError, OSError, subprocess.TimeoutExpired) as exc:
-                # Any error after invoking sbatch is an ambiguous external boundary:
+                job_id = _submit_sbatch(
+                    sbatch_path,
+                    expected_sbatch_sha256=str(
+                        work["intents"][batch_id]["sbatch_sha256"]
+                    ),
+                    batch_manifest_path=manifest_path,
+                    expected_batch_manifest_sha256=str(
+                        work["intents"][batch_id][
+                            "batch_manifest_sha256"
+                        ]
+                    ),
+                )
+            except SubmissionPreflightError as exc:
+                # The external boundary was never crossed.  Preserve the exact
+                # coordinates indefinitely and latch a scientific-integrity hold
+                # after releasing this already-owned admission lock.
+                submission_integrity_error = str(exc)
+                blocked_intent = work["intents"][batch_id]
+                for field in (
+                    "job_id",
+                    "submit_started_at",
+                    "submitted_at",
+                    "reconciled_at",
+                    "spooled_sbatch_sha256",
+                    "spooled_receipt_path",
+                    "spooled_receipt_sha256",
+                    "last_submit_error_at",
+                ):
+                    blocked_intent.pop(field, None)
+                for job_id, record in list(work["jobs"].items()):
+                    if (
+                        isinstance(record, Mapping)
+                        and record.get("batch_id") == batch_id
+                    ):
+                        del work["jobs"][job_id]
+                blocked_intent.update(
+                    {
+                        "state": "integrity_blocked",
+                        "fairness_committed": False,
+                        "error": submission_integrity_error,
+                        "integrity_blocked_at": time.time(),
+                        "integrity_alert_key": (
+                            DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+                        ),
+                    }
+                )
+                work["updated_at"] = time.time()
+                _atomic_write_json(args.ledger_path, work)
+            except SubmissionRejectedError as exc:
+                # Slurm explicitly rejected this request.  No allocation can exist,
+                # so this is retryable without the ambiguous-visibility fence.
+                submission_error = str(exc)
+                work["intents"][batch_id].update(
+                    {
+                        "state": "submission_rejected",
+                        "error": submission_error,
+                        "last_submit_error_at": time.time(),
+                    }
+                )
+                work["updated_at"] = time.time()
+                _atomic_write_json(args.ledger_path, work)
+            except (
+                SubmissionAmbiguousError,
+                DispatcherError,
+                OSError,
+                subprocess.TimeoutExpired,
+            ) as exc:
+                # An error after invoking sbatch is an ambiguous external boundary:
                 # Slurm may have accepted the array before the client lost/failed to
                 # parse its reply.  Preserve ``submitting`` until complete squeue+sacct
                 # truth proves absence after the visibility grace.
@@ -3777,6 +8357,7 @@ def _dispatch_poll(
                 # Publish the ambiguous outcome before releasing the pause boundary.
                 # A concurrent drain must see this reservation and wait for joined
                 # scheduler visibility instead of declaring an empty cut.
+                work["updated_at"] = time.time()
                 _atomic_write_json(args.ledger_path, work)
             else:
                 accepted_at = time.time()
@@ -3798,7 +8379,21 @@ def _dispatch_poll(
                 # Bind the accepted numeric job ID durably while admission is still
                 # fenced.  Pause may now cancel or wait for this exact allocation even
                 # if squeue has not exposed it yet.
+                work["updated_at"] = accepted_at
                 _atomic_write_json(args.ledger_path, work)
+
+    if submission_integrity_error is not None:
+        if control_state_dir is not None:
+            _persist_dispatcher_submission_integrity_hold(
+                control_state_dir,
+                message=(
+                    "dispatcher refused to invoke sbatch because immutable "
+                    "admission provenance drifted; the exact coordinates remain "
+                    f"fenced: {submission_integrity_error}"
+                ),
+                now=time.time(),
+            )
+        raise SubmissionPreflightError(submission_integrity_error)
 
     if dry_run:
         # Dry-run reports the exact next fairness state without persisting it.
@@ -3876,7 +8471,10 @@ def _dispatch_poll(
         poll_number=poll_number,
     )
     work["runs"] = updated_runs
-    work["updated_at"] = now
+    work["updated_at"] = max(
+        float(work.get("updated_at", now)),
+        now,
+    )
     report = {
         "poll_number": poll_number,
         "dry_run": dry_run,
@@ -4006,7 +8604,10 @@ def _run_dispatch(args: argparse.Namespace) -> int:
             while True:
                 if not successor_queued:
                     try:
-                        successor = _queue_successor(Path(args.successor_sbatch).resolve())
+                        successor = _queue_successor(
+                            Path(args.successor_sbatch).resolve(),
+                            state_dir=args.state_dir,
+                        )
                     except (DispatcherError, OSError) as exc:
                         print(
                             f"[dispatcher] SUCCESSOR RETRY: {exc}",
@@ -4053,12 +8654,33 @@ def _run_dispatch(args: argparse.Namespace) -> int:
 def _run_status(args: argparse.Namespace) -> int:
     state_dir = Path(args.state_dir).expanduser().resolve()
     ledger = _load_ledger(state_dir / "ledger.json")
+    if ledger.get("schema_version") == LEDGER_SCHEMA_VERSION:
+        ledger = validate_production_ledger_structure(
+            ledger, source=str(state_dir / "ledger.json")
+        )
     jobs = ledger.get("jobs", {})
     runs = ledger.get("runs", {})
     cells = ledger.get("cells", {})
+    intents = ledger.get("intents", {})
     by_state: dict[str, int] = defaultdict(int)
     for record in cells.values():
         by_state[str(record.get("completion_state", "unknown"))] += 1
+    blocked = sorted(
+        batch_id
+        for batch_id, record in intents.items()
+        if record.get("state") == "integrity_blocked"
+    )
+    retired: list[str] = []
+    invalid_retired: dict[str, str] = {}
+    for batch_id, record in sorted(intents.items()):
+        if record.get("state") != "integrity_retired":
+            continue
+        try:
+            _verify_integrity_retirement_receipt(batch_id, record)
+        except DispatcherError as exc:
+            invalid_retired[batch_id] = str(exc)
+        else:
+            retired.append(batch_id)
     report = {
         "state_dir": str(state_dir),
         "schema_version": ledger["schema_version"],
@@ -4072,9 +8694,29 @@ def _run_status(args: argparse.Namespace) -> int:
             "total": len(jobs),
             "active_at_last_poll": sum(record.get("state") == "active" for record in jobs.values()),
         },
+        "integrity_intents": {
+            "blocked": blocked,
+            "blocked_count": len(blocked),
+            "retired": retired,
+            "retired_count": len(retired),
+            "invalid_retired": invalid_retired,
+        },
         "cells_by_state": dict(sorted(by_state.items())),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _run_retire_integrity(args: argparse.Namespace) -> int:
+    receipt = retire_integrity_blocked_intent(
+        Path(args.state_dir),
+        control_state_dir=Path(args.control_state_dir),
+        batch_id=str(args.batch_id),
+        semantic_evidence_path=Path(args.semantic_evidence),
+        semantic_evidence_sha256=str(args.semantic_evidence_sha256),
+        operator_note=str(args.note),
+    )
+    print(json.dumps(receipt, indent=2, sort_keys=True))
     return 0
 
 
@@ -4317,6 +8959,9 @@ _QUALIFICATION_EXECUTION_AUTHORITY_FIELDS = frozenset(
         "run_id",
         "run_root",
         "release_git_commit",
+        "release_tag_object",
+        "source_tree_sha256",
+        "qualification_runner_source_sha256",
         "protected_capacity",
         "readiness_generation",
         "execution",
@@ -4333,6 +8978,8 @@ _QUALIFICATION_EXECUTION_FIELDS = frozenset(
         "python_sha256",
         "dispatcher_script",
         "dispatcher_script_sha256",
+        "qualification_runner_script",
+        "qualification_runner_script_sha256",
         "batch_template",
         "batch_template_sha256",
     }
@@ -4387,6 +9034,15 @@ def _qualification_execution_authority_binding(
         "run_root": str(authority.payload["run_root"]),
         "release_git_commit": str(
             authority.payload["release_git_commit"]
+        ),
+        "release_tag_object": str(
+            authority.payload["release_tag_object"]
+        ),
+        "source_tree_sha256": str(
+            authority.payload["source_tree_sha256"]
+        ),
+        "qualification_runner_source_sha256": str(
+            authority.payload["qualification_runner_source_sha256"]
         ),
         "runtime_environment_sha256": (
             _qualification_runtime_environment_sha256(
@@ -4459,7 +9115,8 @@ def load_qualification_execution_authority(
     if (
         not isinstance(value, dict)
         or set(value) != _QUALIFICATION_EXECUTION_AUTHORITY_FIELDS
-        or value.get("schema_version") != 1
+        or value.get("schema_version")
+        != QUALIFICATION_EXECUTION_AUTHORITY_SCHEMA_VERSION
         or value.get("protocol")
         != QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL
         or raw != _qualification_canonical_bytes(value)
@@ -4495,6 +9152,19 @@ def load_qualification_execution_authority(
         or Path(raw_run_root).resolve().name != run_id
         or re.fullmatch(
             r"[0-9a-f]{40}", str(value.get("release_git_commit", ""))
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(value.get("release_tag_object", ""))
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}", str(value.get("source_tree_sha256", ""))
+        )
+        is None
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(value.get("qualification_runner_source_sha256", "")),
         )
         is None
     ):
@@ -4571,6 +9241,7 @@ def load_qualification_execution_authority(
         "hf_home",
         "python",
         "dispatcher_script",
+        "qualification_runner_script",
         "batch_template",
     )
     if any(
@@ -4587,6 +9258,11 @@ def load_qualification_execution_authority(
         "python": (harness_prefix / "bin" / "python").resolve(),
         "dispatcher_script": (
             release_root / "slurm" / "dispatch_sweeps.py"
+        ).resolve(),
+        "qualification_runner_script": (
+            release_root
+            / "scripts"
+            / "run_schema5_throughput_qualification.py"
         ).resolve(),
         "batch_template": (
             release_root / "slurm" / "run_dispatch_batch.sbatch.tmpl"
@@ -4610,6 +9286,13 @@ def load_qualification_execution_authority(
             raise DispatcherError(
                 f"qualification execution artifact drifted: {field}"
             )
+    if (
+        execution["qualification_runner_script_sha256"]
+        != value["qualification_runner_source_sha256"]
+    ):
+        raise DispatcherError(
+            "qualification runner differs from its release source authority"
+        )
     runtime_environment = _runtime_environment(value)
     expected_runtime = {
         "ASYS_RELEASE_GIT_COMMIT": str(value["release_git_commit"]),
@@ -4854,6 +9537,25 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    retire_integrity = sub.add_parser(
+        "retire-integrity",
+        help=(
+            "archive and retire one pre-sbatch integrity-blocked intent after "
+            "clean semantic evidence, human acknowledgement, identity change, "
+            "and complete scheduler absence"
+        ),
+    )
+    retire_integrity.add_argument("--state-dir", required=True)
+    retire_integrity.add_argument("--control-state-dir", required=True)
+    retire_integrity.add_argument("--batch-id", required=True)
+    retire_integrity.add_argument(
+        "--semantic-evidence", required=True, type=Path
+    )
+    retire_integrity.add_argument(
+        "--semantic-evidence-sha256", required=True
+    )
+    retire_integrity.add_argument("--note", required=True)
+
     task = sub.add_parser("run-task", help=argparse.SUPPRESS)
     task.add_argument("--batch-manifest", required=True)
     task.add_argument("--batch-manifest-sha256", required=True)
@@ -4874,6 +9576,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_dispatch(args)
     if args.command == "status":
         return _run_status(args)
+    if args.command == "retire-integrity":
+        return _run_retire_integrity(args)
     if args.command == "run-task":
         return _run_task(args)
     parser.error(f"unknown command {args.command!r}")

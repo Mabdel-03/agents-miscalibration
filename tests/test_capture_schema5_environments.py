@@ -12,6 +12,7 @@ import shutil
 import pytest
 
 from scripts import capture_schema5_environments as capture
+from scripts import seal_recovery_evidence as seal_evidence
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -146,32 +147,19 @@ def _evidence(
         + "\n",
         encoding="utf-8",
     )
+    recovered.chmod(0o444)
+    failed_log = tmp_path / "failed-materialization.log"
+    failed_log.write_text("pip distribution view changed\n", encoding="utf-8")
     incident = tmp_path / "CONDA_RECONCILIATION_INCIDENT.json"
-    incident.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "protocol": "schema5-conda-pip-reconciliation-incident-v1",
-                "classification": "source_metadata_reconciled_by_conda_pip_interop",
-                "harness_prefix": str(harness),
-                "serving_prefix": str(serving),
-                "harness_stale_conda_record_present": False,
-                "serving_stale_conda_record_present": True,
-                "live_sources_must_not_be_queried_by_conda": True,
-                "superseded_conda_record": {
-                    "artifact_sha256": SETUPTOOLS_ARTIFACT_SHA256,
-                },
-                "resolution": (
-                    "capture_live_bytes_without_conda_then_normalize_only_immutable_seeds"
-                ),
-                "incident_id": "a" * 64,
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    seal_evidence.record_conda_reconciliation_incident(
+        output=incident,
+        harness_prefix=harness,
+        serving_prefix=serving,
+        recovered_harness_record=recovered,
+        failed_materialization_log=failed_log,
+        observed_at="2026-07-23T11:43:55-04:00",
+        apply=True,
     )
-    incident.chmod(0o444)
     return incident, recovered
 
 
@@ -188,6 +176,38 @@ def _inputs(tmp_path: Path) -> dict:
         "reconciliation_incident": incident,
         "recovered_setuptools_record": recovered,
     }
+
+
+def _rewrite_incident(
+    path: Path,
+    payload: dict,
+    *,
+    recompute_id: bool = True,
+    canonical: bool = True,
+    rewrite_sidecar: bool = True,
+) -> None:
+    payload = dict(payload)
+    if recompute_id:
+        payload.pop("incident_id", None)
+        payload["incident_id"] = hashlib.sha256(
+            capture._incident_canonical_bytes(payload)
+        ).hexdigest()
+    raw = (
+        capture._incident_canonical_bytes(payload)
+        if canonical
+        else (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    )
+    path.chmod(0o644)
+    path.write_bytes(raw)
+    path.chmod(0o444)
+    if rewrite_sidecar:
+        sidecar = path.with_suffix(path.suffix + ".sha256")
+        sidecar.chmod(0o644)
+        sidecar.write_text(
+            f"{hashlib.sha256(raw).hexdigest()}  {path.name}\n",
+            encoding="utf-8",
+        )
+        sidecar.chmod(0o444)
 
 
 def _add_pip_record_normalization_fixture(prefix: Path) -> tuple[Path, bytes]:
@@ -353,35 +373,133 @@ def test_capture_is_real_copy_normalizes_only_setuptools_and_is_idempotent(tmp_p
     )["source_record_state"] == "present"
 
 
-@pytest.mark.parametrize(
-    ("role", "incident_present"),
-    (("harness", True), ("serving", False)),
-)
 def test_capture_rejects_source_record_state_that_differs_from_sealed_incident(
     tmp_path: Path,
-    role: str,
-    incident_present: bool,
 ):
     inputs = _inputs(tmp_path)
     incident = inputs["reconciliation_incident"]
-    incident.chmod(0o644)
     payload = json.loads(incident.read_text(encoding="utf-8"))
-    payload[f"{role}_stale_conda_record_present"] = incident_present
-    incident.write_text(
-        json.dumps(payload, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    incident.chmod(0o444)
+    payload["serving_stale_conda_record_present"] = False
+    payload["superseded_conda_record"]["serving_path"] = None
+    payload["superseded_conda_record"]["serving_sha256"] = None
+    _rewrite_incident(incident, payload)
 
     with pytest.raises(
         capture.EnvironmentCaptureError,
         match=(
             "live source Setuptools record state differs from the sealed "
-            f"reconciliation incident for {role}"
+            "reconciliation incident for serving"
         ),
     ):
         capture.capture_environments(**inputs)
     assert not inputs["output_root"].exists()
+
+
+def test_capture_accepts_exact_incident_v1_emitted_by_sealer(tmp_path):
+    inputs = _inputs(tmp_path)
+    incident = inputs["reconciliation_incident"]
+    payload = json.loads(incident.read_text(encoding="utf-8"))
+
+    assert set(payload["superseded_conda_record"]) == {
+        "name",
+        "version",
+        "build",
+        "artifact_sha256",
+        "recovered_harness_path",
+        "recovered_harness_sha256",
+        "serving_path",
+        "serving_sha256",
+    }
+    assert capture.capture_environments(**inputs)["status"] == "dry_run"
+
+
+def test_capture_rejects_recovered_record_substitution_bound_by_incident(tmp_path):
+    inputs = _inputs(tmp_path)
+    recovered = inputs["recovered_setuptools_record"]
+    payload = json.loads(recovered.read_text(encoding="utf-8"))
+    payload["files"] = []
+    recovered.chmod(0o644)
+    recovered.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    recovered.chmod(0o444)
+
+    with pytest.raises(
+        capture.EnvironmentCaptureError,
+        match="recovered-record binding is invalid",
+    ):
+        capture.capture_environments(**inputs)
+
+
+@pytest.mark.parametrize("mutation", ("extra_field", "incident_id", "encoding"))
+def test_capture_rejects_incident_schema_id_and_encoding_tamper(
+    tmp_path, mutation
+):
+    inputs = _inputs(tmp_path)
+    incident = inputs["reconciliation_incident"]
+    payload = json.loads(incident.read_text(encoding="utf-8"))
+    if mutation == "extra_field":
+        payload["unreviewed_authority"] = True
+        _rewrite_incident(incident, payload)
+        expected = "field inventory drifted"
+    elif mutation == "incident_id":
+        payload["incident_id"] = "0" * 64
+        _rewrite_incident(incident, payload, recompute_id=False)
+        expected = "identity or canonical encoding"
+    else:
+        _rewrite_incident(incident, payload, canonical=False)
+        expected = "identity or canonical encoding"
+
+    with pytest.raises(capture.EnvironmentCaptureError, match=expected):
+        capture.capture_environments(**inputs)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "wrong"))
+def test_capture_requires_exact_read_only_incident_checksum(tmp_path, mutation):
+    inputs = _inputs(tmp_path)
+    incident = inputs["reconciliation_incident"]
+    sidecar = incident.with_suffix(incident.suffix + ".sha256")
+    if mutation == "missing":
+        sidecar.unlink()
+    else:
+        sidecar.chmod(0o644)
+        sidecar.write_text(
+            f"{'0' * 64}  {incident.name}\n",
+            encoding="utf-8",
+        )
+        sidecar.chmod(0o444)
+
+    with pytest.raises(capture.EnvironmentCaptureError, match="checksum"):
+        capture.capture_environments(**inputs)
+
+
+@pytest.mark.parametrize("preimage", ("harness_metadata", "failure_log"))
+def test_capture_revalidates_incident_external_preimages_at_creation(
+    tmp_path, preimage
+):
+    inputs = _inputs(tmp_path)
+    incident = json.loads(
+        inputs["reconciliation_incident"].read_text(encoding="utf-8")
+    )
+    if preimage == "harness_metadata":
+        target = Path(incident["runtime_owner"]["harness_metadata"])
+        expected = "Setuptools METADATA differs"
+    else:
+        target = Path(incident["failed_materialization_log"])
+        expected = "failed materialization log differs"
+    target.write_bytes(target.read_bytes() + b"tamper\n")
+
+    with pytest.raises(capture.EnvironmentCaptureError, match=expected):
+        capture.capture_environments(**inputs)
+
+
+def test_capture_requires_recovered_record_to_be_read_only(tmp_path):
+    inputs = _inputs(tmp_path)
+    inputs["recovered_setuptools_record"].chmod(0o644)
+
+    with pytest.raises(
+        capture.EnvironmentCaptureError,
+        match="read-only regular file",
+    ):
+        capture.capture_environments(**inputs)
 
 
 def test_capture_normalizes_only_exact_bound_pip_record_rows(
@@ -1448,3 +1566,17 @@ def test_capture_resumes_across_normalization_publication_boundaries(
     assert capture.verify_capture(inputs["output_root"])["capture_id"] == recovered[
         "capture_id"
     ]
+
+
+def test_capture_publication_never_launders_writable_preimage(tmp_path):
+    artifact = tmp_path / "CAPTURE_STAGE.json"
+    artifact.write_bytes(b"exact bytes\n")
+    artifact.chmod(0o644)
+
+    with pytest.raises(
+        capture.EnvironmentCaptureError,
+        match="conflicting immutable capture artifact",
+    ):
+        capture._atomic_write_once(artifact, b"exact bytes\n")
+
+    assert artifact.stat().st_mode & 0o222

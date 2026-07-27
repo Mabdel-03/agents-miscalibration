@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,17 @@ from slurm import schema5_control as control  # noqa: E402
 _SIDECAR_SHA256 = "f" * 64
 
 
+def _cell_submission_transport(batch_id: str) -> dict[str, str]:
+    return {
+        "submission_transport": ds.STDIN_EXACT_SUBMISSION_TRANSPORT,
+        "submission_argv_sha256": ds._stdin_submission_argv_sha256(batch_id),
+    }
+
+
+def _cell_submission_command(batch_id: str) -> str:
+    return " ".join(ds._stdin_submission_argv(batch_id))
+
+
 class _QuestionCatalogStub:
     sidecar_sha256 = _SIDECAR_SHA256
     frozen = SimpleNamespace()
@@ -39,6 +51,29 @@ class _QuestionCatalogStub:
 
     def questions_for(self, _cell):
         return (SimpleNamespace(qid="q"),)
+
+
+def test_complete_scheduler_rows_rejects_active_sacct_only_crash_window():
+    snapshot = control.SchedulerSnapshot(
+        jobs=(
+            control.SchedulerJob(
+                "654",
+                "asys-dispatch-crash",
+                "PENDING",
+                "asys-schema5-intent:crash",
+                "sbatch /state/batch-crash.sbatch",
+                "sacct",
+                "",
+                "protected_client",
+                "client_qos",
+            ),
+        ),
+        captured_at=100.0,
+        squeue_ok=True,
+        sacct_ok=True,
+    )
+    with pytest.raises(ds.DispatcherError, match="active sacct-only"):
+        ds._complete_scheduler_rows(snapshot, observation="crash-window")
 
 
 def _cell(
@@ -142,19 +177,29 @@ def _qualification_authority(
     harness = (tmp_path / "sealed-harness").resolve()
     python = (harness / "bin" / "python").resolve()
     dispatcher = (release / "slurm" / "dispatch_sweeps.py").resolve()
+    qualification_runner = (
+        release
+        / "scripts"
+        / "run_schema5_throughput_qualification.py"
+    ).resolve()
     template = (
         release / "slurm" / "run_dispatch_batch.sbatch.tmpl"
     ).resolve()
     python.parent.mkdir(parents=True, exist_ok=True)
     template.parent.mkdir(parents=True, exist_ok=True)
+    qualification_runner.parent.mkdir(parents=True, exist_ok=True)
     python.write_text("#!/bin/sh\n", encoding="utf-8")
     dispatcher.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    qualification_runner.write_text(
+        "#!/usr/bin/env python3\n", encoding="utf-8"
+    )
     template.write_text(
         ds.ARRAY_TEMPLATE.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     python.chmod(0o555)
     dispatcher.chmod(0o444)
+    qualification_runner.chmod(0o444)
     template.chmod(0o444)
     runtime_environment = {
         key: "x" for key in ds.PRODUCTION_ENVIRONMENT_KEYS
@@ -200,19 +245,30 @@ def _qualification_authority(
         "dispatcher_script_sha256": hashlib.sha256(
             dispatcher.read_bytes()
         ).hexdigest(),
+        "qualification_runner_script": str(qualification_runner),
+        "qualification_runner_script_sha256": hashlib.sha256(
+            qualification_runner.read_bytes()
+        ).hexdigest(),
         "batch_template": str(template),
         "batch_template_sha256": hashlib.sha256(
             template.read_bytes()
         ).hexdigest(),
     }
     identity = {
-        "schema_version": 1,
+        "schema_version": (
+            ds.QUALIFICATION_EXECUTION_AUTHORITY_SCHEMA_VERSION
+        ),
         "protocol": ds.QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL,
         "intent_id": "c" * 64,
         "chain_id": "d" * 64,
         "run_id": run.run_id,
         "run_root": str(run.run_root.resolve()),
         "release_git_commit": "1" * 40,
+        "release_tag_object": "2" * 40,
+        "source_tree_sha256": "4" * 64,
+        "qualification_runner_source_sha256": hashlib.sha256(
+            qualification_runner.read_bytes()
+        ).hexdigest(),
         "protected_capacity": {
             "path": str(protected_path),
             "sha256": "2" * 64,
@@ -513,7 +569,9 @@ def test_authoritative_schema5_run_rejects_uncontrolled_admission_before_intent(
     monkeypatch.setattr(
         ds,
         "_submit_sbatch",
-        lambda _path: pytest.fail("sbatch called without production authority"),
+        lambda _path, **_kwargs: pytest.fail(
+            "sbatch called without production authority"
+        ),
     )
 
     with pytest.raises(
@@ -559,7 +617,9 @@ def test_corrupt_or_permanent_state_fails_closed_before_sbatch(
         ),
     )
     monkeypatch.setattr(
-        ds, "_submit_sbatch", lambda _path: pytest.fail("sbatch called")
+        ds,
+        "_submit_sbatch",
+        lambda _path, **_kwargs: pytest.fail("sbatch called"),
     )
 
     outcome = ds._dispatch_poll(
@@ -872,20 +932,35 @@ def test_server_resource_exemption_requires_sealed_endpoint_history(
         fleet_contract_sha256=fleet_sha256,
         slurm_job_id="123",
     )
-    script_path = (tmp_path / "fleet.sbatch").resolve()
+    transaction_directory = tmp_path / "fleet-transactions"
+    script_path = (
+        transaction_directory
+        / "sbatch"
+        / "g000001"
+        / "fleet.sbatch"
+    )
+    script_path.parent.mkdir(parents=True)
     script_path.write_text("#!/bin/bash\n", encoding="utf-8")
+    generation_ledger_path = (
+        transaction_directory / "ledgers" / "g000001.json"
+    )
+    generation_ledger_path.parent.mkdir(parents=True)
+    generation_ledger_path.write_text("{}\n", encoding="utf-8")
+    scheduler_comment = (
+        "asys-s5-fleet:pool=schema5-v1;profile=8B;"
+        "replica=8B-r00;generation=1;"
+        f"intent={'a' * 32};fleet={fleet_sha256}"
+    )
     scheduler_row = ds.QueueRow(
         "123",
         None,
         "123",
         "asys-s5-serve-8B-r00",
         "RUNNING",
-        f"sbatch {script_path}",
-        (
-            "asys-s5-fleet:pool=schema5-v1;profile=8B;"
-            "replica=8B-r00;generation=1;"
-            f"intent={'a' * 32};fleet={fleet_sha256}"
-        ),
+        " ".join(ds.fleet_transactions.submission_argv(scheduler_comment)),
+        scheduler_comment,
+        "server_partition",
+        "server_qos",
     )
     monkeypatch.setattr(
         ds,
@@ -897,18 +972,28 @@ def test_server_resource_exemption_requires_sealed_endpoint_history(
         "endpoint_history_for_entry",
         lambda *_args, **_kwargs: None,
     )
-    assert ds._trusted_server_scheduler_bindings(
-        [run],
-        expected_fleet_sha256=fleet_sha256,
-        frozen_fleet=None,
-        scheduler_rows=[scheduler_row],
-    ) == {}
+    with pytest.raises(
+        ds.DispatcherError,
+        match="lack exact ledger/registry/history provenance",
+    ):
+        ds._trusted_server_scheduler_bindings(
+            [run],
+            expected_fleet_sha256=fleet_sha256,
+            frozen_fleet=SimpleNamespace(),
+            scheduler_rows=[scheduler_row],
+        )
 
     history = SimpleNamespace(
         binding={
             "scheduler_job_name": "asys-s5-serve-8B-r00",
             "scheduler_comment": scheduler_row.comment,
             "local_script_path": str(script_path),
+            "local_script_sha256": hashlib.sha256(
+                script_path.read_bytes()
+            ).hexdigest(),
+            "intent_token": "a" * 32,
+            "replica_id": "8B-r00",
+            "ledger_generation": 1,
         }
     )
     monkeypatch.setattr(
@@ -916,33 +1001,137 @@ def test_server_resource_exemption_requires_sealed_endpoint_history(
         "endpoint_history_for_entry",
         lambda *_args, **_kwargs: history,
     )
+    replica = SimpleNamespace(
+        serving_profile="8B",
+        partition="server_partition",
+        qos="server_qos",
+        gpus_per_replica=1,
+        gpu_type="a100",
+    )
+    frozen_fleet = SimpleNamespace(
+        for_replica=lambda profile, index: (
+            replica
+            if profile == "8B" and index == 0
+            else pytest.fail("unexpected frozen replica lookup")
+        )
+    )
+    entry.replica_index = 0
     assert ds._trusted_server_scheduler_bindings(
         [run],
         expected_fleet_sha256=fleet_sha256,
-        frozen_fleet=None,
+        frozen_fleet=frozen_fleet,
         scheduler_rows=[scheduler_row],
     ) == {
         "123": {
             "job_name": history.binding["scheduler_job_name"],
             "comment": history.binding["scheduler_comment"],
+            "sbatch_path": history.binding["local_script_path"],
+            "sbatch_sha256": history.binding["local_script_sha256"],
+            "intent_token": history.binding["intent_token"],
+            "replica_id": history.binding["replica_id"],
+            "serving_profile": "8B",
+            "ledger_generation": history.binding["ledger_generation"],
+            "partition": "server_partition",
+            "qos": "server_qos",
+            "allocated_gpus": 1,
+            "gpu_type": "a100",
+            "ledger_path": str(generation_ledger_path),
+            "ledger_sha256": hashlib.sha256(
+                generation_ledger_path.read_bytes()
+            ).hexdigest(),
         }
     }
-    assert ds._trusted_server_scheduler_bindings(
-        [run],
-        expected_fleet_sha256=fleet_sha256,
-        frozen_fleet=None,
-        scheduler_rows=[
-            ds.QueueRow(
-                scheduler_row.array_job_id,
-                scheduler_row.array_task_id,
-                scheduler_row.job_id,
-                scheduler_row.job_name,
-                scheduler_row.state,
-                str(tmp_path / "different.sbatch"),
-                scheduler_row.comment,
-            )
-        ],
-    ) == {}
+    with pytest.raises(
+        ds.DispatcherError,
+        match="lack exact ledger/registry/history provenance",
+    ):
+            ds._trusted_server_scheduler_bindings(
+                [run],
+                expected_fleet_sha256=fleet_sha256,
+                frozen_fleet=frozen_fleet,
+                scheduler_rows=[
+                ds.QueueRow(
+                    scheduler_row.array_job_id,
+                    scheduler_row.array_task_id,
+                    scheduler_row.job_id,
+                    scheduler_row.job_name,
+                    scheduler_row.state,
+                        str(tmp_path / "different.sbatch"),
+                        scheduler_row.comment,
+                        scheduler_row.partition,
+                        scheduler_row.qos,
+                    )
+            ],
+        )
+
+
+def test_protected_capacity_rejects_mismatched_trusted_binding_sets():
+    provenance = SimpleNamespace(
+        payload={
+            "trusted_cell_job_ids": ["101_0"],
+            "trusted_fleet_job_ids": ["201"],
+        }
+    )
+    with pytest.raises(ds.DispatcherError, match="exact active mappings"):
+        ds._require_exact_trusted_scientific_binding_sets(
+            provenance,
+            client_bindings={"101_0": {}},
+            nonclient_bindings={"202": {}},
+        )
+
+
+def test_rich_provenance_projection_runs_real_headroom_validator(
+    monkeypatch,
+):
+    clients = {
+        "101_0": {
+            "job_name": "asys-dispatch-batch",
+            "comment": "asys-schema5-intent:batch",
+            "sbatch_path": "/sealed/batch.sbatch",
+            "sbatch_sha256": "a" * 64,
+            "batch_manifest_path": "/sealed/batch.json",
+            "batch_manifest_sha256": "b" * 64,
+        }
+    }
+    fleet = {
+        "201": {
+            "job_name": "asys-s5-serve-8B-r00",
+            "comment": "asys-s5-fleet:sealed",
+            "ledger_path": "/sealed/g000001.json",
+            "ledger_sha256": "c" * 64,
+        }
+    }
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "validate_user_partition_usage",
+        lambda _usage: {
+            "jobs": [],
+            "job_count": 0,
+            "used_cpus": 0,
+            "used_memory_mib": 0,
+        },
+    )
+    assert (
+        ds.scheduler_safety.client_task_headroom(
+            {},
+            cell_cpus=1,
+            cell_memory_mib=4 * 1024,
+            cpu_limit=384,
+            memory_limit_mib=384 * 4 * 1024,
+            max_submit_jobs=448,
+            reserve_jobs=64,
+            cell_ceiling=384,
+            absolute_job_ceiling=448,
+            live_user_job_elements=0,
+            trusted_client_jobs=(
+                ds._scheduler_headroom_binding_projection(clients)
+            ),
+            trusted_nonclient_jobs=(
+                ds._scheduler_headroom_binding_projection(fleet)
+            ),
+        )
+        == 384
+    )
 
 
 def test_pre_submit_intent_reserves_tasks_during_visibility_window(tmp_path):
@@ -1088,7 +1277,19 @@ def test_active_schema5_job_with_corrupt_task_identity_is_unmappable(tmp_path):
         "tasks": json.loads(json.dumps(batch["tasks"])),
         "fairness_after": {"cursor": 0, "deficits": {}},
         "fairness_committed": False,
+        "submission_transport": ds.STDIN_EXACT_SUBMISSION_TRANSPORT,
+        "submission_argv_sha256": ds._stdin_submission_argv_sha256(batch_id),
     }
+    ds._spooled_script_receipt(
+        batch_id=batch_id,
+        job_id="321",
+        expected_name=f"asys-dispatch-{batch_id[-10:]}",
+        expected_comment=f"asys-schema5-intent:{batch_id}",
+        sbatch_path=sbatch_path,
+        sbatch_sha256=ledger["intents"][batch_id]["sbatch_sha256"],
+        spooled_script_reader=lambda _job_id: sbatch_path.read_bytes(),
+        now=11.0,
+    )
     ds._record_submission(
         ledger,
         job_id="321",
@@ -1107,7 +1308,7 @@ def test_active_schema5_job_with_corrupt_task_identity_is_unmappable(tmp_path):
         "321_0",
         f"asys-dispatch-{batch_id[-10:]}",
         "RUNNING",
-        str(sbatch_path),
+        " ".join(ds._stdin_submission_argv(batch_id)),
         f"asys-schema5-intent:{batch_id}",
     )
 
@@ -1392,6 +1593,30 @@ def test_pre_fairness_ledger_loads_with_restart_safe_validation_cursor(tmp_path)
     loaded = ds._load_ledger(path)
     assert loaded["validation_fairness"] == {"next_run_id": None}
     assert loaded["fairness"] == legacy["fairness"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        (
+            '{"schema_version":1,"created_at":1,"updated_at":1,'
+            '"poll_number":0,"fairness":{},"validation_fairness":{},'
+            '"runs":{},"jobs":{},"jobs":{},"intents":{},"cells":{}}\n'
+        ),
+        (
+            '{"schema_version":1,"created_at":1,"updated_at":1e9999,'
+            '"poll_number":0,"fairness":{},"validation_fairness":{},'
+            '"runs":{},"jobs":{},"intents":{},"cells":{}}\n'
+        ),
+    ),
+)
+def test_dispatcher_ledger_load_rejects_duplicate_or_nonfinite_json(
+    tmp_path, payload
+):
+    path = tmp_path / "ledger.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(ds.DispatcherError):
+        ds._load_ledger(path)
 
 
 def test_singleton_lock_rejects_second_coordinator(tmp_path):
@@ -1849,7 +2074,11 @@ def test_dry_run_is_read_only_and_never_calls_sbatch(tmp_path, monkeypatch, caps
         "VerifiedQuestionCatalog",
         lambda *_args, **_kwargs: _QuestionCatalogStub(),
     )
-    monkeypatch.setattr(ds, "_submit_sbatch", lambda _path: pytest.fail("sbatch called"))
+    monkeypatch.setattr(
+        ds,
+        "_submit_sbatch",
+        lambda _path, **_kwargs: pytest.fail("sbatch called"),
+    )
     rc = ds.main(
         [
             "dispatch", "--dry-run", "--run", f"run={run.run_root}",
@@ -1874,7 +2103,11 @@ def test_sbatch_rejection_is_recorded_and_returned_for_next_poll(tmp_path, monke
     run = _run(tmp_path, "run", [_cell(0)])
     args = _poll_args(tmp_path, run)
     monkeypatch.setattr(
-        ds, "_submit_sbatch", lambda _path: (_ for _ in ()).throw(ds.DispatcherError("qos race"))
+        ds,
+        "_submit_sbatch",
+        lambda _path, **_kwargs: (_ for _ in ()).throw(
+            ds.DispatcherError("qos race")
+        ),
     )
     outcome = ds._dispatch_poll(args, [run], ds._empty_ledger(), dry_run=False)
     assert "qos race" in outcome["report"]["submission_error"]
@@ -1887,47 +2120,1125 @@ def test_sbatch_rejection_is_recorded_and_returned_for_next_poll(tmp_path, monke
     }
 
 
+def test_explicit_sbatch_rejection_is_not_recorded_as_ambiguous(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "run", [_cell(0)])
+    args = _poll_args(tmp_path, run)
+    monkeypatch.setattr(
+        ds,
+        "_submit_sbatch",
+        lambda _path, **_kwargs: (_ for _ in ()).throw(
+            ds.SubmissionRejectedError("Slurm rejected the request")
+        ),
+    )
+    outcome = ds._dispatch_poll(
+        args, [run], ds._empty_ledger(), dry_run=False
+    )
+    assert "Slurm rejected" in outcome["report"]["submission_error"]
+    assert {
+        record["state"]
+        for record in outcome["ledger"]["intents"].values()
+    } == {"submission_rejected"}
+
+
 def test_submit_sbatch_binds_cli_intent_and_requires_numeric_job_id(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "batch-20260721T000000-abc123.sbatch"
+    manifest_path = path.with_suffix(".json")
+    manifest_path.write_text('{"schema_version":1}\n', encoding="utf-8")
+    manifest_path.chmod(0o444)
     path.write_text("#!/bin/bash\n", encoding="utf-8")
+    path.chmod(0o444)
+    sbatch_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest_sha256 = hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
     calls = []
 
     def accepted(argv, **kwargs):
         calls.append((list(argv), kwargs))
+        if argv[0] == "scontrol":
+            return subprocess.CompletedProcess(
+                argv, 0, "#!/bin/bash\n", ""
+            )
         return subprocess.CompletedProcess(argv, 0, "321;cluster\n", "")
 
     monkeypatch.setattr(ds.subprocess, "run", accepted)
-    assert ds._submit_sbatch(path) == "321"
+    assert (
+        ds._submit_sbatch(
+            path,
+            expected_sbatch_sha256=sbatch_sha256,
+            batch_manifest_path=manifest_path,
+            expected_batch_manifest_sha256=manifest_sha256,
+        )
+        == "321"
+    )
     assert calls[0][0] == [
         "sbatch",
         "--parsable",
         "--comment=asys-schema5-intent:20260721T000000-abc123",
-        str(path),
     ]
     assert calls[0][1]["timeout"] == 60.0
+    assert calls[0][1]["input"] == "#!/bin/bash\n"
+    assert calls[1][0] == [
+        "scontrol",
+        "write",
+        "batch_script",
+        "321",
+        "-",
+    ]
 
     monkeypatch.setattr(
         ds.subprocess,
         "run",
-        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "accepted\n", ""),
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 0, "accepted\n", ""
+        ),
     )
-    with pytest.raises(ds.DispatcherError, match="invalid job id"):
-        ds._submit_sbatch(path)
+    with pytest.raises(ds.SubmissionAmbiguousError, match="invalid job id"):
+        ds._submit_sbatch(
+            path,
+            expected_sbatch_sha256=sbatch_sha256,
+            batch_manifest_path=manifest_path,
+            expected_batch_manifest_sha256=manifest_sha256,
+        )
 
 
-def _stable_scheduler_snapshot(*job_ids):
+@pytest.mark.parametrize(
+    "mutation",
+    ("tamper", "replace", "writable", "parent-symlink"),
+)
+def test_submit_sbatch_preflight_drift_never_invokes_slurm(
+    tmp_path, monkeypatch, mutation
+):
+    artifact_dir = tmp_path / "sealed"
+    artifact_dir.mkdir()
+    path = artifact_dir / "batch-20260721T000000-abc123.sbatch"
+    manifest_path = path.with_suffix(".json")
+    manifest_path.write_text('{"schema_version":1}\n', encoding="utf-8")
+    path.write_text("#!/bin/bash\n", encoding="utf-8")
+    manifest_path.chmod(0o444)
+    path.chmod(0o444)
+    sbatch_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest_sha256 = hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    submitted = []
+    monkeypatch.setattr(
+        ds.subprocess,
+        "run",
+        lambda *_args, **_kwargs: submitted.append(True),
+    )
+    if mutation == "tamper":
+        path.chmod(0o644)
+        path.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
+        path.chmod(0o444)
+    elif mutation == "replace":
+        replacement = path.with_suffix(".replacement")
+        replacement.write_text("#!/bin/bash\nexit 98\n", encoding="utf-8")
+        replacement.chmod(0o444)
+        replacement.replace(path)
+    elif mutation == "writable":
+        path.chmod(0o644)
+    else:
+        real_dir = tmp_path / "real-sealed"
+        artifact_dir.rename(real_dir)
+        artifact_dir.symlink_to(real_dir, target_is_directory=True)
+
+    with pytest.raises(ds.SubmissionPreflightError):
+        ds._submit_sbatch(
+            path,
+            expected_sbatch_sha256=sbatch_sha256,
+            batch_manifest_path=manifest_path,
+            expected_batch_manifest_sha256=manifest_sha256,
+        )
+    assert submitted == []
+
+
+def test_submit_sbatch_uses_validated_bytes_despite_atomic_path_replacement(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "batch-20260721T000000-atomic.sbatch"
+    manifest_path = path.with_suffix(".json")
+    original = b"#!/bin/bash\nexit 0\n"
+    replacement_bytes = b"#!/bin/bash\nexit 99\n"
+    manifest_path.write_text('{"schema_version":1}\n', encoding="utf-8")
+    manifest_path.chmod(0o444)
+    path.write_bytes(original)
+    path.chmod(0o444)
+    observed_submission = {}
+
+    def slurm(argv, **kwargs):
+        if argv[0] == "sbatch":
+            replacement = path.with_suffix(".replacement")
+            replacement.write_bytes(replacement_bytes)
+            replacement.chmod(0o444)
+            replacement.replace(path)
+            observed_submission["input"] = kwargs["input"].encode("utf-8")
+            return subprocess.CompletedProcess(argv, 0, "321\n", "")
+        assert argv[:3] == ["scontrol", "write", "batch_script"]
+        return subprocess.CompletedProcess(
+            argv, 0, observed_submission["input"].decode("utf-8"), ""
+        )
+
+    monkeypatch.setattr(ds.subprocess, "run", slurm)
+    with pytest.raises(
+        ds.SubmissionAmbiguousError, match="changed across submission"
+    ):
+        ds._submit_sbatch(
+            path,
+            expected_sbatch_sha256=hashlib.sha256(original).hexdigest(),
+            batch_manifest_path=manifest_path,
+            expected_batch_manifest_sha256=hashlib.sha256(
+                manifest_path.read_bytes()
+            ).hexdigest(),
+        )
+    assert observed_submission["input"] == original
+    assert path.read_bytes() == replacement_bytes
+
+
+def test_spooled_receipt_replays_after_slurm_purge_and_rejects_tamper(
+    tmp_path,
+):
+    batch_id = "20260721T000000-replay"
+    sbatch = tmp_path / f"batch-{batch_id}.sbatch"
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    sbatch.chmod(0o444)
+    digest = hashlib.sha256(sbatch.read_bytes()).hexdigest()
+    first = ds._spooled_script_receipt(
+        batch_id=batch_id,
+        job_id="321",
+        expected_name=f"asys-dispatch-{batch_id[-10:]}",
+        expected_comment=f"asys-schema5-intent:{batch_id}",
+        sbatch_path=sbatch,
+        sbatch_sha256=digest,
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
+        now=10.0,
+    )
+    replay = ds._spooled_script_receipt(
+        batch_id=batch_id,
+        job_id="321",
+        expected_name=f"asys-dispatch-{batch_id[-10:]}",
+        expected_comment=f"asys-schema5-intent:{batch_id}",
+        sbatch_path=sbatch,
+        sbatch_sha256=digest,
+        spooled_script_reader=lambda _job_id: pytest.fail(
+            "sealed receipt replay must not query purged Slurm history"
+        ),
+        now=20.0,
+    )
+    assert replay == first
+
+    receipt = Path(first[0])
+    replacement = receipt.with_name("attacker-receipt.json")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["job_id"] = "999"
+    replacement.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    replacement.chmod(0o444)
+    replacement.replace(receipt)
+    with pytest.raises(ds.DispatcherError, match="identity drifted"):
+        ds._spooled_script_receipt(
+            batch_id=batch_id,
+            job_id="321",
+            expected_name=f"asys-dispatch-{batch_id[-10:]}",
+            expected_comment=f"asys-schema5-intent:{batch_id}",
+            sbatch_path=sbatch,
+            sbatch_sha256=digest,
+            spooled_script_reader=lambda _job_id: pytest.fail(
+                "tampered receipt must not be repaired from mutable Slurm state"
+            ),
+            now=30.0,
+        )
+
+
+def test_spooled_receipt_recovers_prelink_and_postlink_crash_states(tmp_path):
+    batch_id = "20260721T000000-crash"
+    sbatch = tmp_path / f"batch-{batch_id}.sbatch"
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    sbatch.chmod(0o444)
+    digest = hashlib.sha256(sbatch.read_bytes()).hexdigest()
+    receipt = sbatch.with_suffix(".spooled.json")
+    payload = {
+        "schema_version": 1,
+        "kind": "schema5_dispatch_spooled_script_receipt",
+        "batch_id": batch_id,
+        "job_id": "321",
+        "job_name": f"asys-dispatch-{batch_id[-10:]}",
+        "scheduler_comment": f"asys-schema5-intent:{batch_id}",
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": digest,
+        "spooled_sbatch_sha256": digest,
+        "verified_at": 10.0,
+    }
+    prelink_transaction = receipt.parent / (
+        f".{receipt.name}.publish.123.{'a' * 32}.txn"
+    )
+    prelink_transaction.mkdir(mode=0o700)
+    prelink = prelink_transaction / "PAYLOAD"
+    prelink.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    prelink.chmod(0o444)
+    ds._spooled_script_receipt(
+        batch_id=batch_id,
+        job_id="321",
+        expected_name=payload["job_name"],
+        expected_comment=payload["scheduler_comment"],
+        sbatch_path=sbatch,
+        sbatch_sha256=digest,
+        spooled_script_reader=lambda _job_id: pytest.fail(
+            "complete pre-link temp must be adopted without Slurm"
+        ),
+        now=20.0,
+    )
+    assert receipt.is_file() and not prelink_transaction.exists()
+    assert receipt.stat().st_nlink == 1
+
+    postlink_transaction = receipt.parent / (
+        f".{receipt.name}.publish.456.{'b' * 32}.txn"
+    )
+    postlink_transaction.mkdir(mode=0o700)
+    postlink = postlink_transaction / "PAYLOAD"
+    postlink.hardlink_to(receipt)
+    assert receipt.stat().st_nlink == 2
+    ds._spooled_script_receipt(
+        batch_id=batch_id,
+        job_id="321",
+        expected_name=payload["job_name"],
+        expected_comment=payload["scheduler_comment"],
+        sbatch_path=sbatch,
+        sbatch_sha256=digest,
+        spooled_script_reader=lambda _job_id: pytest.fail(
+            "post-link recovery must use the durable receipt"
+        ),
+        now=30.0,
+    )
+    assert not postlink_transaction.exists()
+    assert receipt.stat().st_nlink == 1
+    assert not list(tmp_path.glob(f".{receipt.name}.publish.*"))
+
+
+@pytest.mark.parametrize("mutation", ("conflicting-temp", "target-symlink"))
+def test_spooled_receipt_fails_closed_on_publish_namespace_attack(
+    tmp_path, mutation
+):
+    batch_id = "20260721T000000-attack"
+    sbatch = tmp_path / f"batch-{batch_id}.sbatch"
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    sbatch.chmod(0o444)
+    digest = hashlib.sha256(sbatch.read_bytes()).hexdigest()
+    receipt = sbatch.with_suffix(".spooled.json")
+    attacker = tmp_path / "attacker.json"
+    attacker.write_text("{}\n", encoding="utf-8")
+    attacker.chmod(0o444)
+    if mutation == "conflicting-temp":
+        attacker.rename(
+            receipt.parent
+            / f".{receipt.name}.publish.999.{'c' * 32}.tmp"
+        )
+        match = "foreign namespace"
+    else:
+        receipt.symlink_to(attacker)
+        match = "symlink"
+    with pytest.raises(ds.DispatcherError, match=match):
+        ds._spooled_script_receipt(
+            batch_id=batch_id,
+            job_id="321",
+            expected_name=f"asys-dispatch-{batch_id[-10:]}",
+            expected_comment=f"asys-schema5-intent:{batch_id}",
+            sbatch_path=sbatch,
+            sbatch_sha256=digest,
+            spooled_script_reader=lambda _job_id: pytest.fail(
+                "unsafe publication state must not cross back into Slurm"
+            ),
+            now=10.0,
+        )
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    (
+        "open",
+        "partial_write",
+        "post_fsync",
+        "pre_fchmod",
+        "post_fchmod",
+        "prelink",
+        "postlink",
+    ),
+)
+def test_readonly_publication_recovers_every_private_transaction_boundary(
+    tmp_path, crash_point
+):
+    target = tmp_path / "SEALED.bin"
+    payload = b"durable-publication-payload\n"
+    crashed = False
+
+    def crash_hook(point):
+        nonlocal crashed
+        if point == crash_point and not crashed:
+            crashed = True
+            raise KeyboardInterrupt(point)
+
+    with pytest.raises(KeyboardInterrupt, match=crash_point):
+        ds._publish_readonly_bytes_once(
+            target,
+            payload,
+            crash_hook=crash_hook,
+        )
+    ds._publish_readonly_bytes_once(target, payload)
+
+    assert target.read_bytes() == payload
+    assert target.stat().st_mode & 0o222 == 0
+    assert target.stat().st_nlink == 1
+    assert not list(tmp_path.glob(f".{target.name}.publish.*"))
+
+
+def _closed_production_ledger(tmp_path):
+    batch_id = "20260721T000000-closed"
+    manifest = (tmp_path / f"batch-{batch_id}.json").resolve()
+    sbatch = manifest.with_suffix(".sbatch")
+    task = {
+        "run_id": "run",
+        "run_root": str((tmp_path / "run").resolve()),
+        "source_index": 0,
+        "cell_id": "cell",
+        "config_hash": "a" * 12,
+        "manifest_sha256": "b" * 64,
+        "benchmark_contracts_sha256": "c" * 64,
+        "model_size": "8B",
+        "serving_profile": "8B",
+        "fanout_cost": 1,
+        "server_pool_id": None,
+        "server_run_id": None,
+        "server_pool_root": str((tmp_path / "pool").resolve()),
+    }
+    manifest.write_text("{}\n", encoding="utf-8")
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    manifest.chmod(0o444)
+    sbatch.chmod(0o444)
+    manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    sbatch_sha = hashlib.sha256(sbatch.read_bytes()).hexdigest()
+    receipt_path, receipt_sha = ds._spooled_script_receipt(
+        batch_id=batch_id,
+        job_id="321",
+        expected_name=f"asys-dispatch-{batch_id[-10:]}",
+        expected_comment=f"asys-schema5-intent:{batch_id}",
+        sbatch_path=sbatch,
+        sbatch_sha256=sbatch_sha,
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
+        now=2.0,
+    )
+    ledger = ds._empty_ledger(now=1.0)
+    ledger["runs"]["run"] = {
+        "run_root": task["run_root"],
+        "manifest_path": str((tmp_path / "run" / "cells.json").resolve()),
+        "manifest_sha256": task["manifest_sha256"],
+        "manifest_cells": 1,
+        "benchmark_contracts_sha256": task[
+            "benchmark_contracts_sha256"
+        ],
+        "server_pool_arg": None,
+        "server_pool_root": task["server_pool_root"],
+        "weight": 1.0,
+        "backlogged_polls_without_admission": 0,
+    }
+    ledger["intents"][batch_id] = {
+        "state": "submitted",
+        "created_at": 1.0,
+        "submit_started_at": 2.0,
+        "submitted_at": 3.0,
+        "job_id": "321",
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": manifest_sha,
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": sbatch_sha,
+        "spooled_sbatch_sha256": sbatch_sha,
+        "spooled_receipt_path": receipt_path,
+        "spooled_receipt_sha256": receipt_sha,
+        "tasks": [copy.deepcopy(task)],
+        "fairness_after": {"cursor": 0, "deficits": {"run": 0.0}},
+        "fairness_committed": True,
+        **_cell_submission_transport(batch_id),
+    }
+    ledger["jobs"]["321"] = {
+        "job_id": "321",
+        "batch_id": batch_id,
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": manifest_sha,
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": sbatch_sha,
+        "spooled_sbatch_sha256": sbatch_sha,
+        "spooled_receipt_path": receipt_path,
+        "spooled_receipt_sha256": receipt_sha,
+        "submitted_at": 3.0,
+        "last_seen_at": 4.0,
+        "state": "active",
+        "task_count": 1,
+        "tasks": [copy.deepcopy(task)],
+        **_cell_submission_transport(batch_id),
+    }
+    ledger["cells"][ds._key(("run", "cell"))] = {
+        "run_id": "run",
+        "cell_id": "cell",
+        "source_index": 0,
+        "model_size": "8B",
+        "serving_profile": "8B",
+        "fanout_cost": 1,
+        "completion_state": "active",
+        "next_eligible_at": None,
+        "last_checked_at": 4.0,
+        "eligible_for_retry": False,
+    }
+    ledger["updated_at"] = 4.0
+    return ledger, batch_id
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("legacy-schema", "legacy"),
+        ("task-identity", "coordinate identity"),
+        ("job-timestamp", "closed accepted transaction"),
+        ("scheduler-states", "closed accepted transaction"),
+        ("fairness-commit", "sealed spool proof"),
+        ("run-manifest", "manifest record"),
+        ("cell-retry", "retry record"),
+    ),
+)
+def test_production_ledger_validator_rejects_each_admission_field_class(
+    tmp_path, mutation, match
+):
+    ledger, batch_id = _closed_production_ledger(tmp_path)
+    if mutation == "legacy-schema":
+        ledger["schema_version"] = ds.LEGACY_LEDGER_SCHEMA_VERSION
+    elif mutation == "task-identity":
+        ledger["intents"][batch_id]["tasks"][0]["config_hash"] = "bad"
+        ledger["jobs"]["321"]["tasks"][0]["config_hash"] = "bad"
+    elif mutation == "job-timestamp":
+        ledger["jobs"]["321"]["last_seen_at"] = "yesterday"
+    elif mutation == "scheduler-states":
+        ledger["jobs"]["321"]["scheduler_states"] = [None]
+    elif mutation == "fairness-commit":
+        ledger["intents"][batch_id]["fairness_committed"] = False
+    elif mutation == "run-manifest":
+        ledger["runs"]["run"]["manifest_sha256"] = "bad"
+    else:
+        cell = ledger["cells"][ds._key(("run", "cell"))]
+        cell["submission_attempts"] = -1
+    with pytest.raises(ds.DispatcherError, match=match):
+        ds.validate_production_ledger_structure(ledger)
+
+
+def test_preflight_failure_fences_coordinates_as_integrity_blocked(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "run", [_cell(0)])
+    args = _poll_args(tmp_path, run)
+    monkeypatch.setattr(
+        ds,
+        "_submit_sbatch",
+        lambda _path, **_kwargs: (_ for _ in ()).throw(
+            ds.SubmissionPreflightError("sealed artifact changed")
+        ),
+    )
+
+    with pytest.raises(
+        ds.SubmissionPreflightError, match="sealed artifact changed"
+    ):
+        ds._dispatch_poll(
+            args,
+            [run],
+            ds._empty_ledger(),
+            dry_run=False,
+        )
+
+    persisted = ds._load_ledger(args.ledger_path)
+    [intent] = persisted["intents"].values()
+    assert intent["state"] == "integrity_blocked"
+    assert intent["integrity_alert_key"] == (
+        ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+    )
+    assert intent["tasks"]
+
+
+def test_integrity_blocked_rejects_any_post_boundary_or_job_evidence(
+    tmp_path,
+):
+    ledger, batch_id = _closed_production_ledger(tmp_path)
+    ledger["intents"][batch_id].update(
+        {
+            "state": "integrity_blocked",
+            "fairness_committed": False,
+            "error": "invalid accepted-to-blocked mutation",
+            "integrity_blocked_at": 10.0,
+            "integrity_alert_key": (
+                ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+            ),
+        }
+    )
+    with pytest.raises(ds.DispatcherError, match="pre-boundary"):
+        ds.validate_production_ledger_structure(ledger)
+
+
+@pytest.mark.parametrize(
+    ("state", "valid_fields", "contradictory_field", "contradictory_value"),
+    (
+        ("prepared", {}, "job_id", "321"),
+        ("submitting", {"submit_started_at": 2.0}, "job_id", "321"),
+        (
+            "submitted",
+            {
+                "submit_started_at": 2.0,
+                "submitted_at": 3.0,
+                "job_id": "321",
+            },
+            "error",
+            "stale rejection",
+        ),
+        (
+            "reconciled",
+            {
+                "submit_started_at": 2.0,
+                "reconciled_at": 3.0,
+                "job_id": "321",
+            },
+            "integrity_alert_key",
+            ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT,
+        ),
+        (
+            "not_accepted",
+            {"reconciled_at": 3.0, "error": "proven absent"},
+            "spooled_sbatch_sha256",
+            "d" * 64,
+        ),
+        (
+            "submission_rejected",
+            {
+                "submit_started_at": 2.0,
+                "error": "explicit rejection",
+                "last_submit_error_at": 3.0,
+            },
+            "submitted_at",
+            3.0,
+        ),
+        (
+            "integrity_blocked",
+            {
+                "error": "sealed preflight failed",
+                "integrity_blocked_at": 3.0,
+                "integrity_alert_key": (
+                    ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+                ),
+            },
+            "submit_started_at",
+            2.0,
+        ),
+        (
+            "integrity_retired",
+            {
+                "error": "sealed preflight failed",
+                "integrity_blocked_at": 3.0,
+                "integrity_alert_key": (
+                    ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+                ),
+                "integrity_retired_at": 4.0,
+                "retirement_id": "e" * 64,
+                "retirement_receipt_path": "/sealed/retirement.json",
+                "retirement_receipt_sha256": "f" * 64,
+                "retirement_semantic_report_path": "/sealed/semantic.json",
+                "retirement_semantic_report_sha256": "1" * 64,
+                "retirement_scheduler_absence_sha256": "2" * 64,
+                "retirement_operator_note_sha256": "3" * 64,
+                "retirement_identity_changes": ["0:run:cell:ASYS_RELEASE_ID"],
+            },
+            "unexpected_extension_field",
+            True,
+        ),
+    ),
+)
+def test_production_intent_states_are_closed_and_reject_impossible_artifacts(
+    tmp_path,
+    state,
+    valid_fields,
+    contradictory_field,
+    contradictory_value,
+):
+    ledger, batch_id = _closed_production_ledger(tmp_path)
+    original = ledger["intents"][batch_id]
+    common = {
+        key: copy.deepcopy(original[key])
+        for key in (
+            "created_at",
+            "batch_manifest",
+            "batch_manifest_sha256",
+            "sbatch_path",
+            "sbatch_sha256",
+            "submission_transport",
+            "submission_argv_sha256",
+            "tasks",
+            "fairness_after",
+        )
+    }
+    accepted = state in {"submitted", "reconciled"}
+    intent = {
+        **common,
+        "state": state,
+        "fairness_committed": accepted,
+        **copy.deepcopy(valid_fields),
+    }
+    if accepted:
+        intent.update(
+            {
+                "spooled_sbatch_sha256": original[
+                    "spooled_sbatch_sha256"
+                ],
+                "spooled_receipt_path": original["spooled_receipt_path"],
+                "spooled_receipt_sha256": original[
+                    "spooled_receipt_sha256"
+                ],
+            }
+        )
+        if state == "reconciled":
+            ledger["jobs"]["321"]["reconciled_at"] = 3.0
+    else:
+        ledger["jobs"] = {}
+    ledger["intents"][batch_id] = intent
+    ds.validate_production_ledger_structure(ledger)
+
+    intent[contradictory_field] = contradictory_value
+    with pytest.raises(ds.DispatcherError):
+        ds.validate_production_ledger_structure(ledger)
+
+
+def test_submission_integrity_alert_is_critical_and_human_latched(
+    tmp_path, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(
+        control,
+        "record_alert",
+        lambda _state_dir, **kwargs: calls.append(kwargs),
+    )
+    ds._persist_dispatcher_submission_integrity_hold(
+        tmp_path,
+        message="immutable admission artifact drift",
+        now=100.0,
+    )
+    assert calls == [
+        {
+            "kind": "dispatcher-submission-integrity",
+            "severity": "critical",
+            "message": "immutable admission artifact drift",
+            "dedupe_key": ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT,
+            "send_email": True,
+            "now": 100.0,
+        }
+    ]
+    assert (
+        ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+        in control.SCIENTIFIC_INTEGRITY_ALERT_KEYS
+    )
+
+
+def _integrity_retirement_fixture(tmp_path, monkeypatch):
+    ledger, batch_id = _closed_production_ledger(tmp_path)
+    intent = ledger["intents"][batch_id]
+    environment = {
+        key: f"old-{key.lower()}" for key in ds.PRODUCTION_ENVIRONMENT_KEYS
+    }
+    environment.update(
+        {
+            "ASYS_ROLLOUT_GENERATION": "1",
+            "ASYS_CAPACITY_GENERATION": "1",
+            "ASYS_FLEET_CONTRACT_PATH": str(
+                (tmp_path / "fleet.v1.json").resolve()
+            ),
+            "ASYS_FLEET_CONTRACT_SHA256": "d" * 64,
+            "ASYS_RELEASE_FLEET_CONTRACT_SHA256": "e" * 64,
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+        }
+    )
+    intent["tasks"][0]["runtime_environment"] = environment
+    intent.update(
+        {
+            "state": "integrity_blocked",
+            "fairness_committed": False,
+            "error": "sealed artifact changed before sbatch",
+            "integrity_blocked_at": 10.0,
+            "integrity_alert_key": (
+                ds.DISPATCHER_SUBMISSION_INTEGRITY_ALERT
+            ),
+        }
+    )
+    for field in (
+        "job_id",
+        "submit_started_at",
+        "submitted_at",
+        "reconciled_at",
+        "spooled_sbatch_sha256",
+        "spooled_receipt_path",
+        "spooled_receipt_sha256",
+    ):
+        intent.pop(field, None)
+    ledger["jobs"] = {}
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    ds._atomic_write_json(state_dir / "ledger.json", ledger)
+    semantic_path = (state_dir / "monitoring" / "semantic.json").resolve()
+    semantic_path.parent.mkdir()
+    semantic_path.write_text(
+        json.dumps({"semantic": {"scan_successful": True}}) + "\n",
+        encoding="utf-8",
+    )
+    semantic_path.chmod(0o444)
+    semantic_sha256 = hashlib.sha256(
+        semantic_path.read_bytes()
+    ).hexdigest()
+    semantic = {
+        "path": str(semantic_path),
+        "sha256": semantic_sha256,
+        "captured_timestamp": 20.0,
+        "committed_timestamp": 21.0,
+        "cadence": "semantic",
+        "control_immutable_sha256": "3" * 64,
+        "rollout_generation": 2,
+        "fleet_generation": "capacity-g000001-current",
+        "report_sha256": semantic_sha256,
+    }
+    acknowledgement = {
+        "timestamp": 22.0,
+        "at": "1970-01-01T00:00:22Z",
+        "operator_note": "release fixed preflight",
+        "transition_sha256": "2" * 64,
+    }
+    monkeypatch.setattr(
+        ds,
+        "_validated_integrity_retirement_semantic_evidence",
+        lambda *_args, **_kwargs: copy.deepcopy(semantic),
+    )
+    monkeypatch.setattr(
+        ds,
+        "_ensure_integrity_retirement_acknowledgement",
+        lambda *_args, **_kwargs: copy.deepcopy(acknowledgement),
+    )
+    monkeypatch.setattr(
+        ds,
+        "_matching_integrity_acknowledgement",
+        lambda *_args, **_kwargs: copy.deepcopy(acknowledgement),
+    )
+    monkeypatch.setattr(
+        control,
+        "admission_boundary_lock",
+        lambda _state_dir: ds.nullcontext(),
+    )
+    monkeypatch.setattr(
+        control,
+        "load_control",
+        lambda *_args, **_kwargs: {
+            "created_timestamp": 5.0,
+            "immutable_sha256": "3" * 64,
+            "rollout_generation": 2,
+            "resume_intent": {
+                "rollout_generation": 2,
+                "created_timestamp": 12.0,
+            },
+            "capacity": {
+                "current_generation": 1,
+                "current_contract": None,
+            },
+            "throughput_epochs": [
+                {
+                    "epoch": 1,
+                    "rollout_generation": 2,
+                    "fleet_generation": "capacity-g000001-current",
+                    "started_timestamp": 18.0,
+                    "closed_at": None,
+                }
+            ],
+            "admission_ramp": {
+                "last_observation": {
+                    "path": str(semantic_path),
+                    "sha256": semantic_sha256,
+                    "cadence": "semantic",
+                    "captured_timestamp": 20.0,
+                    "timestamp": 21.0,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        ds,
+        "_current_integrity_runtime_identities",
+        lambda _state, blocked: [
+            {
+                **copy.deepcopy(identity),
+                "runtime_environment": {
+                    **copy.deepcopy(identity["runtime_environment"]),
+                    "ASYS_RELEASE_ID": "fixed-release",
+                    "ASYS_ROLLOUT_GENERATION": "2",
+                },
+            }
+            for identity in blocked
+        ],
+    )
+    scheduler = SimpleNamespace(
+        jobs=(),
+        captured_at=30.0,
+        squeue_ok=True,
+        sacct_ok=True,
+        errors=(),
+    )
+    return {
+        "state_dir": state_dir,
+        "control_state_dir": state_dir,
+        "batch_id": batch_id,
+        "semantic_path": semantic_path,
+        "semantic_sha256": semantic_sha256,
+        "note": acknowledgement["operator_note"],
+        "scheduler": scheduler,
+    }
+
+
+def _retire_integrity_fixture(fixture, **kwargs):
+    return ds.retire_integrity_blocked_intent(
+        fixture["state_dir"],
+        control_state_dir=fixture["control_state_dir"],
+        batch_id=fixture["batch_id"],
+        semantic_evidence_path=fixture["semantic_path"],
+        semantic_evidence_sha256=fixture["semantic_sha256"],
+        operator_note=fixture["note"],
+        scheduler_reader=lambda: fixture["scheduler"],
+        now=40.0,
+        **kwargs,
+    )
+
+
+def test_integrity_retirement_rejects_old_scan_after_control_generation_change(
+    tmp_path,
+):
+    semantic_path = (tmp_path / "monitoring" / "semantic.json").resolve()
+    semantic_path.parent.mkdir()
+    semantic_path.write_text("{}\n", encoding="utf-8")
+    semantic_sha256 = hashlib.sha256(
+        semantic_path.read_bytes()
+    ).hexdigest()
+    semantic = {
+        "path": str(semantic_path),
+        "sha256": semantic_sha256,
+        "captured_timestamp": 20.0,
+        "committed_timestamp": 21.0,
+        "cadence": "semantic",
+        "control_immutable_sha256": "a" * 64,
+        "rollout_generation": 1,
+        "fleet_generation": "capacity-g000001-old",
+        "report_sha256": semantic_sha256,
+    }
+    current = {
+        "created_timestamp": 5.0,
+        "immutable_sha256": "b" * 64,
+        "rollout_generation": 2,
+        "resume_intent": {
+            "rollout_generation": 2,
+            "created_timestamp": 12.0,
+        },
+        "capacity": {
+            "current_generation": 2,
+            "current_contract": {
+                "activated_timestamp": 18.0,
+            },
+        },
+        "throughput_epochs": [
+            {
+                "epoch": 2,
+                "rollout_generation": 2,
+                "fleet_generation": "capacity-g000002-current",
+                "started_timestamp": 19.0,
+                "closed_at": None,
+            }
+        ],
+        "admission_ramp": {
+            "last_observation": {
+                "path": str(semantic_path),
+                "sha256": semantic_sha256,
+                "cadence": "semantic",
+                "captured_timestamp": 20.0,
+                "timestamp": 21.0,
+            }
+        },
+    }
+
+    with pytest.raises(ds.DispatcherError, match="current immutable control"):
+        ds._bind_integrity_retirement_semantic_to_current_control(
+            current, semantic
+        )
+
+    semantic.update(
+        {
+            "control_immutable_sha256": "b" * 64,
+            "rollout_generation": 2,
+            "fleet_generation": "capacity-g000001-old",
+        }
+    )
+    with pytest.raises(ds.DispatcherError, match="current fleet generation"):
+        ds._bind_integrity_retirement_semantic_to_current_control(
+            current, semantic
+        )
+
+
+def test_integrity_retirement_seals_preimages_and_releases_only_its_coordinates(
+    tmp_path, monkeypatch
+):
+    fixture = _integrity_retirement_fixture(tmp_path, monkeypatch)
+    receipt = _retire_integrity_fixture(fixture)
+    persisted = ds.load_production_ledger(
+        fixture["state_dir"] / "ledger.json"
+    )
+    intent = persisted["intents"][fixture["batch_id"]]
+
+    assert intent["state"] == "integrity_retired"
+    assert intent["fairness_committed"] is False
+    assert len(receipt["archived_preimages"]) == 3
+    assert {
+        row["logical_name"] for row in receipt["archived_preimages"]
+    } == {"blocked_intent", "batch_manifest", "sbatch"}
+    assert all(
+        Path(row["archive_path"]).stat().st_mode & 0o222 == 0
+        for row in receipt["archived_preimages"]
+    )
+    assert (
+        Path(intent["retirement_receipt_path"]).stat().st_mode & 0o222
+        == 0
+    )
+    active, load, _legacy, unmappable = ds._active_cells(
+        [],
+        persisted,
+        [],
+        now=50.0,
+        schema5_strict=True,
+    )
+    assert active == {}
+    assert load == {}
+    assert unmappable == []
+    assert _retire_integrity_fixture(fixture) == receipt
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    (
+        "after_intent",
+        "after_preimages",
+        "after_scheduler_absence",
+        "after_receipt",
+    ),
+)
+def test_integrity_retirement_recovers_every_marker_boundary(
+    tmp_path, monkeypatch, crash_point
+):
+    fixture = _integrity_retirement_fixture(tmp_path, monkeypatch)
+    crashed = False
+
+    def crash_hook(point):
+        nonlocal crashed
+        if point == crash_point and not crashed:
+            crashed = True
+            raise KeyboardInterrupt(point)
+
+    with pytest.raises(KeyboardInterrupt, match=crash_point):
+        _retire_integrity_fixture(fixture, crash_hook=crash_hook)
+    receipt = _retire_integrity_fixture(fixture)
+    assert receipt["batch_id"] == fixture["batch_id"]
+    persisted = ds.load_production_ledger(
+        fixture["state_dir"] / "ledger.json"
+    )
+    assert (
+        persisted["intents"][fixture["batch_id"]]["state"]
+        == "integrity_retired"
+    )
+
+
+def test_integrity_retirement_rejects_scheduler_ambiguity_before_ledger_change(
+    tmp_path, monkeypatch
+):
+    fixture = _integrity_retirement_fixture(tmp_path, monkeypatch)
+    fixture["scheduler"].jobs = (
+        SimpleNamespace(
+            job_id="456",
+            source="sacct",
+            active=False,
+            job_name=f"asys-dispatch-{fixture['batch_id'][-10:]}",
+            comment=f"asys-schema5-intent:{fixture['batch_id']}",
+            command=ds._cell_submission_command(fixture["batch_id"])
+            if hasattr(ds, "_cell_submission_command")
+            else " ".join(ds._stdin_submission_argv(fixture["batch_id"])),
+        ),
+    )
+    with pytest.raises(ds.DispatcherError, match="cannot prove.*absent"):
+        _retire_integrity_fixture(fixture)
+    persisted = ds.load_production_ledger(
+        fixture["state_dir"] / "ledger.json"
+    )
+    assert (
+        persisted["intents"][fixture["batch_id"]]["state"]
+        == "integrity_blocked"
+    )
+
+
+def test_retired_integrity_archive_tamper_relatches_global_hold(
+    tmp_path, monkeypatch
+):
+    fixture = _integrity_retirement_fixture(tmp_path, monkeypatch)
+    receipt = _retire_integrity_fixture(fixture)
+    archive = Path(receipt["archived_preimages"][0]["archive_path"])
+    archive.chmod(0o644)
+    archive.write_bytes(b"tampered\n")
+    archive.chmod(0o444)
+    calls = []
+    monkeypatch.setattr(
+        ds,
+        "_persist_dispatcher_submission_integrity_hold",
+        lambda *_args, **kwargs: calls.append(kwargs),
+    )
+    ledger = ds.load_production_ledger(
+        fixture["state_dir"] / "ledger.json"
+    )
+    with pytest.raises(ds.SubmissionPreflightError, match="preimage"):
+        ds._recover_dispatcher_submission_integrity_hold(
+            fixture["state_dir"],
+            ledger=ledger,
+            now=60.0,
+        )
+    assert calls and "admission remains fenced" in calls[0]["message"]
+
+
+def _stable_scheduler_snapshot(
+    *job_ids,
+    partition="ou_bcs_normal",
+    qos="normal",
+    job_name="unrelated-target-job",
+    comment="unrelated",
+):
     return SimpleNamespace(
+        captured_at=time.time(),
         jobs=tuple(
             SimpleNamespace(
                 job_id=job_id,
-                job_name="unrelated-target-job",
+                job_name=job_name,
                 state="RUNNING",
-                comment="unrelated",
+                comment=comment,
                 command="",
                 source="squeue",
                 active=True,
+                partition=partition,
+                qos=qos,
             )
             for job_id in job_ids
         ),
@@ -1950,8 +3261,28 @@ def test_stable_occupancy_retries_churn_then_accepts_logical_elements(
     )
     usages = iter(
         (
-            {"jobs": [{"job_id": "500_0"}]},
-            {"jobs": [{"job_id": "500_0"}]},
+            {
+                "partition": "ou_bcs_normal",
+                "jobs": [
+                    {
+                        "job_id": "500_0",
+                        "job_name": "unrelated-target-job",
+                        "comment": "unrelated",
+                        "qos": "normal",
+                    }
+                ],
+            },
+            {
+                "partition": "ou_bcs_normal",
+                "jobs": [
+                    {
+                        "job_id": "500_0",
+                        "job_name": "unrelated-target-job",
+                        "comment": "unrelated",
+                        "qos": "normal",
+                    }
+                ],
+            },
         )
     )
     monkeypatch.setattr(
@@ -1973,6 +3304,185 @@ def test_stable_occupancy_retries_churn_then_accepts_logical_elements(
 
 
 @pytest.mark.parametrize(
+    "drifted_snapshot",
+    (
+        _stable_scheduler_snapshot(
+            "500_0", partition="other_partition"
+        ),
+        _stable_scheduler_snapshot("500_0", qos="other_qos"),
+    ),
+    ids=("partition", "qos"),
+)
+def test_stable_occupancy_rejects_same_id_placement_drift(
+    monkeypatch, drifted_snapshot
+):
+    snapshots = iter(
+        (
+            _stable_scheduler_snapshot("500_0"),
+            drifted_snapshot,
+            _stable_scheduler_snapshot("500_0"),
+            drifted_snapshot,
+        )
+    )
+    usage = {
+        "partition": "ou_bcs_normal",
+        "jobs": [
+            {
+                "job_id": "500_0",
+                "job_name": "unrelated-target-job",
+                "comment": "unrelated",
+                "qos": "normal",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        ds.scheduler_safety,
+        "validate_user_partition_usage",
+        lambda value: value,
+    )
+
+    with pytest.raises(ds.DispatcherError, match=r"changed=\['500_0'\]"):
+        ds._capture_stable_admission_occupancy(
+            user="tester",
+            partition="ou_bcs_normal",
+            scheduler_reader=lambda: next(snapshots),
+            usage_reader=lambda: usage,
+        )
+
+
+def _trusted_client_target_occupancy(
+    *,
+    scheduler_partition="ou_bcs_normal",
+    scheduler_qos="normal",
+    usage_job=True,
+    usage_qos="normal",
+    usage_cpus=1,
+    usage_memory_mib=4_096,
+):
+    name = "asys-dispatch-abc123def0"
+    comment = "asys-schema5-intent:20260726T120000-abc123def0"
+    raw_jobs = []
+    if usage_job:
+        raw_jobs.append(
+            {
+                "job_id": 777,
+                "job_state": ["RUNNING"],
+                "partition": "ou_bcs_normal",
+                "name": name,
+                "comment": comment,
+                "qos": usage_qos,
+                "cpus": {
+                    "set": True,
+                    "infinite": False,
+                    "number": usage_cpus,
+                },
+                "node_count": {
+                    "set": True,
+                    "infinite": False,
+                    "number": 1,
+                },
+                "memory_per_cpu": {
+                    "set": False,
+                    "infinite": False,
+                    "number": 0,
+                },
+                "memory_per_node": {
+                    "set": True,
+                    "infinite": False,
+                    "number": usage_memory_mib,
+                },
+                "array_task_id": {
+                    "set": True,
+                    "infinite": False,
+                    "number": 0,
+                },
+            }
+        )
+    payload = {"jobs": raw_jobs, "errors": [], "warnings": []}
+
+    def runner(argv, *, timeout):
+        assert timeout == 30.0
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps(payload), ""
+        )
+
+    usage = ds.scheduler_safety.capture_user_partition_usage(
+        user="tester",
+        partition="ou_bcs_normal",
+        runner=runner,
+        captured_timestamp=100.0,
+    )
+    row = ds.QueueRow(
+        array_job_id="777",
+        array_task_id=0,
+        job_id="777_0",
+        job_name=name,
+        state="RUNNING",
+        command="/sealed/batch.sbatch",
+        comment=comment,
+        partition=scheduler_partition,
+        qos=scheduler_qos,
+    )
+    occupancy = ds.StableAdmissionOccupancy(
+        scheduler_snapshot=_stable_scheduler_snapshot("777_0"),
+        rows=(row,),
+        usage=usage,
+        usage_summary=(
+            ds.scheduler_safety.validate_user_partition_usage(usage)
+        ),
+        live_job_ids=("777_0",),
+        attempts=1,
+    )
+    binding = {
+        "777_0": {
+            "job_name": name,
+            "comment": comment,
+        }
+    }
+    return occupancy, binding
+
+
+def test_trusted_client_target_placement_uses_real_usage_validator():
+    occupancy, binding = _trusted_client_target_occupancy()
+    ds._require_trusted_client_target_placement(
+        occupancy,
+        trusted_client_bindings=binding,
+        expected_partition="ou_bcs_normal",
+        expected_qos="normal",
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"scheduler_partition": "other_partition"},
+        {"scheduler_qos": "other_qos"},
+        {"usage_job": False},
+        {"usage_qos": "other_qos"},
+        {"usage_cpus": 2},
+        {"usage_memory_mib": 8_192},
+    ),
+    ids=(
+        "scheduler-partition",
+        "scheduler-qos",
+        "missing-target-usage",
+        "usage-qos",
+        "usage-cpus",
+        "usage-memory",
+    ),
+)
+def test_trusted_client_target_placement_rejects_drift(overrides):
+    occupancy, binding = _trusted_client_target_occupancy(**overrides)
+    with pytest.raises(ds.DispatcherError, match="drifted"):
+        ds._require_trusted_client_target_placement(
+            occupancy,
+            trusted_client_bindings=binding,
+            expected_partition="ou_bcs_normal",
+            expected_qos="normal",
+        )
+
+
+@pytest.mark.parametrize(
     ("snapshots", "usage"),
     (
         (
@@ -1982,7 +3492,17 @@ def test_stable_occupancy_retries_churn_then_accepts_logical_elements(
                 _stable_scheduler_snapshot(),
                 _stable_scheduler_snapshot("600_0"),
             ),
-            {"jobs": [{"job_id": "600_0"}]},
+            {
+                "partition": "ou_bcs_normal",
+                "jobs": [
+                    {
+                        "job_id": "600_0",
+                        "job_name": "unrelated-target-job",
+                        "comment": "unrelated",
+                        "qos": "normal",
+                    }
+                ],
+            },
         ),
         (
             (
@@ -1991,7 +3511,16 @@ def test_stable_occupancy_retries_churn_then_accepts_logical_elements(
                 _stable_scheduler_snapshot("700_0"),
                 _stable_scheduler_snapshot(),
             ),
-            {"jobs": []},
+            {"partition": "ou_bcs_normal", "jobs": []},
+        ),
+        (
+            (
+                _stable_scheduler_snapshot("750_0"),
+                _stable_scheduler_snapshot("750_0"),
+                _stable_scheduler_snapshot("750_0"),
+                _stable_scheduler_snapshot("750_0"),
+            ),
+            {"partition": "ou_bcs_normal", "jobs": []},
         ),
         (
             (
@@ -2000,10 +3529,25 @@ def test_stable_occupancy_retries_churn_then_accepts_logical_elements(
                 _stable_scheduler_snapshot(),
                 _stable_scheduler_snapshot(),
             ),
-            {"jobs": [{"job_id": "800_0"}]},
+            {
+                "partition": "ou_bcs_normal",
+                "jobs": [
+                    {
+                        "job_id": "800_0",
+                        "job_name": "unrelated-target-job",
+                        "comment": "unrelated",
+                        "qos": "normal",
+                    }
+                ],
+            },
         ),
     ),
-    ids=("target-appears", "target-disappears", "target-transient"),
+    ids=(
+        "target-appears",
+        "target-disappears",
+        "target-missing-usage",
+        "target-transient",
+    ),
 )
 def test_stable_occupancy_fails_closed_on_persistent_between_read_churn(
     monkeypatch,
@@ -2079,8 +3623,19 @@ def test_submitting_intent_is_durable_before_sbatch_and_fairness_commits_once(
             [intent["state"] for intent in value.get("intents", {}).values()]
         )
 
-    def submit(_path):
+    def submit(path, **_kwargs):
         assert persisted_states[-1] == ["submitting"]
+        batch_id = Path(path).stem.removeprefix("batch-")
+        ds._spooled_script_receipt(
+            batch_id=batch_id,
+            job_id="321",
+            expected_name=f"asys-dispatch-{batch_id[-10:]}",
+            expected_comment=f"asys-schema5-intent:{batch_id}",
+            sbatch_path=Path(path),
+            sbatch_sha256=_kwargs["expected_sbatch_sha256"],
+            spooled_script_reader=lambda _job_id: Path(path).read_bytes(),
+            now=11.0,
+        )
         return "321"
 
     monkeypatch.setattr(ds, "_atomic_write_json", capture_ledger)
@@ -2094,6 +3649,62 @@ def test_submitting_intent_is_durable_before_sbatch_and_fairness_commits_once(
     assert intent["fairness_committed"] is True
     ds._commit_intent_fairness(outcome["ledger"], intent_id)
     assert outcome["ledger"]["fairness"] == committed
+
+
+def test_lost_reply_intent_fences_next_admission_until_late_adoption(
+    tmp_path, monkeypatch
+):
+    run = _run(tmp_path, "run", [_cell(0), _cell(1)])
+    args = _poll_args(tmp_path, run)
+    args.max_batch = 1
+    calls = 0
+
+    def lose_reply(_path, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise ds.SubmissionAmbiguousError("accepted reply lost")
+
+    monkeypatch.setattr(ds, "_submit_sbatch", lose_reply)
+    first = ds._dispatch_poll(
+        args, [run], ds._empty_ledger(), dry_run=False
+    )
+    first_ledger = first["ledger"]
+    [batch_id] = first_ledger["intents"]
+    first_intent = first_ledger["intents"][batch_id]
+    fairness_before = copy.deepcopy(first_ledger["fairness"])
+    assert first_intent["state"] == "submitting"
+    assert calls == 1
+
+    second = ds._dispatch_poll(
+        args, [run], first_ledger, dry_run=False
+    )
+    assert calls == 1
+    assert second["report"]["selected"] == []
+    assert second["ledger"]["fairness"] == fairness_before
+    assert list(second["ledger"]["intents"]) == [batch_id]
+
+    sbatch = Path(first_intent["sbatch_path"])
+    scheduler_job = SimpleNamespace(
+        job_id="321_0",
+        job_name=f"asys-dispatch-{batch_id[-10:]}",
+        state="RUNNING",
+        comment=f"asys-schema5-intent:{batch_id}",
+        command=_cell_submission_command(batch_id),
+        source="squeue",
+        active=True,
+    )
+    warnings, errors = ds._reconcile_schema5_intents(
+        second["ledger"],
+        scheduler_snapshot=SimpleNamespace(jobs=(scheduler_job,)),
+        now=time.time(),
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
+    )
+    assert not errors and warnings
+    assert (
+        second["ledger"]["fairness"]
+        == first_intent["fairness_after"]
+    )
+    assert second["ledger"]["intents"][batch_id]["fairness_committed"] is True
 
 
 def test_production_recaptures_stable_occupancy_after_durable_intent(
@@ -2143,7 +3754,8 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
             "model_contract_path": str(tmp_path / "models.json"),
             "model_contract_sha256": "3" * 64,
             "server_pool_root": str(run.server_pool_root),
-        }
+        },
+        "rollout_generation": 1,
     }
     runtime_environment = {
         key: "x" for key in ds.PRODUCTION_ENVIRONMENT_KEYS
@@ -2197,6 +3809,11 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
             "path": str(tmp_path / "fleet.json"),
             "sha256": fleet_sha256,
         },
+    )
+    monkeypatch.setattr(
+        control,
+        "load_effective_protected_capacity_contract",
+        lambda *_args, **_kwargs: capacity_contract,
     )
     monkeypatch.setattr(
         control,
@@ -2259,6 +3876,11 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
     )
     monkeypatch.setattr(
         ds.protected_capacity,
+        "verify_live_placements",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        ds.protected_capacity,
         "capture_live_client_capacity",
         lambda *_args, **_kwargs: {"evidence_id": "9" * 64},
     )
@@ -2272,7 +3894,10 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
     def capture_usage(**_kwargs):
         nonlocal usage_calls
         usage_calls += 1
-        return {"capture": usage_calls}
+        return {
+            "capture": usage_calls,
+            "partition": "ou_bcs_normal",
+        }
 
     monkeypatch.setattr(
         ds.scheduler_safety,
@@ -2283,6 +3908,7 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
         ds.scheduler_safety,
         "validate_user_partition_usage",
         lambda _usage: {
+            "partition": "ou_bcs_normal",
             "jobs": [],
             "job_count": 0,
             "used_cpus": 0,
@@ -2297,9 +3923,31 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
     monkeypatch.setattr(
         ds,
         "_submit_sbatch",
-        lambda _path: pytest.fail(
+        lambda _path, **_kwargs: pytest.fail(
             "sbatch crossed stale production occupancy"
         ),
+    )
+    original_reconcile = (
+        control.reconcile_trusted_scientific_job_provenance
+    )
+    provenance_cuts = []
+
+    def reconcile_with_durable_cut(state_dir, **kwargs):
+        raw = (Path(state_dir) / "ledger.json").read_bytes()
+        durable = json.loads(raw)
+        provenance_cuts.append(
+            {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "updated_at": durable["updated_at"],
+                "intents": copy.deepcopy(durable["intents"]),
+            }
+        )
+        return original_reconcile(state_dir, **kwargs)
+
+    monkeypatch.setattr(
+        control,
+        "reconcile_trusted_scientific_job_provenance",
+        reconcile_with_durable_cut,
     )
 
     with pytest.raises(ds.DispatcherError, match="headroom shrank"):
@@ -2310,6 +3958,19 @@ def test_production_recaptures_stable_occupancy_after_durable_intent(
     intent = next(iter(persisted["intents"].values()))
     assert intent["state"] == "prepared"
     assert "headroom shrank" in intent["error"]
+    submitting_cuts = [
+        cut
+        for cut in provenance_cuts
+        if cut["intents"]
+        and next(iter(cut["intents"].values()))["state"] == "submitting"
+    ]
+    assert len(submitting_cuts) == 1
+    submitted_intent = next(iter(submitting_cuts[0]["intents"].values()))
+    assert (
+        submitting_cuts[0]["updated_at"]
+        >= submitted_intent["submit_started_at"]
+    )
+    assert len({cut["sha256"] for cut in provenance_cuts}) >= 2
 
 
 def test_protected_qualification_recaptures_unrelated_usage_before_sbatch(
@@ -2358,6 +4019,16 @@ def test_protected_qualification_recaptures_unrelated_usage_before_sbatch(
         "verify_generation_lease",
         lambda **_kwargs: {},
     )
+    qualification_fleet = SimpleNamespace(
+        sha256=runtime_environment["ASYS_FLEET_CONTRACT_SHA256"],
+        verify_pool_root=lambda _root: None,
+    )
+    monkeypatch.setattr(ds, "load_model_contracts", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        ds,
+        "load_fleet_contract",
+        lambda *_args, **_kwargs: qualification_fleet,
+    )
     monkeypatch.setattr(
         ds.protected_capacity,
         "load_contract",
@@ -2395,7 +4066,10 @@ def test_protected_qualification_recaptures_unrelated_usage_before_sbatch(
     def capture_usage(**_kwargs):
         nonlocal usage_calls
         usage_calls += 1
-        return {"capture": usage_calls}
+        return {
+            "capture": usage_calls,
+            "partition": "ou_bcs_normal",
+        }
 
     monkeypatch.setattr(
         ds.scheduler_safety,
@@ -2406,6 +4080,7 @@ def test_protected_qualification_recaptures_unrelated_usage_before_sbatch(
         ds.scheduler_safety,
         "validate_user_partition_usage",
         lambda _usage: {
+            "partition": "ou_bcs_normal",
             "jobs": [],
             "job_count": 0,
             "used_cpus": 0,
@@ -2421,15 +4096,17 @@ def test_protected_qualification_recaptures_unrelated_usage_before_sbatch(
         control,
         "query_scheduler",
         lambda **_kwargs: SimpleNamespace(
+            captured_at=time.time(),
             jobs=(),
             squeue_ok=True,
             sacct_ok=True,
+            errors=(),
         ),
     )
     monkeypatch.setattr(
         ds,
         "_submit_sbatch",
-        lambda _path: pytest.fail(
+        lambda _path, **_kwargs: pytest.fail(
             "sbatch crossed a stale protected-partition usage snapshot"
         ),
     )
@@ -2473,6 +4150,7 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
         "tasks": [task],
         "fairness_after": {"cursor": 3, "deficits": {"run": 1.5}},
         "fairness_committed": False,
+        **_cell_submission_transport(batch_id),
     }
 
     def job(job_id, *, source="squeue"):
@@ -2481,7 +4159,7 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
             job_name=f"asys-dispatch-{batch_id[-10:]}",
             state="RUNNING",
             comment=f"asys-schema5-intent:{batch_id}",
-            command=f"sbatch {sbatch}",
+            command=_cell_submission_command(batch_id),
             source=source,
             active=True,
         )
@@ -2493,7 +4171,10 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
         jobs=(job("321", source="sacct"), job("321_0"), job("321_1"))
     )
     warnings, errors = ds._reconcile_schema5_intents(
-        ledger, scheduler_snapshot=snapshot, now=20.0
+        ledger,
+        scheduler_snapshot=snapshot,
+        now=20.0,
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
     )
     assert not errors
     assert warnings
@@ -2510,11 +4191,12 @@ def test_squeue_sacct_intent_reconciliation_rejects_duplicate_jobs_and_commits_o
         duplicate_ledger,
         scheduler_snapshot=SimpleNamespace(jobs=(job("321_0"), job("322_0"))),
         now=20.0,
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
     )
     assert "ambiguously maps" in duplicate_errors[0]
 
 
-def test_intent_reconciliation_allows_blank_sacct_comment_only_with_exact_path(
+def test_intent_reconciliation_allows_blank_sacct_comment_with_exact_spool(
     tmp_path,
 ):
     batch_id = "20260721T000000-abc123"
@@ -2537,30 +4219,32 @@ def test_intent_reconciliation_allows_blank_sacct_comment_only_with_exact_path(
         "tasks": [task],
         "fairness_after": {"cursor": 1, "deficits": {"run": 0.0}},
         "fairness_committed": False,
+        **_cell_submission_transport(batch_id),
     }
     accounting = SimpleNamespace(
         job_id="321",
         job_name=f"asys-dispatch-{batch_id[-10:]}",
         state="COMPLETED",
         comment="",
-        command=(
-            f"sbatch --comment=asys-schema5-intent:{batch_id} {sbatch}"
-        ),
+        command=_cell_submission_command(batch_id),
         source="sacct",
         active=False,
     )
     warnings, errors = ds._reconcile_schema5_intents(
-        ledger, scheduler_snapshot=SimpleNamespace(jobs=(accounting,)), now=20.0
+        ledger,
+        scheduler_snapshot=SimpleNamespace(jobs=(accounting,)),
+        now=20.0,
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
     )
     assert not errors
     assert warnings
     assert ledger["intents"][batch_id]["job_id"] == "321"
 
-    wrong_path = SimpleNamespace(
+    wrong_identity = SimpleNamespace(
         **{
             **accounting.__dict__,
             "job_id": "322",
-            "command": "sbatch /tmp/foreign.sbatch",
+            "comment": "asys-schema5-intent:foreign",
         }
     )
     second = ds._empty_ledger()
@@ -2571,9 +4255,67 @@ def test_intent_reconciliation_allows_blank_sacct_comment_only_with_exact_path(
         "fairness_committed": False,
     }
     _, errors = ds._reconcile_schema5_intents(
-        second, scheduler_snapshot=SimpleNamespace(jobs=(wrong_path,)), now=20.0
+        second,
+        scheduler_snapshot=SimpleNamespace(jobs=(wrong_identity,)),
+        now=20.0,
+        spooled_script_reader=lambda _job_id: sbatch.read_bytes(),
     )
     assert errors and "provenance drift" in errors[0]
+
+
+@pytest.mark.parametrize("mutation", ("parent-symlink", "file-symlink"))
+def test_intent_reconciliation_rejects_lexical_sbatch_symlink_replacement(
+    tmp_path, mutation
+):
+    batch_id = "20260721T000000-symlink"
+    artifact_dir = tmp_path / "sealed"
+    artifact_dir.mkdir()
+    sbatch = artifact_dir / f"batch-{batch_id}.sbatch"
+    manifest = sbatch.with_suffix(".json")
+    manifest.write_text("{}\n", encoding="utf-8")
+    sbatch.write_text("#!/bin/bash\n", encoding="utf-8")
+    manifest_sha256 = ds._seal_dispatch_artifact(manifest)
+    sbatch_sha256 = ds._seal_dispatch_artifact(sbatch)
+    ledger = ds._empty_ledger()
+    ledger["intents"][batch_id] = {
+        "state": "submitting",
+        "created_at": 10.0,
+        "submit_started_at": 11.0,
+        "batch_manifest": str(manifest),
+        "batch_manifest_sha256": manifest_sha256,
+        "sbatch_path": str(sbatch),
+        "sbatch_sha256": sbatch_sha256,
+        "tasks": [{"run_id": "run", "cell_id": "cell"}],
+        "fairness_after": {"cursor": 1, "deficits": {"run": 0.0}},
+        "fairness_committed": False,
+        **_cell_submission_transport(batch_id),
+    }
+    if mutation == "parent-symlink":
+        real_dir = tmp_path / "real-sealed"
+        artifact_dir.rename(real_dir)
+        artifact_dir.symlink_to(real_dir, target_is_directory=True)
+    else:
+        real_sbatch = sbatch.with_suffix(".real")
+        sbatch.rename(real_sbatch)
+        sbatch.symlink_to(real_sbatch)
+    job = SimpleNamespace(
+        job_id="321_0",
+        job_name=f"asys-dispatch-{batch_id[-10:]}",
+        state="RUNNING",
+        comment=f"asys-schema5-intent:{batch_id}",
+        command=_cell_submission_command(batch_id),
+        source="squeue",
+        active=True,
+    )
+
+    _warnings, errors = ds._reconcile_schema5_intents(
+        ledger,
+        scheduler_snapshot=SimpleNamespace(jobs=(job,)),
+        now=20.0,
+    )
+    assert errors and "symlink" in errors[0]
+    assert ledger["intents"][batch_id]["fairness_committed"] is False
+    assert ledger["jobs"] == {}
 
 
 def test_intent_visibility_grace_starts_at_durable_sbatch_boundary(tmp_path):
@@ -2594,6 +4336,7 @@ def test_intent_visibility_grace_starts_at_durable_sbatch_boundary(tmp_path):
         "tasks": [],
         "fairness_after": {"cursor": 0, "deficits": {}},
         "fairness_committed": False,
+        **_cell_submission_transport(batch_id),
     }
 
     warnings, errors = ds._reconcile_schema5_intents(
@@ -2603,7 +4346,22 @@ def test_intent_visibility_grace_starts_at_durable_sbatch_boundary(tmp_path):
     assert ledger["intents"][batch_id]["state"] == "submitting"
 
     warnings, errors = ds._reconcile_schema5_intents(
-        ledger, scheduler_snapshot=SimpleNamespace(jobs=()), now=1_301.0
+        ledger,
+        scheduler_snapshot=SimpleNamespace(
+            jobs=(), accounting_start_timestamp=990.000001
+        ),
+        now=1_301.0,
+    )
+    assert not warnings
+    assert errors and "integrity-ambiguous" in errors[0]
+    assert ledger["intents"][batch_id]["state"] == "submitting"
+
+    warnings, errors = ds._reconcile_schema5_intents(
+        ledger,
+        scheduler_snapshot=SimpleNamespace(
+            jobs=(), accounting_start_timestamp=990.0
+        ),
+        now=1_301.0,
     )
     assert not errors and warnings
     assert ledger["intents"][batch_id]["state"] == "not_accepted"
@@ -2630,6 +4388,7 @@ def test_known_accepted_intent_cannot_silently_disappear(tmp_path):
         "tasks": [task],
         "fairness_after": {"cursor": 0, "deficits": {}},
         "fairness_committed": True,
+        **_cell_submission_transport(batch_id),
     }
     ledger["jobs"]["321"] = {
         "job_id": "321",
@@ -2813,12 +4572,318 @@ def test_durable_launcher_renders_afterany_successor_control(tmp_path):
 
 def test_successor_submission_is_afterany(monkeypatch, tmp_path):
     monkeypatch.setenv("SLURM_JOB_ID", "123")
-    seen = {}
+    script = tmp_path / "control.sbatch"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    script.chmod(0o444)
+    seen = {"commands": [], "released": False}
 
-    def fake_run(command, **_kwargs):
-        seen["command"] = command
-        return SimpleNamespace(returncode=0, stdout="456\n", stderr="")
+    def fake_run(command, **kwargs):
+        seen["commands"].append(list(command))
+        if command[0] == "sbatch":
+            seen["input"] = kwargs["input"]
+            return SimpleNamespace(returncode=0, stdout="456\n", stderr="")
+        if command[:3] == ["scontrol", "write", "batch_script"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=script.read_text(encoding="utf-8"),
+                stderr="",
+            )
+        if command[:4] == ["scontrol", "show", "job", "-o"]:
+            state = "RUNNING" if seen["released"] else "PENDING"
+            reason = "None" if seen["released"] else "JobHeldUser"
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    f"JobId=456 JobState={state} Reason={reason} "
+                    "Dependency=afterany:123\n"
+                ),
+                stderr="",
+            )
+        if command[:2] == ["scontrol", "release"]:
+            seen["released"] = True
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(command)
 
     monkeypatch.setattr(ds.subprocess, "run", fake_run)
-    assert ds._queue_successor(tmp_path / "control.sbatch") == "456"
-    assert "--dependency=afterany:123" in seen["command"]
+    assert ds._queue_successor(script, state_dir=tmp_path / "state") == "456"
+    sbatch = seen["commands"][0]
+    assert "--dependency=afterany:123" in sbatch
+    assert "--hold" in sbatch
+    assert sbatch[-1].startswith("--comment=asys-schema5-successor:123:")
+    assert seen["input"] == "#!/bin/bash\n"
+
+
+class _SuccessorSlurm:
+    def __init__(self, script: Path, *, lost_reply=False, spool_mismatch=False):
+        self.script = script
+        self.lost_reply = lost_reply
+        self.spool_mismatch = spool_mismatch
+        self.sbatch_calls = 0
+        self.release_calls = 0
+        self.released = False
+
+    def __call__(self, command, **kwargs):
+        if command[0] == "sbatch":
+            self.sbatch_calls += 1
+            assert kwargs["input"] == self.script.read_text(encoding="utf-8")
+            if self.lost_reply:
+                self.lost_reply = False
+                raise KeyboardInterrupt("lost successor reply")
+            return SimpleNamespace(returncode=0, stdout="456\n", stderr="")
+        if command[:3] == ["scontrol", "write", "batch_script"]:
+            text = self.script.read_text(encoding="utf-8")
+            if self.spool_mismatch:
+                text += "# mismatch\n"
+            return SimpleNamespace(returncode=0, stdout=text, stderr="")
+        if command[:4] == ["scontrol", "show", "job", "-o"]:
+            state = "RUNNING" if self.released else "PENDING"
+            reason = "None" if self.released else "JobHeldUser"
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    f"JobId=456 JobState={state} Reason={reason} "
+                    "Dependency=afterany:123\n"
+                ),
+                stderr="",
+            )
+        if command[:2] == ["scontrol", "release"]:
+            assert command == ["scontrol", "release", "456"]
+            self.release_calls += 1
+            self.released = True
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(command)
+
+
+def _successor_snapshot(state_dir: Path, *, present: bool):
+    intent = json.loads(
+        (
+            state_dir
+            / "successor-transactions"
+            / "after-123"
+            / "INTENT.json"
+        ).read_text(encoding="utf-8")
+    )
+    jobs = ()
+    if present:
+        jobs = (
+            SimpleNamespace(
+                job_id="456",
+                comment=intent["scheduler_comment"],
+                command=" ".join(intent["submission_argv"]),
+                state="RUNNING",
+                active=True,
+            ),
+        )
+    return SimpleNamespace(
+        jobs=jobs,
+        squeue_ok=True,
+        sacct_ok=True,
+        errors=(),
+        accounting_start_timestamp=0.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    (
+        "after_submitting",
+        "after_acceptance",
+        "before_release",
+        "after_release_command",
+        "after_release",
+    ),
+)
+def test_successor_transaction_recovers_every_external_boundary(
+    tmp_path, monkeypatch, crash_point
+):
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    script = tmp_path / "control.sbatch"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    script.chmod(0o444)
+    state_dir = tmp_path / "state"
+    slurm = _SuccessorSlurm(script)
+    crashed = False
+
+    def crash_hook(point):
+        nonlocal crashed
+        if point == crash_point and not crashed:
+            crashed = True
+            raise KeyboardInterrupt(point)
+
+    with pytest.raises(KeyboardInterrupt, match=crash_point):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            scheduler_reader=lambda: _successor_snapshot(
+                state_dir, present=False
+            ),
+            now=100.0,
+            crash_hook=crash_hook,
+        )
+    present = crash_point != "after_submitting"
+    assert (
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            scheduler_reader=lambda: _successor_snapshot(
+                state_dir, present=present
+            ),
+            now=401.0,
+        )
+        == "456"
+    )
+    assert slurm.sbatch_calls == 1
+    intent = json.loads(
+        (
+            state_dir
+            / "successor-transactions"
+            / "after-123"
+            / "INTENT.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert intent["state"] == "committed"
+    assert intent["job_id"] == "456"
+    assert slurm.release_calls == 1
+
+
+def test_successor_lost_reply_adopts_without_duplicate_submission(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    script = tmp_path / "control.sbatch"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    script.chmod(0o444)
+    state_dir = tmp_path / "state"
+    slurm = _SuccessorSlurm(script, lost_reply=True)
+    with pytest.raises(KeyboardInterrupt, match="lost successor reply"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            now=100.0,
+        )
+    assert (
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            scheduler_reader=lambda: _successor_snapshot(
+                state_dir, present=True
+            ),
+            now=101.0,
+        )
+        == "456"
+    )
+    assert slurm.sbatch_calls == 1
+
+
+def test_successor_release_replay_rejects_tampered_result_schema(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    script = tmp_path / "control.sbatch"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    script.chmod(0o444)
+    state_dir = tmp_path / "state"
+    slurm = _SuccessorSlurm(script)
+    with pytest.raises(KeyboardInterrupt, match="after_release"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            now=100.0,
+            crash_hook=lambda point: (
+                (_ for _ in ()).throw(KeyboardInterrupt(point))
+                if point == "after_release"
+                else None
+            ),
+        )
+    result_path = (
+        state_dir
+        / "successor-transactions"
+        / "after-123"
+        / "RELEASE_RESULT.json"
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["foreign"] = True
+    result_path.chmod(0o644)
+    result_path.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    result_path.chmod(0o444)
+
+    with pytest.raises(ds.DispatcherError, match="release result drifted"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            scheduler_reader=lambda: _successor_snapshot(
+                state_dir, present=True
+            ),
+            now=101.0,
+        )
+    assert slurm.release_calls == 1
+
+
+def test_successor_spool_mismatch_latches_without_resubmission(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    script = tmp_path / "control.sbatch"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    script.chmod(0o444)
+    state_dir = tmp_path / "state"
+    slurm = _SuccessorSlurm(script, spool_mismatch=True)
+    with pytest.raises(ds.DispatcherError, match="spooled successor"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            now=100.0,
+        )
+    with pytest.raises(ds.DispatcherError, match="integrity remains blocked"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            now=101.0,
+        )
+    assert slurm.sbatch_calls == 1
+
+
+def test_successor_rejects_script_replacement_after_durable_boundary(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    script = tmp_path / "control.sbatch"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+    script.chmod(0o444)
+    state_dir = tmp_path / "state"
+    slurm = _SuccessorSlurm(script)
+    with pytest.raises(KeyboardInterrupt, match="after_submitting"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            now=100.0,
+            crash_hook=lambda point: (
+                (_ for _ in ()).throw(KeyboardInterrupt(point))
+                if point == "after_submitting"
+                else None
+            ),
+        )
+    replacement = tmp_path / "replacement.sbatch"
+    replacement.write_text("#!/bin/bash\n# changed\n", encoding="utf-8")
+    replacement.chmod(0o444)
+    replacement.replace(script)
+    with pytest.raises(ds.DispatcherError, match="identity drifted"):
+        ds._queue_successor(
+            script,
+            state_dir=state_dir,
+            runner=slurm,
+            now=401.0,
+        )
+    assert slurm.sbatch_calls == 0

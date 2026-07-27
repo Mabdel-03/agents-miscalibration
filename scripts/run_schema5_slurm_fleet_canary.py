@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -73,6 +74,7 @@ TRANSACTION_COMPONENT_DIRECTORY = "transaction"
 DEPENDENCY_COMPONENT_DIRECTORY = "dependency-cascade"
 TURNOVER_COMPONENT_DIRECTORY = "turnover"
 DEFAULT_PARTITION = "mit_normal"
+DEFAULT_QOS = "normal"
 DEFAULT_TIME_LIMIT = "00:08:00"
 DEFAULT_VISIBILITY_TIMEOUT = 180.0
 DEFAULT_TERMINAL_TIMEOUT = 180.0
@@ -94,7 +96,7 @@ TURNOVER_POINTER_FILENAME = "PROMOTED_ENDPOINT.json"
 TURNOVER_COMPLETE_FILENAME = "TURNOVER_COMPLETE.json"
 TURNOVER_PROFILE = "turnover-canary"
 TURNOVER_PORT_DERIVATION_PROTOCOL = (
-    "schema5-v1.2-r2-turnover-run-token-port-derivation-v1"
+    "schema5-v1.2-r3-turnover-run-token-port-derivation-v1"
 )
 # Use a broad unprivileged namespace instead of one fixed three-port tuple.  The
 # complete marker-first 128-bit run token and allocation index select the initial
@@ -105,7 +107,7 @@ TURNOVER_PORT_MAX = 64_999
 TURNOVER_MAX_ALLOCATIONS = 5
 ROLLOUT_GENERATION = 1
 PROFILE = "canary-cpu"
-REQUIRED_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r2"
+REQUIRED_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
 CANARY_GIT_PATH = "scripts/run_schema5_slurm_fleet_canary.py"
 FLEET_TRANSACTIONS_GIT_PATH = (
     "src/agents_scaling/serving/fleet_transactions.py"
@@ -113,7 +115,7 @@ FLEET_TRANSACTIONS_GIT_PATH = (
 DURABLE_GIT_PUBLISHER_GIT_PATH = (
     "scripts/publish_schema5_durable_git_release.py"
 )
-CODE_IDENTITY_PROTOCOL = "schema5-v1.2-r2-slurm-canary-code-v3"
+CODE_IDENTITY_PROTOCOL = "schema5-v1.2-r3-slurm-canary-code-v3"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _TOKEN_RE = re.compile(r"[0-9a-f]{32}\Z")
@@ -127,7 +129,7 @@ def _default_canary_root() -> Path:
         / "recovery"
         / "schema5-v1"
         / "slurm_canaries"
-        / "schema5-v1.2-r2"
+        / "schema5-v1.2-r3"
     )
 
 
@@ -140,6 +142,59 @@ class SlurmFleetCanaryError(RuntimeError):
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
+
+
+def _production_runner(
+    argv: Sequence[str],
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run one canary command with a captured, textual result.
+
+    Several durability paths persist and hash both output streams.  Keeping that
+    contract in the production runner is important because ``subprocess.run``
+    otherwise returns ``None`` for both streams when a call site omits capture
+    arguments.
+    """
+
+    options = dict(kwargs)
+    required = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+    }
+    for name, value in required.items():
+        if name in options and options[name] is not value:
+            raise SlurmFleetCanaryError(
+                f"production canary runner requires {name}={value!r}"
+            )
+        options[name] = value
+    timeout = options.setdefault("timeout", DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or float(timeout) <= 0
+    ):
+        raise SlurmFleetCanaryError(
+            "production canary command timeout must be positive"
+        )
+    try:
+        completed = subprocess.run(list(argv), **options)
+    except subprocess.TimeoutExpired as exc:
+        raise SlurmFleetCanaryError(
+            f"production canary command timed out after {float(timeout):g}s"
+        ) from exc
+    except OSError as exc:
+        raise SlurmFleetCanaryError(
+            f"cannot execute production canary command: {exc}"
+        ) from exc
+    if not isinstance(completed.stdout, str) or not isinstance(
+        completed.stderr, str
+    ):
+        raise SlurmFleetCanaryError(
+            "production canary command did not return captured text streams"
+        )
+    return completed
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -333,7 +388,7 @@ def _validate_code_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
 def derive_code_identity(
     durable_git_release_marker: Path | None = None,
 ) -> dict[str, Any]:
-    """Bind a production canary to the exact clean annotated r2 checkout."""
+    """Bind a production canary to the exact clean annotated release checkout."""
 
     files = _current_code_files()
     tag_ref = f"refs/tags/{REQUIRED_RELEASE_TAG}"
@@ -351,7 +406,7 @@ def derive_code_identity(
         or _git("status", "--porcelain=v1", "--untracked-files=all")
     ):
         raise SlurmFleetCanaryError(
-            "production canary requires the exact clean r2 tagged checkout"
+            "production canary requires the exact clean release-tagged checkout"
         )
     if durable_git_release_marker is None:
         raise SlurmFleetCanaryError(
@@ -441,38 +496,237 @@ def _write_immutable_once(
     *,
     description: str,
     mode: int = 0o444,
+    crash_hook: Callable[[str], None] | None = None,
 ) -> None:
+    path = Path(os.path.abspath(os.fspath(path.expanduser())))
     encoded = (
         bytes(payload) if isinstance(payload, bytes) else _canonical_bytes(payload)
     )
-    if path.exists() or path.is_symlink():
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != encoded:
+
+    def validate_existing() -> None:
+        try:
+            info = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise SlurmFleetCanaryError(
+                f"cannot inspect existing {description}: {path}: {exc}"
+            ) from exc
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or path.read_bytes() != encoded
+        ):
             raise SlurmFleetCanaryError(
                 f"existing {description} differs from the durable transaction: {path}"
             )
-        if stat.S_IMODE(path.stat().st_mode) & 0o222:
-            raise SlurmFleetCanaryError(f"existing {description} is writable: {path}")
-        return
+        if stat.S_IMODE(info.st_mode) != mode:
+            raise SlurmFleetCanaryError(
+                f"existing {description} has unsafe mode: {path}"
+            )
+
     if path.parent.is_symlink():
         raise SlurmFleetCanaryError(f"{description} parent is symlinked: {path.parent}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    if path.parent.resolve(strict=True) != path.parent:
+        raise SlurmFleetCanaryError(
+            f"{description} parent traverses a symlink: {path.parent}"
+        )
+    digest = _sha256_bytes(encoded)
+    transaction = path.parent / (
+        f".{path.name}.publish.{digest}.{mode:04o}.txn"
     )
-    temporary = Path(temporary_name)
+    transaction_prefix = f".{path.name}.publish."
+    foreign_transactions = sorted(
+        candidate
+        for candidate in path.parent.iterdir()
+        if candidate.name.startswith(transaction_prefix)
+        and candidate != transaction
+    )
+    if foreign_transactions:
+        raise SlurmFleetCanaryError(
+            f"{description} has conflicting interrupted publication "
+            f"transactions: {foreign_transactions}"
+        )
+    transaction.mkdir(mode=0o700, exist_ok=True)
+    if (
+        transaction.is_symlink()
+        or not transaction.is_dir()
+        or stat.S_IMODE(transaction.stat(follow_symlinks=False).st_mode)
+        != 0o700
+    ):
+        raise SlurmFleetCanaryError(
+            f"{description} publication transaction is unsafe: {transaction}"
+        )
+    _fsync_directory(path.parent)
+    lock_path = transaction / "LOCK"
+    lock_descriptor = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
         try:
-            temporary.unlink()
-        except FileNotFoundError:
+            fcntl.flock(
+                lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB
+            )
+        except BlockingIOError as exc:
+            raise SlurmFleetCanaryError(
+                f"{description} has an active publication transaction"
+            ) from exc
+        intent_path = transaction / "INTENT.json"
+        intent_payload = _canonical_bytes(
+            {
+                "schema_version": 1,
+                "kind": "schema5_immutable_publication_intent",
+                "target_name": path.name,
+                "payload_sha256": digest,
+                "payload_size": len(encoded),
+                "mode": mode,
+            }
+        )
+        if intent_path.exists() or intent_path.is_symlink():
+            info = intent_path.stat(follow_symlinks=False)
+            if (
+                intent_path.is_symlink()
+                or not stat.S_ISREG(info.st_mode)
+                or (
+                    stat.S_IMODE(info.st_mode) == 0o444
+                    and (
+                        info.st_nlink != 1
+                        or intent_path.read_bytes() != intent_payload
+                    )
+                )
+            ):
+                raise SlurmFleetCanaryError(
+                    f"{description} publication intent conflicts: {intent_path}"
+                )
+            if stat.S_IMODE(info.st_mode) != 0o444:
+                intent_path.unlink()
+        if not intent_path.exists():
+            marker_descriptor = os.open(
+                intent_path,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                offset = 0
+                while offset < len(intent_payload):
+                    written = os.write(
+                        marker_descriptor, intent_payload[offset:]
+                    )
+                    if written <= 0:
+                        raise SlurmFleetCanaryError(
+                            f"{description} intent write made no progress"
+                        )
+                    offset += written
+                os.fsync(marker_descriptor)
+                os.fchmod(marker_descriptor, 0o444)
+                os.fsync(marker_descriptor)
+            finally:
+                os.close(marker_descriptor)
+            _fsync_directory(transaction)
+
+        temporary = transaction / "PAYLOAD"
+        if temporary.exists() or temporary.is_symlink():
+            info = temporary.stat(follow_symlinks=False)
+            if temporary.is_symlink() or not stat.S_ISREG(info.st_mode):
+                raise SlurmFleetCanaryError(
+                    f"{description} interrupted payload is unsafe: {temporary}"
+                )
+            sealed = (
+                stat.S_IMODE(info.st_mode) == mode
+                and info.st_nlink in {1, 2}
+                and info.st_size == len(encoded)
+                and temporary.read_bytes() == encoded
+            )
+            if not sealed:
+                if stat.S_IMODE(info.st_mode) & 0o222 == 0:
+                    raise SlurmFleetCanaryError(
+                        f"{description} interrupted sealed payload conflicts"
+                    )
+                temporary.unlink()
+                _fsync_directory(transaction)
+
+        if path.exists() or path.is_symlink():
+            if temporary.exists():
+                temporary.unlink()
+                _fsync_directory(transaction)
+            intent_path.unlink()
+            lock_path.unlink()
+            _fsync_directory(transaction)
+            transaction.rmdir()
+            _fsync_directory(path.parent)
+            validate_existing()
+            return
+
+        if not temporary.exists():
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(temporary, flags, 0o600)
+            try:
+                if crash_hook is not None:
+                    crash_hook("open")
+                offset = 0
+                first_write = True
+                while offset < len(encoded):
+                    remaining = len(encoded) - offset
+                    requested = (
+                        max(1, remaining // 2)
+                        if first_write and remaining > 1
+                        else remaining
+                    )
+                    written = os.write(
+                        descriptor,
+                        encoded[offset : offset + requested],
+                    )
+                    if written <= 0:
+                        raise SlurmFleetCanaryError(
+                            f"{description} payload write made no progress"
+                        )
+                    offset += written
+                    if first_write:
+                        first_write = False
+                        if crash_hook is not None:
+                            crash_hook("partial_write")
+                os.fsync(descriptor)
+                if crash_hook is not None:
+                    crash_hook("post_fsync")
+                    crash_hook("pre_fchmod")
+                os.fchmod(descriptor, mode)
+                if crash_hook is not None:
+                    crash_hook("post_fchmod")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            _fsync_directory(transaction)
+
+        if crash_hook is not None:
+            crash_hook("prelink")
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
             pass
+        _fsync_directory(path.parent)
+        if crash_hook is not None:
+            crash_hook("postlink")
+        temporary.unlink()
+        intent_path.unlink()
+        lock_path.unlink()
+        _fsync_directory(transaction)
+        transaction.rmdir()
+        _fsync_directory(path.parent)
+        validate_existing()
+    finally:
+        os.close(lock_descriptor)
 
 
 def _canonical_pool_root() -> Path:
@@ -508,11 +762,19 @@ def _validate_isolated_root(root: Path) -> Path:
     return resolved
 
 
-def _job_script(*, job_name: str, partition: str, time_limit: str) -> str:
-    if not _JOB_NAME_RE.fullmatch(job_name):
-        raise SlurmFleetCanaryError(f"unsafe canary job name: {job_name!r}")
+def _validate_slurm_placement(*, partition: str, qos: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", partition):
         raise SlurmFleetCanaryError(f"unsafe Slurm partition: {partition!r}")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", qos):
+        raise SlurmFleetCanaryError(f"unsafe Slurm QOS: {qos!r}")
+
+
+def _job_script(
+    *, job_name: str, partition: str, qos: str, time_limit: str
+) -> str:
+    if not _JOB_NAME_RE.fullmatch(job_name):
+        raise SlurmFleetCanaryError(f"unsafe canary job name: {job_name!r}")
+    _validate_slurm_placement(partition=partition, qos=qos)
     match = re.fullmatch(r"00:0([1-9]):00", time_limit)
     if match is None:
         raise SlurmFleetCanaryError(
@@ -522,6 +784,7 @@ def _job_script(*, job_name: str, partition: str, time_limit: str) -> str:
         "#!/bin/bash\n"
         f"#SBATCH --job-name={job_name}\n"
         f"#SBATCH --partition={partition}\n"
+        f"#SBATCH --qos={qos}\n"
         f"#SBATCH --time={time_limit}\n"
         "#SBATCH --nodes=1\n"
         "#SBATCH --ntasks=1\n"
@@ -542,6 +805,7 @@ def _turnover_job_script(
     *,
     job_name: str,
     partition: str,
+    qos: str,
     time_limit: str,
     port: int,
 ) -> str:
@@ -559,6 +823,7 @@ def _turnover_job_script(
     base = _job_script(
         job_name=job_name,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
     )
     header = base.split("set -euo pipefail\n", 1)[0]
@@ -653,6 +918,7 @@ def _derive_turnover_ports(
 def render_turnover_canary_plan(
     *,
     partition: str = DEFAULT_PARTITION,
+    qos: str = DEFAULT_QOS,
     time_limit: str = DEFAULT_TIME_LIMIT,
     cycles: int = DEFAULT_TURNOVER_CYCLES,
     drain_seconds: float = DEFAULT_TURNOVER_DRAIN_SECONDS,
@@ -695,6 +961,7 @@ def render_turnover_canary_plan(
         "profile": TURNOVER_PROFILE,
         "job_name": job_name,
         "partition": partition,
+        "qos": qos,
         "time_limit": time_limit,
         "cycles": cycles,
         "ports": ports,
@@ -711,11 +978,13 @@ def render_turnover_canary_plan(
         script = _turnover_job_script(
             job_name=job_name,
             partition=partition,
+            qos=qos,
             time_limit=time_limit,
             port=ports[index],
         )
         token = hashlib.sha256(
-            f"{run_token}\0{partition}\0{time_limit}\0{cycles}\0{index}".encode(
+            f"{run_token}\0{partition}\0{qos}\0{time_limit}\0"
+            f"{cycles}\0{index}".encode(
                 "utf-8"
             )
         ).hexdigest()[:32]
@@ -733,16 +1002,15 @@ def render_turnover_canary_plan(
                 "role": "primary" if index == 0 else "standby",
                 "job_name": job_name,
                 "scheduler_comment": comment,
+                "partition": partition,
+                "qos": qos,
                 "time_limit": time_limit,
                 "port": ports[index],
                 "script": script,
                 "script_sha256": _sha256_bytes(script.encode("utf-8")),
-                "submit_argv": [
-                    "sbatch",
-                    "--parsable",
-                    f"--comment={comment}",
-                    f"<immutable-script-c{index:02d}>",
-                ],
+                "submission_transport": tx.STDIN_EXACT_SUBMISSION_TRANSPORT,
+                "submission_argv_sha256": tx.submission_argv_sha256(comment),
+                "submit_argv": tx.submission_argv(comment),
                 "effective_state_argv": [
                     "scontrol",
                     "show",
@@ -783,6 +1051,7 @@ def render_turnover_canary_plan(
         "profile": TURNOVER_PROFILE,
         "job_name": job_name,
         "partition": partition,
+        "qos": qos,
         "time_limit": time_limit,
         "cycles": cycles,
         "logical_replicas": 1,
@@ -812,6 +1081,7 @@ def _validate_turnover_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
     try:
         expected = render_turnover_canary_plan(
             partition=str(plan["partition"]),
+            qos=str(plan["qos"]),
             time_limit=str(plan["time_limit"]),
             cycles=int(plan["cycles"]),
             drain_seconds=float(plan["canary_drain_seconds"]),
@@ -829,6 +1099,7 @@ def _load_or_create_turnover_intent(
     *,
     root: Path,
     partition: str,
+    qos: str,
     time_limit: str,
     cycles: int,
     drain_seconds: float,
@@ -865,6 +1136,7 @@ def _load_or_create_turnover_intent(
         plan = intent["plan"]
         if (
             plan["partition"] != partition
+            or plan["qos"] != qos
             or plan["time_limit"] != time_limit
             or plan["cycles"] != cycles
             or plan["canary_drain_seconds"] != float(drain_seconds)
@@ -892,6 +1164,7 @@ def _load_or_create_turnover_intent(
         )
     plan = render_turnover_canary_plan(
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         cycles=cycles,
         drain_seconds=drain_seconds,
@@ -918,9 +1191,14 @@ def _write_atomic_turnover_pointer(path: Path, payload: Mapping[str, Any]) -> No
 
     encoded = _canonical_bytes(payload)
     if path.exists() or path.is_symlink():
-        if path.is_symlink() or not path.is_file():
+        info = path.stat(follow_symlinks=False)
+        if path.is_symlink() or not stat.S_ISREG(info.st_mode):
             raise SlurmFleetCanaryError("turnover promoted pointer is unsafe")
         if path.read_bytes() == encoded:
+            if info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o444:
+                raise SlurmFleetCanaryError(
+                    "turnover promoted pointer has unsafe link or mode state"
+                )
             return
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -1103,6 +1381,7 @@ def _turnover_reconcile(
             replica_job_names={
                 str(plan["replica_id"]): str(plan["job_name"])
             },
+            replica_qos={str(plan["replica_id"]): str(plan["qos"])},
         )
     except tx.FleetTransactionError as exc:
         raise SlurmFleetCanaryError(str(exc)) from exc
@@ -1146,6 +1425,7 @@ def _turnover_adopt(
     expected_limit = int(limit_match.group(1)) * 60
     if (
         row.partition != plan["partition"]
+        or row.qos != plan["qos"]
         or row.job_name != plan["job_name"]
         or row.time_limit_seconds != expected_limit
         or (not tx.terminal_state(row.state) and row.dependency != "")
@@ -1291,7 +1571,7 @@ def _ensure_turnover_attempt_running(
         raise SlurmFleetCanaryError(
             "turnover ledger differs from the immutable allocation contract"
         )
-    _snapshot, reconciled = _turnover_reconcile(
+    absence_snapshot, reconciled = _turnover_reconcile(
         plan=plan,
         ledger=ledger,
         runner=runner,
@@ -1312,12 +1592,21 @@ def _ensure_turnover_attempt_running(
         elif attempt["state"] == "submitting":
             basis = float(attempt["submit_started_at"] or attempt["created_at"])
             if now_fn() - basis >= tx.DEFAULT_VISIBILITY_GRACE_SECONDS:
+                absence_now = now_fn()
+                tx.record_proven_submission_absence(
+                    directory,
+                    ledger,
+                    replica_id=str(plan["replica_id"]),
+                    attempt=attempt,
+                    snapshot=absence_snapshot,
+                    now=absence_now,
+                )
                 tx.submit_attempt(
                     directory,
                     ledger,
                     replica_id=str(plan["replica_id"]),
                     attempt=attempt,
-                    now=now_fn(),
+                    now=absence_now,
                     runner=runner,
                 )
         elif attempt["state"] in {"submitted", "committed", "missing"}:
@@ -1374,6 +1663,7 @@ def _turnover_write_binding(
         "job_name": row.job_name,
         "state": row.state,
         "partition": row.partition,
+        "qos": row.qos,
         "node": row.node,
         "command": row.command,
         "comment": row.comment,
@@ -1381,6 +1671,10 @@ def _turnover_write_binding(
         "end_timestamp": row.end_timestamp,
         "time_limit_seconds": row.time_limit_seconds,
         "dependency": row.dependency,
+        "submission_transport": allocation_contract["submission_transport"],
+        "submission_argv_sha256": allocation_contract[
+            "submission_argv_sha256"
+        ],
     }
     _write_immutable_once(
         _turnover_allocation_directory(
@@ -1406,11 +1700,13 @@ def _turnover_write_spooled(
     destination = directory / "SPOOLED_BATCH_SCRIPT.sbatch"
     expected = str(allocation_contract["script"]).encode("utf-8")
     if destination.exists() or destination.is_symlink():
+        info = destination.stat(follow_symlinks=False)
         if (
             destination.is_symlink()
-            or not destination.is_file()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
             or destination.read_bytes() != expected
-            or stat.S_IMODE(destination.stat().st_mode) & 0o222
+            or stat.S_IMODE(info.st_mode) != 0o444
         ):
             raise SlurmFleetCanaryError(
                 "persisted turnover spooled batch script is invalid"
@@ -1441,6 +1737,7 @@ def _turnover_write_spooled(
         if (
             pending.is_symlink()
             or not pending.is_file()
+            or pending.stat(follow_symlinks=False).st_nlink != 1
             or pending.read_bytes() != expected
         ):
             raise SlurmFleetCanaryError(
@@ -2265,6 +2562,8 @@ def _seal_and_publish_turnover_complete(
         "pool_id": plan["pool_id"],
         "fleet_sha256": plan["fleet_sha256"],
         "replica_id": plan["replica_id"],
+        "partition": plan["partition"],
+        "qos": plan["qos"],
         "cycles_completed": int(plan["cycles"]),
         "allocations_submitted": len(attempts),
         "job_ids": [str(item["job_id"]) for item in attempts],
@@ -2333,6 +2632,8 @@ def verify_turnover_complete(root: Path) -> dict[str, Any]:
         "pool_id",
         "fleet_sha256",
         "replica_id",
+        "partition",
+        "qos",
         "cycles_completed",
         "allocations_submitted",
         "job_ids",
@@ -2370,6 +2671,8 @@ def verify_turnover_complete(root: Path) -> dict[str, Any]:
         or complete.get("pool_id") != plan["pool_id"]
         or complete.get("fleet_sha256") != plan["fleet_sha256"]
         or complete.get("replica_id") != plan["replica_id"]
+        or complete.get("partition") != plan["partition"]
+        or complete.get("qos") != plan["qos"]
         or complete.get("cycles_completed") != plan["cycles"]
         or complete.get("cycles_completed", 0) < 2
         or complete.get("allocations_submitted") != plan["cycles"] + 1
@@ -2497,6 +2800,7 @@ def run_turnover_canary(
     apply: bool = False,
     verify: bool = False,
     partition: str = DEFAULT_PARTITION,
+    qos: str = DEFAULT_QOS,
     time_limit: str = DEFAULT_TIME_LIMIT,
     cycles: int = DEFAULT_TURNOVER_CYCLES,
     drain_seconds: float = DEFAULT_TURNOVER_DRAIN_SECONDS,
@@ -2505,7 +2809,7 @@ def run_turnover_canary(
     terminal_timeout: float = DEFAULT_TERMINAL_TIMEOUT,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     probe_timeout: float = 10.0,
-    runner: Runner = subprocess.run,
+    runner: Runner = _production_runner,
     probe: EndpointProbe = _default_endpoint_probe,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -2535,6 +2839,7 @@ def run_turnover_canary(
     if not apply:
         return render_turnover_canary_plan(
             partition=partition,
+            qos=qos,
             time_limit=time_limit,
             cycles=cycles,
             drain_seconds=drain_seconds,
@@ -2574,6 +2879,7 @@ def run_turnover_canary(
     intent = _load_or_create_turnover_intent(
         root=root,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         cycles=cycles,
         drain_seconds=drain_seconds,
@@ -2904,6 +3210,7 @@ def _new_static_intent(
     *,
     root: Path,
     partition: str,
+    qos: str,
     time_limit: str,
     code_identity: Mapping[str, Any],
     token_factory: Callable[[], str],
@@ -2919,6 +3226,7 @@ def _new_static_intent(
     script = _job_script(
         job_name=job_name,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
     )
     contract = {
@@ -2929,6 +3237,7 @@ def _new_static_intent(
         "profile": PROFILE,
         "job_name": job_name,
         "partition": partition,
+        "qos": qos,
         "time_limit": time_limit,
         "cpus": 1,
         "memory": "128M",
@@ -2945,6 +3254,7 @@ def _new_static_intent(
         intent_token=token,
         fleet_sha256=fleet_sha256,
     )
+    submission_argv_sha256 = tx.submission_argv_sha256(comment)
     sbatch_path = (
         tx.state_directory(root)
         / "sbatch"
@@ -2963,8 +3273,11 @@ def _new_static_intent(
         "profile": PROFILE,
         "intent_token": token,
         "scheduler_comment": comment,
+        "submission_transport": tx.STDIN_EXACT_SUBMISSION_TRANSPORT,
+        "submission_argv_sha256": submission_argv_sha256,
         "job_name": job_name,
         "partition": partition,
+        "qos": qos,
         "time_limit": time_limit,
         "cpus": 1,
         "memory": "128M",
@@ -2989,8 +3302,11 @@ def _validate_static_intent(intent: Mapping[str, Any], *, root: Path) -> None:
         "profile",
         "intent_token",
         "scheduler_comment",
+        "submission_transport",
+        "submission_argv_sha256",
         "job_name",
         "partition",
+        "qos",
         "time_limit",
         "cpus",
         "memory",
@@ -3016,12 +3332,17 @@ def _validate_static_intent(intent: Mapping[str, Any], *, root: Path) -> None:
         or _TOKEN_RE.fullmatch(str(intent["intent_token"])) is None
         or _SHA256_RE.fullmatch(str(intent["fleet_sha256"])) is None
         or _SHA256_RE.fullmatch(str(intent["sbatch_sha256"])) is None
+        or intent["submission_transport"]
+        != tx.STDIN_EXACT_SUBMISSION_TRANSPORT
+        or intent["submission_argv_sha256"]
+        != tx.submission_argv_sha256(str(intent["scheduler_comment"]))
         or not _JOB_NAME_RE.fullmatch(str(intent["job_name"]))
     ):
         raise SlurmFleetCanaryError("canary static-intent identity is invalid")
     expected_script = _job_script(
         job_name=str(intent["job_name"]),
         partition=str(intent["partition"]),
+        qos=str(intent["qos"]),
         time_limit=str(intent["time_limit"]),
     )
     expected_comment = tx.intent_comment(
@@ -3040,6 +3361,7 @@ def _validate_static_intent(intent: Mapping[str, Any], *, root: Path) -> None:
         "profile": PROFILE,
         "job_name": intent["job_name"],
         "partition": intent["partition"],
+        "qos": intent["qos"],
         "time_limit": intent["time_limit"],
         "cpus": 1,
         "memory": "128M",
@@ -3070,6 +3392,7 @@ def _load_or_create_static_intent(
     *,
     root: Path,
     partition: str,
+    qos: str,
     time_limit: str,
     code_identity: Mapping[str, Any],
     token_factory: Callable[[], str],
@@ -3081,7 +3404,11 @@ def _load_or_create_static_intent(
         if stat.S_IMODE(path.stat().st_mode) & 0o222:
             raise SlurmFleetCanaryError("existing canary static intent is writable")
         _validate_static_intent(intent, root=root)
-        if intent["partition"] != partition or intent["time_limit"] != time_limit:
+        if (
+            intent["partition"] != partition
+            or intent["qos"] != qos
+            or intent["time_limit"] != time_limit
+        ):
             raise SlurmFleetCanaryError(
                 "requested Slurm parameters differ from the immutable canary intent"
             )
@@ -3104,6 +3431,7 @@ def _load_or_create_static_intent(
     intent = _new_static_intent(
         root=root,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         code_identity=code_identity,
         token_factory=token_factory,
@@ -3158,6 +3486,7 @@ def _query_bound_allocation(
             fleet_sha256=str(intent["fleet_sha256"]),
             replica_profiles={str(intent["replica_id"]): PROFILE},
             replica_job_names={str(intent["replica_id"]): str(intent["job_name"])},
+            replica_qos={str(intent["replica_id"]): str(intent["qos"])},
         )
     except tx.FleetTransactionError as exc:
         raise SlurmFleetCanaryError(str(exc)) from exc
@@ -3179,6 +3508,10 @@ def _adopt_allocation(
     if row.partition != intent["partition"]:
         raise SlurmFleetCanaryError(
             f"canary job {row.job_id} ran in unexpected partition {row.partition!r}"
+        )
+    if row.qos != intent["qos"]:
+        raise SlurmFleetCanaryError(
+            f"canary job {row.job_id} ran under unexpected QOS {row.qos!r}"
         )
     if attempt["job_id"] not in {None, row.job_id}:
         raise SlurmFleetCanaryError("canary intent changed Slurm job id")
@@ -3218,6 +3551,7 @@ def _binding_payload(
         "job_name": row.job_name,
         "state": row.state,
         "partition": row.partition,
+        "qos": row.qos,
         "node": row.node,
         "command": row.command,
         "comment": row.comment,
@@ -3230,6 +3564,10 @@ def _binding_payload(
         "fleet_sha256": intent["fleet_sha256"],
         "sbatch_path": attempt["sbatch_path"],
         "sbatch_sha256": attempt["sbatch_sha256"],
+        "submission_transport": attempt["submission_transport"],
+        "submission_argv_sha256": attempt["submission_argv_sha256"],
+        "submission_transport": attempt["submission_transport"],
+        "submission_argv_sha256": attempt["submission_argv_sha256"],
     }
 
 
@@ -3271,11 +3609,13 @@ def _write_and_verify_spooled_script(
 ) -> Path:
     destination = root / SPOOLED_SCRIPT_FILENAME
     if destination.exists() or destination.is_symlink():
+        info = destination.stat(follow_symlinks=False)
         if (
             destination.is_symlink()
-            or not destination.is_file()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
             or destination.read_bytes() != expected
-            or stat.S_IMODE(destination.stat().st_mode) & 0o222
+            or stat.S_IMODE(info.st_mode) != 0o444
         ):
             raise SlurmFleetCanaryError("persisted spooled batch script is invalid")
         return destination
@@ -3297,7 +3637,11 @@ def _write_and_verify_spooled_script(
                     f"scontrol write batch_script failed rc={proc.returncode}: "
                     f"{proc.stderr.strip()[:500]}"
                 )
-        if temporary.is_symlink() or not temporary.is_file():
+        if (
+            temporary.is_symlink()
+            or not temporary.is_file()
+            or temporary.stat(follow_symlinks=False).st_nlink != 1
+        ):
             raise SlurmFleetCanaryError(
                 "scontrol did not create a regular spooled script"
             )
@@ -3462,6 +3806,8 @@ def _retirement_payload(
         "fleet_sha256": intent["fleet_sha256"],
         "sbatch_path": attempt["sbatch_path"],
         "sbatch_sha256": attempt["sbatch_sha256"],
+        "submission_transport": attempt["submission_transport"],
+        "submission_argv_sha256": attempt["submission_argv_sha256"],
         "spooled_path": str(spooled_path.resolve()),
         "spooled_sha256": _sha256_file(spooled_path),
         "effective_job_state_path": str(
@@ -3495,6 +3841,8 @@ def _validate_retirement(
         "fleet_sha256",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
         "spooled_path",
         "spooled_sha256",
         "effective_job_state_path",
@@ -3517,6 +3865,10 @@ def _validate_retirement(
         or retirement.get("fleet_sha256") != intent["fleet_sha256"]
         or retirement.get("sbatch_path") != intent["sbatch_path"]
         or retirement.get("sbatch_sha256") != intent["sbatch_sha256"]
+        or retirement.get("submission_transport")
+        != intent["submission_transport"]
+        or retirement.get("submission_argv_sha256")
+        != intent["submission_argv_sha256"]
         or retirement.get("spooled_path")
         != str((root / SPOOLED_SCRIPT_FILENAME).resolve())
         or retirement.get("spooled_sha256") != intent["sbatch_sha256"]
@@ -3627,6 +3979,7 @@ def _validate_scheduler_binding(
         "job_name",
         "state",
         "partition",
+        "qos",
         "node",
         "command",
         "comment",
@@ -3639,6 +3992,8 @@ def _validate_scheduler_binding(
         "fleet_sha256",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
     }
     state = str(binding.get("state", ""))
     if (
@@ -3652,6 +4007,7 @@ def _validate_scheduler_binding(
         or not str(binding.get("job_id", "")).isdigit()
         or binding.get("job_name") != intent["job_name"]
         or binding.get("partition") != intent["partition"]
+        or binding.get("qos") != intent["qos"]
         or binding.get("comment") != intent["scheduler_comment"]
         or binding.get("scheduler_source") not in {"squeue", "sacct"}
         or binding.get("pool_id") != intent["pool_id"]
@@ -3662,9 +4018,14 @@ def _validate_scheduler_binding(
         or binding.get("fleet_sha256") != intent["fleet_sha256"]
         or binding.get("sbatch_path") != intent["sbatch_path"]
         or binding.get("sbatch_sha256") != intent["sbatch_sha256"]
+        or binding.get("submission_transport")
+        != intent["submission_transport"]
+        or binding.get("submission_argv_sha256")
+        != intent["submission_argv_sha256"]
         or tx.terminal_state(state) is not terminal
-        or not tx.command_binds_sbatch(
-            str(binding.get("command", "")), str(intent["sbatch_path"])
+        or not tx.command_binds_stdin_submission(
+            str(binding.get("command", "")),
+            str(intent["scheduler_comment"]),
         )
     ):
         raise SlurmFleetCanaryError(f"{kind} scheduler binding is invalid")
@@ -3706,9 +4067,12 @@ def _seal_and_publish_complete(
         "scheduler_comment": intent["scheduler_comment"],
         "job_name": intent["job_name"],
         "partition": intent["partition"],
+        "qos": intent["qos"],
         "no_requeue": True,
         "sbatch_path": intent["sbatch_path"],
         "sbatch_sha256": intent["sbatch_sha256"],
+        "submission_transport": intent["submission_transport"],
+        "submission_argv_sha256": intent["submission_argv_sha256"],
         "spooled_path": str((root / SPOOLED_SCRIPT_FILENAME).resolve()),
         "spooled_sha256": _sha256_file(root / SPOOLED_SCRIPT_FILENAME),
         "effective_job_state_path": str(
@@ -3769,9 +4133,12 @@ def verify_complete(root: Path) -> dict[str, Any]:
         "scheduler_comment",
         "job_name",
         "partition",
+        "qos",
         "no_requeue",
         "sbatch_path",
         "sbatch_sha256",
+        "submission_transport",
+        "submission_argv_sha256",
         "spooled_path",
         "spooled_sha256",
         "effective_job_state_path",
@@ -3805,9 +4172,14 @@ def verify_complete(root: Path) -> dict[str, Any]:
         or complete.get("scheduler_comment") != intent["scheduler_comment"]
         or complete.get("job_name") != intent["job_name"]
         or complete.get("partition") != intent["partition"]
+        or complete.get("qos") != intent["qos"]
         or complete.get("no_requeue") is not True
         or complete.get("sbatch_path") != intent["sbatch_path"]
         or complete.get("sbatch_sha256") != intent["sbatch_sha256"]
+        or complete.get("submission_transport")
+        != intent["submission_transport"]
+        or complete.get("submission_argv_sha256")
+        != intent["submission_argv_sha256"]
         or complete.get("spooled_sha256") != intent["sbatch_sha256"]
         or complete.get("spooled_path")
         != str((root / SPOOLED_SCRIPT_FILENAME).resolve())
@@ -3934,6 +4306,10 @@ def verify_complete(root: Path) -> dict[str, Any]:
         or attempt["terminal_at"] is None
         or attempt["sbatch_path"] != intent["sbatch_path"]
         or attempt["sbatch_sha256"] != intent["sbatch_sha256"]
+        or attempt["submission_transport"]
+        != intent["submission_transport"]
+        or attempt["submission_argv_sha256"]
+        != intent["submission_argv_sha256"]
         or attempt["scheduler_comment"] != intent["scheduler_comment"]
     ):
         raise SlurmFleetCanaryError(
@@ -3948,12 +4324,13 @@ def run_canary(
     apply: bool = False,
     verify: bool = False,
     partition: str = DEFAULT_PARTITION,
+    qos: str = DEFAULT_QOS,
     time_limit: str = DEFAULT_TIME_LIMIT,
     scheduler_user: str | None = None,
     visibility_timeout: float = DEFAULT_VISIBILITY_TIMEOUT,
     terminal_timeout: float = DEFAULT_TERMINAL_TIMEOUT,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
-    runner: Runner = subprocess.run,
+    runner: Runner = _production_runner,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
     token_factory: Callable[[], str] = lambda: os.urandom(16).hex(),
@@ -3981,6 +4358,7 @@ def run_canary(
             "apply": False,
             "canary_root": str(root),
             "partition": partition,
+            "qos": qos,
             "time_limit": time_limit,
             "cpus": 1,
             "memory": "128M",
@@ -4013,6 +4391,7 @@ def run_canary(
     intent = _load_or_create_static_intent(
         root=root,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         code_identity=bound_code_identity,
         token_factory=token_factory,
@@ -4053,6 +4432,10 @@ def run_canary(
             or attempt["scheduler_comment"] != intent["scheduler_comment"]
             or attempt["sbatch_path"] != intent["sbatch_path"]
             or attempt["sbatch_sha256"] != intent["sbatch_sha256"]
+            or attempt["submission_transport"]
+            != intent["submission_transport"]
+            or attempt["submission_argv_sha256"]
+            != intent["submission_argv_sha256"]
         ):
             raise SlurmFleetCanaryError(
                 "canary ledger drifted from marker-first intent"
@@ -4084,12 +4467,21 @@ def run_canary(
                 else:
                     # Complete joined absence after the fleet visibility grace permits
                     # retry of this same immutable token/path.
+                    absence_now = now_fn()
+                    tx.record_proven_submission_absence(
+                        directory,
+                        ledger,
+                        replica_id=str(intent["replica_id"]),
+                        attempt=attempt,
+                        snapshot=snapshot,
+                        now=absence_now,
+                    )
                     tx.submit_attempt(
                         directory,
                         ledger,
                         replica_id=str(intent["replica_id"]),
                         attempt=attempt,
-                        now=now_fn(),
+                        now=absence_now,
                         runner=runner,
                     )
             elif attempt["state"] == "submitted":
@@ -4277,14 +4669,12 @@ def _dependency_job_scripts(
     *,
     root: Path,
     partition: str,
+    qos: str,
     time_limit: str,
 ) -> dict[str, bytes]:
     """Render the exact three-job dependency-cascade experiment."""
 
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", partition):
-        raise SlurmFleetCanaryError(
-            f"unsafe dependency-canary partition: {partition!r}"
-        )
+    _validate_slurm_placement(partition=partition, qos=qos)
     if re.fullmatch(r"00:0[1-9]:00", time_limit) is None:
         raise SlurmFleetCanaryError(
             "dependency-canary time limit must be 1 through 9 whole minutes"
@@ -4294,6 +4684,7 @@ def _dependency_job_scripts(
     common = (
         "#!/bin/bash\n"
         f"#SBATCH --partition={partition}\n"
+        f"#SBATCH --qos={qos}\n"
         "#SBATCH --cpus-per-task=1\n"
         "#SBATCH --mem=256M\n"
         f"#SBATCH --time={time_limit}\n"
@@ -4400,6 +4791,14 @@ def _dependency_scheduler_snapshot(
     since: str,
     runner: Runner,
 ) -> dict[str, Any]:
+    try:
+        accounting_start_timestamp = datetime.strptime(
+            since, "%Y-%m-%dT%H:%M:%S"
+        ).timestamp()
+    except ValueError as exc:
+        raise SlurmFleetCanaryError(
+            f"dependency-canary accounting lower bound is invalid: {since!r}"
+        ) from exc
     commands = {
         "squeue": [
             "squeue",
@@ -4407,7 +4806,7 @@ def _dependency_scheduler_snapshot(
             slurm_user,
             "-h",
             "-o",
-            "%i|%k|%j|%T|%r|%S|%M",
+            "%i|%k|%j|%T|%r|%S|%M|%P|%q",
         ],
         "sacct": [
             "sacct",
@@ -4420,7 +4819,7 @@ def _dependency_scheduler_snapshot(
             since,
             (
                 "--format=JobIDRaw,Comment%256,JobName%64,State,ExitCode,"
-                "Reason,Start,End,Elapsed,SubmitLine"
+                "Reason,Start,End,Elapsed,Partition,QOS,SubmitLine"
             ),
         ],
     }
@@ -4446,13 +4845,23 @@ def _dependency_scheduler_snapshot(
         for line in proc.stdout.splitlines():
             fields = line.rstrip("\n").split("|")
             if source == "squeue":
-                if len(fields) != 7:
+                if len(fields) != 9:
                     if line.strip():
                         raise SlurmFleetCanaryError(
                             f"malformed dependency-canary squeue row: {line!r}"
                         )
                     continue
-                job_id, comment, job_name, state, reason, start, elapsed = fields
+                (
+                    job_id,
+                    comment,
+                    job_name,
+                    state,
+                    reason,
+                    start,
+                    elapsed,
+                    partition,
+                    qos,
+                ) = fields
                 if not job_id.isdigit():
                     continue
                 row = {
@@ -4465,6 +4874,8 @@ def _dependency_scheduler_snapshot(
                     "start": start.strip(),
                     "end": "",
                     "elapsed": elapsed.strip(),
+                    "partition": partition.strip(),
+                    "qos": qos.strip(),
                     "submit_line": "",
                     "active": "true",
                 }
@@ -4475,7 +4886,7 @@ def _dependency_scheduler_snapshot(
                     )
                 live[job_id] = row
                 continue
-            if len(fields) < 10:
+            if len(fields) < 12:
                 if line.strip():
                     raise SlurmFleetCanaryError(
                         f"malformed dependency-canary sacct row: {line!r}"
@@ -4491,8 +4902,10 @@ def _dependency_scheduler_snapshot(
                 start,
                 end,
                 elapsed,
-            ) = fields[:9]
-            submit_line = "|".join(fields[9:])
+                partition,
+                qos,
+            ) = fields[:11]
+            submit_line = "|".join(fields[11:])
             if not job_id.isdigit():
                 continue
             normalized_comment = stored_comment.strip()
@@ -4515,6 +4928,8 @@ def _dependency_scheduler_snapshot(
                 "start": start.strip(),
                 "end": end.strip(),
                 "elapsed": elapsed.strip(),
+                "partition": partition.strip(),
+                "qos": qos.strip(),
                 "submit_line": submit_line.strip(),
                 "active": "false",
             }
@@ -4531,6 +4946,8 @@ def _dependency_scheduler_snapshot(
         if active is not None and terminal is not None and (
             active["comment"] != terminal["comment"]
             or active["job_name"] != terminal["job_name"]
+            or active["partition"] != terminal["partition"]
+            or active["qos"] != terminal["qos"]
         ):
             raise SlurmFleetCanaryError(
                 f"dependency-canary scheduler identity conflicts for {job_id}"
@@ -4539,6 +4956,7 @@ def _dependency_scheduler_snapshot(
     return {
         "complete_squeue_truth": True,
         "complete_sacct_truth": True,
+        "accounting_start_timestamp": accounting_start_timestamp,
         "raw": raw,
         "live": live,
         "history": history,
@@ -4601,6 +5019,7 @@ def _load_or_create_dependency_intent(
     *,
     root: Path,
     partition: str,
+    qos: str,
     time_limit: str,
     latency_bound_seconds: float,
     code_identity: Mapping[str, Any],
@@ -4608,7 +5027,7 @@ def _load_or_create_dependency_intent(
     token_factory: Callable[[], str],
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     scripts = _dependency_job_scripts(
-        root=root, partition=partition, time_limit=time_limit
+        root=root, partition=partition, qos=qos, time_limit=time_limit
     )
     path = root / DEPENDENCY_INTENT_FILENAME
     if path.exists() or path.is_symlink():
@@ -4618,12 +5037,17 @@ def _load_or_create_dependency_intent(
             or intent.get("kind") != "schema5_dependency_cascade_intent"
             or intent.get("canary_root") != str(root)
             or intent.get("partition") != partition
+            or intent.get("qos") != qos
             or intent.get("time_limit") != time_limit
             or intent.get("alert_latency_bound_seconds")
             != float(latency_bound_seconds)
             or intent.get("code_identity")
             != _validate_code_identity(code_identity)
             or not isinstance(intent.get("scheduler_since"), str)
+            or not isinstance(
+                intent.get("scheduler_start_timestamp"), (int, float)
+            )
+            or isinstance(intent.get("scheduler_start_timestamp"), bool)
             or _TOKEN_RE.fullmatch(str(intent.get("token", ""))) is None
         ):
             raise SlurmFleetCanaryError(
@@ -4660,8 +5084,12 @@ def _load_or_create_dependency_intent(
         "kind": "schema5_dependency_cascade_intent",
         "created_at": float(now),
         "scheduler_since": _dependency_scheduler_since(now),
+        "scheduler_start_timestamp": datetime.strptime(
+            _dependency_scheduler_since(now), "%Y-%m-%dT%H:%M:%S"
+        ).timestamp(),
         "canary_root": str(root),
         "partition": partition,
+        "qos": qos,
         "time_limit": time_limit,
         "alert_latency_bound_seconds": float(latency_bound_seconds),
         "token": token,
@@ -4724,7 +5152,6 @@ def _dependency_submission_argv(
     argv.extend(
         [
             f"--comment={record['comment']}",
-            str(record["script"]),
         ]
     )
     return argv
@@ -4741,6 +5168,7 @@ def _wait_dependency_job_visible(
     sleep_fn: Callable[[float], None],
     timeout: float,
     poll_seconds: float,
+    expected_argv: Sequence[str] | None = None,
 ) -> dict[str, str]:
     deadline = now_fn() + timeout
     expected = intent["jobs"][role]
@@ -4763,11 +5191,26 @@ def _wait_dependency_job_visible(
             row = matches[0]
             if (
                 row["job_name"] != expected["job_name"]
+                or row["partition"] != intent["partition"]
+                or row["qos"] != intent["qos"]
                 or (job_id is not None and row["job_id"] != job_id)
             ):
                 raise SlurmFleetCanaryError(
                     f"dependency-cascade {role} scheduler identity drifted"
                 )
+            if row["submit_line"] and expected_argv is not None:
+                try:
+                    observed_argv = shlex.split(row["submit_line"])
+                except ValueError as exc:
+                    raise SlurmFleetCanaryError(
+                        f"dependency-cascade {role} SubmitLine is invalid"
+                    ) from exc
+                if observed_argv and Path(observed_argv[0]).name == "sbatch":
+                    observed_argv[0] = "sbatch"
+                if observed_argv != list(expected_argv):
+                    raise SlurmFleetCanaryError(
+                        f"dependency-cascade {role} exact submission argv drifted"
+                    )
             return row
         if now_fn() >= deadline:
             raise SlurmFleetCanaryError(
@@ -4812,6 +5255,15 @@ def _submit_dependency_jobs(
         argv = _dependency_submission_argv(
             role=role, intent=intent, job_ids=job_ids
         )
+        argv_sha256 = _sha256_bytes(_canonical_compact_bytes(argv))
+        script_path = Path(intent["jobs"][role]["script"])
+        script_bytes = script_path.read_bytes()
+        try:
+            script_text = script_bytes.decode("utf-8")
+        except UnicodeError as exc:
+            raise SlurmFleetCanaryError(
+                f"dependency-cascade {role} script is not UTF-8"
+            ) from exc
         job_intent = {
             "schema_version": SCHEMA_VERSION,
             "kind": "schema5_dependency_job_submission_intent",
@@ -4820,7 +5272,9 @@ def _submit_dependency_jobs(
             "job_name": intent["jobs"][role]["job_name"],
             "script": intent["jobs"][role]["script"],
             "script_sha256": intent["jobs"][role]["script_sha256"],
+            "submission_transport": tx.STDIN_EXACT_SUBMISSION_TRANSPORT,
             "argv": argv,
+            "argv_sha256": argv_sha256,
             "created_at": float(now_fn()),
         }
         if job_intent_path.exists() or job_intent_path.is_symlink():
@@ -4854,34 +5308,211 @@ def _submit_dependency_jobs(
                 or accepted.get("role") != role
                 or accepted.get("intent_sha256") != _sha256_file(job_intent_path)
                 or not job_id.isdigit()
+                or accepted.get("comment") != job_intent["comment"]
+                or accepted.get("job_name") != job_intent["job_name"]
+                or accepted.get("script_sha256")
+                != job_intent["script_sha256"]
+                or accepted.get("submission_transport")
+                != tx.STDIN_EXACT_SUBMISSION_TRANSPORT
+                or accepted.get("submission_argv_sha256") != argv_sha256
+                or accepted.get("spooled_script_sha256")
+                != job_intent["script_sha256"]
             ):
                 raise SlurmFleetCanaryError(
                     f"dependency-cascade {role} acceptance drifted"
                 )
+            spool_path = Path(str(accepted.get("spooled_script", "")))
+            if (
+                not spool_path.is_absolute()
+                or _sha256_file(spool_path) != job_intent["script_sha256"]
+                or spool_path.read_bytes() != script_bytes
+            ):
+                raise SlurmFleetCanaryError(
+                    f"dependency-cascade {role} sealed spool proof drifted"
+                )
             job_ids[role] = job_id
             records.append(accepted)
             continue
+
+        attempts_root = submission_root / "attempts"
+        attempts_root.mkdir(parents=True, exist_ok=True)
+        attempts = sorted(attempts_root.glob("attempt-[0-9][0-9][0-9][0-9]"))
         visible: dict[str, str] | None = None
-        try:
-            visible = _wait_dependency_job_visible(
-                intent=intent,
-                role=role,
-                job_id=None,
-                slurm_user=slurm_user,
-                runner=runner,
-                now_fn=now_fn,
-                sleep_fn=sleep_fn,
-                timeout=0.0,
-                poll_seconds=poll_seconds,
-            )
-        except SlurmFleetCanaryError as exc:
-            if "did not become visible" not in str(exc):
-                raise
         submission_result: dict[str, Any] | None = None
+        reconciled_after_boundary = False
+        if attempts:
+            latest = attempts[-1]
+            attempt_intent_path = latest / "INTENT.json"
+            submitting_path = latest / "SUBMITTING.json"
+            absent_path = latest / "NOT_ACCEPTED.json"
+            rejected_path = latest / "REJECTED.json"
+            attempt_intent = _read_json(
+                attempt_intent_path,
+                description=f"dependency-cascade {role} attempt intent",
+            )
+            submitting = _read_json(
+                submitting_path,
+                description=f"dependency-cascade {role} submitting boundary",
+            )
+            expected_attempt_number = len(attempts)
+            if (
+                attempt_intent.get("schema_version") != SCHEMA_VERSION
+                or attempt_intent.get("kind")
+                != "schema5_dependency_job_attempt_intent"
+                or attempt_intent.get("attempt") != expected_attempt_number
+                or attempt_intent.get("role") != role
+                or attempt_intent.get("job_intent_sha256")
+                != _sha256_file(job_intent_path)
+                or attempt_intent.get("submission_transport")
+                != tx.STDIN_EXACT_SUBMISSION_TRANSPORT
+                or attempt_intent.get("argv") != argv
+                or attempt_intent.get("argv_sha256") != argv_sha256
+                or submitting.get("schema_version") != SCHEMA_VERSION
+                or submitting.get("kind")
+                != "schema5_dependency_job_submitting"
+                or submitting.get("attempt") != expected_attempt_number
+                or submitting.get("attempt_intent_sha256")
+                != _sha256_file(attempt_intent_path)
+                or not isinstance(
+                    submitting.get("submit_started_at"), (int, float)
+                )
+                or isinstance(submitting.get("submit_started_at"), bool)
+            ):
+                raise SlurmFleetCanaryError(
+                    f"dependency-cascade {role} attempt transaction drifted"
+                )
+            if rejected_path.exists() or rejected_path.is_symlink():
+                rejected = _read_json(
+                    rejected_path,
+                    description=f"dependency-cascade {role} rejection",
+                )
+                raise SlurmFleetCanaryError(
+                    f"dependency-cascade {role} prior sbatch was explicitly "
+                    f"rejected: {str(rejected.get('stderr', ''))[:500]}"
+                )
+            if not absent_path.exists() and not absent_path.is_symlink():
+                try:
+                    visible = _wait_dependency_job_visible(
+                        intent=intent,
+                        role=role,
+                        job_id=None,
+                        slurm_user=slurm_user,
+                        runner=runner,
+                        now_fn=now_fn,
+                        sleep_fn=sleep_fn,
+                        timeout=max(
+                            0.0,
+                            visibility_timeout
+                            - (
+                                float(now_fn())
+                                - float(submitting["submit_started_at"])
+                            ),
+                        ),
+                        poll_seconds=poll_seconds,
+                        expected_argv=argv,
+                    )
+                    reconciled_after_boundary = True
+                except SlurmFleetCanaryError as exc:
+                    if "did not become visible" not in str(exc):
+                        raise
+                if visible is None:
+                    snapshot = _dependency_scheduler_snapshot(
+                        slurm_user=slurm_user,
+                        since=str(intent["scheduler_since"]),
+                        runner=runner,
+                    )
+                    if (
+                        float(snapshot["accounting_start_timestamp"])
+                        > float(submitting["submit_started_at"])
+                    ):
+                        raise SlurmFleetCanaryError(
+                            f"dependency-cascade {role} absence is outside "
+                            "complete accounting coverage"
+                        )
+                    absence = {
+                        "schema_version": SCHEMA_VERSION,
+                        "kind": "schema5_dependency_job_not_accepted",
+                        "attempt": expected_attempt_number,
+                        "attempt_intent_sha256": _sha256_file(
+                            attempt_intent_path
+                        ),
+                        "submit_started_at": float(
+                            submitting["submit_started_at"]
+                        ),
+                        "reconciled_at": float(now_fn()),
+                        "accounting_start_timestamp": float(
+                            snapshot["accounting_start_timestamp"]
+                        ),
+                        "complete_squeue_truth": True,
+                        "complete_sacct_truth": True,
+                    }
+                    _write_immutable_once(
+                        absent_path,
+                        absence,
+                        description=(
+                            f"dependency-cascade {role} proven absence"
+                        ),
+                    )
+
         if visible is None:
-            proc = runner(argv)
+            attempt_number = len(attempts) + 1
+            attempt_root = attempts_root / f"attempt-{attempt_number:04d}"
+            attempt_intent_path = attempt_root / "INTENT.json"
+            submitting_path = attempt_root / "SUBMITTING.json"
+            attempt_token = _sha256_bytes(
+                (
+                    _sha256_file(job_intent_path)
+                    + f":{attempt_number}"
+                ).encode("utf-8")
+            )
+            attempt_intent = {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "schema5_dependency_job_attempt_intent",
+                "attempt": attempt_number,
+                "attempt_token": attempt_token,
+                "role": role,
+                "job_intent": str(job_intent_path.resolve()),
+                "job_intent_sha256": _sha256_file(job_intent_path),
+                "submission_transport": tx.STDIN_EXACT_SUBMISSION_TRANSPORT,
+                "argv": argv,
+                "argv_sha256": argv_sha256,
+                "script_sha256": job_intent["script_sha256"],
+                "created_at": float(now_fn()),
+            }
+            _write_immutable_once(
+                attempt_intent_path,
+                attempt_intent,
+                description=f"dependency-cascade {role} attempt intent",
+            )
+            submitting = {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "schema5_dependency_job_submitting",
+                "attempt": attempt_number,
+                "attempt_intent_sha256": _sha256_file(
+                    attempt_intent_path
+                ),
+                "submit_started_at": float(now_fn()),
+            }
+            _write_immutable_once(
+                submitting_path,
+                submitting,
+                description=(
+                    f"dependency-cascade {role} scheduler-boundary intent"
+                ),
+            )
+            proc = runner(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=DEFAULT_COMMAND_TIMEOUT_SECONDS,
+                input=script_text,
+            )
             submission_result = {
                 "argv": argv,
+                "argv_sha256": argv_sha256,
+                "submission_transport": tx.STDIN_EXACT_SUBMISSION_TRANSPORT,
+                "stdin_sha256": _sha256_bytes(script_bytes),
                 "returncode": int(proc.returncode),
                 "stdout": proc.stdout,
                 "stderr": proc.stderr,
@@ -4889,6 +5520,22 @@ def _submit_dependency_jobs(
                 "stderr_sha256": _sha256_bytes(proc.stderr.encode("utf-8")),
             }
             if proc.returncode != 0:
+                _write_immutable_once(
+                    attempt_root / "REJECTED.json",
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "kind": "schema5_dependency_job_rejected",
+                        "attempt": attempt_number,
+                        "attempt_intent_sha256": _sha256_file(
+                            attempt_intent_path
+                        ),
+                        "returncode": int(proc.returncode),
+                        "stdout": proc.stdout,
+                        "stderr": proc.stderr,
+                        "recorded_at": float(now_fn()),
+                    },
+                    description=f"dependency-cascade {role} rejection",
+                )
                 raise SlurmFleetCanaryError(
                     f"dependency-cascade {role} sbatch failed rc={proc.returncode}: "
                     f"{proc.stderr.strip()[:500]}"
@@ -4908,39 +5555,28 @@ def _submit_dependency_jobs(
                 sleep_fn=sleep_fn,
                 timeout=visibility_timeout,
                 poll_seconds=poll_seconds,
+                expected_argv=argv,
             )
         job_id = visible["job_id"]
         spool_path = submission_root / "SPOOLED_BATCH_SCRIPT.sbatch"
-        with tempfile.NamedTemporaryFile(
-            prefix=".spooled.",
-            suffix=".sbatch",
-            dir=submission_root,
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-        try:
-            proc = runner(
-                [
-                    "scontrol",
-                    "write",
-                    "batch_script",
-                    job_id,
-                    str(temporary),
-                ]
+        proc = runner(
+            ["scontrol", "write", "batch_script", job_id, "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        )
+        if proc.returncode != 0:
+            raise SlurmFleetCanaryError(
+                f"dependency-cascade {role} spooled-script query failed: "
+                f"{proc.stderr.strip()[:500]}"
             )
-            if proc.returncode != 0:
-                raise SlurmFleetCanaryError(
-                    f"dependency-cascade {role} spooled-script query failed: "
-                    f"{proc.stderr.strip()[:500]}"
-                )
-            payload = temporary.read_bytes()
-            _write_immutable_once(
-                spool_path,
-                payload,
-                description=f"dependency-cascade {role} spooled script",
-            )
-        finally:
-            temporary.unlink(missing_ok=True)
+        payload = proc.stdout.encode("utf-8")
+        _write_immutable_once(
+            spool_path,
+            payload,
+            description=f"dependency-cascade {role} spooled script",
+        )
         if (
             _sha256_file(spool_path) != intent["jobs"][role]["script_sha256"]
             or spool_path.read_bytes()
@@ -4960,9 +5596,12 @@ def _submit_dependency_jobs(
             "job_name": intent["jobs"][role]["job_name"],
             "script": intent["jobs"][role]["script"],
             "script_sha256": intent["jobs"][role]["script_sha256"],
+            "submission_transport": tx.STDIN_EXACT_SUBMISSION_TRANSPORT,
+            "submission_argv": argv,
+            "submission_argv_sha256": argv_sha256,
             "spooled_script": str(spool_path.resolve()),
             "spooled_script_sha256": _sha256_file(spool_path),
-            "reconciled_after_boundary": submission_result is None,
+            "reconciled_after_boundary": reconciled_after_boundary,
             "submission_result": submission_result,
             "recorded_at": float(now_fn()),
         }
@@ -5372,6 +6011,8 @@ def _seal_dependency_complete(
         "completed_at": float(now),
         "canary_root": str(root),
         "code_identity": intent["code_identity"],
+        "partition": intent["partition"],
+        "qos": intent["qos"],
         "intent_path": str((root / DEPENDENCY_INTENT_FILENAME).resolve()),
         "intent_sha256": _sha256_file(root / DEPENDENCY_INTENT_FILENAME),
         "submission_receipt_path": str(
@@ -5461,6 +6102,8 @@ def verify_dependency_cascade_complete(root: Path) -> dict[str, Any]:
         "completed_at",
         "canary_root",
         "code_identity",
+        "partition",
+        "qos",
         "intent_path",
         "intent_sha256",
         "submission_receipt_path",
@@ -5495,6 +6138,8 @@ def verify_dependency_cascade_complete(root: Path) -> dict[str, Any]:
         or complete.get("kind") != "schema5_dependency_cascade_complete"
         or complete.get("canary_root") != str(root)
         or complete.get("code_identity") != intent.get("code_identity")
+        or complete.get("partition") != intent.get("partition")
+        or complete.get("qos") != intent.get("qos")
         or _validate_code_identity(complete.get("code_identity", {}))
         != complete.get("code_identity")
         or complete.get("intent_path")
@@ -5567,13 +6212,14 @@ def run_dependency_cascade_canary(
     apply: bool = False,
     verify: bool = False,
     partition: str = DEFAULT_PARTITION,
+    qos: str = DEFAULT_QOS,
     time_limit: str = DEFAULT_TIME_LIMIT,
     alert_latency_bound_seconds: float = DEFAULT_DEPENDENCY_ALERT_LATENCY_SECONDS,
     scheduler_user: str | None = None,
     visibility_timeout: float = DEFAULT_VISIBILITY_TIMEOUT,
     terminal_timeout: float = DEFAULT_TERMINAL_TIMEOUT,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
-    runner: Runner = subprocess.run,
+    runner: Runner = _production_runner,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
     token_factory: Callable[[], str] = lambda: os.urandom(16).hex(),
@@ -5607,7 +6253,7 @@ def run_dependency_cascade_canary(
             f"dependency-cascade completion is missing: {marker}"
         )
     scripts = _dependency_job_scripts(
-        root=root, partition=partition, time_limit=time_limit
+        root=root, partition=partition, qos=qos, time_limit=time_limit
     )
     if not apply:
         return {
@@ -5616,6 +6262,7 @@ def run_dependency_cascade_canary(
             "apply": False,
             "canary_root": str(root),
             "partition": partition,
+            "qos": qos,
             "time_limit": time_limit,
             "alert_latency_bound_seconds": float(
                 alert_latency_bound_seconds
@@ -5644,6 +6291,7 @@ def run_dependency_cascade_canary(
     intent, scripts = _load_or_create_dependency_intent(
         root=root,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         latency_bound_seconds=float(alert_latency_bound_seconds),
         code_identity=bound_code_identity,
@@ -5698,6 +6346,7 @@ def _load_or_create_composite_intent(
     *,
     root: Path,
     partition: str,
+    qos: str,
     time_limit: str,
     turnover_cycles: int,
     turnover_drain_seconds: float,
@@ -5719,6 +6368,7 @@ def _load_or_create_composite_intent(
         ),
         "turnover_root": str((root / TURNOVER_COMPONENT_DIRECTORY).resolve()),
         "partition": partition,
+        "qos": qos,
         "time_limit": time_limit,
         "turnover_cycles": turnover_cycles,
         "turnover_drain_seconds": float(turnover_drain_seconds),
@@ -5790,6 +6440,12 @@ def _seal_and_publish_composite_complete(
         or transaction.get("code_identity") != intent["code_identity"]
         or dependency.get("code_identity") != intent["code_identity"]
         or turnover.get("code_identity") != intent["code_identity"]
+        or transaction.get("partition") != intent["partition"]
+        or dependency.get("partition") != intent["partition"]
+        or turnover.get("partition") != intent["partition"]
+        or transaction.get("qos") != intent["qos"]
+        or dependency.get("qos") != intent["qos"]
+        or turnover.get("qos") != intent["qos"]
         or dependency.get("kill_invalid_depend") is not True
         or dependency.get("child_never_started") is not True
         or dependency.get("root_initial_hold") is not True
@@ -5819,6 +6475,8 @@ def _seal_and_publish_composite_complete(
             root / COMPOSITE_INTENT_FILENAME
         ),
         "code_identity": intent["code_identity"],
+        "partition": intent["partition"],
+        "qos": intent["qos"],
         "transaction_root": str(transaction_root.resolve()),
         "transaction_marker_path": str(transaction_marker.resolve()),
         "transaction_marker_sha256": _sha256_file(transaction_marker),
@@ -5909,6 +6567,8 @@ def verify_composite_complete(root: Path) -> dict[str, Any]:
         "composite_intent_path",
         "composite_intent_sha256",
         "code_identity",
+        "partition",
+        "qos",
         "transaction_root",
         "transaction_marker_path",
         "transaction_marker_sha256",
@@ -5954,9 +6614,17 @@ def verify_composite_complete(root: Path) -> dict[str, Any]:
         or complete.get("composite_intent_sha256")
         != _sha256_file(root / COMPOSITE_INTENT_FILENAME)
         or complete.get("code_identity") != intent.get("code_identity")
+        or complete.get("partition") != intent.get("partition")
+        or complete.get("qos") != intent.get("qos")
         or complete.get("code_identity") != transaction.get("code_identity")
         or complete.get("code_identity") != dependency.get("code_identity")
         or complete.get("code_identity") != turnover.get("code_identity")
+        or complete.get("partition") != transaction.get("partition")
+        or complete.get("partition") != dependency.get("partition")
+        or complete.get("partition") != turnover.get("partition")
+        or complete.get("qos") != transaction.get("qos")
+        or complete.get("qos") != dependency.get("qos")
+        or complete.get("qos") != turnover.get("qos")
         or _validate_code_identity(complete.get("code_identity", {}))
         != complete.get("code_identity")
         or complete.get("transaction_root") != str(transaction_root.resolve())
@@ -6032,6 +6700,7 @@ def run_composite_canary(
     apply: bool = False,
     verify: bool = False,
     partition: str = DEFAULT_PARTITION,
+    qos: str = DEFAULT_QOS,
     time_limit: str = DEFAULT_TIME_LIMIT,
     turnover_cycles: int = DEFAULT_TURNOVER_CYCLES,
     turnover_drain_seconds: float = DEFAULT_TURNOVER_DRAIN_SECONDS,
@@ -6043,7 +6712,7 @@ def run_composite_canary(
     terminal_timeout: float = DEFAULT_TERMINAL_TIMEOUT,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     probe_timeout: float = 10.0,
-    runner: Runner = subprocess.run,
+    runner: Runner = _production_runner,
     probe: EndpointProbe = _default_endpoint_probe,
     now_fn: Callable[[], float] = time.time,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -6082,9 +6751,12 @@ def run_composite_canary(
             "turnover_root": str(
                 (root / TURNOVER_COMPONENT_DIRECTORY).resolve()
             ),
+            "partition": partition,
+            "qos": qos,
             "dependency_plan": run_dependency_cascade_canary(
                 root=root / DEPENDENCY_COMPONENT_DIRECTORY,
                 partition=partition,
+                qos=qos,
                 time_limit=time_limit,
                 alert_latency_bound_seconds=dependency_alert_latency_seconds,
                 code_identity=code_identity,
@@ -6092,6 +6764,7 @@ def run_composite_canary(
             "turnover_cycles": turnover_cycles,
             "turnover_plan": render_turnover_canary_plan(
                 partition=partition,
+                qos=qos,
                 time_limit=time_limit,
                 cycles=turnover_cycles,
                 drain_seconds=turnover_drain_seconds,
@@ -6111,6 +6784,7 @@ def run_composite_canary(
     intent = _load_or_create_composite_intent(
         root=root,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         turnover_cycles=turnover_cycles,
         turnover_drain_seconds=turnover_drain_seconds,
@@ -6122,6 +6796,7 @@ def run_composite_canary(
         root=root / TRANSACTION_COMPONENT_DIRECTORY,
         apply=True,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         scheduler_user=scheduler_user,
         visibility_timeout=visibility_timeout,
@@ -6137,6 +6812,7 @@ def run_composite_canary(
         root=root / DEPENDENCY_COMPONENT_DIRECTORY,
         apply=True,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         alert_latency_bound_seconds=dependency_alert_latency_seconds,
         scheduler_user=scheduler_user,
@@ -6153,6 +6829,7 @@ def run_composite_canary(
         root=root / TURNOVER_COMPONENT_DIRECTORY,
         apply=True,
         partition=partition,
+        qos=qos,
         time_limit=time_limit,
         cycles=turnover_cycles,
         drain_seconds=turnover_drain_seconds,
@@ -6210,6 +6887,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--canary-root", type=Path, default=_default_canary_root())
     parser.add_argument("--partition", default=DEFAULT_PARTITION)
+    parser.add_argument("--qos", default=DEFAULT_QOS)
     parser.add_argument("--time-limit", default=DEFAULT_TIME_LIMIT)
     parser.add_argument("--scheduler-user")
     parser.add_argument(
@@ -6260,6 +6938,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "apply": args.apply,
             "verify": args.verify,
             "partition": args.partition,
+            "qos": args.qos,
             "time_limit": args.time_limit,
             "scheduler_user": args.scheduler_user,
             "visibility_timeout": args.visibility_timeout,

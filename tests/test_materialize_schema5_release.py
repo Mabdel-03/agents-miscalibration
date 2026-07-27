@@ -122,7 +122,15 @@ def _tagged_repository(tmp_path: Path) -> tuple[Path, str]:
     (repository / ".gitignore").write_text("*.egg-info/\n", encoding="utf-8")
     _run("git", "add", "source.txt", ".gitignore", cwd=repository)
     _run("git", "commit", "-q", "-m", "release", cwd=repository)
-    _run("git", "tag", materialize.REQUIRED_TAG, cwd=repository)
+    _run(
+        "git",
+        "tag",
+        "-a",
+        materialize.REQUIRED_TAG,
+        "-m",
+        "schema-5 materialization fixture",
+        cwd=repository,
+    )
     return repository, _run("git", "rev-parse", "HEAD", cwd=repository)
 
 
@@ -874,6 +882,74 @@ def test_setuptools_byproduct_is_atomically_retained_and_worktree_recovers_clean
         materialize.freeze.verify_clean_exact_tag(worktree)["git_tag"]
         == materialize.REQUIRED_TAG
     )
+
+
+def test_completed_build_evidence_binds_exact_archive_root_and_file_set(
+    tmp_path,
+):
+    output = tmp_path / "materialization"
+    archive = output / "build_evidence"
+    package_info = archive / "src" / "agents_scaling.egg-info" / "PKG-INFO"
+    package_info.parent.mkdir(parents=True)
+    package_info.write_text("Name: agents_scaling\n", encoding="utf-8")
+    inventory = materialize.freeze.directory_inventory(archive)
+    valid = {
+        "generated_paths": ["src/agents_scaling.egg-info/PKG-INFO"],
+        "archive_path": str(archive),
+        "archive_inventory_sha256": inventory["inventory_sha256"],
+    }
+
+    materialize._verify_build_evidence(valid, output_root=output)
+
+    wrong_paths = dict(valid)
+    wrong_paths["generated_paths"] = [
+        "src/agents_scaling.egg-info/NOT-ARCHIVED"
+    ]
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="does not contain the exact generated paths",
+    ):
+        materialize._verify_build_evidence(wrong_paths, output_root=output)
+
+    nested = archive / "src"
+    nested_inventory = materialize.freeze.directory_inventory(nested)
+    wrong_root = {
+        "generated_paths": ["agents_scaling.egg-info/PKG-INFO"],
+        "archive_path": str(nested),
+        "archive_inventory_sha256": nested_inventory["inventory_sha256"],
+    }
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="archive is invalid|unsafe or unexpected",
+    ):
+        materialize._verify_build_evidence(wrong_root, output_root=output)
+
+
+def test_completed_build_evidence_rejects_residual_ignored_byproduct(tmp_path):
+    worktree, _commit = _tagged_repository(tmp_path)
+    output = tmp_path / "materialization"
+    output.mkdir()
+    materialize._publish_build_evidence_marker(
+        release_worktree=worktree,
+        output_root=output,
+        evidence={
+            "generated_paths": [],
+            "archive_path": None,
+            "archive_inventory_sha256": None,
+        },
+    )
+    residual = worktree / "src" / "agents_scaling.egg-info" / "PKG-INFO"
+    residual.parent.mkdir(parents=True)
+    residual.write_text("Name: agents_scaling\n", encoding="utf-8")
+
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="left release-worktree drift",
+    ):
+        materialize._load_completed_build_evidence(
+            release_worktree=worktree,
+            output_root=output,
+        )
 
 
 def test_harness_package_retry_adopts_completed_build_evidence_without_reinstall(

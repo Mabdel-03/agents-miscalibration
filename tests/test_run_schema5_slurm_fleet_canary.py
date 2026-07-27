@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import stat
 import hashlib
+import inspect
 import subprocess
+import sys
 import time
 
 import pytest
@@ -101,6 +104,87 @@ class _Clock:
         self.value += float(seconds)
 
 
+def test_production_runner_captures_both_text_streams() -> None:
+    completed = canary._production_runner(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.write('captured-out'); "
+                "sys.stderr.write('captured-err')"
+            ),
+        ]
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == "captured-out"
+    assert completed.stderr == "captured-err"
+
+
+def test_production_runner_rejects_missing_captured_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def uncaptured(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0, None, None)
+
+    monkeypatch.setattr(canary.subprocess, "run", uncaptured)
+    with pytest.raises(
+        canary.SlurmFleetCanaryError,
+        match="did not return captured text streams",
+    ):
+        canary._production_runner(["squeue"])
+
+
+@pytest.mark.parametrize(
+    ("exception", "message"),
+    [
+        (
+            subprocess.TimeoutExpired(["squeue"], timeout=60),
+            "timed out after 60s",
+        ),
+        (OSError("scheduler unavailable"), "cannot execute"),
+    ],
+)
+def test_production_runner_translates_execution_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    exception: Exception,
+    message: str,
+) -> None:
+    def fail(_argv, **_kwargs):
+        raise exception
+
+    monkeypatch.setattr(canary.subprocess, "run", fail)
+    with pytest.raises(canary.SlurmFleetCanaryError, match=message):
+        canary._production_runner(["squeue"])
+
+
+def test_production_runner_rejects_unbounded_timeout() -> None:
+    with pytest.raises(
+        canary.SlurmFleetCanaryError,
+        match="timeout must be positive",
+    ):
+        canary._production_runner(["squeue"], timeout=None)
+
+
+@pytest.mark.parametrize(
+    "entry_point",
+    [
+        canary.run_canary,
+        canary.run_dependency_cascade_canary,
+        canary.run_turnover_canary,
+        canary.run_composite_canary,
+    ],
+)
+def test_live_canary_entry_points_default_to_production_runner(
+    entry_point,
+) -> None:
+    assert (
+        inspect.signature(entry_point).parameters["runner"].default
+        is canary._production_runner
+    )
+
+
 class _FakeSlurm:
     def __init__(
         self,
@@ -125,20 +209,21 @@ class _FakeSlurm:
         self.sbatch_path = ""
         self.job_name = ""
         self.partition = ""
+        self.qos = ""
 
     def _row(self, *, source):
         if not self.accepted:
             return ""
         state = "RUNNING" if self.active else "CANCELLED"
         node = "node001" if self.active else "node001"
-        command = f"sbatch --parsable --comment={self.comment} {self.sbatch_path}"
+        command = f"sbatch --parsable --comment={self.comment}"
         comment = self.comment
         return (
-            f"{self.job_id}|{self.job_name}|{state}|{self.partition}|{node}|"
+            f"{self.job_id}|{self.job_name}|{state}|{self.partition}|{self.qos}|{node}|"
             f"{command}|{comment}\n"
         )
 
-    def __call__(self, argv, **_kwargs):
+    def __call__(self, argv, **kwargs):
         if argv[0] == "sacct":
             return _Process(stdout=self._row(source="sacct"))
         if argv[0] == "squeue":
@@ -159,16 +244,20 @@ class _FakeSlurm:
                 "sbatch",
                 "--parsable",
                 f"--comment={intent['scheduler_comment']}",
-                intent["sbatch_path"],
             ]
-            script = Path(intent["sbatch_path"]).read_text(encoding="utf-8")
+            script = kwargs.get("input")
+            assert script == Path(intent["sbatch_path"]).read_text(
+                encoding="utf-8"
+            )
             assert "#SBATCH --no-requeue\n" in script
             assert "#SBATCH --partition=mit_normal\n" in script
+            assert "#SBATCH --qos=normal\n" in script
             assert "#SBATCH --time=00:08:00\n" in script
             self.comment = intent["scheduler_comment"]
             self.sbatch_path = intent["sbatch_path"]
             self.job_name = intent["job_name"]
             self.partition = intent["partition"]
+            self.qos = intent["qos"]
             self.accepted = True
             self.active = True
             if self.crash_after_acceptance:
@@ -181,6 +270,8 @@ class _FakeSlurm:
             body = Path(self.sbatch_path).read_bytes()
             if self.spooled_mismatch:
                 body += b"# scheduler drift\n"
+            if argv[4] == "-":
+                return _Process(stdout=body.decode("utf-8"))
             Path(argv[4]).write_bytes(body)
             return _Process()
         if argv[:4] == ["scontrol", "show", "job", "-o"]:
@@ -244,7 +335,14 @@ def test_apply_runs_one_real_transaction_contract_and_seals_marker_last(tmp_path
 
     assert scheduler.sbatch_calls == 1
     assert scheduler.scancel_calls == [["scancel", "424242"]]
-    assert len(scheduler.scontrol_calls) == 1
+    assert len(scheduler.scontrol_calls) == 2
+    assert scheduler.scontrol_calls[0] == [
+        "scontrol",
+        "write",
+        "batch_script",
+        "424242",
+        "-",
+    ]
     assert scheduler.effective_state_calls == [
         ["scontrol", "show", "job", "-o", "424242"]
     ]
@@ -305,8 +403,8 @@ def test_spooled_script_drift_fails_before_retirement_or_cancel(tmp_path):
     scheduler = _FakeSlurm(root, spooled_mismatch=True)
     clock = _Clock()
     with pytest.raises(
-        canary.SlurmFleetCanaryError,
-        match="spooled batch script differs",
+        canary.tx.FleetTransactionError,
+        match="lacks exact Slurm-spooled script proof",
     ):
         _run(root, scheduler, clock)
     assert scheduler.sbatch_calls == 1
@@ -427,14 +525,19 @@ class _FakeTurnoverSlurm:
         root: Path,
         *,
         crash_after_turnover_acceptance: bool = False,
+        crash_after_dependency_acceptance: bool = False,
     ):
         self.root = root
         self.crash_after_turnover_acceptance = (
             crash_after_turnover_acceptance
         )
+        self.crash_after_dependency_acceptance = (
+            crash_after_dependency_acceptance
+        )
         self.next_job_id = 510000
         self.jobs: dict[str, dict] = {}
         self.sbatch_calls: list[list[str]] = []
+        self.sbatch_inputs: list[str | None] = []
         self.scancel_calls: list[list[str]] = []
         self.release_calls: list[list[str]] = []
         self.active_counts: list[int] = []
@@ -450,11 +553,10 @@ class _FakeTurnoverSlurm:
 
     def _sacct_row(self, job_id: str, job: dict) -> str:
         state = "RUNNING" if job["active"] else "CANCELLED"
-        command = (
-            f"sbatch --parsable --comment={job['comment']} {job['path']}"
-        )
+        command = f"sbatch --parsable --comment={job['comment']}"
         return (
-            f"{job_id}|{job['name']}|{state}|{job['partition']}|node001|"
+            f"{job_id}|{job['name']}|{state}|{job['partition']}|{job['qos']}|"
+            "node001|"
             f"{command}|{job['comment']}|2026-07-23T12:00:00|"
             f"2026-07-23T12:08:00|8\n"
         )
@@ -464,26 +566,26 @@ class _FakeTurnoverSlurm:
         return (
             f"{job_id}|{job['comment']}|{job['name']}|{job['state']}|"
             f"{job['exit_code']}|{job['reason']}|{job['start']}|{job['end']}|"
-            f"{job['elapsed']}|{command}\n"
+            f"{job['elapsed']}|{job['partition']}|{job['qos']}|{command}\n"
         )
 
     def _dependency_squeue_row(self, job_id: str, job: dict) -> str:
         return (
             f"{job_id}|{job['comment']}|{job['name']}|{job['state']}|"
-            f"{job['reason']}|{job['start']}|{job['elapsed']}\n"
+            f"{job['reason']}|{job['start']}|{job['elapsed']}|"
+            f"{job['partition']}|{job['qos']}\n"
         )
 
     def _squeue_row(self, job_id: str, job: dict) -> str:
-        command = (
-            f"sbatch --parsable --comment={job['comment']} {job['path']}"
-        )
+        command = f"sbatch --parsable --comment={job['comment']}"
         return (
-            f"{job_id}|{job['name']}|RUNNING|{job['partition']}|node001|"
+            f"{job_id}|{job['name']}|RUNNING|{job['partition']}|{job['qos']}|"
+            "node001|"
             f"{command}|{job['comment']}|2026-07-23T12:00:00|"
             "2026-07-23T12:08:00|00:08:00|(null)\n"
         )
 
-    def __call__(self, argv, **_kwargs):
+    def __call__(self, argv, **kwargs):
         if argv[0] == "sacct":
             if any("ExitCode" in value for value in argv):
                 return _Process(
@@ -500,7 +602,7 @@ class _FakeTurnoverSlurm:
                 )
             )
         if argv[0] == "squeue":
-            if argv[-1] == "%i|%k|%j|%T|%r|%S|%M":
+            if argv[-1] == "%i|%k|%j|%T|%r|%S|%M|%P|%q":
                 return _Process(
                     stdout="".join(
                         self._dependency_squeue_row(job_id, job)
@@ -522,9 +624,45 @@ class _FakeTurnoverSlurm:
             )
         if argv[0] == "sbatch":
             self.sbatch_calls.append(list(argv))
-            path = Path(argv[-1])
-            script = path.read_text(encoding="utf-8")
+            submission_text = kwargs.get("input")
+            self.sbatch_inputs.append(submission_text)
+            if submission_text is None:
+                path = Path(argv[-1])
+                script = path.read_text(encoding="utf-8")
+            else:
+                comment_value = next(
+                    value.split("=", 1)[1]
+                    for value in argv
+                    if value.startswith("--comment=")
+                )
+                if comment_value.startswith(
+                    "asys:s5-dependency-canary:"
+                ):
+                    role = comment_value.rsplit(":", 1)[1]
+                    path = (
+                        self.root
+                        / canary.DEPENDENCY_COMPONENT_DIRECTORY
+                        / "jobs"
+                        / f"{role}.sbatch"
+                    )
+                else:
+                    parsed = canary.tx.parse_intent_comment(comment_value)
+                    assert parsed is not None
+                    candidates = list(
+                        self.root.rglob(
+                            f"*.{parsed['intent']}.sbatch"
+                        )
+                    )
+                    assert len(candidates) == 1
+                    path = candidates[0]
+                script = str(submission_text)
+                assert script == path.read_text(encoding="utf-8")
+                if not comment_value.startswith(
+                    "asys:s5-dependency-canary:"
+                ):
+                    assert argv == canary.tx.submission_argv(comment_value)
             assert "#SBATCH --no-requeue\n" in script
+            assert "#SBATCH --qos=normal\n" in script
             assert "#SBATCH --gres" not in script
             job_id = str(self.next_job_id)
             self.next_job_id += 1
@@ -547,6 +685,7 @@ class _FakeTurnoverSlurm:
                 "path": str(path.resolve()),
                 "name": self._directive(script, "job-name"),
                 "partition": self._directive(script, "partition"),
+                "qos": self._directive(script, "qos"),
                 "dependency": dependency,
                 "role": role,
                 "argv": list(argv),
@@ -562,9 +701,18 @@ class _FakeTurnoverSlurm:
                 raise KeyboardInterrupt(
                     "crash after turnover allocation was accepted"
                 )
+            if dependency and self.crash_after_dependency_acceptance:
+                self.crash_after_dependency_acceptance = False
+                raise KeyboardInterrupt(
+                    "crash after dependency allocation was accepted"
+                )
             return _Process(stdout=f"{job_id};cluster\n")
         if argv[:3] == ["scontrol", "write", "batch_script"]:
             job = self.jobs[argv[3]]
+            if argv[4] == "-":
+                return _Process(
+                    stdout=Path(job["path"]).read_text(encoding="utf-8")
+                )
             Path(argv[4]).write_bytes(Path(job["path"]).read_bytes())
             return _Process()
         if argv[:4] == ["scontrol", "show", "job", "-o"]:
@@ -657,6 +805,54 @@ class _FakeTurnoverSlurm:
             self.jobs[job_id]["active"] = False
             return _Process()
         raise AssertionError(f"unexpected turnover command: {argv}")
+
+
+class _DefaultShapeSubprocess:
+    """Expose subprocess.run's uncaptured defaults around a fake scheduler."""
+
+    def __init__(self, scheduler: _FakeTurnoverSlurm):
+        self.scheduler = scheduler
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        argv,
+        *,
+        capture_output=False,
+        text=False,
+        check=False,
+        **kwargs,
+    ):
+        self.calls.append(
+            {
+                "argv": list(argv),
+                "capture_output": capture_output,
+                "text": text,
+                "check": check,
+                "timeout": kwargs.get("timeout"),
+                "input": kwargs.get("input"),
+            }
+        )
+        delegated = self.scheduler(argv, **kwargs)
+        stdout = delegated.stdout if capture_output else None
+        stderr = delegated.stderr if capture_output else None
+        if capture_output and not text:
+            stdout = stdout.encode("utf-8")
+            stderr = stderr.encode("utf-8")
+        completed = subprocess.CompletedProcess(
+            argv,
+            delegated.returncode,
+            stdout,
+            stderr,
+        )
+        if check and completed.returncode != 0:
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                argv,
+                output=stdout,
+                stderr=stderr,
+            )
+        return completed
 
 
 def _successful_probe(endpoint, *, timeout):
@@ -833,6 +1029,11 @@ def test_real_dependency_cascade_is_held_receipted_bounded_and_sealed(
     )
 
     assert len(scheduler.sbatch_calls) == 3
+    assert all(value is not None for value in scheduler.sbatch_inputs)
+    assert all(
+        call[-1].startswith("--comment=")
+        for call in scheduler.sbatch_calls
+    )
     assert "--hold" in scheduler.sbatch_calls[0]
     assert scheduler.release_calls == [["scontrol", "release", "510000"]]
     assert complete["root_initial_hold"] is True
@@ -852,6 +1053,60 @@ def test_real_dependency_cascade_is_held_receipted_bounded_and_sealed(
         runner=bomb,
         code_identity=_code_identity(),
     ) == complete
+
+
+def test_dependency_lost_reply_adopts_exact_stdin_job_without_duplicate(
+    tmp_path,
+):
+    root = tmp_path / canary.DEPENDENCY_COMPONENT_DIRECTORY
+    scheduler = _FakeTurnoverSlurm(
+        tmp_path,
+        crash_after_dependency_acceptance=True,
+    )
+    clock = _Clock()
+    kwargs = {
+        "root": root,
+        "apply": True,
+        "scheduler_user": "tester",
+        "runner": scheduler,
+        "now_fn": clock.now,
+        "sleep_fn": clock.sleep,
+        "poll_seconds": 1.0,
+        "visibility_timeout": 20.0,
+        "terminal_timeout": 20.0,
+        "token_factory": lambda: "9" * 32,
+        "code_identity": _code_identity(),
+    }
+
+    with pytest.raises(
+        KeyboardInterrupt,
+        match="dependency allocation was accepted",
+    ):
+        canary.run_dependency_cascade_canary(**kwargs)
+    assert len(scheduler.sbatch_calls) == 1
+
+    complete = canary.run_dependency_cascade_canary(
+        **{
+            **kwargs,
+            "token_factory": lambda: pytest.fail(
+                "dependency replay must retain the marker-first token"
+            ),
+        }
+    )
+    assert complete["root_state"] == "FAILED"
+    assert len(scheduler.sbatch_calls) == 3
+    assert len(
+        {
+            job["comment"]
+            for job in scheduler.jobs.values()
+            if job.get("dependency") is True
+        }
+    ) == 3
+    assert all(
+        input_text is not None
+        and "#SBATCH --no-requeue" in input_text
+        for input_text in scheduler.sbatch_inputs
+    )
 
 
 def test_dependency_cascade_fails_held_before_release_on_policy_drift(
@@ -1053,6 +1308,62 @@ def test_composite_canary_binds_transaction_and_two_turnovers_marker_last(
     ) == complete
 
 
+def test_composite_default_runner_captures_transaction_dependency_and_turnover(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "composite"
+    scheduler = _FakeTurnoverSlurm(root)
+    default_shape = _DefaultShapeSubprocess(scheduler)
+    monkeypatch.setattr(canary.subprocess, "run", default_shape)
+    clock = _Clock()
+
+    complete = canary.run_composite_canary(
+        root=root,
+        apply=True,
+        scheduler_user="tester",
+        probe=_successful_probe,
+        now_fn=clock.now,
+        sleep_fn=clock.sleep,
+        poll_seconds=1.0,
+        visibility_timeout=20.0,
+        terminal_timeout=20.0,
+        turnover_drain_seconds=1.0,
+        token_factory=lambda: "7" * 32,
+        code_identity=_code_identity(),
+    )
+
+    assert complete["turnover_cycles_completed"] == 2
+    assert default_shape.calls
+    assert all(
+        call["capture_output"] is True
+        and call["text"] is True
+        and call["check"] is False
+        and isinstance(call["timeout"], (int, float))
+        and 0 < call["timeout"] <= canary.DEFAULT_COMMAND_TIMEOUT_SECONDS
+        for call in default_shape.calls
+    )
+    submitted_components = set()
+    for call in default_shape.calls:
+        if call["argv"][0] != "sbatch":
+            continue
+        submission_text = call["input"]
+        assert submission_text is not None
+        assert call["argv"][-1].startswith("--comment=")
+        if "serve-turnover-" in str(submission_text):
+            component = canary.TURNOVER_COMPONENT_DIRECTORY
+        elif "serve-dep-" in str(submission_text):
+            component = canary.DEPENDENCY_COMPONENT_DIRECTORY
+        else:
+            component = canary.TRANSACTION_COMPONENT_DIRECTORY
+        submitted_components.add(component)
+    assert submitted_components == {
+        canary.TRANSACTION_COMPONENT_DIRECTORY,
+        canary.DEPENDENCY_COMPONENT_DIRECTORY,
+        canary.TURNOVER_COMPONENT_DIRECTORY,
+    }
+
+
 def test_turnover_retries_endpoint_startup_within_visibility_deadline(tmp_path):
     root = tmp_path / "turnover"
     scheduler = _FakeTurnoverSlurm(root)
@@ -1084,3 +1395,139 @@ def test_turnover_retries_endpoint_startup_within_visibility_deadline(tmp_path):
     )
     assert calls > failures
     assert complete["cycles_completed"] == 2
+
+
+def test_immutable_canary_publication_is_no_clobber_and_adopts_exact_race(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    target = tmp_path / "INTENT.json"
+    payload = {"schema_version": 1, "kind": "intent"}
+
+    def competing_publish(source, destination, *, follow_symlinks):
+        assert follow_symlinks is False
+        destination = Path(destination)
+        destination.write_bytes(Path(source).read_bytes())
+        destination.chmod(0o444)
+        raise FileExistsError
+
+    monkeypatch.setattr(canary.os, "link", competing_publish)
+    canary._write_immutable_once(
+        target,
+        payload,
+        description="test intent",
+    )
+
+    assert target.read_bytes() == canary._canonical_bytes(payload)
+    assert target.stat().st_nlink == 1
+    assert target.stat().st_mode & 0o222 == 0
+    assert not list(tmp_path.glob(".INTENT.json.*.tmp"))
+
+
+def test_immutable_canary_publication_rejects_writable_or_hardlinked_preimage(
+    tmp_path,
+):
+    payload = {"schema_version": 1, "kind": "intent"}
+    encoded = canary._canonical_bytes(payload)
+    writable = tmp_path / "writable.json"
+    writable.write_bytes(encoded)
+    writable.chmod(0o644)
+    with pytest.raises(
+        canary.SlurmFleetCanaryError,
+        match="unsafe mode",
+    ):
+        canary._write_immutable_once(
+            writable,
+            payload,
+            description="test intent",
+        )
+    assert writable.stat().st_mode & 0o222
+
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(encoded)
+    outside.chmod(0o444)
+    linked = tmp_path / "linked.json"
+    os.link(outside, linked)
+    with pytest.raises(
+        canary.SlurmFleetCanaryError,
+        match="differs from the durable transaction",
+    ):
+        canary._write_immutable_once(
+            linked,
+            payload,
+            description="test intent",
+        )
+    assert linked.stat().st_nlink == 2
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "open",
+        "partial_write",
+        "post_fsync",
+        "pre_fchmod",
+        "post_fchmod",
+        "prelink",
+        "postlink",
+    ),
+)
+def test_immutable_canary_publication_recovers_every_crash_boundary(
+    tmp_path,
+    stage,
+):
+    target = (tmp_path / "CANARY_COMPLETE.json").resolve()
+    payload = {
+        "schema_version": 4,
+        "kind": "schema5_slurm_fleet_canary_complete",
+    }
+
+    def crash(point):
+        if point == stage:
+            raise KeyboardInterrupt(point)
+
+    with pytest.raises(KeyboardInterrupt, match=stage):
+        canary._write_immutable_once(
+            target,
+            payload,
+            description="test completion marker",
+            crash_hook=crash,
+        )
+
+    canary._write_immutable_once(
+        target,
+        payload,
+        description="test completion marker",
+    )
+    assert target.read_bytes() == canary._canonical_bytes(payload)
+    assert target.stat().st_nlink == 1
+    assert target.stat().st_mode & 0o222 == 0
+    assert not list(tmp_path.glob(f".{target.name}.publish.*"))
+
+
+def test_immutable_canary_publication_rejects_conflicting_orphan(
+    tmp_path,
+):
+    target = (tmp_path / "INTENT.json").resolve()
+
+    with pytest.raises(KeyboardInterrupt):
+        canary._write_immutable_once(
+            target,
+            {"version": 1},
+            description="test intent",
+            crash_hook=lambda stage: (
+                (_ for _ in ()).throw(KeyboardInterrupt(stage))
+                if stage == "post_fchmod"
+                else None
+            ),
+        )
+
+    with pytest.raises(
+        canary.SlurmFleetCanaryError,
+        match="conflicting interrupted publication",
+    ):
+        canary._write_immutable_once(
+            target,
+            {"version": 2},
+            description="test intent",
+        )

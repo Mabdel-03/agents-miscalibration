@@ -69,9 +69,10 @@ from agents_scaling.serving import (  # noqa: E402
 )
 from slurm.dispatch_sweeps import (  # noqa: E402
     DispatcherError as DispatcherLedgerError,
-    validate_ledger_structure,
+    load_production_ledger,
 )
 from slurm import schema5_control as control  # noqa: E402
+from slurm import keepalive  # noqa: E402
 from scripts import monitor_run  # noqa: E402
 
 
@@ -83,6 +84,7 @@ HEALTH_ALERT_KEYS = frozenset(
     {
         "monitor:scheduler",
         "monitor:controllers",
+        "monitor:watchdog-mirror",
         "monitor:fleet",
         "monitor:fleet-hung",
         "monitor:qos-memory",
@@ -364,6 +366,39 @@ def _empty_progress() -> dict[str, Any]:
     }
 
 
+def _closed_semantic_outcomes(
+    counts: Mapping[str, Any],
+    *,
+    aggregate: bool,
+) -> dict[str, int]:
+    """Materialize the finalizer's exact outcome schema, including zeroes."""
+
+    fields = (
+        control.FINAL_AGGREGATE_OUTCOME_FIELDS
+        if aggregate
+        else control.FINAL_RUN_OUTCOME_FIELDS
+    )
+    unexpected = set(counts) - fields
+    if unexpected:
+        raise MonitorError(
+            "semantic outcome counter contains unregistered fields: "
+            f"{sorted(unexpected, key=repr)!r}"
+        )
+    result: dict[str, int] = {}
+    for field in sorted(fields):
+        value = counts.get(field, 0)
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+        ):
+            raise MonitorError(
+                f"semantic outcome {field} must be a non-negative integer"
+            )
+        result[field] = value
+    return result
+
+
 def _record_is_useful(record: Mapping[str, Any]) -> bool:
     """Return whether a trusted QID is eligible for throughput evidence.
 
@@ -605,6 +640,13 @@ def collect_semantic_state(
             + run_totals["auxiliary_transport_censored"]
         ):
             contract_errors.append("auxiliary termination partition is not exhaustive")
+        # Counter omits unseen keys.  Final semantic acceptance is a closed
+        # scientific contract, so explicitly materialize every zero-valued run
+        # outcome rather than letting an all-clean censor/integrity class disappear.
+        closed_run_outcomes = _closed_semantic_outcomes(
+            run_totals,
+            aggregate=False,
+        )
         run_reports[run_id] = {
             "run_root": str(run_root),
             "manifest_cells": len(snapshot.cells),
@@ -615,23 +657,27 @@ def collect_semantic_state(
             "artifact_policy_id": policy.policy_id,
             "contract_errors": contract_errors,
             "states": dict(sorted(run_states.items())),
-            "outcomes": dict(sorted(run_totals.items())),
+            "outcomes": closed_run_outcomes,
             "artifact_schema_counts": dict(sorted(run_schemas.items())),
             "stale_unmanifested_dirs": len(stale),
             "stale_unmanifested_examples": stale[:20],
         }
         states.update(run_states)
-        totals.update(run_totals)
+        totals.update(closed_run_outcomes)
         artifact_schemas.update(run_schemas)
         totals["stale_unmanifested_dirs"] += len(stale)
         totals["contract_errors"] += len(contract_errors)
 
+    closed_aggregate_outcomes = _closed_semantic_outcomes(
+        totals,
+        aggregate=True,
+    )
     report = {
         "scan_successful": not scan_errors,
         "scan_errors": scan_errors[:100],
         "runs": run_reports,
         "states": dict(sorted(states.items())),
-        "outcomes": dict(sorted(totals.items())),
+        "outcomes": closed_aggregate_outcomes,
         "artifact_schema_counts": dict(sorted(artifact_schemas.items())),
         "trusted_generation_catalog": trusted_catalog_binding,
         "transport_censor_protocol": {
@@ -772,7 +818,7 @@ def _ledger_health(
 ) -> dict[str, Any]:
     path = state_dir / "ledger.json"
     try:
-        ledger = json.loads(path.read_text(encoding="utf-8"))
+        ledger = load_production_ledger(path)
     except FileNotFoundError:
         return {
             "available": False,
@@ -782,19 +828,12 @@ def _ledger_health(
             "starved_runs": [],
             "cached_state_counts": {},
         }
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return {
-            "available": False,
-            "healthy": False,
-            "status": "invalid",
-            "path": str(path),
-            "error": str(exc),
-            "starved_runs": [],
-            "cached_state_counts": {},
-        }
-    try:
-        ledger = validate_ledger_structure(ledger, source=str(path))
-    except DispatcherLedgerError as exc:
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        DispatcherLedgerError,
+    ) as exc:
         return {
             "available": False,
             "healthy": False,
@@ -1031,19 +1070,35 @@ def collect_health_state(
         client_contract = control.client_capacity_contract_from_state(
             state_dir
         )
-        capacity_contract = protected_capacity.load_contract(
-            state["immutable"]["protected_capacity_marker_path"],
-            expected_release_git_commit=str(
-                state["immutable"]["git_commit"]
-            ),
-            expected_marker_id=str(
-                state["immutable"]["protected_capacity_marker_id"]
-            ),
-            expected_sha256=str(
-                state["immutable"][
-                    "protected_capacity_marker_sha256"
-                ]
-            ),
+        effective_fleet = control.load_effective_fleet_contract(
+            state, verify_files=True
+        )
+        fleet_snapshot = keepalive.reconcile_fleet_read_only(
+            str(server_pool),
+            effective_fleet,
+            current_generation=int(state["rollout_generation"]),
+            scheduler_runner=scheduler_safety_runner,
+            scheduler_now=now,
+        )
+        trusted_scientific_provenance = (
+            control.reconcile_trusted_scientific_job_provenance(
+                state_dir,
+                fleet_bindings=keepalive.trusted_scientific_fleet_bindings(
+                    fleet_snapshot
+                ),
+                fleet_contract_sha256=effective_fleet.sha256,
+                fleet_generation=int(state["rollout_generation"]),
+                scheduler_snapshot=scheduler_snapshot,
+                now=now,
+                allow_exact_cell_quiescence=(
+                    state.get("desired_state") != "running"
+                ),
+            )
+        )
+        capacity_contract = (
+            control.load_effective_protected_capacity_contract(
+                state, verify_files=True
+            )
         )
         live_client_capacity = (
             protected_capacity.capture_live_client_capacity(
@@ -1052,6 +1107,9 @@ def collect_health_state(
                 qos=str(client_contract["qos"]),
                 required_time_limit_seconds=(
                     scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                ),
+                trusted_scientific_job_provenance=(
+                    trusted_scientific_provenance
                 ),
                 runner=scheduler_safety_runner,
                 captured_timestamp=now,
@@ -1086,6 +1144,7 @@ def collect_health_state(
         KeyError,
         OSError,
         control.ControlError,
+        keepalive.FleetContractError,
         scheduler_safety.SchedulerSafetyError,
         protected_capacity.ProtectedCapacityError,
     ) as exc:
@@ -1286,6 +1345,110 @@ def final_acceptance(
     return {"passed": all(checks.values()), "checks": checks}
 
 
+_SEMANTIC_PAYLOAD_FIELDS = frozenset(
+    {
+        "scan_successful",
+        "scan_errors",
+        "runs",
+        "states",
+        "outcomes",
+        "artifact_schema_counts",
+        "trusted_generation_catalog",
+        "transport_censor_protocol",
+    }
+)
+_SEMANTIC_RUN_FIELDS = frozenset(
+    {
+        "run_root",
+        "manifest_cells",
+        "expected_qids",
+        "manifest_sha256",
+        "benchmark_contract_sha256",
+        "artifact_policy_sha256",
+        "artifact_policy_id",
+        "contract_errors",
+        "states",
+        "outcomes",
+        "artifact_schema_counts",
+        "stale_unmanifested_dirs",
+        "stale_unmanifested_examples",
+    }
+)
+_THROUGHPUT_ACCEPTANCE_FIELDS = frozenset(
+    {
+        "observation_ready",
+        "unfinished_strata",
+        "strata_with_observed_throughput",
+        "strata_without_observed_throughput",
+        "all_rotation_strata_observed",
+        "max_stratum_eta_days",
+        "overall_rate_meets_floor",
+        "projected_completion_within_target",
+    }
+)
+
+
+def _display_object_fields(fields: Iterable[Any]) -> list[str]:
+    return sorted(
+        field if isinstance(field, str) else repr(field) for field in fields
+    )
+
+
+def _closed_object_issues(
+    value: Mapping[str, Any], *, path: str, fields: frozenset[str]
+) -> list[str]:
+    observed = set(value)
+    missing = _display_object_fields(fields - observed)
+    unexpected = _display_object_fields(observed - fields)
+    issues: list[str] = []
+    if missing:
+        issues.append(f"{path} is missing fields {missing!r}")
+    if unexpected:
+        issues.append(f"{path} contains unexpected fields {unexpected!r}")
+    return issues
+
+
+def _nonnegative_integer_issues(
+    value: Any, *, path: str, maximum: int | None = None
+) -> list[str]:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return [f"{path} must be a non-negative integer"]
+    if maximum is not None and value > maximum:
+        return [f"{path} must not exceed {maximum}"]
+    return []
+
+
+def _counter_payload_issues(
+    value: Any,
+    *,
+    path: str,
+    allowed_fields: frozenset[str] | None = None,
+    required_fields: frozenset[str] = frozenset(),
+) -> list[str]:
+    if not isinstance(value, Mapping):
+        return [f"{path} must be an object"]
+    issues: list[str] = []
+    keys = set(value)
+    if required_fields - keys:
+        issues.append(
+            f"{path} is missing fields "
+            f"{_display_object_fields(required_fields - keys)!r}"
+        )
+    if allowed_fields is not None and keys - allowed_fields:
+        issues.append(
+            f"{path} contains unexpected fields "
+            f"{_display_object_fields(keys - allowed_fields)!r}"
+        )
+    for field, count in value.items():
+        if not isinstance(field, str):
+            issues.append(f"{path} keys must be strings")
+            continue
+        issues.extend(
+            _nonnegative_integer_issues(count, path=f"{path}.{field}")
+        )
+    return issues
+
+
 def _semantic_payload_issues(report: Mapping[str, Any]) -> tuple[str, ...]:
     """Return structural defects that make semantic alert resolution unsafe."""
 
@@ -1294,11 +1457,177 @@ def _semantic_payload_issues(report: Mapping[str, Any]) -> tuple[str, ...]:
     if not isinstance(semantic, Mapping):
         issues.append("semantic must be an object")
     else:
+        issues.extend(
+            _closed_object_issues(
+                semantic,
+                path="semantic",
+                fields=_SEMANTIC_PAYLOAD_FIELDS,
+            )
+        )
         if not isinstance(semantic.get("scan_successful"), bool):
             issues.append("semantic.scan_successful must be a boolean")
-        for field in ("states", "outcomes"):
-            if not isinstance(semantic.get(field), Mapping):
-                issues.append(f"semantic.{field} must be an object")
+        scan_errors = semantic.get("scan_errors")
+        if not isinstance(scan_errors, list) or not all(
+            isinstance(error, str) for error in scan_errors
+        ):
+            issues.append("semantic.scan_errors must be an array of strings")
+        issues.extend(
+            _counter_payload_issues(
+                semantic.get("states"), path="semantic.states"
+            )
+        )
+        issues.extend(
+            _counter_payload_issues(
+                semantic.get("outcomes"),
+                path="semantic.outcomes",
+                allowed_fields=control.FINAL_AGGREGATE_OUTCOME_FIELDS,
+                required_fields=control.FINAL_AGGREGATE_OUTCOME_FIELDS,
+            )
+        )
+        issues.extend(
+            _counter_payload_issues(
+                semantic.get("artifact_schema_counts"),
+                path="semantic.artifact_schema_counts",
+            )
+        )
+
+        runs = semantic.get("runs")
+        expected_runs = set(control.REQUIRED_RUNS)
+        run_qids: dict[str, dict[str, int]] = {}
+        if not isinstance(runs, Mapping):
+            issues.append("semantic.runs must be an object")
+        else:
+            observed_runs = set(runs)
+            if observed_runs != expected_runs:
+                issues.append(
+                    "semantic.runs must contain exactly the production run IDs; "
+                    f"missing={_display_object_fields(expected_runs - observed_runs)!r}, "
+                    f"unexpected={_display_object_fields(observed_runs - expected_runs)!r}"
+                )
+            for run_id in sorted(expected_runs & observed_runs):
+                row = runs.get(run_id)
+                path = f"semantic.runs.{run_id}"
+                if not isinstance(row, Mapping):
+                    issues.append(f"{path} must be an object")
+                    continue
+                issues.extend(
+                    _closed_object_issues(
+                        row,
+                        path=path,
+                        fields=_SEMANTIC_RUN_FIELDS,
+                    )
+                )
+                expected_cells = control.REQUIRED_RUNS[run_id]
+                expected_qids = control.REQUIRED_RUN_QIDS[run_id]
+                if row.get("manifest_cells") != expected_cells:
+                    issues.append(
+                        f"{path}.manifest_cells must equal {expected_cells}"
+                    )
+                if row.get("expected_qids") != expected_qids:
+                    issues.append(
+                        f"{path}.expected_qids must equal {expected_qids}"
+                    )
+                if not isinstance(row.get("run_root"), str):
+                    issues.append(f"{path}.run_root must be a string")
+                for field in (
+                    "manifest_sha256",
+                    "benchmark_contract_sha256",
+                    "artifact_policy_sha256",
+                    "artifact_policy_id",
+                ):
+                    if not isinstance(row.get(field), str):
+                        issues.append(f"{path}.{field} must be a string")
+                contract_errors = row.get("contract_errors")
+                if not isinstance(contract_errors, list) or not all(
+                    isinstance(error, str) for error in contract_errors
+                ):
+                    issues.append(
+                        f"{path}.contract_errors must be an array of strings"
+                    )
+                stale_examples = row.get("stale_unmanifested_examples")
+                if not isinstance(stale_examples, list) or not all(
+                    isinstance(example, str) for example in stale_examples
+                ):
+                    issues.append(
+                        f"{path}.stale_unmanifested_examples must be an "
+                        "array of strings"
+                    )
+                issues.extend(
+                    _nonnegative_integer_issues(
+                        row.get("stale_unmanifested_dirs"),
+                        path=f"{path}.stale_unmanifested_dirs",
+                    )
+                )
+                issues.extend(
+                    _counter_payload_issues(
+                        row.get("states"), path=f"{path}.states"
+                    )
+                )
+                issues.extend(
+                    _counter_payload_issues(
+                        row.get("outcomes"),
+                        path=f"{path}.outcomes",
+                        allowed_fields=control.FINAL_RUN_OUTCOME_FIELDS,
+                        required_fields=control.FINAL_RUN_OUTCOME_FIELDS,
+                    )
+                )
+                issues.extend(
+                    _counter_payload_issues(
+                        row.get("artifact_schema_counts"),
+                        path=f"{path}.artifact_schema_counts",
+                    )
+                )
+                outcomes = row.get("outcomes")
+                if isinstance(outcomes, Mapping):
+                    validated = outcomes.get("validated_qids")
+                    useful = outcomes.get("useful_qids")
+                    issues.extend(
+                        _nonnegative_integer_issues(
+                            validated,
+                            path=f"{path}.outcomes.validated_qids",
+                            maximum=expected_qids,
+                        )
+                    )
+                    issues.extend(
+                        _nonnegative_integer_issues(
+                            useful,
+                            path=f"{path}.outcomes.useful_qids",
+                            maximum=expected_qids,
+                        )
+                    )
+                    if (
+                        isinstance(validated, int)
+                        and not isinstance(validated, bool)
+                        and isinstance(useful, int)
+                        and not isinstance(useful, bool)
+                        and useful > validated
+                    ):
+                        issues.append(
+                            f"{path}.outcomes.useful_qids must not exceed "
+                            "validated_qids"
+                        )
+                    if (
+                        isinstance(validated, int)
+                        and not isinstance(validated, bool)
+                        and isinstance(useful, int)
+                        and not isinstance(useful, bool)
+                    ):
+                        run_qids[run_id] = {
+                            "validated_qids": validated,
+                            "useful_qids": useful,
+                        }
+        aggregate = semantic.get("outcomes")
+        if (
+            isinstance(aggregate, Mapping)
+            and set(run_qids) == expected_runs
+        ):
+            for field in ("validated_qids", "useful_qids"):
+                expected = sum(row[field] for row in run_qids.values())
+                if aggregate.get(field) != expected:
+                    issues.append(
+                        f"semantic.outcomes.{field} must equal exact per-run "
+                        f"sum {expected}"
+                    )
 
     throughput = report.get("throughput")
     if not isinstance(throughput, Mapping):
@@ -1308,15 +1637,66 @@ def _semantic_payload_issues(report: Mapping[str, Any]) -> tuple[str, ...]:
         if not isinstance(acceptance, Mapping):
             issues.append("throughput.acceptance must be an object")
         else:
+            issues.extend(
+                _closed_object_issues(
+                    acceptance,
+                    path="throughput.acceptance",
+                    fields=_THROUGHPUT_ACCEPTANCE_FIELDS,
+                )
+            )
             for field in (
                 "observation_ready",
+                "all_rotation_strata_observed",
+                "overall_rate_meets_floor",
                 "projected_completion_within_target",
             ):
                 if not isinstance(acceptance.get(field), bool):
                     issues.append(
                         f"throughput.acceptance.{field} must be a boolean"
                     )
+            for field in (
+                "unfinished_strata",
+                "strata_with_observed_throughput",
+                "strata_without_observed_throughput",
+            ):
+                issues.extend(
+                    _nonnegative_integer_issues(
+                        acceptance.get(field),
+                        path=f"throughput.acceptance.{field}",
+                    )
+                )
+            max_eta = acceptance.get("max_stratum_eta_days")
+            if max_eta is not None and (
+                not isinstance(max_eta, (int, float))
+                or isinstance(max_eta, bool)
+                or not math.isfinite(float(max_eta))
+                or float(max_eta) < 0
+            ):
+                issues.append(
+                    "throughput.acceptance.max_stratum_eta_days must be null "
+                    "or a finite non-negative number"
+                )
     return tuple(issues)
+
+
+def _exact_terminal_semantic_completion(report: Mapping[str, Any]) -> bool:
+    """Return whether capacity throughput is moot because the full sweep is exact."""
+
+    semantic = report.get("semantic")
+    acceptance = report.get("final_acceptance")
+    outcomes = (
+        semantic.get("outcomes") if isinstance(semantic, Mapping) else None
+    )
+    return bool(
+        isinstance(semantic, Mapping)
+        and semantic.get("scan_successful") is True
+        and semantic.get("states")
+        == {"complete": control.EXPECTED_TOTAL_CELLS}
+        and isinstance(outcomes, Mapping)
+        and outcomes.get("validated_qids") == control.EXPECTED_TOTAL_QIDS
+        and isinstance(acceptance, Mapping)
+        and acceptance.get("passed") is True
+    )
 
 
 def _cadence_payload_complete(
@@ -1370,6 +1750,27 @@ def evaluate_alerts(
         for row in control_live["controllers"].values()
     ):
         findings.append(AlertFinding("monitor:controllers", "controller-health", "critical", "one or more running controllers are absent or stale"))
+    watchdog_mirror = control_live.get("external_watchdog_mirror")
+    if (
+        not isinstance(watchdog_mirror, Mapping)
+        or (
+            watchdog_mirror.get("required") is True
+            and (
+                watchdog_mirror.get("healthy") is not True
+                or watchdog_mirror.get("status") != "fresh"
+            )
+        )
+    ):
+        findings.append(
+            AlertFinding(
+                "monitor:watchdog-mirror",
+                "external-watchdog-mirror",
+                "critical",
+                "cluster-mirrored external watchdog heartbeat is missing, "
+                f"stale, replayed, conflicting, or identity-invalid: "
+                f"{watchdog_mirror!r}",
+            )
+        )
     live_mismatches = health.get("fleet_mismatches")
     http_probes_performed = health.get("http_probes_performed")
     http_mismatches = health.get("http_fleet_mismatches")
@@ -1464,6 +1865,7 @@ def evaluate_alerts(
     admission = control_live.get("admission")
     safety_hold = control_live.get("admission_safety_hold")
     safety_hold_drain = control_live.get("safety_hold_drain_intent")
+    exact_terminal_completion = _exact_terminal_semantic_completion(report)
     capacity_gate = (
         ramp.get("capacity_gate") if isinstance(ramp, Mapping) else None
     )
@@ -1528,7 +1930,7 @@ def evaluate_alerts(
         else None
     )
     threshold = disk_policy["ramp_stall_seconds"].get(str(ceiling))
-    if ramp_stall_latched:
+    if ramp_stall_latched and not exact_terminal_completion:
         deadline = (
             f"{float(threshold) / 3600:.1f} hours"
             if threshold is not None
@@ -1645,7 +2047,7 @@ def evaluate_alerts(
                 )
             )
         acceptance = report["throughput"]["acceptance"]
-        if (
+        if not exact_terminal_completion and (
             (
                 acceptance["observation_ready"]
                 and not acceptance["projected_completion_within_target"]
@@ -1845,6 +2247,7 @@ def _production_poll_health_clean(report: Mapping[str, Any]) -> bool:
         return False
     live_scheduler = live.get("scheduler")
     controllers = live.get("controllers")
+    watchdog_mirror = live.get("external_watchdog_mirror")
     fleet_scheduler_policy = health.get("fleet_scheduler_policy")
     http_probes_performed = health.get("http_probes_performed")
     if (
@@ -1855,6 +2258,10 @@ def _production_poll_health_clean(report: Mapping[str, Any]) -> bool:
         or live_scheduler.get("sacct_ok") is not True
         or not isinstance(controllers, Mapping)
         or set(controllers) != {"dispatcher", "fleet_supervisor"}
+        or not isinstance(watchdog_mirror, Mapping)
+        or watchdog_mirror.get("required") is not True
+        or watchdog_mirror.get("healthy") is not True
+        or watchdog_mirror.get("status") != "fresh"
         or health.get("fleet_mismatches") != {}
         or not isinstance(fleet_scheduler_policy, Mapping)
         or fleet_scheduler_policy.get("available") is not True
@@ -1986,6 +2393,62 @@ def _admission_ramp_observation(
     }
 
 
+def _skipped_semantic_ramp_observation(
+    report: Mapping[str, Any],
+    *,
+    cadence: str,
+    state: Mapping[str, Any],
+    findings: Sequence[AlertFinding],
+    captured_at: float,
+    committed_at: float,
+    payload_issues: Sequence[str],
+) -> dict[str, Any]:
+    """Describe an invalid scan without supplying actionable ramp evidence."""
+
+    health = report.get("health")
+    live = health.get("control") if isinstance(health, Mapping) else None
+    admission = live.get("admission") if isinstance(live, Mapping) else None
+    critical = sorted(
+        {
+            finding.dedupe_key
+            for finding in findings
+            if finding.severity == "critical"
+        }
+    )
+    return {
+        "schema_version": 1,
+        "protocol": control.ADMISSION_RAMP_EVIDENCE_PROTOCOL,
+        "captured_timestamp": captured_at,
+        "committed_timestamp": committed_at,
+        "cadence": cadence,
+        "control_immutable_sha256": state.get("immutable_sha256"),
+        "rollout_generation": (
+            live.get("rollout_generation")
+            if isinstance(live, Mapping)
+            else None
+        ),
+        "admission_ceiling": (
+            admission.get("current_ceiling")
+            if isinstance(admission, Mapping)
+            else None
+        ),
+        "fleet_generation": (
+            health.get("fleet_generation")
+            if isinstance(health, Mapping)
+            else None
+        ),
+        "production_health_clean": False,
+        "semantic_integrity_clean": False,
+        "critical_finding_keys": critical,
+        "promotion_blocking_finding_keys": critical,
+        "run_validated_qids": None,
+        "run_useful_qids": None,
+        "evidence_usable": False,
+        "skipped_reason": "invalid-semantic-payload",
+        "payload_issues": list(payload_issues),
+    }
+
+
 def persist_report(
     report: dict[str, Any],
     *,
@@ -2020,6 +2483,32 @@ def _persist_report_locked(
     committed_at: float,
 ) -> dict[str, Any]:
     state = control.load_control(state_dir)
+    payload_issues = (
+        _semantic_payload_issues(report)
+        if cadence in {"semantic", "daily"}
+        else ()
+    )
+    effective_findings = list(findings)
+    execution_key = f"monitor:execution:{cadence}"
+    if payload_issues and not any(
+        finding.dedupe_key == execution_key for finding in effective_findings
+    ):
+        effective_findings.append(
+            AlertFinding(
+                execution_key,
+                "monitor-execution-failure",
+                "critical",
+                "semantic monitor produced an incomplete report: "
+                + "; ".join(payload_issues),
+            )
+        )
+    findings = tuple(effective_findings)
+    if payload_issues:
+        # The immutable report must carry the finding even when a caller reached
+        # persistence without first evaluating alerts.
+        report["alert_findings"] = [
+            finding.__dict__ for finding in findings
+        ]
     recorded_cadence = report.setdefault("cadence", cadence)
     recorded_captured = report.setdefault("captured_timestamp", captured_at)
     report.setdefault("captured_at", _iso(captured_at))
@@ -2034,14 +2523,25 @@ def _persist_report_locked(
         raise MonitorError("persisted monitor report capture identity is invalid")
     report["production_poll_recorded"] = False
     report["admission_ramp_recorded"] = False
-    report["ramp_observation"] = _admission_ramp_observation(
-        report,
-        cadence=cadence,
-        state=state,
-        findings=findings,
-        captured_at=captured_at,
-        committed_at=committed_at,
-    )
+    if payload_issues:
+        report["ramp_observation"] = _skipped_semantic_ramp_observation(
+            report,
+            cadence=cadence,
+            state=state,
+            findings=findings,
+            captured_at=captured_at,
+            committed_at=committed_at,
+            payload_issues=payload_issues,
+        )
+    else:
+        report["ramp_observation"] = _admission_ramp_observation(
+            report,
+            cadence=cadence,
+            state=state,
+            findings=findings,
+            captured_at=captured_at,
+            committed_at=committed_at,
+        )
 
     root = state_dir / MONITORING_DIRNAME
     history = root / cadence / f"{int(committed_at * 1_000_000):020d}.json"
@@ -2071,7 +2571,6 @@ def _persist_report_locked(
             control.resolve_alert(
                 state_dir, dedupe_key=dedupe_key, now=committed_at
             )
-    execution_key = f"monitor:execution:{cadence}"
     if (
         execution_key not in current
         and _cadence_execution_succeeded(report, cadence=cadence)
@@ -2089,6 +2588,7 @@ def _persist_report_locked(
         if alert.get("resolved_at") is None and alert.get("severity") == "critical"
     }
     observation = report["ramp_observation"]
+    active_critical.update(observation["critical_finding_keys"])
     if "admission_safety_hold" in current_state:
         current_state = control.update_admission_safety_hold(
             state_dir,
@@ -2113,6 +2613,8 @@ def _persist_report_locked(
         control.retry_pending_alert_emails(state_dir, now=committed_at)
         current_state = control.load_control(state_dir)
     if (
+        not payload_issues
+        and
         cadence in {"semantic", "daily"}
         and observation["semantic_integrity_clean"] is True
         and observation["production_health_clean"] is True
@@ -2136,17 +2638,26 @@ def _persist_report_locked(
         )
         report["production_poll_recorded"] = True
 
-    ramp_state = control.record_admission_ramp_observation(
-        state_dir,
-        evidence_path=history,
-        evidence_sha256=evidence_sha256,
-        now=committed_at,
-    )
-    report["admission_ramp_recorded"] = True
-    report["admission_ramp_action"] = copy.deepcopy(
-        ramp_state["admission_ramp"]["last_action"]
-    )
-    report["admission_ceiling"] = ramp_state["admission"]["current_ceiling"]
+    if payload_issues:
+        report["admission_ramp_action"] = None
+        admission = current_state.get("admission")
+        report["admission_ceiling"] = (
+            admission.get("current_ceiling")
+            if isinstance(admission, Mapping)
+            else None
+        )
+    else:
+        ramp_state = control.record_admission_ramp_observation(
+            state_dir,
+            evidence_path=history,
+            evidence_sha256=evidence_sha256,
+            now=committed_at,
+        )
+        report["admission_ramp_recorded"] = True
+        report["admission_ramp_action"] = copy.deepcopy(
+            ramp_state["admission_ramp"]["last_action"]
+        )
+        report["admission_ceiling"] = ramp_state["admission"]["current_ceiling"]
     _atomic_json(
         latest,
         _latest_pointer(
@@ -2158,12 +2669,16 @@ def _persist_report_locked(
         ),
     )
     finalization_requested = False
+    final_acceptance_report = report.get("final_acceptance")
     if (
+        not payload_issues
+        and
         cadence in {"semantic", "daily"}
-        and report.get("final_acceptance", {}).get("passed") is True
-        and report.get("semantic", {}).get("states")
+        and isinstance(final_acceptance_report, Mapping)
+        and final_acceptance_report.get("passed") is True
+        and report["semantic"].get("states")
         == {"complete": control.EXPECTED_TOTAL_CELLS}
-        and report.get("semantic", {}).get("outcomes", {}).get(
+        and report["semantic"]["outcomes"].get(
             "validated_qids"
         )
         == control.EXPECTED_TOTAL_QIDS

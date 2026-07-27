@@ -17,12 +17,31 @@ import pytest
 
 from scripts import run_schema5_materialization_pilot as pilot
 from scripts import publish_schema5_durable_git_release as durable_git
+from scripts import seal_recovery_evidence as seal_evidence
 
 
 REPO = Path(__file__).resolve().parent.parent
 SETUPTOOLS_ARTIFACT_SHA256 = (
     "82088a6e4daa33329a30bc26dc19a98c7c1d3f05c0f73ce9845d4eab4924e9e1"
 )
+
+
+def test_all_fresh_pilot_wire_protocols_identify_r3() -> None:
+    protocols = {
+        pilot.PILOT_QUARANTINE_PROTOCOL,
+        pilot.PILOT_QUARANTINE_INTENT_PROTOCOL,
+        pilot.SCHEDULER_INTENT_PROTOCOL,
+        pilot.SCHEDULER_ACTIVE_PROTOCOL,
+        pilot.SCHEDULER_ACCEPTANCE_PROTOCOL,
+        pilot.SUBMISSION_INTENT_PROTOCOL,
+        pilot.SUBMISSION_ATTEMPT_PROTOCOL,
+        pilot.SUBMISSION_RESULT_PROTOCOL,
+        pilot.SUBMISSION_ABSENT_PROTOCOL,
+        pilot.SUBMISSION_ACCEPTED_PROTOCOL,
+    }
+
+    assert all("schema5-v1.2-r3-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r2-" not in protocol for protocol in protocols)
 
 
 def _run(*argv: str, cwd: Path) -> str:
@@ -146,32 +165,19 @@ def _evidence(
         + "\n",
         encoding="utf-8",
     )
+    recovered.chmod(0o444)
+    failed_log = tmp_path / "failed-materialization.log"
+    failed_log.write_text("pip distribution view changed\n", encoding="utf-8")
     incident = tmp_path / "CONDA_RECONCILIATION_INCIDENT.json"
-    incident.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "protocol": "schema5-conda-pip-reconciliation-incident-v1",
-                "classification": "source_metadata_reconciled_by_conda_pip_interop",
-                "harness_prefix": str(harness.resolve()),
-                "serving_prefix": str(serving.resolve()),
-                "harness_stale_conda_record_present": False,
-                "serving_stale_conda_record_present": True,
-                "live_sources_must_not_be_queried_by_conda": True,
-                "superseded_conda_record": {
-                    "artifact_sha256": SETUPTOOLS_ARTIFACT_SHA256,
-                },
-                "resolution": (
-                    "capture_live_bytes_without_conda_then_normalize_only_immutable_seeds"
-                ),
-                "incident_id": "a" * 64,
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    seal_evidence.record_conda_reconciliation_incident(
+        output=incident,
+        harness_prefix=harness,
+        serving_prefix=serving,
+        recovered_harness_record=recovered,
+        failed_materialization_log=failed_log,
+        observed_at="2026-07-23T11:43:55-04:00",
+        apply=True,
     )
-    incident.chmod(0o444)
     return incident, recovered
 
 
@@ -207,7 +213,7 @@ def _inputs(tmp_path: Path, *, annotated: bool = True) -> tuple[dict, Path]:
         "annotated_tag": True,
         "remote_query_read_only": True,
         "remote": "durable",
-        "remote_commit_ref": "refs/heads/release",
+        "remote_commit_ref": durable_git.DURABLE_COMMIT_REF,
         "remote_commit": commit,
         "remote_tag_object": tag_object,
         "remote_peeled_commit": commit,
@@ -374,6 +380,7 @@ def _install_stage_doubles(
         return {**report, "status": "verified"}
 
     def fake_freeze(*, apply=False, **kwargs):
+        assert "conda_executable" not in kwargs
         output = Path(kwargs["output_root"])
         report = {
             "release_id": pilot.RELEASE_ID,
@@ -382,6 +389,12 @@ def _install_stage_doubles(
                 "git",
                 "rev-parse",
                 "HEAD",
+                cwd=Path(kwargs["release_worktree"]),
+            ),
+            "release_tag_object": _run(
+                "git",
+                "rev-parse",
+                f"refs/tags/{pilot.REQUIRED_TAG}",
                 cwd=Path(kwargs["release_worktree"]),
             ),
             "source_tree_sha256": "c" * 64,
@@ -457,6 +470,7 @@ def _install_stage_doubles(
                 "release_id": pilot.RELEASE_ID,
                 "release_worktree": str(Path(kwargs["release_worktree"]).resolve()),
                 "git_commit": report["git_commit"],
+                "release_tag_object": report["release_tag_object"],
                 "source_tree_sha256": report["source_tree_sha256"],
                 "transport_uncertainty_binding": (
                     pilot.control.scheduler_safety
@@ -617,7 +631,7 @@ def test_rendered_sbatch_is_exact_immutable_no_requeue_and_rerunnable(tmp_path):
     assert f"#SBATCH --output={logs}/schema5-materialization-pilot-%j.out\n" in text
     assert f"#SBATCH --error={logs}/schema5-materialization-pilot-%j.err\n" in text
     assert f"#SBATCH --chdir={inputs['release_checkout']}\n" in text
-    assert "#SBATCH --comment=asys-s5-pilot:r2:" in text
+    assert "#SBATCH --comment=asys-s5-pilot:r3:" in text
     exact_script = (
         Path(inputs["release_checkout"])
         / "scripts"
@@ -1215,6 +1229,23 @@ def test_real_two_prefix_orchestration_is_marker_last_idempotent_and_verifiable(
             Path(inputs["integrity_normalization_policy"]).read_bytes()
         ).hexdigest()
     )
+    incident_payload = json.loads(
+        Path(inputs["reconciliation_incident"]).read_text(encoding="utf-8")
+    )
+    assert verified["reconciliation_incident"] == {
+        "path": str(
+            Path(inputs["pilot_root"])
+            / "environment-capture"
+            / "evidence"
+            / "CONDA_RECONCILIATION_INCIDENT.json"
+        ),
+        "sha256": hashlib.sha256(
+            Path(inputs["reconciliation_incident"]).read_bytes()
+        ).hexdigest(),
+        "incident_id": incident_payload["incident_id"],
+        "harness_stale_conda_record_present": False,
+        "serving_stale_conda_record_present": True,
+    }
     assert writes[-1] == pilot.COMPLETE_MARKER
     assert not conda_called.exists()
     assert verified["setuptools_contract"] == {
@@ -1376,6 +1407,22 @@ def test_pilot_verifier_rejects_evidence_tamper(tmp_path, monkeypatch):
 
     with pytest.raises(
         pilot.MaterializationPilotError, match="evidence inventory drifted"
+    ):
+        pilot._verify_materialization_pilot_semantic(inputs["pilot_root"])
+
+
+def test_pilot_verifier_requires_release_bundle_root_to_remain_sealed(
+    tmp_path, monkeypatch
+):
+    inputs, _conda_called = _inputs(tmp_path)
+    _install_stage_doubles(monkeypatch)
+    pilot.run_materialization_pilot(**inputs, apply=True)
+    release_bundle = Path(pilot._layout(inputs["pilot_root"])["release_bundle"])
+    release_bundle.chmod(0o755)
+
+    with pytest.raises(
+        pilot.MaterializationPilotError,
+        match="verifier runtime is not exact and read-only",
     ):
         pilot._verify_materialization_pilot_semantic(inputs["pilot_root"])
 
@@ -2436,3 +2483,17 @@ def test_scheduler_acceptance_recovers_before_marker_commit(
         apply=True,
     )
     assert accepted["status"] == "accepted"
+
+
+def test_pilot_publication_never_launders_writable_preimage(tmp_path):
+    artifact = tmp_path / "PILOT_STAGE.json"
+    artifact.write_bytes(b"exact bytes\n")
+    artifact.chmod(0o644)
+
+    with pytest.raises(
+        pilot.MaterializationPilotError,
+        match="conflicting immutable pilot artifact",
+    ):
+        pilot._atomic_write_once(artifact, b"exact bytes\n")
+
+    assert artifact.stat().st_mode & 0o222

@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -57,7 +58,14 @@ COMPLETE_MARKER_FILENAME = COMPLETE_FILENAME
 SNAPSHOT_MANIFEST_FILENAME = CATALOG_FILENAME
 COPY_INVENTORY_FILENAME = SNAPSHOT_INVENTORY_FILENAME
 ATTESTATION_SCHEMA_VERSION = 1
-_COMPLETION_MARKER_KEYS = frozenset(
+SNAPSHOT_KIND_PRE_REPAIR = "pre_repair"
+SNAPSHOT_KIND_FINAL = "final"
+SNAPSHOT_KINDS = (SNAPSHOT_KIND_PRE_REPAIR, SNAPSHOT_KIND_FINAL)
+_PRE_REPAIR_SCHEMA_VERSION = 1
+_FINAL_SCHEMA_VERSION = 2
+_PRE_REPAIR_ID_PREFIX = "schema5-v1-pre-repair"
+_FINAL_ID_PREFIX = "schema5-v2-final"
+_PRE_REPAIR_COMPLETION_MARKER_KEYS = frozenset(
     {
         "schema_version",
         "snapshot_id",
@@ -69,6 +77,28 @@ _COMPLETION_MARKER_KEYS = frozenset(
         "read_only",
     }
 )
+_FINAL_COMPLETION_MARKER_KEYS = (
+    _PRE_REPAIR_COMPLETION_MARKER_KEYS | {"snapshot_kind"}
+)
+_PRE_REPAIR_CATALOG_KEYS = frozenset(
+    {
+        "schema_version",
+        "snapshot_id",
+        "created_at",
+        "copy_contract",
+        "sources",
+        "file_count",
+        "directory_count",
+        "total_bytes",
+        "source_inventory_sha256",
+        "snapshot_inventory_sha256",
+        "elapsed_seconds",
+    }
+)
+_FINAL_CATALOG_KEYS = _PRE_REPAIR_CATALOG_KEYS | {"snapshot_kind"}
+# Backward-compatible public-ish aliases retained for focused historical tests.
+_COMPLETION_MARKER_KEYS = _PRE_REPAIR_COMPLETION_MARKER_KEYS
+_CATALOG_KEYS = _PRE_REPAIR_CATALOG_KEYS
 _ATTESTATION_KEYS = frozenset(
     {
         "schema_version",
@@ -86,6 +116,27 @@ _ATTESTATION_KEYS = frozenset(
 
 class SnapshotError(RuntimeError):
     """The snapshot could not be proven complete and independent."""
+
+
+def _snapshot_kind_contract(snapshot_kind: str) -> tuple[int, str, frozenset[str], frozenset[str]]:
+    if snapshot_kind == SNAPSHOT_KIND_PRE_REPAIR:
+        return (
+            _PRE_REPAIR_SCHEMA_VERSION,
+            _PRE_REPAIR_ID_PREFIX,
+            _PRE_REPAIR_COMPLETION_MARKER_KEYS,
+            _PRE_REPAIR_CATALOG_KEYS,
+        )
+    if snapshot_kind == SNAPSHOT_KIND_FINAL:
+        return (
+            _FINAL_SCHEMA_VERSION,
+            _FINAL_ID_PREFIX,
+            _FINAL_COMPLETION_MARKER_KEYS,
+            _FINAL_CATALOG_KEYS,
+        )
+    raise SnapshotError(
+        f"snapshot kind must be one of {list(SNAPSHOT_KINDS)}, "
+        f"observed={snapshot_kind!r}"
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -199,7 +250,12 @@ def _walk_source(source: Source) -> Iterator[tuple[str, Path, bool]]:
             if path.is_symlink() or not path.is_dir():
                 raise SnapshotError(f"refusing unsafe source directory: {path}")
             relative = path.relative_to(source.path).as_posix()
-            yield f"{source.name}/{relative}", path, True
+            logical = f"{source.name}/{relative}"
+            if "\n" in logical or "\r" in logical:
+                raise SnapshotError(
+                    f"newline in source path is not inventory-safe: {path}"
+                )
+            yield logical, path, True
         for file_name in file_names:
             path = root_path / file_name
             if path.is_symlink() or not path.is_file():
@@ -669,18 +725,57 @@ def _require_read_only_regular(path: Path, *, context: str) -> None:
 
 
 def _load_json_object(path: Path, *, context: str) -> dict[str, object]:
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise SnapshotError(
+                    f"{context} duplicates JSON key {key!r}: {path}"
+                )
+            value[key] = item
+        return value
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=lambda token: (_ for _ in ()).throw(
+                SnapshotError(
+                    f"{context} contains non-finite JSON value {token!r}: {path}"
+                )
+            ),
+        )
+    except SnapshotError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise SnapshotError(f"cannot parse {context}: {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise SnapshotError(f"{context} must be a JSON object: {path}")
+    expected = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if raw != expected:
+        raise SnapshotError(f"{context} is not canonical JSON: {path}")
     return value
 
 
 def _verify_snapshot(
-    snapshot_root: Path, *, _allow_writable_root: bool = False
+    snapshot_root: Path,
+    *,
+    snapshot_kind: str = SNAPSHOT_KIND_PRE_REPAIR,
+    expected_sources: Iterable[Source] | None = None,
+    _allow_writable_root: bool = False,
 ) -> dict[str, object]:
+    (
+        schema_version,
+        snapshot_id_prefix,
+        completion_marker_keys,
+        catalog_keys,
+    ) = _snapshot_kind_contract(snapshot_kind)
+    requested_sources = (
+        tuple(expected_sources) if expected_sources is not None else None
+    )
     if snapshot_root.is_symlink() or not snapshot_root.is_dir():
         raise SnapshotError(f"snapshot root is missing or unsafe: {snapshot_root}")
     complete_path = snapshot_root / COMPLETE_FILENAME
@@ -731,12 +826,15 @@ def _verify_snapshot(
     catalog = _load_json_object(
         snapshot_root / CATALOG_FILENAME, context="snapshot catalog"
     )
+    if set(catalog) != catalog_keys:
+        raise SnapshotError("snapshot catalog schema mismatch")
     if (
-        not isinstance(catalog.get("file_count"), int)
+        catalog.get("schema_version") != schema_version
+        or not isinstance(catalog.get("file_count"), int)
         or isinstance(catalog.get("file_count"), bool)
         or catalog.get("file_count") != len(records)
     ):
-        raise SnapshotError("catalog file count disagrees with inventory")
+        raise SnapshotError("snapshot catalog version or file count is invalid")
     total_bytes = sum(record.size for record in records)
     if (
         not isinstance(catalog.get("total_bytes"), int)
@@ -745,24 +843,126 @@ def _verify_snapshot(
     ):
         raise SnapshotError("catalog byte count disagrees with inventory")
     marker = _load_json_object(complete_path, context="snapshot completion marker")
-    if set(marker) != _COMPLETION_MARKER_KEYS:
+    if set(marker) != completion_marker_keys:
         raise SnapshotError(
             "completion marker schema mismatch: "
-            f"expected={sorted(_COMPLETION_MARKER_KEYS)}, observed={sorted(marker)}"
+            f"expected={sorted(completion_marker_keys)}, observed={sorted(marker)}"
         )
     if (
         not isinstance(marker.get("schema_version"), int)
         or isinstance(marker.get("schema_version"), bool)
-        or marker.get("schema_version") != 1
+        or marker.get("schema_version") != schema_version
     ):
         raise SnapshotError("completion marker schema version is unsupported")
+    if snapshot_kind == SNAPSHOT_KIND_FINAL and (
+        marker.get("snapshot_kind") != snapshot_kind
+        or catalog.get("snapshot_kind") != snapshot_kind
+    ):
+        raise SnapshotError("snapshot kind disagrees with the expected final contract")
     snapshot_id = marker.get("snapshot_id")
     if not isinstance(snapshot_id, str) or not snapshot_id:
         raise SnapshotError("completion marker snapshot id is invalid")
-    _parse_utc_timestamp(marker.get("completed_at"), context="completed_at")
+    completed_at = _parse_utc_timestamp(
+        marker.get("completed_at"), context="completed_at"
+    )
     if marker.get("snapshot_id") != catalog.get("snapshot_id"):
         raise SnapshotError("completion marker snapshot id disagrees with catalog")
     expected = hashlib.sha256(copy_inventory.read_bytes()).hexdigest()
+    sources = catalog.get("sources")
+    elapsed_seconds = catalog.get("elapsed_seconds")
+    if (
+        catalog.get("snapshot_id")
+        != f"{snapshot_id_prefix}-{expected[:16]}"
+        or catalog.get("copy_contract")
+        != "independent_regular_files_no_hardlinks_no_symlinks"
+        or not isinstance(catalog.get("directory_count"), int)
+        or isinstance(catalog.get("directory_count"), bool)
+        or catalog.get("directory_count") != len(directories)
+        or catalog.get("source_inventory_sha256") != expected
+        or catalog.get("snapshot_inventory_sha256") != expected
+        or not isinstance(elapsed_seconds, (int, float))
+        or isinstance(elapsed_seconds, bool)
+        or not math.isfinite(float(elapsed_seconds))
+        or float(elapsed_seconds) < 0
+        or not isinstance(sources, list)
+        or not sources
+    ):
+        raise SnapshotError("snapshot catalog identity is invalid")
+    source_names: list[str] = []
+    for source in sources:
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"name", "path"}
+            or not isinstance(source.get("name"), str)
+            or _SAFE_NAME.fullmatch(source["name"]) is None
+            or not isinstance(source.get("path"), str)
+            or not Path(source["path"]).is_absolute()
+        ):
+            raise SnapshotError("snapshot catalog source identity is invalid")
+        source_names.append(source["name"])
+    if len(set(source_names)) != len(source_names):
+        raise SnapshotError("snapshot catalog source names are duplicated")
+    if (
+        snapshot_kind == SNAPSHOT_KIND_FINAL
+        and requested_sources is not None
+    ):
+        if len({source.name for source in requested_sources}) != len(
+            requested_sources
+        ):
+            raise SnapshotError("requested final snapshot source names are duplicated")
+        expected_source_map: dict[str, str] = {}
+        for source in requested_sources:
+            path = Path(source.path)
+            if (
+                _SAFE_NAME.fullmatch(source.name) is None
+                or not path.is_absolute()
+                or path.is_symlink()
+                or not path.exists()
+                or not (path.is_file() or path.is_dir())
+            ):
+                raise SnapshotError(
+                    "requested final snapshot source is missing or unsafe: "
+                    f"{source.name}={path}"
+                )
+            expected_source_map[source.name] = str(path.resolve())
+        catalog_source_map = {
+            str(source["name"]): str(source["path"]) for source in sources
+        }
+        if catalog_source_map != expected_source_map:
+            raise SnapshotError(
+                "completed final snapshot source origins differ from the "
+                "requested canonical source map"
+            )
+        live_records, live_directories = _inventory_sources(
+            tuple(
+                Source(name=source.name, path=Path(source.path).resolve())
+                for source in requested_sources
+            )
+        )
+        confirmed_records, confirmed_directories = _inventory_sources(
+            tuple(
+                Source(name=source.name, path=Path(source.path).resolve())
+                for source in requested_sources
+            )
+        )
+        if (
+            confirmed_records != live_records
+            or confirmed_directories != live_directories
+        ):
+            raise SnapshotError(
+                "canonical final snapshot sources changed during replay "
+                "inventory"
+            )
+        if live_records != records or live_directories != tuple(directories):
+            raise SnapshotError(
+                "completed final snapshot inventory differs from the current "
+                "canonical sources"
+            )
+    created_at = _parse_utc_timestamp(
+        catalog.get("created_at"), context="catalog created_at"
+    )
+    if completed_at < created_at:
+        raise SnapshotError("snapshot completion predates catalog creation")
     if (
         not isinstance(marker.get("file_count"), int)
         or isinstance(marker.get("file_count"), bool)
@@ -799,6 +999,7 @@ def _verify_snapshot(
         "status": "already_complete",
         "snapshot_root": str(snapshot_root),
         "snapshot_id": snapshot_id,
+        "snapshot_kind": snapshot_kind,
         "file_count": len(records),
         "total_bytes": total_bytes,
         "snapshot_inventory_sha256": expected,
@@ -806,14 +1007,25 @@ def _verify_snapshot(
     }
 
 
-def verify_snapshot(snapshot_root: Path) -> dict[str, object]:
+def verify_snapshot(
+    snapshot_root: Path,
+    *,
+    snapshot_kind: str = SNAPSHOT_KIND_PRE_REPAIR,
+) -> dict[str, object]:
     """Strictly verify one fully sealed snapshot."""
 
-    return _verify_snapshot(snapshot_root, _allow_writable_root=False)
+    return _verify_snapshot(
+        snapshot_root,
+        snapshot_kind=snapshot_kind,
+        _allow_writable_root=False,
+    )
 
 
 def write_snapshot_attestation(
-    snapshot_root: Path, attestation_path: Path
+    snapshot_root: Path,
+    attestation_path: Path,
+    *,
+    snapshot_kind: str = SNAPSHOT_KIND_PRE_REPAIR,
 ) -> dict[str, object]:
     """Publish an external checksum envelope for every snapshot control artifact.
 
@@ -834,7 +1046,7 @@ def write_snapshot_attestation(
         raise SnapshotError(
             "snapshot attestation must be stored outside the sealed snapshot"
         )
-    verified = verify_snapshot(snapshot_root)
+    verified = verify_snapshot(snapshot_root, snapshot_kind=snapshot_kind)
     controls: dict[str, dict[str, object]] = {}
     for filename in (
         COMPLETE_FILENAME,
@@ -930,16 +1142,25 @@ def write_snapshot_attestation(
 
 
 def verify_complete_snapshot(
-    snapshot_root: Path, sources: Iterable[Source] | None = None
+    snapshot_root: Path,
+    sources: Iterable[Source] | None = None,
+    *,
+    snapshot_kind: str = SNAPSHOT_KIND_PRE_REPAIR,
 ) -> dict[str, object]:
-    """Compatibility wrapper for explicit completed-snapshot verification.
+    """Verify a completed snapshot, optionally against its live source origins.
 
-    Source paths are deliberately not re-read: the purpose of the sealed snapshot is to
-    remain independently verifiable after the live sources are repaired or retired.
+    Historical ``pre_repair`` snapshots remain independently verifiable after their
+    live roots are retired.  A schema-2 ``final`` replay with supplied sources is an
+    active publication transaction, so it additionally re-inventories those exact
+    canonical roots before adopting the completed marker.
     """
 
-    del sources
-    return verify_snapshot(Path(snapshot_root))
+    return _verify_snapshot(
+        Path(snapshot_root),
+        snapshot_kind=snapshot_kind,
+        expected_sources=sources,
+        _allow_writable_root=False,
+    )
 
 
 def _create_snapshot_unlocked(
@@ -947,7 +1168,11 @@ def _create_snapshot_unlocked(
     sources: tuple[Source, ...] | list[Source],
     *,
     apply: bool = True,
+    snapshot_kind: str = SNAPSHOT_KIND_PRE_REPAIR,
 ) -> dict[str, object]:
+    schema_version, snapshot_id_prefix, _, _ = _snapshot_kind_contract(
+        snapshot_kind
+    )
     sources = tuple(sources)
     if len({source.name for source in sources}) != len(sources):
         raise SnapshotError("source names must be unique")
@@ -958,12 +1183,15 @@ def _create_snapshot_unlocked(
         raise SnapshotError(f"source names collide with snapshot controls: {reserved}")
     resolved_root = snapshot_root.absolute()
     for source in sources:
-        try:
-            resolved_root.relative_to(source.path)
-        except ValueError:
-            pass
-        else:
-            raise SnapshotError(f"snapshot destination is inside source: {source.path}")
+        if (
+            resolved_root == source.path
+            or resolved_root.is_relative_to(source.path)
+            or source.path.is_relative_to(resolved_root)
+        ):
+            raise SnapshotError(
+                "snapshot destination and source overlap: "
+                f"destination={resolved_root}, source={source.path}"
+            )
     if snapshot_root.is_symlink():
         raise SnapshotError(f"snapshot root may not be a symlink: {snapshot_root}")
     complete = snapshot_root / COMPLETE_FILENAME
@@ -980,15 +1208,26 @@ def _create_snapshot_unlocked(
             else 0
         )
         if apply and root_mode & 0o222:
-            _verify_snapshot(snapshot_root, _allow_writable_root=True)
+            _verify_snapshot(
+                snapshot_root,
+                snapshot_kind=snapshot_kind,
+                expected_sources=sources,
+                _allow_writable_root=True,
+            )
             snapshot_root.chmod(root_mode & ~0o222)
             _fsync_directory(snapshot_root.parent)
-        return verify_snapshot(snapshot_root)
+        return _verify_snapshot(
+            snapshot_root,
+            snapshot_kind=snapshot_kind,
+            expected_sources=sources,
+            _allow_writable_root=False,
+        )
     if not apply:
         expected_records, expected_directories = _inventory_sources(sources)
         return {
             "status": "dry_run",
             "snapshot_root": str(snapshot_root),
+            "snapshot_kind": snapshot_kind,
             "sources": [
                 {"name": source.name, "path": str(source.path)} for source in sources
             ],
@@ -1050,8 +1289,8 @@ def _create_snapshot_unlocked(
     )
     inventory_sha = hashlib.sha256(inventory).hexdigest()
     catalog = {
-        "schema_version": 1,
-        "snapshot_id": f"schema5-v1-pre-repair-{inventory_sha[:16]}",
+        "schema_version": schema_version,
+        "snapshot_id": f"{snapshot_id_prefix}-{inventory_sha[:16]}",
         "created_at": _utc_now(),
         "copy_contract": "independent_regular_files_no_hardlinks_no_symlinks",
         "sources": [asdict(source) | {"path": str(source.path)} for source in sources],
@@ -1062,6 +1301,8 @@ def _create_snapshot_unlocked(
         "snapshot_inventory_sha256": inventory_sha,
         "elapsed_seconds": time.monotonic() - started,
     }
+    if snapshot_kind == SNAPSHOT_KIND_FINAL:
+        catalog["snapshot_kind"] = snapshot_kind
     _atomic_json(snapshot_root / CATALOG_FILENAME, catalog)
 
     # Verify every copied byte before sealing, then remove write permission from all
@@ -1080,7 +1321,7 @@ def _create_snapshot_unlocked(
         elif path.is_dir():
             path.chmod(0o555)
     marker = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "snapshot_id": catalog["snapshot_id"],
         "completed_at": _utc_now(),
         "file_count": len(records),
@@ -1089,6 +1330,8 @@ def _create_snapshot_unlocked(
         "verified": True,
         "read_only": True,
     }
+    if snapshot_kind == SNAPSHOT_KIND_FINAL:
+        marker["snapshot_kind"] = snapshot_kind
     _atomic_json(complete, marker, mode=0o444)
     snapshot_root.chmod(0o555)
     _fsync_directory(snapshot_root.parent)
@@ -1100,12 +1343,19 @@ def create_snapshot(
     sources: tuple[Source, ...] | list[Source],
     *,
     apply: bool = True,
+    snapshot_kind: str = SNAPSHOT_KIND_PRE_REPAIR,
 ) -> dict[str, object]:
     """Create/audit a snapshot under a cross-process same-parent advisory lock."""
 
     snapshot_root = Path(snapshot_root)
+    _snapshot_kind_contract(snapshot_kind)
     if not apply:
-        return _create_snapshot_unlocked(snapshot_root, sources, apply=False)
+        return _create_snapshot_unlocked(
+            snapshot_root,
+            sources,
+            apply=False,
+            snapshot_kind=snapshot_kind,
+        )
     snapshot_root.parent.mkdir(parents=True, exist_ok=True)
     lock_path = snapshot_root.parent / f".{snapshot_root.name}.snapshot.lock"
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -1118,7 +1368,12 @@ def create_snapshot(
                     f"another snapshot process holds {lock_path}"
                 ) from exc
             raise
-        return _create_snapshot_unlocked(snapshot_root, sources, apply=True)
+        return _create_snapshot_unlocked(
+            snapshot_root,
+            sources,
+            apply=True,
+            snapshot_kind=snapshot_kind,
+        )
     finally:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -1130,6 +1385,15 @@ def create_snapshot(
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot-root", "--destination", required=True, type=Path)
+    parser.add_argument(
+        "--snapshot-kind",
+        choices=SNAPSHOT_KINDS,
+        default=SNAPSHOT_KIND_PRE_REPAIR,
+        help=(
+            "immutable snapshot identity contract; defaults to the historical "
+            "pre_repair schema"
+        ),
+    )
     parser.add_argument("--source", action="append", default=[])
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument(
@@ -1148,11 +1412,25 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     snapshot_root = args.snapshot_root.absolute()
+    requested_sources = tuple(_parse_source(item) for item in args.source)
     if args.verify_only:
+        if args.attestation_path is not None and requested_sources:
+            raise SnapshotError(
+                "--attestation-path cannot be combined with live --source "
+                "verification"
+            )
         result = (
-            write_snapshot_attestation(snapshot_root, args.attestation_path)
+            write_snapshot_attestation(
+                snapshot_root,
+                args.attestation_path,
+                snapshot_kind=args.snapshot_kind,
+            )
             if args.attestation_path is not None
-            else verify_snapshot(snapshot_root)
+            else verify_complete_snapshot(
+                snapshot_root,
+                requested_sources or None,
+                snapshot_kind=args.snapshot_kind,
+            )
         )
     else:
         if args.attestation_path is not None:
@@ -1161,8 +1439,9 @@ def main() -> int:
             raise SnapshotError("at least one --source NAME=/absolute/path is required")
         result = create_snapshot(
             snapshot_root,
-            tuple(_parse_source(item) for item in args.source),
+            requested_sources,
             apply=not args.dry_run,
+            snapshot_kind=args.snapshot_kind,
         )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

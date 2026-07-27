@@ -5,7 +5,7 @@ This tool deliberately does not create a Git worktree, install an environment, o
 submit scheduler jobs.  It seals identities that an operator has already materialized:
 
 * a clean worktree at the exact operational retry tag
-  ``sweep-recovery-schema5-v1.2-r2``;
+  ``sweep-recovery-schema5-v1.2-r3``;
 * harness and serving Conda prefixes, including reproducible Conda/pip locks;
 * the frozen Qwen model/tokenizer contract; and
 * the canonical 22-replica/24-GPU fleet contract.
@@ -72,7 +72,7 @@ RELEASE_SCHEMA_VERSION = 4
 ENVIRONMENT_SCHEMA_VERSION = 3
 FLEET_SCHEMA_VERSION = 1
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-REQUIRED_GIT_TAG = "sweep-recovery-schema5-v1.2-r2"
+REQUIRED_GIT_TAG = "sweep-recovery-schema5-v1.2-r3"
 FLEET_ID = "schema5-v1"
 HARNESS_MANIFEST_FILENAME = "harness_environment.schema5-v1.json"
 SERVING_MANIFEST_FILENAME = "serving_environment.schema5-v1.json"
@@ -192,9 +192,19 @@ def _atomic_write_exact(path: Path, payload: bytes, *, mode: int = 0o444) -> Non
     """Publish exact bytes once; never overwrite a conflicting preimage."""
 
     if path.exists() or path.is_symlink():
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+        info = path.stat(follow_symlinks=False)
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o222
+            or path.read_bytes() != payload
+        ):
             raise ReleaseFreezeError(f"conflicting immutable release artifact: {path}")
-        os.chmod(path, mode)
+        if stat.S_IMODE(info.st_mode) != mode:
+            raise ReleaseFreezeError(
+                f"immutable release artifact mode drifted: {path}"
+            )
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -288,17 +298,45 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def _verify_nonoverlap(output_root: Path, observed_roots: Iterable[Path]) -> None:
-    # An observed root may live below a release bundle root, but the generated
-    # artifacts must never live *inside* a hashed worktree/environment.
-    for observed in observed_roots:
-        if output_root == observed or _is_relative_to(output_root, observed):
+    observed = tuple(observed_roots)
+    for candidate in observed:
+        if (
+            output_root == candidate
+            or _is_relative_to(output_root, candidate)
+            or _is_relative_to(candidate, output_root)
+        ):
             raise ReleaseFreezeError(
-                f"release artifact root {output_root} is inside inventoried tree {observed}"
+                "release artifact root overlaps an inventoried tree: "
+                f"output={output_root}, observed={candidate}"
             )
+    for index, left in enumerate(observed):
+        for right in observed[index + 1 :]:
+            if (
+                left == right
+                or _is_relative_to(left, right)
+                or _is_relative_to(right, left)
+            ):
+                raise ReleaseFreezeError(
+                    f"inventoried release inputs overlap: {left}, {right}"
+                )
 
 
 def _git(worktree: Path, *args: str) -> str:
     return _run(("git", "-C", str(worktree), *args)).strip()
+
+
+def _influential_ignored_paths(worktree: Path) -> tuple[str, ...]:
+    ignored = _git(
+        worktree, "ls-files", "--others", "--ignored", "--exclude-standard"
+    ).splitlines()
+    ignored_cache_names = {".pytest_cache", "__pycache__"}
+    return tuple(
+        value
+        for value in ignored
+        if value
+        and not any(part in ignored_cache_names for part in Path(value).parts)
+        and Path(value).suffix != ".pyc"
+    )
 
 
 def verify_clean_exact_tag(worktree: Path) -> dict[str, str]:
@@ -315,42 +353,99 @@ def verify_clean_exact_tag(worktree: Path) -> dict[str, str]:
     status = _git(worktree, "status", "--porcelain=v1", "--untracked-files=all")
     if status:
         raise ReleaseFreezeError("release worktree is not clean")
-    ignored = _git(
-        worktree, "ls-files", "--others", "--ignored", "--exclude-standard"
-    ).splitlines()
-    ignored_cache_names = {".pytest_cache", "__pycache__"}
-    influential_ignored = [
-        value
-        for value in ignored
-        if value
-        and not any(part in ignored_cache_names for part in Path(value).parts)
-        and Path(value).suffix != ".pyc"
-    ]
+    influential_ignored = _influential_ignored_paths(worktree)
     if influential_ignored:
         raise ReleaseFreezeError(
             "release worktree contains ignored files included by the source hash: "
             + ", ".join(influential_ignored[:5])
         )
     try:
+        tag_object = _git(
+            worktree,
+            "rev-parse",
+            "--verify",
+            f"refs/tags/{REQUIRED_GIT_TAG}",
+        )
+        tag_type = _git(
+            worktree,
+            "cat-file",
+            "-t",
+            tag_object,
+        )
         tag_commit = _git(
             worktree,
             "rev-parse",
             "--verify",
-            f"refs/tags/{REQUIRED_GIT_TAG}^{{commit}}",
+            f"{tag_object}^{{commit}}",
         )
     except ReleaseFreezeError as exc:
         raise ReleaseFreezeError(
             f"required exact Git tag is absent: {REQUIRED_GIT_TAG}"
         ) from exc
-    if tag_commit != commit:
+    if (
+        _GIT_COMMIT_RE.fullmatch(tag_object) is None
+        or tag_type != "tag"
+        or tag_commit != commit
+    ):
         raise ReleaseFreezeError(
-            f"tag {REQUIRED_GIT_TAG} resolves to {tag_commit}, but HEAD is {commit}"
+            f"tag {REQUIRED_GIT_TAG} is not an annotated tag object "
+            f"resolving to HEAD {commit}"
+        )
+    source_tree_sha256 = sha256_tree(worktree)
+    final_commit = _git(worktree, "rev-parse", "HEAD")
+    final_tag_object = _git(
+        worktree,
+        "rev-parse",
+        "--verify",
+        f"refs/tags/{REQUIRED_GIT_TAG}",
+    )
+    final_status = _git(
+        worktree,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    final_influential_ignored = _influential_ignored_paths(worktree)
+    if (
+        final_commit != commit
+        or final_tag_object != tag_object
+        or final_status
+        or final_influential_ignored
+    ):
+        raise ReleaseFreezeError(
+            "release worktree or annotated tag changed during source hashing"
+        )
+    replay_source_tree_sha256 = sha256_tree(worktree)
+    replay_commit = _git(worktree, "rev-parse", "HEAD")
+    replay_tag_object = _git(
+        worktree,
+        "rev-parse",
+        "--verify",
+        f"refs/tags/{REQUIRED_GIT_TAG}",
+    )
+    replay_status = _git(
+        worktree,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    replay_influential_ignored = _influential_ignored_paths(worktree)
+    if (
+        replay_source_tree_sha256 != source_tree_sha256
+        or replay_commit != commit
+        or replay_tag_object != tag_object
+        or replay_status
+        or replay_influential_ignored
+    ):
+        raise ReleaseFreezeError(
+            "release source hash was not stable across final replay"
         )
     return {
         "git_commit": commit,
         "git_tag": REQUIRED_GIT_TAG,
+        "git_tag_object": tag_object,
         # Do not reproduce this algorithm here.  The control plane owns it.
-        "source_tree_sha256": sha256_tree(worktree),
+        "source_tree_sha256": source_tree_sha256,
     }
 
 
@@ -1648,6 +1743,7 @@ def _build_release_material(
         "release_id": RELEASE_ID,
         "release_worktree": str(release_worktree),
         "git_commit": git_identity["git_commit"],
+        "release_tag_object": git_identity["git_tag_object"],
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "transport_uncertainty_binding": transport_binding,
         "transport_uncertainty_binding_sha256": (
@@ -2181,6 +2277,14 @@ def verify_release_bundle(output_root: str | Path) -> dict[str, Any]:
     }
     if not isinstance(artifacts, dict) or set(artifacts) != expected_names:
         raise ReleaseFreezeError("release marker has the wrong artifact inventory")
+    expected_root_entries = expected_names | {COMPLETE_MARKER_FILENAME}
+    observed_root_entries = {path.name for path in root.iterdir()}
+    if observed_root_entries != expected_root_entries:
+        raise ReleaseFreezeError(
+            "release artifact root has unexpected or missing entries: "
+            f"missing={sorted(expected_root_entries - observed_root_entries)}, "
+            f"unexpected={sorted(observed_root_entries - expected_root_entries)}"
+        )
     for filename, record in artifacts.items():
         path = root / filename
         if path.is_symlink() or not path.is_file() or not isinstance(record, dict):
@@ -2247,9 +2351,18 @@ def verify_release_bundle(output_root: str | Path) -> dict[str, Any]:
     if (
         not isinstance(stored_git_identity, dict)
         or set(stored_git_identity)
-        != {"git_commit", "git_tag", "source_tree_sha256"}
+        != {
+            "git_commit",
+            "git_tag",
+            "git_tag_object",
+            "source_tree_sha256",
+        }
         or stored_git_identity.get("git_tag") != REQUIRED_GIT_TAG
         or _GIT_COMMIT_RE.fullmatch(str(stored_git_identity.get("git_commit", "")))
+        is None
+        or _GIT_COMMIT_RE.fullmatch(
+            str(stored_git_identity.get("git_tag_object", ""))
+        )
         is None
         or _SHA256_RE.fullmatch(
             str(stored_git_identity.get("source_tree_sha256", ""))
@@ -2390,6 +2503,7 @@ def verify_release_bundle(output_root: str | Path) -> dict[str, Any]:
         "release_id": RELEASE_ID,
         "release_worktree": str(worktree),
         "git_commit": git_identity["git_commit"],
+        "release_tag_object": git_identity["git_tag_object"],
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "transport_uncertainty_binding": expected_transport_binding,
         "transport_uncertainty_binding_sha256": expected_transport_sha256,

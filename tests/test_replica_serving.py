@@ -7,6 +7,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1096,6 +1097,29 @@ def _one_replica_fleet(fleet):
     )
 
 
+def _fleet_submission_command(attempt):
+    from agents_scaling.serving import fleet_transactions
+
+    return " ".join(
+        fleet_transactions.submission_argv(attempt["scheduler_comment"])
+    )
+
+
+def _accepted_fleet_runner(job_id, calls=None):
+    submitted = {}
+
+    def run(argv, **kwargs):
+        if calls is not None:
+            calls.append(list(argv))
+        if argv[0] == "sbatch":
+            submitted["script"] = kwargs["input"]
+            return subprocess.CompletedProcess(argv, 0, f"{job_id}\n", "")
+        assert argv[:3] == ["scontrol", "write", "batch_script"]
+        return subprocess.CompletedProcess(argv, 0, submitted["script"], "")
+
+    return run
+
+
 def _production_spooled_provenance(keepalive, root, fleet, replica):
     from agents_scaling.serving.model_contracts import load_model_contracts
 
@@ -1431,13 +1455,14 @@ def test_initial_and_handoff_endpoints_seal_before_routing_and_survive_rotation(
             "RUNNING",
             replica.partition,
             "node-old",
-            primary["sbatch_path"],
+            _fleet_submission_command(primary),
             primary["scheduler_comment"],
             "squeue",
             0.0,
             86_400.0,
             86_400,
             "",
+            replica.qos,
         )
 
         assert not keepalive._advance_primary_registration(
@@ -1486,13 +1511,14 @@ def test_initial_and_handoff_endpoints_seal_before_routing_and_survive_rotation(
             "RUNNING",
             replica.partition,
             "node-new",
-            successor["sbatch_path"],
+            _fleet_submission_command(successor),
             successor["scheduler_comment"],
             "squeue",
             20.0,
             86_420.0,
             86_400,
             "",
+            replica.qos,
         )
         assert not keepalive._advance_handoff(
             directory=directory,
@@ -1726,13 +1752,14 @@ def test_endpoint_history_rejects_symlink_shared_inode_and_unlisted_file(tmp_pat
                 "RUNNING",
                 replica.partition,
                 "node-old",
-                primary["sbatch_path"],
+                _fleet_submission_command(primary),
                 primary["scheduler_comment"],
                 "squeue",
                 0.0,
                 86_400.0,
                 86_400,
                 "",
+                replica.qos,
             )
             primary["ready_probe_count"] = 1
             transactions.save_ledger(directory, ledger, now=31.0)
@@ -1887,13 +1914,14 @@ def test_handoff_recovers_pointer_ahead_of_lifecycle_without_resubmission(
             "RUNNING",
             replica.partition,
             "node-new",
-            successor["sbatch_path"],
+            _fleet_submission_command(successor),
             successor["scheduler_comment"],
             "squeue",
             20.0,
             86_420.0,
             86_400,
             "",
+            replica.qos,
         )
         assert keepalive._advance_handoff(
             directory=directory,
@@ -1942,13 +1970,14 @@ def test_missing_standby_registry_is_rebuilt_only_after_clean_probe(tmp_path):
             "RUNNING",
             replica.partition,
             "node-new",
-            successor["sbatch_path"],
+            _fleet_submission_command(successor),
             successor["scheduler_comment"],
             "squeue",
             20.0,
             86_420.0,
             86_400,
             "",
+            replica.qos,
         )
         assert not keepalive._advance_handoff(
             directory=directory,
@@ -2044,13 +2073,14 @@ def test_tick_launches_one_typed_standby_at_twelve_hour_lead(
         "RUNNING",
         replica.partition,
         "node-old",
-        prepared["sbatch_path"],
+        _fleet_submission_command(prepared),
         prepared["scheduler_comment"],
         "squeue",
         0.0,
         86_400.0,
         86_400,
         "",
+        replica.qos,
     )
     monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: (row,))
     monkeypatch.setattr(
@@ -2063,9 +2093,7 @@ def test_tick_launches_one_typed_standby_at_twelve_hour_lead(
     monkeypatch.setattr(keepalive, "_reregister_running", lambda *_a, **_k: 0)
     submitted = []
 
-    def submit(argv, **_kwargs):
-        submitted.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "701\n", "")
+    submit = _accepted_fleet_runner("701", submitted)
 
     keepalive.tick_fleet(
         str(root),
@@ -2078,7 +2106,7 @@ def test_tick_launches_one_typed_standby_at_twelve_hour_lead(
             "predecessor must drain only after promotion"
         ),
     )
-    assert len(submitted) == 1
+    assert len(submitted) == 2
     persisted = json.loads(
         fleet_transactions.ledger_path(
             root / fleet_transactions.STATE_DIRECTORY, 1
@@ -2137,13 +2165,14 @@ def test_handoff_retirement_crash_retries_only_exact_predecessor(tmp_path):
             "RUNNING",
             replica.partition,
             "node-old",
-            predecessor["sbatch_path"],
+            _fleet_submission_command(predecessor),
             predecessor["scheduler_comment"],
             "squeue",
             0.0,
             86_400.0,
             86_400,
             "",
+            replica.qos,
         )
 
         def die_after_scancel(argv, **_kwargs):
@@ -2213,13 +2242,14 @@ def test_readiness_rejects_overlap_then_accepts_sole_promoted_handoff(
         "RUNNING",
         replica.partition,
         "node-old",
-        primary["sbatch_path"],
+        _fleet_submission_command(primary),
         primary["scheduler_comment"],
         "squeue",
         0.0,
         86_400.0,
         86_400,
         "",
+        replica.qos,
     )
     new_row = keepalive.FleetQueueRow(
         "701",
@@ -2227,13 +2257,14 @@ def test_readiness_rejects_overlap_then_accepts_sole_promoted_handoff(
         "RUNNING",
         replica.partition,
         "node-new",
-        successor["sbatch_path"],
+        _fleet_submission_command(successor),
         successor["scheduler_comment"],
         "squeue",
         20.0,
         86_420.0,
         86_400,
         "",
+        replica.qos,
     )
     observed = transactions.SchedulerSnapshot(
         rows=(old_row, new_row),
@@ -2696,9 +2727,7 @@ def test_accepted_fleet_id_absence_never_retries_duplicate(tmp_path, monkeypatch
         fleet,
         launch_options=launch_options,
         now=10.0,
-        submission_runner=lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 0, "321\n", ""
-        ),
+        submission_runner=_accepted_fleet_runner("321"),
     )
 
     with pytest.raises(keepalive.FleetContractError, match="duplicate replacement"):
@@ -2711,6 +2740,82 @@ def test_accepted_fleet_id_absence_never_retries_duplicate(tmp_path, monkeypatch
                 "accepted fleet job must never be resubmitted while ambiguous"
             ),
         )
+
+
+def test_keepalive_cannot_retry_ambiguous_submit_from_raw_rows(
+    tmp_path, monkeypatch
+):
+    import keepalive
+    from agents_scaling.serving import fleet_transactions
+    from agents_scaling.serving.fleet_contract import load_fleet_contract
+    from agents_scaling.serving.model_contracts import load_model_contracts
+
+    contracts = load_model_contracts()
+    fleet = _one_replica_fleet(
+        load_fleet_contract(None, model_contracts=contracts)
+    )
+    replica = fleet.replicas[0]
+    root = tmp_path / "server_pools" / "schema5-v1"
+    root.mkdir(parents=True)
+    launch_options = _frozen_environment_render_kwargs(tmp_path)
+    launch_options["model_contract_sha256"] = contracts.sha256
+    script = render_sbatch(
+        replica.model_size,
+        str(root),
+        replica.partition,
+        replica.gpu_type,
+        replica.time_limit,
+        str(root / "logs"),
+        replica=replica.replica_index,
+        serving_profile=replica.serving_profile,
+        **launch_options,
+    )
+    _prepare_transactional_fleet_attempt(
+        root, fleet, replica, script, now=10.0
+    )
+    with fleet_transactions.transaction_lock(root) as directory:
+        ledger = fleet_transactions.load_or_create_ledger(
+            directory,
+            pool_root=root,
+            pool_id=fleet.fleet_id,
+            fleet_sha256=fleet.sha256,
+            rollout_generation=1,
+            replica_ids=[replica.replica_id],
+            now=11.0,
+        )
+        attempt = ledger["replicas"][replica.replica_id]["attempts"][0]
+        attempt.update(
+            {
+                "state": "submitting",
+                "submit_started_at": 10.0,
+                "submission_attempts": 1,
+            }
+        )
+        fleet_transactions.save_ledger(directory, ledger, now=11.0)
+    # A raw row tuple has no independently retained squeue+sacct completion facts.
+    monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: ())
+    with pytest.raises(
+        keepalive.FleetContractError,
+        match="exact complete scheduler snapshot",
+    ):
+        keepalive.tick_fleet(
+            str(root),
+            fleet,
+            launch_options=launch_options,
+            now=400.0,
+            submission_runner=lambda *_args, **_kwargs: pytest.fail(
+                "unproven ambiguous submit must not be retried"
+            ),
+        )
+    persisted = json.loads(
+        fleet_transactions.ledger_path(
+            root / fleet_transactions.STATE_DIRECTORY, 1
+        ).read_text(encoding="utf-8")
+    )
+    assert (
+        persisted["replicas"][replica.replica_id]["attempts"][0]["state"]
+        == "submitting"
+    )
 
 
 def test_production_fleet_adopts_only_exact_rendered_runtime_and_scheduler_comment(
@@ -2748,13 +2853,14 @@ def test_production_fleet_adopts_only_exact_rendered_runtime_and_scheduler_comme
         "PENDING",
         replica.partition,
         "(null)",
-        attempt["sbatch_path"],
+        _fleet_submission_command(attempt),
         comment,
         "squeue",
         None,
         None,
         86_400,
         "",
+        replica.qos,
     )
     monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: (row,))
     monkeypatch.setattr(
@@ -2823,8 +2929,9 @@ def test_production_fleet_rejects_unknown_and_duplicate_job_names(
         "PENDING",
         first.partition,
         "(null)",
-        attempt["sbatch_path"],
+        _fleet_submission_command(attempt),
         attempt["scheduler_comment"],
+        qos=first.qos,
     )
     duplicate_two = replace(duplicate_one, job_id="3")
     monkeypatch.setattr(
@@ -2873,10 +2980,9 @@ def test_production_fleet_ignores_only_unknown_terminal_accounting_history(
         str(root),
         fleet,
         launch_options=launch_options,
-        submission_runner=lambda argv, **_kwargs: submitted.append(argv)
-        or type("Proc", (), {"returncode": 0, "stdout": "700\n", "stderr": ""})(),
+        submission_runner=_accepted_fleet_runner("700", submitted),
     )
-    assert len(submitted) == 1
+    assert len(submitted) == 2
 
     active = replace(terminal, job_id="701", state="RUNNING", node="node001")
     monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: (active,))
@@ -2929,13 +3035,14 @@ def test_new_rollout_adopts_exact_active_prior_generation_without_relaunch(
         "PENDING",
         replica.partition,
         "(null)",
-        attempt["sbatch_path"],
+        _fleet_submission_command(attempt),
         attempt["scheduler_comment"],
         "squeue",
         None,
         None,
         86_400,
         "",
+        replica.qos,
     )
     monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: (row,))
     monkeypatch.setattr(
@@ -3054,13 +3161,14 @@ def test_read_only_fleet_readiness_uses_committed_transaction_and_rejects_pendin
         "RUNNING",
         replica.partition,
         "node001",
-        prepared["sbatch_path"],
+        _fleet_submission_command(prepared),
         prepared["scheduler_comment"],
         "squeue",
         100.0,
         86_500.0,
         86_400,
         "",
+        replica.qos,
     )
     observed = fleet_transactions.SchedulerSnapshot(
         rows=(row,),
@@ -3097,18 +3205,17 @@ def test_read_only_fleet_readiness_uses_committed_transaction_and_rejects_pendin
     monkeypatch.setattr(
         keepalive, "_spooled_job_provenance", original_spooled_provenance
     )
-    submit_line = (
-        f"sbatch --comment={prepared['scheduler_comment']} "
-        f"{prepared['sbatch_path']}"
-    )
+    submit_line = _fleet_submission_command(prepared)
     start = "1970-01-01T00:01:40Z"
     end = "1970-01-02T00:01:40Z"
     sacct = (
-        f"700|{replica.scheduler_job_name}|RUNNING|{replica.partition}|node001|"
+        f"700|{replica.scheduler_job_name}|RUNNING|{replica.partition}|"
+        f"{replica.qos}|node001|"
         f"{submit_line}||{start}|{end}|1440\n"
     )
     squeue = (
-        f"700|{replica.scheduler_job_name}|RUNNING|{replica.partition}|node001|"
+        f"700|{replica.scheduler_job_name}|RUNNING|{replica.partition}|"
+        f"{replica.qos}|node001|"
         f"{submit_line}|{prepared['scheduler_comment']}|{start}|{end}|"
         "1-00:00:00|(null)\n"
     )
@@ -3302,6 +3409,7 @@ def test_hung_replica_requires_three_dual_failures_over_ten_minutes_and_cancels_
         "node001",
         "/immutable.sbatch",
         "intent",
+        qos=replica.qos,
     )
     cancelled = []
 
@@ -3386,6 +3494,7 @@ def test_intermittent_probe_success_resets_hung_evidence(tmp_path):
         "node001",
         "/immutable.sbatch",
         "intent",
+        qos=replica.qos,
     )
     cancelled = []
     try:
@@ -3422,6 +3531,7 @@ def test_crash_after_cancel_intent_retries_same_exact_job_after_backoff(tmp_path
         "node001",
         "/immutable.sbatch",
         "intent",
+        qos=replica.qos,
     )
     try:
         for timestamp in (0.0, 300.0):
@@ -3490,6 +3600,7 @@ def test_failed_scancel_is_retryable_and_scheduler_query_failure_never_cancels(
         "node001",
         "/immutable.sbatch",
         "intent",
+        qos=replica.qos,
     )
     attempts = []
     try:
@@ -3642,27 +3753,75 @@ def test_fleet_tick_revalidates_stable_scheduler_policy_under_transaction_lock(
                 release_tag_object="4" * 40,
                 scheduler_evidence_id="5" * 64,
                 scheduler_evidence_sha256="6" * 64,
-                    canary_id="7" * 64,
-                    canary_evidence_sha256="8" * 64,
-                    fleet_contract_sha256=fleet.sha256,
-                    active_fleet_topology_sha256="9" * 64,
-                    preempt_type="preempt/qos",
+                canary_id="7" * 64,
+                canary_evidence_sha256="8" * 64,
+                capacity_generation=1,
+                base_fleet_contract_path=tmp_path / "base-fleet.json",
+                base_fleet_contract_sha256=fleet.sha256,
+                effective_fleet_contract_path=fleet.path,
+                effective_fleet_contract_sha256=fleet.sha256,
+                additive_overlay_contract_path=tmp_path / "effective-fleet.json",
+                additive_overlay_contract_sha256=fleet.sha256,
+                static_feasibility_certificate_path=(
+                    tmp_path / "STATIC_FEASIBILITY_COMPLETE.json"
+                ),
+                static_feasibility_certificate_sha256="a" * 64,
+                static_feasibility_certificate_id="b" * 64,
+                fleet_contract_sha256=fleet.sha256,
+                active_fleet_topology_sha256="9" * 64,
+                base_active_logical_replicas=len(fleet.replicas),
+                base_active_gpus=sum(
+                    row.gpus_per_replica for row in fleet.replicas
+                ),
+                additive_reserved_logical_replicas=0,
+                additive_reserved_gpus=0,
+                effective_active_logical_replicas=len(fleet.replicas),
+                effective_active_gpus=sum(
+                    row.gpus_per_replica for row in fleet.replicas
+                ),
+                retained_warm_turnover_job_elements=3,
+                retained_warm_turnover_gpus=4,
+                attested_total_gpus=46,
+                job_element_accounting={
+                    "cell_job_elements": 384,
+                    "active_server_job_elements": 40,
+                    "warm_turnover_job_elements": 3,
+                    "controller_monitor_other_held_job_elements": 21,
+                    "total_non_cell_reserve_job_elements": 64,
+                    "total_canary_job_elements": 448,
+                },
+                preempt_type="preempt/qos",
                     capacity_source=(
                         keepalive.protected_capacity.CAPACITY_SOURCE
                     ),
-                    scheduler_cluster="test_cluster",
-                    scheduler_account="test_account",
-                    scheduler_user="test_user",
-                    scheduler_max_submit_jobs=500,
-                    partition_cpus=384,
+                        scheduler_cluster="test_cluster",
+                        scheduler_account="test_account",
+                        scheduler_user="test_user",
+                        scheduler_max_jobs=427,
+                        scheduler_max_submit_jobs=500,
+                        running_scientific_jobs=427,
+                        scientific_qos_contracts=(
+                            {
+                                "qos": replica.qos,
+                                "max_wall_seconds": 86_400,
+                                "max_jobs_per_user": 427,
+                                "max_submit_jobs_per_user": 500,
+                                "required_wall_seconds": 86_400,
+                                "required_running_jobs": 427,
+                                "required_submit_jobs": 448,
+                            },
+                        ),
+                        partition_cpus=384,
                     partition_memory_mib=384 * 4096,
-                    partition_gpus=28,
+                    partition_gpus=46,
                 server_placements=(
                     keepalive.protected_capacity.ProtectedPlacement(
                         replica.partition,
                         replica.qos,
                         {
-                            "active_serving_gpus": 24,
+                            "effective_active_gpus": sum(
+                                row.gpus_per_replica for row in fleet.replicas
+                            ),
                             "warm_headroom_gpus": 4,
                         },
                     ),
@@ -3670,6 +3829,297 @@ def test_fleet_tick_revalidates_stable_scheduler_policy_under_transaction_lock(
                 client_placements=(),
             ),
         )
+
+
+def test_current_fleet_authority_requires_exact_generations_and_bindings(
+    tmp_path, monkeypatch
+):
+    import keepalive
+    from slurm import schema5_control as control_plane
+    from agents_scaling.serving.fleet_contract import load_fleet_contract
+    from agents_scaling.serving.model_contracts import load_model_contracts
+
+    fleet = _one_replica_fleet(
+        load_fleet_contract(None, model_contracts=load_model_contracts())
+    )
+    marker_path = tmp_path / "PROTECTED_CAPACITY_COMPLETE.json"
+    protected = SimpleNamespace(
+        path=marker_path,
+        sha256="a" * 64,
+        marker_id="b" * 64,
+        capacity_generation=2,
+        effective_fleet_contract_path=fleet.path,
+        effective_fleet_contract_sha256=fleet.sha256,
+    )
+    state = {
+        "capacity": {"current_generation": 2},
+        "rollout_generation": 7,
+    }
+    fleet_binding = {
+        "capacity_generation": 2,
+        "path": str(fleet.path.resolve()),
+        "sha256": fleet.sha256,
+    }
+    protected_binding = {
+        "capacity_generation": 2,
+        "path": str(marker_path.resolve()),
+        "sha256": protected.sha256,
+        "marker_id": protected.marker_id,
+        "effective_fleet_contract_path": str(fleet.path.resolve()),
+        "effective_fleet_contract_sha256": fleet.sha256,
+    }
+    monkeypatch.setattr(
+        control_plane,
+        "load_control",
+        lambda *_a, **kwargs: (
+            state
+            if kwargs.get("verify_files") is True
+            else pytest.fail("authority load must verify files")
+        ),
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "effective_fleet_contract_binding",
+        lambda *_a, **_kw: fleet_binding,
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "effective_protected_capacity_binding",
+        lambda *_a, **_kw: protected_binding,
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "load_effective_fleet_contract",
+        lambda *_a, **_kw: fleet,
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "load_effective_protected_capacity_contract",
+        lambda *_a, **_kw: protected,
+    )
+    monkeypatch.setattr(
+        keepalive.protected_capacity,
+        "authorize_fleet",
+        lambda *_a, **_kw: None,
+    )
+    supplied_marker = {
+        "path": str(marker_path.resolve()),
+        "sha256": protected.sha256,
+        "marker_id": protected.marker_id,
+    }
+
+    loaded, current_marker = keepalive._load_current_fleet_authority(
+        tmp_path,
+        fleet=fleet,
+        capacity_generation=2,
+        rollout_generation=7,
+        expected_protected_binding=supplied_marker,
+        expected_protected_capacity_contract=protected,
+    )
+    assert loaded is state
+    assert current_marker is protected
+
+    state["rollout_generation"] = 8
+    with pytest.raises(
+        keepalive.FleetContractError,
+        match="capacity/rollout generation or effective fleet",
+    ):
+        keepalive._load_current_fleet_authority(
+            tmp_path,
+            fleet=fleet,
+            capacity_generation=2,
+            rollout_generation=7,
+            expected_protected_binding=supplied_marker,
+        )
+    state["rollout_generation"] = 7
+    protected_binding["sha256"] = "c" * 64
+    with pytest.raises(
+        keepalive.FleetContractError,
+        match="protected-capacity binding differs",
+    ):
+        keepalive._load_current_fleet_authority(
+            tmp_path,
+            fleet=fleet,
+            capacity_generation=2,
+            rollout_generation=7,
+            expected_protected_binding=supplied_marker,
+        )
+
+
+@pytest.mark.parametrize(
+    ("fail_on_authority_load", "prepared_attempts"),
+    ((2, 0), (3, 1)),
+)
+def test_fleet_tick_reloads_current_authority_before_prepare_and_sbatch(
+    tmp_path,
+    monkeypatch,
+    fail_on_authority_load,
+    prepared_attempts,
+):
+    import keepalive
+    from slurm import schema5_control as control_plane
+    from agents_scaling.serving.fleet_contract import load_fleet_contract
+    from agents_scaling.serving.model_contracts import load_model_contracts
+
+    fleet = _one_replica_fleet(
+        load_fleet_contract(None, model_contracts=load_model_contracts())
+    )
+    root = tmp_path / "server_pools" / "schema5-v1"
+    root.mkdir(parents=True)
+    options = _frozen_environment_render_kwargs(tmp_path / "runtime")
+    options["model_contract_sha256"] = load_model_contracts().sha256
+    protected = SimpleNamespace()
+    authority_loads = 0
+
+    def reload_authority(*_args, **_kwargs):
+        nonlocal authority_loads
+        authority_loads += 1
+        if authority_loads == fail_on_authority_load:
+            raise keepalive.FleetContractError(
+                "synthetic current authority drift"
+            )
+        return {"desired_state": "paused"}, protected
+
+    monkeypatch.setattr(
+        keepalive, "_load_current_fleet_authority", reload_authority
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "_validate_live_fleet_scheduler_policy",
+        lambda *_a, **_kw: ({}, {}),
+    )
+    monkeypatch.setattr(
+        keepalive.protected_capacity,
+        "authorize_fleet",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(
+        keepalive.protected_capacity,
+        "verify_live_placements",
+        lambda *_a, **_kw: {},
+    )
+    monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: ())
+    monkeypatch.setattr(
+        control_plane,
+        "reconcile_trusted_scientific_job_provenance",
+        lambda *_a, **_kw: object(),
+    )
+    original_prepare = keepalive.fleet_tx.prepare_attempt
+    prepare_calls = 0
+
+    def observe_prepare(*args, **kwargs):
+        nonlocal prepare_calls
+        prepare_calls += 1
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(
+        keepalive.fleet_tx, "prepare_attempt", observe_prepare
+    )
+
+    with pytest.raises(
+        keepalive.FleetContractError,
+        match="synthetic current authority drift",
+    ):
+        keepalive.tick_fleet(
+            str(root),
+            fleet,
+            launch_options=options,
+            now=100.0,
+            scheduler_safety_contract={
+                "expected_policy_contract_id": "1" * 64,
+                "transport_uncertainty_binding_sha256": "2" * 64,
+            },
+            protected_capacity_contract=protected,
+            control_state_dir=tmp_path / "control",
+            submission_runner=lambda *_a, **_kw: pytest.fail(
+                "authority drift must precede sbatch"
+            ),
+        )
+    assert authority_loads == fail_on_authority_load
+    assert prepare_calls == prepared_attempts
+
+
+@pytest.mark.parametrize(
+    "inventory_error",
+    (
+        "live protected server partition TRES/node inventory shrank",
+        "live protected server partition GPU TRES drifted",
+    ),
+)
+def test_fleet_tick_fails_closed_on_live_server_inventory_drift_before_sbatch(
+    tmp_path,
+    monkeypatch,
+    inventory_error,
+):
+    import keepalive
+    from slurm import schema5_control as control_plane
+    from agents_scaling.serving.fleet_contract import load_fleet_contract
+    from agents_scaling.serving.model_contracts import load_model_contracts
+
+    fleet = _one_replica_fleet(
+        load_fleet_contract(None, model_contracts=load_model_contracts())
+    )
+    root = tmp_path / "server_pools" / "schema5-v1"
+    root.mkdir(parents=True)
+    options = _frozen_environment_render_kwargs(tmp_path / "runtime")
+    options["model_contract_sha256"] = load_model_contracts().sha256
+    protected = SimpleNamespace()
+    monkeypatch.setattr(
+        keepalive,
+        "_load_current_fleet_authority",
+        lambda *_a, **_kw: ({"desired_state": "paused"}, protected),
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "_validate_live_fleet_scheduler_policy",
+        lambda *_a, **_kw: ({}, {}),
+    )
+    monkeypatch.setattr(
+        keepalive.protected_capacity,
+        "authorize_fleet",
+        lambda *_a, **_kw: None,
+    )
+
+    def reject_inventory(*_args, **_kwargs):
+        raise keepalive.protected_capacity.ProtectedCapacityError(
+            inventory_error
+        )
+
+    monkeypatch.setattr(
+        keepalive.protected_capacity,
+        "verify_live_placements",
+        reject_inventory,
+    )
+    monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: ())
+    monkeypatch.setattr(
+        control_plane,
+        "reconcile_trusted_scientific_job_provenance",
+        lambda *_a, **_kw: object(),
+    )
+    submission_calls: list[list[str]] = []
+
+    def submit(argv, **_kwargs):
+        submission_calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "999\n", "")
+
+    with pytest.raises(
+        keepalive.FleetContractError,
+        match="live protected placement rejected.*before sbatch",
+    ):
+        keepalive.tick_fleet(
+            str(root),
+            fleet,
+            launch_options=options,
+            now=100.0,
+            scheduler_safety_contract={
+                "expected_policy_contract_id": "1" * 64,
+                "transport_uncertainty_binding_sha256": "2" * 64,
+            },
+            protected_capacity_contract=protected,
+            control_state_dir=tmp_path / "control",
+            submission_runner=submit,
+        )
+    assert submission_calls == []
 
 
 def test_failed_scancel_retries_are_bounded_and_end_exhausted(tmp_path):
@@ -3684,6 +4134,7 @@ def test_failed_scancel_retries_are_bounded_and_end_exhausted(tmp_path):
         "node001",
         "/immutable.sbatch",
         "intent",
+        qos=replica.qos,
     )
     attempts = []
 
@@ -3792,17 +4243,14 @@ def test_terminal_fenced_job_gets_one_transactional_replacement(
         "CANCELLED by 1",
         replica.partition,
         "None assigned",
-        f"sbatch --comment={attempt['scheduler_comment']} {attempt['sbatch_path']}",
+        _fleet_submission_command(attempt),
         attempt["scheduler_comment"],
+        qos=replica.qos,
     )
     monkeypatch.setattr(keepalive, "_query_fleet_queue", lambda: (terminal,))
     submitted = []
 
-    def submit(argv, **_kwargs):
-        submitted.append(argv)
-        return type(
-            "Proc", (), {"returncode": 0, "stdout": "701\n", "stderr": ""}
-        )()
+    submit = _accepted_fleet_runner("701", submitted)
 
     keepalive.tick_fleet(
         str(root),
@@ -3811,7 +4259,7 @@ def test_terminal_fenced_job_gets_one_transactional_replacement(
         now=20.0,
         submission_runner=submit,
     )
-    assert len(submitted) == 1
+    assert len(submitted) == 2
     persisted = json.loads(fleet_transactions.ledger_path(
         root / fleet_transactions.STATE_DIRECTORY, 1
     ).read_text())

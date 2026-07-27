@@ -1,14 +1,16 @@
-"""Focused contracts for the superseding schema-5 v1.2-r2 recovery chain."""
+"""Focused contracts for the superseding schema-5 v1.2-r3 recovery chain."""
 
 from __future__ import annotations
 
 import hashlib
 import fcntl
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
 import re
 import runpy
+import shlex
 import stat
 import subprocess
 import sys
@@ -16,6 +18,9 @@ import sys
 import pytest
 
 from scripts import render_schema5_recovery_chain_v12 as chain
+from scripts import run_schema5_throughput_qualification as qualification
+from scripts import build_schema5_watchdog_deployment as watchdog_builder
+from scripts import publish_schema5_watchdog_ready as watchdog_publisher
 from scripts import run_schema5_smokes as smoke_runner
 from scripts import schema5_recovery_sentinel as recovery_sentinel
 from scripts import schema5_conda_runtime_identity
@@ -25,6 +30,111 @@ from scripts import verify_schema5_recovery_evidence
 
 COMMIT = "2" * 40
 TAG_OBJECT = "3" * 40
+
+
+def _base_profile_replicas() -> dict[str, int]:
+    return {
+        "0.6B": 2,
+        "0.6B-long": 1,
+        "1.7B": 2,
+        "1.7B-long": 1,
+        "4B": 2,
+        "4B-long": 1,
+        "8B": 3,
+        "8B-long": 1,
+        "14B": 2,
+        "14B-long": 1,
+        "32B": 4,
+        "32B-long": 2,
+    }
+
+
+def _effective_profile_replicas() -> dict[str, int]:
+    result = _base_profile_replicas()
+    for profile, count in {
+        "0.6B": 3,
+        "1.7B": 3,
+        "4B": 3,
+        "8B": 2,
+        "14B": 3,
+        "32B": 4,
+    }.items():
+        result[profile] += count
+    return result
+
+
+@lru_cache(maxsize=None)
+def _capacity_payloads(
+    base_fleet_sha256: str,
+    effective_fleet_sha256: str,
+) -> dict[str, object]:
+    base = _base_profile_replicas()
+    effective = _effective_profile_replicas()
+    certificate = qualification.build_preflight_capacity_certificate(
+        capacity_generation=1,
+        release_git_commit=COMMIT,
+        source_tree_sha256="a" * 64,
+        release_fleet_contract_sha256=base_fleet_sha256,
+        base_fleet_contract_sha256=base_fleet_sha256,
+        proposed_effective_fleet_contract_sha256=effective_fleet_sha256,
+        additive_overlay_contract_sha256=effective_fleet_sha256,
+        base_profile_replicas=base,
+        effective_profile_replicas=effective,
+        dispatcher_source_sha256="b" * 64,
+        qualification_runner_source_sha256="c" * 64,
+    )
+
+    def topology(
+        prefix: str, counts: dict[str, int]
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for profile in sorted(counts):
+            tp_size = int(
+                qualification.SERVING_PROFILE_REGISTRY[profile].tp_size
+            )
+            for index in range(counts[profile]):
+                rows.append(
+                    {
+                        "shape_id": (
+                            f"{prefix}-{profile.replace('.', '_')}-{index:02d}"
+                        ),
+                        "serving_profile": profile,
+                        "tasks": 1,
+                        "cpus": 1,
+                        "memory_mib": 1,
+                        "gpus": tp_size,
+                        "time_limit_seconds": 86_400,
+                    }
+                )
+        return rows
+
+    delta = {
+        profile: effective[profile] - base[profile] for profile in base
+    }
+    base_topology = topology("base", base)
+    additive_topology = topology("additive", delta)
+    effective_topology = [*base_topology, *additive_topology]
+    warm_topology = [
+        {
+            "shape_id": f"warm-{index}",
+            "serving_profile": profile,
+            "tasks": 1,
+            "cpus": 1,
+            "memory_mib": 1,
+            "gpus": gpus,
+            "time_limit_seconds": 86_400,
+        }
+        for index, (profile, gpus) in enumerate(
+            (("0.6B", 1), ("1.7B", 1), ("32B-long", 2))
+        )
+    ]
+    return {
+        "certificate": certificate,
+        "base_topology": base_topology,
+        "additive_topology": additive_topology,
+        "effective_topology": effective_topology,
+        "warm_topology": warm_topology,
+    }
 
 
 def _json(path: Path, payload: object) -> None:
@@ -40,6 +150,298 @@ def _identified_json(
     value[identity_field] = chain._sha256_bytes(chain._canonical_json(value))
     _json(path, value)
     return value
+
+
+def _write_protected_capacity_fixture(
+    recovery: Path,
+    release_binding: dict[str, object],
+) -> dict[str, object]:
+    contracts = recovery / "contracts"
+    base_path = contracts / "base-fleet.json"
+    effective_path = contracts / "effective-fleet.json"
+    _json(base_path, {"kind": "base-fleet-test-fixture"})
+    _json(effective_path, {"kind": "effective-fleet-test-fixture"})
+    base_sha256 = chain._sha256(base_path)
+    effective_sha256 = chain._sha256(effective_path)
+    payloads = _capacity_payloads(base_sha256, effective_sha256)
+    certificate_path = (
+        recovery
+        / "readiness"
+        / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
+    )
+    _json(certificate_path, payloads["certificate"])
+
+    def digest(value: object) -> str:
+        return chain._sha256_bytes(chain._canonical_json(value))
+
+    return _identified_json(
+        recovery / chain.PROTECTED_CAPACITY_MARKER_NAME,
+        {
+            **release_binding,
+            "schema_version": chain.protected_capacity.SCHEMA_VERSION,
+            "protocol": chain.PROTECTED_CAPACITY_PROTOCOL,
+            "source_tree_sha256": "a" * 64,
+            "dispatcher_source_sha256": "b" * 64,
+            "qualification_runner_source_sha256": "c" * 64,
+            "capacity_generation": 1,
+            "base_fleet_contract_path": str(base_path.resolve()),
+            "base_fleet_contract_sha256": base_sha256,
+            "effective_fleet_contract_path": str(
+                effective_path.resolve()
+            ),
+            "effective_fleet_contract_sha256": effective_sha256,
+            "additive_overlay_contract_path": str(
+                effective_path.resolve()
+            ),
+            "additive_overlay_contract_sha256": effective_sha256,
+            "static_feasibility_certificate": {
+                "path": str(certificate_path.resolve()),
+                "sha256": chain._sha256(certificate_path),
+                "certificate_id": payloads["certificate"][
+                    "certificate_id"
+                ],
+            },
+            "base_active_logical_replicas": 22,
+            "base_active_gpus": 24,
+            "base_active_topology": payloads["base_topology"],
+            "base_active_topology_sha256": digest(
+                payloads["base_topology"]
+            ),
+            "additive_reserved_logical_replicas": 18,
+            "additive_reserved_gpus": 18,
+            "additive_reserved_tp1_replicas": 18,
+            "additive_reserved_tp2_replicas": 0,
+            "additive_reserved_topology": payloads["additive_topology"],
+            "additive_reserved_topology_sha256": digest(
+                payloads["additive_topology"]
+            ),
+            "effective_active_logical_replicas": 40,
+            "effective_active_gpus": 42,
+            "effective_active_topology": payloads["effective_topology"],
+            "effective_active_topology_sha256": digest(
+                payloads["effective_topology"]
+            ),
+            "retained_warm_turnover_job_elements": 3,
+            "retained_warm_turnover_gpus": 4,
+            "retained_warm_turnover_tp1_allocations": 2,
+            "retained_warm_turnover_tp2_allocations": 1,
+            "retained_warm_turnover_topology": payloads["warm_topology"],
+            "retained_warm_turnover_topology_sha256": digest(
+                payloads["warm_topology"]
+            ),
+            "attested_total_gpus": 46,
+            "job_element_accounting": {
+                "cell_job_elements": 384,
+                "active_server_job_elements": 40,
+                "warm_turnover_job_elements": 3,
+                "controller_monitor_other_held_job_elements": 21,
+                "total_non_cell_reserve_job_elements": 64,
+                "total_canary_job_elements": 448,
+            },
+            "active_gpus": 42,
+            "warm_headroom_gpus": 4,
+            "cell_ceiling": 384,
+            "reserve_jobs": 64,
+            "submit_headroom": 448,
+            "cpu": 384,
+            "memory_mib": 1_572_864,
+            "preempt_type": "preempt/qos",
+            "capacity_source": chain.PROTECTED_CAPACITY_SOURCE,
+            "scheduler_cluster": "test_cluster",
+            "scheduler_account": "test_account",
+            "scheduler_user": "test_user",
+            "scheduler_max_jobs": 427,
+            "scheduler_max_submit_jobs": 500,
+            "running_scientific_jobs": 427,
+            "minimum_scientific_wall_seconds": 86_400,
+            "scientific_qos_contracts": [
+                {
+                    "qos": "client_science",
+                    "max_wall_seconds": 86_400,
+                    "max_jobs_per_user": 384,
+                    "max_submit_jobs_per_user": 500,
+                    "required_wall_seconds": 43_200,
+                    "required_running_jobs": 384,
+                    "required_submit_jobs": 405,
+                },
+                {
+                    "qos": "gpu_science",
+                    "max_wall_seconds": 86_400,
+                    "max_jobs_per_user": 43,
+                    "max_submit_jobs_per_user": 500,
+                    "required_wall_seconds": 86_400,
+                    "required_running_jobs": 43,
+                    "required_submit_jobs": 43,
+                },
+            ],
+            "partition_cpus": 384,
+            "partition_memory_mib": 1_572_864,
+            "partition_gpus": 46,
+            "fleet_contract_sha256": effective_sha256,
+            "active_fleet_topology_sha256": digest(
+                payloads["effective_topology"]
+            ),
+            "scientific_server_preempt_mode": "OFF",
+            "scientific_client_preempt_mode": "OFF",
+            "scientific_server_placements": [
+                {
+                    "partition": "gpu_protected",
+                    "qos": "gpu_science",
+                    "partition_preempt_mode": "OFF",
+                    "qos_preempt_mode": "OFF",
+                    "base_active_gpus": 24,
+                    "reserved_additive_gpus": 18,
+                    "effective_active_gpus": 42,
+                    "retained_warm_turnover_gpus": 4,
+                    "attested_total_gpus": 46,
+                    "partition_cpus": 4096,
+                    "partition_memory_mib": 33_554_432,
+                    "partition_gpus": 64,
+                    "partition_nodes": 8,
+                }
+            ],
+            "scientific_client_placements": [
+                {
+                    "partition": "cpu_protected",
+                    "qos": "client_science",
+                    "partition_preempt_mode": "OFF",
+                    "qos_preempt_mode": "OFF",
+                    "slots": 384,
+                    "cpus": 384,
+                    "memory_mib": 1_572_864,
+                    "reserve_jobs": 64,
+                    "submit_headroom": 448,
+                }
+            ],
+            "scheduler_evidence_id": "3" * 64,
+            "scheduler_evidence_sha256": "4" * 64,
+            "canary_id": "5" * 64,
+            "canary_evidence_sha256": "6" * 64,
+            "squeue_complete": True,
+            "sacct_complete": True,
+        },
+        identity_field="marker_id",
+    )
+
+
+def _write_superseded_r2_canary_failure(
+    recovery: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = recovery / "slurm_canaries" / "schema5-v1.2-r2"
+    tree.mkdir(parents=True)
+    partial = tree / "COMPOSITE_CANARY_INTENT.json"
+    partial.write_text('{"fixture":"partial-r2-canary"}\n', encoding="utf-8")
+    partial.chmod(0o444)
+    tree.chmod(0o555)
+
+    evidence = (
+        recovery
+        / chain.SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH
+    ).parent
+    evidence.mkdir(parents=True)
+    intent = evidence / "CANARY_FAILURE_SEAL_INTENT.json"
+    preseal = evidence / "CANARY_FAILURE_PRESEAL_INVENTORY.jsonl"
+    sealed = evidence / "CANARY_FAILURE_SEALED_INVENTORY.jsonl"
+    scheduler_pre = evidence / "CANARY_FAILURE_SCHEDULER_PRE.json"
+    scheduler_post = evidence / "CANARY_FAILURE_SCHEDULER_POST.json"
+    _json(intent, {"fixture": "intent"})
+    inventory, file_count, total_bytes = (
+        chain._current_canary_tree_inventory(tree)
+    )
+    inventory_payload = b"".join(
+        chain._compact_canonical_json(row) for row in inventory
+    )
+    for path in (preseal, sealed):
+        payload = inventory_payload
+        path.write_bytes(payload)
+        path.chmod(0o444)
+    scheduler = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r2-partial-canary-scheduler-evidence-v1"
+        ),
+        "complete_squeue_truth": True,
+        "complete_sacct_truth": True,
+        "no_active_matching_jobs": True,
+        "matching_squeue_rows": [],
+        "matching_sacct_rows": [
+            {
+                "job_id": chain.SUPERSEDED_R2_CANARY_JOB_ID,
+                "state": "CANCELLED",
+            }
+        ],
+    }
+    _json(scheduler_pre, scheduler)
+    _json(scheduler_post, scheduler)
+
+    artifact_paths = {
+        "intent": intent,
+        "preseal_inventory": preseal,
+        "sealed_inventory": sealed,
+        "scheduler_pre": scheduler_pre,
+        "scheduler_post": scheduler_post,
+    }
+    marker = {
+        "schema_version": 1,
+        "protocol": chain.SUPERSEDED_R2_CANARY_FAILURE_PROTOCOL,
+        "passed": True,
+        "classification": "deterministic_canary_failure_sealed_fail_closed",
+        "error_classification": "deterministic_missing_subprocess_capture",
+        "retry_in_place": False,
+        "no_active_matching_jobs_preseal": True,
+        "no_active_matching_jobs_postseal": True,
+        "mutation_claim": (
+            "bound_to_preexisting_evidence_not_inferred_from_absence"
+        ),
+        "tree": str(tree),
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+        "release": {
+            "release_tag": chain.SUPERSEDED_R2_RELEASE_TAG,
+            "release_git_commit": chain.SUPERSEDED_R2_RELEASE_COMMIT,
+            "release_tag_object": chain.SUPERSEDED_R2_RELEASE_TAG_OBJECT,
+            "code_identity": {
+                "protocol": "schema5-v1.2-r2-slurm-canary-code-v3",
+                "release_tag": chain.SUPERSEDED_R2_RELEASE_TAG,
+                "release_git_commit": chain.SUPERSEDED_R2_RELEASE_COMMIT,
+                "release_tag_object": (
+                    chain.SUPERSEDED_R2_RELEASE_TAG_OBJECT
+                ),
+            },
+        },
+        "known_scheduler_identity": {
+            "job_ids": [chain.SUPERSEDED_R2_CANARY_JOB_ID],
+        },
+        "sealed_at": "2026-07-26T00:00:00+00:00",
+    }
+    for field, path in artifact_paths.items():
+        marker[field] = str(path)
+        marker[f"{field}_sha256"] = chain._sha256(path)
+    marker["seal_id"] = chain._sha256_bytes(
+        chain._compact_canonical_json(marker)
+    )
+    marker_path = (
+        recovery
+        / chain.SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH
+    )
+    _json(marker_path, marker)
+    evidence.chmod(0o555)
+    monkeypatch.setattr(
+        chain,
+        "SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID",
+        marker["seal_id"],
+    )
+    monkeypatch.setattr(
+        chain,
+        "SUPERSEDED_R2_CANARY_FAILURE_FILE_COUNT",
+        file_count,
+    )
+    monkeypatch.setattr(
+        chain,
+        "SUPERSEDED_R2_CANARY_FAILURE_TOTAL_BYTES",
+        total_bytes,
+    )
 
 
 def test_conda_runtime_identity_rejects_links_outside_the_base_prefix(
@@ -72,6 +474,7 @@ def _paths(
     results = tmp_path / "results"
     recovery = results / "recovery" / "schema5-v1"
     recovery.mkdir(parents=True)
+    _write_superseded_r2_canary_failure(recovery, monkeypatch)
     release_binding = {
         "schema_version": 1,
         "passed": True,
@@ -109,7 +512,7 @@ def _paths(
         "annotated_tag": True,
         "remote_query_read_only": True,
         "remote": "durable",
-        "remote_commit_ref": "refs/heads/release",
+        "remote_commit_ref": "refs/heads/schema5-v1.2-r3",
         "remote_commit": COMMIT,
         "remote_tag_object": TAG_OBJECT,
         "remote_peeled_commit": COMMIT,
@@ -133,64 +536,7 @@ def _paths(
     durable_binding = chain.durable_git.marker_binding(
         durable_marker_path
     )
-    _identified_json(
-        recovery / chain.PROTECTED_CAPACITY_MARKER_NAME,
-        {
-            **release_binding,
-            "schema_version": 2,
-            "protocol": chain.PROTECTED_CAPACITY_PROTOCOL,
-            "active_gpus": 24,
-            "warm_headroom_gpus": 4,
-            "cell_ceiling": 384,
-            "reserve_jobs": 64,
-            "submit_headroom": 448,
-            "cpu": 384,
-            "memory_mib": 1_572_864,
-            "preempt_type": "preempt/qos",
-            "capacity_source": chain.PROTECTED_CAPACITY_SOURCE,
-            "scheduler_cluster": "test_cluster",
-            "scheduler_account": "test_account",
-            "scheduler_user": "test_user",
-            "scheduler_max_submit_jobs": 500,
-            "partition_cpus": 384,
-            "partition_memory_mib": 1_572_864,
-            "partition_gpus": 0,
-            "fleet_contract_sha256": "7" * 64,
-            "active_fleet_topology_sha256": "8" * 64,
-            "scientific_server_preempt_mode": "OFF",
-            "scientific_client_preempt_mode": "OFF",
-            "scientific_server_placements": [
-                {
-                    "partition": "gpu_protected",
-                    "qos": "gpu_science",
-                    "partition_preempt_mode": "OFF",
-                    "qos_preempt_mode": "OFF",
-                    "active_serving_gpus": 24,
-                    "warm_headroom_gpus": 4,
-                }
-            ],
-            "scientific_client_placements": [
-                {
-                    "partition": "cpu_protected",
-                    "qos": "client_science",
-                    "partition_preempt_mode": "OFF",
-                    "qos_preempt_mode": "OFF",
-                    "slots": 384,
-                    "cpus": 384,
-                    "memory_mib": 1_572_864,
-                    "reserve_jobs": 64,
-                    "submit_headroom": 448,
-                }
-            ],
-            "scheduler_evidence_id": "3" * 64,
-            "scheduler_evidence_sha256": "4" * 64,
-            "canary_id": "5" * 64,
-            "canary_evidence_sha256": "6" * 64,
-            "squeue_complete": True,
-            "sacct_complete": True,
-        },
-        identity_field="marker_id",
-    )
+    _write_protected_capacity_fixture(recovery, release_binding)
     drill = _identified_json(
         recovery / chain.EXTERNAL_WATCHDOG_DRILL_MARKER_NAME,
         {
@@ -500,7 +846,7 @@ def _paths(
                     "receipt": str(
                         received_paths.recovery_root
                         / "jobs"
-                        / "schema5-v1.2-r2-materialization-pilot.sbatch.receipt.json"
+                        / "schema5-v1.2-r3-materialization-pilot.sbatch.receipt.json"
                     ),
                     "receipt_sha256": "c" * 64,
                     "receipt_id": "d" * 64,
@@ -544,11 +890,29 @@ def _paths(
                     "python_size": pilot_python.stat().st_size,
                     "library_path": str(pilot_harness / "lib"),
                 },
+                "reconciliation_incident": {
+                    "path": str(
+                        received_paths.materialization_pilot_root
+                        / "environment-capture"
+                        / "evidence"
+                        / "CONDA_RECONCILIATION_INCIDENT.json"
+                    ),
+                    "sha256": (
+                        chain.PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256
+                    ),
+                    "incident_id": (
+                        chain.PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID
+                    ),
+                    "harness_stale_conda_record_present": False,
+                    "serving_stale_conda_record_present": False,
+                },
             },
             "slurm_canary": {
                 "schema_version": 4,
                 "kind": "schema5_slurm_fleet_composite_canary_complete",
                 "canary_root": str(received_paths.slurm_canary_root),
+                "partition": "mit_normal",
+                "qos": "normal",
                 "canary_id": "5" * 64,
                 "transaction_root": str(
                     received_paths.slurm_canary_root / "transaction"
@@ -642,6 +1006,15 @@ def _paths(
             json.dumps(contract, sort_keys=True)
         ),
     )
+    monkeypatch.setattr(
+        chain,
+        "_protected_capacity_release_source_binding",
+        lambda _paths, *, git_identity: {
+            "source_tree_sha256": "a" * 64,
+            "dispatcher_source_sha256": "b" * 64,
+            "qualification_runner_source_sha256": "c" * 64,
+        },
+    )
     return paths
 
 
@@ -681,6 +1054,59 @@ def _stub_tagged_release(
     return payloads
 
 
+def test_tagged_source_tree_hash_matches_control_tree_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blobs = {
+        "1" * 40: b"print('exact')\n",
+        "2" * 40: b"docs\n",
+        "3" * 40: b"scripts/tool.py",
+    }
+    tree = b"\0".join(
+        (
+            (
+                b"120000 blob "
+                + b"3" * 40
+                + b"\ttool-link"
+            ),
+            (
+                b"100644 blob "
+                + b"2" * 40
+                + b"\t.pytest_cache/ignored"
+            ),
+            (
+                b"100755 blob "
+                + b"1" * 40
+                + b"\tscripts/tool.py"
+            ),
+            b"",
+        )
+    )
+
+    def tagged_query(argv, *, cwd=None):
+        assert cwd == tmp_path
+        if argv[:3] == ["git", "ls-tree", "-rz"]:
+            return tree
+        if argv[:3] == ["git", "cat-file", "blob"]:
+            return blobs[argv[3]]
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(chain, "_run_checked_bytes", tagged_query)
+    observed = chain._tagged_source_tree_sha256(tmp_path, COMMIT)
+    expected = hashlib.sha256()
+    for relative, payload in (
+        ("scripts/tool.py", blobs["1" * 40]),
+        ("tool-link", b"SYMLINK\0scripts/tool.py"),
+    ):
+        relative_bytes = relative.encode("utf-8")
+        expected.update(len(relative_bytes).to_bytes(8, "big"))
+        expected.update(relative_bytes)
+        expected.update(len(payload).to_bytes(8, "big"))
+        expected.update(payload)
+    assert observed == expected.hexdigest()
+
+
 def _render_applied(
     paths: chain.RecoveryPaths,
     monkeypatch: pytest.MonkeyPatch,
@@ -694,6 +1120,372 @@ def _render_applied(
     )
     assert result["status"] == "complete"
     return payloads, json.loads(paths.chain_manifest.read_text(encoding="utf-8"))
+
+
+def _publish_r3_throughput_attempt(
+    paths: chain.RecoveryPaths,
+    manifest: dict,
+    *,
+    pointer_path: Path,
+    pointer: dict,
+    attempt_root: Path,
+    run_root: Path,
+) -> dict[str, object]:
+    intent_id = "d" * 64
+    reference_cycle = "1" * 64
+    replay_cycle = "2" * 64
+    replay_run_id = (
+        f"{chain.THROUGHPUT_QUALIFICATION_ROOT_NAME}"
+        f"__{pointer['attempt_id'][:12]}__cycle_000001"
+    )
+    replay_root = paths.results_root / "load-replay-runs" / replay_run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    replay_root.mkdir(parents=True, exist_ok=True)
+    (run_root / "reference.jsonl").write_text(
+        '{"fixture":"reference"}\n', encoding="utf-8"
+    )
+    (replay_root / "replay.jsonl").write_text(
+        '{"fixture":"replay"}\n', encoding="utf-8"
+    )
+    _seal_test_tree(run_root)
+    _seal_test_tree(replay_root)
+
+    rows: list[tuple[float, int, int, int]] = [
+        (1_000.0, 24, 0, 0),
+        (1_010.0, 24, 24, 24),
+        (1_020.0, 96, 96, 120),
+        (1_030.0, 192, 192, 312),
+        (1_040.0, 384, 384, 696),
+    ]
+    for index in range(1, 13):
+        rows.append(
+            (
+                1_040.0 + 600.0 * index,
+                384,
+                384,
+                696 + (16_833 * index) // 12,
+            )
+        )
+    rows.append((8_241.0, 384, 0, 17_529))
+    observation_inventory: list[dict[str, object]] = []
+    for sequence, (timestamp, ceiling, active, events) in enumerate(rows):
+        scheduler_path = (
+            attempt_root
+            / "scheduler"
+            / f"SCHEDULER_{sequence:06d}.json"
+        )
+        semantic_path = (
+            attempt_root
+            / "semantic"
+            / f"SEMANTIC_{sequence:06d}.json"
+        )
+        receipt_path = (
+            attempt_root
+            / "observations"
+            / f"OBSERVATION_{sequence:06d}.json"
+        )
+        scheduler = _identified_json(
+            scheduler_path,
+            {
+                "schema_version": (
+                    chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+                ),
+                "protocol": (
+                    chain.THROUGHPUT_QUALIFICATION_SCHEDULER_PROTOCOL
+                ),
+                "intent_id": intent_id,
+                "sequence": sequence,
+                "captured_timestamp": timestamp,
+                "ceiling": ceiling,
+                "squeue_complete": True,
+                "sacct_complete": True,
+                "errors": [],
+                "qualification_tasks_only": True,
+                "production_run_ids": [],
+                "active_qualification_cells": active,
+                "unfinished_load_assignments": (
+                    0 if active == 0 else 768
+                ),
+            },
+            identity_field="scheduler_id",
+        )
+        reference_events = min(events, chain.THROUGHPUT_QUALIFICATION_QIDS)
+        replay_events = max(
+            0, events - chain.THROUGHPUT_QUALIFICATION_QIDS
+        )
+        final = sequence == len(rows) - 1
+        progress = {
+            "stratum-a": events // 2,
+            "stratum-b": events - events // 2,
+        }
+        cycles = [
+            {
+                "cycle_index": 0,
+                "cycle_id": reference_cycle,
+                "run_id": chain.THROUGHPUT_QUALIFICATION_ROOT_NAME,
+                "semantic_reference": True,
+                "status": "complete" if final else "active",
+                "validated_execution_events": reference_events,
+                "unfinished_assignments": 0 if final else 384,
+                "estimand_excluded": True,
+                "primary_analysis_eligible": False,
+            },
+            {
+                "cycle_index": 1,
+                "cycle_id": replay_cycle,
+                "run_id": replay_run_id,
+                "semantic_reference": False,
+                "status": "load_window_drained" if final else "active",
+                "validated_execution_events": replay_events,
+                "unfinished_assignments": 0 if final else 384,
+                "estimand_excluded": True,
+                "primary_analysis_eligible": False,
+            },
+        ]
+        semantic = _identified_json(
+            semantic_path,
+            {
+                "schema_version": (
+                    chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+                ),
+                "protocol": (
+                    chain.THROUGHPUT_QUALIFICATION_SEMANTIC_PROTOCOL
+                ),
+                "intent_id": intent_id,
+                "sequence": sequence,
+                "captured_timestamp": timestamp,
+                "states": (
+                    {
+                        "complete": (
+                            chain.THROUGHPUT_QUALIFICATION_CELLS
+                        )
+                    }
+                    if final
+                    else {
+                        "active": active,
+                        "missing": (
+                            chain.THROUGHPUT_QUALIFICATION_CELLS - active
+                        ),
+                    }
+                ),
+                "validated_qids": (
+                    chain.THROUGHPUT_QUALIFICATION_QIDS
+                    if final
+                    else min(events, chain.THROUGHPUT_QUALIFICATION_QIDS)
+                ),
+                "useful_qids": (
+                    chain.THROUGHPUT_QUALIFICATION_QIDS
+                    if final
+                    else min(events, chain.THROUGHPUT_QUALIFICATION_QIDS)
+                ),
+                "artifact_schema_counts": (
+                    {"5": chain.THROUGHPUT_QUALIFICATION_QIDS}
+                    if final
+                    else {}
+                ),
+                "integrity_incidents": 0,
+                "transport_censor_incidents": 0,
+                "load_integrity_incidents": 0,
+                "load_censor_incidents": 0,
+                "semantic_reference_cycle": reference_cycle,
+                "trusted_qid_execution_events": events,
+                "replay_qid_execution_events": replay_events,
+                "load_strata_progress": progress,
+                "load_cycle_inventory": cycles,
+            },
+            identity_field="semantic_id",
+        )
+        receipt = _identified_json(
+            receipt_path,
+            {
+                "schema_version": (
+                    chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+                ),
+                "protocol": (
+                    chain.THROUGHPUT_QUALIFICATION_OBSERVATION_PROTOCOL
+                ),
+                "intent_id": intent_id,
+                "sequence": sequence,
+                "captured_timestamp": timestamp,
+                "ceiling": ceiling,
+                "scheduler": {
+                    "path": str(scheduler_path.resolve()),
+                    "sha256": chain._sha256(scheduler_path),
+                    "scheduler_id": scheduler["scheduler_id"],
+                },
+                "semantic": {
+                    "path": str(semantic_path.resolve()),
+                    "sha256": chain._sha256(semantic_path),
+                    "semantic_id": semantic["semantic_id"],
+                },
+            },
+            identity_field="observation_id",
+        )
+        observation_inventory.append(
+            {
+                "sequence": sequence,
+                "observation": {
+                    "path": str(receipt_path.resolve()),
+                    "sha256": chain._sha256(receipt_path),
+                    "observation_id": receipt["observation_id"],
+                },
+                "scheduler": {
+                    "path": str(scheduler_path.resolve()),
+                    "sha256": chain._sha256(scheduler_path),
+                    "scheduler_id": scheduler["scheduler_id"],
+                },
+                "semantic": {
+                    "path": str(semantic_path.resolve()),
+                    "sha256": chain._sha256(semantic_path),
+                    "semantic_id": semantic["semantic_id"],
+                },
+            }
+        )
+
+    final_cycles = json.loads(
+        (
+            attempt_root / "semantic" / "SEMANTIC_000017.json"
+        ).read_text(encoding="utf-8")
+    )["load_cycle_inventory"]
+    cycle_roots = [
+        {
+            "cycle_index": 0,
+            "cycle_id": reference_cycle,
+            "run_id": chain.THROUGHPUT_QUALIFICATION_ROOT_NAME,
+            "semantic_reference": True,
+            "estimand_excluded": True,
+            "primary_analysis_eligible": False,
+            **chain._qualification_tree_inventory(
+                run_root,
+                description="test reference load cycle",
+            ),
+        },
+        {
+            "cycle_index": 1,
+            "cycle_id": replay_cycle,
+            "run_id": replay_run_id,
+            "semantic_reference": False,
+            "estimand_excluded": True,
+            "primary_analysis_eligible": False,
+            **chain._qualification_tree_inventory(
+                replay_root,
+                description="test replay load cycle",
+            ),
+        },
+    ]
+    deltas = {"stratum-a": 8_416, "stratum-b": 8_417}
+    unique = {
+        "cells": chain.THROUGHPUT_QUALIFICATION_CELLS,
+        "qids": chain.THROUGHPUT_QUALIFICATION_QIDS,
+        "semantic_reference_cycle": reference_cycle,
+    }
+    load = {
+        "unit": "trusted_qid_execution_events",
+        "repeated_coordinates": True,
+        "window_intent_id": "a" * 64,
+        "window_start_sequence": 4,
+        "window_end_sequence": 16,
+        "window_start_timestamp": 1_040.0,
+        "window_end_timestamp": 8_240.0,
+        "window_duration_seconds": 7_200,
+        "trusted_execution_events": 16_833,
+        "replay_execution_events_total": 2_169,
+        "cycle_count": 2,
+        "cycle_inventory": final_cycles,
+        "capacity_target": 384,
+        "certified_exact_384_cuts": True,
+        "work_conserving_refill": True,
+        "sealed_refill_deficit_journal": True,
+        "refill_deficit_scan_count": 0,
+        "refill_wall_seconds": 0.0,
+        "rate_denominator_includes_refill_wall_time": True,
+        "minimum_unfinished_assignments": 384,
+        "all_strata_progress": True,
+        "stratum_execution_event_deltas": deltas,
+        "throughput_events_per_day": 201_996,
+    }
+    evaluation = {
+        "unique_design": unique,
+        "load_execution": load,
+    }
+    evidence = _identified_json(
+        attempt_root / "QUALIFICATION_EVIDENCE.json",
+        {
+            "schema_version": (
+                chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            ),
+            "protocol": chain.THROUGHPUT_QUALIFICATION_EVIDENCE_PROTOCOL,
+            "intent_id": intent_id,
+            "plan_id": "e" * 64,
+            "run_id": chain.THROUGHPUT_QUALIFICATION_ROOT_NAME,
+            "estimand_excluded": True,
+            "primary_analysis_eligible": False,
+            "unique_design": unique,
+            "load_execution": load,
+            "load_window_intent": {},
+            "load_window_drain": {},
+            "load_window_end_intent": {},
+            "cycle_run_roots": cycle_roots,
+            "refill_reconciliations": [],
+            "observations": observation_inventory,
+            "evaluation": evaluation,
+        },
+        identity_field="evidence_id",
+    )
+    prerequisite = manifest["prerequisite_evidence"]
+    protected = prerequisite["protected_capacity"]
+    marker = _identified_json(
+        attempt_root / chain.THROUGHPUT_QUALIFICATION_MARKER_NAME,
+        {
+            "schema_version": (
+                chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            ),
+            "protocol": chain.THROUGHPUT_QUALIFICATION_PROTOCOL,
+            "passed": True,
+            "release_id": chain.RELEASE_ID,
+            "release_tag": chain.RELEASE_TAG,
+            "release_git_commit": COMMIT,
+            "release_tag_object": TAG_OBJECT,
+            "chain_namespace": chain.CHAIN_NAMESPACE,
+            "chain_id": manifest["chain_id"],
+            "manifest": str(paths.chain_manifest),
+            "manifest_sha256": chain._sha256(paths.chain_manifest),
+            "protected_capacity": {
+                "marker": protected["marker"],
+                "marker_sha256": protected["marker_sha256"],
+                "marker_id": protected["marker_id"],
+            },
+            "attempt": chain._qualification_attempt_binding(
+                pointer_path, pointer
+            ),
+            "evidence": {
+                "path": str(
+                    (attempt_root / "QUALIFICATION_EVIDENCE.json").resolve()
+                ),
+                "sha256": chain._sha256(
+                    attempt_root / "QUALIFICATION_EVIDENCE.json"
+                ),
+                "evidence_id": evidence["evidence_id"],
+            },
+            "cells": chain.THROUGHPUT_QUALIFICATION_CELLS,
+            "qids": chain.THROUGHPUT_QUALIFICATION_QIDS,
+            "unique_design": unique,
+            "load_execution": load,
+            "ceilings": list(chain.THROUGHPUT_QUALIFICATION_CEILINGS),
+            "health_soak_384_seconds": 7_200,
+            "loaded_384_seconds": 7_200,
+            "loaded_384_useful_qids": 16_833,
+            "loaded_384_observation_count": 13,
+            "certified_exact_384_cuts": True,
+            "throughput_qids_per_day": 201_996,
+            "throughput_unit": "trusted_qid_execution_events",
+            "every_stratum_progress": True,
+            "integrity_incidents": 0,
+            "transport_censor_incidents": 0,
+        },
+        identity_field="qualification_id",
+    )
+    return marker
 
 
 def _publish_throughput_qualification(
@@ -789,41 +1581,13 @@ def _publish_throughput_qualification(
         },
         identity_field="current_id",
     )
-    marker = _identified_json(
-        attempt_root / chain.THROUGHPUT_QUALIFICATION_MARKER_NAME,
-        {
-            "schema_version": 1,
-            "protocol": chain.THROUGHPUT_QUALIFICATION_PROTOCOL,
-            "passed": True,
-            "release_id": chain.RELEASE_ID,
-            "release_tag": chain.RELEASE_TAG,
-            "release_git_commit": COMMIT,
-            "release_tag_object": TAG_OBJECT,
-            "chain_namespace": chain.CHAIN_NAMESPACE,
-            "chain_id": manifest["chain_id"],
-            "manifest": str(paths.chain_manifest),
-            "manifest_sha256": chain._sha256(paths.chain_manifest),
-            "protected_capacity": compact(
-                "protected_capacity", "marker_id"
-            ),
-            "attempt": chain._qualification_attempt_binding(
-                pointer_path,
-                pointer,
-            ),
-            "cells": chain.THROUGHPUT_QUALIFICATION_CELLS,
-            "qids": chain.THROUGHPUT_QUALIFICATION_QIDS,
-            "ceilings": list(chain.THROUGHPUT_QUALIFICATION_CEILINGS),
-            "steady_384_seconds": (
-                chain.THROUGHPUT_QUALIFICATION_STEADY_SECONDS
-            ),
-            "throughput_qids_per_day": (
-                chain.THROUGHPUT_QUALIFICATION_MIN_QIDS_PER_DAY
-            ),
-            "every_stratum_progress": True,
-            "integrity_incidents": 0,
-            "transport_censor_incidents": 0,
-        },
-        identity_field="qualification_id",
+    marker = _publish_r3_throughput_attempt(
+        paths,
+        manifest,
+        pointer_path=pointer_path,
+        pointer=pointer,
+        attempt_root=attempt_root,
+        run_root=run_root,
     )
     _json(paths.throughput_qualification_marker, marker)
     for root in (attempt_root, run_root):
@@ -869,10 +1633,43 @@ def _promote_throughput_qualification_to_additive_successor(
         "requirement": "add one replica (1 GPU)",
         "capacity_mutated": False,
     }
+    failure_reason = "qualification throughput is below threshold"
+    drain_observation_path = sorted(
+        (attempt1_root / "observations").glob("OBSERVATION_*.json")
+    )[-1]
+    drain_observation = json.loads(
+        drain_observation_path.read_text(encoding="utf-8")
+    )
+    drain_intent = _identified_json(
+        attempt1_root / "QUALIFICATION_FAILURE_DRAIN_INTENT.json",
+        {
+            "schema_version": (
+                chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            ),
+            "protocol": (
+                "schema5-v1.2-r3-throughput-qualification-"
+                "failure-drain-intent-v3"
+            ),
+            "qualification_intent_id": "d" * 64,
+            "reason": failure_reason,
+            "admission_closed": True,
+            "state": "draining",
+            "requested_timestamp": 8_240.0,
+            "requested_at": chain.datetime.fromtimestamp(
+                8_240.0, tz=chain.timezone.utc
+            ).isoformat(),
+        },
+        identity_field="failure_drain_intent_id",
+    )
+    evidence = json.loads(
+        Path(marker["evidence"]["path"]).read_text(encoding="utf-8")
+    )
     failure = _identified_json(
         attempt1_root / chain.THROUGHPUT_QUALIFICATION_FAILURE_NAME,
         {
-            "schema_version": 1,
+            "schema_version": (
+                chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            ),
             "protocol": (
                 chain.THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL
             ),
@@ -883,9 +1680,33 @@ def _promote_throughput_qualification_to_additive_successor(
                 pointer1,
             ),
             "readiness_generation": pointer1["readiness_generation"],
-            "reason": "qualification throughput is below threshold",
+            "reason": failure_reason,
             "additive_scaling_requirement": scaling,
             "scheduler_capacity_mutated": False,
+            "failure_drain_intent": {
+                "path": str(
+                    attempt1_root
+                    / "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
+                ),
+                "sha256": chain._sha256(
+                    attempt1_root
+                    / "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
+                ),
+                "failure_drain_intent_id": drain_intent[
+                    "failure_drain_intent_id"
+                ],
+                "drain_observation": {
+                    "path": str(drain_observation_path),
+                    "sha256": chain._sha256(drain_observation_path),
+                    "observation_id": drain_observation[
+                        "observation_id"
+                    ],
+                },
+            },
+            "cycle_run_roots": evidence["cycle_run_roots"],
+            "refill_reconciliations": evidence[
+                "refill_reconciliations"
+            ],
             "rerun_requirement": (
                 "publish a fresh serving/capacity and trusted-catalog "
                 "rollout generation, then create a fresh qualification "
@@ -997,16 +1818,16 @@ def _promote_throughput_qualification_to_additive_successor(
         },
         identity_field="current_id",
     )
-    successor_identity = dict(marker)
-    successor_identity.pop("qualification_id")
-    successor_identity["attempt"] = chain._qualification_attempt_binding(
-        pointer2_path,
-        pointer2,
+    manifest = json.loads(
+        paths.chain_manifest.read_text(encoding="utf-8")
     )
-    successor = _identified_json(
-        attempt2_root / chain.THROUGHPUT_QUALIFICATION_MARKER_NAME,
-        successor_identity,
-        identity_field="qualification_id",
+    successor = _publish_r3_throughput_attempt(
+        paths,
+        manifest,
+        pointer_path=pointer2_path,
+        pointer=pointer2,
+        attempt_root=attempt2_root,
+        run_root=run2_root,
     )
     paths.throughput_qualification_marker.chmod(0o644)
     _json(paths.throughput_qualification_marker, successor)
@@ -1044,10 +1865,43 @@ def _replace_throughput_success_with_failure(
         "requirement": "add one replica (1 GPU)",
         "capacity_mutated": False,
     }
+    failure_reason = "qualification throughput is below threshold"
+    drain_observation_path = sorted(
+        (attempt_root / "observations").glob("OBSERVATION_*.json")
+    )[-1]
+    drain_observation = json.loads(
+        drain_observation_path.read_text(encoding="utf-8")
+    )
+    drain_intent = _identified_json(
+        attempt_root / "QUALIFICATION_FAILURE_DRAIN_INTENT.json",
+        {
+            "schema_version": (
+                chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            ),
+            "protocol": (
+                "schema5-v1.2-r3-throughput-qualification-"
+                "failure-drain-intent-v3"
+            ),
+            "qualification_intent_id": "d" * 64,
+            "reason": failure_reason,
+            "admission_closed": True,
+            "state": "draining",
+            "requested_timestamp": 8_240.0,
+            "requested_at": chain.datetime.fromtimestamp(
+                8_240.0, tz=chain.timezone.utc
+            ).isoformat(),
+        },
+        identity_field="failure_drain_intent_id",
+    )
+    evidence = json.loads(
+        Path(marker["evidence"]["path"]).read_text(encoding="utf-8")
+    )
     failure = _identified_json(
         attempt_root / chain.THROUGHPUT_QUALIFICATION_FAILURE_NAME,
         {
-            "schema_version": 1,
+            "schema_version": (
+                chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
+            ),
             "protocol": (
                 chain.THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL
             ),
@@ -1055,9 +1909,33 @@ def _replace_throughput_success_with_failure(
             "intent_id": "d" * 64,
             "attempt": marker["attempt"],
             "readiness_generation": pointer["readiness_generation"],
-            "reason": "qualification throughput is below threshold",
+            "reason": failure_reason,
             "additive_scaling_requirement": scaling,
             "scheduler_capacity_mutated": False,
+            "failure_drain_intent": {
+                "path": str(
+                    attempt_root
+                    / "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
+                ),
+                "sha256": chain._sha256(
+                    attempt_root
+                    / "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
+                ),
+                "failure_drain_intent_id": drain_intent[
+                    "failure_drain_intent_id"
+                ],
+                "drain_observation": {
+                    "path": str(drain_observation_path),
+                    "sha256": chain._sha256(drain_observation_path),
+                    "observation_id": drain_observation[
+                        "observation_id"
+                    ],
+                },
+            },
+            "cycle_run_roots": evidence["cycle_run_roots"],
+            "refill_reconciliations": evidence[
+                "refill_reconciliations"
+            ],
             "rerun_requirement": (
                 "publish a fresh exact additive serving/readiness "
                 "generation and rerun in a new immutable attempt"
@@ -1069,7 +1947,7 @@ def _replace_throughput_success_with_failure(
     return pointer_path, pointer, failure
 
 
-def test_r2_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
+def test_r3_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = _paths(tmp_path, monkeypatch)
@@ -1131,6 +2009,10 @@ def test_r2_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
         "throughput_qualification",
     ]
     assert "protected_capacity" in manifest["prerequisite_evidence"]
+    assert (
+        "superseded_r2_canary_failure"
+        in manifest["prerequisite_evidence"]
+    )
     assert "external_watchdog_drill" not in manifest["prerequisite_evidence"]
     assert "watchdog_ready" not in manifest["prerequisite_evidence"]
     qualification = Path(
@@ -1308,7 +2190,77 @@ def test_full_capacity_marker_is_a_fail_closed_render_prerequisite(
 
     with pytest.raises(
         chain.ChainError,
-        match="protected-capacity completion marker remains writable",
+        match="protected-capacity.*read-only|stable, read-only",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
+        )
+
+
+def test_superseded_r2_canary_failure_is_a_fail_closed_render_prerequisite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    paths.superseded_r2_canary_failure_marker.chmod(0o644)
+
+    with pytest.raises(
+        chain.ChainError,
+        match="superseded r2 canary failure seal remains writable",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
+        )
+
+
+def test_superseded_r2_canary_tree_content_must_match_sealed_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    partial = (
+        paths.recovery_root
+        / "slurm_canaries"
+        / "schema5-v1.2-r2"
+        / "COMPOSITE_CANARY_INTENT.json"
+    )
+    partial.chmod(0o644)
+    partial.write_text('{"fixture":"tampered-r2-canary"}\n', encoding="utf-8")
+    partial.chmod(0o444)
+
+    with pytest.raises(
+        chain.ChainError,
+        match="differs from its sealed inventory",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
+        )
+
+
+def test_superseded_r2_canary_failure_rejects_extra_evidence_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    evidence_root = paths.superseded_r2_canary_failure_marker.parent
+    evidence_root.chmod(0o755)
+    extra = evidence_root / "UNBOUND_EVIDENCE.json"
+    extra.write_text('{"unbound":true}\n', encoding="utf-8")
+    extra.chmod(0o444)
+    evidence_root.chmod(0o555)
+
+    with pytest.raises(
+        chain.ChainError,
+        match="contains unexpected or missing artifacts",
     ):
         chain.render_chain(
             paths,
@@ -1325,7 +2277,7 @@ def test_watchdog_is_post_initialize_not_a_renderer_bootstrap_prerequisite(
     paths.external_watchdog_drill_marker.unlink()
     paths.watchdog_ready_marker.unlink()
     _, manifest = _render_applied(paths, monkeypatch)
-    assert manifest["prerequisite_evidence"]["schema_version"] == 5
+    assert manifest["prerequisite_evidence"]["schema_version"] == 7
     assert "external_watchdog_drill" not in manifest["prerequisite_evidence"]
     assert "watchdog_ready" not in manifest["prerequisite_evidence"]
     assert len(manifest["jobs"]) == 43
@@ -1381,8 +2333,8 @@ def test_protected_capacity_source_and_placement_bindings_fail_closed(
         marker["scheduler_evidence_sha256"] = "x" * 64
     elif mutation == "placement_total_drift":
         marker["scientific_server_placements"][0][
-            "active_serving_gpus"
-        ] = 25
+            "effective_active_gpus"
+        ] = 43
     else:
         marker["scientific_server_placements"] = [
             {
@@ -1390,16 +2342,22 @@ def test_protected_capacity_source_and_placement_bindings_fail_closed(
                 "qos": "z_science",
                 "partition_preempt_mode": "OFF",
                 "qos_preempt_mode": "OFF",
-                "active_serving_gpus": 24,
-                "warm_headroom_gpus": 0,
+                "base_active_gpus": 24,
+                "reserved_additive_gpus": 18,
+                "effective_active_gpus": 42,
+                "retained_warm_turnover_gpus": 0,
+                "attested_total_gpus": 42,
             },
             {
                 "partition": "a_gpu",
                 "qos": "a_science",
                 "partition_preempt_mode": "OFF",
                 "qos_preempt_mode": "OFF",
-                "active_serving_gpus": 0,
-                "warm_headroom_gpus": 4,
+                "base_active_gpus": 0,
+                "reserved_additive_gpus": 0,
+                "effective_active_gpus": 0,
+                "retained_warm_turnover_gpus": 4,
+                "attested_total_gpus": 4,
             },
         ]
     marker.pop("marker_id")
@@ -1409,11 +2367,62 @@ def test_protected_capacity_source_and_placement_bindings_fail_closed(
 
     with pytest.raises(
         chain.ChainError,
-        match=(
-            "non-preemptible scientific placement"
-            if mutation != "unsorted_placements"
-            else "not canonically sorted"
-        ),
+        match="protected-capacity completion marker is invalid",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "association_running_limit",
+        "running_envelope",
+        "wall_envelope",
+        "qos_running_limit",
+        "qos_running_total",
+        "server_walltime",
+        "qos_coverage",
+    ],
+)
+def test_protected_capacity_requires_exact_assoc_qos_and_walltime_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    marker = json.loads(
+        paths.protected_capacity_marker.read_text(encoding="utf-8")
+    )
+    contracts = marker["scientific_qos_contracts"]
+    assert isinstance(contracts, list)
+    if mutation == "association_running_limit":
+        marker["scheduler_max_jobs"] = 408
+    elif mutation == "running_envelope":
+        marker["running_scientific_jobs"] = 408
+    elif mutation == "wall_envelope":
+        marker["minimum_scientific_wall_seconds"] = 43_200
+    elif mutation == "qos_running_limit":
+        contracts[1]["max_jobs_per_user"] = 24
+    elif mutation == "qos_running_total":
+        contracts[0]["required_running_jobs"] = 383
+    elif mutation == "server_walltime":
+        contracts[1]["required_wall_seconds"] = 43_200
+    else:
+        marker["scientific_qos_contracts"] = contracts[:1]
+    marker.pop("marker_id")
+    marker["marker_id"] = chain._sha256_bytes(chain._canonical_json(marker))
+    paths.protected_capacity_marker.chmod(0o644)
+    _json(paths.protected_capacity_marker, marker)
+
+    with pytest.raises(
+        chain.ChainError,
+        match="protected",
     ):
         chain.render_chain(
             paths,
@@ -1433,9 +2442,16 @@ def test_throughput_qualification_binds_full_384_capacity(
     verified = chain.verify_throughput_qualification(paths.chain_manifest)
     assert verified["passed"] is True
     assert verified["qualification_id"] == marker["qualification_id"]
+    assert "steady_384_seconds" not in marker
+    assert "steady_384_seconds" not in verified
     assert verified["cells"] == 768
     assert verified["qids"] == 15_360
-    assert verified["throughput_qids_per_day"] == 201_994
+    assert verified["health_soak_384_seconds"] == 7_200
+    assert verified["loaded_384_seconds"] == 7_200
+    assert verified["loaded_384_useful_qids"] == 16_833
+    assert verified["loaded_384_observation_count"] == 13
+    assert verified["certified_exact_384_cuts"] is True
+    assert verified["throughput_qids_per_day"] == 201_996
 
     marker["throughput_qids_per_day"] = 201_993
     marker.pop("qualification_id")
@@ -1454,7 +2470,49 @@ def test_throughput_qualification_binds_full_384_capacity(
         _json(marker_path, marker)
     with pytest.raises(
         chain.ChainError,
-        match="full-384 protected-capacity contract",
+        match="throughput qualification",
+    ):
+        chain.verify_throughput_qualification(paths.chain_manifest)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("health_soak_384_seconds", 7_199),
+        ("loaded_384_seconds", 0),
+        ("loaded_384_useful_qids", 0),
+        ("loaded_384_observation_count", 1),
+        ("certified_exact_384_cuts", False),
+    ],
+)
+def test_throughput_qualification_requires_loaded_384_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _, manifest = _render_applied(paths, monkeypatch)
+    marker = _publish_throughput_qualification(paths, manifest)
+    marker[field] = value
+    marker.pop("qualification_id")
+    marker["qualification_id"] = chain._sha256_bytes(
+        chain._canonical_json(marker)
+    )
+    attempt_marker = (
+        Path(marker["attempt"]["attempt_root"])
+        / chain.THROUGHPUT_QUALIFICATION_MARKER_NAME
+    )
+    for marker_path in (
+        attempt_marker,
+        paths.throughput_qualification_marker,
+    ):
+        marker_path.chmod(0o644)
+        _json(marker_path, marker)
+
+    with pytest.raises(
+        chain.ChainError,
+        match="throughput qualification",
     ):
         chain.verify_throughput_qualification(paths.chain_manifest)
 
@@ -1769,6 +2827,7 @@ class _RecoveryLaunchScheduler:
         *,
         crash_after_release: bool = False,
         crash_before_release: bool = False,
+        crash_after_release_call: int | None = None,
         dependency_drift: str | None = None,
         dependency_or_drift: str | None = None,
         requeue_drift: str | None = None,
@@ -1781,6 +2840,7 @@ class _RecoveryLaunchScheduler:
         self.recovery_root = recovery_root
         self.crash_after_release = crash_after_release
         self.crash_before_release = crash_before_release
+        self.crash_after_release_call = crash_after_release_call
         self.dependency_drift = dependency_drift
         self.dependency_or_drift = dependency_or_drift
         self.requeue_drift = requeue_drift
@@ -1793,6 +2853,7 @@ class _RecoveryLaunchScheduler:
         self.jobs: dict[str, dict[str, str]] = {}
         self.sbatch_calls: list[list[str]] = []
         self.release_calls: list[list[str]] = []
+        self.purged_job_ids: set[str] = set()
 
     def __call__(self, argv):
         if argv == ["scontrol", "show", "config"]:
@@ -1845,6 +2906,7 @@ class _RecoveryLaunchScheduler:
                 "path": str(path),
                 "dependency": dependency,
                 "script": script,
+                "submit_line": shlex.join(list(argv)),
             }
             self.sbatch_calls.append(list(argv))
             return subprocess.CompletedProcess(
@@ -1857,6 +2919,8 @@ class _RecoveryLaunchScheduler:
                     f"{job_id}|{job['state']}|{job['comment']}|{job['name']}\n"
                     for job_id, job in self.jobs.items()
                     if job["name"] != self.missing_squeue
+                    and job["state"]
+                    in {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING"}
                 )
                 if self.foreign_namespace and self.jobs:
                     first = next(iter(self.jobs.values()))
@@ -1867,6 +2931,8 @@ class _RecoveryLaunchScheduler:
                 rows = "".join(
                     f"{job_id}|{job['comment']}|{job['name']}|{job['state']}\n"
                     for job_id, job in self.jobs.items()
+                    if job["state"]
+                    in {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING"}
                 )
             return subprocess.CompletedProcess(
                 argv, 0, stdout=rows, stderr=""
@@ -1879,7 +2945,7 @@ class _RecoveryLaunchScheduler:
                 rows = "".join(
                     (
                         f"{job_id}|{job['state']}|0:0||{job['name']}|"
-                        f"sbatch --comment={job['comment']} {job['path']}\n"
+                        f"{job['submit_line']}\n"
                     )
                     for job_id, job in self.jobs.items()
                     if job["name"] != self.missing_sacct
@@ -1888,13 +2954,17 @@ class _RecoveryLaunchScheduler:
                 rows = "".join(
                     (
                         f"{job_id}||{job['name']}|{job['state']}|"
-                        f"sbatch --comment={job['comment']} {job['path']}\n"
+                        f"{job['submit_line']}\n"
                     )
                     for job_id, job in self.jobs.items()
                 )
             return subprocess.CompletedProcess(argv, 0, stdout=rows, stderr="")
         if argv[:4] == ["scontrol", "show", "job", "-o"]:
             job_id = argv[4]
+            if job_id in self.purged_job_ids:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="invalid job id"
+                )
             job = self.jobs[job_id]
             dependency = job["dependency"]
             if job["name"] == self.dependency_drift:
@@ -1929,6 +2999,10 @@ class _RecoveryLaunchScheduler:
             )
         if argv[:3] == ["scontrol", "write", "batch_script"]:
             job_id = argv[3]
+            if job_id in self.purged_job_ids:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="", stderr="invalid job id"
+                )
             job = self.jobs[job_id]
             payload = job["script"]
             if job["name"] == self.spool_drift:
@@ -1953,11 +3027,779 @@ class _RecoveryLaunchScheduler:
                 raise KeyboardInterrupt("crash before exact root release")
             self.jobs[job_id]["state"] = "RUNNING"
             self.jobs[job_id]["reason"] = "None"
-            if self.crash_after_release:
+            if (
+                self.crash_after_release
+                or self.crash_after_release_call
+                == len(self.release_calls)
+            ):
                 self.crash_after_release = False
+                self.crash_after_release_call = None
                 raise KeyboardInterrupt("crash after exact root release")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected launch scheduler command: {argv}")
+
+
+def _arm_bootstrap_watchdog(
+    paths,
+    scheduler: _RecoveryLaunchScheduler,
+    *,
+    first_timestamp: float = 1_721_750_400.0,
+) -> dict[str, object]:
+    manifest = json.loads(paths.chain_manifest.read_text(encoding="utf-8"))
+    receipt_path = paths.recovery_root / chain.SUBMISSION_RECEIPT_NAME
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    first = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=first_timestamp,
+        record=True,
+    )
+    second = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=first_timestamp + 60,
+        record=True,
+    )
+
+    def seal_drill_artifact(path: Path, payload: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(watchdog_builder._canonical(payload))
+        path.chmod(0o444)
+
+    isolated_root = (
+        paths.recovery_root
+        / watchdog_builder.BOOTSTRAP_ISOLATED_DRILL_DIRECTORY
+    )
+    isolated_manifest_path = (
+        isolated_root / watchdog_builder.BOOTSTRAP_CHAIN_MANIFEST_NAME
+    )
+    isolated_manifest = json.loads(json.dumps(manifest))
+    isolated_manifest.pop("chain_id")
+    isolated_manifest["recovery_root"] = str(isolated_root)
+    isolated_manifest["jobs_root"] = str(isolated_root / "jobs")
+    isolated_manifest["logs_root"] = str(isolated_root / "logs")
+    for row in isolated_manifest["jobs"]:
+        row["script"] = str(
+            isolated_root / "jobs" / Path(str(row["script"])).name
+        )
+    isolated_manifest["chain_id"] = chain._sha256_bytes(
+        chain._canonical_json(isolated_manifest)
+    )
+    seal_drill_artifact(isolated_manifest_path, isolated_manifest)
+    isolated_receipt_path = (
+        isolated_root / watchdog_builder.BOOTSTRAP_SUBMISSION_RECEIPT_NAME
+    )
+    isolated_receipt = {
+        key: value for key, value in receipt.items() if key != "receipt_id"
+    }
+    isolated_receipt.update(
+        chain_id=isolated_manifest["chain_id"],
+        manifest=str(isolated_manifest_path),
+        manifest_sha256=chain._sha256(isolated_manifest_path),
+    )
+    isolated_ids = {
+        row["name"]: str(870000 + index)
+        for index, row in enumerate(isolated_manifest["jobs"])
+    }
+    submitted: dict[str, str] = {}
+    isolated_receipt_jobs: list[dict[str, object]] = []
+    for manifest_row, receipt_row in zip(
+        isolated_manifest["jobs"], receipt["jobs"], strict=True
+    ):
+        name = manifest_row["name"]
+        job_id = isolated_ids[name]
+        dependencies = list(manifest_row["dependencies"])
+        isolated_receipt_jobs.append(
+            {
+                **receipt_row,
+                "job_id": job_id,
+                "dependencies": dependencies,
+                "dependency_job_ids": [
+                    submitted[item] for item in dependencies
+                ],
+                "comment": (
+                    "asys:s5-recovery-v1.2-r3:"
+                    f"{isolated_manifest['chain_id']}:g0000:{name}"
+                ),
+                "script": manifest_row["script"],
+                "script_sha256": manifest_row["script_sha256"],
+            }
+        )
+        submitted[name] = job_id
+    isolated_receipt["jobs"] = isolated_receipt_jobs
+    isolated_receipt["receipt_id"] = chain._sha256_bytes(
+        chain._canonical_json(isolated_receipt)
+    )
+    seal_drill_artifact(isolated_receipt_path, isolated_receipt)
+    canonical_provenance_path = Path(str(first["generation_provenance"]))
+    canonical_provenance = json.loads(
+        canonical_provenance_path.read_text(encoding="utf-8")
+    )
+    isolated_provenance = json.loads(json.dumps(canonical_provenance))
+    isolated_provenance.pop("provenance_id")
+    isolated_provenance.update(
+        chain_id=isolated_manifest["chain_id"],
+        chain_manifest=str(isolated_manifest_path),
+        chain_manifest_sha256=chain._sha256(isolated_manifest_path),
+        submission_receipt=str(isolated_receipt_path),
+        submission_receipt_sha256=chain._sha256(isolated_receipt_path),
+        submission_receipt_id=isolated_receipt["receipt_id"],
+        namespace_lineage_receipt_ids=[isolated_receipt["receipt_id"]],
+        namespace_bound_job_ids=sorted(isolated_ids.values(), key=int),
+    )
+    for provenance_row, manifest_row, receipt_row in zip(
+        isolated_provenance["jobs"],
+        isolated_manifest["jobs"],
+        isolated_receipt_jobs,
+        strict=True,
+    ):
+        provenance_row.update(
+            job_id=receipt_row["job_id"],
+            comment=receipt_row["comment"],
+            script_sha256=manifest_row["script_sha256"],
+            scontrol_command=receipt_row["script"],
+            dependency_job_ids=receipt_row["dependency_job_ids"],
+            origin_generation=0,
+        )
+    isolated_provenance["provenance_id"] = chain._sha256_bytes(
+        chain._canonical_json(isolated_provenance)
+    )
+    isolated_provenance_path = (
+        isolated_root / chain.BOOTSTRAP_GENERATION_PROVENANCE_NAME
+    )
+    seal_drill_artifact(isolated_provenance_path, isolated_provenance)
+
+    def isolated_observation(source: dict[str, object]) -> dict[str, object]:
+        value = {
+            key: current
+            for key, current in source.items()
+            if key
+            not in {
+                "observation_artifact",
+                "observation_artifact_sha256",
+                "observation_id",
+            }
+        }
+        value.update(
+            chain_id=isolated_manifest["chain_id"],
+            chain_manifest=str(isolated_manifest_path),
+            chain_manifest_sha256=chain._sha256(isolated_manifest_path),
+            submission_receipt=str(isolated_receipt_path),
+            submission_receipt_sha256=chain._sha256(isolated_receipt_path),
+            submission_receipt_id=isolated_receipt["receipt_id"],
+            generation_provenance=str(isolated_provenance_path),
+            generation_provenance_sha256=chain._sha256(
+                isolated_provenance_path
+            ),
+            generation_provenance_id=isolated_provenance["provenance_id"],
+            anchor_submission_receipt=str(isolated_receipt_path),
+            anchor_submission_receipt_sha256=chain._sha256(
+                isolated_receipt_path
+            ),
+            anchor_submission_receipt_id=isolated_receipt["receipt_id"],
+            root_job_id=isolated_ids["source_checkout"],
+            root_job_ids=[isolated_ids["source_checkout"]],
+            namespace_lineage_receipt_ids=[isolated_receipt["receipt_id"]],
+            namespace_lineage_job_ids=[
+                [str(row["job_id"]) for row in isolated_receipt_jobs]
+            ],
+            namespace_bound_job_ids=sorted(
+                isolated_ids.values(), key=int
+            ),
+        )
+        value["jobs"] = [
+            {
+                **source_row,
+                "job_id": receipt_row["job_id"],
+                "comment": receipt_row["comment"],
+                "scontrol_command": receipt_row["script"],
+            }
+            for source_row, receipt_row in zip(
+                source["jobs"], isolated_receipt_jobs, strict=True
+            )
+        ]
+        return value
+
+    isolated_first = isolated_observation(first)
+    isolated_second = isolated_observation(second)
+    isolated_contract, _, _ = (
+        watchdog_builder._bootstrap_isolated_drill_contract(
+            canonical_manifest_path=paths.chain_manifest,
+            canonical_manifest=manifest,
+            canonical_receipt_path=receipt_path,
+            canonical_receipt=receipt,
+            isolated_manifest_path=isolated_manifest_path,
+            isolated_receipt_path=isolated_receipt_path,
+        )
+    )
+    bundle_path = paths.recovery_root / "bootstrap-fixture-bundle.json"
+    bundle = {
+        "schema_version": 1,
+        "protocol": watchdog_publisher.BOOTSTRAP_READY_PROTOCOL.replace(
+            "deployment-ready", "bundle"
+        ),
+        "release_id": chain.RELEASE_ID,
+        "release_tag": chain.RELEASE_TAG,
+        "release_git_commit": manifest["release_git_commit"],
+        "release_tag_object": manifest["release_tag_object"],
+        "chain_namespace": chain.CHAIN_NAMESPACE,
+        "chain_id": manifest["chain_id"],
+        "chain_manifest": str(paths.chain_manifest),
+        "chain_manifest_sha256": chain._sha256(paths.chain_manifest),
+        "submission_receipt": str(receipt_path),
+        "submission_receipt_sha256": chain._sha256(receipt_path),
+        "submission_receipt_id": receipt["receipt_id"],
+        "isolated_cancellation_drill": isolated_contract,
+        "watchdog_code_sha256": "a" * 64,
+        "ssh_public_key_sha256": "b" * 64,
+        "separate_bootstrap_key": True,
+        "allowed_operations": ["bootstrap-status", "bootstrap-repair"],
+        "harness_environment_binding": {
+            "lexical_path": "/sealed/harness/bin/python",
+            "resolved_path": "/sealed/harness/bin/python3.11",
+            "manifest_path": "/sealed/HARNESS.json",
+            "manifest_sha256": "d" * 64,
+            "inventory_sha256": "e" * 64,
+        },
+        "materialization_pilot": {
+            "marker": "/sealed/PILOT_COMPLETE.json",
+            "marker_sha256": "f" * 64,
+            "pilot_id": "1" * 64,
+            "pilot_root": "/sealed/pilot",
+            "release_worktree": "/sealed/pilot/release-worktree",
+            "release_bundle": "/sealed/pilot/release",
+            "source_tree_sha256": "2" * 64,
+            "release_bundle_id": "3" * 64,
+            "release_identity_sha256": "4" * 64,
+            "release_completion_sha256": "5" * 64,
+        },
+        "runtime_inventory_sha256": "6" * 64,
+        "runtime_file_count": 1,
+        "runtime_total_bytes": 1,
+        "vm_python": "/sealed/bootstrap/bin/python",
+        "root_release_authority": (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        ),
+        "prelaunch_root_release": False,
+        "descendant_rearm_authority": True,
+        "release_intent_continuation_authority": True,
+        "scientific_admission_direct": False,
+        "production_control_mutation": False,
+        "safety_hold_clear_authority": False,
+        "forced_command_argv": [
+            "/sealed/python",
+            "-I",
+            "-u",
+            "/sealed/forced.py",
+            "--release-root",
+            "/sealed/release",
+            "--harness-python",
+            "/sealed/harness/bin/python",
+            "--resolved-harness-python",
+            "/sealed/harness/bin/python3.11",
+            "--harness-environment-manifest",
+            "/sealed/HARNESS.json",
+            "--harness-environment-sha256",
+            "d" * 64,
+            "--materialization-pilot-marker",
+            "/sealed/PILOT_COMPLETE.json",
+            "--materialization-pilot-sha256",
+            "f" * 64,
+            "--materialization-pilot-id",
+            "1" * 64,
+            "bootstrap-dispatch",
+        ],
+    }
+    bundle["bundle_id"] = watchdog_publisher._self_hash(
+        bundle, "bundle_id"
+    )
+    bundle_path.write_bytes(watchdog_publisher._canonical(bundle))
+    bundle_path.chmod(0o444)
+    deployment_path = (
+        paths.recovery_root / "bootstrap-fixture-deployment.json"
+    )
+    deployment = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r3-bootstrap-watchdog-"
+            "deployment-evidence-v1"
+        ),
+        "passed": True,
+        "bundle_id": bundle["bundle_id"],
+        "bundle_sha256": chain._sha256(bundle_path),
+        "deployment_id": "c" * 64,
+        "watchdog_code_sha256": "a" * 64,
+        "release_git_commit": manifest["release_git_commit"],
+        "release_tag_object": manifest["release_tag_object"],
+        "chain_id": manifest["chain_id"],
+        "chain_manifest_sha256": chain._sha256(paths.chain_manifest),
+        "submission_receipt_id": receipt["receipt_id"],
+        "submission_receipt_sha256": chain._sha256(receipt_path),
+        "runtime_inventory_sha256": "6" * 64,
+        "runtime_file_count": 1,
+        "runtime_total_bytes": 1,
+        "vm_python_path": "/sealed/bootstrap/bin/python",
+        "vm_python_sha256": "7" * 64,
+        "vm_python_immutable": True,
+        "heartbeat_freshness_seconds": 1.0,
+        "heartbeat_max_age_seconds": 600,
+        "ssh_public_key_sha256": "b" * 64,
+        "separate_bootstrap_key": True,
+        "forced_command_only": True,
+        "systemd_service_loaded": True,
+        "systemd_timer_active": True,
+    }
+    deployment["evidence_id"] = watchdog_publisher._self_hash(
+        deployment, "evidence_id"
+    )
+    deployment_path.write_bytes(
+        watchdog_publisher._canonical(deployment)
+    )
+    deployment_path.chmod(0o444)
+    drill_root = isolated_root
+
+    cancelled_paths: list[Path] = []
+    for index, source in enumerate(
+        (isolated_first, isolated_second), start=1
+    ):
+        cancelled = {
+            key: value
+            for key, value in source.items()
+            if key
+            not in {
+                "observation_artifact",
+                "observation_artifact_sha256",
+                "observation_id",
+            }
+        }
+        cancelled["jobs"] = [
+            dict(row, state="CANCELLED", active=False)
+            for row in source["jobs"]
+        ]
+        cancelled.update(
+            roots_held=False,
+            root_held=False,
+            recovery_namespace_cancelled=True,
+        )
+        cancelled["observation_id"] = chain._sha256_bytes(
+            chain._canonical_json(cancelled)
+        )
+        cancelled_path = (
+            drill_root / f"cancelled-observation-{index}.json"
+        )
+        seal_drill_artifact(cancelled_path, cancelled)
+        cancelled_paths.append(cancelled_path)
+
+    generation_root = (
+        drill_root / chain.REPAIR_ROOT_NAME / "g0001"
+    )
+    journal_path = generation_root / chain.SUBMISSION_JOURNAL_NAME
+    manifest_rows = isolated_manifest["jobs"]
+    new_ids = {
+        row["name"]: str(880000 + index)
+        for index, row in enumerate(manifest_rows)
+    }
+    repair_jobs = [row["name"] for row in manifest_rows]
+    journal = {
+        "schema_version": chain.SUBMISSION_SCHEMA_VERSION,
+        "protocol": (
+            "schema5-v1.2-r3-recovery-chain-repair-journal"
+        ),
+        "chain_id": isolated_manifest["chain_id"],
+        "repair_generation": 1,
+        "base_receipt": str(isolated_receipt_path),
+        "base_receipt_sha256": chain._sha256(isolated_receipt_path),
+        "repair_jobs": repair_jobs,
+        "started_at": "2024-07-23T00:00:00+00:00",
+        "started_timestamp": first_timestamp + 60,
+        "scheduler_since": "2024-07-23T00:00:00",
+        "slurm_user": isolated_manifest["slurm_user"],
+        "dependency_policy_check": isolated_receipt[
+            "dependency_policy_check"
+        ],
+        "dependency_policy_check_sha256": isolated_receipt[
+            "dependency_policy_check_sha256"
+        ],
+        "dependency_canary": isolated_receipt["dependency_canary"],
+        "held_root_names": ["source_checkout"],
+        "jobs": {
+            row["name"]: {
+                "name": row["name"],
+                "comment": (
+                    "asys:s5-recovery-v1.2-r3:"
+                    f"{isolated_manifest['chain_id']}:g0001:{row['name']}"
+                ),
+                "job_id": new_ids[row["name"]],
+                "submission_boundary_state": "committed",
+            }
+            for row in manifest_rows
+        },
+    }
+    seal_drill_artifact(journal_path, journal)
+    submitted: dict[str, str] = {}
+    repair_receipt_jobs: list[dict[str, object]] = []
+    for row in manifest_rows:
+        name = row["name"]
+        repair_receipt_jobs.append(
+            {
+                "name": name,
+                "job_id": new_ids[name],
+                "dependencies": list(row["dependencies"]),
+                "dependency_job_ids": [
+                    submitted[item] for item in row["dependencies"]
+                ],
+                "comment": (
+                    "asys:s5-recovery-v1.2-r3:"
+                    f"{isolated_manifest['chain_id']}:g0001:{name}"
+                ),
+                "script": row["script"],
+                "script_sha256": row["script_sha256"],
+                "dependency_type": row["dependency_type"],
+                "generation": 1,
+                "disposition": "resubmitted",
+            }
+        )
+        submitted[name] = new_ids[name]
+    repair_receipt = {
+        key: value
+        for key, value in isolated_receipt.items()
+        if key not in {"receipt_id"}
+    }
+    repair_receipt.update(
+        protocol="schema5-v1.2-r3-recovery-chain-repair",
+        submission_journal=str(journal_path),
+        submission_journal_sha256=chain._sha256(journal_path),
+        repair_generation=1,
+        parent_receipt=str(isolated_receipt_path),
+        parent_receipt_sha256=chain._sha256(isolated_receipt_path),
+        held_root_names=["source_checkout"],
+        jobs=repair_receipt_jobs,
+    )
+    repair_receipt["receipt_id"] = chain._sha256_bytes(
+        chain._canonical_json(repair_receipt)
+    )
+    repair_receipt_path = generation_root / chain.SUBMISSION_RECEIPT_NAME
+    seal_drill_artifact(repair_receipt_path, repair_receipt)
+
+    parent_provenance_path = isolated_provenance_path
+    parent_provenance = isolated_provenance
+    provenance_jobs = []
+    for manifest_row, receipt_row, parent_row in zip(
+        manifest_rows,
+        repair_receipt_jobs,
+        parent_provenance["jobs"],
+        strict=True,
+    ):
+        provenance_row = dict(parent_row)
+        provenance_row.update(
+            job_id=receipt_row["job_id"],
+            comment=receipt_row["comment"],
+            submit_line_sha256=hashlib.sha256(
+                f"fixture-{receipt_row['job_id']}".encode()
+            ).hexdigest(),
+            scontrol_command=receipt_row["script"],
+            scontrol_requeue=0,
+            dependency_type=receipt_row["dependency_type"],
+            dependency_job_ids=receipt_row["dependency_job_ids"],
+            initial_hold=manifest_row["name"] == "source_checkout",
+            origin_generation=1,
+            scontrol_reason=(
+                "JobHeldUser"
+                if manifest_row["name"] == "source_checkout"
+                else "Dependency"
+            ),
+        )
+        provenance_jobs.append(provenance_row)
+    lineage_job_ids = sorted(
+        {
+            str(row["job_id"])
+            for row in isolated_receipt["jobs"] + repair_receipt_jobs
+        },
+        key=int,
+    )
+    repair_provenance = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r3-bootstrap-generation-provenance-v1"
+        ),
+        "passed": True,
+        "release_git_commit": manifest["release_git_commit"],
+        "release_tag_object": manifest["release_tag_object"],
+        "chain_id": isolated_manifest["chain_id"],
+        "chain_manifest": str(isolated_manifest_path),
+        "chain_manifest_sha256": chain._sha256(isolated_manifest_path),
+        "submission_receipt": str(repair_receipt_path),
+        "submission_receipt_sha256": chain._sha256(
+            repair_receipt_path
+        ),
+        "submission_receipt_id": repair_receipt["receipt_id"],
+        "repair_generation": 1,
+        "parent_provenance": str(parent_provenance_path),
+        "parent_provenance_sha256": chain._sha256(
+            parent_provenance_path
+        ),
+        "parent_provenance_id": parent_provenance["provenance_id"],
+        "namespace_lineage_receipt_ids": [
+            isolated_receipt["receipt_id"],
+            repair_receipt["receipt_id"],
+        ],
+        "namespace_bound_job_ids": lineage_job_ids,
+        "namespace_scan_complete": True,
+        "generation_root_names": ["source_checkout"],
+        "current_generation_names": repair_jobs,
+        "scheduler_topology_valid": True,
+        "jobs": provenance_jobs,
+    }
+    repair_provenance["provenance_id"] = chain._sha256_bytes(
+        chain._canonical_json(repair_provenance)
+    )
+    repair_provenance_path = (
+        generation_root / chain.BOOTSTRAP_GENERATION_PROVENANCE_NAME
+    )
+    seal_drill_artifact(repair_provenance_path, repair_provenance)
+
+    repair_result = dict(repair_receipt)
+    repair_result.update(
+        status="bootstrap_repaired_held",
+        passed=True,
+        repair_jobs=repair_jobs,
+        submission_receipt=str(repair_receipt_path),
+        submission_receipt_sha256=chain._sha256(repair_receipt_path),
+        submission_receipt_id=repair_receipt["receipt_id"],
+        generation_provenance=str(repair_provenance_path),
+        generation_provenance_sha256=chain._sha256(
+            repair_provenance_path
+        ),
+        generation_provenance_id=repair_provenance["provenance_id"],
+        parent_submission_receipt_id=isolated_receipt["receipt_id"],
+        anchor_submission_receipt_id=isolated_receipt["receipt_id"],
+        anchor_submission_receipt_sha256=chain._sha256(
+            isolated_receipt_path
+        ),
+        anchor_launch_authorized=False,
+        anchor_launch_id=None,
+        anchor_armed_authorized=False,
+        anchor_armed_id=None,
+        anchor_release_intent_authorized=False,
+        descendant_armed=None,
+        descendant_armed_id=None,
+        root_name="source_checkout",
+        root_job_id=new_ids["source_checkout"],
+        root_names=["source_checkout"],
+        root_job_ids=[new_ids["source_checkout"]],
+        roots_held=True,
+        root_held=True,
+        root_released=False,
+        root_release_id=None,
+        launch_id=None,
+        watchdog_scientific_jobs_submitted=0,
+        release_required=True,
+    )
+    repair_result_path = drill_root / "repair-result.json"
+    seal_drill_artifact(repair_result_path, repair_result)
+
+    recovered = {
+        key: value
+        for key, value in isolated_first.items()
+        if key
+        not in {
+            "observation_artifact",
+            "observation_artifact_sha256",
+            "observation_id",
+        }
+    }
+    recovered_jobs = []
+    for old, receipt_row, provenance_row in zip(
+        isolated_first["jobs"],
+        repair_receipt_jobs,
+        provenance_jobs,
+        strict=True,
+    ):
+        recovered_jobs.append(
+            dict(
+                old,
+                job_id=receipt_row["job_id"],
+                comment=receipt_row["comment"],
+                state="PENDING",
+                active=True,
+                submit_line_sha256=provenance_row[
+                    "submit_line_sha256"
+                ],
+            )
+        )
+    recovered.update(
+        observed_at_timestamp=first_timestamp + 120,
+        submission_receipt=str(repair_receipt_path),
+        submission_receipt_sha256=chain._sha256(repair_receipt_path),
+        submission_receipt_id=repair_receipt["receipt_id"],
+        generation_provenance=str(repair_provenance_path),
+        generation_provenance_sha256=chain._sha256(
+            repair_provenance_path
+        ),
+        generation_provenance_id=repair_provenance["provenance_id"],
+        repair_generation=1,
+        root_name="source_checkout",
+        root_job_id=new_ids["source_checkout"],
+        root_names=["source_checkout"],
+        root_job_ids=[new_ids["source_checkout"]],
+        roots_held=True,
+        root_held=True,
+        namespace_lineage_receipt_ids=[
+            isolated_receipt["receipt_id"],
+            repair_receipt["receipt_id"],
+        ],
+        namespace_lineage_job_ids=[
+            [
+                str(row["job_id"])
+                for row in isolated_receipt["jobs"]
+            ],
+            [str(row["job_id"]) for row in repair_receipt_jobs],
+        ],
+        namespace_bound_job_ids=lineage_job_ids,
+        jobs=recovered_jobs,
+        recovery_namespace_cancelled=False,
+    )
+    recovered["observation_id"] = chain._sha256_bytes(
+        chain._canonical_json(recovered)
+    )
+    recovered_path = drill_root / "recovered-observation.json"
+    seal_drill_artifact(recovered_path, recovered)
+
+    drill_path = paths.recovery_root / "bootstrap-fixture-drill.json"
+    watchdog_builder.capture_bootstrap_drill_evidence(
+        bundle_manifest=bundle_path,
+        deployment_evidence=deployment_path,
+        cancelled_observations=cancelled_paths,
+        repair_result=repair_result_path,
+        recovered_observation=recovered_path,
+        recovery_seconds=120.0,
+        output=drill_path,
+    )
+    drill_evidence = json.loads(
+        drill_path.read_text(encoding="utf-8")
+    )
+    attestation_path = (
+        paths.recovery_root / "bootstrap-fixture-attestation.json"
+    )
+    attestation = {
+        "schema_version": 1,
+        "protocol": watchdog_publisher.BOOTSTRAP_ATTESTATION_PROTOCOL,
+        "passed": True,
+        **watchdog_publisher._release_fields(
+            git_commit=manifest["release_git_commit"],
+            tag_object=manifest["release_tag_object"],
+        ),
+        "chain_manifest_sha256": chain._sha256(paths.chain_manifest),
+        "submission_receipt_sha256": chain._sha256(receipt_path),
+        "deployment_id": "c" * 64,
+        "deployment_evidence": str(deployment_path),
+        "deployment_evidence_sha256": chain._sha256(deployment_path),
+        "deployment_evidence_id": deployment["evidence_id"],
+        "watchdog_code_sha256": "a" * 64,
+        "bundle_manifest": str(bundle_path),
+        "bundle_manifest_sha256": chain._sha256(bundle_path),
+        "bundle_id": bundle["bundle_id"],
+        "ssh_public_key_sha256": "b" * 64,
+        "separate_bootstrap_key": True,
+        "forced_command_argv": bundle["forced_command_argv"],
+        "systemd_service_loaded": True,
+        "systemd_timer_active": True,
+        "forced_command_only": True,
+        "forced_operation": "bootstrap-repair",
+        "scheduler_observations": [
+            {
+                "artifact": item["observation_artifact"],
+                "artifact_sha256": item[
+                    "observation_artifact_sha256"
+                ],
+                "observation_id": item["observation_id"],
+            }
+            for item in (first, second)
+        ],
+        "cancellation_drill": {
+            "recovery_namespace_cancellation_recovery_seconds": 120.0,
+            "isolated_cancellation_drill": True,
+            "isolation_id": drill_evidence["isolation_id"],
+            "isolated_drill_root": drill_evidence[
+                "isolated_drill_root"
+            ],
+            "isolated_chain_id": isolated_manifest["chain_id"],
+            "isolated_anchor_submission_receipt_id": isolated_receipt[
+                "receipt_id"
+            ],
+            "canonical_submission_receipt_id": receipt["receipt_id"],
+            "canonical_job_id_overlap": 0,
+            "canonical_comment_overlap": 0,
+            "canonical_control_paths_absent": True,
+            "squeue_complete": True,
+            "sacct_complete": True,
+            "duplicate_jobs": 0,
+            "duplicate_submission_intents": 0,
+            "root_remained_held": True,
+            "scientific_jobs_started": 0,
+        },
+        "cancellation_drill_evidence": str(drill_path),
+        "cancellation_drill_evidence_sha256": chain._sha256(
+            drill_path
+        ),
+        "cancellation_drill_evidence_id": drill_evidence[
+            "evidence_id"
+        ],
+        "root_release_authority": (
+            "armed-descendant-rearm-or-release-intent-"
+            "continuation-only"
+        ),
+        "prelaunch_root_release": False,
+        "descendant_rearm_authority": True,
+        "release_intent_continuation_authority": True,
+        "scientific_admission_direct": False,
+        "production_control_mutation": False,
+        "safety_hold_clear_authority": False,
+        "handoff_stage": "watchdog_readiness",
+    }
+    attestation["evidence_id"] = watchdog_publisher._self_hash(
+        attestation, "evidence_id"
+    )
+    attestation_path.write_bytes(
+        watchdog_publisher._canonical(attestation)
+    )
+    attestation_path.chmod(0o444)
+    watchdog_publisher.publish_bootstrap(
+        recovery_root=paths.recovery_root,
+        chain_manifest=paths.chain_manifest,
+        submission_receipt=receipt_path,
+        bootstrap_attestation=attestation_path,
+        git_commit=manifest["release_git_commit"],
+        tag_object=manifest["release_tag_object"],
+        apply=True,
+    )
+    return receipt
+
+
+def _submit_arm_and_release(
+    paths,
+    scheduler: _RecoveryLaunchScheduler,
+    *,
+    submit_timestamp: float = 1_721_750_400.0,
+    release_timestamp: float = 1_721_750_500.0,
+) -> dict[str, object]:
+    submitted = chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=submit_timestamp,
+    )
+    assert submitted["status"] == "awaiting_bootstrap_watchdog"
+    _arm_bootstrap_watchdog(
+        paths, scheduler, first_timestamp=submit_timestamp
+    )
+    return chain.release_recovery_root(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=release_timestamp,
+    )
 
 
 def test_chain_submission_holds_root_until_receipt_then_releases_exactly_once(
@@ -1976,9 +3818,9 @@ def test_chain_submission_holds_root_until_receipt_then_releases_exactly_once(
         now=1_721_750_400.0,
     )
 
-    assert result["status"] == "launched"
+    assert result["status"] == "awaiting_bootstrap_watchdog"
     assert len(scheduler.sbatch_calls) == len(chain.EXPECTED_JOB_ORDER)
-    assert scheduler.release_calls == [["scontrol", "release", "770000"]]
+    assert scheduler.release_calls == []
     assert "--hold" in scheduler.sbatch_calls[0]
     assert all("--hold" not in argv for argv in scheduler.sbatch_calls[1:])
     receipt = json.loads(
@@ -1996,6 +3838,18 @@ def test_chain_submission_holds_root_until_receipt_then_releases_exactly_once(
     ]
     assert receipt["dependency_canary"]["alert_latency_bound_seconds"] == 180.0
     assert receipt["dependency_policy"] == chain.DEPENDENCY_POLICY_CONTRACT
+    assert not (
+        paths.recovery_root / chain.ROOT_RELEASE_COMPLETE_NAME
+    ).exists()
+    _arm_bootstrap_watchdog(paths, scheduler)
+    launched = chain.release_recovery_root(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_500.0,
+    )
+    assert launched["status"] == "launched"
+    assert scheduler.release_calls == [["scontrol", "release", "770000"]]
     assert (
         paths.recovery_root / chain.ROOT_RELEASE_COMPLETE_NAME
     ).is_file()
@@ -2012,23 +3866,109 @@ def test_chain_submission_holds_root_until_receipt_then_releases_exactly_once(
     assert scheduler.release_calls == [["scontrol", "release", "770000"]]
 
 
+def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    (paths.source_checkout / ".git").mkdir(parents=True)
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    canonical = chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
+    )
+
+    dry_run = chain.prepare_isolated_bootstrap_drill_chain(
+        paths.chain_manifest
+    )
+    assert dry_run["status"] == "dry_run"
+    prepared = chain.prepare_isolated_bootstrap_drill_chain(
+        paths.chain_manifest,
+        apply=True,
+    )
+    assert prepared["status"] == "complete"
+    isolated_root = (
+        paths.recovery_root / chain.BOOTSTRAP_ISOLATED_DRILL_DIRECTORY
+    )
+    isolated_manifest_path = isolated_root / chain.CHAIN_MANIFEST_NAME
+    isolated_manifest = json.loads(
+        isolated_manifest_path.read_text(encoding="utf-8")
+    )
+    verified = chain.verify_chain(isolated_manifest_path)
+    assert verified["isolated_bootstrap_drill"] is True
+    assert verified["inert_exit_code"] == (
+        chain.BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE
+    )
+    assert isolated_manifest["chain_id"] != canonical["chain_id"]
+    for row in isolated_manifest["jobs"]:
+        script = Path(row["script"])
+        assert script.is_relative_to(isolated_root)
+        assert (
+            f"exit {chain.BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE}"
+            in script.read_text(encoding="utf-8")
+        )
+
+    isolated = chain.submit_chain(
+        isolated_manifest_path,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_600.0,
+    )
+    assert isolated["status"] == "awaiting_bootstrap_watchdog"
+    canonical_ids = {row["job_id"] for row in canonical["jobs"]}
+    isolated_ids = {row["job_id"] for row in isolated["jobs"]}
+    canonical_comments = {row["comment"] for row in canonical["jobs"]}
+    isolated_comments = {row["comment"] for row in isolated["jobs"]}
+    assert not canonical_ids & isolated_ids
+    assert not canonical_comments & isolated_comments
+    assert all(
+        comment.startswith(
+            "asys:s5-recovery-v1.2-r3:"
+            f"{isolated_manifest['chain_id']}:g0000:"
+        )
+        for comment in isolated_comments
+    )
+    assert len(scheduler.sbatch_calls) == 2 * len(
+        chain.EXPECTED_JOB_ORDER
+    )
+    assert scheduler.release_calls == []
+    assert not (paths.recovery_root / chain.REPAIR_ROOT_NAME).exists()
+    assert not (
+        paths.recovery_root / chain.ROOT_RELEASE_COMPLETE_NAME
+    ).exists()
+    assert not (paths.recovery_root / chain.LAUNCH_COMPLETE_NAME).exists()
+
+    first_script = Path(isolated_manifest["jobs"][0]["script"])
+    first_script.chmod(0o644)
+    first_script.write_bytes(first_script.read_bytes() + b"# drift\n")
+    first_script.chmod(0o444)
+    with pytest.raises(
+        chain.ChainError,
+        match="exact inert canonical-topology derivation|script drifted",
+    ):
+        chain.verify_chain(isolated_manifest_path)
+
+
 @pytest.mark.parametrize(
     ("scheduler_kwargs", "message"),
     [
         (
-            {"dependency_drift": "asys-s5v12r2-resume"},
+            {"dependency_drift": "asys-s5v12r3-resume"},
             "scontrol acceptance provenance drifted",
         ),
         (
-            {"dependency_or_drift": "asys-s5v12r2-resume"},
+            {"dependency_or_drift": "asys-s5v12r3-resume"},
             "OR semantics",
         ),
         (
-            {"requeue_drift": "asys-s5v12r2-resume"},
+            {"requeue_drift": "asys-s5v12r3-resume"},
             "scontrol acceptance provenance drifted",
         ),
         (
-            {"spool_drift": "asys-s5v12r2-resume"},
+            {"spool_drift": "asys-s5v12r3-resume"},
             "spooled sbatch differs",
         ),
         (
@@ -2036,11 +3976,11 @@ def test_chain_submission_holds_root_until_receipt_then_releases_exactly_once(
             "foreign squeue job collides",
         ),
         (
-            {"missing_squeue": "asys-s5v12r2-resume"},
+            {"missing_squeue": "asys-s5v12r3-resume"},
             "squeue set is incomplete",
         ),
         (
-            {"missing_sacct": "asys-s5v12r2-resume"},
+            {"missing_sacct": "asys-s5v12r3-resume"},
             "sacct set is incomplete",
         ),
     ],
@@ -2054,16 +3994,23 @@ def test_chain_scheduler_acceptance_rejects_live_or_spooled_drift_before_release
     paths = _paths(tmp_path, monkeypatch)
     _render_applied(paths, monkeypatch)
     (paths.source_checkout / ".git").mkdir(parents=True)
-    scheduler = _RecoveryLaunchScheduler(
-        paths.recovery_root, **scheduler_kwargs
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
     )
+    _arm_bootstrap_watchdog(paths, scheduler)
+    for key, value in scheduler_kwargs.items():
+        setattr(scheduler, key, value)
 
     with pytest.raises(chain.ChainError, match=message):
-        chain.submit_chain(
+        chain.release_recovery_root(
             paths.chain_manifest,
             apply=True,
             runner=scheduler,
-            now=1_721_750_400.0,
+            now=1_721_750_500.0,
         )
 
     assert scheduler.release_calls == []
@@ -2087,13 +4034,20 @@ def test_chain_scheduler_acceptance_crash_before_release_replays_sealed_artifact
     scheduler = _RecoveryLaunchScheduler(
         paths.recovery_root, crash_before_release=True
     )
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
+    )
+    _arm_bootstrap_watchdog(paths, scheduler)
 
     with pytest.raises(KeyboardInterrupt, match="before exact root release"):
-        chain.submit_chain(
+        chain.release_recovery_root(
             paths.chain_manifest,
             apply=True,
             runner=scheduler,
-            now=1_721_750_400.0,
+            now=1_721_750_500.0,
         )
     acceptance_path = (
         paths.recovery_root / chain.SCHEDULER_ACCEPTANCE_COMPLETE_NAME
@@ -2108,13 +4062,13 @@ def test_chain_scheduler_acceptance_crash_before_release_replays_sealed_artifact
     assert len(tuple(artifact_root.iterdir())) == 86
     assert scheduler.jobs["770000"]["state"] == "PENDING"
 
-    recovered = chain.submit_chain(
+    recovered = chain.release_recovery_root(
         paths.chain_manifest,
         apply=True,
         runner=scheduler,
-        now=1_721_750_401.0,
+        now=1_721_750_501.0,
     )
-    assert recovered["status"] == "already_launched"
+    assert recovered["status"] == "launched"
     assert scheduler.jobs["770000"]["state"] == "RUNNING"
     assert scheduler.release_calls == [
         ["scontrol", "release", "770000"],
@@ -2126,6 +4080,18 @@ def test_chain_scheduler_acceptance_crash_before_release_replays_sealed_artifact
         release["scheduler_acceptance_id"]
         == acceptance["acceptance_id"]
     )
+    assert [item["result_kind"] for item in release["release_attempts"]] == [
+        "scheduler_reconciled_no_effect",
+        "scontrol_result",
+    ]
+    no_effect = json.loads(
+        Path(release["release_attempts"][0]["result"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert no_effect["scheduler_reconciliation"]["fields"][
+        "Reason"
+    ] == "JobHeldUser"
 
 
 def test_chain_scheduler_acceptance_crash_after_direct_spool_write_resumes(
@@ -2135,19 +4101,24 @@ def test_chain_scheduler_acceptance_crash_after_direct_spool_write_resumes(
     paths = _paths(tmp_path, monkeypatch)
     _render_applied(paths, monkeypatch)
     (paths.source_checkout / ".git").mkdir(parents=True)
-    scheduler = _RecoveryLaunchScheduler(
-        paths.recovery_root,
-        crash_after_spool_write="asys-s5v12r2-resume",
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
     )
+    _arm_bootstrap_watchdog(paths, scheduler)
+    scheduler.crash_after_spool_write = "asys-s5v12r3-resume"
 
     with pytest.raises(
         KeyboardInterrupt, match="after scheduler spool write"
     ):
-        chain.submit_chain(
+        chain.release_recovery_root(
             paths.chain_manifest,
             apply=True,
             runner=scheduler,
-            now=1_721_750_400.0,
+            now=1_721_750_500.0,
         )
     assert scheduler.release_calls == []
     assert not (
@@ -2157,15 +4128,18 @@ def test_chain_scheduler_acceptance_crash_after_direct_spool_write_resumes(
         paths.recovery_root
         / chain.SCHEDULER_ACCEPTANCE_STAGING_ROOT_NAME
     )
-    assert list(staging_root.iterdir()) == []
+    # The stronger generation-provenance replay may encounter the injected
+    # crash before the scheduler-acceptance transaction creates its staging
+    # directory.  If the latter exists, it must still be empty.
+    assert not staging_root.exists() or list(staging_root.iterdir()) == []
 
-    recovered = chain.submit_chain(
+    recovered = chain.release_recovery_root(
         paths.chain_manifest,
         apply=True,
         runner=scheduler,
-        now=1_721_750_401.0,
+        now=1_721_750_501.0,
     )
-    assert recovered["status"] == "already_launched"
+    assert recovered["status"] == "launched"
     assert scheduler.release_calls == [
         ["scontrol", "release", "770000"]
     ]
@@ -2189,12 +4163,7 @@ def test_generated_launch_validator_executes_against_schema4_receipt_and_policy(
     _render_applied(paths, monkeypatch)
     (paths.source_checkout / ".git").mkdir(parents=True)
     scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
-    chain.submit_chain(
-        paths.chain_manifest,
-        apply=True,
-        runner=scheduler,
-        now=1_721_750_400.0,
-    )
+    _submit_arm_and_release(paths, scheduler)
 
     manifest = json.loads(paths.chain_manifest.read_text(encoding="utf-8"))
     receipt_path = paths.recovery_root / chain.SUBMISSION_RECEIPT_NAME
@@ -2209,6 +4178,16 @@ def test_generated_launch_validator_executes_against_schema4_receipt_and_policy(
         row for row in receipt["jobs"] if row["name"] == stage_name
     )
     rendered = Path(manifest_stage["script"]).read_text(encoding="utf-8")
+    for evidence_field in (
+        "scheduler_max_jobs",
+        "running_scientific_jobs",
+        "minimum_scientific_wall_seconds",
+        "scientific_qos_contracts",
+        "required_wall_seconds",
+        "required_running_jobs",
+        "required_submit_jobs",
+    ):
+        assert evidence_field in rendered
     heredoc_anchor = '"$launch_gate_comment" <<\'PY\'\n'
     validator_start = rendered.index(heredoc_anchor) + len(heredoc_anchor)
     validator_end = rendered.index("\nPY\n", validator_start)
@@ -2251,13 +4230,20 @@ def test_chain_root_release_crash_reconciles_without_second_release(
     scheduler = _RecoveryLaunchScheduler(
         paths.recovery_root, crash_after_release=True
     )
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
+    )
+    _arm_bootstrap_watchdog(paths, scheduler)
 
     with pytest.raises(KeyboardInterrupt, match="crash after exact root release"):
-        chain.submit_chain(
+        chain.release_recovery_root(
             paths.chain_manifest,
             apply=True,
             runner=scheduler,
-            now=1_721_750_400.0,
+            now=1_721_750_500.0,
         )
     assert scheduler.release_calls == [["scontrol", "release", "770000"]]
     assert (
@@ -2267,19 +4253,24 @@ def test_chain_root_release_crash_reconciles_without_second_release(
         paths.recovery_root / chain.ROOT_RELEASE_COMPLETE_NAME
     ).exists()
 
-    recovered = chain.submit_chain(
+    recovered = chain.release_recovery_root(
         paths.chain_manifest,
         apply=True,
         runner=scheduler,
-        now=1_721_750_401.0,
+        now=1_721_750_501.0,
     )
-    assert recovered["status"] == "already_launched"
+    assert recovered["status"] == "launched"
     assert scheduler.release_calls == [["scontrol", "release", "770000"]]
     assert recovered["root_release"]["release_reconciled"] is True
+    attempt = recovered["root_release"]["release_attempts"][0]
+    assert Path(attempt["result"]).is_file()
     assert (
-        recovered["root_release"]["release_attempts"][0]["result"]
-        is None
+        attempt["result_kind"]
+        == "scheduler_reconciled_after_ambiguous_release"
     )
+    result = json.loads(Path(attempt["result"]).read_text(encoding="utf-8"))
+    assert result["result_id"] == attempt["result_id"]
+    assert result["scheduler_reconciliation"]["fields"]["JobState"] == "RUNNING"
 
 
 def test_chain_root_remains_held_when_release_time_dependency_policy_drifts(
@@ -2304,12 +4295,19 @@ def test_chain_root_remains_held_when_release_time_dependency_policy_drifts(
                 )
         return scheduler(argv)
 
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=one_drift,
+        now=1_721_750_400.0,
+    )
+    _arm_bootstrap_watchdog(paths, scheduler)
     with pytest.raises(chain.ChainError, match="kill_invalid_depend"):
-        chain.submit_chain(
+        chain.release_recovery_root(
             paths.chain_manifest,
             apply=True,
             runner=one_drift,
-            now=1_721_750_400.0,
+            now=1_721_750_500.0,
         )
     assert len(scheduler.sbatch_calls) == len(chain.EXPECTED_JOB_ORDER)
     assert scheduler.release_calls == []
@@ -2320,14 +4318,151 @@ def test_chain_root_remains_held_when_release_time_dependency_policy_drifts(
     ).is_file()
     assert not (paths.recovery_root / chain.LAUNCH_COMPLETE_NAME).exists()
 
-    recovered = chain.submit_chain(
+    recovered = chain.release_recovery_root(
         paths.chain_manifest,
         apply=True,
         runner=one_drift,
-        now=1_721_750_401.0,
+        now=1_721_750_501.0,
     )
-    assert recovered["status"] == "already_launched"
+    assert recovered["status"] == "launched"
     assert scheduler.release_calls == [["scontrol", "release", "770000"]]
+
+
+def test_repair_frontier_matrix_is_transitive_plural_and_canonical() -> None:
+    manifest = {
+        "jobs": [
+            {"name": "stage_a", "dependencies": []},
+            {"name": "bridge", "dependencies": ["stage_a"]},
+            {"name": "stage_c", "dependencies": ["bridge"]},
+            {"name": "stage_b", "dependencies": []},
+            {"name": "observer_a", "dependencies": ["stage_a"]},
+            {"name": "observer_b", "dependencies": ["stage_b"]},
+            {
+                "name": "failure_sentinel",
+                "dependencies": ["stage_c", "observer_a", "observer_b"],
+            },
+        ]
+    }
+
+    assert chain._repair_frontier_names(  # noqa: SLF001
+        manifest, ["stage_a", "stage_b"]
+    ) == ["stage_a", "stage_b"]
+    assert chain._repair_frontier_names(  # noqa: SLF001
+        manifest, ["observer_a", "observer_b"]
+    ) == ["observer_a", "observer_b"]
+    assert chain._repair_frontier_names(  # noqa: SLF001
+        manifest, ["stage_c", "observer_b"]
+    ) == ["stage_c", "observer_b"]
+    assert chain._repair_frontier_names(  # noqa: SLF001
+        manifest, ["failure_sentinel"]
+    ) == ["failure_sentinel"]
+    # Input order is never admission authority; manifest DAG order is.
+    assert chain._repair_frontier_names(  # noqa: SLF001
+        manifest, ["stage_b", "stage_a"]
+    ) == ["stage_a", "stage_b"]
+    # The unselected bridge still makes stage_a a transitive selected ancestor.
+    assert chain._repair_frontier_names(  # noqa: SLF001
+        manifest, ["stage_a", "stage_c"]
+    ) == ["stage_a"]
+
+    with pytest.raises(chain.ChainError, match="unique jobs"):
+        chain._repair_frontier_names(  # noqa: SLF001
+            manifest, ["stage_a", "missing"]
+        )
+    with pytest.raises(chain.ChainError, match="unique jobs"):
+        chain._repair_frontier_names(  # noqa: SLF001
+            manifest, ["stage_a", "stage_a"]
+        )
+
+
+@pytest.mark.parametrize("exit_code", [None, "1:0"])
+def test_completed_stage_observer_exemption_requires_zero_exit_code(
+    exit_code: str | None,
+) -> None:
+    stage = "stage"
+    observer = f"{chain.STAGE_SENTINEL_PREFIX}{stage}"
+    manifest = {
+        "stage_failure_sentinels": [
+            {"stage": stage, "sentinel": observer}
+        ],
+        "jobs": [
+            {
+                "name": stage,
+                "dependencies": [],
+                "dependency_type": "afterok",
+                "script": "/sealed/stage.sbatch",
+                "script_sha256": "1" * 64,
+            },
+            {
+                "name": observer,
+                "dependencies": [stage],
+                "dependency_type": "afterany",
+                "script": "/sealed/observer.sbatch",
+                "script_sha256": "2" * 64,
+            },
+        ],
+    }
+    receipt = {
+        "jobs": [
+            {
+                "name": stage,
+                "job_id": "100",
+                "comment": "stage-comment",
+                "dependencies": [],
+                "dependency_type": "afterok",
+                "dependency_job_ids": [],
+                "script": "/sealed/stage.sbatch",
+                "script_sha256": "1" * 64,
+            },
+            {
+                "name": observer,
+                "job_id": "101",
+                "comment": "observer-comment",
+                "dependencies": [stage],
+                "dependency_type": "afterany",
+                "dependency_job_ids": ["100"],
+                "script": "/sealed/observer.sbatch",
+                "script_sha256": "2" * 64,
+            },
+        ]
+    }
+    states = {
+        stage: {
+            "job_id": "100",
+            "state": "FAILED",
+            "active": False,
+            "exit_code": "1:0",
+        },
+        observer: {
+            "job_id": "101",
+            "comment": "observer-comment",
+            "state": "COMPLETED",
+            "active": False,
+            "exit_code": exit_code,
+        },
+    }
+
+    assert (
+        chain._is_exact_completed_stage_observer(  # noqa: SLF001
+            name=observer,
+            manifest=manifest,
+            receipt=receipt,
+            states=states,
+            failed_set={stage},
+        )
+        is False
+    )
+    states[observer]["exit_code"] = "0:0"
+    assert (
+        chain._is_exact_completed_stage_observer(  # noqa: SLF001
+            name=observer,
+            manifest=manifest,
+            receipt=receipt,
+            states=states,
+            failed_set={stage},
+        )
+        is True
+    )
 
 
 def test_repair_generation_holds_first_suffix_job_until_repair_receipt(
@@ -2338,12 +4473,7 @@ def test_repair_generation_holds_first_suffix_job_until_repair_receipt(
     _render_applied(paths, monkeypatch)
     (paths.source_checkout / ".git").mkdir(parents=True)
     scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
-    chain.submit_chain(
-        paths.chain_manifest,
-        apply=True,
-        runner=scheduler,
-        now=1_721_750_400.0,
-    )
+    _submit_arm_and_release(paths, scheduler)
     repair_names = [
         "fleet_readiness",
         "smoke_readiness",
@@ -2368,11 +4498,41 @@ def test_repair_generation_holds_first_suffix_job_until_repair_receipt(
         }
         for name in chain.EXPECTED_JOB_ORDER
     }
-    monkeypatch.setattr(
-        chain,
-        "_query_receipt_job_states",
-        lambda **_kwargs: states,
-    )
+    def query_states(**kwargs):
+        current_receipt = kwargs["receipt"]
+        if current_receipt.get("repair_generation") != 1:
+            return states
+        result = {}
+        for record in current_receipt["jobs"]:
+            name = record["name"]
+            if record.get("generation") == 1:
+                scheduled = scheduler.jobs[str(record["job_id"])]
+                result[name] = {
+                    "job_id": record["job_id"],
+                    "state": "PENDING",
+                    "active": True,
+                    "exit_code": "0:0",
+                    "comment": record["comment"],
+                    "job_name": scheduled["name"],
+                    "submit_line": scheduled["submit_line"],
+                }
+            else:
+                result[name] = {
+                    "job_id": record["job_id"],
+                    "state": "COMPLETED",
+                    "active": False,
+                    "exit_code": "0:0",
+                    "comment": record["comment"],
+                    "job_name": scheduler.jobs[
+                        str(record["job_id"])
+                    ]["name"],
+                    "submit_line": scheduler.jobs[
+                        str(record["job_id"])
+                    ]["submit_line"],
+                }
+        return result
+
+    monkeypatch.setattr(chain, "_query_receipt_job_states", query_states)
     monkeypatch.setattr(
         chain,
         "_sentinel_repair_jobs",
@@ -2423,6 +4583,429 @@ def test_repair_generation_holds_first_suffix_job_until_repair_receipt(
             str(770000 + len(chain.EXPECTED_JOB_ORDER)),
         ],
     ]
+
+
+def test_bootstrap_repair_reconstructs_cancelled_suffix_without_sentinel_or_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    (paths.source_checkout / ".git").mkdir(parents=True)
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    submitted = chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
+    )
+    assert submitted["status"] == "awaiting_bootstrap_watchdog"
+    receipt = json.loads(
+        (
+            paths.recovery_root / chain.SUBMISSION_RECEIPT_NAME
+        ).read_text(encoding="utf-8")
+    )
+    source_job_id = next(
+        row["job_id"]
+        for row in receipt["jobs"]
+        if row["name"] == "source_checkout"
+    )
+    for job_id, job in scheduler.jobs.items():
+        if job_id == source_job_id:
+            job["state"] = "COMPLETED"
+        else:
+            job["state"] = "CANCELLED"
+        job["reason"] = "None"
+    first = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_500.0,
+        record=True,
+    )
+    second = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_560.0,
+        record=True,
+    )
+    assert first["recovery_namespace_cancelled"] is True
+    assert second["recovery_namespace_cancelled"] is True
+
+    result = chain.repair_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_600.0,
+        bootstrap=True,
+    )
+
+    assert result["status"] == "bootstrap_repaired_held"
+    assert result["root_held"] is True
+    assert result["watchdog_scientific_jobs_submitted"] == 0
+    assert result["repair_jobs"][0] == "maintenance_preflight"
+    assert "failure_sentinel" in result["repair_jobs"]
+    assert scheduler.release_calls == []
+    repair_calls = scheduler.sbatch_calls[len(chain.EXPECTED_JOB_ORDER):]
+    assert len(repair_calls) == len(chain.EXPECTED_JOB_ORDER) - 1
+    assert result["held_root_names"] == [
+        "maintenance_preflight",
+        f"{chain.STAGE_SENTINEL_PREFIX}source_checkout",
+    ]
+    assert [
+        name
+        for name, call in zip(
+            result["repair_jobs"], repair_calls, strict=True
+        )
+        if "--hold" in call
+    ] == result["held_root_names"]
+    generation_root = (
+        paths.recovery_root / chain.REPAIR_ROOT_NAME / "g0001"
+    )
+    assert (
+        generation_root / chain.SUBMISSION_RECEIPT_NAME
+    ).is_file()
+    assert not (
+        generation_root / chain.ROOT_RELEASE_COMPLETE_NAME
+    ).exists()
+    assert not (generation_root / chain.LAUNCH_COMPLETE_NAME).exists()
+
+
+def test_prearm_cancelled_purged_jobs_use_submit_transaction_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    (paths.source_checkout / ".git").mkdir(parents=True)
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
+    )
+    assert (
+        paths.recovery_root
+        / chain.BOOTSTRAP_GENERATION_PROVENANCE_NAME
+    ).is_file()
+    for index, (job_id, job) in enumerate(scheduler.jobs.items()):
+        job["state"] = "COMPLETED" if index == 0 else "CANCELLED"
+        job["reason"] = "None"
+        scheduler.purged_job_ids.add(job_id)
+
+    first = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_500.0,
+        record=True,
+    )
+    second = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_560.0,
+        record=True,
+    )
+
+    assert first["recovery_namespace_cancelled"] is True
+    assert second["recovery_namespace_cancelled"] is True
+    assert all(row["active"] is False for row in second["jobs"])
+    result = chain.repair_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_600.0,
+        bootstrap=True,
+    )
+    assert result["status"] == "bootstrap_repaired_held"
+    assert result["root_held"] is True
+
+
+@pytest.mark.parametrize("crashed_frontier_index", [0, 1])
+def test_postlaunch_bootstrap_repair_inherits_authority_and_releases_descendant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crashed_frontier_index: int,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    (paths.source_checkout / ".git").mkdir(parents=True)
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    _submit_arm_and_release(paths, scheduler)
+    initial_ids = list(scheduler.jobs)
+    for index, job_id in enumerate(initial_ids):
+        scheduler.jobs[job_id]["state"] = (
+            "COMPLETED" if index == 0 else "CANCELLED"
+        )
+        scheduler.jobs[job_id]["reason"] = "None"
+    chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_700.0,
+        record=True,
+    )
+    chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_760.0,
+        record=True,
+    )
+
+    held = chain.repair_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_800.0,
+        bootstrap=True,
+    )
+
+    assert held["status"] == "bootstrap_repaired_held"
+    assert held["anchor_launch_authorized"] is True
+    assert held["roots_held"] is True
+    assert held["root_released"] is False
+    first_rearm = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_900.0,
+        record=True,
+    )
+    second_rearm = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_960.0,
+        record=True,
+    )
+    anchor_launch = json.loads(
+        (paths.recovery_root / chain.LAUNCH_COMPLETE_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert first_rearm["repair_generation"] == 1
+    assert second_rearm["repair_generation"] == 1
+    assert first_rearm["descendant_rearm_required"] is True
+    assert second_rearm["descendant_rearm_required"] is True
+    assert first_rearm["anchor_launch_authorized"] is True
+    assert (
+        first_rearm["anchor_launch_id"]
+        == second_rearm["anchor_launch_id"]
+        == anchor_launch["launch_id"]
+    )
+    scheduler.crash_after_release_call = 2 + crashed_frontier_index
+    with pytest.raises(
+        KeyboardInterrupt, match="crash after exact root release"
+    ):
+        chain.repair_chain(
+            paths.chain_manifest,
+            apply=True,
+            runner=scheduler,
+            now=1_721_751_000.0,
+            bootstrap=True,
+        )
+    assert len(held["root_names"]) == 2
+    assert len(scheduler.release_calls) == 2 + crashed_frontier_index
+    first_descendant_job_id = held["root_job_ids"][0]
+    second_descendant_job_id = held["root_job_ids"][1]
+    assert scheduler.jobs[first_descendant_job_id]["state"] == "RUNNING"
+    assert scheduler.jobs[second_descendant_job_id]["state"] == (
+        "PENDING" if crashed_frontier_index == 0 else "RUNNING"
+    )
+    assert scheduler.jobs[second_descendant_job_id]["reason"] == (
+        "JobHeldUser" if crashed_frontier_index == 0 else "None"
+    )
+    result = chain.repair_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_751_001.0,
+        bootstrap=True,
+    )
+
+    assert result["status"] == "bootstrap_repair_reconciled"
+    assert result["anchor_launch_authorized"] is True
+    assert result["root_held"] is False
+    assert result["roots_held"] is False
+    assert result["root_released"] is True
+    assert len(scheduler.release_calls) == 1 + len(result["root_names"])
+    assert len(
+        {call[-1] for call in scheduler.release_calls}
+    ) == len(scheduler.release_calls)
+    attempts = result["release_attempts"] if "release_attempts" in result else (
+        json.loads(
+            (
+                paths.recovery_root
+                / chain.REPAIR_ROOT_NAME
+                / "g0001"
+                / chain.ROOT_RELEASE_COMPLETE_NAME
+            ).read_text(encoding="utf-8")
+        )["release_attempts"]
+    )
+    assert [item["root_name"] for item in attempts] == result["root_names"]
+    assert attempts[crashed_frontier_index]["result_kind"] == (
+        "scheduler_reconciled_after_ambiguous_release"
+    )
+    assert all(
+        attempt["result_kind"] == (
+            "scheduler_reconciled_after_ambiguous_release"
+            if index == crashed_frontier_index
+            else "scontrol_result"
+        )
+        for index, attempt in enumerate(attempts)
+    )
+    assert all(
+        Path(item["result"]).is_file()
+        and chain._sha256(Path(item["result"])) == item["result_sha256"]
+        for item in attempts
+    )
+    generation_root = (
+        paths.recovery_root / chain.REPAIR_ROOT_NAME / "g0001"
+    )
+    assert (generation_root / chain.ROOT_RELEASE_COMPLETE_NAME).is_file()
+    assert (generation_root / chain.LAUNCH_COMPLETE_NAME).is_file()
+    if crashed_frontier_index == 0:
+        # A marker that names one successful result per root is still invalid
+        # if the transaction directory contains an unbound attempt/result.
+        _json(
+            generation_root
+            / "root_release_attempts"
+            / "attempt-9999.result.json",
+            {"unbound": True},
+        )
+        repair_receipt_path = (
+            generation_root / chain.SUBMISSION_RECEIPT_NAME
+        )
+        repair_receipt = json.loads(
+            repair_receipt_path.read_text(encoding="utf-8")
+        )
+        root_record = next(
+            row
+            for row in repair_receipt["jobs"]
+            if row["name"] == repair_receipt["held_root_names"][0]
+        )
+        with pytest.raises(
+            chain.ChainError,
+            match="exactly cover and successfully resolve",
+        ):
+            chain._validate_root_release_complete(  # noqa: SLF001
+                generation_root / chain.ROOT_RELEASE_COMPLETE_NAME,
+                receipt_path=repair_receipt_path,
+                receipt=repair_receipt,
+                root_record=root_record,
+            )
+
+
+def test_postlaunch_repair_crash_after_receipt_rebuilds_provenance_then_releases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    (paths.source_checkout / ".git").mkdir(parents=True)
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    _submit_arm_and_release(paths, scheduler)
+    initial_ids = list(scheduler.jobs)
+    for index, job_id in enumerate(initial_ids):
+        scheduler.jobs[job_id]["state"] = (
+            "COMPLETED" if index == 0 else "CANCELLED"
+        )
+        scheduler.jobs[job_id]["reason"] = "None"
+    chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_700.0,
+        record=True,
+    )
+    chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_760.0,
+        record=True,
+    )
+    manifest = json.loads(
+        paths.chain_manifest.read_text(encoding="utf-8")
+    )
+    scheduler.crash_after_spool_write = next(
+        row["job_name"]
+        for row in manifest["jobs"]
+        if row["name"] == "maintenance_preflight"
+    )
+    with pytest.raises(KeyboardInterrupt, match="spool write"):
+        chain.repair_chain(
+            paths.chain_manifest,
+            apply=True,
+            runner=scheduler,
+            now=1_721_750_800.0,
+            bootstrap=True,
+        )
+    generation_root = (
+        paths.recovery_root / chain.REPAIR_ROOT_NAME / "g0001"
+    )
+    assert (generation_root / chain.SUBMISSION_RECEIPT_NAME).is_file()
+    assert not (
+        generation_root / chain.BOOTSTRAP_GENERATION_PROVENANCE_NAME
+    ).exists()
+
+    first = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_900.0,
+        record=True,
+    )
+    second = chain.bootstrap_status(
+        paths.chain_manifest,
+        runner=scheduler,
+        now=1_721_750_960.0,
+        record=True,
+    )
+    assert first["descendant_release_required"] is True
+    assert second["descendant_release_required"] is True
+    result = chain.repair_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_751_000.0,
+        bootstrap=True,
+    )
+    assert result["status"] == "bootstrap_repair_reconciled"
+    assert result["root_released"] is True
+    assert result["roots_held"] is False
+    assert len(scheduler.release_calls) == 1 + len(result["root_names"])
+
+
+def test_bootstrap_repair_refuses_after_marker_last_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    (paths.source_checkout / ".git").mkdir(parents=True)
+    scheduler = _RecoveryLaunchScheduler(paths.recovery_root)
+    chain.submit_chain(
+        paths.chain_manifest,
+        apply=True,
+        runner=scheduler,
+        now=1_721_750_400.0,
+    )
+    manifest = json.loads(paths.chain_manifest.read_text(encoding="utf-8"))
+    handoff = {
+        "schema_version": 1,
+        "protocol": chain.BOOTSTRAP_WATCHDOG_HANDOFF_PROTOCOL,
+        "passed": True,
+        "chain_id": manifest["chain_id"],
+    }
+    handoff["handoff_id"] = chain._sha256_bytes(
+        chain._canonical_json(handoff)
+    )
+    _json(
+        paths.recovery_root / chain.BOOTSTRAP_WATCHDOG_HANDOFF_NAME,
+        handoff,
+    )
+    with pytest.raises(chain.ChainError, match="authority ended"):
+        chain.repair_chain(
+            paths.chain_manifest,
+            apply=True,
+            runner=scheduler,
+            now=1_721_750_500.0,
+            bootstrap=True,
+        )
 
 
 def test_rebound_r1_hashes_cannot_replace_native_protocol_validation(
@@ -2526,7 +5109,7 @@ def test_rebound_r1_hashes_cannot_replace_native_protocol_validation(
         )
 
 
-def test_r2_requires_semantic_r1_idempotency_and_zero_mutation_receipts(
+def test_r3_requires_semantic_r1_idempotency_and_zero_mutation_receipts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2612,6 +5195,10 @@ def test_prerequisite_marker_faults_block_verify_and_submit_before_scheduler(
         "pilot_schema3",
         "ownership_policy",
         "integrity_policy",
+        "incident_sha256",
+        "incident_id",
+        "harness_stale_record",
+        "serving_stale_record",
         "canary_commit",
         "canary_script",
         "canary_schema2",
@@ -2642,6 +5229,22 @@ def test_wrong_prerequisite_release_or_code_report_blocks_render(
             reports["materialization_pilot"][
                 "integrity_normalization_policy_sha256"
             ] = "9" * 64
+        elif drift == "incident_sha256":
+            reports["materialization_pilot"]["reconciliation_incident"][
+                "sha256"
+            ] = "9" * 64
+        elif drift == "incident_id":
+            reports["materialization_pilot"]["reconciliation_incident"][
+                "incident_id"
+            ] = "9" * 64
+        elif drift == "harness_stale_record":
+            reports["materialization_pilot"]["reconciliation_incident"][
+                "harness_stale_conda_record_present"
+            ] = True
+        elif drift == "serving_stale_record":
+            reports["materialization_pilot"]["reconciliation_incident"][
+                "serving_stale_conda_record_present"
+            ] = True
         elif drift == "canary_commit":
             reports["slurm_canary"]["code_identity"][
                 "release_git_commit"
@@ -2662,7 +5265,7 @@ def test_wrong_prerequisite_release_or_code_report_blocks_render(
     )
     with pytest.raises(
         chain.ChainError,
-        match="does not belong to the exact r2 code",
+        match="does not belong to the exact release code",
     ):
         chain.render_chain(
             paths,
@@ -2780,6 +5383,12 @@ def test_spooled_bootstraps_authenticate_exact_tagged_tools_before_execution(
         'exec env LD_LIBRARY_PATH="$bootstrap_root/lib"'
     )
     assert '[[ -f "${sentinel_tool}" && ! -L "${sentinel_tool}" ]]' in sentinel
+    assert 'sentinel_report="$(env LD_LIBRARY_PATH=' in sentinel
+    assert '.get("run_succeeded")' in sentinel
+    assert 'if [[ "$run_succeeded" != true ]]; then' in sentinel
+    assert sentinel.find('if [[ "$run_succeeded" != true ]]') < sentinel.find(
+        "publish-bootstrap-handoff"
+    )
 
 
 def test_live_source_inventory_and_conda_identity_flow_into_production_jobs(
@@ -2807,6 +5416,23 @@ def test_live_source_inventory_and_conda_identity_flow_into_production_jobs(
     assert "live {role} prefix differs from sealed pilot" in capture
     assert "production capture used bytes outside sealed pilot" in capture
     assert "production capture used policies outside sealed pilot" in capture
+    incident = pilot["reconciliation_incident"]
+    assert incident == {
+        "path": str(
+            paths.materialization_pilot_root
+            / "environment-capture"
+            / "evidence"
+            / "CONDA_RECONCILIATION_INCIDENT.json"
+        ),
+        "sha256": chain.PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256,
+        "incident_id": chain.PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID,
+        "harness_stale_conda_record_present": False,
+        "serving_stale_conda_record_present": False,
+    }
+    assert incident["sha256"] in capture
+    assert incident["incident_id"] in capture
+    assert "production Conda reconciliation incident drifted" in capture
+    assert "production capture used a different Conda" in capture
     assert "directory_inventory" in capture
     assert expected["harness"] in materialize
     assert expected["serving"] in materialize
@@ -3039,12 +5665,12 @@ def test_submission_argv_uses_manifest_dependency_type() -> None:
     assert chain.submission_argv(
         record,
         dependency_job_ids=["101", "202"],
-        comment="asys:s5-recovery-v1.2-r2:abc:g0000:failure_sentinel",
+        comment="asys:s5-recovery-v1.2-r3:abc:g0000:failure_sentinel",
     ) == [
         "sbatch",
         "--parsable",
         "--no-requeue",
-        "--comment=asys:s5-recovery-v1.2-r2:abc:g0000:failure_sentinel",
+        "--comment=asys:s5-recovery-v1.2-r3:abc:g0000:failure_sentinel",
         "--dependency=afterany:101:202",
         "/recovery/20_failure_sentinel.sbatch",
     ]
@@ -3085,7 +5711,7 @@ def test_repair_consumes_generation_scoped_sentinel_classification(
     }
     scheduler = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r2-recovery-scheduler-evidence",
+        "protocol": "schema5-v1.2-r3-recovery-scheduler-evidence",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -3100,7 +5726,7 @@ def test_repair_consumes_generation_scoped_sentinel_classification(
     _json(evidence_path, scheduler)
     marker = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r2-recovery-sentinel-outcome",
+        "protocol": "schema5-v1.2-r3-recovery-sentinel-outcome",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -3374,7 +6000,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     ]
     receipt_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r2-recovery-chain-submission",
+        "protocol": "schema5-v1.2-r3-recovery-chain-submission",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -3495,7 +6121,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     evidence_path = sentinel_root / "SCHEDULER_EVIDENCE.json"
     evidence_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r2-recovery-scheduler-evidence",
+        "protocol": "schema5-v1.2-r3-recovery-scheduler-evidence",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -3514,7 +6140,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     _json(evidence_path, evidence)
     completion_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r2-recovery-sentinel-outcome",
+        "protocol": "schema5-v1.2-r3-recovery-sentinel-outcome",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -3571,7 +6197,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     transition_identity = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r2-throughput-qualification-"
+            "schema5-v1.2-r3-throughput-qualification-"
             "capacity-transition-v1"
         ),
         "passed": True,
@@ -4323,6 +6949,13 @@ def test_failure_sentinel_uses_sealed_real_copy_bootstrap_not_live_python(
 
     # The sentinel and native chain verifier remain usable after the mutable source
     # interpreter changes; the sealed bootstrap is the runtime trust anchor.
+    monkeypatch.setattr(
+        chain,
+        "_protected_capacity_release_source_binding",
+        lambda *_args, **_kwargs: pytest.fail(
+            "sealed chain verification consulted mutable Git provenance"
+        ),
+    )
     paths.dev_python.write_text(
         "#!/bin/sh\n# drift after immutable rendering\nexit 0\n",
         encoding="utf-8",

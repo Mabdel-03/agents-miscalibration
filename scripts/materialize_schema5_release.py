@@ -43,6 +43,11 @@ RELEASE_ID = freeze.RELEASE_ID
 REQUIRED_TAG = freeze.REQUIRED_GIT_TAG
 COMPLETE_MARKER = "MATERIALIZATION_COMPLETE.json"
 BUILD_EVIDENCE_COMPLETE_MARKER = "HARNESS_BUILD_EVIDENCE_COMPLETE.json"
+ALLOWED_BUILD_EVIDENCE_ROOTS = (
+    Path("src") / "agents_scaling.egg-info",
+    Path("build"),
+    Path("dist"),
+)
 STAGE_FILENAMES = {
     "worktree": "WORKTREE_MATERIALIZED.json",
     "harness_clone": "HARNESS_CLONE_COMPLETE.json",
@@ -1244,16 +1249,11 @@ def _archive_release_build_evidence(
             evidence=evidence,
         )
         return evidence
-    allowed_roots = (
-        Path("src") / "agents_scaling.egg-info",
-        Path("build"),
-        Path("dist"),
-    )
     if any(
         not any(
             Path(relative) == allowed
             or _lexically_relative_to(Path(relative), allowed)
-            for allowed in allowed_roots
+            for allowed in ALLOWED_BUILD_EVIDENCE_ROOTS
         )
         for relative in ignored
     ):
@@ -1267,7 +1267,7 @@ def _archive_release_build_evidence(
         )
     selected_roots = [
         allowed
-        for allowed in allowed_roots
+        for allowed in ALLOWED_BUILD_EVIDENCE_ROOTS
         if any(
             Path(relative) == allowed
             or _lexically_relative_to(Path(relative), allowed)
@@ -1333,23 +1333,57 @@ def _verify_build_evidence(
         "archive_inventory_sha256",
     } or not isinstance(payload.get("generated_paths"), list):
         raise MaterializationError("package-build evidence has the wrong fields")
+    generated_paths = payload["generated_paths"]
+    if (
+        any(
+            not isinstance(value, str)
+            or not value
+            or Path(value).is_absolute()
+            or Path(value).as_posix() != value
+            or any(part in {"", ".", ".."} for part in Path(value).parts)
+            for value in generated_paths
+        )
+        or generated_paths != sorted(generated_paths)
+        or len(set(generated_paths)) != len(generated_paths)
+        or any(
+            not any(
+                Path(relative) == allowed
+                or _lexically_relative_to(Path(relative), allowed)
+                for allowed in ALLOWED_BUILD_EVIDENCE_ROOTS
+            )
+            for relative in generated_paths
+        )
+    ):
+        raise MaterializationError(
+            "package-build evidence has unsafe or unexpected generated paths"
+        )
     archive_path = payload.get("archive_path")
     inventory_sha = payload.get("archive_inventory_sha256")
     if archive_path is None:
-        if payload["generated_paths"] or inventory_sha is not None:
+        if generated_paths or inventory_sha is not None:
             raise MaterializationError("empty package-build evidence is inconsistent")
         return
     archive = Path(str(archive_path)).resolve()
     evidence_root = (output_root / "build_evidence").resolve()
     if (
-        not _is_relative_to(archive, evidence_root)
+        archive != evidence_root
         or archive.is_symlink()
         or not archive.is_dir()
         or _SHA256_RE.fullmatch(str(inventory_sha)) is None
     ):
         raise MaterializationError("package-build evidence archive is invalid")
-    if freeze.directory_inventory(archive)["inventory_sha256"] != inventory_sha:
+    inventory = freeze.directory_inventory(archive)
+    if inventory["inventory_sha256"] != inventory_sha:
         raise MaterializationError("package-build evidence archive drifted")
+    archived_generated_paths = sorted(
+        str(entry["path"])
+        for entry in inventory["entries"]
+        if entry.get("type") != "directory"
+    )
+    if generated_paths != archived_generated_paths:
+        raise MaterializationError(
+            "package-build evidence archive does not contain the exact generated paths"
+        )
 
 
 def _build_evidence_marker_payload(

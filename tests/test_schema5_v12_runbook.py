@@ -11,22 +11,74 @@ RUNBOOK = (
     / "SCHEMA5_V12_RECOVERY_RUNBOOK.md"
 )
 RELEASE_GUIDE = RUNBOOK.with_name("SCHEMA5_RELEASE.md")
+RETIRED_R1_CHAIN = RUNBOOK.with_name("SCHEMA5_RECOVERY_CHAIN.md")
 
 
 def test_recovery_chain_documents_transactional_failfast_stage_observers() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     assert "publishes all 43 jobs" in text
-    assert "Chain schema 9" in text
+    assert "Chain schema 10" in text
     assert "one fail-fast `afterany` observer" in text
     assert "STAGE_SCHEDULER_EVIDENCE.json" in text
     assert "STAGE_SENTINEL_COMPLETE.json" in text
     assert (
-        "recovery_chain_stage_sentinels/schema5-v1.2-r2/gNNNN/<stage>/"
+        "recovery_chain_stage_sentinels/schema5-v1.2-r3/gNNNN/<stage>/"
         in text
     )
     assert "explicitly has no repair authority" in text
     assert "aggregate sentinel remains the sole causal" in text
     assert "without waiting for the\nlong-running email-acknowledgement branch" in text
+
+
+def test_recovery_chain_documents_prelaunch_bootstrap_resurrection_gate() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    section = text[
+        text.index("## Render and submit the superseding chain")
+        : text.index("Each stage observer authenticates")
+    ]
+    assert 'status == "awaiting_bootstrap_watchdog"' in section
+    assert "BOOTSTRAP_GENERATION_PROVENANCE.json" in section
+    assert "bootstrap-bundle" in section
+    assert "prepare-isolated-bootstrap-drill" in section
+    assert "--isolated-drill-chain-manifest" in section
+    assert "--isolated-drill-submission-receipt" in section
+    assert "authorized_keys.bootstrap.line" in section
+    assert "bootstrap-deployment-evidence" in section
+    assert "bootstrap-drill-evidence" in section
+    assert "bootstrap-attestation" in section
+    assert "schema5-bootstrap-watchdog drill-status" in section
+    assert "schema5-bootstrap-watchdog drill-repair" in section
+    assert 'scancel -- "${isolated_job_ids[@]}"' in section
+    assert "--installed-release-root $bootstrap_vm_release" in section
+    assert "sudo systemctl enable --now $bootstrap_timer" in section
+    assert ": \"${BOOTSTRAP_VM_LOGIN:?" in section
+    assert ": \"${BOOTSTRAP_CLUSTER_HOST:?" in section
+    assert ": \"${BOOTSTRAP_CLUSTER_KNOWN_HOSTS:?" in section
+    assert ": \"${PRODUCTION_WATCHDOG_PUBLIC_KEY:?" in section
+    assert "READY`, `ARM_INTENT`, and\n`ARMED`" in section
+    assert section.index("submit_result=") < section.index(
+        "prepare-isolated-bootstrap-drill"
+    ) < section.index(
+        "bootstrap-bundle"
+    ) < section.index(
+        "bootstrap-deployment-evidence"
+    ) < section.index(
+        "bootstrap-drill-evidence"
+    ) < section.index(
+        "bootstrap-attestation"
+    ) < section.index(
+        '"$sealed_python" -I "$renderer" release-root'
+    )
+    assert "at most 1,200\nseconds" in section
+    assert "descending from the validated immutable initial\n`LAUNCHED`" in section
+    assert "no direct scientific admission" in section
+    assert "does not transfer\nbootstrap authority" in section
+    assert "aggregate `failure_sentinel`" in text
+    assert "other 42 jobs" in text
+    assert "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_HANDOFF_COMPLETE.json" in text
+    assert "schema5-v1.2-r3-bootstrap-watchdog-handoff-v1" in text
+    assert "shared\nsubmission/repair lock" in text
+    assert "Only after that sealed\nmarker exists" in text
 
 
 def test_partial_materialization_is_quarantined_before_suffix_repair() -> None:
@@ -149,7 +201,7 @@ def test_materialization_pilot_uses_only_the_exact_tagged_script() -> None:
     assert section.count("--integrity-normalization-policy") == 2
     assert section.count(
         '--durable-git-release-marker "$schema5_recovery/'
-        'DURABLE_GIT_RELEASE_COMPLETE.json"'
+        'DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"'
     ) == 2
     assert "`already_submitted`" in section
     assert "reports `adopted`" in section
@@ -271,7 +323,7 @@ def test_chain_renderer_receives_canonical_python_paths() -> None:
     assert 'sealed_python="$(realpath -e "$sealed_python")"' in render_section
     assert '--dev-python "$dev_python"' in render_section
     assert '--partition mit_normal --slurm-user "$slurm_user"' in render_section
-    assert "RECOVERY_CHAIN_SCHEMA5_V1_2_R2_SUBMISSION.json" in render_section
+    assert "RECOVERY_CHAIN_SCHEMA5_V1_2_R3_SUBMISSION.json" in render_section
     assert "(.jobs | length) == 43" in render_section
     assert '" Requeue=0 "' in render_section
     assert '" Comment=$comment "' in render_section
@@ -353,10 +405,82 @@ def test_launch_requires_protected_capacity_watchdog_and_qualification() -> None
     assert "Watchdog drill/readiness markers are\nstage-19 outputs" in render
 
 
+def test_protected_capacity_uses_marker_last_effective_fleet_materializer() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    section = text[
+        text.index(
+            "## Protected capacity before render; external watchdog at stage 19"
+        )
+        : text.index(
+            "After the submitted chain has completed `schema5_initialize`"
+        )
+    ]
+
+    assert "materialize_schema5_effective_fleet.py" in section
+    assert (
+        "schema5-v1.2-r3-effective-fleet-materialization-v1"
+        in section
+    )
+    assert "EFFECTIVE_FLEET_COMPLETE.json" in section
+    assert "schema5_fleet.effective.v1.json" in section
+    assert section.count(
+        '"$sealed_python" -I "$effective_fleet_tool" materialize'
+    ) == 2
+    assert '"${effective_fleet_args[@]}" --apply' in section
+    assert "--format runbook-nul" in section
+    assert "test \"${#effective_fleet_inputs[@]}\" -eq 10" in section
+    assert "Never construct\nthe effective contract with `jq`" in section
+    assert "0.6B:+3, 1.7B:+3, 4B:+3, 8B:+2, 14B:+3, 32B:+4" in section
+    assert "22/24 + 18/18 = 40/42" in section
+    assert section.count(
+        "--effective-fleet-contract \"$effective_fleet_contract\""
+    ) == 3
+    assert section.count(
+        "--effective-fleet-contract-sha256 "
+        '"$effective_fleet_contract_sha256"'
+    ) == 2
+    assert section.count(
+        "--additive-overlay-contract \"$additive_overlay_contract\""
+    ) == 3
+    assert section.count("--capacity-generation 1") == 3
+    assert section.count(
+        "--static-feasibility-certificate \"$static_capacity_certificate\""
+    ) == 2
+    assert section.count(
+        "--source-tree-sha256 \"$source_tree_sha256\""
+    ) == 2
+    assert (
+        "--dispatcher-source-sha256 \"$dispatcher_source_sha256\""
+        in section
+    )
+    assert "--qualification-runner-source-sha256" in section
+    assert '"$qualification_runner_source_sha256"' in section
+    publisher_verify = section[
+        section.index(
+            '"$sealed_python" -I "$protected_publisher" verify'
+        )
+        : section.index(
+            'test -f "$protected_capacity"'
+        )
+    ]
+    assert publisher_verify.count(
+        "--qualification-runner-source-sha256"
+    ) == 1
+    assert (
+        "Review exactly 448 canary job elements: 384 clients,\n"
+        "# 40 active servers, three warm-turnover allocations, and 21 held "
+        "reserve elements."
+    ) in section
+    assert (
+        "`PROTECTED_CAPACITY_COMPLETE.json` is a schema-4"
+        in section
+    )
+
+
 def test_durable_release_and_watchdog_commands_are_exact_and_fail_closed() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     freeze = text[
-        text.index("## Freeze and test the r2 source")
+        text.index("## Freeze and test the r3 source")
         : text.index("## Required two-prefix materialization pilot")
     ]
     watchdog = text[
@@ -378,3 +502,147 @@ def test_durable_release_and_watchdog_commands_are_exact_and_fail_closed() -> No
     assert "Result=success" in watchdog
     assert "ExecMainStatus=0" in watchdog
     assert "Do not manually publish `WATCHDOG_READY.json`" in watchdog
+
+
+def test_r3_uses_fresh_operational_paths_and_binds_sealed_r2_lineage() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    release = RELEASE_GUIDE.read_text(encoding="utf-8")
+
+    assert "# Schema-5 v1.2-r3 recovery and production runbook" in text
+    assert "tag=sweep-recovery-schema5-v1.2-r3" in text
+    assert "chain namespace is `schema5-v1.2-r3`" in text
+    assert "durable_commit_ref=refs/heads/schema5-v1.2-r3" in text
+    assert (
+        "schema5-v1.2-r3-client-placement-capacity-generation-v1"
+        in text
+    )
+    assert (
+        "schema5-v1.2-r2-client-placement-capacity-generation-v1"
+        not in text
+    )
+    assert (
+        'durable_marker="$recovery/'
+        'DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"' in text
+    )
+    for path in (
+        "materialization_pilot_source_checkout_v1_2_r3",
+        "materialization_pilots/schema5-v1.2-r3",
+        "slurm_canaries/schema5-v1.2-r3",
+        "jobs/schema5-v1.2-r3-materialization-pilot.sbatch",
+        "logs/materialization-pilot-r3",
+        "protected_capacity/schema5-v1.2-r3",
+        "recovery_chain_stage_sentinels/schema5-v1.2-r3",
+    ):
+        assert path in text
+
+    lineage = text[
+        text.index("## Immutable r2 to r3 lineage")
+        : text.index("## Before-tag gates")
+    ]
+    assert "refs/heads/schema5-v1.2-r2" in lineage
+    assert "DURABLE_GIT_RELEASE_COMPLETE.json" in lineage
+    assert "requires_superseding_release" in lineage
+    assert "Never rename the partial tree" in lineage
+    assert "canary_failures/schema5-v1.2-r2/CANARY_FAILURE_SEALED.json" in lineage
+    assert "schema5-v1.2-r2-partial-canary-failure-seal-v1" in lineage
+    assert "`retry_in_place=false`" in lineage
+    assert "exact seal path, raw SHA-256, size, and\n`seal_id`" in lineage
+    assert "reverify\nthat binding at submission" in lineage
+    assert "Operational artifact basenames are r3-specific" in lineage
+    assert "chain_namespace=schema5-v1.2-r3" in lineage
+
+    assert "## Superseding operational lineage" in release
+    assert "sweep-recovery-schema5-v1.2-r3" in release
+    assert "canary_failures/schema5-v1.2-r2/CANARY_FAILURE_SEALED.json" in release
+    assert "jobs/schema5-v1.2-r3-materialization-pilot.sbatch" in release
+    assert "logs/materialization-pilot-r3" in release
+
+
+def test_r2_canary_failure_sealing_commands_are_exact_and_idempotent() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    lineage = text[
+        text.index("## Immutable r2 to r3 lineage")
+        : text.index("## Before-tag gates")
+    ]
+
+    assert (
+        'r2_release_checkout="$recovery/'
+        'materialization_pilot_source_checkout_v1_2_r2"' in text
+    )
+    assert (
+        'r2_zero_mutation="$recovery/r1_acceptance/'
+        'ZERO_RESULT_MUTATION_RECEIPT.json"' in text
+    )
+    assert (
+        'r2_snapshot_marker="$recovery/pre_repair/SNAPSHOT_COMPLETE.json"'
+        in text
+    )
+    assert '"$dev_python" -I "$r2_sealer" seal-canary-failure' in lineage
+    assert '--tree "$r2_canary_tree"' in lineage
+    assert '--evidence-root "$r2_canary_failure_root"' in lineage
+    assert '--release-checkout "$r2_release_checkout"' in lineage
+    assert "--error-classification deterministic_missing_subprocess_capture" in lineage
+    assert lineage.count('--mutation-evidence "$r2_zero_mutation"') == 1
+    assert lineage.count('--mutation-evidence "$r2_snapshot_marker"') == 1
+    assert lineage.count('"${r2_canary_seal_cmd[@]}"') == 3
+    assert lineage.count('"${r2_canary_seal_cmd[@]}" --apply') == 2
+    assert "transaction canary job 18889366 was cancelled before start" in lineage
+    assert ".known_scheduler_identity.job_ids == [\"18889366\"]" in lineage
+    assert "`already_sealed`" in lineage
+
+
+def test_release_gates_follow_executable_tag_order() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    before = text[
+        text.index("## Before-tag gates")
+        : text.index("## Freeze and test the r3 source")
+    ]
+    after = text[
+        text.index("## Post-tag and pre-render gates")
+        : text.index("## Render and submit the superseding chain")
+    ]
+
+    assert text.index("## Before-tag gates") < text.index(
+        "## Freeze and test the r3 source"
+    )
+    assert text.index("## Freeze and test the r3 source") < text.index(
+        "## Post-tag and pre-render gates"
+    )
+    assert text.index("## Post-tag and pre-render gates") < text.index(
+        "## Render and submit the superseding chain"
+    )
+    assert "clean full test suite" in before
+    assert "deterministic r2 canary failure seal" in before
+    assert "PROTECTED_CAPACITY_COMPLETE.json" not in before
+    assert "external watchdog" not in before
+    assert "PROTECTED_CAPACITY_COMPLETE.json" in after
+    assert "bootstrap-watchdog VM login" in after
+    assert "production external-watchdog deployment" in after
+    assert "after `schema5_initialize`" in after
+    assert "not render prerequisites" in after
+    assert "complete `squeue` plus `sacct`" in after
+    assert "`WATCHDOG_READY.json` remains a stage-19 output" in after
+
+
+def test_retired_r1_record_preserves_historical_r2_successor() -> None:
+    text = RETIRED_R1_CHAIN.read_text(encoding="utf-8")
+
+    assert "Immutable historical record" in text
+    assert "requires the v1.2-r2\n> superseding release" in text
+    assert "requires the v1.2-r3" not in text
+
+
+def test_throughput_runbook_separates_health_soak_from_loaded_saturation() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    qualification = text[
+        text.index("The preproduction qualification exercises")
+        : text.index("At 48 continuous production hours")
+    ]
+
+    assert "`health_soak_384_seconds` window of at least 7,200 seconds" in qualification
+    assert "health soak is not represented as loaded steady-state" in qualification
+    assert "at least two\nobservations at exactly 384 active/pending clients" in qualification
+    assert "positive trusted-QID progress" in qualification
+    assert "`loaded_384_seconds`" in qualification
+    assert "`loaded_384_useful_qids`" in qualification
+    assert "`loaded_384_observation_count`" in qualification

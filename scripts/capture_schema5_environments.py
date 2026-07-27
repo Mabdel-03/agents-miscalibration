@@ -38,6 +38,9 @@ POLICY_FILENAME = "environment_ownership_policy.v1.json"
 INTEGRITY_POLICY_FILENAME = "environment_integrity_normalization_policy.v1.json"
 COMPLETE_MARKER = "ENVIRONMENT_CAPTURE_COMPLETE.json"
 INTENT_MARKER = "ENVIRONMENT_CAPTURE_INTENT.json"
+RECONCILIATION_INCIDENT_PROTOCOL = (
+    "schema5-conda-pip-reconciliation-incident-v1"
+)
 SETUPTOOLS_NORMALIZATION_ID = "setuptools-conda-pip-ownership-v1"
 PIP_RECORD_NORMALIZATION_ID = "pip-26.1.1-installer-launcher-record-v1"
 PACKAGING_RECORD_NORMALIZATION_ID = "packaging-26.2-conda-installer-record-v1"
@@ -182,6 +185,21 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _incident_canonical_bytes(value: Mapping[str, Any]) -> bytes:
+    """Canonical encoding used by ``seal_recovery_evidence`` incident v1."""
+
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -214,6 +232,85 @@ def _read_json(path: Path, *, description: str) -> dict[str, Any]:
     return payload
 
 
+def _stable_regular_bytes(
+    path: Path,
+    *,
+    description: str,
+    require_read_only: bool,
+) -> bytes:
+    """Read exact bytes while rejecting symlinks, links, and concurrent replacement."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise EnvironmentCaptureError(
+            f"cannot open {description} {path}: {exc}"
+        ) from exc
+    chunks: list[bytes] = []
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or (require_read_only and stat.S_IMODE(before.st_mode) & 0o222)
+        ):
+            raise EnvironmentCaptureError(
+                f"{description} is not a safe"
+                f"{' read-only' if require_read_only else ''} regular file: {path}"
+            )
+        while chunk := os.read(descriptor, _CHUNK_SIZE):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise EnvironmentCaptureError(
+            f"{description} changed while being read: {path}: {exc}"
+        ) from exc
+
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    if identity(before) != identity(after) or identity(before) != identity(current):
+        raise EnvironmentCaptureError(
+            f"{description} changed while being read: {path}"
+        )
+    return b"".join(chunks)
+
+
+def _json_object_from_bytes(
+    raw: bytes, *, path: Path, description: str
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonfinite,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise EnvironmentCaptureError(
+            f"cannot read {description} {path}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise EnvironmentCaptureError(
+            f"{description} must contain one JSON object: {path}"
+        )
+    return payload
+
+
 def _fsync_directory(path: Path) -> None:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -230,11 +327,21 @@ def _fsync_directory(path: Path) -> None:
 
 def _atomic_write_once(path: Path, payload: bytes, *, mode: int = 0o444) -> None:
     if path.exists() or path.is_symlink():
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+        info = path.stat(follow_symlinks=False)
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o222
+            or path.read_bytes() != payload
+        ):
             raise EnvironmentCaptureError(
                 f"conflicting immutable capture artifact: {path}"
             )
-        os.chmod(path, mode)
+        if stat.S_IMODE(info.st_mode) != mode:
+            raise EnvironmentCaptureError(
+                f"immutable capture artifact mode drifted: {path}"
+            )
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -2358,10 +2465,22 @@ def _combined_policy(
 
 
 def _validate_recovered_record(
-    path: Path, normalization: Mapping[str, Any]
-) -> tuple[dict[str, Any], str]:
-    payload = _read_json(path, description="recovered Setuptools Conda record")
-    digest = _sha256_file(path)
+    path: Path,
+    normalization: Mapping[str, Any],
+    *,
+    require_read_only: bool = True,
+) -> tuple[dict[str, Any], str, bytes]:
+    raw = _stable_regular_bytes(
+        path,
+        description="recovered Setuptools Conda record",
+        require_read_only=require_read_only,
+    )
+    payload = _json_object_from_bytes(
+        raw,
+        path=path,
+        description="recovered Setuptools Conda record",
+    )
+    digest = _sha256_bytes(raw)
     if (
         payload.get("name") != normalization["project"]
         or payload.get("version") != normalization["conda_version"]
@@ -2371,7 +2490,7 @@ def _validate_recovered_record(
         raise EnvironmentCaptureError(
             "recovered Conda record does not match the ownership policy"
         )
-    return payload, digest
+    return payload, digest, raw
 
 
 def _validate_incident(
@@ -2379,73 +2498,267 @@ def _validate_incident(
     *,
     affected_prefixes: Sequence[Path],
     artifact_sha256: str,
-) -> tuple[str, dict[str, str]]:
-    payload = _read_json(path, description="Conda reconciliation incident")
-    if stat.S_IMODE(path.stat().st_mode) & 0o222:
-        raise EnvironmentCaptureError("Conda reconciliation incident must be read-only")
-    serialized = json.dumps(payload, sort_keys=True)
-    recognized_sealed_incident = (
-        payload.get("protocol")
-        == "schema5-conda-pip-reconciliation-incident-v1"
-        and payload.get("classification")
-        == "source_metadata_reconciled_by_conda_pip_interop"
-        and payload.get("live_sources_must_not_be_queried_by_conda") is True
-        and payload.get("resolution")
-        == "capture_live_bytes_without_conda_then_normalize_only_immutable_seeds"
-        and _SHA256_RE.fullmatch(str(payload.get("incident_id", ""))) is not None
+    recovered_record_source_path: Path,
+    recovered_record_sha256: str,
+    verify_external_preimages: bool,
+) -> tuple[
+    str,
+    dict[str, str],
+    dict[str, str | None],
+    dict[str, str],
+]:
+    """Validate the exact canonical incident-v1 authorization envelope.
+
+    Incident v1 is emitted with a mandatory checksum sidecar by
+    :func:`seal_recovery_evidence.record_conda_reconciliation_incident`.  There is
+    no protocol-scoped historical incident format in this release, so a generic
+    ``complete=true`` object is deliberately not a compatibility escape hatch.
+    """
+
+    raw = _stable_regular_bytes(
+        path,
+        description="Conda reconciliation incident",
+        require_read_only=True,
     )
+    payload = _json_object_from_bytes(
+        raw,
+        path=path,
+        description="Conda reconciliation incident",
+    )
+    incident_fields = {
+        "schema_version",
+        "protocol",
+        "classification",
+        "observed_at",
+        "recorded_at",
+        "intended_action",
+        "mutation_intended",
+        "live_sources_must_not_be_queried_by_conda",
+        "harness_prefix",
+        "serving_prefix",
+        "harness_stale_conda_record_present",
+        "serving_stale_conda_record_present",
+        "runtime_owner",
+        "superseded_conda_record",
+        "failed_materialization_log",
+        "failed_materialization_log_sha256",
+        "resolution",
+        "incident_id",
+    }
+    _require_exact_fields(
+        payload,
+        incident_fields,
+        description="Conda reconciliation incident",
+    )
+    identity = dict(payload)
+    incident_id = identity.pop("incident_id", None)
     if (
-        not (payload.get("complete") is True or recognized_sealed_incident)
-        or "conda" not in serialized.lower()
-        or "reconcil" not in serialized.lower()
-        or artifact_sha256 not in serialized
-        or any(str(prefix) not in serialized for prefix in affected_prefixes)
+        payload.get("schema_version") != 1
+        or payload.get("protocol") != RECONCILIATION_INCIDENT_PROTOCOL
+        or payload.get("classification")
+        != "source_metadata_reconciled_by_conda_pip_interop"
+        or not isinstance(payload.get("observed_at"), str)
+        or not payload["observed_at"]
+        or not isinstance(payload.get("recorded_at"), str)
+        or not payload["recorded_at"]
+        or payload.get("intended_action") != "read_only_environment_inventory"
+        or payload.get("mutation_intended") is not False
+        or payload.get("live_sources_must_not_be_queried_by_conda") is not True
+        or payload.get("resolution")
+        != "capture_live_bytes_without_conda_then_normalize_only_immutable_seeds"
+        or _SHA256_RE.fullmatch(str(incident_id)) is None
+        or incident_id
+        != _sha256_bytes(_incident_canonical_bytes(identity))
+        or raw != _incident_canonical_bytes(payload)
     ):
         raise EnvironmentCaptureError(
-            "Conda reconciliation incident does not bind all affected prefixes "
-            "and the recovered artifact"
+            "Conda reconciliation incident identity or canonical encoding is invalid"
         )
-    source_record_states: dict[str, str] = {}
-    expected_prefix_fields = {
-        "harness": "harness_prefix",
-        "serving": "serving_prefix",
-    }
-    expected_state_fields = {
-        "harness": "harness_stale_conda_record_present",
-        "serving": "serving_stale_conda_record_present",
-    }
     if len(affected_prefixes) != len(ROLES):
         raise EnvironmentCaptureError(
             "Conda reconciliation incident requires both environment roles"
         )
+    prefix_by_role = dict(zip(ROLES, affected_prefixes, strict=True))
+    runtime_owner = payload.get("runtime_owner")
+    expected_runtime_paths = {
+        role: str(
+            prefix_by_role[role]
+            / "lib"
+            / "python3.11"
+            / "site-packages"
+            / "setuptools-81.0.0.dist-info"
+            / "METADATA"
+        )
+        for role in ROLES
+    }
+    if (
+        not isinstance(runtime_owner, dict)
+        or set(runtime_owner)
+        != {
+            "distribution",
+            "version",
+            "harness_metadata",
+            "harness_metadata_sha256",
+            "serving_metadata",
+            "serving_metadata_sha256",
+        }
+        or runtime_owner.get("distribution") != "setuptools"
+        or runtime_owner.get("version") != "81.0.0"
+        or runtime_owner.get("harness_metadata")
+        != expected_runtime_paths["harness"]
+        or runtime_owner.get("serving_metadata")
+        != expected_runtime_paths["serving"]
+        or _SHA256_RE.fullmatch(
+            str(runtime_owner.get("harness_metadata_sha256", ""))
+        )
+        is None
+        or _SHA256_RE.fullmatch(
+            str(runtime_owner.get("serving_metadata_sha256", ""))
+        )
+        is None
+    ):
+        raise EnvironmentCaptureError(
+            "Conda reconciliation incident runtime-owner binding is invalid"
+        )
+    runtime_owner_sha256 = {
+        "harness": str(runtime_owner["harness_metadata_sha256"]),
+        "serving": str(runtime_owner["serving_metadata_sha256"]),
+    }
+
+    superseded = payload.get("superseded_conda_record")
+    serving_present = payload.get("serving_stale_conda_record_present")
+    expected_serving_path = (
+        prefix_by_role["serving"]
+        / "conda-meta"
+        / "setuptools-82.0.1-pyh332efcf_0.json"
+    )
+    if (
+        payload.get("harness_stale_conda_record_present") is not False
+        or type(serving_present) is not bool
+        or not isinstance(superseded, dict)
+        or set(superseded)
+        != {
+            "name",
+            "version",
+            "build",
+            "artifact_sha256",
+            "recovered_harness_path",
+            "recovered_harness_sha256",
+            "serving_path",
+            "serving_sha256",
+        }
+        or superseded.get("name") != "setuptools"
+        or superseded.get("version") != "82.0.1"
+        or superseded.get("build") != "pyh332efcf_0"
+        or superseded.get("artifact_sha256") != artifact_sha256
+        or superseded.get("recovered_harness_path")
+        != str(recovered_record_source_path)
+        or superseded.get("recovered_harness_sha256")
+        != recovered_record_sha256
+        or (
+            serving_present
+            and (
+                superseded.get("serving_path") != str(expected_serving_path)
+                or _SHA256_RE.fullmatch(
+                    str(superseded.get("serving_sha256", ""))
+                )
+                is None
+            )
+        )
+        or (
+            not serving_present
+            and (
+                superseded.get("serving_path") is not None
+                or superseded.get("serving_sha256") is not None
+            )
+        )
+    ):
+        raise EnvironmentCaptureError(
+            "Conda reconciliation incident recovered-record binding is invalid"
+        )
+    failed_log = payload.get("failed_materialization_log")
+    if (
+        not isinstance(failed_log, str)
+        or not Path(failed_log).is_absolute()
+        or _SHA256_RE.fullmatch(
+            str(payload.get("failed_materialization_log_sha256", ""))
+        )
+        is None
+    ):
+        raise EnvironmentCaptureError(
+            "Conda reconciliation incident failure-log binding is invalid"
+        )
+    if verify_external_preimages:
+        for role in ROLES:
+            metadata_path = Path(expected_runtime_paths[role])
+            observed = _sha256_bytes(
+                _stable_regular_bytes(
+                    metadata_path,
+                    description=f"{role} incident-bound Setuptools METADATA",
+                    require_read_only=False,
+                )
+            )
+            if observed != runtime_owner_sha256[role]:
+                raise EnvironmentCaptureError(
+                    f"{role} Setuptools METADATA differs from the sealed "
+                    "reconciliation incident"
+                )
+        observed_failed_log_sha256 = _sha256_bytes(
+            _stable_regular_bytes(
+                Path(failed_log),
+                description="incident-bound failed materialization log",
+                require_read_only=False,
+            )
+        )
+        if observed_failed_log_sha256 != payload[
+            "failed_materialization_log_sha256"
+        ]:
+            raise EnvironmentCaptureError(
+                "failed materialization log differs from the sealed "
+                "reconciliation incident"
+            )
+
+    source_record_states: dict[str, str] = {
+        "harness": "absent",
+        "serving": "present" if serving_present else "absent",
+    }
+    source_record_sha256: dict[str, str | None] = {
+        "harness": None,
+        "serving": (
+            str(superseded["serving_sha256"]) if serving_present else None
+        ),
+    }
     for role, prefix in zip(ROLES, affected_prefixes, strict=True):
-        observed_prefix = payload.get(expected_prefix_fields[role])
-        observed_present = payload.get(expected_state_fields[role])
-        if observed_prefix != str(prefix) or type(observed_present) is not bool:
+        if payload.get(f"{role}_prefix") != str(prefix):
             raise EnvironmentCaptureError(
                 "Conda reconciliation incident does not bind the exact "
-                f"{role} source-record state"
+                f"{role} source prefix"
             )
-        source_record_states[role] = (
-            "present" if observed_present else "absent"
-        )
+
     sidecar = path.with_suffix(path.suffix + ".sha256")
-    if sidecar.exists() or sidecar.is_symlink():
-        if sidecar.is_symlink() or not sidecar.is_file():
-            raise EnvironmentCaptureError(
-                "Conda reconciliation incident checksum is unsafe"
-            )
-        fields = sidecar.read_text(encoding="utf-8").strip().split()
-        if (
-            len(fields) != 2
-            or fields[0] != _sha256_file(path)
-            or fields[1] != path.name
-            or stat.S_IMODE(sidecar.stat().st_mode) & 0o222
-        ):
-            raise EnvironmentCaptureError(
-                "Conda reconciliation incident checksum is invalid"
-            )
-    return _sha256_file(path), source_record_states
+    sidecar_raw = _stable_regular_bytes(
+        sidecar,
+        description="Conda reconciliation incident checksum",
+        require_read_only=True,
+    )
+    incident_sha256 = _sha256_bytes(raw)
+    expected_sidecar = f"{incident_sha256}  {path.name}\n"
+    try:
+        sidecar_text = sidecar_raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise EnvironmentCaptureError(
+            "Conda reconciliation incident checksum is invalid"
+        ) from exc
+    if sidecar_text != expected_sidecar:
+        raise EnvironmentCaptureError(
+            "Conda reconciliation incident checksum is invalid"
+        )
+    return (
+        incident_sha256,
+        source_record_states,
+        source_record_sha256,
+        runtime_owner_sha256,
+    )
 
 
 def _distribution_versions(prefix: Path) -> dict[str, str]:
@@ -2790,16 +3103,19 @@ def _normalize_seed(
             f"{role} Setuptools record absence is not authorized"
         )
     if source_state == "present":
-        record_payload, record_sha256 = _validate_recovered_record(
-            record_path, normalization
+        record_payload, record_sha256, preimage_bytes = (
+            _validate_recovered_record(
+                record_path,
+                normalization,
+                require_read_only=False,
+            )
         )
-        preimage_bytes = record_path.read_bytes()
     else:
-        record_payload, _unused = _validate_recovered_record(
-            recovered_record_path, normalization
+        record_payload, _unused, preimage_bytes = _validate_recovered_record(
+            recovered_record_path,
+            normalization,
         )
         record_sha256 = recovered_record_sha256
-        preimage_bytes = recovered_record_path.read_bytes()
     record_work: list[dict[str, Any]] = []
     for record_normalization in _record_normalizations_for_role(
         policy, role=role
@@ -3710,17 +4026,25 @@ def capture_environments(
         ownership_policy_payload, integrity_policy_payload
     )
     recovered_path = Path(recovered_setuptools_record).expanduser().resolve()
-    _recovered, recovered_sha256 = _validate_recovered_record(
+    _recovered, recovered_sha256, _recovered_bytes = _validate_recovered_record(
         recovered_path,
         _policy_normalization(policy, SETUPTOOLS_NORMALIZATION_ID),
     )
     incident_path = Path(reconciliation_incident).expanduser().resolve()
-    incident_sha256, incident_source_record_states = _validate_incident(
+    (
+        incident_sha256,
+        incident_source_record_states,
+        incident_source_record_sha256,
+        incident_runtime_owner_sha256,
+    ) = _validate_incident(
         incident_path,
         affected_prefixes=tuple(sources.values()),
         artifact_sha256=_policy_normalization(
             policy, SETUPTOOLS_NORMALIZATION_ID
         )["conda_artifact_sha256"],
+        recovered_record_source_path=recovered_path,
+        recovered_record_sha256=recovered_sha256,
+        verify_external_preimages=True,
     )
     setuptools_record_filename = _policy_normalization(
         policy, SETUPTOOLS_NORMALIZATION_ID
@@ -3739,6 +4063,18 @@ def capture_environments(
                 f"expected {incident_source_record_states[role]}, "
                 f"observed {observed_state}"
             )
+        expected_record_sha256 = incident_source_record_sha256[role]
+        if (
+            observed_state == "present"
+            and (
+                expected_record_sha256 is None
+                or _sha256_file(record_path) != expected_record_sha256
+            )
+        ):
+            raise EnvironmentCaptureError(
+                "live source Setuptools record bytes differ from the sealed "
+                f"reconciliation incident for {role}"
+            )
     marker_path = root / COMPLETE_MARKER
     if marker_path.is_file() and not marker_path.is_symlink():
         report = verify_capture(root)
@@ -3756,6 +4092,48 @@ def capture_environments(
             )
         return {**report, "status": "already_complete"}
     before = {role: directory_inventory(source) for role, source in sources.items()}
+    runtime_metadata_relative = (
+        "lib/python3.11/site-packages/"
+        "setuptools-81.0.0.dist-info/METADATA"
+    )
+    for role in ROLES:
+        matches = [
+            row
+            for row in before[role]["entries"]
+            if row.get("path") == runtime_metadata_relative
+            and row.get("type") == "file"
+        ]
+        if (
+            len(matches) != 1
+            or matches[0].get("sha256")
+            != incident_runtime_owner_sha256[role]
+        ):
+            raise EnvironmentCaptureError(
+                f"{role} source inventory differs from the incident-bound "
+                "Setuptools METADATA"
+            )
+        record_relative = f"conda-meta/{setuptools_record_filename}"
+        record_matches = [
+            row
+            for row in before[role]["entries"]
+            if row.get("path") == record_relative
+            and row.get("type") == "file"
+        ]
+        if incident_source_record_states[role] == "present":
+            if (
+                len(record_matches) != 1
+                or record_matches[0].get("sha256")
+                != incident_source_record_sha256[role]
+            ):
+                raise EnvironmentCaptureError(
+                    f"{role} source inventory differs from the "
+                    "incident-bound Setuptools record"
+                )
+        elif record_matches:
+            raise EnvironmentCaptureError(
+                f"{role} source inventory contains an incident-absent "
+                "Setuptools record"
+            )
     source_distribution_reports: dict[str, dict[str, Any]] = {}
     source_distribution_audits = {}
     for role, source in sources.items():
@@ -3875,6 +4253,14 @@ def capture_environments(
         ).encode("utf-8"),
     )
     _atomic_write_once(archived_incident_path, incident_path.read_bytes())
+    _atomic_write_once(
+        archived_incident_path.with_suffix(
+            archived_incident_path.suffix + ".sha256"
+        ),
+        (
+            f"{incident_sha256}  {archived_incident_path.name}\n"
+        ).encode("utf-8"),
+    )
     _atomic_write_once(archived_recovered_path, recovered_path.read_bytes())
     for role in ROLES:
         _atomic_write_once(
@@ -4097,15 +4483,30 @@ def verify_capture(output_root: str | Path) -> dict[str, Any]:
         raise EnvironmentCaptureError(
             "captured reconciliation evidence path drifted"
         )
-    incident_sha256, incident_source_record_states = _validate_incident(
+    (
+        _recovered_record,
+        recovered_sha256,
+        _recovered_record_bytes,
+    ) = _validate_recovered_record(
+        recovered_path, normalization
+    )
+    original_recovered_path = Path(
+        input_evidence_paths["recovered_setuptools_record"]
+    )
+    (
+        incident_sha256,
+        incident_source_record_states,
+        incident_source_record_sha256,
+        incident_runtime_owner_sha256,
+    ) = _validate_incident(
         incident_path,
         affected_prefixes=tuple(
             Path(source_prefixes[role]) for role in ROLES
         ),
         artifact_sha256=normalization["conda_artifact_sha256"],
-    )
-    _recovered_record, recovered_sha256 = _validate_recovered_record(
-        recovered_path, normalization
+        recovered_record_source_path=original_recovered_path,
+        recovered_record_sha256=recovered_sha256,
+        verify_external_preimages=False,
     )
     if (
         incident_sha256 != marker.get("reconciliation_incident_sha256")
@@ -4200,7 +4601,26 @@ def verify_capture(output_root: str | Path) -> dict[str, Any]:
         ):
             raise EnvironmentCaptureError(
                 f"{role} archived source inventory binding drifted"
+            )
+        runtime_metadata_relative = (
+            "lib/python3.11/site-packages/"
+            "setuptools-81.0.0.dist-info/METADATA"
         )
+        runtime_metadata_entries = [
+            row
+            for row in source_inventory["entries"]
+            if row.get("path") == runtime_metadata_relative
+            and row.get("type") == "file"
+        ]
+        if (
+            len(runtime_metadata_entries) != 1
+            or runtime_metadata_entries[0].get("sha256")
+            != incident_runtime_owner_sha256[role]
+        ):
+            raise EnvironmentCaptureError(
+                f"{role} archived source inventory differs from the "
+                "incident-bound Setuptools METADATA"
+            )
         source_state = incident_source_record_states[role]
         if source_state == "absent":
             record_sha256 = recovered_sha256
@@ -4221,6 +4641,11 @@ def verify_capture(output_root: str | Path) -> dict[str, Any]:
                     "bound Setuptools record"
                 )
             record_sha256 = record_entries[0]["sha256"]
+            if record_sha256 != incident_source_record_sha256[role]:
+                raise EnvironmentCaptureError(
+                    f"{role} archived source Setuptools record differs from "
+                    "the incident-bound preimage"
+                )
         receipt = _verify_normalization_receipt(
             output_root=root,
             role=role,

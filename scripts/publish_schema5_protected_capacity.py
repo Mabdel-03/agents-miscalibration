@@ -11,15 +11,16 @@ before publication, re-executes every recorded read-only scheduler capture:
 * canary evidence binding those exact placements and scheduler-evidence identity
   to effective ``Requeue=0`` observations.
 
-Both objects must carry the exact schema-5 v1.2-r2 release and chain namespace.
+Both objects must carry the exact schema-5 v1.2-r3 release and chain namespace.
 The release commit and annotated-tag object are also supplied as explicit trust
 anchors so that two consistently substituted evidence files cannot authorize a
 different release.  The scheduler evidence additionally binds the exact canary
 element accounting: 384 clients plus an inclusive 64-job non-cell reserve made up
-of 22 active servers, three warm-turnover allocations, and 39 held
-controller/monitor/other placeholders.  Thus the canary is executable under the
-minimum accepted 448-job submit limit rather than requiring 64 slots in addition
-to its serving allocations.
+  of the frozen 22-replica/24-GPU base plus an 18-replica/18-GPU additive
+  reservation (40 active server elements and 42 active GPUs), three warm-turnover
+  allocations (four GPUs), and 21 held controller/monitor/other placeholders.  Thus
+  the canary is executable under the minimum accepted 448-job submit limit rather
+  than requiring 64 slots in addition to its serving allocations.
 
 The only mutation is an atomic, create-once, mode-0444 publication of
 ``recovery_root/PROTECTED_CAPACITY_COMPLETE.json`` when ``--apply`` is supplied.
@@ -41,13 +42,20 @@ import sys
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
-SCHEMA_VERSION = 2
+from agents_scaling.serving import protected_capacity as runtime_capacity
+
+
+SCHEMA_VERSION = 4
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r2"
-CHAIN_NAMESPACE = "schema5-v1.2-r2"
-PROTOCOL = "schema5-v1.2-r2-protected-capacity-v2"
-SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r2-protected-capacity-scheduler-evidence-v2"
-CANARY_EVIDENCE_PROTOCOL = "schema5-v1.2-r2-protected-capacity-canary-evidence-v2"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
+CHAIN_NAMESPACE = "schema5-v1.2-r3"
+PROTOCOL = "schema5-v1.2-r3-protected-capacity-v4"
+SCHEDULER_EVIDENCE_PROTOCOL = (
+    "schema5-v1.2-r3-protected-capacity-scheduler-evidence-v4"
+)
+CANARY_EVIDENCE_PROTOCOL = (
+    "schema5-v1.2-r3-protected-capacity-canary-evidence-v4"
+)
 CAPACITY_SOURCE = (
     "sealed_protected_canary+partition_inventory+association"
 )
@@ -56,22 +64,23 @@ MARKER_FILENAME = "PROTECTED_CAPACITY_COMPLETE.json"
 PROTECTED_CAPACITY_PROTOCOL = PROTOCOL
 PROTECTED_CAPACITY_MARKER_NAME = MARKER_FILENAME
 
-MIN_ACTIVE_GPUS = 24
-MIN_WARM_HEADROOM_GPUS = 4
+BASE_ACTIVE_GPUS = 24
+BASE_LOGICAL_REPLICAS = 22
+PRODUCTION_ACTIVE_GPUS = 42
+RETAINED_WARM_TURNOVER_GPUS = 4
+PRODUCTION_ATTESTED_GPUS = (
+    PRODUCTION_ACTIVE_GPUS + RETAINED_WARM_TURNOVER_GPUS
+)
 MIN_CLIENT_SLOTS = 384
 MIN_CLIENT_CPUS = 384
 MIN_CLIENT_MEMORY_MIB = 1_572_864
 MIN_RESERVE_JOBS = 64
 MIN_SUBMIT_HEADROOM = 448
 CLIENT_MEMORY_MIB_PER_SLOT = 4_096
-EXPECTED_ACTIVE_SERVER_JOB_ELEMENTS = 22
 EXPECTED_WARM_TURNOVER_JOB_ELEMENTS = 3
-EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS = (
-    MIN_RESERVE_JOBS
-    - EXPECTED_ACTIVE_SERVER_JOB_ELEMENTS
-    - EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
-)
 EXPECTED_TOTAL_JOB_ELEMENTS = MIN_CLIENT_SLOTS + MIN_RESERVE_JOBS
+MIN_SCIENTIFIC_WALL_SECONDS = 86_400
+CLIENT_WALL_SECONDS = 43_200
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_OBJECT_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -83,32 +92,75 @@ _BINDING_FIELDS = {
     "release_tag_object",
     "chain_namespace",
 }
+_SOURCE_TRUST_FIELDS = {
+    "source_tree_sha256",
+    "dispatcher_source_sha256",
+    "qualification_runner_source_sha256",
+}
 _SCHEDULER_FIELDS = {
     "schema_version",
     "protocol",
     "passed",
     *_BINDING_FIELDS,
+    *_SOURCE_TRUST_FIELDS,
     "observed_at",
     "preempt_type",
     "capacity_source",
     "scheduler_cluster",
     "scheduler_account",
     "scheduler_user",
+    "scheduler_max_jobs",
     "scheduler_max_submit_jobs",
+    "running_scientific_jobs",
+    "minimum_scientific_wall_seconds",
+    "scientific_qos_contracts",
     "partition_cpus",
     "partition_memory_mib",
     "partition_gpus",
+    "capacity_generation",
+    "base_fleet_contract_path",
+    "base_fleet_contract_sha256",
+    "effective_fleet_contract_path",
+    "effective_fleet_contract_sha256",
+    "additive_overlay_contract_path",
+    "additive_overlay_contract_sha256",
+    "static_feasibility_certificate",
+    "base_active_logical_replicas",
+    "base_active_gpus",
+    "base_active_topology",
+    "base_active_topology_sha256",
+    "additive_reserved_logical_replicas",
+    "additive_reserved_gpus",
+    "additive_reserved_tp1_replicas",
+    "additive_reserved_tp2_replicas",
+    "additive_reserved_topology",
+    "additive_reserved_topology_sha256",
+    "effective_active_logical_replicas",
+    "effective_active_gpus",
+    "effective_active_topology",
+    "effective_active_topology_sha256",
+    "retained_warm_turnover_job_elements",
+    "retained_warm_turnover_gpus",
+    "retained_warm_turnover_tp1_allocations",
+    "retained_warm_turnover_tp2_allocations",
+    "retained_warm_turnover_topology",
+    "retained_warm_turnover_topology_sha256",
+    "attested_total_gpus",
     "fleet_contract_sha256",
     "active_fleet_topology_sha256",
     "builder_source_sha256",
     "publisher_source_sha256",
     "expected_total_job_elements",
     "job_element_accounting",
+    "occupancy_preflight",
     "scheduler_configuration",
     "partition_configuration",
     "qos_configuration",
     "association_configuration",
-    "fleet_contract",
+    "base_fleet_contract",
+    "effective_fleet_contract",
+    "additive_overlay_contract",
+    "static_feasibility_certificate_source",
     "builder_source",
     "publisher_source",
     "scientific_server_placements",
@@ -135,8 +187,15 @@ _SERVER_FIELDS = {
     "qos",
     "partition_preempt_mode",
     "qos_preempt_mode",
-    "active_serving_gpus",
-    "warm_headroom_gpus",
+    "base_active_gpus",
+    "reserved_additive_gpus",
+    "effective_active_gpus",
+    "retained_warm_turnover_gpus",
+    "attested_total_gpus",
+    "partition_cpus",
+    "partition_memory_mib",
+    "partition_gpus",
+    "partition_nodes",
 }
 _CLIENT_FIELDS = {
     "partition",
@@ -176,6 +235,37 @@ _MARKER_FIELDS = {
     "protocol",
     "passed",
     *_BINDING_FIELDS,
+    *_SOURCE_TRUST_FIELDS,
+    "capacity_generation",
+    "base_fleet_contract_path",
+    "base_fleet_contract_sha256",
+    "effective_fleet_contract_path",
+    "effective_fleet_contract_sha256",
+    "additive_overlay_contract_path",
+    "additive_overlay_contract_sha256",
+    "static_feasibility_certificate",
+    "base_active_logical_replicas",
+    "base_active_gpus",
+    "base_active_topology",
+    "base_active_topology_sha256",
+    "additive_reserved_logical_replicas",
+    "additive_reserved_gpus",
+    "additive_reserved_tp1_replicas",
+    "additive_reserved_tp2_replicas",
+    "additive_reserved_topology",
+    "additive_reserved_topology_sha256",
+    "effective_active_logical_replicas",
+    "effective_active_gpus",
+    "effective_active_topology",
+    "effective_active_topology_sha256",
+    "retained_warm_turnover_job_elements",
+    "retained_warm_turnover_gpus",
+    "retained_warm_turnover_tp1_allocations",
+    "retained_warm_turnover_tp2_allocations",
+    "retained_warm_turnover_topology",
+    "retained_warm_turnover_topology_sha256",
+    "attested_total_gpus",
+    "job_element_accounting",
     "active_gpus",
     "warm_headroom_gpus",
     "cell_ceiling",
@@ -188,7 +278,11 @@ _MARKER_FIELDS = {
     "scheduler_cluster",
     "scheduler_account",
     "scheduler_user",
+    "scheduler_max_jobs",
     "scheduler_max_submit_jobs",
+    "running_scientific_jobs",
+    "minimum_scientific_wall_seconds",
+    "scientific_qos_contracts",
     "partition_cpus",
     "partition_memory_mib",
     "partition_gpus",
@@ -205,6 +299,15 @@ _MARKER_FIELDS = {
     "squeue_complete",
     "sacct_complete",
     "marker_id",
+}
+_QOS_CONTRACT_FIELDS = {
+    "qos",
+    "max_wall_seconds",
+    "max_jobs_per_user",
+    "max_submit_jobs_per_user",
+    "required_wall_seconds",
+    "required_running_jobs",
+    "required_submit_jobs",
 }
 
 
@@ -445,6 +548,38 @@ def _validate_release_binding(
     return {field: str(binding[field]) for field in sorted(_BINDING_FIELDS)}
 
 
+def _validate_source_trust_anchors(
+    evidence: Mapping[str, Any],
+    *,
+    expected_source_tree_sha256: str | None,
+    expected_dispatcher_source_sha256: str | None,
+    expected_qualification_runner_source_sha256: str | None,
+    description: str,
+) -> dict[str, str]:
+    """Require three caller-supplied hashes from one immutable release authority."""
+
+    expected = {
+        "source_tree_sha256": expected_source_tree_sha256,
+        "dispatcher_source_sha256": expected_dispatcher_source_sha256,
+        "qualification_runner_source_sha256": (
+            expected_qualification_runner_source_sha256
+        ),
+    }
+    if any(
+        not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
+        for value in expected.values()
+    ):
+        raise ProtectedCapacityError(
+            "frozen release source-tree, dispatcher, and qualification-runner "
+            "SHA-256 trust anchors are all required"
+        )
+    if any(evidence.get(field) != value for field, value in expected.items()):
+        raise ProtectedCapacityError(
+            f"{description} source trust anchors differ from the immutable release"
+        )
+    return {field: str(value) for field, value in sorted(expected.items())}
+
+
 def _validate_self_hash(
     value: Mapping[str, Any],
     *,
@@ -511,8 +646,13 @@ def _validate_scheduler_server_rows(
         )
     normalized: list[dict[str, Any]] = []
     identities: set[tuple[str, str]] = set()
-    active_gpus = 0
-    warm_gpus = 0
+    totals = {
+        "base_active_gpus": 0,
+        "reserved_additive_gpus": 0,
+        "effective_active_gpus": 0,
+        "retained_warm_turnover_gpus": 0,
+        "attested_total_gpus": 0,
+    }
     for index, raw in enumerate(rows):
         if not isinstance(raw, Mapping):
             raise ProtectedCapacityError(
@@ -531,24 +671,37 @@ def _validate_scheduler_server_rows(
                 f"duplicate scientific server placement {identity[0]}/{identity[1]}"
             )
         identities.add(identity)
-        active_gpus += _require_integer(
-            raw.get("active_serving_gpus"),
-            minimum=0,
-            description=f"server placement {identity} active GPUs",
-        )
-        warm_gpus += _require_integer(
-            raw.get("warm_headroom_gpus"),
-            minimum=0,
-            description=f"server placement {identity} warm GPUs",
-        )
+        for field in totals:
+            totals[field] += _require_integer(
+                raw.get(field),
+                minimum=0,
+                description=f"server placement {identity} {field}",
+            )
+        if (
+            raw["base_active_gpus"] + raw["reserved_additive_gpus"]
+            != raw["effective_active_gpus"]
+            or raw["effective_active_gpus"]
+            + raw["retained_warm_turnover_gpus"]
+            > raw["attested_total_gpus"]
+        ):
+            raise ProtectedCapacityError(
+                f"server placement {identity} double-counts active/turnover GPUs"
+            )
         normalized.append(dict(raw))
-    if active_gpus < MIN_ACTIVE_GPUS:
+    if totals["base_active_gpus"] != BASE_ACTIVE_GPUS:
         raise ProtectedCapacityError(
-            f"active serving GPUs {active_gpus} < required {MIN_ACTIVE_GPUS}"
+            "base active serving GPU total differs from the frozen 24-GPU fleet"
         )
-    if warm_gpus < MIN_WARM_HEADROOM_GPUS:
+    if (
+        len(normalized) != 1
+        or totals["retained_warm_turnover_gpus"]
+        != RETAINED_WARM_TURNOVER_GPUS
+        or totals["effective_active_gpus"] != PRODUCTION_ACTIVE_GPUS
+        or totals["attested_total_gpus"] != PRODUCTION_ATTESTED_GPUS
+    ):
         raise ProtectedCapacityError(
-            f"warm GPU headroom {warm_gpus} < required " f"{MIN_WARM_HEADROOM_GPUS}"
+            "exactly one server capacity placement must remain at 42 active "
+            "plus four retained warm turnover GPUs"
         )
     normalized.sort(
         key=lambda row: (
@@ -557,10 +710,7 @@ def _validate_scheduler_server_rows(
             canonical_bytes(row),
         )
     )
-    return normalized, {
-        "active_gpus": active_gpus,
-        "warm_headroom_gpus": warm_gpus,
-    }
+    return normalized, totals
 
 
 def _validate_scheduler_client_rows(
@@ -668,12 +818,20 @@ def _validate_scheduler_client_rows(
     return normalized, totals
 
 
-def _expected_job_element_accounting() -> dict[str, int]:
+def _expected_job_element_accounting(
+    active_server_job_elements: int,
+) -> dict[str, int]:
+    residual = (
+        MIN_RESERVE_JOBS
+        - active_server_job_elements
+        - EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+    )
     if (
-        EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS <= 0
-        or EXPECTED_ACTIVE_SERVER_JOB_ELEMENTS
+        active_server_job_elements < BASE_LOGICAL_REPLICAS
+        or residual <= 0
+        or active_server_job_elements
         + EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
-        + EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS
+        + residual
         != MIN_RESERVE_JOBS
         or MIN_CLIENT_SLOTS + MIN_RESERVE_JOBS
         != EXPECTED_TOTAL_JOB_ELEMENTS
@@ -683,17 +841,19 @@ def _expected_job_element_accounting() -> dict[str, int]:
         )
     return {
         "cell_job_elements": MIN_CLIENT_SLOTS,
-        "active_server_job_elements": EXPECTED_ACTIVE_SERVER_JOB_ELEMENTS,
+        "active_server_job_elements": active_server_job_elements,
         "warm_turnover_job_elements": EXPECTED_WARM_TURNOVER_JOB_ELEMENTS,
-        "controller_monitor_other_held_job_elements": (
-            EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS
-        ),
+        "controller_monitor_other_held_job_elements": residual,
         "total_non_cell_reserve_job_elements": MIN_RESERVE_JOBS,
         "total_canary_job_elements": EXPECTED_TOTAL_JOB_ELEMENTS,
     }
 
 
-def _validate_job_element_accounting(value: Any) -> dict[str, int]:
+def _validate_job_element_accounting(
+    value: Any,
+    *,
+    active_server_job_elements: int,
+) -> dict[str, int]:
     if not isinstance(value, Mapping):
         raise ProtectedCapacityError(
             "scheduler job-element accounting is malformed"
@@ -711,13 +871,254 @@ def _validate_job_element_accounting(value: Any) -> dict[str, int]:
         )
         for field in _JOB_ELEMENT_ACCOUNTING_FIELDS
     }
-    expected = _expected_job_element_accounting()
+    expected = _expected_job_element_accounting(active_server_job_elements)
     if normalized != expected:
         raise ProtectedCapacityError(
             "scheduler job-element accounting does not realize exactly 384 "
             "clients plus the inclusive 64-job non-cell reserve"
         )
     return normalized
+
+
+def _validate_occupancy_preflight(
+    value: Any,
+    *,
+    scheduler_account: str,
+    scheduler_max_jobs: int | None,
+    scheduler_max_submit_jobs: int,
+    qos_contracts: Sequence[Mapping[str, Any]],
+    expected_running_jobs: int,
+) -> dict[str, Any]:
+    """Validate the historical residual-capacity proof made before canary submit."""
+
+    required = {
+        "protocol",
+        "plan_id",
+        "observation_interval_seconds",
+        "scheduler_account",
+        "scientific_qos",
+        "association_max_jobs",
+        "qos_max_jobs",
+        "effective_max_jobs",
+        "association_max_submit_jobs",
+        "qos_max_submit_jobs",
+        "effective_max_submit_jobs",
+        "existing_job_elements",
+        "existing_association_job_elements",
+        "existing_qos_job_elements",
+        "existing_association_running_job_elements",
+        "existing_qos_running_job_elements",
+        "required_new_running_job_elements",
+        "required_new_job_elements",
+        "first_observation",
+        "second_observation",
+        "preflight_id",
+    }
+    if not isinstance(value, Mapping):
+        raise ProtectedCapacityError("occupancy preflight is absent")
+    _require_exact_fields(
+        value,
+        required,
+        description="occupancy preflight",
+    )
+    identity = dict(value)
+    preflight_id = identity.pop("preflight_id")
+    qos_contract_by_name = {
+        str(row["qos"]): row for row in qos_contracts
+    }
+    scientific_qos = value.get("scientific_qos")
+    qos_contract = qos_contract_by_name.get(str(scientific_qos))
+    interval = value.get("observation_interval_seconds")
+    if (
+        value.get("protocol")
+        != "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
+        or _SHA256_RE.fullmatch(str(value.get("plan_id", ""))) is None
+        or preflight_id
+        != hashlib.sha256(canonical_bytes(identity)).hexdigest()
+        or value.get("scheduler_account") != scheduler_account
+        or not isinstance(scientific_qos, str)
+        or qos_contract is None
+        or not isinstance(interval, (int, float))
+        or isinstance(interval, bool)
+        or not math.isfinite(float(interval))
+        or float(interval) < 0
+        or value.get("association_max_jobs") != scheduler_max_jobs
+        or value.get("qos_max_jobs")
+        != qos_contract["max_jobs_per_user"]
+        or value.get("association_max_submit_jobs")
+        != scheduler_max_submit_jobs
+        or value.get("qos_max_submit_jobs")
+        != qos_contract["max_submit_jobs_per_user"]
+        or value.get("required_new_running_job_elements")
+        != expected_running_jobs
+        or value.get("required_new_job_elements")
+        != EXPECTED_TOTAL_JOB_ELEMENTS
+    ):
+        raise ProtectedCapacityError(
+            "occupancy preflight identity/limit binding is invalid"
+        )
+    finite_max_jobs = [
+        limit
+        for limit in (
+            scheduler_max_jobs,
+            qos_contract["max_jobs_per_user"],
+        )
+        if limit is not None
+    ]
+    finite_max_submit = [
+        limit
+        for limit in (
+            scheduler_max_submit_jobs,
+            qos_contract["max_submit_jobs_per_user"],
+        )
+        if limit is not None
+    ]
+    if (
+        value.get("effective_max_jobs")
+        != (min(finite_max_jobs) if finite_max_jobs else None)
+        or value.get("effective_max_submit_jobs")
+        != min(finite_max_submit)
+    ):
+        raise ProtectedCapacityError(
+            "occupancy preflight effective limits are invalid"
+        )
+    observations: list[Mapping[str, Any]] = []
+    for field in ("first_observation", "second_observation"):
+        observation = value.get(field)
+        if not isinstance(observation, Mapping):
+            raise ProtectedCapacityError(
+                f"occupancy preflight {field} is malformed"
+            )
+        _require_exact_fields(
+            observation,
+            {
+                "observed_at",
+                "job_elements",
+                "jobs",
+                "squeue_sha256",
+                "sacct_sha256",
+                "observation_id",
+            },
+            description=f"occupancy preflight {field}",
+        )
+        observation_identity = dict(observation)
+        observation_id = observation_identity.pop("observation_id")
+        jobs = observation.get("jobs")
+        if (
+            not isinstance(observation.get("observed_at"), (int, float))
+            or isinstance(observation.get("observed_at"), bool)
+            or not math.isfinite(float(observation["observed_at"]))
+            or not isinstance(jobs, list)
+            or observation.get("job_elements") != len(jobs)
+            or _SHA256_RE.fullmatch(
+                str(observation.get("squeue_sha256", ""))
+            )
+            is None
+            or _SHA256_RE.fullmatch(
+                str(observation.get("sacct_sha256", ""))
+            )
+            is None
+            or observation_id
+            != hashlib.sha256(
+                canonical_bytes(observation_identity)
+            ).hexdigest()
+        ):
+            raise ProtectedCapacityError(
+                f"occupancy preflight {field} envelope is invalid"
+            )
+        identities: set[str] = set()
+        for row in jobs:
+            if (
+                not isinstance(row, Mapping)
+                or set(row)
+                != {"job_id", "state", "account", "qos", "comment"}
+                or re.fullmatch(r"[0-9]+(?:_[0-9]+)?", str(row.get("job_id", "")))
+                is None
+                or str(row["job_id"]) in identities
+                or str(row.get("state", ""))
+                not in {
+                    "PENDING",
+                    "RUNNING",
+                    "CONFIGURING",
+                    "COMPLETING",
+                    "RESIZING",
+                    "SUSPENDED",
+                }
+                or _PLACEMENT_NAME_RE.fullmatch(str(row.get("account", "")))
+                is None
+                or _PLACEMENT_NAME_RE.fullmatch(str(row.get("qos", "")))
+                is None
+                or not isinstance(row.get("comment"), str)
+            ):
+                raise ProtectedCapacityError(
+                    f"occupancy preflight {field} job row is invalid"
+                )
+            identities.add(str(row["job_id"]))
+        observations.append(observation)
+    second_jobs = observations[1]["jobs"]
+    max_jobs_states = {
+        "RUNNING",
+        "CONFIGURING",
+        "COMPLETING",
+        "RESIZING",
+        "SUSPENDED",
+    }
+    association_running = sum(
+        row["state"] in max_jobs_states
+        and row["account"] == scheduler_account
+        for row in second_jobs
+    )
+    qos_running = sum(
+        row["state"] in max_jobs_states
+        and row["account"] == scheduler_account
+        and row["qos"] == scientific_qos
+        for row in second_jobs
+    )
+    existing = len(second_jobs)
+    association_existing = sum(
+        row["account"] == scheduler_account for row in second_jobs
+    )
+    qos_existing = sum(
+        row["account"] == scheduler_account
+        and row["qos"] == scientific_qos
+        for row in second_jobs
+    )
+    if (
+        observations[0]["jobs"] != second_jobs
+        or observations[0]["job_elements"] != existing
+        or float(observations[1]["observed_at"])
+        - float(observations[0]["observed_at"])
+        < float(interval)
+        or value.get("existing_job_elements") != existing
+        or value.get("existing_association_job_elements")
+        != association_existing
+        or value.get("existing_qos_job_elements") != qos_existing
+        or value.get("existing_association_running_job_elements")
+        != association_running
+        or value.get("existing_qos_running_job_elements") != qos_running
+        or association_existing + EXPECTED_TOTAL_JOB_ELEMENTS
+        > scheduler_max_submit_jobs
+        or (
+            qos_contract["max_submit_jobs_per_user"] is not None
+            and qos_existing + int(qos_contract["required_submit_jobs"])
+            > int(qos_contract["max_submit_jobs_per_user"])
+        )
+        or (
+            scheduler_max_jobs is not None
+            and association_running + expected_running_jobs
+            > scheduler_max_jobs
+        )
+        or (
+            qos_contract["max_jobs_per_user"] is not None
+            and qos_running + int(qos_contract["required_running_jobs"])
+            > qos_contract["max_jobs_per_user"]
+        )
+    ):
+        raise ProtectedCapacityError(
+            "occupancy preflight does not prove residual submit/MaxJobs "
+            "capacity around contemporaneous unrelated work"
+        )
+    return dict(value)
 
 
 def _validate_scheduler_source(
@@ -830,7 +1231,7 @@ def _parse_partition_configuration(
     rows = _pipe_rows(
         source,
         command="scontrol",
-        width=7,
+        width=8,
         description="partition configuration",
     )
     parsed: dict[str, dict[str, Any]] = {}
@@ -861,7 +1262,14 @@ def _parse_partition_configuration(
             "gpus": _parse_nonnegative_field(
                 row[6], description=f"{partition} GPUs"
             ),
+            "nodes": _parse_nonnegative_field(
+                row[7], description=f"{partition} nodes"
+            ),
         }
+        if parsed[partition]["nodes"] < 1:
+            raise ProtectedCapacityError(
+                f"partition {partition} must contain at least one node"
+            )
     return parsed
 
 
@@ -879,7 +1287,7 @@ def _parse_qos_configuration(
     rows = _pipe_rows(
         source,
         command="sacctmgr",
-        width=4,
+        width=5,
         description="QOS configuration",
     )
     parsed: dict[str, dict[str, Any]] = {}
@@ -904,6 +1312,9 @@ def _parse_qos_configuration(
             "max_submit_jobs_per_user": _parse_optional_limit(
                 row[3], description=f"{qos} MaxSubmitJobsPerUser"
             ),
+            "max_wall_seconds": _parse_optional_limit(
+                row[4], description=f"{qos} MaxWall"
+            ),
         }
     return parsed
 
@@ -914,12 +1325,12 @@ def _parse_association_configuration(
     rows = _pipe_rows(
         source,
         command="sacctmgr",
-        width=5,
+        width=6,
         description="association configuration",
     )
     parsed: list[dict[str, Any]] = []
     identities: set[tuple[str, str, str]] = set()
-    for cluster, account, user, qos_csv, max_submit_raw in rows:
+    for cluster, account, user, qos_csv, max_jobs_raw, max_submit_raw in rows:
         identity = (cluster, account, user)
         qoses = sorted(set(filter(None, qos_csv.split(","))))
         if (
@@ -941,6 +1352,10 @@ def _parse_association_configuration(
                 "account": account,
                 "user": user,
                 "qos": qoses,
+                "max_jobs": _parse_optional_limit(
+                    max_jobs_raw,
+                    description=f"association {identity} MaxJobs",
+                ),
                 "max_submit_jobs": _parse_optional_limit(
                     max_submit_raw,
                     description=f"association {identity} MaxSubmitJobs",
@@ -963,10 +1378,13 @@ def _fleet_memory_mib(value: Any, *, description: str) -> int:
 
 def _parse_fleet_contract(
     source: Mapping[str, Any],
+    *,
+    command: str,
+    require_base: bool,
 ) -> dict[str, Any]:
     validated = _validate_scheduler_source(
         source,
-        command="fleet-contract",
+        command=command,
     )
     raw = str(validated["raw_output"]).encode("utf-8")
     fleet = _decode_json_object(raw, description="frozen fleet contract")
@@ -986,8 +1404,12 @@ def _parse_fleet_contract(
         or fleet.get("schema_version") != 1
         or fleet.get("fleet_id") != "schema5-v1"
         or fleet.get("release_id") != RELEASE_ID
-        or fleet.get("logical_replica_count") != 22
-        or fleet.get("allocated_gpu_count") != 24
+        or not isinstance(fleet.get("logical_replica_count"), int)
+        or isinstance(fleet.get("logical_replica_count"), bool)
+        or fleet["logical_replica_count"] < BASE_LOGICAL_REPLICAS
+        or not isinstance(fleet.get("allocated_gpu_count"), int)
+        or isinstance(fleet.get("allocated_gpu_count"), bool)
+        or fleet["allocated_gpu_count"] < BASE_ACTIVE_GPUS
         or _SHA256_RE.fullmatch(str(fleet.get("model_contract_sha256", "")))
         is None
         or not isinstance(fleet.get("profiles"), list)
@@ -1022,6 +1444,7 @@ def _parse_fleet_contract(
                 )
             replica_id = replica.get("replica_id")
             cpus = replica.get("cpus_per_task")
+            time_limit = replica.get("time_limit")
             if (
                 not isinstance(replica_id, str)
                 or _PLACEMENT_NAME_RE.fullmatch(replica_id) is None
@@ -1029,6 +1452,7 @@ def _parse_fleet_contract(
                 or not isinstance(cpus, int)
                 or isinstance(cpus, bool)
                 or cpus < 1
+                or time_limit != "1-00:00:00"
             ):
                 raise ProtectedCapacityError(
                     "frozen fleet replica identity/resources are malformed"
@@ -1045,22 +1469,37 @@ def _parse_fleet_contract(
                         description=f"{replica_id} memory",
                     ),
                     "gpus": tp,
+                    "time_limit_seconds": MIN_SCIENTIFIC_WALL_SECONDS,
                 }
             )
     if (
-        len(topology) != 22
-        or sum(row["gpus"] for row in topology) != 24
-        or sum(row["cpus"] for row in topology) != 192
-        or sum(row["memory_mib"] for row in topology) != 2_949_120
-        or sorted(row["gpus"] for row in topology) != [1] * 20 + [2] * 2
+        len(topology) != fleet["logical_replica_count"]
+        or sum(row["gpus"] for row in topology)
+        != fleet["allocated_gpu_count"]
+        or (
+            require_base
+            and (
+                len(topology) != BASE_LOGICAL_REPLICAS
+                or sum(row["gpus"] for row in topology)
+                != BASE_ACTIVE_GPUS
+                or sorted(row["gpus"] for row in topology)
+                != [1] * 20 + [2] * 2
+            )
+        )
     ):
         raise ProtectedCapacityError(
-            "frozen fleet does not encode the exact 22-job/24-GPU topology"
+            "fleet contract aggregate/topology cardinality is invalid"
         )
     return {
         "sha256": hashlib.sha256(raw).hexdigest(),
         "topology": topology,
         "topology_sha256": hashlib.sha256(canonical_bytes(topology)).hexdigest(),
+        "logical_replicas": len(topology),
+        "allocated_gpus": sum(int(row["gpus"]) for row in topology),
+        "profile_replicas": {
+            str(profile["serving_profile"]): len(profile["replicas"])
+            for profile in fleet["profiles"]
+        },
     }
 
 
@@ -1072,7 +1511,7 @@ def _parse_canary_jobs(
     rows = _pipe_rows(
         source,
         command=command,
-        width=12,
+        width=13,
         description=f"{command} protected canary jobs",
     )
     parsed: list[dict[str, Any]] = []
@@ -1080,8 +1519,8 @@ def _parse_canary_jobs(
     allowed_roles = {"server_active", "server_warm", "client", "reserve"}
     for row in rows:
         job_id, role, state, partition, qos = row[:5]
-        shape_id = row[10]
-        spooled_script_sha256 = row[11]
+        shape_id = row[11]
+        spooled_script_sha256 = row[12]
         if (
             re.fullmatch(r"[0-9]+(?:_[0-9]+)?", job_id) is None
             or job_id in identities
@@ -1120,6 +1559,9 @@ def _parse_canary_jobs(
                 "effective_requeue": _parse_nonnegative_field(
                     row[9], description=f"{job_id} Requeue"
                 ),
+                "time_limit_seconds": _parse_nonnegative_field(
+                    row[10], description=f"{job_id} TimeLimit"
+                ),
                 "shape_id": shape_id,
                 "spooled_script_sha256": spooled_script_sha256,
             }
@@ -1136,6 +1578,9 @@ def _derive_capacity_from_raw_sources(
     *,
     servers: Sequence[Mapping[str, Any]],
     clients: Sequence[Mapping[str, Any]],
+    expected_source_tree_sha256: str,
+    expected_dispatcher_source_sha256: str,
+    expected_qualification_runner_source_sha256: str,
 ) -> dict[str, Any]:
     preempt_type = _parse_scheduler_configuration(
         evidence["scheduler_configuration"]
@@ -1150,14 +1595,91 @@ def _derive_capacity_from_raw_sources(
     associations = _parse_association_configuration(
         evidence["association_configuration"]
     )
-    fleet = _parse_fleet_contract(evidence["fleet_contract"])
+    base_fleet = _parse_fleet_contract(
+        evidence["base_fleet_contract"],
+        command="base-fleet-contract",
+        require_base=True,
+    )
+    effective_fleet = _parse_fleet_contract(
+        evidence["effective_fleet_contract"],
+        command="effective-fleet-contract",
+        require_base=False,
+    )
+    overlay_source = _validate_scheduler_source(
+        evidence["additive_overlay_contract"],
+        command="additive-overlay-contract",
+    )
+    certificate_source = _validate_scheduler_source(
+        evidence["static_feasibility_certificate_source"],
+        command="static-feasibility-certificate",
+    )
+    base_by_id = {
+        str(row["shape_id"]): row for row in base_fleet["topology"]
+    }
+    effective_by_id = {
+        str(row["shape_id"]): row for row in effective_fleet["topology"]
+    }
     if (
-        evidence.get("fleet_contract_sha256") != fleet["sha256"]
-        or evidence.get("active_fleet_topology_sha256")
-        != fleet["topology_sha256"]
+        not set(base_by_id).issubset(effective_by_id)
+        or any(effective_by_id[key] != row for key, row in base_by_id.items())
     ):
         raise ProtectedCapacityError(
-            "claimed fleet hash/topology differs from parsed frozen fleet bytes"
+            "effective fleet is not an exact additive extension of the base fleet"
+        )
+    additive_topology = [
+        row
+        for row in effective_fleet["topology"]
+        if str(row["shape_id"]) not in base_by_id
+    ]
+    certificate_binding = evidence.get("static_feasibility_certificate")
+    if (
+        not isinstance(certificate_binding, Mapping)
+        or set(certificate_binding)
+        != {"path", "sha256", "certificate_id"}
+    ):
+        raise ProtectedCapacityError(
+            "scheduler evidence static feasibility binding is malformed"
+        )
+    try:
+        certificate = runtime_capacity.load_static_feasibility_certificate(
+            str(certificate_binding["path"]),
+            expected_sha256=str(certificate_binding["sha256"]),
+            expected_certificate_id=str(certificate_binding["certificate_id"]),
+            expected_capacity_generation=int(evidence["capacity_generation"]),
+            expected_base_fleet_contract_sha256=base_fleet["sha256"],
+            expected_effective_fleet_contract_sha256=effective_fleet["sha256"],
+            expected_additive_overlay_contract_sha256=effective_fleet["sha256"],
+            expected_release_git_commit=str(evidence["release_git_commit"]),
+            expected_source_tree_sha256=expected_source_tree_sha256,
+            expected_dispatcher_source_sha256=(
+                expected_dispatcher_source_sha256
+            ),
+            expected_qualification_runner_source_sha256=(
+                expected_qualification_runner_source_sha256
+            ),
+        )
+    except (runtime_capacity.ProtectedCapacityError, TypeError, ValueError) as exc:
+        raise ProtectedCapacityError(
+            f"static feasibility certificate is invalid: {exc}"
+        ) from exc
+    if (
+        evidence.get("base_fleet_contract_sha256") != base_fleet["sha256"]
+        or evidence.get("effective_fleet_contract_sha256")
+        != effective_fleet["sha256"]
+        or evidence.get("additive_overlay_contract_sha256")
+        != effective_fleet["sha256"]
+        or evidence.get("fleet_contract_sha256")
+        != effective_fleet["sha256"]
+        or evidence.get("active_fleet_topology_sha256")
+        != effective_fleet["topology_sha256"]
+        or overlay_source["raw_output_sha256"]
+        != effective_fleet["sha256"]
+        or certificate_source["raw_output_sha256"]
+        != certificate.sha256
+    ):
+        raise ProtectedCapacityError(
+            "claimed base/effective/overlay/certificate bytes differ from "
+            "their parsed protected-capacity bindings"
         )
     for field in ("builder_source", "publisher_source"):
         source = _validate_scheduler_source(
@@ -1181,12 +1703,21 @@ def _derive_capacity_from_raw_sources(
                 "partition/QOS configuration"
             )
     required_qoses = {qos for _partition, qos in placement_identities}
+    expected_running_jobs = (
+        MIN_CLIENT_SLOTS
+        + int(effective_fleet["logical_replicas"])
+        + EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+    )
     matching_associations = [
         association
         for association in associations
         if required_qoses.issubset(set(association["qos"]))
         and association["max_submit_jobs"] is not None
         and association["max_submit_jobs"] >= MIN_SUBMIT_HEADROOM
+        and (
+            association["max_jobs"] is None
+            or association["max_jobs"] >= expected_running_jobs
+        )
     ]
     if len(matching_associations) != 1:
         raise ProtectedCapacityError(
@@ -1194,13 +1725,6 @@ def _derive_capacity_from_raw_sources(
             "authority for every claimed QOS and sufficient submit headroom"
         )
     association = matching_associations[0]
-    for qos in {qos for _partition, qos in placement_identities}:
-        qos_limit = qoses[qos]["max_submit_jobs_per_user"]
-        if qos_limit is not None and qos_limit < MIN_SUBMIT_HEADROOM:
-            raise ProtectedCapacityError(
-                f"QOS {qos} MaxSubmitJobsPerUser cannot cover 448 jobs"
-            )
-
     queued_by_role = {
         role: [row for row in queued if row["role"] == role]
         for role in ("server_active", "server_warm", "client", "reserve")
@@ -1256,6 +1780,7 @@ def _derive_capacity_from_raw_sources(
                     "memory_mib",
                     "gpus",
                     "effective_requeue",
+                    "time_limit_seconds",
                     "shape_id",
                     "spooled_script_sha256",
                 )
@@ -1276,6 +1801,9 @@ def _derive_capacity_from_raw_sources(
                     "cpus": int(queue_row["cpus"]),
                     "memory_mib": int(queue_row["memory_mib"]),
                     "gpus": int(queue_row["gpus"]),
+                    "time_limit_seconds": int(
+                        queue_row["time_limit_seconds"]
+                    ),
                 }
             )
         if len(placements) != 1:
@@ -1312,7 +1840,9 @@ def _derive_capacity_from_raw_sources(
             + reserve["tasks"]
         ),
     }
-    expected_job_element_accounting = _expected_job_element_accounting()
+    expected_job_element_accounting = _expected_job_element_accounting(
+        int(effective_fleet["logical_replicas"])
+    )
     if (
         evidence.get("expected_total_job_elements")
         != EXPECTED_TOTAL_JOB_ELEMENTS
@@ -1331,17 +1861,23 @@ def _derive_capacity_from_raw_sources(
     expected_active = {
         row["shape_id"]: {
             key: row[key]
-            for key in ("shape_id", "tasks", "cpus", "memory_mib", "gpus")
+            for key in (
+                "shape_id",
+                "tasks",
+                "cpus",
+                "memory_mib",
+                "gpus",
+                "time_limit_seconds",
+            )
         }
-        for row in fleet["topology"]
+        for row in effective_fleet["topology"]
     }
     if (
         len(observed_active) != len(server_active["shape_rows"])
         or observed_active != expected_active
     ):
         raise ProtectedCapacityError(
-            "active GPU canaries do not exactly realize the frozen 22-replica "
-            "fleet topology"
+            "active GPU canaries do not exactly realize the effective fleet topology"
         )
     warm_shapes = sorted(
         (
@@ -1349,14 +1885,15 @@ def _derive_capacity_from_raw_sources(
             row["cpus"],
             row["memory_mib"],
             row["gpus"],
+            row["time_limit_seconds"],
         )
         for row in server_warm["shape_rows"]
     )
     if warm_shapes != sorted(
         [
-            (1, 8, 120 * 1024, 1),
-            (1, 8, 120 * 1024, 1),
-            (1, 16, 240 * 1024, 2),
+            (1, 8, 120 * 1024, 1, MIN_SCIENTIFIC_WALL_SECONDS),
+            (1, 8, 120 * 1024, 1, MIN_SCIENTIFIC_WALL_SECONDS),
+            (1, 16, 240 * 1024, 2, MIN_SCIENTIFIC_WALL_SECONDS),
         ]
     ):
         raise ProtectedCapacityError(
@@ -1369,11 +1906,28 @@ def _derive_capacity_from_raw_sources(
         or client["cpus"] != MIN_CLIENT_CPUS
         or client["memory_mib"] != MIN_CLIENT_MEMORY_MIB
         or client["gpus"] != 0
-        or reserve["tasks"] != EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS
-        or reserve["cpus"] != EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS
+        or any(
+            row["time_limit_seconds"] != CLIENT_WALL_SECONDS
+            for row in client["shape_rows"]
+        )
+        or reserve["tasks"]
+        != expected_job_element_accounting[
+            "controller_monitor_other_held_job_elements"
+        ]
+        or reserve["cpus"]
+        != expected_job_element_accounting[
+            "controller_monitor_other_held_job_elements"
+        ]
         or reserve["memory_mib"]
-        != EXPECTED_RESIDUAL_HELD_RESERVE_JOB_ELEMENTS * 1024
+        != expected_job_element_accounting[
+            "controller_monitor_other_held_job_elements"
+        ]
+        * 1024
         or reserve["gpus"] != 0
+        or any(
+            row["time_limit_seconds"] != CLIENT_WALL_SECONDS
+            for row in reserve["shape_rows"]
+        )
     ):
         raise ProtectedCapacityError(
             "raw client/reserve canary does not prove the full protected envelope"
@@ -1381,19 +1935,39 @@ def _derive_capacity_from_raw_sources(
     if (
         not server_active["states"].issubset({"RUNNING", "MIXED"})
         or not server_warm["states"].issubset({"RUNNING", "MIXED"})
-        or server_active["gpus"] < MIN_ACTIVE_GPUS
-        or server_warm["gpus"] < MIN_WARM_HEADROOM_GPUS
-        or server_active["tasks"] != 22
-        or server_warm["tasks"] != 3
+        or server_active["gpus"] != effective_fleet["allocated_gpus"]
+        or server_warm["gpus"] != RETAINED_WARM_TURNOVER_GPUS
+        or server_active["tasks"] != effective_fleet["logical_replicas"]
+        or server_warm["tasks"] != EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+        or any(
+            row["time_limit_seconds"] != MIN_SCIENTIFIC_WALL_SECONDS
+            for row in server_active["shape_rows"]
+        )
+        or any(
+            row["time_limit_seconds"] != MIN_SCIENTIFIC_WALL_SECONDS
+            for row in server_warm["shape_rows"]
+        )
     ):
         raise ProtectedCapacityError(
-            "raw GPU canary does not separately prove 24 active and 4 warm GPUs"
+            "raw GPU canary does not separately prove the effective active fleet "
+            "and four retained warm-turnover GPUs"
         )
     derived_server = {
         "partition": server_active["partition"],
         "qos": server_active["qos"],
-        "active_serving_gpus": server_active["gpus"],
-        "warm_headroom_gpus": server_warm["gpus"],
+        "base_active_gpus": base_fleet["allocated_gpus"],
+        "reserved_additive_gpus": (
+            effective_fleet["allocated_gpus"] - base_fleet["allocated_gpus"]
+        ),
+        "effective_active_gpus": server_active["gpus"],
+        "retained_warm_turnover_gpus": server_warm["gpus"],
+        "attested_total_gpus": server_active["gpus"] + server_warm["gpus"],
+        "partition_cpus": partitions[server_active["partition"]]["cpus"],
+        "partition_memory_mib": partitions[
+            server_active["partition"]
+        ]["memory_mib"],
+        "partition_gpus": partitions[server_active["partition"]]["gpus"],
+        "partition_nodes": partitions[server_active["partition"]]["nodes"],
     }
     if (
         (server_warm["partition"], server_warm["qos"])
@@ -1422,30 +1996,104 @@ def _derive_capacity_from_raw_sources(
         raise ProtectedCapacityError(
             "client and reserve canaries used different placements"
         )
+    required_running_by_qos: dict[str, int] = {}
+    required_submit_by_qos: dict[str, int] = {}
+    required_wall_by_qos: dict[str, int] = {}
+    for role_record, running, required_wall in (
+        (server_active, True, MIN_SCIENTIFIC_WALL_SECONDS),
+        (server_warm, True, MIN_SCIENTIFIC_WALL_SECONDS),
+        (client, True, CLIENT_WALL_SECONDS),
+        (reserve, False, CLIENT_WALL_SECONDS),
+    ):
+        qos_name = str(role_record["qos"])
+        required_submit_by_qos[qos_name] = (
+            required_submit_by_qos.get(qos_name, 0)
+            + int(role_record["tasks"])
+        )
+        if running:
+            required_running_by_qos[qos_name] = (
+                required_running_by_qos.get(qos_name, 0)
+                + int(role_record["tasks"])
+            )
+        required_wall_by_qos[qos_name] = max(
+            required_wall_by_qos.get(qos_name, 0),
+            required_wall,
+        )
+    if (
+        sum(required_running_by_qos.values())
+        != expected_running_jobs
+        or sum(required_submit_by_qos.values())
+        != EXPECTED_TOTAL_JOB_ELEMENTS
+        or max(required_wall_by_qos.values(), default=0)
+        != MIN_SCIENTIFIC_WALL_SECONDS
+    ):
+        raise ProtectedCapacityError(
+            "raw scheduler canary does not derive the exact running/submit/"
+            "walltime scientific envelope"
+        )
+    qos_contracts: list[dict[str, Any]] = []
+    for qos_name in sorted(required_submit_by_qos):
+        qos_policy = qoses[qos_name]
+        required_running = required_running_by_qos.get(qos_name, 0)
+        required_submit = required_submit_by_qos[qos_name]
+        required_wall = required_wall_by_qos[qos_name]
+        if (
+            qos_policy["max_jobs_per_user"] is not None
+            and qos_policy["max_jobs_per_user"] < required_running
+        ) or (
+            qos_policy["max_submit_jobs_per_user"] is not None
+            and qos_policy["max_submit_jobs_per_user"] < required_submit
+        ) or (
+            qos_policy["max_wall_seconds"] is not None
+            and qos_policy["max_wall_seconds"] < required_wall
+        ):
+            raise ProtectedCapacityError(
+                f"QOS {qos_name} limits cannot sustain its exact "
+                "running/submit/walltime canary envelope"
+            )
+        qos_contracts.append(
+            {
+                "qos": qos_name,
+                "max_wall_seconds": qos_policy["max_wall_seconds"],
+                "max_jobs_per_user": qos_policy["max_jobs_per_user"],
+                "max_submit_jobs_per_user": qos_policy[
+                    "max_submit_jobs_per_user"
+                ],
+                "required_wall_seconds": required_wall,
+                "required_running_jobs": required_running,
+                "required_submit_jobs": required_submit,
+            }
+        )
     required_by_partition: dict[str, dict[str, int]] = {}
-    for partition_name, cpus, memory_mib, gpus in (
+    for partition_name, cpus, memory_mib, gpus, wall_seconds in (
         (
             derived_server["partition"],
             server_active["cpus"] + server_warm["cpus"],
             server_active["memory_mib"] + server_warm["memory_mib"],
             server_active["gpus"] + server_warm["gpus"],
+            MIN_SCIENTIFIC_WALL_SECONDS,
         ),
         (
             derived_client["partition"],
             derived_client["cpus"],
             derived_client["memory_mib"],
             0,
+            CLIENT_WALL_SECONDS,
         ),
     ):
         requirements = required_by_partition.setdefault(
             partition_name,
-            {"cpus": 0, "memory_mib": 0, "gpus": 0},
+            {"cpus": 0, "memory_mib": 0, "gpus": 0, "wall_seconds": 0},
         )
         requirements["cpus"] += cpus
         requirements["memory_mib"] += memory_mib
         requirements["gpus"] += gpus
+        requirements["wall_seconds"] = max(
+            requirements["wall_seconds"], wall_seconds
+        )
     if any(
-        partitions[partition_name]["max_time_seconds"] < 43_200
+        partitions[partition_name]["max_time_seconds"]
+        < requirements["wall_seconds"]
         or partitions[partition_name]["cpus"] < requirements["cpus"]
         or partitions[partition_name]["memory_mib"]
         < requirements["memory_mib"]
@@ -1478,7 +2126,17 @@ def _derive_capacity_from_raw_sources(
         or expected_client is None
         or any(
             expected_server[field] != derived_server[field]
-            for field in ("active_serving_gpus", "warm_headroom_gpus")
+            for field in (
+                "base_active_gpus",
+                "reserved_additive_gpus",
+                "effective_active_gpus",
+                "retained_warm_turnover_gpus",
+                "attested_total_gpus",
+                "partition_cpus",
+                "partition_memory_mib",
+                "partition_gpus",
+                "partition_nodes",
+            )
         )
         or any(
             expected_client[field] != derived_client[field]
@@ -1501,21 +2159,121 @@ def _derive_capacity_from_raw_sources(
         "scheduler_cluster": association["cluster"],
         "scheduler_account": association["account"],
         "scheduler_user": association["user"],
+        "scheduler_max_jobs": association["max_jobs"],
         "scheduler_max_submit_jobs": association["max_submit_jobs"],
+        "running_scientific_jobs": expected_running_jobs,
+        "minimum_scientific_wall_seconds": (
+            MIN_SCIENTIFIC_WALL_SECONDS
+        ),
+        "scientific_qos_contracts": qos_contracts,
         "partition_cpus": partitions[derived_client["partition"]]["cpus"],
         "partition_memory_mib": partitions[derived_client["partition"]][
             "memory_mib"
         ],
         "partition_gpus": partitions[derived_client["partition"]]["gpus"],
-        "active_gpus": derived_server["active_serving_gpus"],
-        "warm_headroom_gpus": derived_server["warm_headroom_gpus"],
+        "active_gpus": derived_server["effective_active_gpus"],
+        "warm_headroom_gpus": derived_server[
+            "retained_warm_turnover_gpus"
+        ],
         "cell_ceiling": derived_client["slots"],
         "cpu": derived_client["cpus"],
         "memory_mib": derived_client["memory_mib"],
         "reserve_jobs": derived_client["reserve_jobs"],
         "submit_headroom": derived_client["submit_headroom"],
-        "fleet_contract_sha256": fleet["sha256"],
-        "active_fleet_topology_sha256": fleet["topology_sha256"],
+        "capacity_generation": certificate.capacity_generation,
+        "base_fleet_contract_path": str(
+            evidence["base_fleet_contract_path"]
+        ),
+        "base_fleet_contract_sha256": base_fleet["sha256"],
+        "effective_fleet_contract_path": str(
+            evidence["effective_fleet_contract_path"]
+        ),
+        "effective_fleet_contract_sha256": effective_fleet["sha256"],
+        "additive_overlay_contract_path": str(
+            evidence["additive_overlay_contract_path"]
+        ),
+        "additive_overlay_contract_sha256": effective_fleet["sha256"],
+        "static_feasibility_certificate": dict(certificate_binding),
+        "base_active_logical_replicas": base_fleet["logical_replicas"],
+        "base_active_gpus": base_fleet["allocated_gpus"],
+        "base_active_topology": base_fleet["topology"],
+        "base_active_topology_sha256": base_fleet["topology_sha256"],
+        "additive_reserved_logical_replicas": len(additive_topology),
+        "additive_reserved_gpus": sum(
+            int(row["gpus"]) for row in additive_topology
+        ),
+        "additive_reserved_tp1_replicas": sum(
+            int(row["gpus"]) == 1 for row in additive_topology
+        ),
+        "additive_reserved_tp2_replicas": sum(
+            int(row["gpus"]) == 2 for row in additive_topology
+        ),
+        "additive_reserved_topology": additive_topology,
+        "additive_reserved_topology_sha256": hashlib.sha256(
+            canonical_bytes(additive_topology)
+        ).hexdigest(),
+        "effective_active_logical_replicas": effective_fleet[
+            "logical_replicas"
+        ],
+        "effective_active_gpus": effective_fleet["allocated_gpus"],
+        "effective_active_topology": effective_fleet["topology"],
+        "effective_active_topology_sha256": effective_fleet[
+            "topology_sha256"
+        ],
+        "retained_warm_turnover_job_elements": (
+            EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+        ),
+        "retained_warm_turnover_gpus": RETAINED_WARM_TURNOVER_GPUS,
+        "retained_warm_turnover_tp1_allocations": 2,
+        "retained_warm_turnover_tp2_allocations": 1,
+        "retained_warm_turnover_topology": [
+            {
+                "shape_id": str(row["shape_id"]),
+                "serving_profile": (
+                    "warm-tp2" if int(row["gpus"]) == 2 else "warm-tp1"
+                ),
+                "tasks": int(row["tasks"]),
+                "cpus": int(row["cpus"]),
+                "memory_mib": int(row["memory_mib"]),
+                "gpus": int(row["gpus"]),
+                "time_limit_seconds": int(row["time_limit_seconds"]),
+            }
+            for row in server_warm["shape_rows"]
+        ],
+        "retained_warm_turnover_topology_sha256": hashlib.sha256(
+            canonical_bytes(
+                [
+                    {
+                        "shape_id": str(row["shape_id"]),
+                        "serving_profile": (
+                            "warm-tp2"
+                            if int(row["gpus"]) == 2
+                            else "warm-tp1"
+                        ),
+                        "tasks": int(row["tasks"]),
+                        "cpus": int(row["cpus"]),
+                        "memory_mib": int(row["memory_mib"]),
+                        "gpus": int(row["gpus"]),
+                        "time_limit_seconds": int(
+                            row["time_limit_seconds"]
+                        ),
+                    }
+                    for row in server_warm["shape_rows"]
+                ]
+            )
+        ).hexdigest(),
+        "attested_total_gpus": (
+            effective_fleet["allocated_gpus"] + RETAINED_WARM_TURNOVER_GPUS
+        ),
+        "fleet_contract_sha256": effective_fleet["sha256"],
+        "active_fleet_topology_sha256": effective_fleet[
+            "topology_sha256"
+        ],
+        "source_tree_sha256": expected_source_tree_sha256,
+        "dispatcher_source_sha256": expected_dispatcher_source_sha256,
+        "qualification_runner_source_sha256": (
+            expected_qualification_runner_source_sha256
+        ),
         "builder_source_sha256": str(evidence["builder_source_sha256"]),
         "publisher_source_sha256": str(evidence["publisher_source_sha256"]),
         "expected_total_job_elements": EXPECTED_TOTAL_JOB_ELEMENTS,
@@ -1528,6 +2286,9 @@ def validate_scheduler_evidence(
     *,
     expected_release_git_commit: str,
     expected_release_tag_object: str,
+    expected_source_tree_sha256: str | None = None,
+    expected_dispatcher_source_sha256: str | None = None,
+    expected_qualification_runner_source_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Validate and summarize one sealed scheduler evidence object."""
 
@@ -1550,6 +2311,17 @@ def validate_scheduler_evidence(
         expected_release_tag_object=expected_release_tag_object,
         description="scheduler evidence",
     )
+    source_trust = _validate_source_trust_anchors(
+        evidence,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_dispatcher_source_sha256=(
+            expected_dispatcher_source_sha256
+        ),
+        expected_qualification_runner_source_sha256=(
+            expected_qualification_runner_source_sha256
+        ),
+        description="scheduler evidence",
+    )
     observed_at = _require_positive_timestamp(
         evidence.get("observed_at"),
         description="scheduler observed_at",
@@ -1564,8 +2336,14 @@ def validate_scheduler_evidence(
         identity_field="evidence_id",
         description="scheduler evidence",
     )
+    effective_logical_replicas = _require_integer(
+        evidence.get("effective_active_logical_replicas"),
+        minimum=BASE_LOGICAL_REPLICAS,
+        description="scheduler effective active logical replicas",
+    )
     job_element_accounting = _validate_job_element_accounting(
-        evidence.get("job_element_accounting")
+        evidence.get("job_element_accounting"),
+        active_server_job_elements=effective_logical_replicas,
     )
     if (
         _require_integer(
@@ -1590,6 +2368,23 @@ def validate_scheduler_evidence(
         evidence,
         servers=servers,
         clients=clients,
+        expected_source_tree_sha256=source_trust["source_tree_sha256"],
+        expected_dispatcher_source_sha256=source_trust[
+            "dispatcher_source_sha256"
+        ],
+        expected_qualification_runner_source_sha256=source_trust[
+            "qualification_runner_source_sha256"
+        ],
+    )
+    occupancy_preflight = _validate_occupancy_preflight(
+        evidence.get("occupancy_preflight"),
+        scheduler_account=str(derived["scheduler_account"]),
+        scheduler_max_jobs=derived["scheduler_max_jobs"],
+        scheduler_max_submit_jobs=int(
+            derived["scheduler_max_submit_jobs"]
+        ),
+        qos_contracts=derived["scientific_qos_contracts"],
+        expected_running_jobs=int(derived["running_scientific_jobs"]),
     )
     if (
         derived["preempt_type"] != preempt_type
@@ -1597,15 +2392,33 @@ def validate_scheduler_evidence(
         or derived["scheduler_cluster"] != evidence.get("scheduler_cluster")
         or derived["scheduler_account"] != evidence.get("scheduler_account")
         or derived["scheduler_user"] != evidence.get("scheduler_user")
+        or derived["scheduler_max_jobs"]
+        != evidence.get("scheduler_max_jobs")
         or derived["scheduler_max_submit_jobs"]
         != evidence.get("scheduler_max_submit_jobs")
+        or derived["running_scientific_jobs"]
+        != evidence.get("running_scientific_jobs")
+        or derived["minimum_scientific_wall_seconds"]
+        != evidence.get("minimum_scientific_wall_seconds")
+        or derived["scientific_qos_contracts"]
+        != evidence.get("scientific_qos_contracts")
         or derived["partition_cpus"] != evidence.get("partition_cpus")
         or derived["partition_memory_mib"]
         != evidence.get("partition_memory_mib")
         or derived["partition_gpus"] != evidence.get("partition_gpus")
-        or derived["active_gpus"] != server_totals["active_gpus"]
-        or derived["warm_headroom_gpus"]
-        != server_totals["warm_headroom_gpus"]
+        or any(
+            derived[derived_field] != server_totals[placement_field]
+            for placement_field, derived_field in (
+                ("base_active_gpus", "base_active_gpus"),
+                ("reserved_additive_gpus", "additive_reserved_gpus"),
+                ("effective_active_gpus", "effective_active_gpus"),
+                (
+                    "retained_warm_turnover_gpus",
+                    "retained_warm_turnover_gpus",
+                ),
+                ("attested_total_gpus", "attested_total_gpus"),
+            )
+        )
         or any(derived[field] != client_totals[field] for field in client_totals)
         or derived["fleet_contract_sha256"]
         != evidence.get("fleet_contract_sha256")
@@ -1615,9 +2428,47 @@ def validate_scheduler_evidence(
         != evidence.get("builder_source_sha256")
         or derived["publisher_source_sha256"]
         != evidence.get("publisher_source_sha256")
+        or any(
+            derived[field] != evidence.get(field)
+            for field in _SOURCE_TRUST_FIELDS
+        )
         or derived["expected_total_job_elements"]
         != evidence.get("expected_total_job_elements")
         or derived["job_element_accounting"] != job_element_accounting
+        or any(
+            derived[field] != evidence.get(field)
+            for field in (
+                "capacity_generation",
+                "base_fleet_contract_path",
+                "base_fleet_contract_sha256",
+                "effective_fleet_contract_path",
+                "effective_fleet_contract_sha256",
+                "additive_overlay_contract_path",
+                "additive_overlay_contract_sha256",
+                "static_feasibility_certificate",
+                "base_active_logical_replicas",
+                "base_active_gpus",
+                "base_active_topology",
+                "base_active_topology_sha256",
+                "additive_reserved_logical_replicas",
+                "additive_reserved_gpus",
+                "additive_reserved_tp1_replicas",
+                "additive_reserved_tp2_replicas",
+                "additive_reserved_topology",
+                "additive_reserved_topology_sha256",
+                "effective_active_logical_replicas",
+                "effective_active_gpus",
+                "effective_active_topology",
+                "effective_active_topology_sha256",
+                "retained_warm_turnover_job_elements",
+                "retained_warm_turnover_gpus",
+                "retained_warm_turnover_tp1_allocations",
+                "retained_warm_turnover_tp2_allocations",
+                "retained_warm_turnover_topology",
+                "retained_warm_turnover_topology_sha256",
+                "attested_total_gpus",
+            )
+        )
     ):
         raise ProtectedCapacityError(
             "scheduler evidence claims differ from independently parsed raw "
@@ -1634,12 +2485,56 @@ def validate_scheduler_evidence(
         "scheduler_cluster": derived["scheduler_cluster"],
         "scheduler_account": derived["scheduler_account"],
         "scheduler_user": derived["scheduler_user"],
+        "scheduler_max_jobs": derived["scheduler_max_jobs"],
         "scheduler_max_submit_jobs": derived[
             "scheduler_max_submit_jobs"
+        ],
+        "running_scientific_jobs": derived[
+            "running_scientific_jobs"
+        ],
+        "minimum_scientific_wall_seconds": derived[
+            "minimum_scientific_wall_seconds"
+        ],
+        "scientific_qos_contracts": derived[
+            "scientific_qos_contracts"
         ],
         "partition_cpus": derived["partition_cpus"],
         "partition_memory_mib": derived["partition_memory_mib"],
         "partition_gpus": derived["partition_gpus"],
+        **{
+            field: derived[field]
+            for field in (
+                "capacity_generation",
+                "base_fleet_contract_path",
+                "base_fleet_contract_sha256",
+                "effective_fleet_contract_path",
+                "effective_fleet_contract_sha256",
+                "additive_overlay_contract_path",
+                "additive_overlay_contract_sha256",
+                "static_feasibility_certificate",
+                "base_active_logical_replicas",
+                "base_active_gpus",
+                "base_active_topology",
+                "base_active_topology_sha256",
+                "additive_reserved_logical_replicas",
+                "additive_reserved_gpus",
+                "additive_reserved_tp1_replicas",
+                "additive_reserved_tp2_replicas",
+                "additive_reserved_topology",
+                "additive_reserved_topology_sha256",
+                "effective_active_logical_replicas",
+                "effective_active_gpus",
+                "effective_active_topology",
+                "effective_active_topology_sha256",
+                "retained_warm_turnover_job_elements",
+                "retained_warm_turnover_gpus",
+                "retained_warm_turnover_tp1_allocations",
+                "retained_warm_turnover_tp2_allocations",
+                "retained_warm_turnover_topology",
+                "retained_warm_turnover_topology_sha256",
+                "attested_total_gpus",
+            )
+        },
         "servers": servers,
         "clients": clients,
         "squeue": squeue,
@@ -1650,10 +2545,12 @@ def validate_scheduler_evidence(
         ],
         "builder_source_sha256": derived["builder_source_sha256"],
         "publisher_source_sha256": derived["publisher_source_sha256"],
+        **source_trust,
         "expected_total_job_elements": derived[
             "expected_total_job_elements"
         ],
         "job_element_accounting": derived["job_element_accounting"],
+        "occupancy_preflight": occupancy_preflight,
         **server_totals,
         **client_totals,
     }
@@ -1798,6 +2695,9 @@ def build_marker(
     canary_evidence_sha256: str,
     expected_release_git_commit: str,
     expected_release_tag_object: str,
+    expected_source_tree_sha256: str | None = None,
+    expected_dispatcher_source_sha256: str | None = None,
+    expected_qualification_runner_source_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build the exact downstream marker from two validated evidence objects."""
 
@@ -1805,6 +2705,13 @@ def build_marker(
         scheduler_evidence,
         expected_release_git_commit=expected_release_git_commit,
         expected_release_tag_object=expected_release_tag_object,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_dispatcher_source_sha256=(
+            expected_dispatcher_source_sha256
+        ),
+        expected_qualification_runner_source_sha256=(
+            expected_qualification_runner_source_sha256
+        ),
     )
     canary = validate_canary_evidence(
         canary_evidence,
@@ -1828,8 +2735,49 @@ def build_marker(
         "release_git_commit": expected_release_git_commit,
         "release_tag_object": expected_release_tag_object,
         "chain_namespace": CHAIN_NAMESPACE,
-        "active_gpus": scheduler["active_gpus"],
-        "warm_headroom_gpus": scheduler["warm_headroom_gpus"],
+        **{
+            field: scheduler[field]
+            for field in sorted(_SOURCE_TRUST_FIELDS)
+        },
+        **{
+            field: scheduler[field]
+            for field in (
+                "capacity_generation",
+                "base_fleet_contract_path",
+                "base_fleet_contract_sha256",
+                "effective_fleet_contract_path",
+                "effective_fleet_contract_sha256",
+                "additive_overlay_contract_path",
+                "additive_overlay_contract_sha256",
+                "static_feasibility_certificate",
+                "base_active_logical_replicas",
+                "base_active_gpus",
+                "base_active_topology",
+                "base_active_topology_sha256",
+                "additive_reserved_logical_replicas",
+                "additive_reserved_gpus",
+                "additive_reserved_tp1_replicas",
+                "additive_reserved_tp2_replicas",
+                "additive_reserved_topology",
+                "additive_reserved_topology_sha256",
+                "effective_active_logical_replicas",
+                "effective_active_gpus",
+                "effective_active_topology",
+                "effective_active_topology_sha256",
+                "retained_warm_turnover_job_elements",
+                "retained_warm_turnover_gpus",
+                "retained_warm_turnover_tp1_allocations",
+                "retained_warm_turnover_tp2_allocations",
+                "retained_warm_turnover_topology",
+                "retained_warm_turnover_topology_sha256",
+                "attested_total_gpus",
+                "job_element_accounting",
+            )
+        },
+        "active_gpus": scheduler["effective_active_gpus"],
+        "warm_headroom_gpus": scheduler[
+            "retained_warm_turnover_gpus"
+        ],
         "cell_ceiling": scheduler["cell_ceiling"],
         "reserve_jobs": scheduler["reserve_jobs"],
         "submit_headroom": scheduler["submit_headroom"],
@@ -1840,8 +2788,18 @@ def build_marker(
         "scheduler_cluster": scheduler["scheduler_cluster"],
         "scheduler_account": scheduler["scheduler_account"],
         "scheduler_user": scheduler["scheduler_user"],
+        "scheduler_max_jobs": scheduler["scheduler_max_jobs"],
         "scheduler_max_submit_jobs": scheduler[
             "scheduler_max_submit_jobs"
+        ],
+        "running_scientific_jobs": scheduler[
+            "running_scientific_jobs"
+        ],
+        "minimum_scientific_wall_seconds": scheduler[
+            "minimum_scientific_wall_seconds"
+        ],
+        "scientific_qos_contracts": scheduler[
+            "scientific_qos_contracts"
         ],
         "partition_cpus": scheduler["partition_cpus"],
         "partition_memory_mib": scheduler["partition_memory_mib"],
@@ -1864,13 +2822,106 @@ def build_marker(
     return with_self_hash(marker, identity_field="marker_id")
 
 
+def _validate_scientific_qos_contracts(
+    value: Any,
+    *,
+    expected_running_jobs: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise ProtectedCapacityError(
+            "protected-capacity scientific QOS contracts are absent"
+        )
+    normalized: list[dict[str, Any]] = []
+    prior_qos = ""
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping):
+            raise ProtectedCapacityError(
+                f"scientific QOS contract {index} is malformed"
+            )
+        _require_exact_fields(
+            raw,
+            _QOS_CONTRACT_FIELDS,
+            description=f"scientific QOS contract {index}",
+        )
+        qos = raw.get("qos")
+        if (
+            not isinstance(qos, str)
+            or _PLACEMENT_NAME_RE.fullmatch(qos) is None
+            or qos <= prior_qos
+        ):
+            raise ProtectedCapacityError(
+                "scientific QOS contracts are duplicated or not canonical"
+            )
+        prior_qos = qos
+        optional: dict[str, int | None] = {}
+        for field in (
+            "max_wall_seconds",
+            "max_jobs_per_user",
+            "max_submit_jobs_per_user",
+        ):
+            observed = raw.get(field)
+            if observed is None:
+                optional[field] = None
+            else:
+                optional[field] = _require_integer(
+                    observed,
+                    minimum=1,
+                    description=f"{qos} {field}",
+                )
+        required_wall = _require_integer(
+            raw.get("required_wall_seconds"),
+            minimum=CLIENT_WALL_SECONDS,
+            description=f"{qos} required walltime",
+        )
+        required_running = _require_integer(
+            raw.get("required_running_jobs"),
+            minimum=0,
+            description=f"{qos} required running jobs",
+        )
+        required_submit = _require_integer(
+            raw.get("required_submit_jobs"),
+            minimum=1,
+            description=f"{qos} required submit jobs",
+        )
+        if (
+            optional["max_wall_seconds"] is not None
+            and optional["max_wall_seconds"] < required_wall
+        ) or (
+            optional["max_jobs_per_user"] is not None
+            and optional["max_jobs_per_user"] < required_running
+        ) or (
+            optional["max_submit_jobs_per_user"] is not None
+            and optional["max_submit_jobs_per_user"] < required_submit
+        ):
+            raise ProtectedCapacityError(
+                f"scientific QOS contract {qos} cannot sustain its bound load"
+            )
+        normalized.append(dict(raw))
+    if (
+        sum(row["required_running_jobs"] for row in normalized)
+        != expected_running_jobs
+        or sum(row["required_submit_jobs"] for row in normalized)
+        != EXPECTED_TOTAL_JOB_ELEMENTS
+        or max(row["required_wall_seconds"] for row in normalized)
+        != MIN_SCIENTIFIC_WALL_SECONDS
+    ):
+        raise ProtectedCapacityError(
+            "scientific QOS contracts do not realize the dynamic running/"
+            "448-submit/24-hour envelope"
+        )
+    return normalized
+
+
 def validate_marker_payload(
     marker: Mapping[str, Any],
     *,
     expected_release_git_commit: str | None = None,
     expected_release_tag_object: str | None = None,
+    expected_source_tree_sha256: str | None = None,
+    expected_dispatcher_source_sha256: str | None = None,
+    expected_qualification_runner_source_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Validate the exact marker schema used by the r2 chain renderer."""
+    """Validate the exact marker schema used by the r3 chain renderer."""
 
     _require_exact_fields(
         marker,
@@ -1902,14 +2953,40 @@ def validate_marker_payload(
         raise ProtectedCapacityError(
             "protected-capacity marker release/tag/chain binding is invalid"
         )
+    source_trust = _validate_source_trust_anchors(
+        marker,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_dispatcher_source_sha256=(
+            expected_dispatcher_source_sha256
+        ),
+        expected_qualification_runner_source_sha256=(
+            expected_qualification_runner_source_sha256
+        ),
+        description="protected-capacity marker",
+    )
     _validate_self_hash(
         marker,
         identity_field="marker_id",
         description="protected-capacity marker",
     )
+    effective_count = _require_integer(
+        marker.get("effective_active_logical_replicas"),
+        minimum=BASE_LOGICAL_REPLICAS,
+        description="protected-capacity effective logical replicas",
+    )
+    effective_gpus = _require_integer(
+        marker.get("effective_active_gpus"),
+        minimum=BASE_ACTIVE_GPUS,
+        description="protected-capacity effective active GPUs",
+    )
+    expected_running_jobs = (
+        MIN_CLIENT_SLOTS
+        + effective_count
+        + EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+    )
     minima = {
-        "active_gpus": MIN_ACTIVE_GPUS,
-        "warm_headroom_gpus": MIN_WARM_HEADROOM_GPUS,
+        "active_gpus": effective_gpus,
+        "warm_headroom_gpus": RETAINED_WARM_TURNOVER_GPUS,
         "cell_ceiling": MIN_CLIENT_SLOTS,
         "reserve_jobs": MIN_RESERVE_JOBS,
         "submit_headroom": MIN_SUBMIT_HEADROOM,
@@ -1932,6 +3009,25 @@ def validate_marker_payload(
         marker.get("scientific_client_placements"),
         preempt_type=str(marker.get("preempt_type")),
     )
+    qos_contracts = _validate_scientific_qos_contracts(
+        marker.get("scientific_qos_contracts"),
+        expected_running_jobs=expected_running_jobs,
+    )
+    qos_contract_by_name = {
+        str(row["qos"]): row for row in qos_contracts
+    }
+    scheduler_max_jobs = marker.get("scheduler_max_jobs")
+    if scheduler_max_jobs is not None:
+        scheduler_max_jobs = _require_integer(
+            scheduler_max_jobs,
+            minimum=expected_running_jobs,
+            description="protected-capacity scheduler MaxJobs",
+        )
+    _require_integer(
+        marker.get("scheduler_max_submit_jobs"),
+        minimum=MIN_SUBMIT_HEADROOM,
+        description="protected-capacity scheduler MaxSubmitJobs",
+    )
     if (
         marker.get("scientific_server_placements") != servers
         or marker.get("scientific_client_placements") != clients
@@ -1944,15 +3040,190 @@ def validate_marker_payload(
         "scheduler_evidence_sha256",
         "canary_id",
         "canary_evidence_sha256",
+        "base_fleet_contract_sha256",
+        "effective_fleet_contract_sha256",
+        "additive_overlay_contract_sha256",
+        "base_active_topology_sha256",
+        "additive_reserved_topology_sha256",
+        "effective_active_topology_sha256",
+        "retained_warm_turnover_topology_sha256",
         "fleet_contract_sha256",
         "active_fleet_topology_sha256",
     )
+    certificate_binding = marker.get("static_feasibility_certificate")
+    if (
+        not isinstance(certificate_binding, Mapping)
+        or set(certificate_binding)
+        != {"path", "sha256", "certificate_id"}
+    ):
+        raise ProtectedCapacityError(
+            "protected-capacity marker static feasibility binding is malformed"
+        )
+    try:
+        certificate = runtime_capacity.load_static_feasibility_certificate(
+            str(certificate_binding["path"]),
+            expected_sha256=str(certificate_binding["sha256"]),
+            expected_certificate_id=str(certificate_binding["certificate_id"]),
+            expected_capacity_generation=int(marker["capacity_generation"]),
+            expected_base_fleet_contract_sha256=str(
+                marker["base_fleet_contract_sha256"]
+            ),
+            expected_effective_fleet_contract_sha256=str(
+                marker["effective_fleet_contract_sha256"]
+            ),
+            expected_additive_overlay_contract_sha256=str(
+                marker["additive_overlay_contract_sha256"]
+            ),
+            expected_release_git_commit=str(commit),
+            expected_source_tree_sha256=source_trust[
+                "source_tree_sha256"
+            ],
+            expected_dispatcher_source_sha256=source_trust[
+                "dispatcher_source_sha256"
+            ],
+            expected_qualification_runner_source_sha256=source_trust[
+                "qualification_runner_source_sha256"
+            ],
+        )
+    except (runtime_capacity.ProtectedCapacityError, TypeError, ValueError) as exc:
+        raise ProtectedCapacityError(
+            f"protected-capacity static feasibility binding failed: {exc}"
+        ) from exc
+    base_count = _require_integer(
+        marker.get("base_active_logical_replicas"),
+        minimum=BASE_LOGICAL_REPLICAS,
+        description="protected-capacity base logical replicas",
+    )
+    base_gpus = _require_integer(
+        marker.get("base_active_gpus"),
+        minimum=BASE_ACTIVE_GPUS,
+        description="protected-capacity base GPUs",
+    )
+    additive_count = _require_integer(
+        marker.get("additive_reserved_logical_replicas"),
+        minimum=0,
+        description="protected-capacity additive logical replicas",
+    )
+    additive_gpus = _require_integer(
+        marker.get("additive_reserved_gpus"),
+        minimum=0,
+        description="protected-capacity additive GPUs",
+    )
+    additive_tp1 = _require_integer(
+        marker.get("additive_reserved_tp1_replicas"),
+        minimum=0,
+        description="protected-capacity additive TP1 replicas",
+    )
+    additive_tp2 = _require_integer(
+        marker.get("additive_reserved_tp2_replicas"),
+        minimum=0,
+        description="protected-capacity additive TP2 replicas",
+    )
+    warm_count = _require_integer(
+        marker.get("retained_warm_turnover_job_elements"),
+        minimum=1,
+        description="protected-capacity retained warm jobs",
+    )
+    warm_gpus = _require_integer(
+        marker.get("retained_warm_turnover_gpus"),
+        minimum=1,
+        description="protected-capacity retained warm GPUs",
+    )
+    topology_specs = (
+        ("base_active_topology", base_count, base_gpus),
+        ("additive_reserved_topology", additive_count, additive_gpus),
+        ("effective_active_topology", effective_count, effective_gpus),
+        ("retained_warm_turnover_topology", warm_count, warm_gpus),
+    )
+    parsed_topologies: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    try:
+        for field, count, gpus in topology_specs:
+            parsed_topologies[field] = runtime_capacity._validated_topology(  # noqa: SLF001
+                marker.get(field),
+                field=field,
+                expected_count=count,
+                expected_gpus=gpus,
+            )
+    except runtime_capacity.ProtectedCapacityError as exc:
+        raise ProtectedCapacityError(str(exc)) from exc
+    base_by_id = {
+        str(row["shape_id"]): row
+        for row in parsed_topologies["base_active_topology"]
+    }
+    additive_by_id = {
+        str(row["shape_id"]): row
+        for row in parsed_topologies["additive_reserved_topology"]
+    }
+    effective_by_id = {
+        str(row["shape_id"]): row
+        for row in parsed_topologies["effective_active_topology"]
+    }
+    expected_held = (
+        MIN_RESERVE_JOBS
+        - effective_count
+        - EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+    )
+    expected_accounting = _expected_job_element_accounting(effective_count)
+    for path_field, hash_field in (
+        ("base_fleet_contract_path", "base_fleet_contract_sha256"),
+        ("effective_fleet_contract_path", "effective_fleet_contract_sha256"),
+        ("additive_overlay_contract_path", "additive_overlay_contract_sha256"),
+    ):
+        raw_path = marker.get(path_field)
+        if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+            raise ProtectedCapacityError(
+                f"protected-capacity marker {path_field} is not absolute"
+            )
+        _bound_path, _bound_payload, observed_sha256 = (
+            _read_sealed_json_with_sha256(
+                Path(raw_path),
+                description=f"protected-capacity {path_field}",
+            )
+        )
+        if observed_sha256 != marker.get(hash_field):
+            raise ProtectedCapacityError(
+                f"protected-capacity marker {path_field} bytes drifted"
+            )
     if (
         values["cpu"] < values["cell_ceiling"]
         or values["memory_mib"] < values["cell_ceiling"] * CLIENT_MEMORY_MIB_PER_SLOT
         or values["submit_headroom"] < values["cell_ceiling"] + values["reserve_jobs"]
-        or values["active_gpus"] != server_totals["active_gpus"]
-        or values["warm_headroom_gpus"] != server_totals["warm_headroom_gpus"]
+        or marker.get("running_scientific_jobs")
+        != expected_running_jobs
+        or marker.get("minimum_scientific_wall_seconds")
+        != MIN_SCIENTIFIC_WALL_SECONDS
+        or {
+            str(row["qos"]) for row in qos_contracts
+        }
+        != {
+            str(row["qos"]) for row in [*servers, *clients]
+        }
+        or any(
+            int(qos_contract_by_name[str(row["qos"])][
+                "required_wall_seconds"
+            ])
+            != MIN_SCIENTIFIC_WALL_SECONDS
+            for row in servers
+        )
+        or any(
+            int(qos_contract_by_name[str(row["qos"])][
+                "required_wall_seconds"
+            ])
+            < CLIENT_WALL_SECONDS
+            for row in clients
+        )
+        or (
+            scheduler_max_jobs is not None
+            and scheduler_max_jobs < expected_running_jobs
+        )
+        or values["active_gpus"] != effective_gpus
+        or values["warm_headroom_gpus"] != warm_gpus
+        or server_totals["base_active_gpus"] != base_gpus
+        or server_totals["reserved_additive_gpus"] != additive_gpus
+        or server_totals["effective_active_gpus"] != effective_gpus
+        or server_totals["retained_warm_turnover_gpus"] != warm_gpus
+        or server_totals["attested_total_gpus"]
+        != marker.get("attested_total_gpus")
         or any(values[field] != client_totals[field] for field in client_totals)
         or any(
             not isinstance(marker.get(field), str)
@@ -1965,6 +3236,52 @@ def validate_marker_payload(
         not in {"preempt/partition_prio", "preempt/qos"}
         or marker.get("squeue_complete") is not True
         or marker.get("sacct_complete") is not True
+        or marker.get("fleet_contract_sha256")
+        != marker.get("effective_fleet_contract_sha256")
+        or marker.get("active_fleet_topology_sha256")
+        != marker.get("effective_active_topology_sha256")
+        or marker.get("base_fleet_contract_sha256")
+        != certificate.base_fleet_contract_sha256
+        or marker.get("effective_fleet_contract_sha256")
+        != certificate.effective_fleet_contract_sha256
+        or marker.get("additive_overlay_contract_sha256")
+        != certificate.additive_overlay_contract_sha256
+        or base_count != BASE_LOGICAL_REPLICAS
+        or base_gpus != BASE_ACTIVE_GPUS
+        or effective_count != base_count + additive_count
+        or effective_gpus != base_gpus + additive_gpus
+        or additive_count != additive_tp1 + additive_tp2
+        or additive_gpus != additive_tp1 + 2 * additive_tp2
+        or additive_tp1 != certificate.additive_tp1_logical_replicas
+        or additive_tp2 != certificate.additive_tp2_logical_replicas
+        or additive_gpus != certificate.additive_allocated_gpus
+        or set(base_by_id).intersection(additive_by_id)
+        or effective_by_id != {**base_by_id, **additive_by_id}
+        or warm_count != EXPECTED_WARM_TURNOVER_JOB_ELEMENTS
+        or warm_gpus != RETAINED_WARM_TURNOVER_GPUS
+        or marker.get("retained_warm_turnover_tp1_allocations") != 2
+        or marker.get("retained_warm_turnover_tp2_allocations") != 1
+        or sorted(
+            int(row["gpus"])
+            for row in parsed_topologies[
+                "retained_warm_turnover_topology"
+            ]
+        )
+        != [1, 1, 2]
+        or marker.get("attested_total_gpus", 0)
+        < effective_gpus + warm_gpus
+        or expected_held <= 0
+        or marker.get("job_element_accounting") != expected_accounting
+        or any(
+            marker.get(f"{field}_sha256")
+            != hashlib.sha256(canonical_bytes(marker.get(field))).hexdigest()
+            for field in (
+                "base_active_topology",
+                "additive_reserved_topology",
+                "effective_active_topology",
+                "retained_warm_turnover_topology",
+            )
+        )
     ):
         raise ProtectedCapacityError(
             "protected-capacity marker does not satisfy placement/capacity/"
@@ -2020,6 +3337,9 @@ def verify_marker(
     *,
     expected_release_git_commit: str | None = None,
     expected_release_tag_object: str | None = None,
+    expected_source_tree_sha256: str | None = None,
+    expected_dispatcher_source_sha256: str | None = None,
+    expected_qualification_runner_source_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Verify the canonical read-only marker without consulting live evidence."""
 
@@ -2040,6 +3360,13 @@ def verify_marker(
         marker,
         expected_release_git_commit=expected_release_git_commit,
         expected_release_tag_object=expected_release_tag_object,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_dispatcher_source_sha256=(
+            expected_dispatcher_source_sha256
+        ),
+        expected_qualification_runner_source_sha256=(
+            expected_qualification_runner_source_sha256
+        ),
     )
 
 
@@ -2076,7 +3403,10 @@ def _require_live_scheduler_sources_unchanged(
         "partition_configuration",
         "qos_configuration",
         "association_configuration",
-        "fleet_contract",
+        "base_fleet_contract",
+        "effective_fleet_contract",
+        "additive_overlay_contract",
+        "static_feasibility_certificate_source",
         "builder_source",
         "publisher_source",
         "squeue",
@@ -2127,6 +3457,9 @@ def attest(
     canary_evidence_path: Path,
     expected_release_git_commit: str,
     expected_release_tag_object: str,
+    expected_source_tree_sha256: str | None = None,
+    expected_dispatcher_source_sha256: str | None = None,
+    expected_qualification_runner_source_sha256: str | None = None,
     apply: bool = False,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> dict[str, Any]:
@@ -2173,6 +3506,13 @@ def attest(
         canary_evidence_sha256=canary_evidence_sha256,
         expected_release_git_commit=expected_release_git_commit,
         expected_release_tag_object=expected_release_tag_object,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_dispatcher_source_sha256=(
+            expected_dispatcher_source_sha256
+        ),
+        expected_qualification_runner_source_sha256=(
+            expected_qualification_runner_source_sha256
+        ),
     )
     # Reopen both trust anchors after all semantic checks.  This closes the
     # validation/publication window even if another process can chmod a sealed file.
@@ -2195,6 +3535,13 @@ def attest(
             root,
             expected_release_git_commit=expected_release_git_commit,
             expected_release_tag_object=expected_release_tag_object,
+            expected_source_tree_sha256=expected_source_tree_sha256,
+            expected_dispatcher_source_sha256=(
+                expected_dispatcher_source_sha256
+            ),
+            expected_qualification_runner_source_sha256=(
+                expected_qualification_runner_source_sha256
+            ),
         )
         if canonical_bytes(existing) != payload:
             raise ProtectedCapacityError(
@@ -2228,6 +3575,13 @@ def attest(
         root,
         expected_release_git_commit=expected_release_git_commit,
         expected_release_tag_object=expected_release_tag_object,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_dispatcher_source_sha256=(
+            expected_dispatcher_source_sha256
+        ),
+        expected_qualification_runner_source_sha256=(
+            expected_qualification_runner_source_sha256
+        ),
     )
     if canonical_bytes(published) != payload:
         raise ProtectedCapacityError(
@@ -2264,12 +3618,30 @@ def _build_parser() -> argparse.ArgumentParser:
     attest_parser.add_argument(
         "--release-git-commit",
         required=True,
-        help="exact 40-hex commit peeled from the r2 annotated tag",
+        help="exact 40-hex commit peeled from the release annotated tag",
     )
     attest_parser.add_argument(
         "--release-tag-object",
         required=True,
         help="exact 40-hex annotated-tag object ID",
+    )
+    attest_parser.add_argument(
+        "--source-tree-sha256",
+        required=True,
+        help="exact schema5_control.sha256_tree digest of the release worktree",
+    )
+    attest_parser.add_argument(
+        "--dispatcher-source-sha256",
+        required=True,
+        help="exact digest of tagged slurm/dispatch_sweeps.py",
+    )
+    attest_parser.add_argument(
+        "--qualification-runner-source-sha256",
+        required=True,
+        help=(
+            "exact digest of tagged "
+            "scripts/run_schema5_throughput_qualification.py"
+        ),
     )
     attest_parser.add_argument(
         "--apply",
@@ -2282,8 +3654,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="verify an already-published marker without scheduler access",
     )
     verify_parser.add_argument("--recovery-root", required=True, type=Path)
-    verify_parser.add_argument("--release-git-commit")
-    verify_parser.add_argument("--release-tag-object")
+    verify_parser.add_argument("--release-git-commit", required=True)
+    verify_parser.add_argument("--release-tag-object", required=True)
+    verify_parser.add_argument("--source-tree-sha256", required=True)
+    verify_parser.add_argument("--dispatcher-source-sha256", required=True)
+    verify_parser.add_argument(
+        "--qualification-runner-source-sha256",
+        required=True,
+    )
     return parser
 
 
@@ -2298,15 +3676,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 canary_evidence_path=args.canary_evidence,
                 expected_release_git_commit=args.release_git_commit,
                 expected_release_tag_object=args.release_tag_object,
+                expected_source_tree_sha256=args.source_tree_sha256,
+                expected_dispatcher_source_sha256=(
+                    args.dispatcher_source_sha256
+                ),
+                expected_qualification_runner_source_sha256=(
+                    args.qualification_runner_source_sha256
+                ),
                 apply=args.apply,
             )
         else:
-            if (args.release_git_commit is None) != (args.release_tag_object is None):
-                parser.error("verify requires both release identity options or neither")
             marker = verify_marker(
                 args.recovery_root,
                 expected_release_git_commit=args.release_git_commit,
                 expected_release_tag_object=args.release_tag_object,
+                expected_source_tree_sha256=args.source_tree_sha256,
+                expected_dispatcher_source_sha256=(
+                    args.dispatcher_source_sha256
+                ),
+                expected_qualification_runner_source_sha256=(
+                    args.qualification_runner_source_sha256
+                ),
             )
             report = {
                 "status": "verified",

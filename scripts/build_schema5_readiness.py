@@ -70,7 +70,7 @@ from scripts.audit_context_capacity import AuditFilters, selected_cells  # noqa:
 from scripts import schema5_email_ack  # noqa: E402
 from scripts.verify_schema5_recovery_evidence import (  # noqa: E402
     EvidenceVerificationError,
-    R2_PROTOCOL,
+    R3_PROTOCOL,
     verify_recovery_evidence,
 )
 from slurm import keepalive  # noqa: E402
@@ -85,10 +85,10 @@ EXPECTED_DENSE_REQUESTS = 43_092
 EXPECTED_SEVEN_CELLS = 288
 EXPECTED_SEVEN_REQUESTS = 57_456
 CAPACITY_TRANSIENT_PROTOCOL = (
-    "schema5-v1.2-r2-fleet-capacity-transient-receipt"
+    "schema5-v1.2-r3-fleet-capacity-transient-receipt"
 )
 CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r2-fleet-capacity-transient-evidence"
+    "schema5-v1.2-r3-fleet-capacity-transient-evidence"
 )
 CAPACITY_TRANSIENT_EVIDENCE_NAME = "FLEET_CAPACITY_TRANSIENT_EVIDENCE.json"
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
@@ -104,7 +104,7 @@ CAPACITY_PREIMAGE_ROOT_NAME = "sealed-preimages"
 CAPACITY_PREIMAGE_MANIFEST_NAME = "PREIMAGE_MANIFEST.json"
 CAPACITY_PREIMAGE_INVENTORY_NAME = "PREIMAGE_INVENTORY.sha256"
 CAPACITY_PREIMAGE_COMPLETE_NAME = "PREIMAGE_ARCHIVE_COMPLETE.json"
-CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r2-capacity-preimage-archive"
+CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r3-capacity-preimage-archive"
 
 
 class EvidenceError(RuntimeError):
@@ -1387,6 +1387,50 @@ def build_fleet_gate(
     ):
         raise EvidenceError("fleet readiness differs from its capacity generation")
 
+    transaction_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None
+    control_scheduler_reader = None
+    if scheduler_runner is not None:
+        def adapted_scheduler_runner(argv, **kwargs):
+            return scheduler_runner(argv, float(kwargs.get("timeout", 15.0)))
+
+        transaction_runner = adapted_scheduler_runner
+
+        def control_scheduler_reader():
+            return control_plane.query_scheduler(
+                runner=lambda argv: scheduler_runner(list(argv), 15.0),
+                now=float(now()),
+            )
+
+    try:
+        fleet_snapshot = keepalive.reconcile_fleet_read_only(
+            str(pool_root),
+            fleet,
+            current_generation=generation,
+            scheduler_runner=transaction_runner,
+            scheduler_now=float(now()),
+        )
+        trusted_scientific_provenance = (
+            control_plane.reconcile_trusted_scientific_job_provenance(
+                state_dir,
+                fleet_bindings=keepalive.trusted_scientific_fleet_bindings(
+                    fleet_snapshot
+                ),
+                fleet_contract_sha256=fleet.sha256,
+                fleet_generation=generation,
+                scheduler_reader=control_scheduler_reader,
+                now=float(now()),
+                allow_exact_cell_quiescence=True,
+            )
+        )
+    except (
+        control_plane.ControlError,
+        keepalive.FleetContractError,
+        OSError,
+    ) as exc:
+        raise EvidenceError(
+            f"transactional scientific occupancy reconciliation failed: {exc}"
+        ) from exc
+
     try:
         transport_binding = (
             scheduler_safety.validate_transport_uncertainty_binding(
@@ -1427,15 +1471,10 @@ def build_fleet_gate(
         client_capacity_summary = (
             control_plane.client_capacity_contract_from_state(state_dir)
         )
-        protected_contract = protected_capacity.load_contract(
-            pins["protected_capacity_marker_path"],
-            expected_release_git_commit=str(pins["git_commit"]),
-            expected_marker_id=str(
-                pins["protected_capacity_marker_id"]
-            ),
-            expected_sha256=str(
-                pins["protected_capacity_marker_sha256"]
-            ),
+        protected_contract = (
+            control_plane.load_effective_protected_capacity_contract(
+                control, verify_files=True
+            )
         )
         protected_capacity.authorize_client(
             protected_contract,
@@ -1454,6 +1493,9 @@ def build_fleet_gate(
             qos=str(client_capacity_summary["qos"]),
             required_time_limit_seconds=(
                 scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+            ),
+            trusted_scientific_job_provenance=(
+                trusted_scientific_provenance
             ),
             runner=_transaction_runner(scheduler_runner),
             captured_timestamp=float(now()),
@@ -1477,23 +1519,6 @@ def build_fleet_gate(
             f"non-preemptible client partition/QOS readiness failed: {exc}"
         ) from exc
 
-    transaction_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None
-    if scheduler_runner is not None:
-        def adapted_scheduler_runner(argv, **kwargs):
-            return scheduler_runner(argv, float(kwargs.get("timeout", 15.0)))
-
-        transaction_runner = adapted_scheduler_runner
-
-    try:
-        fleet_snapshot = keepalive.reconcile_fleet_read_only(
-            str(pool_root),
-            fleet,
-            current_generation=generation,
-            scheduler_runner=transaction_runner,
-            scheduler_now=float(now()),
-        )
-    except (keepalive.FleetContractError, OSError) as exc:
-        raise EvidenceError(f"transactional fleet reconciliation failed: {exc}") from exc
     scheduler = {
         allocation.replica_id: (
             allocation.row,
@@ -2190,15 +2215,10 @@ def _validate_raw_fleet_readiness(
         control_plane.client_capacity_contract_from_state(state_dir)
     )
     try:
-        protected_contract = protected_capacity.load_contract(
-            pins["protected_capacity_marker_path"],
-            expected_release_git_commit=str(pins["git_commit"]),
-            expected_marker_id=str(
-                pins["protected_capacity_marker_id"]
-            ),
-            expected_sha256=str(
-                pins["protected_capacity_marker_sha256"]
-            ),
+        protected_contract = (
+            control_plane.load_effective_protected_capacity_contract(
+                control, verify_files=True
+            )
         )
         if not isinstance(stored_client_capacity, Mapping):
             raise protected_capacity.ProtectedCapacityError(
@@ -2215,6 +2235,42 @@ def _validate_raw_fleet_readiness(
                 ),
             )
         )
+        transaction_runner = (
+            None
+            if scheduler_runner is None
+            else lambda argv, **kwargs: scheduler_runner(
+                list(argv), float(kwargs.get("timeout", 15.0))
+            )
+        )
+        fresh_fleet_snapshot = keepalive.reconcile_fleet_read_only(
+            str(pool_root),
+            fleet,
+            current_generation=int(payload["rollout_generation"]),
+            scheduler_runner=transaction_runner,
+        )
+        fresh_now = time.time()
+        fresh_trusted_provenance = (
+            control_plane.reconcile_trusted_scientific_job_provenance(
+                state_dir,
+                fleet_bindings=keepalive.trusted_scientific_fleet_bindings(
+                    fresh_fleet_snapshot
+                ),
+                fleet_contract_sha256=fleet.sha256,
+                fleet_generation=int(payload["rollout_generation"]),
+                scheduler_reader=(
+                    None
+                    if scheduler_runner is None
+                    else lambda: control_plane.query_scheduler(
+                        runner=lambda argv: scheduler_runner(
+                            list(argv), 15.0
+                        ),
+                        now=fresh_now,
+                    )
+                ),
+                now=fresh_now,
+                allow_exact_cell_quiescence=True,
+            )
+        )
         fresh_client_capacity = (
             protected_capacity.capture_live_client_capacity(
                 protected_contract,
@@ -2222,6 +2278,9 @@ def _validate_raw_fleet_readiness(
                 qos=str(current_client_capacity["qos"]),
                 required_time_limit_seconds=(
                     scheduler_safety.CLIENT_JOB_TIME_LIMIT_SECONDS
+                ),
+                trusted_scientific_job_provenance=(
+                    fresh_trusted_provenance
                 ),
                 runner=_transaction_runner(scheduler_runner)
             )
@@ -2238,6 +2297,8 @@ def _validate_raw_fleet_readiness(
             )
         )
     except (
+        control_plane.ControlError,
+        keepalive.FleetContractError,
         scheduler_safety.SchedulerSafetyError,
         protected_capacity.ProtectedCapacityError,
     ) as exc:
@@ -2749,6 +2810,10 @@ def _collect_fleet_capacity_transient(
                     replica.replica_id: replica.scheduler_job_name
                     for replica in fleet.replicas
                 },
+                replica_qos={
+                    replica.replica_id: replica.qos
+                    for replica in fleet.replicas
+                },
             )
             physical = reconciled.active_allocations
             logical = reconciled.logical_allocations
@@ -3134,8 +3199,10 @@ def _verified_capacity_chain_binding(
         verified = verify_recovery_evidence(chain_manifest, submission_receipt)
     except EvidenceVerificationError as exc:
         raise EvidenceError(f"capacity-transient chain evidence is invalid: {exc}") from exc
-    if verified["chain_protocol"] != R2_PROTOCOL:
-        raise EvidenceError("capacity-transient receipt accepts only the r2 chain")
+    if verified["chain_protocol"] != R3_PROTOCOL:
+        raise EvidenceError(
+            "capacity-transient receipt accepts only the active r3 wire protocol"
+        )
     manifest = verified["manifest"]
     receipt = verified["submission_receipt"]
     manifest_jobs = manifest.get("jobs")
@@ -3272,7 +3339,7 @@ def _validate_capacity_transient_evidence(
         or payload.get("schema_version") != 1
         or payload.get("protocol") != CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL
         or payload.get("passed") is not True
-        or payload.get("chain_protocol") != R2_PROTOCOL
+        or payload.get("chain_protocol") != R3_PROTOCOL
         or payload.get("chain_id") != verified["manifest"]["chain_id"]
         or payload.get("chain_generation") != binding["chain_generation"]
         or payload.get("manifest") != verified["manifest_path"]
@@ -4900,7 +4967,7 @@ def build_fleet_capacity_transient_receipt(
                 "schema_version": 1,
                 "protocol": CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL,
                 "passed": True,
-                "chain_protocol": R2_PROTOCOL,
+                "chain_protocol": R3_PROTOCOL,
                 "chain_id": verified["manifest"]["chain_id"],
                 "chain_generation": binding["chain_generation"],
                 "manifest": verified["manifest_path"],
@@ -5543,7 +5610,7 @@ def build_email_request(
             ]
         )
         body = (
-            "The schema-5 v1.2-r2 production chain requires proof that this alert "
+            f"The schema-5 production chain {release_tag} requires proof that this alert "
             "was received. The challenge is valid only for the exact immutable "
             "identity below and may be consumed once.\n\n"
             f"One-time token:\n{token}\n\n"

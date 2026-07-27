@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import schema5_monitor as monitor
+from slurm import dispatch_sweeps as dispatcher
 
 
 def _config() -> dict:
@@ -91,6 +93,20 @@ def _fleet_state_and_contract(tmp_path, config):
     }
 
 
+def _base_fleet_binding(state, config):
+    immutable = state["immutable"]
+    return {
+        "capacity_generation": 1,
+        "path": immutable["fleet_contract_path"],
+        "sha256": immutable["fleet_contract_sha256"],
+        "fleet_id": "schema5-v1",
+        "logical_replicas": sum(config["fleet_replicas"].values()),
+        "allocated_gpus": 24,
+        "profile_replicas": dict(config["fleet_replicas"]),
+        "is_capacity_overlay": False,
+    }
+
+
 def test_collect_health_keeps_epoch_identity_across_server_allocation_replacement(
     monkeypatch, tmp_path
 ):
@@ -102,6 +118,11 @@ def test_collect_health_keeps_epoch_identity_across_server_allocation_replacemen
     }
     allocation = {"value": "allocation-a"}
     monkeypatch.setattr(monitor.control, "load_control", lambda *_a, **_kw: state)
+    monkeypatch.setattr(
+        monitor.control,
+        "effective_fleet_contract_binding",
+        lambda *_a, **_kw: _base_fleet_binding(state, config),
+    )
     monkeypatch.setattr(monitor.control, "query_scheduler", lambda **_kw: object())
     monkeypatch.setattr(
         monitor.control,
@@ -244,9 +265,16 @@ def test_collect_health_uses_additive_capacity_overlay_counts_and_identity(
     assert server_pool.is_dir()
 
 
-def test_material_fleet_identity_fails_closed_on_contract_or_layout_drift(tmp_path):
+def test_material_fleet_identity_fails_closed_on_contract_or_layout_drift(
+    tmp_path, monkeypatch
+):
     config = _config()
     state = _fleet_state_and_contract(tmp_path, config)
+    monkeypatch.setattr(
+        monitor.control,
+        "effective_fleet_contract_binding",
+        lambda *_a, **_kw: _base_fleet_binding(state, config),
+    )
     contract_path = tmp_path / "fleet.json"
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     contract["note"] = "unattested mutation"
@@ -725,9 +753,96 @@ def test_semantic_scan_counts_cross_generation_qid_as_trusted(
     outcomes = semantic["runs"][run_id]["outcomes"]
     assert outcomes["validated_qids"] == 1
     assert outcomes.get("untrusted_valid_rows", 0) == 0
+    assert set(outcomes) == set(monitor.control.FINAL_RUN_OUTCOME_FIELDS)
+    assert set(semantic["outcomes"]) == set(
+        monitor.control.FINAL_AGGREGATE_OUTCOME_FIELDS
+    )
     assert semantic["artifact_schema_counts"] == {"5": 1}
     assert next(iter(progress.values()))["validated"] == 1
     assert next(iter(rotation.values()))["validated"] == 1
+
+
+def test_zero_censor_generator_schema_passes_final_control_acceptance(tmp_path):
+    runs = {}
+    aggregate_counts: Counter[str] = Counter()
+    for run_id, expected_cells in monitor.control.REQUIRED_RUNS.items():
+        expected_qids = monitor.control.REQUIRED_RUN_QIDS[run_id]
+        outcomes = monitor._closed_semantic_outcomes(
+            {
+                "validated_qids": expected_qids,
+                "useful_qids": expected_qids,
+                "completed_qids": expected_qids,
+            },
+            aggregate=False,
+        )
+        assert set(outcomes) == set(
+            monitor.control.FINAL_RUN_OUTCOME_FIELDS
+        )
+        aggregate_counts.update(outcomes)
+        runs[run_id] = {
+            "run_root": str((tmp_path / run_id).resolve()),
+            "manifest_cells": expected_cells,
+            "expected_qids": expected_qids,
+            "manifest_sha256": "1" * 64,
+            "benchmark_contract_sha256": "2" * 64,
+            "artifact_policy_sha256": "3" * 64,
+            "artifact_policy_id": "4" * 64,
+            "contract_errors": [],
+            "states": {"complete": expected_cells},
+            "outcomes": outcomes,
+            "artifact_schema_counts": {"5": expected_qids},
+            "stale_unmanifested_dirs": 0,
+            "stale_unmanifested_examples": [],
+        }
+    aggregate = monitor._closed_semantic_outcomes(
+        aggregate_counts,
+        aggregate=True,
+    )
+    assert set(aggregate) == set(
+        monitor.control.FINAL_AGGREGATE_OUTCOME_FIELDS
+    )
+    semantic = {
+        "scan_successful": True,
+        "scan_errors": [],
+        "runs": runs,
+        "states": {"complete": monitor.control.EXPECTED_TOTAL_CELLS},
+        "outcomes": aggregate,
+        "artifact_schema_counts": {
+            "5": monitor.control.EXPECTED_TOTAL_QIDS
+        },
+        "trusted_generation_catalog": {
+            "catalog_id": "5" * 64,
+            "marker_path": str((tmp_path / "catalog.json").resolve()),
+            "marker_sha256": "6" * 64,
+            "inventory_sha256": "7" * 64,
+            "catalog_payload_sha256": "8" * 64,
+            "allowed_generation_tuple_count": 1,
+        },
+        "transport_censor_protocol": {
+            "version": monitor.TRANSPORT_CENSOR_PROTOCOL_VERSION,
+            "hash": monitor.TRANSPORT_CENSOR_PROTOCOL_HASH,
+        },
+    }
+    acceptance = monitor.final_acceptance(
+        semantic,
+        {
+            "acceptance": {
+                "projected_completion_within_target": False
+            }
+        },
+        _config(),
+    )
+    assert set(acceptance["checks"]) == set(
+        monitor.control.FINAL_ACCEPTANCE_CHECK_NAMES
+    )
+    assert acceptance["passed"] is True
+
+    monitor.control._validate_final_semantic_report(
+        {
+            "semantic": semantic,
+            "final_acceptance": acceptance,
+        }
+    )
 
 
 def test_final_acceptance_counts_censors_once_under_top_level_denominator():
@@ -843,18 +958,50 @@ def _healthy_production_poll_report() -> dict:
         "full_sweep_agent_counts_schema5_v1": 3,
         "full_sweep_agent_count_7_schema5_v1": 3,
     }
+    zero_run_outcomes = {
+        field: 0 for field in monitor.control.FINAL_RUN_OUTCOME_FIELDS
+    }
+    zero_aggregate_outcomes = {
+        field: 0
+        for field in monitor.control.FINAL_AGGREGATE_OUTCOME_FIELDS
+    }
     return {
         "semantic": {
             "scan_successful": True,
-            "outcomes": {"validated_qids": 10, "useful_qids": 10},
+            "scan_errors": [],
+            "states": {},
+            "outcomes": {
+                **zero_aggregate_outcomes,
+                "validated_qids": 10,
+                "useful_qids": 10,
+            },
             "runs": {
                 run_id: {
+                    "run_root": f"/results/{run_id}",
+                    "manifest_cells": monitor.control.REQUIRED_RUNS[run_id],
+                    "expected_qids": monitor.control.REQUIRED_RUN_QIDS[run_id],
+                    "manifest_sha256": "1" * 64,
+                    "benchmark_contract_sha256": "2" * 64,
+                    "artifact_policy_sha256": "3" * 64,
+                    "artifact_policy_id": "schema5-policy",
+                    "contract_errors": [],
+                    "states": {},
                     "outcomes": {
+                        **zero_run_outcomes,
                         "validated_qids": qids,
                         "useful_qids": qids,
-                    }
+                    },
+                    "artifact_schema_counts": {},
+                    "stale_unmanifested_dirs": 0,
+                    "stale_unmanifested_examples": [],
                 }
                 for run_id, qids in per_run.items()
+            },
+            "artifact_schema_counts": {},
+            "trusted_generation_catalog": {"catalog_id": "4" * 64},
+            "transport_censor_protocol": {
+                "version": monitor.TRANSPORT_CENSOR_PROTOCOL_VERSION,
+                "hash": monitor.TRANSPORT_CENSOR_PROTOCOL_HASH,
             },
         },
         "health": {
@@ -898,6 +1045,14 @@ def _healthy_production_poll_report() -> dict:
                 "desired_state": "running",
                 "rollout_generation": 1,
                 "admission": {"current_ceiling": 24},
+                "external_watchdog_mirror": {
+                    "required": True,
+                    "healthy": True,
+                    "status": "fresh",
+                    "receipt_id": "e" * 64,
+                    "sequence": 1,
+                    "age_seconds": 1.0,
+                },
                 "scheduler": {"squeue_ok": True, "sacct_ok": True},
                 "controllers": {
                     "dispatcher": {
@@ -912,7 +1067,16 @@ def _healthy_production_poll_report() -> dict:
             },
         },
         "throughput": {
-            "acceptance": {"strata_with_observed_throughput": 1}
+            "acceptance": {
+                "observation_ready": False,
+                "unfinished_strata": 1,
+                "strata_with_observed_throughput": 1,
+                "strata_without_observed_throughput": 0,
+                "all_rotation_strata_observed": True,
+                "max_stratum_eta_days": None,
+                "overall_rate_meets_floor": True,
+                "projected_completion_within_target": True,
+            }
         },
     }
 
@@ -1042,17 +1206,21 @@ def test_complete_semantic_report_requests_autonomous_finalization(
     )
     report = _healthy_production_poll_report()
     for run_id, expected_qids in monitor.control.REQUIRED_RUN_QIDS.items():
-        report["semantic"]["runs"][run_id]["outcomes"] = {
-            "validated_qids": expected_qids,
-            "useful_qids": expected_qids,
-        }
+        report["semantic"]["runs"][run_id]["outcomes"].update(
+            {
+                "validated_qids": expected_qids,
+                "useful_qids": expected_qids,
+            }
+        )
     report["semantic"]["states"] = {
         "complete": monitor.control.EXPECTED_TOTAL_CELLS
     }
-    report["semantic"]["outcomes"] = {
-        "validated_qids": monitor.control.EXPECTED_TOTAL_QIDS,
-        "useful_qids": monitor.control.EXPECTED_TOTAL_QIDS,
-    }
+    report["semantic"]["outcomes"].update(
+        {
+            "validated_qids": monitor.control.EXPECTED_TOTAL_QIDS,
+            "useful_qids": monitor.control.EXPECTED_TOTAL_QIDS,
+        }
+    )
     report["final_acceptance"] = {"passed": True}
 
     result = monitor.persist_report(
@@ -1095,23 +1263,33 @@ def test_incomplete_semantic_report_never_requests_finalization(
     )
     report = _healthy_production_poll_report()
     for run_id, expected_qids in monitor.control.REQUIRED_RUN_QIDS.items():
-        report["semantic"]["runs"][run_id]["outcomes"] = {
-            "validated_qids": expected_qids,
-            "useful_qids": expected_qids,
-        }
+        report["semantic"]["runs"][run_id]["outcomes"].update(
+            {
+                "validated_qids": expected_qids,
+                "useful_qids": expected_qids,
+            }
+        )
     last_run = tuple(monitor.control.REQUIRED_RUNS)[-1]
-    report["semantic"]["runs"][last_run]["outcomes"] = {
-        "validated_qids": monitor.control.REQUIRED_RUN_QIDS[last_run] - 1,
-        "useful_qids": monitor.control.REQUIRED_RUN_QIDS[last_run] - 1,
-    }
+    report["semantic"]["runs"][last_run]["outcomes"].update(
+        {
+            "validated_qids": (
+                monitor.control.REQUIRED_RUN_QIDS[last_run] - 1
+            ),
+            "useful_qids": (
+                monitor.control.REQUIRED_RUN_QIDS[last_run] - 1
+            ),
+        }
+    )
     report["semantic"]["states"] = {
         "complete": monitor.control.EXPECTED_TOTAL_CELLS - 1,
         "partial": 1,
     }
-    report["semantic"]["outcomes"] = {
-        "validated_qids": monitor.control.EXPECTED_TOTAL_QIDS - 1,
-        "useful_qids": monitor.control.EXPECTED_TOTAL_QIDS - 1,
-    }
+    report["semantic"]["outcomes"].update(
+        {
+            "validated_qids": monitor.control.EXPECTED_TOTAL_QIDS - 1,
+            "useful_qids": monitor.control.EXPECTED_TOTAL_QIDS - 1,
+        }
+    )
     report["final_acceptance"] = {"passed": False}
 
     result = monitor.persist_report(
@@ -1453,20 +1631,10 @@ def test_ledger_health_is_fail_closed_for_missing_invalid_and_stale(tmp_path):
         == "invalid"
     )
 
+    stale_ledger = dispatcher._empty_ledger(now=600.0)
+    stale_ledger["poll_number"] = 2
     (state_dir / "ledger.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "updated_at": 600.0,
-                "poll_number": 2,
-                "runs": {},
-                "jobs": {},
-                "intents": {},
-                "cells": {},
-                "fairness": {},
-                "validation_fairness": {},
-            }
-        ),
+        json.dumps(stale_ledger),
         encoding="utf-8",
     )
     stale = monitor._ledger_health(
@@ -1595,6 +1763,82 @@ def test_capacity_gate_findings_remain_latched_until_transition(
     }
 
 
+def test_exact_terminal_completion_stops_relatching_capacity_only_findings():
+    report = _healthy_production_poll_report()
+    report["health"]["control"].update(
+        {
+            "desired_state": "paused",
+            "admission_safety_hold": {
+                "active": True,
+                "mode": "integrity",
+                "reasons": [
+                    "monitor:ramp-stall",
+                    "monitor:throughput",
+                ],
+            },
+            "safety_hold_drain_intent": {"state": "complete"},
+        }
+    )
+    report["semantic"]["states"] = {
+        "complete": monitor.control.EXPECTED_TOTAL_CELLS
+    }
+    report["semantic"]["scan_errors"] = []
+    report["semantic"]["outcomes"].update(
+        {
+            "validated_qids": monitor.control.EXPECTED_TOTAL_QIDS,
+            "useful_qids": monitor.control.EXPECTED_TOTAL_QIDS,
+            "untrusted_valid_rows": 0,
+            "contract_errors": 0,
+            "protocol_censored_qids": 0,
+        }
+    )
+    for run_id, expected_qids in monitor.control.REQUIRED_RUN_QIDS.items():
+        report["semantic"]["runs"][run_id]["outcomes"].update(
+            {
+                "validated_qids": expected_qids,
+                "useful_qids": expected_qids,
+            }
+        )
+    report["throughput"]["acceptance"].update(
+        {
+            "observation_ready": True,
+            "projected_completion_within_target": False,
+        }
+    )
+    report["final_acceptance"] = {"passed": True}
+    report["progress_watch"] = {
+        "consecutive_no_progress_scans": 9,
+        "useful_qids": monitor.control.EXPECTED_TOTAL_QIDS,
+    }
+
+    findings = monitor.evaluate_alerts(
+        report, cadence="semantic", config=_config()
+    )
+    critical_keys = {
+        finding.dedupe_key
+        for finding in findings
+        if finding.severity == "critical"
+    }
+    assert "monitor:ramp-stall" not in critical_keys
+    assert "monitor:throughput" not in critical_keys
+
+    # Cardinality alone is insufficient: failed terminal acceptance keeps both
+    # fail-closed capacity latches intact.
+    report["final_acceptance"] = {"passed": False}
+    blocked = monitor.evaluate_alerts(
+        report, cadence="semantic", config=_config()
+    )
+    blocked_keys = {
+        finding.dedupe_key
+        for finding in blocked
+        if finding.severity == "critical"
+    }
+    assert {
+        "monitor:ramp-stall",
+        "monitor:throughput",
+    } <= blocked_keys
+
+
 def test_paused_latches_and_execution_alert_survive_missing_semantic_payload():
     report = _healthy_production_poll_report()
     report["health"]["disk"].update(
@@ -1640,6 +1884,160 @@ def test_paused_latches_and_execution_alert_survive_missing_semantic_payload():
     assert "throughput must be an object" in critical[
         "monitor:execution:semantic"
     ].message
+
+
+def test_nested_partial_semantic_payload_preserves_latches_and_reports_all_issues():
+    report = _healthy_production_poll_report()
+    report["health"]["disk"].update(
+        {"free_inodes": 10**9, "free_inode_fraction": 0.9}
+    )
+    report["health"]["control"].update(
+        {
+            "desired_state": "paused",
+            "admission_safety_hold": {
+                "active": True,
+                "mode": "integrity",
+                "reasons": [
+                    "monitor:ramp-stall",
+                    "monitor:throughput",
+                ],
+            },
+            "safety_hold_drain_intent": {"state": "complete"},
+        }
+    )
+    missing_run = "full_sweep_agent_count_7_schema5_v1"
+    report["semantic"]["runs"].pop(missing_run)
+    report["throughput"]["acceptance"].pop(
+        "strata_with_observed_throughput"
+    )
+
+    findings = monitor.evaluate_alerts(
+        report, cadence="semantic", config=_config()
+    )
+    critical = {
+        finding.dedupe_key: finding
+        for finding in findings
+        if finding.severity == "critical"
+    }
+
+    assert {
+        "monitor:ramp-stall",
+        "monitor:throughput",
+        "monitor:execution:semantic",
+    } <= set(critical)
+    message = critical["monitor:execution:semantic"].message
+    assert "semantic.runs must contain exactly the production run IDs" in message
+    assert missing_run in message
+    assert (
+        "throughput.acceptance is missing fields "
+        "['strata_with_observed_throughput']"
+    ) in message
+
+
+def test_nested_partial_semantic_persistence_is_non_actionable_and_fail_closed(
+    monkeypatch, tmp_path
+):
+    state = _monitor_control_state()
+    state["desired_state"] = "paused"
+    state["alerts"] = [
+        {
+            "dedupe_key": "monitor:ramp-stall",
+            "severity": "critical",
+            "resolved_at": None,
+        },
+        {
+            "dedupe_key": "monitor:throughput",
+            "severity": "critical",
+            "resolved_at": None,
+        },
+    ]
+    state["admission_safety_hold"] = {
+        "active": True,
+        "mode": "integrity",
+        "reasons": ["monitor:ramp-stall", "monitor:throughput"],
+    }
+    report = _healthy_production_poll_report()
+    report["health"]["control"]["desired_state"] = "paused"
+    run_id = "full_sweep_schema5_v1"
+    report["semantic"]["runs"][run_id]["outcomes"].pop("useful_qids")
+    report["throughput"]["acceptance"][
+        "strata_with_observed_throughput"
+    ] = True
+    report["final_acceptance"] = {"passed": True}
+
+    recorded: list[str] = []
+    resolved: list[str] = []
+    hold_updates: list[dict] = []
+    forbidden_calls: list[str] = []
+    monkeypatch.setattr(monitor.control, "load_control", lambda *_a, **_kw: state)
+    monkeypatch.setattr(
+        monitor.control,
+        "record_alert",
+        lambda *_a, **kwargs: recorded.append(kwargs["dedupe_key"]),
+    )
+    monkeypatch.setattr(
+        monitor.control,
+        "resolve_alert",
+        lambda *_a, **kwargs: resolved.append(kwargs["dedupe_key"]),
+    )
+    monkeypatch.setattr(
+        monitor.control,
+        "update_admission_safety_hold",
+        lambda *_a, **kwargs: hold_updates.append(kwargs) or state,
+    )
+    monkeypatch.setattr(
+        monitor.control,
+        "record_successful_poll",
+        lambda *_a, **_kw: forbidden_calls.append("progress"),
+    )
+    monkeypatch.setattr(
+        monitor.control,
+        "record_admission_ramp_observation",
+        lambda *_a, **_kw: forbidden_calls.append("ramp"),
+    )
+    monkeypatch.setattr(
+        monitor.control,
+        "request_autonomous_finalization",
+        lambda *_a, **_kw: forbidden_calls.append("finalization"),
+    )
+
+    result = monitor.persist_report(
+        report,
+        cadence="semantic",
+        state_dir=tmp_path,
+        findings=[],
+        send_email=False,
+        now=1_000.0,
+        committed_at=1_001.0,
+    )
+
+    assert recorded == ["monitor:execution:semantic"]
+    assert resolved == []
+    assert forbidden_calls == []
+    assert result["finalization_requested"] is False
+    assert report["production_poll_recorded"] is False
+    assert report["admission_ramp_recorded"] is False
+    assert report["ramp_observation"]["evidence_usable"] is False
+    assert report["ramp_observation"]["semantic_integrity_clean"] is False
+    assert {
+        "monitor:ramp-stall",
+        "monitor:throughput",
+        "monitor:execution:semantic",
+    } <= set(hold_updates[0]["active_critical_keys"])
+    persisted = json.loads(
+        Path(result["history"]).read_text(encoding="utf-8")
+    )
+    execution = {
+        row["dedupe_key"]: row for row in persisted["alert_findings"]
+    }["monitor:execution:semantic"]
+    assert (
+        f"semantic.runs.{run_id}.outcomes is missing fields ['useful_qids']"
+        in execution["message"]
+    )
+    assert (
+        "throughput.acceptance.strata_with_observed_throughput must be a "
+        "non-negative integer"
+    ) in execution["message"]
 
 
 def test_incomplete_semantic_report_cannot_resolve_monitor_alerts(
@@ -1984,3 +2382,29 @@ def test_handoff_violation_sets_critical_fleet_alert_and_blocks_clean_poll():
 
     report["health"]["fleet_transactions"]["handoff_violations"] = []
     assert monitor._production_poll_health_clean(report) is True
+
+
+@pytest.mark.parametrize("status", ["missing", "stale", "invalid"])
+def test_watchdog_mirror_failure_is_monitor_owned_critical_and_blocks_poll(
+    status,
+):
+    report = _healthy_production_poll_report()
+    report["health"]["control"]["external_watchdog_mirror"].update(
+        {
+            "healthy": False,
+            "status": status,
+            "error": f"synthetic {status}",
+        }
+    )
+    findings = monitor.evaluate_alerts(
+        report, cadence="health", config=_config()
+    )
+    mirror = [
+        finding
+        for finding in findings
+        if finding.dedupe_key == "monitor:watchdog-mirror"
+    ]
+    assert len(mirror) == 1
+    assert mirror[0].severity == "critical"
+    assert "monitor:watchdog-mirror" in monitor.HEALTH_ALERT_KEYS
+    assert monitor._production_poll_health_clean(report) is False

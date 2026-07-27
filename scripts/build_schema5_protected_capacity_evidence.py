@@ -2,12 +2,12 @@
 """Run and seal the real schema-5 protected-capacity canary transaction.
 
 The default command is non-mutating and prints the exact four-role plan.  The active
-role contains the frozen fleet's 22 logical allocations (24 GPUs, including the two
-co-located TP=2 replicas), the warm role contains three usable TP=1/TP=2 allocations
-totalling four GPUs, and the client role contains 384 tasks.  Those 25 non-cell
-allocations are part of—not additional to—the 64-job reserve, so the held residual is
-exactly 39 controller/monitor/other placeholders.  The resulting canary contains
-exactly 448 job elements, split into arrays of at most 24 elements.  ``run --apply``
+role contains every allocation in the solver-qualified effective fleet, the warm role
+contains the separately retained ``2xTP1 + 1xTP2`` turnover topology (four GPUs), and
+the client role contains 384 tasks.  Active and warm job elements consume the inclusive
+64-job non-cell reserve, leaving ``64 - active - 3`` held controller/monitor/other
+placeholders.  The resulting canary therefore always contains exactly 448 job elements,
+split into arrays of at most 24 elements.  ``run --apply``
 creates a marker-first transaction, submits the generation/comment-addressed Slurm
 jobs, waits until all protected resources are simultaneously visible, seals normalized
 raw scheduler evidence, and delegates marker-last publication to
@@ -43,6 +43,14 @@ import tempfile
 import time
 from typing import Any
 
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+if str(REPOSITORY_ROOT) not in sys.path:
+    # The production launcher invokes this script with ``python -I`` from the
+    # immutable release checkout.  Add that exact checkout so the builder calls
+    # the control plane's canonical tree-hash implementation instead of carrying
+    # a second, potentially divergent implementation.
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from agents_scaling.serving.fleet_contract import (
     FleetContractError,
     FrozenFleetContract,
@@ -52,6 +60,8 @@ from agents_scaling.serving.model_contracts import (
     ModelContractError,
     load_model_contracts,
 )
+from agents_scaling.serving import protected_capacity as runtime_capacity
+from slurm.schema5_control import sha256_tree
 
 
 def _load_sibling_publisher() -> Any:
@@ -72,7 +82,7 @@ def _load_sibling_publisher() -> Any:
 publisher = _load_sibling_publisher()
 
 
-PROTOCOL = "schema5-v1.2-r2-protected-capacity-builder-v2"
+PROTOCOL = "schema5-v1.2-r3-protected-capacity-builder-v4"
 INTENT_FILENAME = "PROTECTED_CAPACITY_BUILD_INTENT.json"
 LEDGER_FILENAME = "protected_capacity_build_ledger.json"
 SCHEDULER_EVIDENCE_FILENAME = "PROTECTED_CAPACITY_SCHEDULER_EVIDENCE.json"
@@ -82,48 +92,37 @@ READY_DIRECTORY = "ready"
 RELEASE_FILENAME = "RELEASE"
 ROLE_ORDER = ("server_active", "server_warm", "client", "reserve")
 MAX_ARRAY_TASKS = 24
-ACTIVE_SERVER_JOB_ELEMENTS = 22
+_PLACEMENT_NAME_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z"
+)
+BASE_ACTIVE_SERVER_JOB_ELEMENTS = 22
+BASE_ACTIVE_GPUS = 24
 WARM_TURNOVER_JOB_ELEMENTS = 3
+WARM_TURNOVER_GPUS = 4
 CLIENT_JOB_ELEMENTS = 384
 TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS = 64
-RESIDUAL_HELD_RESERVE_JOB_ELEMENTS = (
-    TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
-    - ACTIVE_SERVER_JOB_ELEMENTS
-    - WARM_TURNOVER_JOB_ELEMENTS
-)
 EXPECTED_TOTAL_JOB_ELEMENTS = (
     CLIENT_JOB_ELEMENTS + TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
 )
+CLIENT_TIME_LIMIT = "12:00:00"
+SERVER_TIME_LIMIT = "1-00:00:00"
+CLIENT_TIME_LIMIT_SECONDS = 43_200
+SERVER_TIME_LIMIT_SECONDS = 86_400
+MAX_JOBS_CONSUMING_STATES = frozenset(
+    {
+        "RUNNING",
+        "CONFIGURING",
+        "COMPLETING",
+        "RESIZING",
+        "SUSPENDED",
+    }
+)
 OCCUPANCY_OBSERVATION_INTERVAL_SECONDS = 60.0
-ROLE_SPECS = {
-    "server_active": {
-        "tasks": ACTIVE_SERVER_JOB_ELEMENTS,
-        "cpus": 192,
-        "memory_mib": 2_949_120,
-        "gpus": 24,
-        "held": False,
-    },
-    "server_warm": {
-        "tasks": WARM_TURNOVER_JOB_ELEMENTS,
-        "cpus": 32,
-        "memory_mib": 491_520,
-        "gpus": 4,
-        "held": False,
-    },
-    "client": {
-        "tasks": CLIENT_JOB_ELEMENTS,
-        "cpus": CLIENT_JOB_ELEMENTS,
-        "memory_mib": CLIENT_JOB_ELEMENTS * 4096,
-        "gpus": 0,
-        "held": False,
-    },
-    "reserve": {
-        "tasks": RESIDUAL_HELD_RESERVE_JOB_ELEMENTS,
-        "cpus": RESIDUAL_HELD_RESERVE_JOB_ELEMENTS,
-        "memory_mib": RESIDUAL_HELD_RESERVE_JOB_ELEMENTS * 1024,
-        "gpus": 0,
-        "held": True,
-    },
+ROLE_HELD = {
+    "server_active": False,
+    "server_warm": False,
+    "client": False,
+    "reserve": True,
 }
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -562,6 +561,7 @@ def _load_frozen_fleet(
     fleet_contract_sha256: str,
     model_contract_path: Path,
     model_contract_sha256: str,
+    allow_capacity_layout: bool,
 ) -> FrozenFleetContract:
     if (
         _SHA256_RE.fullmatch(fleet_contract_sha256) is None
@@ -579,18 +579,139 @@ def _load_frozen_fleet(
             fleet_contract_path,
             model_contracts=models,
             expected_sha256=fleet_contract_sha256,
+            allow_capacity_layout=allow_capacity_layout,
         )
     except (FleetContractError, ModelContractError, OSError, ValueError) as exc:
         raise ProtectedCapacityBuildError(
             f"frozen fleet contract cannot be loaded: {exc}"
         ) from exc
-    if len(fleet.replicas) != 22 or sum(
-        replica.gpus_per_replica for replica in fleet.replicas
-    ) != 24:
+    if not allow_capacity_layout and (
+        len(fleet.replicas) != BASE_ACTIVE_SERVER_JOB_ELEMENTS
+        or sum(replica.gpus_per_replica for replica in fleet.replicas)
+        != BASE_ACTIVE_GPUS
+    ):
         raise ProtectedCapacityBuildError(
             "frozen fleet must contain exactly 22 logical replicas using 24 GPUs"
         )
     return fleet
+
+
+def _profile_counts(fleet: FrozenFleetContract) -> dict[str, int]:
+    return {
+        profile: len(replicas)
+        for profile, replicas in sorted(fleet.by_profile.items())
+    }
+
+
+def _validate_effective_capacity_authority(
+    *,
+    base_fleet: FrozenFleetContract,
+    effective_fleet: FrozenFleetContract,
+    additive_overlay_path: Path,
+    additive_overlay_sha256: str,
+    static_feasibility_certificate_path: Path,
+    static_feasibility_certificate_sha256: str,
+    static_feasibility_certificate_id: str,
+    capacity_generation: int,
+    release_git_commit: str,
+    source_tree_sha256: str,
+    dispatcher_source_sha256: str,
+    qualification_runner_source_sha256: str,
+) -> runtime_capacity.StaticFeasibilityCertificate:
+    """Prove one exact additive fleet and its zero-QID admission certificate."""
+
+    if (
+        type(capacity_generation) is not int
+        or capacity_generation < 1
+        or _SHA256_RE.fullmatch(additive_overlay_sha256) is None
+        or _SHA256_RE.fullmatch(static_feasibility_certificate_sha256) is None
+        or _SHA256_RE.fullmatch(static_feasibility_certificate_id) is None
+    ):
+        raise ProtectedCapacityBuildError(
+            "capacity generation/certificate/overlay identity is malformed"
+        )
+    overlay = _canonical_existing_path(
+        additive_overlay_path,
+        description="additive overlay contract",
+        kind="file",
+    )
+    if (
+        overlay != effective_fleet.path
+        or additive_overlay_sha256 != effective_fleet.sha256
+    ):
+        raise ProtectedCapacityBuildError(
+            "current overlay protocol requires the exact effective fleet contract "
+            "as its additive-overlay authority"
+        )
+    base_ids = {replica.replica_id: replica for replica in base_fleet.replicas}
+    effective_ids = {
+        replica.replica_id: replica for replica in effective_fleet.replicas
+    }
+    if (
+        not set(base_ids).issubset(effective_ids)
+        or any(effective_ids[key] != row for key, row in base_ids.items())
+    ):
+        raise ProtectedCapacityBuildError(
+            "effective fleet is not an exact additive extension of the frozen base"
+        )
+    base_counts = _profile_counts(base_fleet)
+    effective_counts = _profile_counts(effective_fleet)
+    if any(
+        effective_counts[profile] < base_counts[profile]
+        for profile in base_counts
+    ) or effective_counts == base_counts:
+        raise ProtectedCapacityBuildError(
+            "effective fleet must be a nonempty additive extension of the base"
+        )
+    try:
+        certificate = runtime_capacity.load_static_feasibility_certificate(
+            static_feasibility_certificate_path,
+            expected_sha256=static_feasibility_certificate_sha256,
+            expected_certificate_id=static_feasibility_certificate_id,
+            expected_capacity_generation=capacity_generation,
+            expected_base_fleet_contract_sha256=base_fleet.sha256,
+            expected_effective_fleet_contract_sha256=effective_fleet.sha256,
+            expected_additive_overlay_contract_sha256=additive_overlay_sha256,
+            expected_release_git_commit=release_git_commit,
+            expected_source_tree_sha256=source_tree_sha256,
+            expected_dispatcher_source_sha256=dispatcher_source_sha256,
+            expected_qualification_runner_source_sha256=(
+                qualification_runner_source_sha256
+            ),
+        )
+    except (
+        runtime_capacity.ProtectedCapacityError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ProtectedCapacityBuildError(
+            f"static feasibility certificate cannot authorize capacity: {exc}"
+        ) from exc
+    if (
+        dict(certificate.base_profile_replicas) != base_counts
+        or dict(certificate.effective_profile_replicas) != effective_counts
+        or certificate.base_logical_replicas != len(base_fleet.replicas)
+        or certificate.base_allocated_gpus
+        != sum(row.gpus_per_replica for row in base_fleet.replicas)
+        or certificate.effective_logical_replicas
+        != len(effective_fleet.replicas)
+        or certificate.effective_active_gpus
+        != sum(row.gpus_per_replica for row in effective_fleet.replicas)
+    ):
+        raise ProtectedCapacityBuildError(
+            "static feasibility topology differs from the supplied fleet contracts"
+        )
+    residual = (
+        TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
+        - len(effective_fleet.replicas)
+        - WARM_TURNOVER_JOB_ELEMENTS
+    )
+    if residual <= 0:
+        raise ProtectedCapacityBuildError(
+            "effective fleet exhausts the inclusive 64-job non-cell reserve"
+        )
+    return certificate
 
 
 def _verify_release_checkout(
@@ -627,7 +748,7 @@ def _verify_release_checkout(
     ):
         raise ProtectedCapacityBuildError(
             "capacity builder is not executing against the exact clean annotated "
-            "r2 checkout"
+            "release checkout"
         )
     builder_path = _canonical_existing_path(
         worktree / "scripts" / Path(__file__).name,
@@ -637,6 +758,21 @@ def _verify_release_checkout(
     publisher_path = _canonical_existing_path(
         worktree / "scripts" / Path(publisher.__file__).name,
         description="tagged capacity publisher source",
+        kind="file",
+    )
+    dispatcher_path = _canonical_existing_path(
+        worktree / "slurm" / "dispatch_sweeps.py",
+        description="tagged dispatcher source",
+        kind="file",
+    )
+    qualification_runner_path = _canonical_existing_path(
+        worktree / "scripts" / "run_schema5_throughput_qualification.py",
+        description="tagged qualification runner source",
+        kind="file",
+    )
+    control_source_path = _canonical_existing_path(
+        worktree / "slurm" / "schema5_control.py",
+        description="tagged control-plane source",
         kind="file",
     )
     executing_builder = _canonical_existing_path(
@@ -649,41 +785,133 @@ def _verify_release_checkout(
         description="executing capacity publisher source",
         kind="file",
     )
+    executing_control_source = _canonical_existing_path(
+        Path(sha256_tree.__code__.co_filename),
+        description="executing control-plane source",
+        kind="file",
+    )
+    tagged_builder_bytes = _stable_bytes(
+        builder_path,
+        description="tagged capacity builder source",
+        require_read_only=False,
+        require_single_link=False,
+    )
+    tagged_publisher_bytes = _stable_bytes(
+        publisher_path,
+        description="tagged capacity publisher source",
+        require_read_only=False,
+        require_single_link=False,
+    )
+    tagged_control_bytes = _stable_bytes(
+        control_source_path,
+        description="tagged control-plane source",
+        require_read_only=False,
+        require_single_link=False,
+    )
     if (
-        _stable_bytes(
-            builder_path,
-            description="tagged capacity builder source",
-            require_read_only=False,
-            require_single_link=False,
-        )
+        tagged_builder_bytes
         != _stable_bytes(
             executing_builder,
             description="executing capacity builder source",
             require_read_only=False,
             require_single_link=False,
         )
-        or _stable_bytes(
-            publisher_path,
-            description="tagged capacity publisher source",
-            require_read_only=False,
-            require_single_link=False,
-        )
+        or tagged_publisher_bytes
         != _stable_bytes(
             executing_publisher,
             description="executing capacity publisher source",
             require_read_only=False,
             require_single_link=False,
         )
+        or tagged_control_bytes
+        != _stable_bytes(
+            executing_control_source,
+            description="executing control-plane source",
+            require_read_only=False,
+            require_single_link=False,
+        )
     ):
         raise ProtectedCapacityBuildError(
-            "executing builder/publisher bytes differ from the tagged worktree"
+            "executing builder/publisher/control bytes differ from the tagged "
+            "worktree"
+        )
+    try:
+        source_tree_sha256 = sha256_tree(worktree)
+        # A clean-status/tree-hash replay closes the interval in which the three
+        # source anchors are read.  The certificate is allowed to authorize this
+        # transaction only when all anchors come from one stable annotated tree.
+        dispatcher_source_sha256 = sha256_bytes(
+            _stable_bytes(
+                dispatcher_path,
+                description="tagged dispatcher source",
+                require_read_only=False,
+                require_single_link=False,
+            )
+        )
+        qualification_runner_source_sha256 = sha256_bytes(
+            _stable_bytes(
+                qualification_runner_path,
+                description="tagged qualification runner source",
+                require_read_only=False,
+                require_single_link=False,
+            )
+        )
+        replayed_source_tree_sha256 = sha256_tree(worktree)
+        replayed_dirty = git(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        )
+        replayed_head = git("rev-parse", "HEAD")
+        replayed_tag_object = git(
+            "rev-parse",
+            f"refs/tags/{publisher.RELEASE_TAG}",
+        )
+        replayed_peeled = git(
+            "rev-parse",
+            f"refs/tags/{publisher.RELEASE_TAG}^{{}}",
+        )
+        replayed_tag_type = git("cat-file", "-t", replayed_tag_object)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ProtectedCapacityBuildError(
+            f"cannot compute frozen release source authority: {exc}"
+        ) from exc
+    if (
+        source_tree_sha256 != replayed_source_tree_sha256
+        or replayed_dirty
+        or replayed_head != head
+        or replayed_tag_object != tag_object
+        or replayed_peeled != peeled
+        or replayed_tag_type != tag_type
+        or any(
+            _SHA256_RE.fullmatch(value) is None
+            for value in (
+                source_tree_sha256,
+                dispatcher_source_sha256,
+                qualification_runner_source_sha256,
+            )
+        )
+    ):
+        raise ProtectedCapacityBuildError(
+            "annotated release tree drifted while computing source authority"
         )
     return {
         "release_worktree": str(worktree),
+        "source_tree_sha256": source_tree_sha256,
         "builder_source_path": str(builder_path),
-        "builder_source_sha256": sha256_file(builder_path),
+        "builder_source_sha256": sha256_bytes(tagged_builder_bytes),
         "publisher_source_path": str(publisher_path),
-        "publisher_source_sha256": sha256_file(publisher_path),
+        "publisher_source_sha256": sha256_bytes(tagged_publisher_bytes),
+        "control_source_path": str(control_source_path),
+        "control_source_sha256": sha256_bytes(tagged_control_bytes),
+        "dispatcher_source_path": str(dispatcher_path),
+        "dispatcher_source_sha256": dispatcher_source_sha256,
+        "qualification_runner_source_path": str(
+            qualification_runner_path
+        ),
+        "qualification_runner_source_sha256": (
+            qualification_runner_source_sha256
+        ),
     }
 
 
@@ -698,9 +926,30 @@ def _active_shapes(fleet: FrozenFleetContract) -> list[dict[str, Any]]:
                 "cpus": replica.cpus_per_task,
                 "memory_mib": _memory_mib(replica.memory),
                 "gpus": replica.gpus_per_replica,
+                "time_limit": replica.time_limit,
             }
         )
     return shapes
+
+
+def _active_topology(shapes: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            **{
+                key: row[key]
+                for key in (
+                    "shape_id",
+                    "serving_profile",
+                    "tasks",
+                    "cpus",
+                    "memory_mib",
+                    "gpus",
+                )
+            },
+            "time_limit_seconds": _time_seconds(str(row["time_limit"])),
+        }
+        for row in shapes
+    ]
 
 
 def _warm_shapes() -> list[dict[str, Any]]:
@@ -712,6 +961,7 @@ def _warm_shapes() -> list[dict[str, Any]]:
             "cpus": 8,
             "memory_mib": 120 * 1024,
             "gpus": 1,
+            "time_limit": SERVER_TIME_LIMIT,
         },
         {
             "shape_id": "warm-tp1-01",
@@ -720,6 +970,7 @@ def _warm_shapes() -> list[dict[str, Any]]:
             "cpus": 8,
             "memory_mib": 120 * 1024,
             "gpus": 1,
+            "time_limit": SERVER_TIME_LIMIT,
         },
         {
             "shape_id": "warm-tp2-00",
@@ -728,6 +979,7 @@ def _warm_shapes() -> list[dict[str, Any]]:
             "cpus": 16,
             "memory_mib": 240 * 1024,
             "gpus": 2,
+            "time_limit": SERVER_TIME_LIMIT,
         },
     ]
 
@@ -788,21 +1040,39 @@ def _capture_partition(
         if separator and key and value:
             tres[key] = value
     memory_raw = tres.get("mem")
+    cpu_raw = tres.get("cpu")
+    node_raw = tres.get("node")
     gpu_raw = (
         tres.get("gres/gpu")
         or tres.get("gpu")
         or "0"
     )
-    if memory_raw is None:
+    if memory_raw is None or cpu_raw is None or node_raw is None:
         raise ProtectedCapacityBuildError(
-            "partition TRES does not report memory"
+            "partition TRES does not report CPU, memory, and node inventory"
+        )
+    cpus = int(cpu_raw)
+    nodes = int(node_raw)
+    if (
+        cpus < 0
+        or nodes <= 0
+        or (
+            "TotalCPUs" in values
+            and int(values["TotalCPUs"]) != cpus
+        )
+        or (
+            "TotalNodes" in values
+            and int(values["TotalNodes"]) != nodes
+        )
+    ):
+        raise ProtectedCapacityBuildError(
+            "partition aggregate TRES conflicts with TotalCPUs/TotalNodes"
         )
     return (
         f"{partition}|{values.get('PreemptMode', '')}|"
         f"{values.get('State', '')}|"
         f"{_time_seconds(values.get('MaxTime', ''))}|"
-        f"{int(values.get('TotalCPUs', '0'))}|"
-        f"{_memory_mib(memory_raw)}|{int(gpu_raw)}\n"
+        f"{cpus}|{_memory_mib(memory_raw)}|{int(gpu_raw)}|{nodes}\n"
     )
 
 
@@ -817,18 +1087,28 @@ def _capture_qos(
         "show",
         "qos",
         qos,
-        "format=Name,PreemptMode,MaxJobsPerUser,MaxSubmitJobsPerUser",
+        (
+            "format=Name,PreemptMode,MaxJobsPerUser,"
+            "MaxSubmitJobsPerUser,MaxWall"
+        ),
     ]
     raw = _invoke(runner, argv, timeout=30.0).stdout
     rows = [line.strip().split("|") for line in raw.splitlines() if line.strip()]
-    if len(rows) != 1 or len(rows[0]) < 4 or rows[0][0] != qos:
+    if len(rows) != 1 or len(rows[0]) < 5 or rows[0][0] != qos:
         raise ProtectedCapacityBuildError(
             "QOS query did not return one exact row"
         )
     mode = rows[0][1] or "cluster"
     max_jobs = rows[0][2] or "-"
     max_submit = rows[0][3] or "-"
-    return f"{qos}|{mode}|{max_jobs}|{max_submit}\n"
+    max_wall_raw = rows[0][4]
+    max_wall = (
+        "-"
+        if not max_wall_raw
+        or max_wall_raw.upper() in {"UNLIMITED", "INFINITE"}
+        else str(_time_seconds(max_wall_raw))
+    )
+    return f"{qos}|{mode}|{max_jobs}|{max_submit}|{max_wall}\n"
 
 
 def _capture_association(
@@ -862,7 +1142,7 @@ def _capture_association(
     return (
         f"{row[0]}|{row[1]}|{row[2]}|"
         f"{','.join(sorted(set(filter(None, row[3].split(',')))))}|"
-        f"{row[5] or '-'}\n"
+        f"{row[4] or '-'}|{row[5] or '-'}\n"
     )
 
 
@@ -880,11 +1160,20 @@ def _chunk_sizes(total_tasks: int) -> tuple[int, ...]:
     return tuple(values)
 
 
-def _job_element_accounting() -> dict[str, int]:
+def _job_element_accounting(
+    active_server_job_elements: int,
+) -> dict[str, int]:
+    residual_held = (
+        TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
+        - active_server_job_elements
+        - WARM_TURNOVER_JOB_ELEMENTS
+    )
     if (
-        RESIDUAL_HELD_RESERVE_JOB_ELEMENTS <= 0
-        or ACTIVE_SERVER_JOB_ELEMENTS + WARM_TURNOVER_JOB_ELEMENTS
-        + RESIDUAL_HELD_RESERVE_JOB_ELEMENTS
+        type(active_server_job_elements) is not int
+        or active_server_job_elements < BASE_ACTIVE_SERVER_JOB_ELEMENTS
+        or residual_held <= 0
+        or active_server_job_elements + WARM_TURNOVER_JOB_ELEMENTS
+        + residual_held
         != TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
         or CLIENT_JOB_ELEMENTS + TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
         != EXPECTED_TOTAL_JOB_ELEMENTS
@@ -894,11 +1183,9 @@ def _job_element_accounting() -> dict[str, int]:
         )
     return {
         "cell_job_elements": CLIENT_JOB_ELEMENTS,
-        "active_server_job_elements": ACTIVE_SERVER_JOB_ELEMENTS,
+        "active_server_job_elements": active_server_job_elements,
         "warm_turnover_job_elements": WARM_TURNOVER_JOB_ELEMENTS,
-        "controller_monitor_other_held_job_elements": (
-            RESIDUAL_HELD_RESERVE_JOB_ELEMENTS
-        ),
+        "controller_monitor_other_held_job_elements": residual_held,
         "total_non_cell_reserve_job_elements": (
             TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
         ),
@@ -924,6 +1211,7 @@ def _render_script(
     cpus_per_task: int,
     memory_mib_per_task: int,
     gpus_per_task: int,
+    time_limit: str,
     shape_id: str,
     partition: str,
     qos: str,
@@ -946,7 +1234,7 @@ def _render_script(
         f"#SBATCH --qos={qos}\n"
         f"#SBATCH --cpus-per-task={cpus_per_task}\n"
         f"#SBATCH --mem={memory_mib_per_task}M\n"
-        "#SBATCH --time=00:30:00\n"
+        f"#SBATCH --time={time_limit}\n"
         "#SBATCH --no-requeue\n"
         f"#SBATCH --array=0-{chunk_tasks - 1}%{chunk_tasks}\n"
         f"{gres}"
@@ -991,6 +1279,14 @@ def build_plan(
     token: str,
     fleet_contract_path: Path,
     fleet_contract_sha256: str,
+    effective_fleet_contract_path: Path,
+    effective_fleet_contract_sha256: str,
+    additive_overlay_contract_path: Path,
+    additive_overlay_contract_sha256: str,
+    static_feasibility_certificate_path: Path,
+    static_feasibility_certificate_sha256: str,
+    static_feasibility_certificate_id: str,
+    capacity_generation: int,
     model_contract_path: Path,
     model_contract_sha256: str,
     release_worktree: Path,
@@ -1038,11 +1334,43 @@ def build_plan(
         raise ProtectedCapacityBuildError(
             "capacity contracts must be the exact tagged release authorities"
         )
-    fleet = _load_frozen_fleet(
+    base_fleet = _load_frozen_fleet(
         fleet_contract_path=supplied_fleet,
         fleet_contract_sha256=fleet_contract_sha256,
         model_contract_path=supplied_models,
         model_contract_sha256=model_contract_sha256,
+        allow_capacity_layout=False,
+    )
+    effective_fleet = _load_frozen_fleet(
+        fleet_contract_path=effective_fleet_contract_path,
+        fleet_contract_sha256=effective_fleet_contract_sha256,
+        model_contract_path=supplied_models,
+        model_contract_sha256=model_contract_sha256,
+        allow_capacity_layout=True,
+    )
+    certificate = _validate_effective_capacity_authority(
+        base_fleet=base_fleet,
+        effective_fleet=effective_fleet,
+        additive_overlay_path=additive_overlay_contract_path,
+        additive_overlay_sha256=additive_overlay_contract_sha256,
+        static_feasibility_certificate_path=(
+            static_feasibility_certificate_path
+        ),
+        static_feasibility_certificate_sha256=(
+            static_feasibility_certificate_sha256
+        ),
+        static_feasibility_certificate_id=(
+            static_feasibility_certificate_id
+        ),
+        capacity_generation=capacity_generation,
+        release_git_commit=release_git_commit,
+        source_tree_sha256=release_identity["source_tree_sha256"],
+        dispatcher_source_sha256=release_identity[
+            "dispatcher_source_sha256"
+        ],
+        qualification_runner_source_sha256=release_identity[
+            "qualification_runner_source_sha256"
+        ],
     )
     root = _lexical_absolute(root)
     if root.exists() or root.is_symlink():
@@ -1057,8 +1385,15 @@ def build_plan(
             description="capacity build parent",
             kind="directory",
         )
+    active_server_job_elements = len(effective_fleet.replicas)
+    residual_held_reserve = (
+        TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
+        - active_server_job_elements
+        - WARM_TURNOVER_JOB_ELEMENTS
+    )
+    accounting = _job_element_accounting(active_server_job_elements)
     role_shapes: dict[str, list[dict[str, Any]]] = {
-        "server_active": _active_shapes(fleet),
+        "server_active": _active_shapes(effective_fleet),
         "server_warm": _warm_shapes(),
         "client": [
             {
@@ -1068,6 +1403,7 @@ def build_plan(
                 "cpus": tasks,
                 "memory_mib": tasks * 4096,
                 "gpus": 0,
+                "time_limit": CLIENT_TIME_LIMIT,
             }
             for index, tasks in enumerate(_chunk_sizes(CLIENT_JOB_ELEMENTS))
         ],
@@ -1079,24 +1415,25 @@ def build_plan(
                 "cpus": tasks,
                 "memory_mib": tasks * 1024,
                 "gpus": 0,
+                "time_limit": CLIENT_TIME_LIMIT,
             }
             for index, tasks in enumerate(
-                _chunk_sizes(RESIDUAL_HELD_RESERVE_JOB_ELEMENTS)
+                _chunk_sizes(residual_held_reserve)
             )
         ],
     }
     active_shapes = role_shapes["server_active"]
     if (
-        len(active_shapes) != 22
-        or sum(int(row["gpus"]) for row in active_shapes) != 24
-        or sum(int(row["cpus"]) for row in active_shapes) != 192
-        or sum(int(row["memory_mib"]) for row in active_shapes) != 2_949_120
-        or sorted(int(row["gpus"]) for row in active_shapes)
-        != [1] * 20 + [2] * 2
+        len(active_shapes) != certificate.effective_logical_replicas
+        or sum(int(row["gpus"]) for row in active_shapes)
+        != certificate.effective_active_gpus
+        or {
+            _time_seconds(str(row["time_limit"])) for row in active_shapes
+        }
+        != {SERVER_TIME_LIMIT_SECONDS}
     ):
         raise ProtectedCapacityBuildError(
-            "frozen active fleet does not have the required 20 TP=1 plus "
-            "two TP=2 resource topology"
+            "effective active fleet differs from its certified resource topology"
         )
     scripts: dict[str, str] = {}
     role_chunks: dict[str, list[dict[str, Any]]] = {}
@@ -1111,6 +1448,12 @@ def build_plan(
                 or int(shape["cpus"]) % chunk_tasks
                 or int(shape["memory_mib"]) % chunk_tasks
                 or int(shape["gpus"]) % chunk_tasks
+                or _time_seconds(str(shape["time_limit"]))
+                != (
+                    SERVER_TIME_LIMIT_SECONDS
+                    if role in {"server_active", "server_warm"}
+                    else CLIENT_TIME_LIMIT_SECONDS
+                )
             ):
                 raise ProtectedCapacityBuildError(
                     f"canary shape {shape['shape_id']} cannot be represented "
@@ -1125,6 +1468,7 @@ def build_plan(
                 cpus_per_task=int(shape["cpus"]) // chunk_tasks,
                 memory_mib_per_task=int(shape["memory_mib"]) // chunk_tasks,
                 gpus_per_task=int(shape["gpus"]) // chunk_tasks,
+                time_limit=str(shape["time_limit"]),
                 shape_id=str(shape["shape_id"]),
                 partition=partition,
                 qos=qos,
@@ -1138,6 +1482,7 @@ def build_plan(
                     "cpus": int(shape["cpus"]),
                     "memory_mib": int(shape["memory_mib"]),
                     "gpus": int(shape["gpus"]),
+                    "time_limit": str(shape["time_limit"]),
                     "shape_id": str(shape["shape_id"]),
                     "serving_profile": str(shape["serving_profile"]),
                     "comment": _chunk_comment(token, role, chunk_index),
@@ -1152,10 +1497,16 @@ def build_plan(
         role: sum(int(row["tasks"]) for row in role_shapes[role])
         for role in ROLE_ORDER
     }
-    if any(
-        role_totals[role] != int(ROLE_SPECS[role]["tasks"])
-        for role in ROLE_ORDER
-    ) or sum(role_totals.values()) != EXPECTED_TOTAL_JOB_ELEMENTS:
+    expected_role_totals = {
+        "server_active": active_server_job_elements,
+        "server_warm": WARM_TURNOVER_JOB_ELEMENTS,
+        "client": CLIENT_JOB_ELEMENTS,
+        "reserve": residual_held_reserve,
+    }
+    if (
+        role_totals != expected_role_totals
+        or sum(role_totals.values()) != EXPECTED_TOTAL_JOB_ELEMENTS
+    ):
         raise ProtectedCapacityBuildError(
             "protected-capacity role totals do not realize the exact 448-element "
             "contract"
@@ -1173,16 +1524,74 @@ def build_plan(
         "qos": qos,
         "scheduler_user": scheduler_user,
         "token": token,
-        "fleet_contract_path": str(fleet.path),
-        "fleet_contract_sha256": fleet.sha256,
+        "capacity_generation": capacity_generation,
+        "base_fleet_contract_path": str(base_fleet.path),
+        "base_fleet_contract_sha256": base_fleet.sha256,
+        "effective_fleet_contract_path": str(effective_fleet.path),
+        "effective_fleet_contract_sha256": effective_fleet.sha256,
+        "additive_overlay_contract_path": str(effective_fleet.path),
+        "additive_overlay_contract_sha256": effective_fleet.sha256,
+        "static_feasibility_certificate": {
+            "path": str(certificate.path),
+            "sha256": certificate.sha256,
+            "certificate_id": certificate.certificate_id,
+        },
+        # Compatibility aliases remain exact-effective, never base-only.
+        "fleet_contract_path": str(effective_fleet.path),
+        "fleet_contract_sha256": effective_fleet.sha256,
         "model_contract_path": str(supplied_models),
         "model_contract_sha256": model_contract_sha256,
         **release_identity,
+        "base_active_logical_replicas": len(base_fleet.replicas),
+        "base_active_gpus": sum(
+            row.gpus_per_replica for row in base_fleet.replicas
+        ),
+        "base_active_topology": _active_topology(
+            _active_shapes(base_fleet)
+        ),
+        "base_active_topology_sha256": sha256_bytes(
+            canonical_bytes(_active_topology(_active_shapes(base_fleet)))
+        ),
+        "additive_reserved_logical_replicas": (
+            len(effective_fleet.replicas) - len(base_fleet.replicas)
+        ),
+        "additive_reserved_gpus": certificate.additive_allocated_gpus,
+        "additive_reserved_tp1_replicas": (
+            certificate.additive_tp1_logical_replicas
+        ),
+        "additive_reserved_tp2_replicas": (
+            certificate.additive_tp2_logical_replicas
+        ),
+        "additive_reserved_topology": [
+            row
+            for row in _active_topology(active_shapes)
+            if row["shape_id"]
+            not in {replica.replica_id for replica in base_fleet.replicas}
+        ],
+        "effective_active_logical_replicas": len(
+            effective_fleet.replicas
+        ),
+        "effective_active_gpus": sum(
+            row.gpus_per_replica for row in effective_fleet.replicas
+        ),
+        "effective_active_topology": _active_topology(active_shapes),
+        "retained_warm_turnover_topology": _active_topology(
+            role_shapes["server_warm"]
+        ),
+        "attested_total_gpus": (
+            sum(row.gpus_per_replica for row in effective_fleet.replicas)
+            + WARM_TURNOVER_GPUS
+        ),
         "active_fleet_topology_sha256": sha256_bytes(
-            canonical_bytes(active_shapes)
+            canonical_bytes(_active_topology(active_shapes))
         ),
         "expected_total_job_elements": EXPECTED_TOTAL_JOB_ELEMENTS,
-        "job_element_accounting": _job_element_accounting(),
+        "running_scientific_jobs": (
+            CLIENT_JOB_ELEMENTS
+            + active_server_job_elements
+            + WARM_TURNOVER_JOB_ELEMENTS
+        ),
+        "job_element_accounting": accounting,
         "roles": {
             role: {
                 "tasks": sum(int(row["tasks"]) for row in role_shapes[role]),
@@ -1191,7 +1600,7 @@ def build_plan(
                     int(row["memory_mib"]) for row in role_shapes[role]
                 ),
                 "gpus": sum(int(row["gpus"]) for row in role_shapes[role]),
-                "held": bool(ROLE_SPECS[role]["held"]),
+                "held": ROLE_HELD[role],
                 "chunks": role_chunks[role],
             }
             for role in ROLE_ORDER
@@ -1280,6 +1689,7 @@ def prepare(
                     "cpus": int(chunk["cpus"]),
                     "memory_mib": int(chunk["memory_mib"]),
                     "gpus": int(chunk["gpus"]),
+                    "time_limit": str(chunk["time_limit"]),
                     "shape_id": str(chunk["shape_id"]),
                     "serving_profile": str(chunk["serving_profile"]),
                     "held": bool(role_record["held"]),
@@ -1336,14 +1746,34 @@ def _validate_occupancy_preflight(
     *,
     plan: Mapping[str, Any],
 ) -> dict[str, Any]:
+    expected_running = plan.get("running_scientific_jobs")
+    expected_accounting = plan.get("job_element_accounting")
+    if (
+        type(expected_running) is not int
+        or expected_running < CLIENT_JOB_ELEMENTS
+        or not isinstance(expected_accounting, Mapping)
+    ):
+        raise ProtectedCapacityBuildError(
+            "build intent lacks dynamic scientific job accounting"
+        )
     required = {
         "protocol",
         "plan_id",
         "observation_interval_seconds",
+        "scheduler_account",
+        "scientific_qos",
+        "association_max_jobs",
+        "qos_max_jobs",
+        "effective_max_jobs",
         "association_max_submit_jobs",
         "qos_max_submit_jobs",
         "effective_max_submit_jobs",
         "existing_job_elements",
+        "existing_association_job_elements",
+        "existing_qos_job_elements",
+        "existing_association_running_job_elements",
+        "existing_qos_running_job_elements",
+        "required_new_running_job_elements",
         "required_new_job_elements",
         "first_observation",
         "second_observation",
@@ -1353,8 +1783,13 @@ def _validate_occupancy_preflight(
         not isinstance(value, dict)
         or set(value) != required
         or value.get("protocol")
-        != "schema5-v1.2-r2-protected-capacity-occupancy-preflight-v1"
+        != "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
         or value.get("plan_id") != plan.get("plan_id")
+        or value.get("scientific_qos") != plan.get("qos")
+        or not isinstance(value.get("scheduler_account"), str)
+        or _PLACEMENT_NAME_RE.fullmatch(value["scheduler_account"]) is None
+        or value.get("required_new_running_job_elements")
+        != expected_running
         or value.get("required_new_job_elements")
         != EXPECTED_TOTAL_JOB_ELEMENTS
         or value.get("preflight_id")
@@ -1368,10 +1803,21 @@ def _validate_occupancy_preflight(
             "build ledger occupancy preflight is malformed"
         )
     interval = value.get("observation_interval_seconds")
+    association_max_jobs = value.get("association_max_jobs")
+    qos_max_jobs = value.get("qos_max_jobs")
+    effective_max_jobs = value.get("effective_max_jobs")
     association_limit = value.get("association_max_submit_jobs")
     qos_limit = value.get("qos_max_submit_jobs")
     effective_limit = value.get("effective_max_submit_jobs")
     existing = value.get("existing_job_elements")
+    existing_association = value.get(
+        "existing_association_job_elements"
+    )
+    existing_qos = value.get("existing_qos_job_elements")
+    existing_association_running = value.get(
+        "existing_association_running_job_elements"
+    )
+    existing_qos_running = value.get("existing_qos_running_job_elements")
     if (
         not isinstance(interval, (int, float))
         or isinstance(interval, bool)
@@ -1396,7 +1842,65 @@ def _validate_occupancy_preflight(
         or not isinstance(existing, int)
         or isinstance(existing, bool)
         or existing < 0
-        or existing + EXPECTED_TOTAL_JOB_ELEMENTS > effective_limit
+        or not isinstance(existing_association, int)
+        or isinstance(existing_association, bool)
+        or existing_association < 0
+        or not isinstance(existing_qos, int)
+        or isinstance(existing_qos, bool)
+        or existing_qos < 0
+        or existing_qos > existing_association
+        or existing_association > existing
+        or existing_association + EXPECTED_TOTAL_JOB_ELEMENTS
+        > association_limit
+        or (
+            qos_limit is not None
+            and existing_qos + EXPECTED_TOTAL_JOB_ELEMENTS > qos_limit
+        )
+        or (
+            association_max_jobs is not None
+            and (
+                not isinstance(association_max_jobs, int)
+                or isinstance(association_max_jobs, bool)
+                or association_max_jobs < 1
+            )
+        )
+        or (
+            qos_max_jobs is not None
+            and (
+                not isinstance(qos_max_jobs, int)
+                or isinstance(qos_max_jobs, bool)
+                or qos_max_jobs < 1
+            )
+        )
+        or effective_max_jobs
+        != (
+            None
+            if association_max_jobs is None and qos_max_jobs is None
+            else min(
+                limit
+                for limit in (association_max_jobs, qos_max_jobs)
+                if limit is not None
+            )
+        )
+        or not isinstance(existing_association_running, int)
+        or isinstance(existing_association_running, bool)
+        or existing_association_running < 0
+        or not isinstance(existing_qos_running, int)
+        or isinstance(existing_qos_running, bool)
+        or existing_qos_running < 0
+        or existing_qos_running > existing_association_running
+        or existing_association_running > existing
+        or (
+            association_max_jobs is not None
+            and existing_association_running
+            + expected_running
+            > association_max_jobs
+        )
+        or (
+            qos_max_jobs is not None
+            and existing_qos_running + expected_running
+            > qos_max_jobs
+        )
     ):
         raise ProtectedCapacityBuildError(
             "build ledger occupancy limits are invalid"
@@ -1442,10 +1946,13 @@ def _validate_occupancy_preflight(
         for row in observation["jobs"]:
             if (
                 not isinstance(row, dict)
-                or set(row) != {"job_id", "state", "comment"}
+                or set(row)
+                != {"job_id", "state", "account", "qos", "comment"}
                 or _JOB_ID_RE.fullmatch(str(row.get("job_id", ""))) is None
                 or row["job_id"] in identities
                 or not isinstance(row.get("state"), str)
+                or not isinstance(row.get("account"), str)
+                or not isinstance(row.get("qos"), str)
                 or not isinstance(row.get("comment"), str)
             ):
                 raise ProtectedCapacityBuildError(
@@ -1457,6 +1964,30 @@ def _validate_occupancy_preflight(
         observations[0]["jobs"] != observations[1]["jobs"]
         or observations[0]["job_elements"] != existing
         or observations[1]["job_elements"] != existing
+        or sum(
+            row["account"] == value["scheduler_account"]
+            for row in observations[1]["jobs"]
+        )
+        != existing_association
+        or sum(
+            row["account"] == value["scheduler_account"]
+            and row["qos"] == value["scientific_qos"]
+            for row in observations[1]["jobs"]
+        )
+        != existing_qos
+        or sum(
+            row["state"] in MAX_JOBS_CONSUMING_STATES
+            and row["account"] == value["scheduler_account"]
+            for row in observations[1]["jobs"]
+        )
+        != existing_association_running
+        or sum(
+            row["state"] in MAX_JOBS_CONSUMING_STATES
+            and row["account"] == value["scheduler_account"]
+            and row["qos"] == value["scientific_qos"]
+            for row in observations[1]["jobs"]
+        )
+        != existing_qos_running
         or float(observations[1]["observed_at"])
         - float(observations[0]["observed_at"])
         < float(interval)
@@ -1516,6 +2047,7 @@ def _load_ledger(root: Path, *, plan: Mapping[str, Any]) -> dict[str, Any]:
         "cpus",
         "memory_mib",
         "gpus",
+        "time_limit",
         "shape_id",
         "serving_profile",
         "held",
@@ -1544,6 +2076,7 @@ def _load_ledger(root: Path, *, plan: Mapping[str, Any]) -> dict[str, Any]:
             "cpus": int(chunk["cpus"]),
             "memory_mib": int(chunk["memory_mib"]),
             "gpus": int(chunk["gpus"]),
+            "time_limit": str(chunk["time_limit"]),
             "shape_id": str(chunk["shape_id"]),
             "serving_profile": str(chunk["serving_profile"]),
             "held": bool(role_record["held"]),
@@ -1608,7 +2141,7 @@ def _capture_current_user_occupancy(
         user,
         "--states=PENDING,RUNNING,CONFIGURING,COMPLETING,RESIZING,SUSPENDED",
         "-o",
-        "%i|%T|%k",
+        "%i|%T|%a|%q|%k",
     ]
     queue_raw = _invoke(runner, queue_argv, timeout=60.0).stdout
     active_states = {
@@ -1624,14 +2157,18 @@ def _capture_current_user_occupancy(
         if not raw.strip():
             continue
         fields = raw.rstrip("\n").split("|")
-        if len(fields) != 3:
+        if len(fields) != 5:
             raise ProtectedCapacityBuildError(
                 f"occupancy squeue row {line_number} is malformed"
             )
-        job_id, state, comment = (field.strip() for field in fields)
+        job_id, state, account, qos, comment = (
+            field.strip() for field in fields
+        )
         if (
             _JOB_ID_RE.fullmatch(job_id) is None
             or state.upper() not in active_states
+            or _PLACEMENT_NAME_RE.fullmatch(account) is None
+            or _PLACEMENT_NAME_RE.fullmatch(qos) is None
             or job_id in queued
         ):
             raise ProtectedCapacityBuildError(
@@ -1640,6 +2177,8 @@ def _capture_current_user_occupancy(
         queued[job_id] = {
             "job_id": job_id,
             "state": state.upper(),
+            "account": account,
+            "qos": qos,
             "comment": comment,
         }
 
@@ -1669,7 +2208,7 @@ def _capture_current_user_occupancy(
                     timezone.utc,
                 ).astimezone().strftime("%Y-%m-%d"),
                 "-o",
-                "JobID,State,Comment",
+                "JobID,State,Account,QOS,Comment",
             ]
         ]
     else:
@@ -1682,7 +2221,7 @@ def _capture_current_user_occupancy(
                 "-j",
                 ",".join(chunk),
                 "-o",
-                "JobID,State,Comment",
+                "JobID,State,Account,QOS,Comment",
             ]
             for chunk in job_id_chunks
         ]
@@ -1712,18 +2251,28 @@ def _capture_current_user_occupancy(
             if not raw.strip():
                 continue
             fields = raw.rstrip("\n").split("|")
-            if len(fields) != 3:
+            if len(fields) != 5:
                 raise ProtectedCapacityBuildError(
                     "occupancy sacct row "
                     f"{capture_index}:{line_number} is malformed"
                 )
-            job_id, state, comment = (field.strip() for field in fields)
+            job_id, state, account, qos, comment = (
+                field.strip() for field in fields
+            )
             if "." in job_id:
                 continue
             if _JOB_ID_RE.fullmatch(job_id) is None:
                 raise ProtectedCapacityBuildError(
                     "occupancy sacct row "
                     f"{capture_index}:{line_number} has an invalid job ID"
+                )
+            if (
+                _PLACEMENT_NAME_RE.fullmatch(account) is None
+                or _PLACEMENT_NAME_RE.fullmatch(qos) is None
+            ):
+                raise ProtectedCapacityBuildError(
+                    "occupancy sacct row "
+                    f"{capture_index}:{line_number} has invalid account/QOS"
                 )
             normalized_state = state.upper().split()[0].rstrip("+")
             if normalized_state not in active_states:
@@ -1735,6 +2284,8 @@ def _capture_current_user_occupancy(
             accounted[job_id] = {
                 "job_id": job_id,
                 "state": normalized_state,
+                "account": account,
+                "qos": qos,
                 "comment": comment,
             }
 
@@ -1748,6 +2299,9 @@ def _capture_current_user_occupancy(
             accounting_row["comment"]
             and queue_row["comment"]
             and accounting_row["comment"] != queue_row["comment"]
+        ) or (
+            accounting_row["account"] != queue_row["account"]
+            or accounting_row["qos"] != queue_row["qos"]
         ):
             raise ProtectedCapacityBuildError(
                 f"squeue/sacct occupancy provenance conflicts for {job_id}"
@@ -1794,7 +2348,11 @@ def _verify_submit_headroom_preflight(
         OCCUPANCY_OBSERVATION_INTERVAL_SECONDS
     ),
 ) -> dict[str, Any]:
-    expected_accounting = _job_element_accounting()
+    active_jobs = int(
+        plan["job_element_accounting"]["active_server_job_elements"]
+    )
+    expected_accounting = _job_element_accounting(active_jobs)
+    expected_running = int(plan["running_scientific_jobs"])
     if (
         plan.get("expected_total_job_elements")
         != EXPECTED_TOTAL_JOB_ELEMENTS
@@ -1813,19 +2371,38 @@ def _verify_submit_headroom_preflight(
         scheduler_user=str(plan["scheduler_user"]),
         qos=str(plan["qos"]),
     ).strip().split("|")
-    if len(qos_fields) != 4 or len(association_fields) != 5:
+    if len(qos_fields) != 5 or len(association_fields) != 6:
         raise ProtectedCapacityBuildError(
             "submit-headroom preflight returned malformed scheduler authority"
         )
     try:
-        association_limit = int(association_fields[4])
+        association_max_jobs = (
+            None
+            if association_fields[4] == "-"
+            else int(association_fields[4])
+        )
+        association_limit = int(association_fields[5])
+        qos_max_jobs = (
+            None if qos_fields[2] == "-" else int(qos_fields[2])
+        )
         qos_limit = (
             None if qos_fields[3] == "-" else int(qos_fields[3])
+        )
+        qos_max_wall = (
+            None if qos_fields[4] == "-" else int(qos_fields[4])
         )
     except ValueError as exc:
         raise ProtectedCapacityBuildError(
             "submit-headroom preflight limits are not integers"
         ) from exc
+    if (
+        qos_max_wall is not None
+        and qos_max_wall < SERVER_TIME_LIMIT_SECONDS
+    ):
+        raise ProtectedCapacityBuildError(
+            "protected-capacity QOS walltime authority cannot sustain the "
+            "24-hour scientific serving allocation"
+        )
     if (
         not isinstance(observation_interval_seconds, (int, float))
         or isinstance(observation_interval_seconds, bool)
@@ -1869,22 +2446,88 @@ def _verify_submit_headroom_preflight(
         association_limit if qos_limit is None else qos_limit,
     )
     existing_job_elements = int(second["job_elements"])
-    if existing_job_elements + EXPECTED_TOTAL_JOB_ELEMENTS > effective_limit:
+    scheduler_account = association_fields[1]
+    scientific_qos = str(plan["qos"])
+    existing_association = sum(
+        row["account"] == scheduler_account for row in second["jobs"]
+    )
+    existing_qos = sum(
+        row["account"] == scheduler_account
+        and row["qos"] == scientific_qos
+        for row in second["jobs"]
+    )
+    existing_association_running = sum(
+        row["state"] in MAX_JOBS_CONSUMING_STATES
+        and row["account"] == scheduler_account
+        for row in second["jobs"]
+    )
+    existing_qos_running = sum(
+        row["state"] in MAX_JOBS_CONSUMING_STATES
+        and row["account"] == scheduler_account
+        and row["qos"] == scientific_qos
+        for row in second["jobs"]
+    )
+    if (
+        association_max_jobs is not None
+        and existing_association_running + expected_running
+        > association_max_jobs
+    ) or (
+        qos_max_jobs is not None
+        and existing_qos_running + expected_running
+        > qos_max_jobs
+    ):
         raise ProtectedCapacityBuildError(
-            "protected-capacity canary requires existing user job elements plus "
-            f"{EXPECTED_TOTAL_JOB_ELEMENTS} to fit the effective submit limit: "
-            f"existing={existing_job_elements}, limit={effective_limit}"
+            "protected-capacity canary requires contemporaneous unrelated "
+            f"running jobs plus {expected_running} scientific allocations to fit both "
+            "association and QOS MaxJobs limits: "
+            f"association_existing={existing_association_running}, "
+            f"association_limit={association_max_jobs}, "
+            f"qos_existing={existing_qos_running}, qos_limit={qos_max_jobs}"
+        )
+    if (
+        existing_association + EXPECTED_TOTAL_JOB_ELEMENTS
+        > association_limit
+    ) or (
+        qos_limit is not None
+        and existing_qos + EXPECTED_TOTAL_JOB_ELEMENTS > qos_limit
+    ):
+        raise ProtectedCapacityBuildError(
+            "protected-capacity canary requires same-account/QOS existing user "
+            "job elements plus 448 scientific allocations to fit the residual "
+            "submit limits"
         )
     receipt: dict[str, Any] = {
         "protocol": (
-            "schema5-v1.2-r2-protected-capacity-occupancy-preflight-v1"
+            "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
         ),
         "plan_id": str(plan["plan_id"]),
         "observation_interval_seconds": float(observation_interval_seconds),
+        "scheduler_account": scheduler_account,
+        "scientific_qos": scientific_qos,
+        "association_max_jobs": association_max_jobs,
+        "qos_max_jobs": qos_max_jobs,
+        "effective_max_jobs": (
+            None
+            if association_max_jobs is None and qos_max_jobs is None
+            else min(
+                limit
+                for limit in (association_max_jobs, qos_max_jobs)
+                if limit is not None
+            )
+        ),
         "association_max_submit_jobs": association_limit,
         "qos_max_submit_jobs": qos_limit,
         "effective_max_submit_jobs": effective_limit,
         "existing_job_elements": existing_job_elements,
+        "existing_association_job_elements": existing_association,
+        "existing_qos_job_elements": existing_qos,
+        "existing_association_running_job_elements": (
+            existing_association_running
+        ),
+        "existing_qos_running_job_elements": existing_qos_running,
+        "required_new_running_job_elements": (
+            expected_running
+        ),
         "required_new_job_elements": EXPECTED_TOTAL_JOB_ELEMENTS,
         "first_observation": first,
         "second_observation": second,
@@ -2321,7 +2964,7 @@ def _capture_job_rows(
                 "-j",
                 job_id,
                 "-o",
-                "%A|%a|%T|%P|%q|%C|%m|%b|%k",
+                "%A|%a|%T|%P|%q|%C|%m|%b|%l|%k",
             ]
         else:
             argv = [
@@ -2331,26 +2974,30 @@ def _capture_job_rows(
                 "-j",
                 job_id,
                 "-o",
-                "JobID,State,Partition,QOS,ReqCPUS,ReqMem,ReqTRES,Comment",
+                (
+                    "JobID,State,Partition,QOS,ReqCPUS,ReqMem,ReqTRES,"
+                    "Timelimit,Comment"
+                ),
             ]
         raw = _invoke(runner, argv, timeout=60.0).stdout
         observed: set[int] = set()
         states: set[str] = set()
         partitions: set[str] = set()
         qoses: set[str] = set()
+        time_limits: set[int] = set()
         total_cpus = 0
         total_memory_mib = 0
         total_gpus = 0
         for line in raw.splitlines():
             fields = line.strip().split("|")
-            if len(fields) < (9 if command == "squeue" else 8):
+            if len(fields) < (10 if command == "squeue" else 9):
                 continue
             identity = fields[0]
             if command == "squeue":
                 base = fields[0]
                 task_raw = fields[1]
                 state, partition, qos = fields[2:5]
-                cpu_raw, memory_raw, tres_raw, comment = fields[5:9]
+                cpu_raw, memory_raw, tres_raw, time_raw, comment = fields[5:10]
             else:
                 match = _JOB_ID_RE.fullmatch(identity)
                 if match is None or match.group(2) is None:
@@ -2358,7 +3005,7 @@ def _capture_job_rows(
                 base = match.group(1)
                 task_raw = match.group(2)
                 state, partition, qos = fields[1:4]
-                cpu_raw, memory_raw, tres_raw, comment = fields[4:8]
+                cpu_raw, memory_raw, tres_raw, time_raw, comment = fields[4:9]
             if base != job_id or not task_raw.isdigit():
                 continue
             if comment != record["comment"]:
@@ -2378,6 +3025,7 @@ def _capture_job_rows(
                 total_cpus += int(cpu_raw)
                 total_memory_mib += _memory_mib(memory_raw)
                 total_gpus += _gpus_from_tres(tres_raw)
+                time_limits.add(_time_seconds(time_raw))
             except (TypeError, ValueError) as exc:
                 raise ProtectedCapacityBuildError(
                     f"{command} {key} resource fields are malformed"
@@ -2387,7 +3035,12 @@ def _capture_job_rows(
             raise ProtectedCapacityBuildError(
                 f"{command} does not expose all {key} array elements"
             )
-        if len(states) != 1 or len(partitions) != 1 or len(qoses) != 1:
+        if (
+            len(states) != 1
+            or len(partitions) != 1
+            or len(qoses) != 1
+            or len(time_limits) != 1
+        ):
             raise ProtectedCapacityBuildError(
                 f"{command} {key} scheduler facts are ambiguous"
             )
@@ -2409,10 +3062,14 @@ def _capture_job_rows(
         expected_cpus = int(record.get("cpus", -1))
         expected_memory_mib = int(record.get("memory_mib", -1))
         expected_gpus = int(record.get("gpus", -1))
+        expected_time_limit = _time_seconds(
+            str(record.get("time_limit", ""))
+        )
         if (
             total_cpus != expected_cpus
             or total_memory_mib != expected_memory_mib
             or total_gpus != expected_gpus
+            or next(iter(time_limits)) != expected_time_limit
         ):
             raise ProtectedCapacityBuildError(
                 f"{command} {key} resource request drifted: "
@@ -2432,6 +3089,7 @@ def _capture_job_rows(
         if not details or any(
             "Requeue=0" not in item
             or f"Comment={record['comment']}" not in item
+            or f"TimeLimit={record['time_limit']}" not in item
             for item in details
         ):
             raise ProtectedCapacityBuildError(
@@ -2460,6 +3118,7 @@ def _capture_job_rows(
                     str(total_memory_mib),
                     str(total_gpus),
                     "0",
+                    str(expected_time_limit),
                     str(record["shape_id"]),
                     spooled_sha256,
                 ]
@@ -2490,25 +3149,63 @@ def capture_source(
             scheduler_user=str(plan["scheduler_user"]),
             qos=str(plan["qos"]),
         )
-    if kind == "fleet_contract":
-        path = Path(str(plan["fleet_contract_path"])).resolve()
+    contract_sources = {
+        "base_fleet_contract": (
+            "base_fleet_contract_path",
+            "base_fleet_contract_sha256",
+        ),
+        "effective_fleet_contract": (
+            "effective_fleet_contract_path",
+            "effective_fleet_contract_sha256",
+        ),
+        "additive_overlay_contract": (
+            "additive_overlay_contract_path",
+            "additive_overlay_contract_sha256",
+        ),
+    }
+    if kind in contract_sources:
+        path_field, sha_field = contract_sources[kind]
+        path = Path(str(plan[path_field])).resolve()
         if (
             path.is_symlink()
             or not path.is_file()
-            or sha256_file(path) != plan["fleet_contract_sha256"]
+            or sha256_file(path) != plan[sha_field]
         ):
             raise ProtectedCapacityBuildError(
-                "frozen fleet contract drifted during capacity capture"
+                f"{kind.replace('_', ' ')} drifted during capacity capture"
             )
         try:
             raw = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise ProtectedCapacityBuildError(
-                f"cannot read frozen fleet contract: {exc}"
+                f"cannot read {kind.replace('_', ' ')}: {exc}"
             ) from exc
         if not raw.endswith("\n"):
             raw += "\n"
         return raw
+    if kind == "static_feasibility_certificate_source":
+        binding = plan.get("static_feasibility_certificate")
+        if not isinstance(binding, Mapping):
+            raise ProtectedCapacityBuildError(
+                "capacity plan lacks static feasibility certificate binding"
+            )
+        path = Path(str(binding["path"])).resolve()
+        raw = _stable_bytes(
+            path,
+            description="static feasibility certificate",
+            require_read_only=True,
+            require_single_link=True,
+        )
+        if sha256_bytes(raw) != binding["sha256"]:
+            raise ProtectedCapacityBuildError(
+                "static feasibility certificate drifted during capacity capture"
+            )
+        try:
+            return raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise ProtectedCapacityBuildError(
+                f"static feasibility certificate is not UTF-8: {exc}"
+            ) from exc
     if kind in {"builder_source", "publisher_source"}:
         path_field = f"{kind}_path"
         sha_field = f"{kind}_sha256"
@@ -2556,8 +3253,21 @@ def _source_record(
         if kind in {"scheduler_configuration", "partition_configuration"}
         else "sacctmgr"
         if kind in {"qos_configuration", "association_configuration"}
-        else "fleet-contract"
-        if kind == "fleet_contract"
+        else {
+            "base_fleet_contract": "base-fleet-contract",
+            "effective_fleet_contract": "effective-fleet-contract",
+            "additive_overlay_contract": "additive-overlay-contract",
+            "static_feasibility_certificate_source": (
+                "static-feasibility-certificate"
+            ),
+        }[kind]
+        if kind
+        in {
+            "base_fleet_contract",
+            "effective_fleet_contract",
+            "additive_overlay_contract",
+            "static_feasibility_certificate_source",
+        }
         else "release-source"
         if kind in {"builder_source", "publisher_source"}
         else kind
@@ -2582,12 +3292,19 @@ def _build_evidence(
     now: Callable[[], float],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     plan = _load_plan(root)
+    occupancy_preflight = _validate_occupancy_preflight(
+        _load_ledger(root, plan=plan).get("occupancy_preflight"),
+        plan=plan,
+    )
     source_kinds = (
         "scheduler_configuration",
         "partition_configuration",
         "qos_configuration",
         "association_configuration",
-        "fleet_contract",
+        "base_fleet_contract",
+        "effective_fleet_contract",
+        "additive_overlay_contract",
+        "static_feasibility_certificate_source",
         "builder_source",
         "publisher_source",
         "squeue",
@@ -2607,15 +3324,28 @@ def _build_evidence(
     )
     if (
         len(config_fields) != 2
-        or len(partition_fields) != 7
-        or len(qos_fields) != 4
-        or len(association_fields) != 5
+        or len(partition_fields) != 8
+        or len(qos_fields) != 5
+        or len(association_fields) != 6
         or association_fields[2] != plan["scheduler_user"]
         or plan["qos"] not in set(association_fields[3].split(","))
     ):
         raise ProtectedCapacityBuildError(
             "normalized scheduler configuration has invalid cardinality"
         )
+    optional_limit = lambda value: (  # noqa: E731 - local normalization
+        None if value == "-" else int(value)
+    )
+    running_scientific_jobs = int(plan["running_scientific_jobs"])
+    qos_contract = {
+        "qos": str(plan["qos"]),
+        "max_wall_seconds": optional_limit(qos_fields[4]),
+        "max_jobs_per_user": optional_limit(qos_fields[2]),
+        "max_submit_jobs_per_user": optional_limit(qos_fields[3]),
+        "required_wall_seconds": SERVER_TIME_LIMIT_SECONDS,
+        "required_running_jobs": running_scientific_jobs,
+        "required_submit_jobs": EXPECTED_TOTAL_JOB_ELEMENTS,
+    }
     binding = {
         "release_id": publisher.RELEASE_ID,
         "release_tag": publisher.RELEASE_TAG,
@@ -2634,11 +3364,87 @@ def _build_evidence(
         "scheduler_cluster": association_fields[0],
         "scheduler_account": association_fields[1],
         "scheduler_user": association_fields[2],
-        "scheduler_max_submit_jobs": int(association_fields[4]),
+        "scheduler_max_jobs": optional_limit(association_fields[4]),
+        "scheduler_max_submit_jobs": int(association_fields[5]),
+        "running_scientific_jobs": running_scientific_jobs,
+        "minimum_scientific_wall_seconds": SERVER_TIME_LIMIT_SECONDS,
+        "scientific_qos_contracts": [qos_contract],
         "partition_cpus": int(partition_fields[4]),
         "partition_memory_mib": int(partition_fields[5]),
         "partition_gpus": int(partition_fields[6]),
-        "fleet_contract_sha256": plan["fleet_contract_sha256"],
+        "capacity_generation": plan["capacity_generation"],
+        "source_tree_sha256": plan["source_tree_sha256"],
+        "dispatcher_source_sha256": plan[
+            "dispatcher_source_sha256"
+        ],
+        "qualification_runner_source_sha256": plan[
+            "qualification_runner_source_sha256"
+        ],
+        "base_fleet_contract_path": plan["base_fleet_contract_path"],
+        "base_fleet_contract_sha256": plan[
+            "base_fleet_contract_sha256"
+        ],
+        "effective_fleet_contract_path": plan[
+            "effective_fleet_contract_path"
+        ],
+        "effective_fleet_contract_sha256": plan[
+            "effective_fleet_contract_sha256"
+        ],
+        "additive_overlay_contract_path": plan[
+            "additive_overlay_contract_path"
+        ],
+        "additive_overlay_contract_sha256": plan[
+            "additive_overlay_contract_sha256"
+        ],
+        "static_feasibility_certificate": plan[
+            "static_feasibility_certificate"
+        ],
+        "base_active_logical_replicas": plan[
+            "base_active_logical_replicas"
+        ],
+        "base_active_gpus": plan["base_active_gpus"],
+        "base_active_topology": plan["base_active_topology"],
+        "base_active_topology_sha256": plan[
+            "base_active_topology_sha256"
+        ],
+        "additive_reserved_logical_replicas": plan[
+            "additive_reserved_logical_replicas"
+        ],
+        "additive_reserved_gpus": plan["additive_reserved_gpus"],
+        "additive_reserved_tp1_replicas": plan[
+            "additive_reserved_tp1_replicas"
+        ],
+        "additive_reserved_tp2_replicas": plan[
+            "additive_reserved_tp2_replicas"
+        ],
+        "additive_reserved_topology": plan[
+            "additive_reserved_topology"
+        ],
+        "additive_reserved_topology_sha256": sha256_bytes(
+            canonical_bytes(plan["additive_reserved_topology"])
+        ),
+        "effective_active_logical_replicas": plan[
+            "effective_active_logical_replicas"
+        ],
+        "effective_active_gpus": plan["effective_active_gpus"],
+        "effective_active_topology": plan["effective_active_topology"],
+        "effective_active_topology_sha256": plan[
+            "active_fleet_topology_sha256"
+        ],
+        "retained_warm_turnover_job_elements": (
+            WARM_TURNOVER_JOB_ELEMENTS
+        ),
+        "retained_warm_turnover_gpus": WARM_TURNOVER_GPUS,
+        "retained_warm_turnover_tp1_allocations": 2,
+        "retained_warm_turnover_tp2_allocations": 1,
+        "retained_warm_turnover_topology": plan[
+            "retained_warm_turnover_topology"
+        ],
+        "retained_warm_turnover_topology_sha256": sha256_bytes(
+            canonical_bytes(plan["retained_warm_turnover_topology"])
+        ),
+        "attested_total_gpus": plan["attested_total_gpus"],
+        "fleet_contract_sha256": plan["effective_fleet_contract_sha256"],
         "active_fleet_topology_sha256": plan[
             "active_fleet_topology_sha256"
         ],
@@ -2648,6 +3454,7 @@ def _build_evidence(
             "expected_total_job_elements"
         ],
         "job_element_accounting": plan["job_element_accounting"],
+        "occupancy_preflight": occupancy_preflight,
         **sources,
         "scientific_server_placements": [
             {
@@ -2655,8 +3462,19 @@ def _build_evidence(
                 "qos": plan["qos"],
                 "partition_preempt_mode": partition_fields[1],
                 "qos_preempt_mode": qos_fields[1],
-                "active_serving_gpus": 24,
-                "warm_headroom_gpus": 4,
+                "base_active_gpus": plan["base_active_gpus"],
+                "reserved_additive_gpus": plan[
+                    "additive_reserved_gpus"
+                ],
+                "effective_active_gpus": plan[
+                    "effective_active_gpus"
+                ],
+                "retained_warm_turnover_gpus": WARM_TURNOVER_GPUS,
+                "attested_total_gpus": plan["attested_total_gpus"],
+                "partition_cpus": int(partition_fields[4]),
+                "partition_memory_mib": int(partition_fields[5]),
+                "partition_gpus": int(partition_fields[6]),
+                "partition_nodes": int(partition_fields[7]),
             }
         ],
         "scientific_client_placements": [
@@ -2857,6 +3675,13 @@ def apply_transaction(
             recovery_root,
             expected_release_git_commit=str(plan["release_git_commit"]),
             expected_release_tag_object=str(plan["release_tag_object"]),
+            expected_source_tree_sha256=str(plan["source_tree_sha256"]),
+            expected_dispatcher_source_sha256=str(
+                plan["dispatcher_source_sha256"]
+            ),
+            expected_qualification_runner_source_sha256=str(
+                plan["qualification_runner_source_sha256"]
+            ),
         )
         if marker["fleet_contract_sha256"] != plan["fleet_contract_sha256"]:
             raise ProtectedCapacityBuildError(
@@ -2946,8 +3771,15 @@ def apply_transaction(
         recovery_root=recovery_root,
         scheduler_evidence_path=scheduler_path,
         canary_evidence_path=canary_path,
-        expected_release_git_commit=str(scheduler["release_git_commit"]),
-        expected_release_tag_object=str(scheduler["release_tag_object"]),
+        expected_release_git_commit=str(plan["release_git_commit"]),
+        expected_release_tag_object=str(plan["release_tag_object"]),
+        expected_source_tree_sha256=str(plan["source_tree_sha256"]),
+        expected_dispatcher_source_sha256=str(
+            plan["dispatcher_source_sha256"]
+        ),
+        expected_qualification_runner_source_sha256=str(
+            plan["qualification_runner_source_sha256"]
+        ),
         apply=True,
         runner=recapture,
     )
@@ -2983,6 +3815,14 @@ def run_operation(
     token: str,
     fleet_contract_path: Path,
     fleet_contract_sha256: str,
+    effective_fleet_contract_path: Path,
+    effective_fleet_contract_sha256: str,
+    additive_overlay_contract_path: Path,
+    additive_overlay_contract_sha256: str,
+    static_feasibility_certificate_path: Path,
+    static_feasibility_certificate_sha256: str,
+    static_feasibility_certificate_id: str,
+    capacity_generation: int,
     model_contract_path: Path,
     model_contract_sha256: str,
     release_worktree: Path,
@@ -3006,6 +3846,20 @@ def run_operation(
         token=token,
         fleet_contract_path=fleet_contract_path,
         fleet_contract_sha256=fleet_contract_sha256,
+        effective_fleet_contract_path=effective_fleet_contract_path,
+        effective_fleet_contract_sha256=effective_fleet_contract_sha256,
+        additive_overlay_contract_path=additive_overlay_contract_path,
+        additive_overlay_contract_sha256=additive_overlay_contract_sha256,
+        static_feasibility_certificate_path=(
+            static_feasibility_certificate_path
+        ),
+        static_feasibility_certificate_sha256=(
+            static_feasibility_certificate_sha256
+        ),
+        static_feasibility_certificate_id=(
+            static_feasibility_certificate_id
+        ),
+        capacity_generation=capacity_generation,
         model_contract_path=model_contract_path,
         model_contract_sha256=model_contract_sha256,
         release_worktree=release_worktree,
@@ -3035,6 +3889,32 @@ def _add_plan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token", required=True)
     parser.add_argument("--fleet-contract", required=True, type=Path)
     parser.add_argument("--fleet-contract-sha256", required=True)
+    parser.add_argument(
+        "--effective-fleet-contract",
+        required=True,
+        type=Path,
+    )
+    parser.add_argument("--effective-fleet-contract-sha256", required=True)
+    parser.add_argument(
+        "--additive-overlay-contract",
+        required=True,
+        type=Path,
+    )
+    parser.add_argument("--additive-overlay-contract-sha256", required=True)
+    parser.add_argument(
+        "--static-feasibility-certificate",
+        required=True,
+        type=Path,
+    )
+    parser.add_argument(
+        "--static-feasibility-certificate-sha256",
+        required=True,
+    )
+    parser.add_argument(
+        "--static-feasibility-certificate-id",
+        required=True,
+    )
+    parser.add_argument("--capacity-generation", required=True, type=int)
     parser.add_argument("--model-contract", required=True, type=Path)
     parser.add_argument("--model-contract-sha256", required=True)
     parser.add_argument("--release-worktree", required=True, type=Path)
@@ -3069,7 +3949,10 @@ def _parser() -> argparse.ArgumentParser:
             "partition_configuration",
             "qos_configuration",
             "association_configuration",
-            "fleet_contract",
+            "base_fleet_contract",
+            "effective_fleet_contract",
+            "additive_overlay_contract",
+            "static_feasibility_certificate_source",
             "builder_source",
             "publisher_source",
             "squeue",
@@ -3085,7 +3968,10 @@ def _parser() -> argparse.ArgumentParser:
             "sacctmgr",
             "squeue",
             "sacct",
-            "fleet-contract",
+            "base-fleet-contract",
+            "effective-fleet-contract",
+            "additive-overlay-contract",
+            "static-feasibility-certificate",
             "release-source",
         ),
     )
@@ -3107,6 +3993,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=args.token,
         fleet_contract_path=args.fleet_contract,
         fleet_contract_sha256=args.fleet_contract_sha256,
+        effective_fleet_contract_path=args.effective_fleet_contract,
+        effective_fleet_contract_sha256=(
+            args.effective_fleet_contract_sha256
+        ),
+        additive_overlay_contract_path=args.additive_overlay_contract,
+        additive_overlay_contract_sha256=(
+            args.additive_overlay_contract_sha256
+        ),
+        static_feasibility_certificate_path=(
+            args.static_feasibility_certificate
+        ),
+        static_feasibility_certificate_sha256=(
+            args.static_feasibility_certificate_sha256
+        ),
+        static_feasibility_certificate_id=(
+            args.static_feasibility_certificate_id
+        ),
+        capacity_generation=args.capacity_generation,
         model_contract_path=args.model_contract,
         model_contract_sha256=args.model_contract_sha256,
         release_worktree=args.release_worktree,
@@ -3126,6 +4030,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=args.token,
         fleet_contract_path=args.fleet_contract,
         fleet_contract_sha256=args.fleet_contract_sha256,
+        effective_fleet_contract_path=args.effective_fleet_contract,
+        effective_fleet_contract_sha256=(
+            args.effective_fleet_contract_sha256
+        ),
+        additive_overlay_contract_path=args.additive_overlay_contract,
+        additive_overlay_contract_sha256=(
+            args.additive_overlay_contract_sha256
+        ),
+        static_feasibility_certificate_path=(
+            args.static_feasibility_certificate
+        ),
+        static_feasibility_certificate_sha256=(
+            args.static_feasibility_certificate_sha256
+        ),
+        static_feasibility_certificate_id=(
+            args.static_feasibility_certificate_id
+        ),
+        capacity_generation=args.capacity_generation,
         model_contract_path=args.model_contract,
         model_contract_sha256=args.model_contract_sha256,
         release_worktree=args.release_worktree,

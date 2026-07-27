@@ -36,6 +36,21 @@ def _capacity_readiness_control(tmp_path: Path, *, rollout_generation: int = 3):
         "sha256": "b" * 64,
         "marker_path": str((tmp_path / "overlay.complete.json").resolve()),
         "marker_sha256": "c" * 64,
+        "protected_capacity_marker_path": str(
+            (tmp_path / "PROTECTED_CAPACITY_COMPLETE.json").resolve()
+        ),
+        "protected_capacity_marker_sha256": "d" * 64,
+        "protected_capacity_marker_id": "e" * 64,
+        "static_feasibility_certificate_path": str(
+            (tmp_path / "STATIC_FEASIBILITY_COMPLETE.json").resolve()
+        ),
+        "static_feasibility_certificate_sha256": "f" * 64,
+        "static_feasibility_certificate_id": "1" * 64,
+        "base_fleet_contract_sha256": "2" * 64,
+        "additive_overlay_contract_path": str(
+            (tmp_path / "overlay.json").resolve()
+        ),
+        "additive_overlay_contract_sha256": "b" * 64,
         "fleet_id": "schema5-v1",
         "logical_replicas": 23,
         "allocated_gpus": 25,
@@ -814,7 +829,6 @@ def test_fleet_runtime_proof_projects_exact_paused_next_generation(
     calls = []
     monkeypatch.setattr(control, "control_lock", lambda _state: nullcontext())
     monkeypatch.setattr(control, "load_control", lambda *_args, **_kwargs: current)
-
     def ensure(_state, observed, *, generation, force_full):
         calls.append((observed, generation, force_full))
         return attestation
@@ -878,6 +892,15 @@ def test_fleet_runtime_proof_allows_exact_capacity_readiness_drain(
     }
     monkeypatch.setattr(control, "control_lock", lambda _state: nullcontext())
     monkeypatch.setattr(control, "load_control", lambda *_args, **_kwargs: current)
+    monkeypatch.setattr(
+        control,
+        "effective_fleet_contract_binding",
+        lambda *_args, **_kwargs: {
+            "capacity_generation": 2,
+            "path": current["capacity"]["current_contract"]["path"],
+            "sha256": current["capacity"]["current_contract"]["sha256"],
+        },
+    )
     monkeypatch.setattr(
         control,
         "ensure_runtime_integrity_attestation",
@@ -955,8 +978,26 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
         lambda *_args, **_kwargs: dict(client_contract),
     )
     monkeypatch.setattr(
-        readiness.protected_capacity,
-        "load_contract",
+        readiness.control_plane,
+        "load_effective_protected_capacity_contract",
+        lambda *_args, **_kwargs: SimpleNamespace(marker_id="1" * 64),
+    )
+    protected_authority = {
+        "capacity_generation": 1,
+        "path": str(
+            (tmp_path / "PROTECTED_CAPACITY_COMPLETE.json").resolve()
+        ),
+        "sha256": "3" * 64,
+        "marker_id": "4" * 64,
+    }
+    monkeypatch.setattr(
+        readiness.control_plane,
+        "effective_protected_capacity_binding",
+        lambda *_args, **_kwargs: dict(protected_authority),
+    )
+    monkeypatch.setattr(
+        readiness.control_plane,
+        "_load_protected_capacity_contract",
         lambda *_args, **_kwargs: SimpleNamespace(marker_id="1" * 64),
     )
     monkeypatch.setattr(
@@ -1114,6 +1155,20 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
         keepalive,
         "reconcile_fleet_read_only",
         lambda *_args, **_kwargs: snapshot,
+    )
+    provenance_calls = []
+    monkeypatch.setattr(
+        readiness.control_plane,
+        "reconcile_trusted_scientific_job_provenance",
+        lambda *_args, **kwargs: (
+            provenance_calls.append(dict(kwargs))
+            or SimpleNamespace(
+                payload={
+                    "trusted_live_job_ids": sorted(scripts),
+                    "provenance_id": "a" * 64,
+                }
+            )
+        ),
     )
     monkeypatch.setattr(readiness, "_verify_registry", lambda **_kwargs: records)
     monkeypatch.setattr(
@@ -1363,7 +1418,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r2",
+            release_tag="sweep-recovery-schema5-v1.2-r3",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=False,
@@ -1380,7 +1435,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
         output=active,
         chain_id="c" * 64,
         challenge_generation=0,
-        release_tag="sweep-recovery-schema5-v1.2-r2",
+        release_tag="sweep-recovery-schema5-v1.2-r3",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1422,7 +1477,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
         "acknowledged": True,
         "chain_id": "c" * 64,
         "request_id": raw_request["request_id"],
-        "release_tag": "sweep-recovery-schema5-v1.2-r2",
+        "release_tag": "sweep-recovery-schema5-v1.2-r3",
         "release_git_commit": "b" * 40,
         "challenge_generation": 0,
         "challenge_id": raw_request["challenge_id"],
@@ -1493,7 +1548,7 @@ def test_email_delivery_retries_reuse_token_only_in_live_process(
         output=active,
         chain_id="c" * 64,
         challenge_generation=3,
-        release_tag="sweep-recovery-schema5-v1.2-r2",
+        release_tag="sweep-recovery-schema5-v1.2-r3",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1558,7 +1613,7 @@ def test_email_failed_delivery_publishes_no_challenge(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r2",
+            release_tag="sweep-recovery-schema5-v1.2-r3",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1604,7 +1659,7 @@ def test_email_challenge_rejects_generation_and_tool_ancestor_symlinks(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r2",
+            release_tag="sweep-recovery-schema5-v1.2-r3",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1629,7 +1684,7 @@ def test_email_challenge_rejects_generation_and_tool_ancestor_symlinks(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r2",
+            release_tag="sweep-recovery-schema5-v1.2-r3",
             release_git_commit="b" * 40,
             acknowledgement_script=linked_tools / real_tool.name,
             apply=True,
@@ -1666,7 +1721,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
         output=active,
         chain_id="c" * 64,
         challenge_generation=0,
-        release_tag="sweep-recovery-schema5-v1.2-r2",
+        release_tag="sweep-recovery-schema5-v1.2-r3",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1680,7 +1735,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
         output=active,
         chain_id="c" * 64,
         challenge_generation=1,
-        release_tag="sweep-recovery-schema5-v1.2-r2",
+        release_tag="sweep-recovery-schema5-v1.2-r3",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1734,7 +1789,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
             output=active,
             chain_id="d" * 64,
             challenge_generation=1,
-            release_tag="sweep-recovery-schema5-v1.2-r2",
+            release_tag="sweep-recovery-schema5-v1.2-r3",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1772,7 +1827,7 @@ def test_email_activation_crash_leaves_old_pointer_and_next_repair_supersedes(
             output=active,
             chain_id="c" * 64,
             challenge_generation=generation,
-            release_tag="sweep-recovery-schema5-v1.2-r2",
+            release_tag="sweep-recovery-schema5-v1.2-r3",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1850,7 +1905,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
         "jobs": [
             {
                 "name": "fleet_readiness",
-                "job_name": "asys-s5-r2-fleet-ready",
+                "job_name": "asys-s5-r3-fleet-ready",
             }
         ],
     }
@@ -1861,7 +1916,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
                 "name": "fleet_readiness",
                 "job_id": "4242",
                 "comment": (
-                    "asys:s5-recovery-v1.2-r2:"
+                    "asys:s5-recovery-v1.2-r3:"
                     + "e" * 64
                     + ":g0000:fleet_readiness"
                 ),
@@ -1870,7 +1925,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
     }
     return {
         "verified": {
-            "chain_protocol": readiness.R2_PROTOCOL,
+                "chain_protocol": readiness.R3_PROTOCOL,
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": _sha(manifest_path),
             "manifest": manifest,
@@ -2087,6 +2142,12 @@ def _materialize_capacity_archive_sources(
             "submission_attempts": 1,
             "sbatch_path": str(script_path.resolve()),
             "sbatch_sha256": script_sha256,
+            "submission_transport": (
+                fleet_tx.STDIN_EXACT_SUBMISSION_TRANSPORT
+            ),
+            "submission_argv_sha256": (
+                fleet_tx.submission_argv_sha256(comment)
+            ),
             "scheduler_comment": comment,
             "job_id": job_id,
             "submitted_at": 1.2,
@@ -2203,7 +2264,7 @@ def _archive_capacity_preimage(
     binding = readiness._build_capacity_preimage_archive(
         parent=archive_parent,
         fleet=fleet,
-        chain_id="schema5-v1.2-r2",
+        chain_id="schema5-v1.2-r3",
         chain_generation=1,
         readiness_job_id="4242",
         scheduler_runner=scheduler_runner,
@@ -2230,7 +2291,7 @@ def _validate_capacity_preimage_fixture(
     return readiness._validate_capacity_preimage_archive(
         binding,
         fleet=fleet,
-        chain_id="schema5-v1.2-r2",
+        chain_id="schema5-v1.2-r3",
         chain_generation=1,
         readiness_job_id="4242",
     )

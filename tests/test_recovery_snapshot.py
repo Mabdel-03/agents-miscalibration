@@ -98,6 +98,160 @@ def test_apply_real_copies_verifies_seals_and_is_idempotent(tmp_path):
     assert again["snapshot_id"] == report["snapshot_id"]
 
 
+def test_default_snapshot_kind_preserves_historical_pre_repair_contract(tmp_path):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "historical-pre-repair"
+
+    report = snapshot.create_snapshot(destination, sources, apply=True)
+
+    inventory_sha256 = snapshot._sha256(
+        destination / snapshot.SNAPSHOT_INVENTORY_FILENAME
+    )
+    marker = json.loads(
+        (destination / snapshot.COMPLETE_FILENAME).read_text(encoding="utf-8")
+    )
+    catalog = json.loads(
+        (destination / snapshot.CATALOG_FILENAME).read_text(encoding="utf-8")
+    )
+    expected_id = f"schema5-v1-pre-repair-{inventory_sha256[:16]}"
+    assert marker["schema_version"] == 1
+    assert catalog["schema_version"] == 1
+    assert "snapshot_kind" not in marker
+    assert "snapshot_kind" not in catalog
+    assert marker["snapshot_id"] == catalog["snapshot_id"] == expected_id
+    assert report["snapshot_id"] == expected_id
+    assert snapshot.verify_snapshot(destination)["snapshot_kind"] == "pre_repair"
+
+
+def test_final_snapshot_kind_is_distinct_immutable_and_bound_in_both_payloads(
+    tmp_path,
+):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "final"
+
+    report = snapshot.create_snapshot(
+        destination,
+        sources,
+        apply=True,
+        snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+    )
+
+    inventory_sha256 = snapshot._sha256(
+        destination / snapshot.SNAPSHOT_INVENTORY_FILENAME
+    )
+    marker = json.loads(
+        (destination / snapshot.COMPLETE_FILENAME).read_text(encoding="utf-8")
+    )
+    catalog = json.loads(
+        (destination / snapshot.CATALOG_FILENAME).read_text(encoding="utf-8")
+    )
+    expected_id = f"schema5-v2-final-{inventory_sha256[:16]}"
+    assert marker["schema_version"] == catalog["schema_version"] == 2
+    assert marker["snapshot_kind"] == catalog["snapshot_kind"] == "final"
+    assert marker["snapshot_id"] == catalog["snapshot_id"] == expected_id
+    assert report["snapshot_id"] == expected_id
+    assert (
+        snapshot.verify_snapshot(
+            destination,
+            snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+        )["snapshot_kind"]
+        == "final"
+    )
+    with pytest.raises(snapshot.SnapshotError, match="schema mismatch"):
+        snapshot.verify_snapshot(destination)
+    with pytest.raises(snapshot.SnapshotError, match="schema mismatch"):
+        snapshot.create_snapshot(destination, sources, apply=True)
+
+
+def test_completed_final_snapshot_rejects_foreign_same_name_source_origins(
+    tmp_path,
+):
+    sources, run, metadata = _sources(tmp_path)
+    destination = tmp_path / "final"
+    snapshot.create_snapshot(
+        destination,
+        sources,
+        apply=True,
+        snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+    )
+
+    foreign_root = tmp_path / "foreign"
+    foreign_run = foreign_root / "run"
+    foreign_run.mkdir(parents=True)
+    (foreign_run / "cells").mkdir()
+    (foreign_run / "cells" / "cell-a").mkdir()
+    (foreign_run / "cells.json").write_bytes((run / "cells.json").read_bytes())
+    (foreign_run / "cells/cell-a/results.jsonl").write_bytes(
+        (run / "cells/cell-a/results.jsonl").read_bytes()
+    )
+    foreign_metadata = foreign_root / "scheduler.txt"
+    foreign_metadata.write_bytes(metadata.read_bytes())
+    foreign_sources = [
+        snapshot.SourceSpec("run", foreign_run.resolve()),
+        snapshot.SourceSpec("scheduler", foreign_metadata.resolve()),
+    ]
+
+    with pytest.raises(snapshot.SnapshotError, match="source origins"):
+        snapshot.create_snapshot(
+            destination,
+            foreign_sources,
+            apply=True,
+            snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+        )
+
+
+def test_completed_final_snapshot_rejects_stale_payload_at_canonical_origin(
+    tmp_path,
+):
+    sources, run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "final"
+    snapshot.create_snapshot(
+        destination,
+        sources,
+        apply=True,
+        snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+    )
+    (run / "cells.json").write_bytes(b"changed after final snapshot\n")
+
+    with pytest.raises(snapshot.SnapshotError, match="current canonical sources"):
+        snapshot.create_snapshot(
+            destination,
+            sources,
+            apply=True,
+            snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+        )
+    with pytest.raises(snapshot.SnapshotError, match="current canonical sources"):
+        snapshot.verify_complete_snapshot(
+            destination,
+            sources,
+            snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+        )
+
+    # Independent post-retirement verification remains available without live roots.
+    assert (
+        snapshot.verify_snapshot(
+            destination,
+            snapshot_kind=snapshot.SNAPSHOT_KIND_FINAL,
+        )["status"]
+        == "already_complete"
+    )
+
+
+def test_invalid_snapshot_kind_fails_before_destination_mutation(tmp_path):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "invalid-kind"
+
+    with pytest.raises(snapshot.SnapshotError, match="snapshot kind"):
+        snapshot.create_snapshot(
+            destination,
+            sources,
+            apply=True,
+            snapshot_kind="not-a-kind",
+        )
+
+    assert not destination.exists()
+
+
 def test_resume_reuses_verified_file_and_completes(tmp_path):
     sources, run, _metadata = _sources(tmp_path)
     destination = tmp_path / "snapshot"
@@ -378,6 +532,37 @@ def test_symlink_source_is_rejected_without_following(tmp_path):
     assert not (destination / snapshot.COMPLETE_MARKER_FILENAME).exists()
 
 
+def test_source_directory_newline_is_rejected_as_inventory_ambiguous(tmp_path):
+    source = tmp_path / "source"
+    (source / "unsafe\nname").mkdir(parents=True)
+    destination = tmp_path / "snapshot"
+
+    with pytest.raises(snapshot.SnapshotError, match="not inventory-safe"):
+        snapshot.create_snapshot(
+            destination,
+            [snapshot.SourceSpec("source", source)],
+            apply=False,
+        )
+
+    assert not destination.exists()
+
+
+def test_snapshot_source_may_not_live_inside_destination(tmp_path):
+    destination = tmp_path / "snapshot"
+    source = destination / "live-source"
+    source.mkdir(parents=True)
+    (source / "result.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotError, match="and source overlap"):
+        snapshot.create_snapshot(
+            destination,
+            [snapshot.SourceSpec("source", source.resolve())],
+            apply=True,
+        )
+
+    assert not (destination / snapshot.COMPLETE_MARKER_FILENAME).exists()
+
+
 def test_external_attestation_binds_every_snapshot_control_file(tmp_path):
     sources, _run, _metadata = _sources(tmp_path)
     destination = tmp_path / "snapshot"
@@ -424,6 +609,62 @@ def test_verify_rejects_false_completion_marker_claims(tmp_path, mutation, error
     _rewrite_json_read_only(marker_path, mutation(marker))
 
     with pytest.raises(snapshot.SnapshotError, match=error):
+        snapshot.verify_snapshot(destination)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    (
+        (lambda catalog: catalog | {"unexpected": "field"}, "schema mismatch"),
+        (
+            lambda catalog: catalog | {"directory_count": catalog["directory_count"] + 1},
+            "catalog identity",
+        ),
+        (
+            lambda catalog: catalog
+            | {"source_inventory_sha256": "0" * 64},
+            "catalog identity",
+        ),
+        (
+            lambda catalog: catalog
+            | {"snapshot_inventory_sha256": "0" * 64},
+            "catalog identity",
+        ),
+        (
+            lambda catalog: catalog | {"elapsed_seconds": -1},
+            "catalog identity",
+        ),
+        (
+            lambda catalog: catalog | {"sources": catalog["sources"] * 2},
+            "source names are duplicated",
+        ),
+    ),
+)
+def test_verify_rejects_false_catalog_claims(tmp_path, mutation, error):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    catalog_path = destination / snapshot.CATALOG_FILENAME
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    _rewrite_json_read_only(catalog_path, mutation(catalog))
+
+    with pytest.raises(snapshot.SnapshotError, match=error):
+        snapshot.verify_snapshot(destination)
+
+
+def test_verify_rejects_noncanonical_or_duplicate_control_json(tmp_path):
+    sources, _run, _metadata = _sources(tmp_path)
+    destination = tmp_path / "snapshot"
+    snapshot.create_snapshot(destination, sources, apply=True)
+    marker_path = destination / snapshot.COMPLETE_FILENAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    raw = json.dumps(marker, sort_keys=False).removesuffix("}")
+    raw += ', "verified": true}'
+    marker_path.chmod(0o644)
+    marker_path.write_text(raw, encoding="utf-8")
+    marker_path.chmod(0o444)
+
+    with pytest.raises(snapshot.SnapshotError, match="duplicates JSON key"):
         snapshot.verify_snapshot(destination)
 
 
