@@ -117,7 +117,7 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
                 "sha256": "2" * 64,
             },
             "conda_toolchain": {
-                "protocol": "schema5-v1.2-r9-offline-conda-toolchain-v1",
+                "protocol": "schema5-v1.2-r10-offline-conda-toolchain-v1",
                 "binding_id": "b" * 64,
             },
             "environment_seed": {
@@ -1203,3 +1203,8 @@ def test_cell_sbatch_templates_signal_early_and_disable_requeue():
             assert "#SBATCH --export=ALL" not in text
     legacy = (repo / "slurm/run_cell_array.sbatch.tmpl").read_text(encoding="utf-8")
     assert "exec python -m agents_scaling.experiment.run_one" in legacy
+    serving = (repo / "slurm/serve_qwen.sbatch.tmpl").read_text(
+        encoding="utf-8"
+    )
+    assert "#SBATCH --mail-user=mabdel03@mit.edu" in serving
+    assert "#SBATCH --mail-type=FAIL" in serving

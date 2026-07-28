@@ -864,13 +864,13 @@ def _r3_probe_paths(
 ) -> tuple[Path, Path, Path, Path, Path, list[tuple[str, Path]], dict[str, str], list[str]]:
     recovery = root / "schema5-v1"
     r3_checkout = recovery / evidence._R3_RELEASE_CHECKOUT_DIRECTORY
-    r9_checkout = recovery / evidence._R9_RELEASE_CHECKOUT_DIRECTORY
-    toolchain = recovery / evidence._R9_TOOLCHAIN_RELATIVE_ROOT
+    r10_checkout = recovery / evidence._R10_RELEASE_CHECKOUT_DIRECTORY
+    toolchain = recovery / evidence._R10_TOOLCHAIN_RELATIVE_ROOT
     temporary = root / "schema5-r3-prelaunch-probe"
     expected_paths = {
         "tagged-r3-release-checkout": r3_checkout,
-        "tagged-r9-release-checkout": r9_checkout,
-        "sealed-r9-conda-toolchain": toolchain,
+        "tagged-r10-release-checkout": r10_checkout,
+        "sealed-r10-conda-toolchain": toolchain,
     }
     if classification == "unsafe_recorded_broken_internal_symlink":
         expected_paths["recorded-shared-conda-base"] = (
@@ -910,7 +910,7 @@ def _r3_probe_paths(
     return (
         recovery,
         r3_checkout,
-        r9_checkout,
+        r10_checkout,
         toolchain,
         output,
         inputs,
@@ -926,7 +926,7 @@ def _r3_prelaunch_failure_envelope(
     (
         _recovery,
         r3_checkout,
-        _r9_checkout,
+        _r10_checkout,
         _toolchain,
         output,
         inputs,
@@ -956,6 +956,14 @@ def _r3_prelaunch_failure_envelope(
             "source_inventory_unchanged": True,
         }
     else:
+        stdout = (
+            f"Source:      {_toolchain / 'base'}\n"
+            f"Destination: {temporary / 'offline-clone-destination'}\n"
+            "Packages: 89\n"
+            "Files: 3\n\n"
+            "Downloading and Extracting Packages: ...working..."
+            "\rpython-3.12 | | 0% \x1b[A done\n"
+        )
         stderr = (
             "OfflineError: EnforceUnusedAdapter called with url "
             "https://conda.anaconda.org/conda-forge/linux-64/python-3.13.conda.\n"
@@ -1048,14 +1056,14 @@ def _record_probe_fixture(
     (
         _recovery,
         r3_checkout,
-        r9_checkout,
+        r10_checkout,
         toolchain,
         output,
         inputs,
         environment,
         argv,
     ) = _r3_probe_paths(tmp_path, classification)
-    for path in (r3_checkout, r9_checkout, toolchain):
+    for path in (r3_checkout, r10_checkout, toolchain):
         path.mkdir(parents=True, exist_ok=True)
         (path / "fixture").write_text(path.name, encoding="utf-8")
     temporary = output.parent
@@ -1077,9 +1085,20 @@ def _record_probe_fixture(
         returncode = 2
     else:
         (temporary / "empty-conda-pkgs").mkdir()
+        success_output = (
+            f"Source:      {toolchain / 'base'}\n"
+            f"Destination: {temporary / 'offline-clone-destination'}\n"
+            "Packages: 89\n"
+            "Files: 3\n\n"
+            "Downloading and Extracting Packages: ...working..."
+            "\rpython-3.12 | | 0% \x1b[A done\n"
+        ).encode()
         failure = (
             b"OfflineError: EnforceUnusedAdapter called with url "
             b"https://conda.anaconda.org/conda-forge/linux-64/python.conda.\n"
+            b"This command is using a remote connection in offline mode.\n"
+            b"OfflineError: EnforceUnusedAdapter called with url "
+            b"https://conda.anaconda.org/conda-forge/noarch/pip.conda.\n"
             b"This command is using a remote connection in offline mode.\n"
         )
         returncode = 1
@@ -1093,7 +1112,12 @@ def _record_probe_fixture(
     def runner(command, **kwargs):
         calls.append((list(command), kwargs))
         return __import__("subprocess").CompletedProcess(
-            command, returncode, b"", failure
+            command,
+            returncode,
+            success_output
+            if classification == "offline_clone_unseeded_release_local_cache"
+            else b"",
+            failure,
         )
 
     kwargs = {
@@ -1207,7 +1231,9 @@ def test_record_r3_prelaunch_attempt_rejects_fabricated_offline_error(
         )
 
     kwargs["runner"] = fabricated
-    with pytest.raises(evidence.EvidenceError, match="remote-fetch context"):
+    with pytest.raises(
+        evidence.EvidenceError, match="remote-fetch/progress context"
+    ):
         evidence.record_prelaunch_attempt(**kwargs, apply=True)
     assert len(calls) == 1
     assert not output.exists()
@@ -1257,7 +1283,9 @@ def test_sealed_r3_envelope_validator_rejects_rehashed_fabricated_offline_error(
             {"stderr": "OfflineError: fabricated\n"}
         ),
     )
-    with pytest.raises(evidence.EvidenceError, match="remote-fetch context"):
+    with pytest.raises(
+        evidence.EvidenceError, match="remote-fetch/progress context"
+    ):
         evidence._validate_r3_prelaunch_failure_envelope(envelope)
 
 
@@ -1291,7 +1319,7 @@ def test_sealed_r3_envelope_rejects_rehashed_diagnostic_wrappers(
     expected = (
         "runtime-identity error signature"
         if classification == "unsafe_recorded_broken_internal_symlink"
-        else "remote-fetch context"
+        else "remote-fetch/progress context"
     )
     with pytest.raises(evidence.EvidenceError, match=expected):
         evidence._validate_r3_prelaunch_failure_envelope(envelope)
@@ -1345,7 +1373,7 @@ def test_record_r3_prelaunch_attempt_brackets_immutable_verification_with_invent
         monkeypatch,
         "unsafe_recorded_broken_internal_symlink",
     )
-    toolchain = dict(kwargs["input_roots"])["sealed-r9-conda-toolchain"]
+    toolchain = dict(kwargs["input_roots"])["sealed-r10-conda-toolchain"]
 
     def mutating_verifier(**_kwargs):
         (toolchain / "fixture").write_text("mutated", encoding="utf-8")
@@ -1366,7 +1394,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (
         recovery,
         r3_checkout,
-        r9_checkout,
+        r10_checkout,
         toolchain,
         output,
         inputs,
@@ -1377,18 +1405,18 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     )
     temporary = output.parent
     temporary.mkdir(parents=True)
-    for checkout in (r3_checkout, r9_checkout):
+    for checkout in (r3_checkout, r10_checkout):
         (checkout / "scripts").mkdir(parents=True)
     r3_pilot = r3_checkout / evidence._R3_PILOT_RELATIVE_PATH
     r3_runtime = r3_checkout / evidence._R3_RUNTIME_IDENTITY_RELATIVE_PATH
     r3_pilot.write_text("exact r3 pilot\n", encoding="utf-8")
     r3_runtime.write_text("exact r3 runtime identity\n", encoding="utf-8")
-    r9_sealer = r9_checkout / evidence._R9_SEALER_RELATIVE_PATH
+    r10_sealer = r10_checkout / evidence._R10_SEALER_RELATIVE_PATH
     provisioner = (
-        r9_checkout / evidence._R9_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
+        r10_checkout / evidence._R10_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
     )
-    r9_sealer.write_text("exact r9 sealer\n", encoding="utf-8")
-    provisioner.write_text("exact r9 provisioner\n", encoding="utf-8")
+    r10_sealer.write_text("exact r10 sealer\n", encoding="utf-8")
+    provisioner.write_text("exact r10 provisioner\n", encoding="utf-8")
     (toolchain / "base/bin").mkdir(parents=True)
     (toolchain / "base/bin/python").write_text(
         "#!/bin/sh\n", encoding="utf-8"
@@ -1396,7 +1424,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (toolchain / "base/bin/conda").write_text(
         "#!/bin/sh\n", encoding="utf-8"
     )
-    monkeypatch.setattr(evidence, "__file__", str(r9_sealer))
+    monkeypatch.setattr(evidence, "__file__", str(r10_sealer))
     monkeypatch.setattr(
         evidence, "_R3_PILOT_SHA256", hashlib.sha256(r3_pilot.read_bytes()).hexdigest()
     )
@@ -1434,8 +1462,8 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
         return {
             "schema_version": evidence.conda_toolchain.SCHEMA_VERSION,
             "protocol": evidence.conda_toolchain.PROTOCOL,
-            "release_tag": "sweep-recovery-schema5-v1.2-r9",
-            "chain_namespace": "schema5-v1.2-r9",
+            "release_tag": "sweep-recovery-schema5-v1.2-r10",
+            "chain_namespace": "schema5-v1.2-r10",
             "toolchain_root": str(toolchain),
             "base_prefix": str(toolchain / "base"),
             "portable_shebang": {
@@ -1970,7 +1998,7 @@ def test_verify_r3_prelaunch_failure_seal_rejects_release_substitution(
     intent = json.loads(artifacts["intent"].read_text(encoding="utf-8"))
     marker = json.loads(artifacts["marker"].read_text(encoding="utf-8"))
 
-    intent["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r9"
+    intent["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r10"
     intent.pop("intent_id")
     intent["intent_id"] = evidence._sha256_bytes(
         evidence._canonical_json(intent)
@@ -1980,7 +2008,7 @@ def test_verify_r3_prelaunch_failure_seal_rejects_release_substitution(
     artifacts["intent"].write_bytes(intent_raw)
     artifacts["intent"].chmod(0o444)
 
-    marker["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r9"
+    marker["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r10"
     marker["intent"]["sha256"] = hashlib.sha256(intent_raw).hexdigest()
     marker["intent"]["intent_id"] = intent["intent_id"]
     marker.pop("seal_id")

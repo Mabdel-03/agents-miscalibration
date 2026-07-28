@@ -229,6 +229,7 @@ def load_monitor_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
     required_alerts = {
         "dispatcher_ledger_stale_seconds": 360,
         "email_retry_delays_seconds": [60, 300, 900, 3600],
+        "prequalification_minimum_disk_free_bytes": 7 * 1024**4,
         "minimum_free_inodes": 1_000_000,
         "minimum_free_inode_fraction": 0.05,
         "no_progress_semantic_scans": 2,

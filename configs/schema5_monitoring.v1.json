@@ -73,6 +73,7 @@
     "dispatcher_ledger_stale_seconds": 360,
     "email_retry_delays_seconds": [60, 300, 900, 3600],
     "heartbeat_stale_seconds": 600,
+    "prequalification_minimum_disk_free_bytes": 7696581394432,
     "minimum_disk_free_bytes": 536870912000,
     "minimum_disk_free_fraction": 0.1,
     "minimum_free_inodes": 1000000,

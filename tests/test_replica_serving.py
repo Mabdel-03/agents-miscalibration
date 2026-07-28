@@ -86,6 +86,8 @@ def test_render_long_profile_uses_tp2_40k_but_serves_model_identity(tmp_path):
     )
     assert f"--server-pool-id \"{registry.server_pool_id(tmp_path)}\"" in text
     assert f'--run-root "{tmp_path.resolve()}"' in text
+    assert "#SBATCH --mail-user=mabdel03@mit.edu" in text
+    assert "#SBATCH --mail-type=FAIL" in text
     assert "#SBATCH --no-requeue" in text
     assert "#SBATCH --export=NONE" in text
     assert "#SBATCH --export=ALL" not in text
@@ -933,7 +935,7 @@ def _frozen_environment_render_kwargs(tmp_path, *, generation=1):
                 "sha256": "2" * 64,
             },
             "conda_toolchain": {
-                "protocol": "schema5-v1.2-r9-offline-conda-toolchain-v1",
+                "protocol": "schema5-v1.2-r10-offline-conda-toolchain-v1",
                 "binding_id": "b" * 64,
             },
             "environment_seed": {
@@ -4291,6 +4293,9 @@ def test_terminal_fenced_job_gets_one_transactional_replacement(
         ("terminal", "700"),
         ("submitted", "701"),
     ]
+    replacement = Path(attempts[1]["sbatch_path"]).read_text(encoding="utf-8")
+    assert "#SBATCH --mail-user=mabdel03@mit.edu" in replacement
+    assert "#SBATCH --mail-type=FAIL" in replacement
     assert persisted["replicas"][replica.replica_id]["health"] is None
 
 

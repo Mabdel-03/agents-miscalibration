@@ -1608,7 +1608,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r9",
+            release_tag="sweep-recovery-schema5-v1.2-r10",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=False,
@@ -1625,7 +1625,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
         output=active,
         chain_id="c" * 64,
         challenge_generation=0,
-        release_tag="sweep-recovery-schema5-v1.2-r9",
+        release_tag="sweep-recovery-schema5-v1.2-r10",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1667,7 +1667,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
         "acknowledged": True,
         "chain_id": "c" * 64,
         "request_id": raw_request["request_id"],
-        "release_tag": "sweep-recovery-schema5-v1.2-r9",
+        "release_tag": "sweep-recovery-schema5-v1.2-r10",
         "release_git_commit": "b" * 40,
         "challenge_generation": 0,
         "challenge_id": raw_request["challenge_id"],
@@ -1738,7 +1738,7 @@ def test_email_delivery_retries_reuse_token_only_in_live_process(
         output=active,
         chain_id="c" * 64,
         challenge_generation=3,
-        release_tag="sweep-recovery-schema5-v1.2-r9",
+        release_tag="sweep-recovery-schema5-v1.2-r10",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1803,7 +1803,7 @@ def test_email_failed_delivery_publishes_no_challenge(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r9",
+            release_tag="sweep-recovery-schema5-v1.2-r10",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1849,7 +1849,7 @@ def test_email_challenge_rejects_generation_and_tool_ancestor_symlinks(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r9",
+            release_tag="sweep-recovery-schema5-v1.2-r10",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1874,7 +1874,7 @@ def test_email_challenge_rejects_generation_and_tool_ancestor_symlinks(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r9",
+            release_tag="sweep-recovery-schema5-v1.2-r10",
             release_git_commit="b" * 40,
             acknowledgement_script=linked_tools / real_tool.name,
             apply=True,
@@ -1911,7 +1911,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
         output=active,
         chain_id="c" * 64,
         challenge_generation=0,
-        release_tag="sweep-recovery-schema5-v1.2-r9",
+        release_tag="sweep-recovery-schema5-v1.2-r10",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1925,7 +1925,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
         output=active,
         chain_id="c" * 64,
         challenge_generation=1,
-        release_tag="sweep-recovery-schema5-v1.2-r9",
+        release_tag="sweep-recovery-schema5-v1.2-r10",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1979,7 +1979,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
             output=active,
             chain_id="d" * 64,
             challenge_generation=1,
-            release_tag="sweep-recovery-schema5-v1.2-r9",
+            release_tag="sweep-recovery-schema5-v1.2-r10",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -2017,7 +2017,7 @@ def test_email_activation_crash_leaves_old_pointer_and_next_repair_supersedes(
             output=active,
             chain_id="c" * 64,
             challenge_generation=generation,
-            release_tag="sweep-recovery-schema5-v1.2-r9",
+            release_tag="sweep-recovery-schema5-v1.2-r10",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -2095,7 +2095,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
         "jobs": [
             {
                 "name": "fleet_readiness",
-                "job_name": "asys-s5-r9-fleet-ready",
+                "job_name": "asys-s5-r10-fleet-ready",
             }
         ],
     }
@@ -2106,7 +2106,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
                 "name": "fleet_readiness",
                 "job_id": "4242",
                 "comment": (
-                    "asys:s5-recovery-v1.2-r9:"
+                    "asys:s5-recovery-v1.2-r10:"
                     + "e" * 64
                     + ":g0000:fleet_readiness"
                 ),
@@ -2115,7 +2115,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
     }
     return {
         "verified": {
-                "chain_protocol": readiness.R9_PROTOCOL,
+                "chain_protocol": readiness.R10_PROTOCOL,
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": _sha(manifest_path),
             "manifest": manifest,
@@ -2454,7 +2454,7 @@ def _archive_capacity_preimage(
     binding = readiness._build_capacity_preimage_archive(
         parent=archive_parent,
         fleet=fleet,
-        chain_id="schema5-v1.2-r9",
+        chain_id="schema5-v1.2-r10",
         chain_generation=1,
         readiness_job_id="4242",
         scheduler_runner=scheduler_runner,
@@ -2481,7 +2481,7 @@ def _validate_capacity_preimage_fixture(
     return readiness._validate_capacity_preimage_archive(
         binding,
         fleet=fleet,
-        chain_id="schema5-v1.2-r9",
+        chain_id="schema5-v1.2-r10",
         chain_generation=1,
         readiness_job_id="4242",
     )

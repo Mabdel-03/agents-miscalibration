@@ -1,4 +1,4 @@
-"""Focused contracts for the superseding schema-5 v1.2-r9 recovery chain."""
+"""Focused contracts for the superseding schema-5 v1.2-r10 recovery chain."""
 
 from __future__ import annotations
 
@@ -604,7 +604,7 @@ def _paths(
         "annotated_tag": True,
         "remote_query_read_only": True,
         "remote": "durable",
-        "remote_commit_ref": "refs/heads/schema5-v1.2-r9",
+        "remote_commit_ref": "refs/heads/schema5-v1.2-r10",
         "remote_commit": COMMIT,
         "remote_tag_object": TAG_OBJECT,
         "remote_peeled_commit": COMMIT,
@@ -722,7 +722,7 @@ def _paths(
     source_package_cache = tmp_path / "source-conda-package-cache"
     source_package_cache.mkdir()
     conda_marker = conda_base / chain.conda_toolchain.MARKER_NAME
-    _json(conda_marker, {"fixture": "sealed-r9-toolchain"})
+    _json(conda_marker, {"fixture": "sealed-r10-toolchain"})
     sealed_conda_toolchain = {
         "schema_version": chain.conda_toolchain.SCHEMA_VERSION,
         "protocol": chain.conda_toolchain.PROTOCOL,
@@ -1089,7 +1089,7 @@ def _paths(
                     "receipt": str(
                         received_paths.recovery_root
                         / "jobs"
-                        / "schema5-v1.2-r9-materialization-pilot.sbatch.receipt.json"
+                        / "schema5-v1.2-r10-materialization-pilot.sbatch.receipt.json"
                     ),
                     "receipt_sha256": "c" * 64,
                     "receipt_id": "d" * 64,
@@ -1359,6 +1359,37 @@ def _paths(
         "_verified_superseded_r8_prelaunch_failure",
         lambda _received_paths: json.loads(json.dumps(r8_binding)),
     )
+    r9_binding = {
+        "passed": True,
+        "root": str(paths.superseded_r9_prelaunch_failure_root),
+        "protocol": chain.r9_prelaunch_failure.PROTOCOL,
+        "release_tag": chain.r9_prelaunch_failure.R9_TAG,
+        "release_git_commit": chain.r9_prelaunch_failure.R9_COMMIT,
+        "chain_namespace": chain.r9_prelaunch_failure.R9_NAMESPACE,
+        "marker": str(
+            paths.superseded_r9_prelaunch_failure_root
+            / chain.r9_prelaunch_failure.MARKER_NAME
+        ),
+        "marker_sha256": "f" * 64,
+        "marker_size": 4096,
+        "marker_id": "0" * 64,
+        "classification": chain.r9_prelaunch_failure.CLASSIFICATION,
+        "retry_in_place": False,
+        "requires_superseding_release": True,
+        "pre_scheduler_submission": True,
+        "known_scheduler_job_ids": [],
+    }
+    paths.superseded_r9_prelaunch_failure_root.mkdir(parents=True)
+    _json(
+        paths.superseded_r9_prelaunch_failure_root
+        / "FIXTURE_R9_PRELAUNCH_FAILURE_BINDING.json",
+        r9_binding,
+    )
+    monkeypatch.setattr(
+        chain,
+        "_verified_superseded_r9_prelaunch_failure",
+        lambda _received_paths: json.loads(json.dumps(r9_binding)),
+    )
 
     def native_r1_report(
         received_paths,
@@ -1493,6 +1524,20 @@ def verify_failure_seal(root, *, recovery_root, scheduler_user=None):
         )
     )
 """
+        elif git_path == "scripts/seal_schema5_r9_prelaunch_failure.py":
+            source = """\
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+def verify_failure_seal(root, *, recovery_root, scheduler_user=None):
+    del recovery_root, scheduler_user
+    return json.loads(
+        (Path(root) / "FIXTURE_R9_PRELAUNCH_FAILURE_BINDING.json").read_text(
+            encoding="utf-8"
+        )
+    )
+"""
         elif git_path == "scripts/provision_schema5_conda_toolchain.py":
             source = """\
 #!/usr/bin/env python3
@@ -1604,7 +1649,7 @@ def _render_applied(
     return payloads, json.loads(paths.chain_manifest.read_text(encoding="utf-8"))
 
 
-def _publish_r9_throughput_attempt(
+def _publish_r10_throughput_attempt(
     paths: chain.RecoveryPaths,
     manifest: dict,
     *,
@@ -2075,7 +2120,7 @@ def _publish_throughput_qualification(
         },
         identity_field="current_id",
     )
-    marker = _publish_r9_throughput_attempt(
+    marker = _publish_r10_throughput_attempt(
         paths,
         manifest,
         pointer_path=pointer_path,
@@ -2144,7 +2189,7 @@ def _promote_throughput_qualification_to_additive_successor(
                 chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
             ),
             "protocol": (
-                "schema5-v1.2-r9-throughput-qualification-"
+                "schema5-v1.2-r10-throughput-qualification-"
                 "failure-drain-intent-v3"
             ),
             "qualification_intent_id": "d" * 64,
@@ -2345,7 +2390,7 @@ def _promote_throughput_qualification_to_additive_successor(
     manifest = json.loads(
         paths.chain_manifest.read_text(encoding="utf-8")
     )
-    successor = _publish_r9_throughput_attempt(
+    successor = _publish_r10_throughput_attempt(
         paths,
         manifest,
         pointer_path=pointer2_path,
@@ -2406,7 +2451,7 @@ def _replace_throughput_success_with_failure(
                 chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
             ),
             "protocol": (
-                "schema5-v1.2-r9-throughput-qualification-"
+                "schema5-v1.2-r10-throughput-qualification-"
                 "failure-drain-intent-v3"
             ),
             "qualification_intent_id": "d" * 64,
@@ -2507,7 +2552,7 @@ def _replace_throughput_success_with_failure(
     return pointer_path, pointer, failure
 
 
-def test_r9_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
+def test_r10_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = _paths(tmp_path, monkeypatch)
@@ -2837,7 +2882,7 @@ def test_watchdog_is_post_initialize_not_a_renderer_bootstrap_prerequisite(
     paths.external_watchdog_drill_marker.unlink()
     paths.watchdog_ready_marker.unlink()
     _, manifest = _render_applied(paths, monkeypatch)
-    assert manifest["prerequisite_evidence"]["schema_version"] == 12
+    assert manifest["prerequisite_evidence"]["schema_version"] == 13
     assert "external_watchdog_drill" not in manifest["prerequisite_evidence"]
     assert "watchdog_ready" not in manifest["prerequisite_evidence"]
     assert len(manifest["jobs"]) == 43
@@ -3680,7 +3725,7 @@ def _arm_bootstrap_watchdog(
                     submitted[item] for item in dependencies
                 ],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r9:"
+                    "asys:s5-recovery-v1.2-r10:"
                     f"{isolated_manifest['chain_id']}:g0000:{name}"
                 ),
                 "script": manifest_row["script"],
@@ -3884,7 +3929,7 @@ def _arm_bootstrap_watchdog(
     deployment = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r9-bootstrap-watchdog-"
+            "schema5-v1.2-r10-bootstrap-watchdog-"
             "deployment-evidence-v1"
         ),
         "passed": True,
@@ -3966,7 +4011,7 @@ def _arm_bootstrap_watchdog(
     journal = {
         "schema_version": chain.SUBMISSION_SCHEMA_VERSION,
         "protocol": (
-            "schema5-v1.2-r9-recovery-chain-repair-journal"
+            "schema5-v1.2-r10-recovery-chain-repair-journal"
         ),
         "chain_id": isolated_manifest["chain_id"],
         "repair_generation": 1,
@@ -3989,7 +4034,7 @@ def _arm_bootstrap_watchdog(
             row["name"]: {
                 "name": row["name"],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r9:"
+                    "asys:s5-recovery-v1.2-r10:"
                     f"{isolated_manifest['chain_id']}:g0001:{row['name']}"
                 ),
                 "job_id": new_ids[row["name"]],
@@ -4012,7 +4057,7 @@ def _arm_bootstrap_watchdog(
                     submitted[item] for item in row["dependencies"]
                 ],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r9:"
+                    "asys:s5-recovery-v1.2-r10:"
                     f"{isolated_manifest['chain_id']}:g0001:{name}"
                 ),
                 "script": row["script"],
@@ -4029,7 +4074,7 @@ def _arm_bootstrap_watchdog(
         if key not in {"receipt_id"}
     }
     repair_receipt.update(
-        protocol="schema5-v1.2-r9-recovery-chain-repair",
+        protocol="schema5-v1.2-r10-recovery-chain-repair",
         submission_journal=str(journal_path),
         submission_journal_sha256=chain._sha256(journal_path),
         repair_generation=1,
@@ -4083,7 +4128,7 @@ def _arm_bootstrap_watchdog(
     repair_provenance = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r9-bootstrap-generation-provenance-v1"
+            "schema5-v1.2-r10-bootstrap-generation-provenance-v1"
         ),
         "passed": True,
         "release_git_commit": manifest["release_git_commit"],
@@ -4488,7 +4533,7 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
     assert not canonical_comments & isolated_comments
     assert all(
         comment.startswith(
-            "asys:s5-recovery-v1.2-r9:"
+            "asys:s5-recovery-v1.2-r10:"
             f"{isolated_manifest['chain_id']}:g0000:"
         )
         for comment in isolated_comments
@@ -4523,19 +4568,19 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
     ("scheduler_kwargs", "message"),
     [
         (
-            {"dependency_drift": "asys-s5v12r9-resume"},
+            {"dependency_drift": "asys-s5v12r10-resume"},
             "scontrol acceptance provenance drifted",
         ),
         (
-            {"dependency_or_drift": "asys-s5v12r9-resume"},
+            {"dependency_or_drift": "asys-s5v12r10-resume"},
             "OR semantics",
         ),
         (
-            {"requeue_drift": "asys-s5v12r9-resume"},
+            {"requeue_drift": "asys-s5v12r10-resume"},
             "scontrol acceptance provenance drifted",
         ),
         (
-            {"spool_drift": "asys-s5v12r9-resume"},
+            {"spool_drift": "asys-s5v12r10-resume"},
             "spooled sbatch differs",
         ),
         (
@@ -4543,11 +4588,11 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
             "foreign squeue job collides",
         ),
         (
-            {"missing_squeue": "asys-s5v12r9-resume"},
+            {"missing_squeue": "asys-s5v12r10-resume"},
             "squeue set is incomplete",
         ),
         (
-            {"missing_sacct": "asys-s5v12r9-resume"},
+            {"missing_sacct": "asys-s5v12r10-resume"},
             "sacct set is incomplete",
         ),
     ],
@@ -4676,7 +4721,7 @@ def test_chain_scheduler_acceptance_crash_after_direct_spool_write_resumes(
         now=1_721_750_400.0,
     )
     _arm_bootstrap_watchdog(paths, scheduler)
-    scheduler.crash_after_spool_write = "asys-s5v12r9-resume"
+    scheduler.crash_after_spool_write = "asys-s5v12r10-resume"
 
     with pytest.raises(
         KeyboardInterrupt, match="after scheduler spool write"
@@ -5676,7 +5721,7 @@ def test_rebound_r1_hashes_cannot_replace_native_protocol_validation(
         )
 
 
-def test_r9_requires_semantic_r1_idempotency_and_zero_mutation_receipts(
+def test_r10_requires_semantic_r1_idempotency_and_zero_mutation_receipts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5887,14 +5932,14 @@ def test_render_cli_accepts_only_canonical_toolchain_and_cache_inputs() -> None:
         "--source-serving-prefix",
         "/serving",
         "--conda-toolchain-root",
-        "/results/recovery/schema5-v1/toolchains/r9/"
+        "/results/recovery/schema5-v1/toolchains/r10/"
         "conda",
         "--source-package-cache",
         "/cache",
         "--materialization-pilot-root",
-        "/results/recovery/schema5-v1/materialization_pilots/schema5-v1.2-r9",
+        "/results/recovery/schema5-v1/materialization_pilots/schema5-v1.2-r10",
         "--slurm-canary-root",
-        "/results/recovery/schema5-v1/slurm_canaries/schema5-v1.2-r9",
+        "/results/recovery/schema5-v1/slurm_canaries/schema5-v1.2-r10",
     ]
     parsed = parser.parse_args(arguments)
     assert parsed.conda_toolchain_root.name == (
@@ -5938,7 +5983,7 @@ def test_noncanonical_or_shared_conda_toolchain_root_is_rejected(
         )
 
 
-def test_schema4_pilot_is_rejected_by_r9_renderer(
+def test_schema4_pilot_is_rejected_by_r10_renderer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6441,12 +6486,12 @@ def test_submission_argv_uses_manifest_dependency_type() -> None:
     assert chain.submission_argv(
         record,
         dependency_job_ids=["101", "202"],
-        comment="asys:s5-recovery-v1.2-r9:abc:g0000:failure_sentinel",
+        comment="asys:s5-recovery-v1.2-r10:abc:g0000:failure_sentinel",
     ) == [
         "sbatch",
         "--parsable",
         "--no-requeue",
-        "--comment=asys:s5-recovery-v1.2-r9:abc:g0000:failure_sentinel",
+        "--comment=asys:s5-recovery-v1.2-r10:abc:g0000:failure_sentinel",
         "--dependency=afterany:101:202",
         "/recovery/20_failure_sentinel.sbatch",
     ]
@@ -6487,7 +6532,7 @@ def test_repair_consumes_generation_scoped_sentinel_classification(
     }
     scheduler = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r9-recovery-scheduler-evidence",
+        "protocol": "schema5-v1.2-r10-recovery-scheduler-evidence",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -6502,7 +6547,7 @@ def test_repair_consumes_generation_scoped_sentinel_classification(
     _json(evidence_path, scheduler)
     marker = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r9-recovery-sentinel-outcome",
+        "protocol": "schema5-v1.2-r10-recovery-sentinel-outcome",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -6776,7 +6821,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     ]
     receipt_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r9-recovery-chain-submission",
+        "protocol": "schema5-v1.2-r10-recovery-chain-submission",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -6897,7 +6942,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     evidence_path = sentinel_root / "SCHEDULER_EVIDENCE.json"
     evidence_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r9-recovery-scheduler-evidence",
+        "protocol": "schema5-v1.2-r10-recovery-scheduler-evidence",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -6916,7 +6961,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     _json(evidence_path, evidence)
     completion_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r9-recovery-sentinel-outcome",
+        "protocol": "schema5-v1.2-r10-recovery-sentinel-outcome",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),

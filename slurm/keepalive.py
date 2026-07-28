@@ -1223,6 +1223,8 @@ def _validate_fleet_script_contract(
         f"#SBATCH --cpus-per-task={replica.cpus_per_task}",
         f"#SBATCH --mem={replica.memory}",
         f"#SBATCH --time={replica.time_limit}",
+        "#SBATCH --mail-user=mabdel03@mit.edu",
+        "#SBATCH --mail-type=FAIL",
         "#SBATCH --no-requeue",
         "#SBATCH --export=NONE",
         f'export ASYS_ROLLOUT_GENERATION="{rollout_generation}"',

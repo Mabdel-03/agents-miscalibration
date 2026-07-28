@@ -7,6 +7,8 @@
 #SBATCH --mem={MEM}
 #SBATCH --time={TIME}
 #SBATCH --output={LOG_DIR}/serve_{PROFILE_NAME}_%j.out
+#SBATCH --mail-user=mabdel03@mit.edu
+#SBATCH --mail-type=FAIL
 #SBATCH --no-requeue
 #SBATCH --export=NONE
 

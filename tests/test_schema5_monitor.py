@@ -37,6 +37,13 @@ def test_monitoring_contract_pins_cadences_and_cardinality():
         "terminate_grace": 30,
     }
     assert config["alerts"]["dispatcher_ledger_stale_seconds"] == 360
+    assert (
+        config["alerts"]["prequalification_minimum_disk_free_bytes"]
+        == 7 * 1024**4
+    )
+    # Lowering the launch reserve does not weaken the live emergency floor.
+    assert config["alerts"]["minimum_disk_free_fraction"] == 0.1
+    assert config["alerts"]["minimum_disk_free_bytes"] == 500 * 1024**3
 
 
 def test_material_fleet_generation_ignores_endpoint_replacement_but_tracks_policy():
