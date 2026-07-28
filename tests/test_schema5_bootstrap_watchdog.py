@@ -2,10 +2,36 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from scripts import schema5_bootstrap_watchdog as watchdog
+
+
+def test_forced_ssh_uses_absolute_binary_null_config_and_minimal_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = json.loads(_config(tmp_path).read_text(encoding="utf-8"))
+    observed: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        observed["environment"] = dict(kwargs["env"])
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='{"passed": true}\n', stderr=""
+        )
+
+    monkeypatch.setattr(watchdog.subprocess, "run", fake_run)
+    assert watchdog._ssh(config, "status") == {"passed": True}
+    argv = observed["argv"]
+    assert isinstance(argv, list)
+    assert argv[:3] == ["/usr/bin/ssh", "-F", "/dev/null"]
+    assert observed["environment"] == {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+    }
 
 
 def _config(tmp_path: Path) -> Path:
@@ -102,11 +128,11 @@ def _status(
                 "name": name,
                 "job_id": job_id,
                 "comment": (
-                    "asys:s5-recovery-v1.2-r3:"
+                    "asys:s5-recovery-v1.2-r4:"
                     f"{'c' * 64}:g{generation:04d}:{name}:"
                     f"{'1' * 16}"
                 ),
-                "job_name": f"asys-r3-{name}",
+                "job_name": f"asys-r4-{name}",
                 "state": (
                     "CANCELLED"
                     if cancelled

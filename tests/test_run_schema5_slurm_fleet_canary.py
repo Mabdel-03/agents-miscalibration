@@ -17,6 +17,82 @@ import pytest
 from scripts import run_schema5_slurm_fleet_canary as canary
 
 
+def test_production_runner_rejects_hostile_git_and_slurm_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile = {
+        "PATH": "/tmp/attacker-bin",
+        "BASH_ENV": "/tmp/attacker-env",
+        "LD_PRELOAD": "/tmp/attacker.so",
+        "GIT_DIR": "/tmp/attacker-git",
+        "GIT_CONFIG_PARAMETERS": "'core.hooksPath=/tmp/attacker-hooks'",
+        "GIT_REPLACE_REF_BASE": "refs/attacker",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/tmp/attacker-hooks",
+        "SBATCH_PARTITION": "attacker",
+        "SQUEUE_FORMAT": "attacker",
+        "SACCT_FORMAT": "attacker",
+        "SCONTROL_ALL": "attacker",
+    }
+    for key, value in hostile.items():
+        monkeypatch.setenv(key, value)
+    observed: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        observed["environment"] = dict(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(canary.subprocess, "run", fake_run)
+    canary._production_runner(["squeue", "-h"])
+
+    environment = observed["environment"]
+    assert isinstance(environment, dict)
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
+
+
+def test_canary_sbatch_directives_precede_shell_and_export_no_ambient_state(
+    tmp_path,
+) -> None:
+    scripts = list(
+        canary._dependency_job_scripts(
+            root=tmp_path,
+            partition="mit_normal",
+            qos="normal",
+            time_limit="00:08:00",
+        ).values()
+    )
+    scripts.extend(
+        [
+            canary._job_script(
+                job_name="asys-s5-serve-canary-deadbeef0000",
+                partition="mit_normal",
+                qos="normal",
+                time_limit="00:08:00",
+            ).encode("utf-8"),
+            canary._turnover_job_script(
+                job_name="asys-s5-serve-turnover-deadbeef0000",
+                partition="mit_normal",
+                qos="normal",
+                time_limit="00:08:00",
+                port=canary.TURNOVER_PORT_MIN,
+            ).encode("utf-8"),
+        ]
+    )
+    for payload in scripts:
+        text = payload.decode("utf-8")
+        shell_start = text.index("set -euo pipefail")
+        assert "#SBATCH --export=NONE\n" in text[:shell_start]
+        assert "#SBATCH --job-name=" in text[:shell_start]
+        assert "#SBATCH" not in text[shell_start:]
+        assert "export PATH=/usr/bin:/bin LC_ALL=C LANG=C" in text
+        assert "readonly PATH" in text
+
+
 def test_dependency_scheduler_since_uses_scheduler_local_wall_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

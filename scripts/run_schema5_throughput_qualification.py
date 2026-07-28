@@ -100,6 +100,7 @@ from agents_scaling.experiment import io as experiment_io  # noqa: E402
 from agents_scaling.models import QWEN3_LADDER  # noqa: E402
 from agents_scaling.serving import protected_capacity  # noqa: E402
 from agents_scaling.serving.fleet_contract import (  # noqa: E402
+    EXPECTED_COUNTS,
     FleetContractError,
     FrozenFleetContract,
     load_fleet_contract,
@@ -117,42 +118,42 @@ from slurm import schema5_control as control  # noqa: E402
 from scripts import render_schema5_recovery_chain_v12 as renderer  # noqa: E402
 
 
-# Qualification artifacts are created by the active r3 chain.  Their schema version
+# Qualification artifacts are created by the active r4 chain.  Their schema version
 # remains v1 where appropriate, but their protocol identity must never claim r2.
 SCHEMA_VERSION = 1
-RECOVERY_CHAIN_PROTOCOL = "schema5-v1.2-r3-recovery-chain"
+RECOVERY_CHAIN_PROTOCOL = "schema5-v1.2-r4-recovery-chain"
 LOAD_ACCOUNTING_SCHEMA_VERSION = 3
 QUALIFICATION_RUN_ID = "schema5_throughput_qualification_v1"
 QUALIFICATION_ROOT_NAME = QUALIFICATION_RUN_ID
 MARKER_NAME = "THROUGHPUT_QUALIFICATION_COMPLETE.json"
-PROTOCOL = "schema5-v1.2-r3-throughput-qualification-v3"
-PLAN_PROTOCOL = "schema5-v1.2-r3-throughput-qualification-load-plan-v3"
-INTENT_PROTOCOL = "schema5-v1.2-r3-throughput-qualification-intent-v3"
+PROTOCOL = "schema5-v1.2-r4-throughput-qualification-v3"
+PLAN_PROTOCOL = "schema5-v1.2-r4-throughput-qualification-load-plan-v3"
+INTENT_PROTOCOL = "schema5-v1.2-r4-throughput-qualification-intent-v3"
 SCHEDULER_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-scheduler-evidence-v3"
+    "schema5-v1.2-r4-throughput-qualification-scheduler-evidence-v3"
 )
 SEMANTIC_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-semantic-evidence-v3"
+    "schema5-v1.2-r4-throughput-qualification-semantic-evidence-v3"
 )
 OBSERVATION_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-observation-v3"
+    "schema5-v1.2-r4-throughput-qualification-observation-v3"
 )
 OBSERVATION_TRANSACTION_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-observation-transaction-v3"
+    "schema5-v1.2-r4-throughput-qualification-observation-transaction-v3"
 )
 EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-evidence-v3"
+    "schema5-v1.2-r4-throughput-qualification-evidence-v3"
 )
-LINEAGE_PROTOCOL = "schema5-v1.2-r3-throughput-qualification-lineage-v3"
+LINEAGE_PROTOCOL = "schema5-v1.2-r4-throughput-qualification-lineage-v3"
 EXECUTION_AUTHORITY_SCHEMA_VERSION = 2
 EXECUTION_AUTHORITY_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-execution-authority-v2"
+    "schema5-v1.2-r4-throughput-qualification-execution-authority-v2"
 )
 ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r4-throughput-qualification-attempt-pointer-v1"
 )
 CURRENT_ATTEMPT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r4-throughput-qualification-current-attempt-v1"
 )
 
 CELL_COUNT = 768
@@ -181,14 +182,18 @@ EXECUTION_AUTHORITY_NAME = "QUALIFICATION_EXECUTION_AUTHORITY.json"
 FAILURE_NAME = "QUALIFICATION_FAILURE.json"
 FAILURE_DRAIN_INTENT_NAME = "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
 FAILURE_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-failure-v3"
+    "schema5-v1.2-r4-throughput-qualification-failure-v4"
 )
 FAILURE_DRAIN_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-failure-drain-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-failure-drain-intent-v3"
 )
-CAPACITY_TRANSITION_NAME = "QUALIFICATION_CAPACITY_TRANSITION_COMPLETE.json"
+CAPACITY_TRANSITION_DIRECTORY = "capacity-transitions"
+CURRENT_CAPACITY_TRANSITION_NAME = "CURRENT_CAPACITY_TRANSITION.json"
 CAPACITY_TRANSITION_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-capacity-transition-v1"
+    "schema5-v1.2-r4-throughput-qualification-capacity-transition-v2"
+)
+CURRENT_CAPACITY_TRANSITION_PROTOCOL = (
+    "schema5-v1.2-r4-throughput-qualification-current-capacity-transition-v1"
 )
 LOCK_NAME = ".throughput-qualification.lock"
 CURRENT_ATTEMPT_NAME = "CURRENT_ATTEMPT.json"
@@ -215,10 +220,10 @@ PREFLIGHT_CAPACITY_CERTIFICATE_NAME = (
 )
 PREFLIGHT_CAPACITY_SHORTFALL_NAME = "PREFLIGHT_CAPACITY_SHORTFALL.json"
 PREFLIGHT_CAPACITY_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-preflight-capacity-certificate-v1"
+    "schema5-v1.2-r4-throughput-preflight-capacity-certificate-v1"
 )
 PREFLIGHT_CAPACITY_SHORTFALL_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-preflight-capacity-shortfall-v1"
+    "schema5-v1.2-r4-throughput-preflight-capacity-shortfall-v1"
 )
 PREFLIGHT_CAPACITY_ALGORITHM = (
     "dispatch_sweeps.plan_admission-sequential-wdrr-v1"
@@ -226,28 +231,28 @@ PREFLIGHT_CAPACITY_ALGORITHM = (
 FANOUT_SLOTS_PER_REPLICA = 24
 MIN_RETAINED_WARM_TURNOVER_GPUS = 4
 CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-cycle-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-cycle-intent-v3"
 )
 CYCLE_INITIALIZED_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-cycle-initialized-v3"
+    "schema5-v1.2-r4-throughput-qualification-cycle-initialized-v3"
 )
 LOAD_EVENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-trusted-event-v3"
+    "schema5-v1.2-r4-throughput-qualification-trusted-event-v3"
 )
 LOAD_WINDOW_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-load-window-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-load-window-intent-v3"
 )
 LOAD_WINDOW_END_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-load-window-end-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-load-window-end-intent-v3"
 )
 CYCLE_DRAIN_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-cycle-drain-v3"
+    "schema5-v1.2-r4-throughput-qualification-cycle-drain-v3"
 )
 LOAD_WINDOW_DRAIN_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-load-window-drain-v3"
+    "schema5-v1.2-r4-throughput-qualification-load-window-drain-v3"
 )
 REFILL_RECONCILIATION_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-refill-reconciliation-v3"
+    "schema5-v1.2-r4-throughput-qualification-refill-reconciliation-v3"
 )
 
 _FAILURE_FIELDS = {
@@ -258,6 +263,7 @@ _FAILURE_FIELDS = {
     "attempt",
     "readiness_generation",
     "reason",
+    "admission_capacity_certificate",
     "additive_scaling_requirement",
     "scheduler_capacity_mutated",
     "rerun_requirement",
@@ -265,6 +271,31 @@ _FAILURE_FIELDS = {
     "cycle_run_roots",
     "refill_reconciliations",
     "failure_id",
+}
+_ADMISSION_CAPACITY_CERTIFICATE_FIELDS = {
+    "path",
+    "sha256",
+    "certificate_id",
+    "capacity_generation",
+    "effective_fleet_contract_sha256",
+    "effective_logical_replicas",
+    "effective_active_gpus",
+    "wave_passed",
+    "selected_cell_count",
+    "target_cell_count",
+    "shortfall_cells",
+    "theoretical_packing_upper_bound",
+}
+_CURRENT_CAPACITY_TRANSITION_FIELDS = {
+    "schema_version",
+    "protocol",
+    "path",
+    "sha256",
+    "transition_id",
+    "from_capacity_generation",
+    "to_capacity_generation",
+    "failed_attempt_id",
+    "pointer_id",
 }
 _SCALING_REQUIREMENT_FIELDS = {
     "serving_profile",
@@ -330,6 +361,14 @@ _CAPACITY_SHORTFALL_REASON_RE = re.compile(
     r"(?P<duration>[0-9]+(?:\.[0-9]+)?) seconds "
     r"\((?P<rate>[0-9][0-9,]*)/day\) is below "
     r"(?P<threshold>[0-9][0-9,]*)\Z"
+)
+_STATIC_ADMISSION_CAPACITY_SHORTFALL_REASON_RE = re.compile(
+    r"static admission capacity shortfall in generation "
+    r"(?P<generation>[1-9][0-9]*): signed certificate selected "
+    r"(?P<selected>[0-9][0-9,]*)/(?P<target>[0-9][0-9,]*) cells "
+    r"with a (?P<shortfall>[0-9][0-9,]*)-cell shortfall; "
+    r"theoretical packing upper bound "
+    r"(?P<upper_bound>[0-9][0-9,]*)\Z"
 )
 
 
@@ -401,6 +440,66 @@ def _is_capacity_shortfall_reason(reason: str) -> bool:
         == math.floor(execution_events * 86_400.0 / duration_seconds)
         and reason == expected
     )
+
+
+def _static_admission_capacity_shortfall_reason(
+    binding: Mapping[str, Any],
+) -> str:
+    """Return the canonical signed-certificate admission shortfall reason."""
+
+    if set(binding) != _ADMISSION_CAPACITY_CERTIFICATE_FIELDS:
+        raise ThroughputQualificationError(
+            "static admission shortfall lacks its exact certificate binding"
+        )
+    generation = binding.get("capacity_generation")
+    selected = binding.get("selected_cell_count")
+    target = binding.get("target_cell_count")
+    shortfall = binding.get("shortfall_cells")
+    upper_bound = binding.get("theoretical_packing_upper_bound")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+        or binding.get("wave_passed") is not False
+        or not isinstance(selected, int)
+        or isinstance(selected, bool)
+        or selected < 0
+        or not isinstance(target, int)
+        or isinstance(target, bool)
+        or target != CEILINGS[-1]
+        or not isinstance(shortfall, int)
+        or isinstance(shortfall, bool)
+        or shortfall != target - selected
+        or shortfall <= 0
+        or not isinstance(upper_bound, int)
+        or isinstance(upper_bound, bool)
+        or not selected <= upper_bound < target
+    ):
+        raise ThroughputQualificationError(
+            "static admission shortfall certificate is not a genuine "
+            "sub-384 capacity proof"
+        )
+    return (
+        f"static admission capacity shortfall in generation {generation}: "
+        f"signed certificate selected {selected:,}/{target:,} cells with a "
+        f"{shortfall:,}-cell shortfall; theoretical packing upper bound "
+        f"{upper_bound:,}"
+    )
+
+
+def _is_static_admission_capacity_shortfall_reason(
+    reason: str,
+    binding: Mapping[str, Any],
+) -> bool:
+    """Recognize only the canonical reason derived from one sealed certificate."""
+
+    if _STATIC_ADMISSION_CAPACITY_SHORTFALL_REASON_RE.fullmatch(reason) is None:
+        return False
+    try:
+        expected = _static_admission_capacity_shortfall_reason(binding)
+    except ThroughputQualificationError:
+        return False
+    return reason == expected
 
 
 @dataclass(frozen=True)
@@ -1115,18 +1214,30 @@ def build_load_plan() -> dict[str, Any]:
             "unit": "trusted_qid_execution_events",
             "repeated_coordinates": True,
             "uniqueness_key": ["attempt", "cycle", "cell", "qid"],
-            "capacity_target": CEILINGS[-1],
-            "measurement_contract": (
-                "certified_exact_384_cuts_with_sealed_work_conserving_refill"
+            "configured_client_ceiling": CEILINGS[-1],
+            "certified_saturation_target_source": (
+                "protected_capacity.static_feasibility_certificate."
+                "selected_cell_count"
             ),
-            "minimum_unfinished_assignments": CEILINGS[-1],
-            "window_intent_policy": "first_clean_exact_384_nonresettable",
+            "measurement_contract": (
+                "signed_fleet_specific_saturation_cuts_with_sealed_"
+                "work_conserving_refill"
+            ),
+            "minimum_unfinished_assignments_source": (
+                "certified_saturation_target"
+            ),
+            "window_intent_policy": (
+                "first_clean_certified_saturation_cut_nonresettable"
+            ),
             "rate_denominator_includes_refill_wall_time": True,
             "graceful_drain_required": True,
         },
         "preflight_capacity_contract": {
             "algorithm": PREFLIGHT_CAPACITY_ALGORITHM,
-            "target_active_cells": CEILINGS[-1],
+            "configured_client_ceiling": CEILINGS[-1],
+            "certificate_selected_count_semantics": (
+                "fleet_specific_work_conserving_saturation_target"
+            ),
             "maximum_microbatch": MAX_BATCH,
             "fanout_slots_per_replica": FANOUT_SLOTS_PER_REPLICA,
             "completion_assumption": "no_completions_during_certified_wave",
@@ -1418,6 +1529,9 @@ def theoretical_profile_packing_upper_bound(
 
 def validate_preflight_capacity_wave(
     value: Mapping[str, Any],
+    *,
+    allow_generation_one_baseline_shortfall: bool = False,
+    allow_intermediate_generation_shortfall: bool = False,
 ) -> dict[str, Any]:
     replicas = value.get("profile_replicas")
     if not isinstance(replicas, Mapping):
@@ -1436,12 +1550,38 @@ def validate_preflight_capacity_wave(
             "preflight capacity wave differs from exact sequential WDRR "
             "recomputation"
         )
-    if expected["passed"] is not True:
+    if (
+        allow_generation_one_baseline_shortfall
+        and (
+            expected["profile_replicas"] != dict(EXPECTED_COUNTS)
+            or expected["passed"] is not False
+            or expected["selected_cell_count"] != 278
+            or expected["shortfall_cells"] != 106
+            or expected["microbatch_count"] != 12
+            or [
+                batch["selected_count"]
+                for batch in expected["microbatches"]
+            ]
+            != [24] * 11 + [14]
+        )
+    ):
+        raise ThroughputQualificationError(
+            "generation-one baseline capacity wave differs from the exact "
+            "22-replica/24-GPU zero-delta shortfall"
+        )
+    if (
+        not allow_generation_one_baseline_shortfall
+        and not allow_intermediate_generation_shortfall
+        and expected["passed"] is not True
+    ):
         raise ThroughputQualificationError(
             "effective serving fleet cannot admit the exact 384-cell "
             "qualification wave"
         )
     if (
+        expected["passed"] is True
+        and not allow_generation_one_baseline_shortfall
+        and (
         expected["microbatch_count"]
         != math.ceil(CEILINGS[-1] / MAX_BATCH)
         or any(
@@ -1459,6 +1599,7 @@ def validate_preflight_capacity_wave(
             summary["selected_fanout"]
             > summary["fanout_capacity"]
             for summary in expected["profile_summary"].values()
+        )
         )
     ):
         raise ThroughputQualificationError(
@@ -1565,7 +1706,7 @@ def build_preflight_capacity_certificate(
         for profile in SERVING_PROFILES
     ):
         raise ThroughputQualificationError(
-            "effective fleet is not a positive profile-preserving additive "
+            "effective fleet is not a profile-preserving non-reducing "
             "extension of the base fleet"
         )
     delta_counts = {
@@ -1603,8 +1744,35 @@ def build_preflight_capacity_certificate(
         }
         for profile in sorted(SERVING_PROFILES)
     }
+    zero_delta = not any(delta_counts.values())
+    generation_one_baseline = (
+        capacity_generation == 1
+        and zero_delta
+        and base == dict(EXPECTED_COUNTS)
+        and effective == base
+        and sum(base.values()) == 22
+        and base_gpus == 24
+        and proposed_effective_fleet_contract_sha256
+        == base_fleet_contract_sha256
+    )
+    if capacity_generation == 1 and not generation_one_baseline:
+        raise ThroughputQualificationError(
+            "capacity generation one must bind the exact zero-delta "
+            "22-replica/24-GPU base fleet"
+        )
+    if capacity_generation > 1 and (
+        zero_delta
+        or proposed_effective_fleet_contract_sha256
+        == base_fleet_contract_sha256
+    ):
+        raise ThroughputQualificationError(
+            "post-baseline capacity generations require a positive additive "
+            "fleet transition"
+        )
     wave = validate_preflight_capacity_wave(
-        simulate_preflight_capacity_wave(effective)
+        simulate_preflight_capacity_wave(effective),
+        allow_generation_one_baseline_shortfall=generation_one_baseline,
+        allow_intermediate_generation_shortfall=capacity_generation > 1,
     )
     initial_fairness = {"cursor": 0, "deficits": {}}
     final_fairness = {
@@ -1926,6 +2094,14 @@ def preflight_capacity_report(
         not output.is_absolute()
         or output.name != PREFLIGHT_CAPACITY_CERTIFICATE_NAME
         or output.is_symlink()
+        or (
+            capacity_generation > 1
+            and (
+                output.parent.name
+                != f"c{capacity_generation:06d}"
+                or output.parent.parent.name != "capacity-generations"
+            )
+        )
     ):
         raise ThroughputQualificationError(
             "preflight certificate output must be an absolute canonical "
@@ -1961,73 +2137,6 @@ def preflight_capacity_report(
         for profile in sorted(SERVING_PROFILES)
     }
     wave = simulate_preflight_capacity_wave(effective_replicas)
-    shared = {
-        "schema_version": LOAD_ACCOUNTING_SCHEMA_VERSION,
-        "release_git_commit": release_git_commit,
-        "source_tree_sha256": source_tree_sha256,
-        "capacity_generation": capacity_generation,
-        "base_fleet_contract": {
-            "path": str(base_path),
-            "sha256": _sha256_file(base_path),
-        },
-        "proposed_effective_fleet_contract": {
-            "path": str(effective_path),
-            "sha256": _sha256_file(effective_path),
-        },
-        "additive_overlay_contract": {
-            "path": str(overlay_path),
-            "sha256": _sha256_file(overlay_path),
-        },
-        "dispatcher_source": {
-            "path": str(resolved["dispatcher source"]),
-            "sha256": source_binding["dispatcher_source_sha256"],
-        },
-        "qualification_runner_source": {
-            "path": str(resolved["qualification runner source"]),
-            "sha256": source_binding[
-                "qualification_runner_source_sha256"
-            ],
-        },
-        "base_profile_replicas": base_replicas,
-        "effective_profile_replicas": effective_replicas,
-        "wave": wave,
-    }
-    if wave["passed"] is not True:
-        shortfall = _with_identity(
-            {
-                **shared,
-                "protocol": PREFLIGHT_CAPACITY_SHORTFALL_PROTOCOL,
-                "passed": False,
-                "reason": (
-                    "effective fleet cannot admit 384 cells under exact "
-                    "sequential WDRR without completions"
-                ),
-                "required_action": (
-                    "publish one solver-certified multi-replica additive "
-                    "overlay, then regenerate protected capacity, fleet "
-                    "readiness, and smoke evidence before qualification"
-                ),
-            },
-            "shortfall_id",
-        )
-        shortfall_path = (
-            output.parent / PREFLIGHT_CAPACITY_SHORTFALL_NAME
-        )
-        if apply:
-            _write_once(
-                shortfall_path,
-                shortfall,
-                description="preflight capacity shortfall",
-            )
-        return {
-            "status": "static_capacity_shortfall",
-            "passed": False,
-            "submitted": False,
-            "shortfall": shortfall,
-            "shortfall_marker": (
-                str(shortfall_path) if apply else None
-            ),
-        }
     certificate = build_preflight_capacity_certificate(
         capacity_generation=capacity_generation,
         release_git_commit=release_git_commit,
@@ -2068,6 +2177,9 @@ def preflight_capacity_report(
         "status": "complete" if apply else "dry_run",
         "passed": True,
         "submitted": False,
+        "configured_client_ceiling": wave["target_active_cells"],
+        "certified_saturation_target": wave["selected_cell_count"],
+        "full_ceiling_fit": wave["passed"],
         "certificate": certificate,
         "certificate_path": str(output) if apply else None,
     }
@@ -2098,12 +2210,34 @@ def verify_authorized_preflight_capacity(
             "protected capacity lacks the static feasibility certificate"
         )
     certificate_path = Path(str(certificate_binding.get("path", "")))
-    expected_path = (
+    expected_generation = int(
+        context.protected_capacity_contract.capacity_generation
+    )
+    generation_one_path = (
         context.readiness_root / PREFLIGHT_CAPACITY_CERTIFICATE_NAME
     ).resolve()
+    expected_path = (
+        context.protected_capacity_contract
+        .static_feasibility_certificate_path
+        .resolve()
+    )
+    try:
+        expected_path.relative_to(context.readiness_root)
+    except ValueError as exc:
+        raise ThroughputQualificationError(
+            "static feasibility certificate escapes the readiness root"
+        ) from exc
     if (
         not certificate_path.is_absolute()
         or certificate_path != expected_path
+        or (
+            expected_generation == 1
+            and certificate_path != generation_one_path
+        )
+        or (
+            expected_generation > 1
+            and certificate_path == generation_one_path
+        )
         or not certificate_path.is_file()
         or certificate_path.is_symlink()
         or certificate_path.stat().st_nlink != 1
@@ -2238,6 +2372,22 @@ def verify_authorized_preflight_capacity(
             "static feasibility certificate is not the exact release, "
             "plan, fleet, source, and trusted readiness generation"
         )
+    packing = theoretical_profile_packing_upper_bound(effective_counts)
+    wave = certificate["wave"]
+    if (
+        not isinstance(wave, Mapping)
+        or not isinstance(wave.get("passed"), bool)
+        or not isinstance(wave.get("target_active_cells"), int)
+        or isinstance(wave.get("target_active_cells"), bool)
+        or not isinstance(wave.get("shortfall_cells"), int)
+        or isinstance(wave.get("shortfall_cells"), bool)
+        or packing.get("kind")
+        != "non_executable_cheapest_cell_upper_bound"
+        or not isinstance(packing.get("total_fit"), int)
+    ):
+        raise ThroughputQualificationError(
+            "static feasibility certificate lacks exact admission accounting"
+        )
     return {
         "path": str(certificate_path),
         "sha256": _sha256_file(certificate_path),
@@ -2246,10 +2396,147 @@ def verify_authorized_preflight_capacity(
         "effective_fleet_contract_sha256": certificate[
             "proposed_effective_fleet_contract_sha256"
         ],
+        "effective_logical_replicas": certificate[
+            "effective_logical_replicas"
+        ],
+        "effective_active_gpus": certificate["effective_active_gpus"],
+        "wave_passed": wave["passed"],
+        "selected_cell_count": certificate["selected_cell_count"],
+        "target_cell_count": wave["target_active_cells"],
+        "shortfall_cells": wave["shortfall_cells"],
+        "theoretical_packing_upper_bound": packing["total_fit"],
         "selected_cell_ids_sha256": certificate[
             "selected_cell_ids_sha256"
         ],
     }
+
+
+def _validated_admission_capacity_certificate_binding(
+    context: QualificationContext,
+    value: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate and compact one attempt's immutable admission certificate."""
+
+    if value is None:
+        certificate_path = (
+            context.protected_capacity_contract
+            .static_feasibility_certificate_path
+            .resolve()
+        )
+        raw_binding: Mapping[str, Any] = {
+            "path": str(certificate_path),
+            "sha256": (
+                context.protected_capacity_contract
+                .static_feasibility_certificate_sha256
+            ),
+            "certificate_id": (
+                context.protected_capacity_contract
+                .static_feasibility_certificate_id
+            ),
+        }
+    else:
+        raw_binding = value
+        certificate_path = Path(str(raw_binding.get("path", "")))
+    if (
+        not certificate_path.is_absolute()
+        or certificate_path.is_symlink()
+        or not certificate_path.is_file()
+        or certificate_path.resolve() != certificate_path
+        or certificate_path.stat().st_nlink != 1
+        or stat.S_IMODE(certificate_path.stat().st_mode) & 0o222
+    ):
+        raise ThroughputQualificationError(
+            "admission capacity certificate path is unsafe"
+        )
+    try:
+        certificate_path.relative_to(context.readiness_root)
+    except ValueError as exc:
+        raise ThroughputQualificationError(
+            "admission capacity certificate escapes the readiness root"
+        ) from exc
+    certificate = validate_preflight_capacity_certificate(
+        _read_json(
+            certificate_path,
+            description="attempt admission capacity certificate",
+            sealed=True,
+        )
+    )
+    effective_counts = {
+        str(profile): int(count)
+        for profile, count in dict(
+            certificate["effective_profile_replicas"]
+        ).items()
+    }
+    packing = theoretical_profile_packing_upper_bound(effective_counts)
+    wave = certificate["wave"]
+    compact = {
+        "path": str(certificate_path),
+        "sha256": _sha256_file(certificate_path),
+        "certificate_id": certificate["certificate_id"],
+        "capacity_generation": certificate["capacity_generation"],
+        "effective_fleet_contract_sha256": certificate[
+            "proposed_effective_fleet_contract_sha256"
+        ],
+        "effective_logical_replicas": certificate[
+            "effective_logical_replicas"
+        ],
+        "effective_active_gpus": certificate["effective_active_gpus"],
+        "wave_passed": wave["passed"],
+        "selected_cell_count": certificate["selected_cell_count"],
+        "target_cell_count": wave["target_active_cells"],
+        "shortfall_cells": wave["shortfall_cells"],
+        "theoretical_packing_upper_bound": packing["total_fit"],
+    }
+    readiness = (
+        context.attempt_pointer.get("readiness_generation")
+        if isinstance(context.attempt_pointer, Mapping)
+        else None
+    )
+    generation_one_path = (
+        context.readiness_root / PREFLIGHT_CAPACITY_CERTIFICATE_NAME
+    ).resolve()
+    if (
+        set(compact) != _ADMISSION_CAPACITY_CERTIFICATE_FIELDS
+        or raw_binding.get("path") != compact["path"]
+        or raw_binding.get("sha256") != compact["sha256"]
+        or raw_binding.get("certificate_id") != compact["certificate_id"]
+        or certificate.get("release_git_commit")
+        != context.release_git_commit
+        or certificate.get("source_tree_sha256")
+        != context.source_tree_sha256
+        or certificate.get("dispatcher_source_sha256")
+        != context.dispatcher_source_sha256
+        or certificate.get("qualification_runner_source_sha256")
+        != context.qualification_runner_source_sha256
+        or (
+            compact["capacity_generation"] == 1
+            and certificate_path != generation_one_path
+        )
+        or (
+            compact["capacity_generation"] > 1
+            and certificate_path == generation_one_path
+        )
+        or (
+            isinstance(readiness, Mapping)
+            and (
+                readiness.get("capacity_generation")
+                != compact["capacity_generation"]
+                or readiness.get("fleet_contract_sha256")
+                != compact["effective_fleet_contract_sha256"]
+            )
+        )
+        or (
+            value is not None
+            and (
+                set(value) != _ADMISSION_CAPACITY_CERTIFICATE_FIELDS
+                or dict(value) != compact
+            )
+        )
+    ):
+        raise ThroughputQualificationError(
+            "attempt admission capacity certificate binding drifted"
+        )
+    return compact
 
 
 def _compact_prerequisite(
@@ -2551,6 +2838,47 @@ def load_qualification_context(
     )
 
 
+def _with_effective_protected_capacity(
+    context: QualificationContext,
+    control_value: Mapping[str, Any],
+) -> QualificationContext:
+    """Bind an attempt to the current generation, preserving gen-1 manifest pins."""
+
+    try:
+        authority = control.effective_protected_capacity_binding(
+            control_value,
+            verify_files=True,
+        )
+        contract = control.load_effective_protected_capacity_contract(
+            control_value,
+            verify_files=True,
+        )
+    except control.ControlError as exc:
+        raise ThroughputQualificationError(
+            f"current protected-capacity authority is invalid: {exc}"
+        ) from exc
+    compact = {
+        "marker": str(Path(str(authority["path"])).resolve()),
+        "marker_sha256": str(authority["sha256"]),
+        "marker_id": str(authority["marker_id"]),
+    }
+    if (
+        contract.path != Path(compact["marker"])
+        or contract.sha256 != compact["marker_sha256"]
+        or contract.marker_id != compact["marker_id"]
+        or contract.capacity_generation
+        != int(authority["capacity_generation"])
+    ):
+        raise ThroughputQualificationError(
+            "current protected-capacity marker and contract disagree"
+        )
+    return replace(
+        context,
+        protected_capacity=compact,
+        protected_capacity_contract=contract,
+    )
+
+
 def _control_guard(value: Mapping[str, Any]) -> dict[str, Any]:
     immutable = value.get("immutable")
     pinned_runs = immutable.get("runs") if isinstance(immutable, Mapping) else None
@@ -2758,13 +3086,63 @@ def _attempt_context_from_pointer(
     path: Path,
     pointer: Mapping[str, Any],
 ) -> QualificationContext:
-    return replace(
+    context = replace(
         base,
         qualification_root=Path(str(pointer["attempt_root"])),
         run_root=Path(str(pointer["run_root"])),
         dispatcher_state=Path(str(pointer["dispatcher_state"])),
         attempt_pointer_path=path,
         attempt_pointer=dict(pointer),
+    )
+    intent_path = context.qualification_root / INTENT_NAME
+    if not intent_path.exists() and not intent_path.is_symlink():
+        return context
+    intent = _read_json(
+        intent_path,
+        description="generation-scoped qualification intent",
+        sealed=True,
+    )
+    binding = intent.get("protected_capacity")
+    if (
+        not isinstance(binding, Mapping)
+        or set(binding) != {"marker", "marker_sha256", "marker_id"}
+    ):
+        raise ThroughputQualificationError(
+            "qualification intent protected-capacity binding is malformed"
+        )
+    try:
+        contract = protected_capacity.load_contract(
+            binding["marker"],
+            expected_release_git_commit=context.release_git_commit,
+            expected_release_tag_object=context.release_tag_object,
+            expected_marker_id=str(binding["marker_id"]),
+            expected_sha256=str(binding["marker_sha256"]),
+            expected_source_tree_sha256=context.source_tree_sha256,
+            expected_dispatcher_source_sha256=(
+                context.dispatcher_source_sha256
+            ),
+            expected_qualification_runner_source_sha256=(
+                context.qualification_runner_source_sha256
+            ),
+        )
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ThroughputQualificationError(
+            f"attempt protected-capacity authority is invalid: {exc}"
+        ) from exc
+    readiness = pointer["readiness_generation"]
+    if (
+        contract.capacity_generation
+        != readiness["capacity_generation"]
+        or contract.effective_fleet_contract_sha256
+        != readiness["fleet_contract_sha256"]
+    ):
+        raise ThroughputQualificationError(
+            "attempt protected-capacity and readiness generations disagree"
+        )
+    return replace(
+        context,
+        protected_capacity=dict(binding),
+        protected_capacity_contract=contract,
     )
 
 
@@ -3376,6 +3754,275 @@ def _validate_additive_retry(
     }
 
 
+def _capacity_transition_path(
+    base: QualificationContext,
+    *,
+    from_generation: int,
+    to_generation: int,
+) -> Path:
+    if (
+        from_generation < 1
+        or to_generation != from_generation + 1
+    ):
+        raise ThroughputQualificationError(
+            "capacity-transition generations must be one contiguous step"
+        )
+    return (
+        base.qualification_base
+        / CAPACITY_TRANSITION_DIRECTORY
+        / (
+            f"c{from_generation:06d}-to-"
+            f"c{to_generation:06d}.json"
+        )
+    )
+
+
+def _capacity_transition_pointer_payload(
+    path: Path,
+    transition: Mapping[str, Any],
+) -> dict[str, Any]:
+    additive = transition.get("additive_transition")
+    failed_attempt = transition.get("failed_attempt")
+    if not isinstance(additive, Mapping) or not isinstance(
+        failed_attempt,
+        Mapping,
+    ):
+        raise ThroughputQualificationError(
+            "capacity-transition pointer source is malformed"
+        )
+    return _with_identity(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "protocol": CURRENT_CAPACITY_TRANSITION_PROTOCOL,
+            "path": str(path.resolve()),
+            "sha256": _sha256_file(path),
+            "transition_id": transition["transition_id"],
+            "from_capacity_generation": additive[
+                "from_capacity_generation"
+            ],
+            "to_capacity_generation": additive[
+                "to_capacity_generation"
+            ],
+            "failed_attempt_id": failed_attempt["attempt_id"],
+        },
+        "pointer_id",
+    )
+
+
+def _load_capacity_transition_journal(
+    base: QualificationContext,
+    *,
+    recover_unpublished_head: bool = False,
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Load a contiguous immutable transition journal and its marker-last head."""
+
+    root = base.qualification_base / CAPACITY_TRANSITION_DIRECTORY
+    pointer_path = (
+        base.qualification_base / CURRENT_CAPACITY_TRANSITION_NAME
+    )
+    if not root.exists():
+        if pointer_path.exists() or pointer_path.is_symlink():
+            raise ThroughputQualificationError(
+                "capacity-transition head exists without its journal"
+            )
+        return []
+    if root.is_symlink() or not root.is_dir():
+        raise ThroughputQualificationError(
+            "capacity-transition journal root is unsafe"
+        )
+    records: list[tuple[Path, dict[str, Any]]] = []
+    expected_from = 1
+    for path in sorted(root.iterdir()):
+        match = re.fullmatch(
+            r"c([0-9]{6})-to-c([0-9]{6})[.]json",
+            path.name,
+        )
+        if (
+            match is None
+            or path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_nlink != 1
+            or stat.S_IMODE(path.stat().st_mode) & 0o222
+        ):
+            raise ThroughputQualificationError(
+                "capacity-transition journal contains an unsafe member"
+            )
+        from_generation = int(match.group(1))
+        to_generation = int(match.group(2))
+        record = _read_json(
+            path,
+            description="capacity-transition journal record",
+            sealed=True,
+        )
+        _verify_identity(
+            record,
+            "transition_id",
+            description="capacity-transition journal record",
+        )
+        additive = record.get("additive_transition")
+        if (
+            record.get("schema_version") != SCHEMA_VERSION
+            or record.get("protocol") != CAPACITY_TRANSITION_PROTOCOL
+            or record.get("passed") is not True
+            or not isinstance(additive, Mapping)
+            or additive.get("from_capacity_generation")
+            != from_generation
+            or additive.get("to_capacity_generation")
+            != to_generation
+            or from_generation != expected_from
+            or to_generation != from_generation + 1
+        ):
+            raise ThroughputQualificationError(
+                "capacity-transition journal skips, duplicates, or drifts "
+                "from its generation identity"
+            )
+        records.append((path, record))
+        expected_from = to_generation
+    if not records:
+        raise ThroughputQualificationError(
+            "capacity-transition journal directory is empty"
+        )
+    if not pointer_path.exists() and not pointer_path.is_symlink():
+        if recover_unpublished_head:
+            return records
+        raise ThroughputQualificationError(
+            "capacity-transition journal lacks its marker-last head"
+        )
+    pointer = _read_json(
+        pointer_path,
+        description="current capacity-transition pointer",
+        sealed=True,
+    )
+    if set(pointer) != _CURRENT_CAPACITY_TRANSITION_FIELDS:
+        raise ThroughputQualificationError(
+            "current capacity-transition pointer fields drifted"
+        )
+    _verify_identity(
+        pointer,
+        "pointer_id",
+        description="current capacity-transition pointer",
+    )
+    matching_indexes = [
+        index
+        for index, (path, record) in enumerate(records)
+        if pointer == _capacity_transition_pointer_payload(path, record)
+    ]
+    if (
+        len(matching_indexes) != 1
+        or (
+            matching_indexes[0] != len(records) - 1
+            and not (
+                recover_unpublished_head
+                and matching_indexes[0] == len(records) - 2
+            )
+        )
+    ):
+        raise ThroughputQualificationError(
+            "current capacity-transition pointer does not bind the journal head"
+        )
+    return records
+
+
+def _replace_current_capacity_transition(
+    base: QualificationContext,
+    *,
+    path: Path,
+    transition: Mapping[str, Any],
+) -> None:
+    destination = (
+        base.qualification_base / CURRENT_CAPACITY_TRANSITION_NAME
+    )
+    payload = _capacity_transition_pointer_payload(path, transition)
+    encoded = _canonical_bytes(payload)
+    existing: dict[str, Any] | None = None
+    if destination.exists() or destination.is_symlink():
+        existing = _read_json(
+            destination,
+            description="current capacity-transition pointer",
+            sealed=True,
+        )
+        if existing == payload:
+            return
+        if set(existing) != _CURRENT_CAPACITY_TRANSITION_FIELDS:
+            raise ThroughputQualificationError(
+                "current capacity-transition pointer fields drifted"
+            )
+        _verify_identity(
+            existing,
+            "pointer_id",
+            description="current capacity-transition pointer",
+        )
+        if (
+            existing.get("to_capacity_generation")
+            != payload["from_capacity_generation"]
+            or payload["to_capacity_generation"]
+            != int(existing["to_capacity_generation"]) + 1
+        ):
+            raise ThroughputQualificationError(
+                "capacity-transition pointer replacement would roll back or "
+                "skip the immutable journal head"
+            )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    stale = sorted(
+        child
+        for child in destination.parent.iterdir()
+        if child.name.startswith(f".{destination.name}.")
+        and child.name.endswith(".publishing")
+    )
+    if stale:
+        if (
+            len(stale) != 1
+            or stale[0].is_symlink()
+            or not stale[0].is_file()
+            or stale[0].stat().st_nlink != 1
+            or stat.S_IMODE(stale[0].stat().st_mode) & 0o222
+            or stale[0].read_bytes() != encoded
+        ):
+            raise ThroughputQualificationError(
+                "current capacity-transition pointer has an ambiguous or "
+                "mismatched crash preimage"
+            )
+        descriptor = os.open(
+            stale[0],
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(stale[0], destination)
+        _fsync_directory(destination.parent)
+        observed = _read_json(
+            destination,
+            description="recovered current capacity-transition pointer",
+            sealed=True,
+        )
+        if observed != payload:
+            raise ThroughputQualificationError(
+                "recovered capacity-transition pointer bytes drifted"
+            )
+        return
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".publishing",
+        dir=destination.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o444)
+        os.replace(temporary, destination)
+        _fsync_directory(destination.parent)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def publish_capacity_transition_authority(
     chain_manifest: Path,
     *,
@@ -3437,7 +4084,6 @@ def publish_capacity_transition_authority(
         raise ThroughputQualificationError(
             "capacity-transition timestamp is invalid"
         )
-    destination = base.qualification_base / CAPACITY_TRANSITION_NAME
     with _qualification_lock(base.qualification_base):
         locked_receipt = _read_json(
             receipt_path,
@@ -3462,6 +4108,10 @@ def publish_capacity_transition_authority(
             )
         control_value, guard = load_paused_control(base)
         readiness = load_readiness_generation(base, control_value)
+        effective_base = _with_effective_protected_capacity(
+            base,
+            control_value,
+        )
         pointers = _load_attempt_pointers(base)
         if not pointers:
             raise ThroughputQualificationError(
@@ -3492,6 +4142,78 @@ def publish_capacity_transition_authority(
             control_value=control_value,
             readiness_generation=readiness,
         )
+        from_generation = int(
+            additive["from_capacity_generation"]
+        )
+        to_generation = int(additive["to_capacity_generation"])
+        destination = _capacity_transition_path(
+            base,
+            from_generation=from_generation,
+            to_generation=to_generation,
+        )
+        if destination.exists() or destination.is_symlink():
+            existing_transition = _read_json(
+                destination,
+                description="existing capacity-transition journal record",
+                sealed=True,
+            )
+            _verify_identity(
+                existing_transition,
+                "transition_id",
+                description="existing capacity-transition journal record",
+            )
+            existing_timestamp = existing_transition.get(
+                "created_timestamp"
+            )
+            if (
+                existing_transition.get("protocol")
+                != CAPACITY_TRANSITION_PROTOCOL
+                or not isinstance(existing_timestamp, (int, float))
+                or isinstance(existing_timestamp, bool)
+                or not math.isfinite(float(existing_timestamp))
+                or float(existing_timestamp) <= 0
+            ):
+                raise ThroughputQualificationError(
+                    "existing capacity-transition journal record is malformed"
+                )
+            timestamp = float(existing_timestamp)
+        journal = _load_capacity_transition_journal(
+            base,
+            recover_unpublished_head=True,
+        )
+        if (
+            (not journal and from_generation != 1)
+            or (
+                journal
+                and int(
+                    journal[-1][1]["additive_transition"][
+                        "to_capacity_generation"
+                    ]
+                )
+                not in {from_generation, to_generation}
+            )
+        ):
+            raise ThroughputQualificationError(
+                "capacity-transition publication skips or duplicates a "
+                "generation"
+            )
+        raw_to_certificate = verify_authorized_preflight_capacity(
+            effective_base,
+            control_value=control_value,
+            readiness_generation=readiness,
+        )
+        to_certificate = (
+            _validated_admission_capacity_certificate_binding(
+                effective_base,
+                {
+                    field: raw_to_certificate[field]
+                    for field in _ADMISSION_CAPACITY_CERTIFICATE_FIELDS
+                },
+            )
+        )
+        from_certificate = dict(
+            failure["admission_capacity_certificate"]
+        )
         identity = {
             "schema_version": SCHEMA_VERSION,
             "protocol": CAPACITY_TRANSITION_PROTOCOL,
@@ -3504,7 +4226,16 @@ def publish_capacity_transition_authority(
             "chain_id": base.chain_id,
             "manifest": str(base.chain_manifest),
             "manifest_sha256": base.chain_manifest_sha256,
-            "protected_capacity": dict(base.protected_capacity),
+            "from_protected_capacity": dict(
+                current.protected_capacity
+            ),
+            "to_protected_capacity": dict(
+                effective_base.protected_capacity
+            ),
+            "from_admission_capacity_certificate": (
+                from_certificate
+            ),
+            "to_admission_capacity_certificate": to_certificate,
             "failed_attempt": _completion_attempt_binding(current),
             "failure": {
                 "path": str(
@@ -3527,7 +4258,10 @@ def publish_capacity_transition_authority(
             },
             "paused_control": guard,
             "additive_transition": additive,
-            "readiness_generation": dict(readiness),
+            "from_readiness_generation": dict(
+                previous["readiness_generation"]
+            ),
+            "to_readiness_generation": dict(readiness),
             "created_at": _utc(timestamp),
             "created_timestamp": timestamp,
         }
@@ -3561,12 +4295,92 @@ def publish_capacity_transition_authority(
                 authority,
                 description="qualification capacity-transition authority",
             )
+            _replace_current_capacity_transition(
+                base,
+                path=destination,
+                transition=authority,
+            )
+            _load_capacity_transition_journal(base)
         return {
             "status": "published" if apply else "dry_run",
             "writes_performed": apply,
             "transition": authority,
             "transition_marker": str(destination),
+            "transition_pointer": str(
+                base.qualification_base
+                / CURRENT_CAPACITY_TRANSITION_NAME
+            ),
         }
+
+
+def _require_capacity_transition_for_retry(
+    base: QualificationContext,
+    *,
+    previous_path: Path,
+    previous: Mapping[str, Any],
+    control_value: Mapping[str, Any],
+    readiness_generation: Mapping[str, Any],
+    additive_retry: Mapping[str, Any],
+) -> None:
+    """Require the journal head to authorize exactly this one-generation retry."""
+
+    journal = _load_capacity_transition_journal(base)
+    if not journal:
+        raise ThroughputQualificationError(
+            "additive qualification retry lacks a capacity-transition journal"
+        )
+    transition_path, transition = journal[-1]
+    previous_context = _attempt_context_from_pointer(
+        base,
+        path=previous_path,
+        pointer=previous,
+    )
+    failure = _load_terminal_failure(previous_context)
+    effective = _with_effective_protected_capacity(base, control_value)
+    raw_to_certificate = verify_authorized_preflight_capacity(
+        effective,
+        control_value=control_value,
+        readiness_generation=readiness_generation,
+    )
+    to_certificate = _validated_admission_capacity_certificate_binding(
+        effective,
+        {
+            field: raw_to_certificate[field]
+            for field in _ADMISSION_CAPACITY_CERTIFICATE_FIELDS
+        },
+    )
+    expected_path = _capacity_transition_path(
+        base,
+        from_generation=int(
+            additive_retry["from_capacity_generation"]
+        ),
+        to_generation=int(additive_retry["to_capacity_generation"]),
+    )
+    if (
+        transition_path != expected_path
+        or transition.get("additive_transition")
+        != dict(additive_retry)
+        or transition.get("failed_attempt")
+        != _completion_attempt_binding(previous_context)
+        or transition.get("failure", {}).get("failure_id")
+        != failure["failure_id"]
+        or transition.get("from_protected_capacity")
+        != dict(previous_context.protected_capacity)
+        or transition.get("to_protected_capacity")
+        != dict(effective.protected_capacity)
+        or transition.get("from_admission_capacity_certificate")
+        != failure["admission_capacity_certificate"]
+        or transition.get("to_admission_capacity_certificate")
+        != to_certificate
+        or transition.get("from_readiness_generation")
+        != previous["readiness_generation"]
+        or transition.get("to_readiness_generation")
+        != dict(readiness_generation)
+    ):
+        raise ThroughputQualificationError(
+            "capacity-transition journal head does not authorize the exact "
+            "one-generation retry"
+        )
 
 
 def create_or_load_attempt_context(
@@ -3588,6 +4402,8 @@ def create_or_load_attempt_context(
             LOCK_NAME,
             ATTEMPT_POINTER_DIRECTORY,
             CURRENT_ATTEMPT_NAME,
+            CAPACITY_TRANSITION_DIRECTORY,
+            CURRENT_CAPACITY_TRANSITION_NAME,
         }
         legacy = sorted(
             path.name
@@ -3664,6 +4480,14 @@ def create_or_load_attempt_context(
             previous=latest,
             control_value=control_value,
             readiness_generation=readiness_generation,
+        )
+        _require_capacity_transition_for_retry(
+            base,
+            previous_path=latest_path,
+            previous=latest,
+            control_value=control_value,
+            readiness_generation=readiness_generation,
+            additive_retry=additive_retry,
         )
         predecessor = _attempt_pointer_ref(latest_path, latest)
     else:
@@ -3881,6 +4705,7 @@ def _intent_identity(
     client_qos: str,
     readiness_generation: Mapping[str, Any],
     control_guard: Mapping[str, Any],
+    admission_capacity_certificate: Mapping[str, Any],
     created_timestamp: float,
 ) -> dict[str, Any]:
     plan = build_load_plan()
@@ -3914,6 +4739,13 @@ def _intent_identity(
         "readiness_generation": dict(readiness_generation),
         "control_guard": dict(control_guard),
         "protected_capacity": dict(context.protected_capacity),
+        "configured_client_ceiling": CEILINGS[-1],
+        "certified_saturation_target": int(
+            admission_capacity_certificate["selected_cell_count"]
+        ),
+        "admission_capacity_certificate": dict(
+            admission_capacity_certificate
+        ),
         "execution_authority": {
             "path": str(
                 context.qualification_root / EXECUTION_AUTHORITY_NAME
@@ -3950,6 +4782,9 @@ _INTENT_FIELDS = {
     "readiness_generation",
     "control_guard",
     "protected_capacity",
+    "configured_client_ceiling",
+    "certified_saturation_target",
+    "admission_capacity_certificate",
     "execution_authority",
     "created_at",
     "created_timestamp",
@@ -3968,6 +4803,15 @@ def validate_intent(
         raise ThroughputQualificationError("qualification intent fields drifted")
     _verify_identity(value, "intent_id", description="qualification intent")
     timestamp = value.get("created_timestamp")
+    admission_certificate = value.get("admission_capacity_certificate")
+    expected_admission_certificate: dict[str, Any] | None = None
+    if isinstance(admission_certificate, Mapping):
+        expected_admission_certificate = (
+            _validated_admission_capacity_certificate_binding(
+                context,
+                admission_certificate,
+            )
+        )
     if (
         value.get("schema_version") != LOAD_ACCOUNTING_SCHEMA_VERSION
         or value.get("protocol") != INTENT_PROTOCOL
@@ -4007,6 +4851,15 @@ def validate_intent(
             client_qos=str(value.get("client_qos", "")),
         )
         or value.get("protected_capacity") != dict(context.protected_capacity)
+        or value.get("configured_client_ceiling") != CEILINGS[-1]
+        or expected_admission_certificate is None
+        or value.get("admission_capacity_certificate")
+        != expected_admission_certificate
+        or value.get("certified_saturation_target")
+        != expected_admission_certificate["selected_cell_count"]
+        or not 0
+        < int(value.get("certified_saturation_target", 0))
+        <= CEILINGS[-1]
         or value.get("execution_authority")
         != {
             "path": str(
@@ -4057,6 +4910,7 @@ def create_or_load_intent(
     client_qos: str,
     readiness_generation: Mapping[str, Any],
     control_guard: Mapping[str, Any],
+    admission_capacity_certificate: Mapping[str, Any],
     now: float,
 ) -> dict[str, Any]:
     authorize_client_placement(
@@ -4082,6 +4936,13 @@ def create_or_load_intent(
                 "trusted serving/readiness generation changed after qualification "
                 "intent publication"
             )
+        if existing["admission_capacity_certificate"] != dict(
+            admission_capacity_certificate
+        ):
+            raise ThroughputQualificationError(
+                "signed saturation target changed after qualification intent "
+                "publication"
+            )
         return existing
     if root.exists():
         if root.is_symlink() or not root.is_dir():
@@ -4105,6 +4966,9 @@ def create_or_load_intent(
             client_qos=client_qos,
             readiness_generation=readiness_generation,
             control_guard=control_guard,
+            admission_capacity_certificate=(
+                admission_capacity_certificate
+            ),
             created_timestamp=now,
         ),
         "intent_id",
@@ -6103,11 +6967,12 @@ def _validate_refill_reconciliation(
         semantic, intent=intent, sequence=sequence
     )
     active = int(scheduler_value["active_qualification_cells"])
+    configured_ceiling, saturation_target = _capacity_targets(intent)
     expected_eligible = bool(
-        scheduler_value["ceiling"] == CEILINGS[-1]
-        and active == CEILINGS[-1]
+        scheduler_value["ceiling"] == configured_ceiling
+        and active == saturation_target
         and scheduler_value["unfinished_load_assignments"]
-        >= CEILINGS[-1]
+        >= saturation_target
         and not unresolved_reservations
         and semantic_value["integrity_incidents"] == 0
         and semantic_value["transport_censor_incidents"] == 0
@@ -6119,7 +6984,7 @@ def _validate_refill_reconciliation(
         or semantic_value["captured_timestamp"] != timestamp
         or scheduler_value["unfinished_load_assignments"]
         != semantic_value["unfinished_load_assignments"]
-        or value.get("active_deficit") != CEILINGS[-1] - active
+        or value.get("active_deficit") != saturation_target - active
         or value.get("measurement_eligible") is not expected_eligible
         or value.get("prior_refill_id")
         != (None if prior is None else prior["refill_id"])
@@ -6386,11 +7251,12 @@ def record_refill_reconciliation(
         intent=intent,
     )
     active = int(scheduler_value["active_qualification_cells"])
+    configured_ceiling, saturation_target = _capacity_targets(intent)
     eligible = bool(
-        scheduler_value["ceiling"] == CEILINGS[-1]
-        and active == CEILINGS[-1]
+        scheduler_value["ceiling"] == configured_ceiling
+        and active == saturation_target
         and scheduler_value["unfinished_load_assignments"]
-        >= CEILINGS[-1]
+        >= saturation_target
         and semantic_value["integrity_incidents"] == 0
         and semantic_value["transport_censor_incidents"] == 0
         and semantic_value["load_integrity_incidents"] == 0
@@ -6421,7 +7287,7 @@ def record_refill_reconciliation(
             "prior_refill_id": (
                 None if not records else records[-1]["refill_id"]
             ),
-            "active_deficit": CEILINGS[-1] - active,
+            "active_deficit": saturation_target - active,
             "measurement_eligible": eligible,
         },
         "refill_id",
@@ -6714,6 +7580,8 @@ _LOAD_WINDOW_INTENT_FIELDS = {
     "start_trusted_qid_execution_events",
     "start_load_strata_progress",
     "start_cycle_ids",
+    "configured_client_ceiling",
+    "certified_saturation_target",
     "required_active_assignments",
     "minimum_unfinished_assignments",
     "minimum_duration_seconds",
@@ -6726,13 +7594,18 @@ _LOAD_WINDOW_INTENT_FIELDS = {
 
 def _is_clean_load_window_start(
     observation: Mapping[str, Any],
+    *,
+    configured_client_ceiling: int = CEILINGS[-1],
+    certified_saturation_target: int = CEILINGS[-1],
 ) -> bool:
     scheduler = observation["scheduler"]
     semantic = observation["semantic"]
     return bool(
-        scheduler["ceiling"] == CEILINGS[-1]
-        and scheduler["active_qualification_cells"] == CEILINGS[-1]
-        and scheduler["unfinished_load_assignments"] >= CEILINGS[-1]
+        scheduler["ceiling"] == configured_client_ceiling
+        and scheduler["active_qualification_cells"]
+        == certified_saturation_target
+        and scheduler["unfinished_load_assignments"]
+        >= certified_saturation_target
         and scheduler["qualification_tasks_only"] is True
         and scheduler["production_run_ids"] == []
         and semantic["integrity_incidents"] == 0
@@ -6748,9 +7621,14 @@ def _load_window_intent_payload(
     intent: Mapping[str, Any],
     observation: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if not _is_clean_load_window_start(observation):
+    configured_ceiling, saturation_target = _capacity_targets(intent)
+    if not _is_clean_load_window_start(
+        observation,
+        configured_client_ceiling=configured_ceiling,
+        certified_saturation_target=saturation_target,
+    ):
         raise ThroughputQualificationError(
-            "load-window intent requires a clean exact-384 observation"
+            "load-window intent requires a clean signed saturation cut"
         )
     receipt = observation["receipt"]
     semantic = observation["semantic"]
@@ -6809,8 +7687,10 @@ def _load_window_intent_payload(
                 record["cycle_id"]
                 for record in semantic["load_cycle_inventory"]
             ],
-            "required_active_assignments": CEILINGS[-1],
-            "minimum_unfinished_assignments": CEILINGS[-1],
+            "configured_client_ceiling": configured_ceiling,
+            "certified_saturation_target": saturation_target,
+            "required_active_assignments": saturation_target,
+            "minimum_unfinished_assignments": saturation_target,
             "minimum_duration_seconds": HEALTH_SOAK_384_SECONDS,
             "maximum_observation_gap_seconds": (
                 MAX_OBSERVATION_GAP_SECONDS
@@ -6840,10 +7720,15 @@ def validate_load_window_intent(
         "window_intent_id",
         description="load-window intent",
     )
+    configured_ceiling, saturation_target = _capacity_targets(intent)
     eligible = [
         observation
         for observation in observations
-        if _is_clean_load_window_start(observation)
+        if _is_clean_load_window_start(
+            observation,
+            configured_client_ceiling=configured_ceiling,
+            certified_saturation_target=saturation_target,
+        )
     ]
     if not eligible:
         raise ThroughputQualificationError(
@@ -6856,7 +7741,8 @@ def validate_load_window_intent(
     )
     if dict(value) != expected:
         raise ThroughputQualificationError(
-            "load-window intent is not bound to the first clean exact-384 "
+            "load-window intent is not bound to the first clean signed "
+            "saturation "
             "observation; reset or cherry-pick is forbidden"
         )
     return expected
@@ -6868,7 +7754,12 @@ def _maybe_publish_load_window_intent(
     intent: Mapping[str, Any],
     observation: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    if not _is_clean_load_window_start(observation):
+    configured_ceiling, saturation_target = _capacity_targets(intent)
+    if not _is_clean_load_window_start(
+        observation,
+        configured_client_ceiling=configured_ceiling,
+        certified_saturation_target=saturation_target,
+    ):
         return None
     path = root / LOAD_WINDOW_INTENT_NAME
     if path.exists() or path.is_symlink():
@@ -7034,10 +7925,15 @@ def load_observations(
             }
         )
     window_path = root / LOAD_WINDOW_INTENT_NAME
+    configured_ceiling, saturation_target = _capacity_targets(intent)
     eligible = [
         observation
         for observation in loaded
-        if _is_clean_load_window_start(observation)
+        if _is_clean_load_window_start(
+            observation,
+            configured_client_ceiling=configured_ceiling,
+            certified_saturation_target=saturation_target,
+        )
     ]
     if window_path.exists() or window_path.is_symlink():
         validate_load_window_intent(
@@ -7162,10 +8058,6 @@ def evaluate_observations(
         raise ThroughputQualificationError(
             f"qualification did not exercise every ceiling: {ceilings_seen}"
         )
-    if any(peak_by_ceiling[ceiling] != ceiling for ceiling in CEILINGS):
-        raise ThroughputQualificationError(
-            f"qualification did not reconcile to every exact ceiling: {peak_by_ceiling}"
-        )
     if completion_timestamp is None:
         raise ThroughputQualificationError(
             "semantic reference cycle is not schema-5 complete"
@@ -7189,6 +8081,12 @@ def evaluate_observations(
             sealed=True,
         )
     start_sequence = load_window_intent.get("start_sequence")
+    configured_ceiling = load_window_intent.get(
+        "configured_client_ceiling"
+    )
+    saturation_target = load_window_intent.get(
+        "certified_saturation_target"
+    )
     _verify_identity(
         load_window_intent,
         "window_intent_id",
@@ -7201,6 +8099,14 @@ def evaluate_observations(
         != LOAD_WINDOW_INTENT_PROTOCOL
         or load_window_intent.get("event_unit")
         != "trusted_qid_execution_events"
+        or configured_ceiling != CEILINGS[-1]
+        or not isinstance(saturation_target, int)
+        or isinstance(saturation_target, bool)
+        or not 0 < saturation_target <= configured_ceiling
+        or load_window_intent.get("required_active_assignments")
+        != saturation_target
+        or load_window_intent.get("minimum_unfinished_assignments")
+        != saturation_target
         or not isinstance(start_sequence, int)
         or isinstance(start_sequence, bool)
         or not 0 <= start_sequence < len(observations)
@@ -7213,6 +8119,16 @@ def evaluate_observations(
     ):
         raise ThroughputQualificationError(
             "load-window intent schema or accounting unit drifted"
+        )
+    expected_peaks = {
+        ceiling: _phase_active_target(ceiling, saturation_target)
+        for ceiling in CEILINGS
+    }
+    if peak_by_ceiling != expected_peaks:
+        raise ThroughputQualificationError(
+            "qualification did not reconcile every configured ceiling to "
+            f"its signed saturation target: {peak_by_ceiling} != "
+            f"{expected_peaks}"
         )
     start = observations[start_sequence]
     if (
@@ -7233,9 +8149,13 @@ def evaluate_observations(
         raise ThroughputQualificationError(
             "load-window start observation differs from its immutable intent"
         )
-    if not _is_clean_load_window_start(start):
+    if not _is_clean_load_window_start(
+        start,
+        configured_client_ceiling=configured_ceiling,
+        certified_saturation_target=saturation_target,
+    ):
         raise ThroughputQualificationError(
-            "load-window start is no longer a clean exact-384 observation"
+            "load-window start is no longer a clean signed saturation cut"
         )
 
     window: list[Mapping[str, Any]] = [start]
@@ -7264,9 +8184,11 @@ def evaluate_observations(
                 "inside the non-resettable load window"
             )
         if (
-            scheduler["ceiling"] != CEILINGS[-1]
-            or scheduler["active_qualification_cells"] != CEILINGS[-1]
-            or scheduler["unfinished_load_assignments"] < CEILINGS[-1]
+            scheduler["ceiling"] != configured_ceiling
+            or scheduler["active_qualification_cells"]
+            != saturation_target
+            or scheduler["unfinished_load_assignments"]
+            < saturation_target
         ):
             if last_mature_candidate is not None:
                 (
@@ -7472,7 +8394,7 @@ def evaluate_observations(
             <= float(deficits[0]["captured_timestamp"])
         ):
             raise ThroughputQualificationError(
-                f"refill sequence {sequence} lacks a later certified exact-384 "
+                f"refill sequence {sequence} lacks a later signed saturation "
                 "cut"
             )
         refill_wall_seconds += (
@@ -7502,14 +8424,15 @@ def evaluate_observations(
         ],
         "cycle_count": len(final_cycles),
         "cycle_inventory": [dict(record) for record in final_cycles],
-        "capacity_target": CEILINGS[-1],
-        "certified_exact_384_cuts": True,
+        "configured_client_ceiling": configured_ceiling,
+        "certified_saturation_target": saturation_target,
+        "certified_saturation_target_cuts": True,
         "work_conserving_refill": True,
         "sealed_refill_deficit_journal": True,
         "refill_deficit_scan_count": len(deficit_records),
         "refill_wall_seconds": refill_wall_seconds,
         "rate_denominator_includes_refill_wall_time": True,
-        "minimum_unfinished_assignments": CEILINGS[-1],
+        "minimum_unfinished_assignments": saturation_target,
         "all_strata_progress": True,
         "stratum_execution_event_deltas": stratum_deltas,
         "throughput_events_per_day": throughput,
@@ -7529,7 +8452,9 @@ def evaluate_observations(
         "loaded_384_seconds": math.floor(loaded_seconds),
         "loaded_384_useful_qids": execution_events,
         "loaded_384_observation_count": len(window),
-        "certified_exact_384_cuts": True,
+        "configured_client_ceiling": configured_ceiling,
+        "certified_saturation_target": saturation_target,
+        "certified_saturation_target_cuts": True,
         "throughput_qids_per_day": throughput,
         "throughput_unit": "trusted_qid_execution_events",
         "every_stratum_progress": True,
@@ -7543,7 +8468,7 @@ def evaluate_observations(
 def load_window_ready(
     observations: Sequence[Mapping[str, Any]],
 ) -> bool:
-    """Return whether the immutable window has already met the r3 load gate.
+    """Return whether the immutable window has already met the r4 load gate.
 
     A started window that loses its capacity-target cut, backlog, cadence, or
     integrity raises
@@ -7561,6 +8486,12 @@ def load_window_ready(
     window_intent = _read_json(
         path, description="load-window intent", sealed=True
     )
+    configured_ceiling = int(
+        window_intent["configured_client_ceiling"]
+    )
+    saturation_target = int(
+        window_intent["certified_saturation_target"]
+    )
     start_sequence = int(window_intent["start_sequence"])
     start = observations[start_sequence]
     prior = start
@@ -7576,9 +8507,11 @@ def load_window_ready(
                 "non-resettable load window exceeded its observation cadence"
             )
         if (
-            scheduler["ceiling"] != CEILINGS[-1]
-            or scheduler["active_qualification_cells"] != CEILINGS[-1]
-            or scheduler["unfinished_load_assignments"] < CEILINGS[-1]
+            scheduler["ceiling"] != configured_ceiling
+            or scheduler["active_qualification_cells"]
+            != saturation_target
+            or scheduler["unfinished_load_assignments"]
+            < saturation_target
             or semantic["integrity_incidents"] != 0
             or semantic["transport_censor_incidents"] != 0
             or semantic["load_integrity_incidents"] != 0
@@ -8263,8 +9196,14 @@ def _marker_payload(
         "loaded_384_observation_count": evaluation[
             "loaded_384_observation_count"
         ],
-        "certified_exact_384_cuts": evaluation[
-            "certified_exact_384_cuts"
+        "configured_client_ceiling": evaluation[
+            "configured_client_ceiling"
+        ],
+        "certified_saturation_target": evaluation[
+            "certified_saturation_target"
+        ],
+        "certified_saturation_target_cuts": evaluation[
+            "certified_saturation_target_cuts"
         ],
         "throughput_qids_per_day": evaluation["throughput_qids_per_day"],
         "throughput_unit": evaluation["throughput_unit"],
@@ -8507,7 +9446,9 @@ def verify_completed_qualification(
                 "loaded_384_seconds",
                 "loaded_384_useful_qids",
                 "loaded_384_observation_count",
-                "certified_exact_384_cuts",
+                "configured_client_ceiling",
+                "certified_saturation_target",
+                "certified_saturation_target_cuts",
                 "throughput_qids_per_day",
                 "throughput_unit",
                 "every_stratum_progress",
@@ -10343,6 +11284,90 @@ def _scaling_requirement(
     }
 
 
+def _static_admission_scaling_requirement(
+    context: QualificationContext,
+    certificate_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive one additive replica from the signed no-QID wave pressure."""
+
+    binding = _validated_admission_capacity_certificate_binding(
+        context,
+        certificate_binding,
+    )
+    if binding["wave_passed"] is not False:
+        raise ThroughputQualificationError(
+            "static scaling requires a signed admission shortfall"
+        )
+    certificate = validate_preflight_capacity_certificate(
+        _read_json(
+            Path(str(binding["path"])),
+            description="static-shortfall admission certificate",
+            sealed=True,
+        )
+    )
+    summary = certificate.get("wave", {}).get("profile_summary")
+    if not isinstance(summary, Mapping) or set(summary) != set(
+        SERVING_PROFILES
+    ):
+        raise ThroughputQualificationError(
+            "static-shortfall profile pressure is malformed"
+        )
+    candidates: list[tuple[str, int, int]] = []
+    for profile in sorted(SERVING_PROFILES):
+        row = summary.get(profile)
+        if not isinstance(row, Mapping):
+            raise ThroughputQualificationError(
+                "static-shortfall profile pressure row is malformed"
+            )
+        replicas = row.get("replicas")
+        plan_fanout = row.get("plan_fanout")
+        selected_fanout = row.get("selected_fanout")
+        if (
+            not isinstance(replicas, int)
+            or isinstance(replicas, bool)
+            or replicas <= 0
+            or not isinstance(plan_fanout, int)
+            or isinstance(plan_fanout, bool)
+            or not isinstance(selected_fanout, int)
+            or isinstance(selected_fanout, bool)
+            or not 0 <= selected_fanout <= plan_fanout
+        ):
+            raise ThroughputQualificationError(
+                "static-shortfall profile pressure values are invalid"
+            )
+        candidates.append(
+            (profile, plan_fanout - selected_fanout, replicas)
+        )
+    profile, backlog, live_replicas = candidates[0]
+    for candidate_profile, candidate_backlog, candidate_replicas in candidates[1:]:
+        if (
+            candidate_backlog * live_replicas
+            > backlog * candidate_replicas
+        ):
+            profile, backlog, live_replicas = (
+                candidate_profile,
+                candidate_backlog,
+                candidate_replicas,
+            )
+    tp_size = int(SERVING_PROFILE_REGISTRY[profile].tp_size)
+    return {
+        "serving_profile": profile,
+        "server_pool_root": str(context.server_pool_root),
+        "backlog_fanout_work": backlog,
+        "live_replicas": live_replicas,
+        "backlog_work_per_replica": backlog / live_replicas,
+        "additional_replicas": 1,
+        "tensor_parallel_size": tp_size,
+        "additional_gpus": tp_size,
+        "requirement": (
+            "add one TP=2 replica pair (2 GPUs)"
+            if tp_size == 2
+            else "add one replica (1 GPU)"
+        ),
+        "capacity_mutated": False,
+    }
+
+
 _FAILURE_DRAIN_INTENT_FIELDS = {
     "schema_version",
     "protocol",
@@ -10582,6 +11607,9 @@ def _publish_terminal_failure(
         cycle_records,
         require_read_only=True,
     )
+    admission_certificate = (
+        _validated_admission_capacity_certificate_binding(context)
+    )
     scaling = _scaling_requirement(context)
     receipt_path = Path(str(final["receipt_path"])).resolve()
     payload = _with_identity(
@@ -10595,6 +11623,7 @@ def _publish_terminal_failure(
                 intent["readiness_generation"]
             ),
             "reason": reason,
+            "admission_capacity_certificate": admission_certificate,
             "additive_scaling_requirement": scaling,
             "scheduler_capacity_mutated": False,
             "rerun_requirement": (
@@ -10691,6 +11720,22 @@ def _load_terminal_failure(
         raise ThroughputQualificationError(
             "terminal qualification failure marker is malformed"
         )
+    raw_admission_certificate = failure.get(
+        "admission_capacity_certificate"
+    )
+    try:
+        admission_certificate = (
+            _validated_admission_capacity_certificate_binding(
+                context,
+                (
+                    raw_admission_certificate
+                    if isinstance(raw_admission_certificate, Mapping)
+                    else None
+                ),
+            )
+        )
+    except ThroughputQualificationError:
+        admission_certificate = None
     profile = scaling.get("serving_profile")
     live_replicas = scaling.get("live_replicas")
     backlog = scaling.get("backlog_fanout_work")
@@ -10820,6 +11865,9 @@ def _load_terminal_failure(
         )
         or not isinstance(failure.get("reason"), str)
         or not str(failure["reason"]).strip()
+        or admission_certificate is None
+        or failure.get("admission_capacity_certificate")
+        != admission_certificate
         or not isinstance(failure.get("rerun_requirement"), str)
         or "fresh qualification namespace and intent"
         not in str(failure["rerun_requirement"])
@@ -10899,7 +11947,42 @@ def _publish_and_raise_terminal_failure(
     _raise_terminal_failure(context)
 
 
-def _next_ceiling(observations: Sequence[Mapping[str, Any]]) -> int:
+def _capacity_targets(intent: Mapping[str, Any]) -> tuple[int, int]:
+    """Return the configured client ceiling and signed fleet saturation cut."""
+
+    ceiling = intent.get("configured_client_ceiling")
+    saturation = intent.get("certified_saturation_target")
+    certificate = intent.get("admission_capacity_certificate")
+    if (
+        not isinstance(ceiling, int)
+        or isinstance(ceiling, bool)
+        or ceiling != CEILINGS[-1]
+        or not isinstance(saturation, int)
+        or isinstance(saturation, bool)
+        or not 0 < saturation <= ceiling
+        or not isinstance(certificate, Mapping)
+        or certificate.get("target_cell_count") != ceiling
+        or certificate.get("selected_cell_count") != saturation
+    ):
+        raise ThroughputQualificationError(
+            "qualification capacity ceiling/saturation binding is invalid"
+        )
+    return ceiling, saturation
+
+
+def _phase_active_target(ceiling: int, saturation_target: int) -> int:
+    if ceiling not in CEILINGS or not 0 < saturation_target <= CEILINGS[-1]:
+        raise ThroughputQualificationError(
+            "qualification phase capacity target is invalid"
+        )
+    return min(ceiling, saturation_target)
+
+
+def _next_ceiling(
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    saturation_target: int = CEILINGS[-1],
+) -> int:
     peaks = {ceiling: 0 for ceiling in CEILINGS}
     for observation in observations:
         scheduler = observation["scheduler"]
@@ -10908,9 +11991,11 @@ def _next_ceiling(observations: Sequence[Mapping[str, Any]]) -> int:
             int(scheduler["active_qualification_cells"]),
         )
     for ceiling in CEILINGS:
-        if peaks[ceiling] != ceiling:
+        if peaks[ceiling] != _phase_active_target(
+            ceiling, saturation_target
+        ):
             return ceiling
-    return 384
+    return CEILINGS[-1]
 
 
 def _stage_dispatch_batch(
@@ -10918,6 +12003,7 @@ def _stage_dispatch_batch(
     ceiling: int,
     active: int,
     useful_qids: int,
+    saturation_target: int = CEILINGS[-1],
     admission_closed: bool = False,
 ) -> int:
     """Return the exact next microbatch without crossing the isolated stage."""
@@ -10926,7 +12012,9 @@ def _stage_dispatch_batch(
         ceiling not in CEILINGS
         or not isinstance(active, int)
         or isinstance(active, bool)
-        or not 0 <= active <= ceiling
+        or not 0 <= active <= _phase_active_target(
+            ceiling, saturation_target
+        )
         or not isinstance(useful_qids, int)
         or isinstance(useful_qids, bool)
         or not 0 <= useful_qids <= TOTAL_QIDS
@@ -10936,7 +12024,10 @@ def _stage_dispatch_batch(
         )
     if admission_closed:
         return 0
-    return min(MAX_BATCH, ceiling - active)
+    return min(
+        MAX_BATCH,
+        _phase_active_target(ceiling, saturation_target) - active,
+    )
 
 
 def _load_window_refill_permitted(root: Path) -> bool:
@@ -10967,14 +12058,14 @@ def _ensure_load_backlog(
     control_value: Mapping[str, Any],
     semantic: Mapping[str, Any],
     now: float,
+    saturation_target: int = CEILINGS[-1],
 ) -> list[LoadCycleContext]:
     """Keep one full future wave available without mutating a prior cycle."""
 
     cycles = load_cycle_inventory(context, intent=intent)
     unfinished = int(semantic["unfinished_load_assignments"])
-    # A 768-assignment low-water mark guarantees at least 384 unfinished
-    # assignments after the next <=384 active wave is admitted.
-    while unfinished < 2 * CEILINGS[-1]:
+    # Two signed saturation cuts keep a complete future refill wave available.
+    while unfinished < 2 * saturation_target:
         cycle = initialize_load_cycle(
             context,
             intent=intent,
@@ -11103,6 +12194,11 @@ def execute_qualification(
         readiness_generation = load_readiness_generation(
             base_context, control_value
         )
+        if capacity_certificate_loader is verify_authorized_preflight_capacity:
+            base_context = _with_effective_protected_capacity(
+                base_context,
+                control_value,
+            )
         current_attempt_path = (
             base_context.qualification_base / CURRENT_ATTEMPT_NAME
         )
@@ -11131,7 +12227,7 @@ def execute_qualification(
                 # on mutable runtime capacity checks and must not attempt to
                 # create a successor namespace.
                 _raise_terminal_failure(replay_context)
-        capacity_certificate_loader(
+        raw_capacity_certificate = capacity_certificate_loader(
             base_context,
             control_value=control_value,
             readiness_generation=readiness_generation,
@@ -11142,6 +12238,26 @@ def execute_qualification(
             readiness_generation=readiness_generation,
             now=clock(),
         )
+        admission_certificate: dict[str, Any] | None = None
+        if (
+            isinstance(raw_capacity_certificate, Mapping)
+            and _ADMISSION_CAPACITY_CERTIFICATE_FIELDS.issubset(
+                raw_capacity_certificate
+            )
+        ):
+            admission_certificate = (
+                _validated_admission_capacity_certificate_binding(
+                    context,
+                    {
+                        field: raw_capacity_certificate[field]
+                        for field in _ADMISSION_CAPACITY_CERTIFICATE_FIELDS
+                    },
+                )
+            )
+        if admission_certificate is None:
+            raise ThroughputQualificationError(
+                "qualification lacks its exact signed fleet saturation target"
+            )
         failure_path = context.qualification_root / FAILURE_NAME
         if failure_path.exists() or failure_path.is_symlink():
             # A restart of a sealed failed attempt is a read-only replay.  In
@@ -11183,12 +12299,16 @@ def execute_qualification(
             client_qos=selected_qos,
             readiness_generation=readiness_generation,
             control_guard=guard,
+            admission_capacity_certificate=admission_certificate,
             now=clock(),
         )
         if intent["control_guard"] != guard:
             raise ThroughputQualificationError(
                 "production admission/ramp state changed after qualification intent"
             )
+        configured_client_ceiling, saturation_target = _capacity_targets(
+            intent
+        )
         initialize_qualification_run(
             context,
             intent=intent,
@@ -11295,7 +12415,7 @@ def execute_qualification(
         def refill_and_capture_load_window(
             current_control: Mapping[str, Any],
         ) -> None:
-            """Reconcile deficits durably, refill, then commit one exact-384 cut."""
+            """Refill and commit one signed fleet-saturation cut at ceiling 384."""
 
             if not observations:
                 raise QualificationWindowContinuityError(
@@ -11305,8 +12425,12 @@ def execute_qualification(
                 observations[-1]["receipt"]["captured_timestamp"]
             )
             preceding_dispatch: Mapping[str, Any] | None = None
-            for _ in range(2 * math.ceil(CEILINGS[-1] / MAX_BATCH)):
-                scheduler, semantic, reconciliation = scan(CEILINGS[-1])
+            for _ in range(
+                2 * math.ceil(saturation_target / MAX_BATCH)
+            ):
+                scheduler, semantic, reconciliation = scan(
+                    configured_client_ceiling
+                )
                 recovered_dispatch, unresolved_reservations = (
                     _recover_unconsumed_refill_dispatch(
                         context,
@@ -11343,7 +12467,7 @@ def execute_qualification(
                     commit_scan(scheduler, semantic)
                     return
                 if unresolved_reservations:
-                    if active > CEILINGS[-1]:
+                    if active > saturation_target:
                         raise QualificationWindowContinuityError(
                             "invisible intent reservations exceed the "
                             "capacity target"
@@ -11351,13 +12475,13 @@ def execute_qualification(
                     sleeper(float(poll_seconds))
                     continue
                 if (
-                    scheduler["ceiling"] != CEILINGS[-1]
+                    scheduler["ceiling"] != configured_client_ceiling
                     or scheduler["qualification_tasks_only"] is not True
                     or scheduler["production_run_ids"] != []
                     or scheduler["squeue_complete"] is not True
                     or scheduler["sacct_complete"] is not True
                     or scheduler["errors"] != []
-                    or active >= CEILINGS[-1]
+                    or active >= saturation_target
                 ):
                     raise QualificationWindowContinuityError(
                         "refill scan is ambiguous, foreign, or exceeds the "
@@ -11368,12 +12492,14 @@ def execute_qualification(
                     intent=intent,
                     control_value=current_control,
                     semantic=semantic,
+                    saturation_target=saturation_target,
                     now=clock(),
                 )
                 requested = _stage_dispatch_batch(
-                    ceiling=CEILINGS[-1],
+                    ceiling=configured_client_ceiling,
                     active=active,
                     useful_qids=int(semantic["useful_qids"]),
+                    saturation_target=saturation_target,
                 )
                 if requested <= 0:
                     raise QualificationWindowContinuityError(
@@ -11396,8 +12522,8 @@ def execute_qualification(
                     cycle=dispatch_cycle,
                 )
             raise QualificationWindowContinuityError(
-                "refill did not converge to exact 384 within bounded "
-                "transactional microbatches"
+                "refill did not converge to the signed saturation target "
+                "within bounded transactional microbatches"
             )
 
         if not observations:
@@ -11422,7 +12548,12 @@ def execute_qualification(
         else:
             # Reconcile scheduler+ledger truth on every restart before computing
             # stage room; never admit from a stale receipt.
-            capture(_next_ceiling(observations))
+            capture(
+                _next_ceiling(
+                    observations,
+                    saturation_target=saturation_target,
+                )
+            )
         while True:
             failure_drain_path = (
                 context.qualification_root / FAILURE_DRAIN_INTENT_NAME
@@ -11493,7 +12624,10 @@ def execute_qualification(
                     "trusted serving/readiness generation changed during "
                     "qualification"
                 )
-            target = _next_ceiling(observations)
+            target = _next_ceiling(
+                observations,
+                saturation_target=saturation_target,
+            )
             latest = observations[-1]
             active = int(
                 latest["scheduler"]["active_qualification_cells"]
@@ -11510,7 +12644,12 @@ def execute_qualification(
                 # wall time, controls the transition to terminal sealing.
                 if active > 0:
                     sleeper(float(poll_seconds))
-                    capture(_next_ceiling(observations))
+                    capture(
+                        _next_ceiling(
+                            observations,
+                            saturation_target=saturation_target,
+                        )
+                    )
                     continue
                 if any(
                     record["status"] not in {
@@ -11529,7 +12668,12 @@ def execute_qualification(
                         ],
                         now=clock(),
                     )
-                    capture(_next_ceiling(observations))
+                    capture(
+                        _next_ceiling(
+                            observations,
+                            saturation_target=saturation_target,
+                        )
+                    )
                     continue
                 _publish_and_raise_terminal_failure(
                     context,
@@ -11561,7 +12705,7 @@ def execute_qualification(
                 # death.  Never invoke a dispatcher after it appears.
                 if active > 0:
                     sleeper(float(poll_seconds))
-                    capture(CEILINGS[-1])
+                    capture(configured_client_ceiling)
                     continue
                 if any(
                     record["status"] not in {
@@ -11580,7 +12724,7 @@ def execute_qualification(
                         ],
                         now=clock(),
                     )
-                    capture(CEILINGS[-1])
+                    capture(configured_client_ceiling)
                     continue
                 # The next loop publishes the aggregate drain, evidence, and
                 # completion marker without any scientific admission.
@@ -11590,6 +12734,7 @@ def execute_qualification(
                 intent=intent,
                 control_value=current_control,
                 semantic=latest["semantic"],
+                saturation_target=saturation_target,
                 now=clock(),
             )
             # One existing dispatcher poll can submit at most 24 tasks.  Clamp that
@@ -11599,6 +12744,7 @@ def execute_qualification(
                 ceiling=target,
                 active=active,
                 useful_qids=useful,
+                saturation_target=saturation_target,
             )
             if next_batch > 0:
                 dispatch_cycle = _select_dispatch_cycle(
@@ -11617,7 +12763,10 @@ def execute_qualification(
                 # proves the exact submitted task count even if sub-second cells finish
                 # before squeue first exposes them.
                 capture(target)
-                target = _next_ceiling(observations)
+                target = _next_ceiling(
+                    observations,
+                    saturation_target=saturation_target,
+                )
                 latest_after_dispatch = observations[-1]
                 if (
                     dispatch_report.get("selected")
@@ -11626,11 +12775,12 @@ def execute_qualification(
                             "active_qualification_cells"
                         ]
                     )
-                    < target
+                    < _phase_active_target(target, saturation_target)
                 ):
                     # Fill the remainder of a ramp with back-to-back <=24 arrays.
                     # Sleeping here would let fast cells vanish before ceilings 96,
-                    # 192, or 384 could ever be durably reconciled.
+                    # 192, or the signed ceiling-384 saturation cut could ever
+                    # be durably reconciled.
                     continue
             sleeper(float(poll_seconds))
             if _load_window_refill_permitted(
@@ -11698,8 +12848,8 @@ def _parser() -> argparse.ArgumentParser:
     capacity = subparsers.add_parser(
         "preflight-capacity",
         help=(
-            "prove an effective additive fleet can admit the exact 384-cell "
-            "qualification wave before any scientific QID"
+            "seal the exact fleet-specific WDRR saturation cut beneath the "
+            "configured 384-client ceiling before any scientific QID"
         ),
     )
     capacity.add_argument(

@@ -60,7 +60,7 @@ def _verified(tmp_path: Path) -> dict[str, Any]:
             }
         )
     manifest = {
-        "protocol": sentinel.R3_PROTOCOL,
+        "protocol": sentinel.R4_PROTOCOL,
         "chain_id": "a" * 64,
         "slurm_user": "tester",
         "jobs": jobs,
@@ -72,7 +72,7 @@ def _verified(tmp_path: Path) -> dict[str, Any]:
     receipt_path.chmod(0o444)
     return {
         "schema_version": 1,
-        "chain_protocol": sentinel.R3_PROTOCOL,
+        "chain_protocol": sentinel.R4_PROTOCOL,
         "renderer": "render_schema5_recovery_chain_v12",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sentinel._sha256(manifest_path),
@@ -130,7 +130,7 @@ def _failfast_verified(tmp_path: Path) -> dict[str, Any]:
         for index, row in enumerate(jobs)
     ]
     manifest = {
-        "protocol": sentinel.R3_PROTOCOL,
+        "protocol": sentinel.R4_PROTOCOL,
         "chain_id": "c" * 64,
         "slurm_user": "tester",
         "jobs": jobs,
@@ -142,7 +142,7 @@ def _failfast_verified(tmp_path: Path) -> dict[str, Any]:
     receipt_path.chmod(0o444)
     return {
         "schema_version": 1,
-        "chain_protocol": sentinel.R3_PROTOCOL,
+        "chain_protocol": sentinel.R4_PROTOCOL,
         "renderer": "render_schema5_recovery_chain_v12",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sentinel._sha256(manifest_path),
@@ -910,7 +910,7 @@ def _capacity_receipt(
         "schema_version": 1,
         "protocol": sentinel.CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL,
         "passed": True,
-        "chain_protocol": sentinel.R3_PROTOCOL,
+        "chain_protocol": sentinel.R4_PROTOCOL,
         "chain_id": verified["manifest"]["chain_id"],
         "chain_generation": 0,
         "manifest": verified["manifest_path"],
@@ -2583,6 +2583,42 @@ def test_exit76_requires_exact_sealed_current_failure_preimage(
     run_member.chmod(0o444)
     run_root.chmod(0o555)
     cycle_inventory = sentinel._qualification_tree_inventory(run_root)
+    admission_certificate = identified(
+        {
+            "schema_version": (
+                sentinel.QUALIFICATION_FAILURE_SCHEMA_VERSION
+            ),
+            "protocol": (
+                sentinel.QUALIFICATION_PREFLIGHT_CERTIFICATE_PROTOCOL
+            ),
+            "passed": True,
+            "capacity_generation": 1,
+            "proposed_effective_fleet_contract_sha256": (
+                readiness_generation["fleet_contract_sha256"]
+            ),
+            "effective_logical_replicas": 22,
+            "effective_active_gpus": 24,
+            "selected_cell_count": 384,
+            "wave": {
+                "passed": True,
+                "selected_cell_count": 384,
+                "target_active_cells": 384,
+                "shortfall_cells": 0,
+            },
+        },
+        "certificate_id",
+    )
+    admission_certificate_path = (
+        readiness_root / "PREFLIGHT_CAPACITY_CERTIFICATE.json"
+    )
+    admission_certificate_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    admission_certificate_path.write_bytes(
+        sentinel._canonical_json(admission_certificate)
+    )
+    admission_certificate_path.chmod(0o444)
     failure = identified(
         {
             "schema_version": (
@@ -2594,6 +2630,26 @@ def test_exit76_requires_exact_sealed_current_failure_preimage(
             "attempt": attempt_binding,
             "readiness_generation": readiness_generation,
             "reason": failure_reason,
+            "admission_capacity_certificate": {
+                "path": str(admission_certificate_path),
+                "sha256": sentinel._sha256(
+                    admission_certificate_path
+                ),
+                "certificate_id": admission_certificate[
+                    "certificate_id"
+                ],
+                "capacity_generation": 1,
+                "effective_fleet_contract_sha256": (
+                    readiness_generation["fleet_contract_sha256"]
+                ),
+                "effective_logical_replicas": 22,
+                "effective_active_gpus": 24,
+                "wave_passed": True,
+                "selected_cell_count": 384,
+                "target_cell_count": 384,
+                "shortfall_cells": 0,
+                "theoretical_packing_upper_bound": 384,
+            },
             "additive_scaling_requirement": {
                 "serving_profile": "8B",
                 "server_pool_root": str(server_pool_root),

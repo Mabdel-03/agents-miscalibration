@@ -92,19 +92,21 @@ def _topology(
     return rows
 
 
-def _marker(root: Path) -> dict:
+def _marker(
+    root: Path,
+    *,
+    capacity_generation: int = 1,
+    additive_profile_replicas: dict[str, int] | None = None,
+) -> dict:
+    root.mkdir(parents=True, exist_ok=True)
     base_counts = dict(EXPECTED_COUNTS)
-    additions = {
-        "0.6B": 3,
-        "1.7B": 3,
-        "4B": 3,
-        "8B": 2,
-        "14B": 3,
-        "32B": 4,
+    requested_additions = {
+        profile: 0 for profile in base_counts
     }
+    requested_additions.update(additive_profile_replicas or {})
     effective_counts = {
-        profile: count + additions.get(profile, 0)
-        for profile, count in base_counts.items()
+        profile: base_counts[profile] + requested_additions[profile]
+        for profile in base_counts
     }
     delta_counts = {
         profile: effective_counts[profile] - base_counts[profile]
@@ -116,10 +118,10 @@ def _marker(root: Path) -> dict:
     )
     effective_path, effective_sha256 = _sealed_json(
         root / "effective-fleet.json",
-        {"kind": "effective-fleet", "counts": effective_counts},
+        {"kind": "base-fleet", "counts": effective_counts},
     )
     certificate = qualification.build_preflight_capacity_certificate(
-        capacity_generation=1,
+        capacity_generation=capacity_generation,
         release_git_commit=COMMIT,
         source_tree_sha256="0" * 64,
         release_fleet_contract_sha256=base_sha256,
@@ -131,8 +133,18 @@ def _marker(root: Path) -> dict:
         dispatcher_source_sha256="1" * 64,
         qualification_runner_source_sha256="2" * 64,
     )
+    certificate_root = (
+        root
+        if capacity_generation == 1
+        else (
+            root
+            / "capacity-generations"
+            / f"c{capacity_generation:06d}"
+        )
+    )
+    certificate_root.mkdir(parents=True, exist_ok=True)
     certificate_path, certificate_sha256 = _sealed_json(
-        root / protected_capacity.STATIC_FEASIBILITY_FILENAME,
+        certificate_root / protected_capacity.STATIC_FEASIBILITY_FILENAME,
         certificate,
     )
     base_topology = _topology(base_counts, prefix="base")
@@ -160,17 +172,31 @@ def _marker(root: Path) -> dict:
             "time_limit_seconds": 86_400,
         }
     ]
+    base_gpus = sum(
+        base_counts[profile]
+        * int(protected_capacity.SERVING_PROFILES[profile].tp_size)
+        for profile in base_counts
+    )
+    additive_gpus = sum(
+        delta_counts[profile]
+        * int(protected_capacity.SERVING_PROFILES[profile].tp_size)
+        for profile in delta_counts
+    )
+    effective_gpus = base_gpus + additive_gpus
+    effective_logical_replicas = sum(effective_counts.values())
+    additive_logical_replicas = sum(delta_counts.values())
+    held_jobs = 64 - effective_logical_replicas - 3
     servers = [
         {
             "partition": "gpu_protected",
             "qos": "gpu_science",
             "partition_preempt_mode": "OFF",
             "qos_preempt_mode": "OFF",
-            "base_active_gpus": 24,
-            "reserved_additive_gpus": 18,
-            "effective_active_gpus": 42,
+            "base_active_gpus": base_gpus,
+            "reserved_additive_gpus": additive_gpus,
+            "effective_active_gpus": effective_gpus,
             "retained_warm_turnover_gpus": 4,
-            "attested_total_gpus": 46,
+            "attested_total_gpus": effective_gpus + 4,
             "partition_cpus": 4096,
             "partition_memory_mib": 32 * 1024 * 1024,
             "partition_gpus": 64,
@@ -202,7 +228,7 @@ def _marker(root: Path) -> dict:
         "dispatcher_source_sha256": "1" * 64,
         "qualification_runner_source_sha256": "2" * 64,
         "chain_namespace": protected_capacity.CHAIN_NAMESPACE,
-        "capacity_generation": 1,
+        "capacity_generation": capacity_generation,
         "base_fleet_contract_path": str(base_path),
         "base_fleet_contract_sha256": base_sha256,
         "effective_fleet_contract_path": str(effective_path),
@@ -214,22 +240,46 @@ def _marker(root: Path) -> dict:
             "sha256": certificate_sha256,
             "certificate_id": certificate["certificate_id"],
         },
-        "base_active_logical_replicas": 22,
-        "base_active_gpus": 24,
+        "static_feasibility_wave_passed": certificate["wave"]["passed"],
+        "static_feasibility_selected_cell_count": certificate[
+            "selected_cell_count"
+        ],
+        "static_feasibility_target_cell_count": certificate["wave"][
+            "target_active_cells"
+        ],
+        "static_feasibility_shortfall_cells": certificate["wave"][
+            "shortfall_cells"
+        ],
+        "static_feasibility_configured_client_ceiling": certificate["wave"][
+            "target_active_cells"
+        ],
+        "static_feasibility_certified_saturation_target": certificate[
+            "selected_cell_count"
+        ],
+        "base_active_logical_replicas": sum(base_counts.values()),
+        "base_active_gpus": base_gpus,
         "base_active_topology": base_topology,
         "base_active_topology_sha256": protected_capacity._sha256_value(
             base_topology
         ),
-        "additive_reserved_logical_replicas": 18,
-        "additive_reserved_gpus": 18,
-        "additive_reserved_tp1_replicas": 18,
-        "additive_reserved_tp2_replicas": 0,
+        "additive_reserved_logical_replicas": additive_logical_replicas,
+        "additive_reserved_gpus": additive_gpus,
+        "additive_reserved_tp1_replicas": sum(
+            count
+            for profile, count in delta_counts.items()
+            if int(protected_capacity.SERVING_PROFILES[profile].tp_size) == 1
+        ),
+        "additive_reserved_tp2_replicas": sum(
+            count
+            for profile, count in delta_counts.items()
+            if int(protected_capacity.SERVING_PROFILES[profile].tp_size) == 2
+        ),
         "additive_reserved_topology": additive_topology,
         "additive_reserved_topology_sha256": protected_capacity._sha256_value(
             additive_topology
         ),
-        "effective_active_logical_replicas": 40,
-        "effective_active_gpus": 42,
+        "effective_active_logical_replicas": effective_logical_replicas,
+        "effective_active_gpus": effective_gpus,
         "effective_active_topology": effective_topology,
         "effective_active_topology_sha256": protected_capacity._sha256_value(
             effective_topology
@@ -242,16 +292,16 @@ def _marker(root: Path) -> dict:
         "retained_warm_turnover_topology_sha256": (
             protected_capacity._sha256_value(warm_topology)
         ),
-        "attested_total_gpus": 46,
+        "attested_total_gpus": effective_gpus + 4,
         "job_element_accounting": {
             "cell_job_elements": 384,
-            "active_server_job_elements": 40,
+            "active_server_job_elements": effective_logical_replicas,
             "warm_turnover_job_elements": 3,
-            "controller_monitor_other_held_job_elements": 21,
+            "controller_monitor_other_held_job_elements": held_jobs,
             "total_non_cell_reserve_job_elements": 64,
             "total_canary_job_elements": 448,
         },
-        "active_gpus": 42,
+        "active_gpus": effective_gpus,
         "warm_headroom_gpus": 4,
         "cell_ceiling": 384,
         "reserve_jobs": 64,
@@ -263,9 +313,9 @@ def _marker(root: Path) -> dict:
         "scheduler_cluster": "cluster",
         "scheduler_account": "account",
         "scheduler_user": "tester",
-        "scheduler_max_jobs": 427,
+        "scheduler_max_jobs": 384 + effective_logical_replicas + 3,
         "scheduler_max_submit_jobs": 448,
-        "running_scientific_jobs": 427,
+        "running_scientific_jobs": 384 + effective_logical_replicas + 3,
         "minimum_scientific_wall_seconds": 86_400,
         "scientific_qos_contracts": [
             {
@@ -275,16 +325,16 @@ def _marker(root: Path) -> dict:
                 "max_submit_jobs_per_user": 448,
                 "required_wall_seconds": 43_200,
                 "required_running_jobs": 384,
-                "required_submit_jobs": 405,
+                "required_submit_jobs": 384 + held_jobs,
             },
             {
                 "qos": "gpu_science",
                 "max_wall_seconds": 86_400,
-                "max_jobs_per_user": 43,
+                "max_jobs_per_user": effective_logical_replicas + 3,
                 "max_submit_jobs_per_user": 448,
                 "required_wall_seconds": 86_400,
-                "required_running_jobs": 43,
-                "required_submit_jobs": 43,
+                "required_running_jobs": effective_logical_replicas + 3,
+                "required_submit_jobs": effective_logical_replicas + 3,
             },
         ],
         "partition_cpus": 384,
@@ -399,6 +449,35 @@ def test_load_contract_and_explicit_authorization(tmp_path: Path) -> None:
     )
     fleet = _fleet(marker)
     protected_capacity.authorize_fleet(fleet, contract)
+    assert contract.effective_active_logical_replicas == 22
+    assert contract.effective_active_gpus == 24
+    assert contract.additive_reserved_logical_replicas == 0
+    assert contract.additive_reserved_gpus == 0
+    assert contract.static_feasibility_wave_passed is False
+    assert contract.static_feasibility_selected_cell_count == 278
+    assert contract.static_feasibility_target_cell_count == 384
+    assert contract.static_feasibility_shortfall_cells == 106
+    assert contract.static_feasibility_configured_client_ceiling == 384
+    assert contract.static_feasibility_certified_saturation_target == 278
+    assert contract.retained_warm_turnover_job_elements == 3
+    assert contract.retained_warm_turnover_gpus == 4
+    assert contract.attested_total_gpus == 28
+    assert contract.job_element_accounting == {
+        "cell_job_elements": 384,
+        "active_server_job_elements": 22,
+        "warm_turnover_job_elements": 3,
+        "controller_monitor_other_held_job_elements": 39,
+        "total_non_cell_reserve_job_elements": 64,
+        "total_canary_job_elements": 448,
+    }
+    certificate = protected_capacity.load_static_feasibility_certificate(
+        contract.static_feasibility_certificate_path,
+        expected_sha256=contract.static_feasibility_certificate_sha256,
+        expected_certificate_id=contract.static_feasibility_certificate_id,
+    )
+    assert certificate.payload["selected_cell_count"] == 278
+    assert certificate.payload["wave"]["shortfall_cells"] == 106
+    assert certificate.payload["wave"]["passed"] is False
     placement = protected_capacity.authorize_client(
         contract,
         partition="cpu_protected",
@@ -407,6 +486,116 @@ def test_load_contract_and_explicit_authorization(tmp_path: Path) -> None:
         required_reserve_jobs=64,
     )
     assert placement.capacity["memory_mib"] == 384 * 4096
+
+
+def test_load_contract_accepts_generation_addressed_intermediate_tp2_shortfall(
+    tmp_path: Path,
+) -> None:
+    marker = _marker(
+        tmp_path,
+        capacity_generation=2,
+        additive_profile_replicas={"32B-long": 1},
+    )
+    marker_path = tmp_path / protected_capacity.MARKER_FILENAME
+    raw = protected_capacity.canonical_bytes(marker)
+    marker_path.write_bytes(raw)
+    marker_path.chmod(0o444)
+
+    contract = protected_capacity.load_contract(
+        marker_path,
+        expected_release_git_commit=COMMIT,
+        expected_release_tag_object=TAG_OBJECT,
+        expected_source_tree_sha256="0" * 64,
+        expected_dispatcher_source_sha256="1" * 64,
+        expected_qualification_runner_source_sha256="2" * 64,
+    )
+    assert contract.capacity_generation == 2
+    assert contract.additive_reserved_logical_replicas == 1
+    assert contract.additive_reserved_gpus == 2
+    assert contract.effective_active_logical_replicas == 23
+    assert contract.effective_active_gpus == 26
+    assert contract.static_feasibility_certificate_path == (
+        tmp_path
+        / "capacity-generations"
+        / "c000002"
+        / protected_capacity.STATIC_FEASIBILITY_FILENAME
+    ).resolve()
+    assert contract.static_feasibility_wave_passed is False
+    assert contract.static_feasibility_selected_cell_count == 284
+    assert contract.static_feasibility_target_cell_count == 384
+    assert contract.static_feasibility_shortfall_cells == 100
+    assert contract.static_feasibility_configured_client_ceiling == 384
+    assert contract.static_feasibility_certified_saturation_target == 284
+
+    certificate = protected_capacity.load_static_feasibility_certificate(
+        contract.static_feasibility_certificate_path,
+        expected_sha256=contract.static_feasibility_certificate_sha256,
+        expected_certificate_id=contract.static_feasibility_certificate_id,
+    )
+    assert certificate.additive_tp1_logical_replicas == 0
+    assert certificate.additive_tp2_logical_replicas == 1
+    assert certificate.wave_passed is False
+    assert certificate.selected_cell_count == 284
+    assert certificate.shortfall_cells == 100
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("static_feasibility_wave_passed", True),
+        ("static_feasibility_configured_client_ceiling", 383),
+        ("static_feasibility_certified_saturation_target", 277),
+    ),
+)
+def test_load_contract_rejects_marker_wave_summary_drift(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    marker = _marker(tmp_path)
+    marker[field] = value
+    marker.pop("marker_id")
+    marker["marker_id"] = hashlib.sha256(
+        protected_capacity.canonical_bytes(marker)
+    ).hexdigest()
+    marker_path = tmp_path / protected_capacity.MARKER_FILENAME
+    marker_path.write_bytes(protected_capacity.canonical_bytes(marker))
+    marker_path.chmod(0o444)
+
+    with pytest.raises(
+        protected_capacity.ProtectedCapacityError,
+        match="fleet/certificate/topology envelope is inconsistent",
+    ):
+        protected_capacity.load_contract(
+            marker_path,
+            expected_release_git_commit=COMMIT,
+            expected_release_tag_object=TAG_OBJECT,
+            expected_source_tree_sha256="0" * 64,
+            expected_dispatcher_source_sha256="1" * 64,
+            expected_qualification_runner_source_sha256="2" * 64,
+        )
+
+
+def test_static_certificate_rejects_unscoped_postbaseline_path(
+    tmp_path: Path,
+) -> None:
+    marker = _marker(
+        tmp_path / "source",
+        capacity_generation=2,
+        additive_profile_replicas={"32B-long": 1},
+    )
+    source = Path(marker["static_feasibility_certificate"]["path"])
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    unscoped, _digest = _sealed_json(
+        tmp_path / protected_capacity.STATIC_FEASIBILITY_FILENAME,
+        payload,
+    )
+
+    with pytest.raises(
+        protected_capacity.ProtectedCapacityError,
+        match="path is not generation-addressed",
+    ):
+        protected_capacity.load_static_feasibility_certificate(unscoped)
 
 
 @pytest.mark.parametrize(
@@ -541,7 +730,7 @@ def _live_runner(
             )
         elif argv[:5] == ["sacctmgr", "-nP", "show", "qos", "gpu_science"]:
             stdout = (
-                f"gpu_science|{qos_mode}|43|448||1-00:00:00\n"
+                f"gpu_science|{qos_mode}|25|448||1-00:00:00\n"
             )
         elif argv == [
             "sacctmgr",
@@ -552,7 +741,7 @@ def _live_runner(
             "format=Cluster,Account,User,QOS,MaxJobs,MaxSubmitJobs",
         ]:
             stdout = (
-                "cluster|account|tester|client_science,gpu_science|427|448\n"
+                "cluster|account|tester|client_science,gpu_science|409|448\n"
             )
         elif argv[:5] == ["squeue", "-h", "-r", "-u", "tester"]:
             stdout = "".join(
@@ -575,7 +764,7 @@ def _live_client_runner(
     *,
     qos_row: str = "client_science|OFF|387|448||1-00:00:00",
     association_row: str = (
-        "cluster|account|tester|client_science,gpu_science|427|448"
+        "cluster|account|tester|client_science,gpu_science|409|448"
     ),
     partition_cpus: int = 384,
     partition_memory_mib: int = 384 * 4096,
@@ -784,7 +973,7 @@ def test_pending_trusted_jobs_count_for_submit_but_not_maxjobs(
     tmp_path: Path,
 ) -> None:
     marker = _marker(tmp_path)
-    marker["scheduler_max_jobs"] = 427
+    marker["scheduler_max_jobs"] = 409
     marker["scientific_qos_contracts"][0]["max_jobs_per_user"] = 384
     marker.pop("marker_id")
     marker["marker_id"] = hashlib.sha256(
@@ -812,7 +1001,7 @@ def test_pending_trusted_jobs_count_for_submit_but_not_maxjobs(
         runner=_live_client_runner(
             qos_row="client_science|OFF|384|448||1-00:00:00",
             association_row=(
-                "cluster|account|tester|client_science,gpu_science|427|448"
+                "cluster|account|tester|client_science,gpu_science|409|448"
             ),
             occupancy_rows=tuple(
                 (job_id, "PENDING", "account", "client_science")
@@ -984,7 +1173,7 @@ def test_live_server_capacity_rejects_sealed_inventory_drift(
     )
     with pytest.raises(
         protected_capacity.ProtectedCapacityError,
-        match="42-active plus 4-warm",
+        match="effective-active plus 4-warm",
     ):
         protected_capacity.verify_live_placements(
             contract,

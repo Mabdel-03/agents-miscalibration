@@ -9,10 +9,13 @@ from that exact worktree.  The mutable developer prefixes are never inspected he
 they are isolated by :mod:`capture_schema5_environments`.
 
 The command is deliberately fail-closed and resumable at explicit stage boundaries.
-It never deletes or overwrites a destination.  A process interrupted inside a Conda
-clone leaves an untrusted prefix without a stage record; that prefix must be moved to
-quarantine before retrying.  Completed stages and the marker-last final record are
-content bound and can be verified idempotently.
+Before Conda runs, a marker-first transaction selects the exact package payloads and
+repository metadata required by both normalized seeds, copies them through explicit
+read/write loops into an immutable cache seed, and independently copies that seed into
+the writable clone cache.  It never deletes or overwrites a destination.  A process
+interrupted inside a Conda clone leaves an untrusted prefix without a stage record;
+that prefix must be moved to quarantine before retrying.  Completed stages and the
+marker-last final record are content bound and can be verified idempotently.
 """
 
 from __future__ import annotations
@@ -21,10 +24,11 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+import posixpath
 import stat
 import subprocess
 import sys
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 
@@ -34,15 +38,28 @@ if str(REPO) not in sys.path:
 
 from scripts import capture_schema5_environments as capture  # noqa: E402
 from scripts import freeze_schema5_release as freeze  # noqa: E402
+from scripts import provision_schema5_conda_toolchain as conda_toolchain  # noqa: E402
 
 
-# Version 3 binds sealed normalized environment seeds, direct conda-meta locks, a
-# release-local package cache, and offline/no-pip-interoperability clone semantics.
-SCHEMA_VERSION = 4
+# Version 5 adds a marker-first, real-copy package-cache seed transaction.  Offline
+# Conda clone is not attempted until the exact extracted packages and repository
+# metadata required by both normalized environment seeds exist in an independently
+# copied release-local cache.
+SCHEMA_VERSION = 5
 RELEASE_ID = freeze.RELEASE_ID
 REQUIRED_TAG = freeze.REQUIRED_GIT_TAG
 COMPLETE_MARKER = "MATERIALIZATION_COMPLETE.json"
 BUILD_EVIDENCE_COMPLETE_MARKER = "HARNESS_BUILD_EVIDENCE_COMPLETE.json"
+PACKAGE_CACHE_SEED_DIRECTORY = "conda-package-cache-seed"
+PACKAGE_CACHE_DIRECTORY = "conda-package-cache"
+PACKAGE_CACHE_SEED_INVENTORY = "CONDA_PACKAGE_CACHE_SEED_INVENTORY.json"
+PACKAGE_CACHE_SEED_INTENT = "CONDA_PACKAGE_CACHE_SEED_INTENT.json"
+PACKAGE_CACHE_SEED_COMPLETE = "CONDA_PACKAGE_CACHE_SEED_COMPLETE.json"
+PACKAGE_CACHE_SEED_INTENT_PROTOCOL = (
+    "schema5-v1.2-r4-conda-package-cache-seed-intent-v1"
+)
+PACKAGE_CACHE_SEED_PROTOCOL = "schema5-v1.2-r4-conda-package-cache-seed-v1"
+PACKAGE_CACHE_METADATA_ENTRIES = ("cache", "urls", "urls.txt")
 ALLOWED_BUILD_EVIDENCE_ROOTS = (
     Path("src") / "agents_scaling.egg-info",
     Path("build"),
@@ -57,6 +74,47 @@ STAGE_FILENAMES = {
 }
 _SHA256_RE = freeze._SHA256_RE
 _GIT_COMMIT_RE = freeze._GIT_COMMIT_RE
+_TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_UNTRUSTED_PROCESS_ENVIRONMENT_KEYS = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_TIME_FORMAT",
+    }
+)
+_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES = (
+    "BASH_FUNC_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+)
 
 
 class MaterializationError(RuntimeError):
@@ -85,11 +143,14 @@ def _run(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> str:
+    process_environment = (
+        _command_environment() if env is None else dict(env)
+    )
     try:
         completed = subprocess.run(
             list(argv),
             cwd=None if cwd is None else str(cwd),
-            env=None if env is None else dict(env),
+            env=process_environment,
             capture_output=True,
             text=True,
             check=False,
@@ -178,13 +239,19 @@ def _validate_nonoverlap(paths: Mapping[str, Path]) -> None:
 
 
 def _git(repository: Path, *args: str) -> str:
-    return _run(("git", "-C", str(repository), *args)).strip()
+    return _run(("/usr/bin/git", "-C", str(repository), *args)).strip()
 
 
 def _tag_commit(repository: Path) -> str:
     top = Path(_git(repository, "rev-parse", "--show-toplevel")).resolve()
     if top != repository:
         raise MaterializationError(f"source repository is not its Git top-level: {repository}")
+    if _git(
+        repository, "for-each-ref", "--format=%(refname)", "refs/replace"
+    ):
+        raise MaterializationError(
+            "source repository contains forbidden Git replacement refs"
+        )
     try:
         commit = _git(
             repository,
@@ -199,13 +266,6 @@ def _tag_commit(repository: Path) -> str:
     return commit
 
 
-def _conda_executable(value: str | Path) -> Path:
-    candidate = Path(value).expanduser().resolve()
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
-        raise MaterializationError(f"Conda executable is absent or not executable: {candidate}")
-    return candidate
-
-
 def _command_environment() -> dict[str, str]:
     blocked = {
         "PYTHONPATH",
@@ -218,10 +278,20 @@ def _command_environment() -> dict[str, str]:
         key: value
         for key, value in os.environ.items()
         if key not in blocked
-        and not key.startswith(("PIP_", "CONDA_"))
+        and not key.startswith(("PIP_", "CONDA_", "PYTHON"))
+        and key not in _UNTRUSTED_PROCESS_ENVIRONMENT_KEYS
+        and not key.startswith(_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES)
     }
     env.update(
         {
+            "PATH": _TRUSTED_SYSTEM_PATH,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
             "CONDA_ALWAYS_COPY": "true",
             "CONDA_OFFLINE": "true",
             "CONDA_PIP_INTEROP_ENABLED": "false",
@@ -543,6 +613,907 @@ def _content_inventory_identity(root: Path) -> dict[str, int | str]:
             entry.get("type") == "symlink" for entry in normalized
         ),
     }
+
+
+def _inventory_from_entries(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    rows = [dict(row) for row in entries]
+    rows.sort(key=lambda row: str(row.get("path", "")))
+    inventory = {
+        "inventory_sha256": _sha256_bytes(capture._canonical_bytes(rows)),
+        "entry_count": len(rows),
+        "file_count": sum(row.get("type") == "file" for row in rows),
+        "directory_count": sum(row.get("type") == "directory" for row in rows),
+        "symlink_count": sum(row.get("type") == "symlink" for row in rows),
+        "total_file_bytes": sum(
+            int(row.get("size", 0))
+            for row in rows
+            if row.get("type") == "file"
+        ),
+        "entries": rows,
+    }
+    try:
+        capture._validated_content_inventory(
+            inventory, description="package-cache seed inventory"
+        )
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    return inventory
+
+
+def _inventory_content_sha256(inventory: Mapping[str, Any]) -> str:
+    try:
+        _rows, _by_path, content_sha256 = (
+            capture._validated_content_inventory(
+                inventory, description="package-cache seed inventory"
+            )
+        )
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    return content_sha256
+
+
+def _copy_cache_inventory_bound(
+    source: Path, destination: Path, inventory: Mapping[str, Any]
+) -> None:
+    """Resume real-copy publication with no partially written canonical files."""
+
+    try:
+        capture._validated_content_inventory(
+            inventory, description="package-cache seed inventory"
+        )
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    if destination.is_symlink():
+        raise MaterializationError(
+            f"package-cache copy destination is symlinked: {destination}"
+        )
+    destination.mkdir(parents=True, exist_ok=True)
+    for row in inventory["entries"]:
+        relative = PurePosixPath(str(row["path"]))
+        src = source.joinpath(*relative.parts)
+        dst = destination.joinpath(*relative.parts)
+        entry_type = row["type"]
+        temporary = dst.parent / f".{dst.name}.schema5-cache-copying"
+        if dst.exists() or dst.is_symlink():
+            if not capture._entry_matches(dst, row):
+                raise MaterializationError(
+                    f"partial package-cache copy conflicts with bound bytes: {dst}"
+                )
+            if entry_type == "file" and (
+                temporary.exists() or temporary.is_symlink()
+            ):
+                info = temporary.lstat()
+                if not stat.S_ISREG(info.st_mode):
+                    raise MaterializationError(
+                        f"unsafe orphaned package-cache copy temporary: {temporary}"
+                    )
+                temporary.unlink()
+                capture._fsync_directory(dst.parent)
+            continue
+        if not capture._entry_matches(src, row):
+            raise MaterializationError(
+                f"package-cache source entry drifted before copy: {src}"
+            )
+        mode = int(row.get("mode", 0))
+        if entry_type == "directory":
+            dst.mkdir(mode=mode)
+            os.chmod(dst, mode)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if entry_type == "symlink":
+            dst.symlink_to(str(row["target"]))
+            capture._fsync_directory(dst.parent)
+            continue
+        if entry_type != "file":
+            raise MaterializationError(
+                f"unsupported package-cache inventory type: {entry_type!r}"
+            )
+        if temporary.exists() or temporary.is_symlink():
+            info = temporary.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise MaterializationError(
+                    f"unsafe package-cache copy temporary: {temporary}"
+                )
+            if not capture._entry_matches(temporary, row):
+                temporary.unlink()
+                capture._fsync_directory(dst.parent)
+        if not temporary.exists():
+            try:
+                capture._copy_regular_file(src, temporary, mode=mode)
+            except capture.EnvironmentCaptureError as exc:
+                raise MaterializationError(str(exc)) from exc
+        if not capture._entry_matches(temporary, row):
+            raise MaterializationError(
+                f"package-cache copy temporary has wrong bytes: {temporary}"
+            )
+        try:
+            os.link(temporary, dst, follow_symlinks=False)
+        except FileExistsError:
+            if not capture._entry_matches(dst, row):
+                raise MaterializationError(
+                    f"concurrent package-cache publication conflicted: {dst}"
+                )
+        os.chmod(dst, mode)
+        temporary.unlink()
+        capture._fsync_directory(dst.parent)
+
+
+def _selected_cache_inventory(
+    source_cache: Path, selected_top_level: Sequence[str]
+) -> dict[str, Any]:
+    """Inventory only the exact cache metadata and package payloads we will copy."""
+
+    rows: list[dict[str, Any]] = []
+    for name in sorted(set(selected_top_level)):
+        relative = PurePosixPath(name)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 1
+            or relative.parts[0] in {"", ".", ".."}
+            or relative.as_posix() != name
+        ):
+            raise MaterializationError(
+                f"unsafe top-level package-cache seed entry: {name!r}"
+            )
+        path = source_cache / name
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise MaterializationError(
+                f"required package-cache seed entry is absent: {path}: {exc}"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise MaterializationError(
+                f"top-level package-cache seed entry is symlinked: {path}"
+            )
+        mode = stat.S_IMODE(info.st_mode)
+        if stat.S_ISREG(info.st_mode):
+            rows.append(
+                {
+                    "path": name,
+                    "mode": mode,
+                    "type": "file",
+                    "size": info.st_size,
+                    "sha256": freeze._sha256_file(path),
+                }
+            )
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise MaterializationError(
+                f"unsupported top-level package-cache seed entry: {path}"
+            )
+        rows.append({"path": name, "mode": mode, "type": "directory"})
+        try:
+            nested = capture.directory_inventory(path)
+        except capture.EnvironmentCaptureError as exc:
+            raise MaterializationError(str(exc)) from exc
+        for raw in nested["entries"]:
+            row = dict(raw)
+            row["path"] = f"{name}/{row['path']}"
+            rows.append(row)
+    return _inventory_from_entries(rows)
+
+
+def _required_cache_packages(
+    harness_seed: Path, serving_seed: Path
+) -> list[dict[str, Any]]:
+    """Derive one exact package requirement per unique normalized Conda artifact."""
+
+    by_dist: dict[str, dict[str, Any]] = {}
+    for role, prefix in (("harness", harness_seed), ("serving", serving_seed)):
+        records = sorted((prefix / "conda-meta").glob("*.json"))
+        if not records:
+            raise MaterializationError(f"{role} normalized seed has no Conda records")
+        for path in records:
+            record = _read_json(path, description=f"{role} Conda package record")
+            name = record.get("name")
+            version = record.get("version")
+            build = record.get("build")
+            filename = record.get("fn")
+            url = record.get("url")
+            digest = record.get("sha256")
+            if (
+                not all(
+                    isinstance(value, str) and value
+                    for value in (name, version, build)
+                )
+                or not isinstance(filename, str)
+                or not filename
+                or Path(filename).name != filename
+                or filename
+                not in {
+                    f"{name}-{version}-{build}.conda",
+                    f"{name}-{version}-{build}.tar.bz2",
+                }
+                or not isinstance(url, str)
+                or not url.startswith(("https://", "http://"))
+                or _SHA256_RE.fullmatch(str(digest)) is None
+            ):
+                raise MaterializationError(
+                    f"{role} Conda record lacks exact cache identity: {path}"
+                )
+            dist = f"{name}-{version}-{build}"
+            identity = {
+                "dist": dist,
+                "name": name,
+                "version": version,
+                "build": build,
+                "filename": filename,
+                "url": url,
+                "sha256": digest,
+                "roles": [role],
+            }
+            prior = by_dist.get(dist)
+            if prior is None:
+                by_dist[dist] = identity
+                continue
+            if {
+                key: prior[key]
+                for key in (
+                    "dist",
+                    "name",
+                    "version",
+                    "build",
+                    "filename",
+                    "url",
+                    "sha256",
+                )
+            } != {
+                key: identity[key]
+                for key in (
+                    "dist",
+                    "name",
+                    "version",
+                    "build",
+                    "filename",
+                    "url",
+                    "sha256",
+                )
+            }:
+                raise MaterializationError(
+                    f"normalized seeds disagree about Conda cache artifact {dist}"
+                )
+            prior["roles"] = sorted({*prior["roles"], role})
+    return [by_dist[dist] for dist in sorted(by_dist)]
+
+
+def _validate_cache_package_payloads(
+    cache_root: Path,
+    requirements: Sequence[Mapping[str, Any]],
+    *,
+    allow_missing_archives: bool,
+) -> list[dict[str, Any]]:
+    """Validate extracted package identity and every archive that is available."""
+
+    urls: set[str] = set()
+    for name in ("urls", "urls.txt"):
+        path = cache_root / name
+        if path.is_symlink() or not path.is_file():
+            raise MaterializationError(
+                f"package-cache seed lacks regular {name} metadata: {path}"
+            )
+        try:
+            urls.update(
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        except (OSError, UnicodeError) as exc:
+            raise MaterializationError(
+                f"cannot read package-cache URL metadata {path}: {exc}"
+            ) from exc
+    repository_cache = cache_root / "cache"
+    if repository_cache.is_symlink() or not repository_cache.is_dir():
+        raise MaterializationError(
+            f"package-cache seed lacks repository metadata: {repository_cache}"
+        )
+    if not any(
+        path.is_file() and not path.is_symlink()
+        for path in repository_cache.glob("*.json")
+    ):
+        raise MaterializationError(
+            "package-cache seed has no cached repository JSON metadata"
+        )
+
+    validated: list[dict[str, Any]] = []
+    for raw in requirements:
+        requirement = dict(raw)
+        expected_fields = {
+            "dist",
+            "name",
+            "version",
+            "build",
+            "filename",
+            "url",
+            "sha256",
+            "roles",
+        }
+        if set(requirement) != expected_fields:
+            raise MaterializationError("package-cache requirement fields drifted")
+        dist = str(requirement["dist"])
+        extracted = cache_root / dist
+        if extracted.is_symlink() or not extracted.is_dir():
+            raise MaterializationError(
+                f"required extracted Conda package is absent: {extracted}"
+            )
+        identities: dict[str, dict[str, Any]] = {}
+        for relative in ("info/index.json", "info/repodata_record.json"):
+            path = extracted / relative
+            identities[relative] = _read_json(
+                path, description=f"{dist} {relative}"
+            )
+        index = identities["info/index.json"]
+        repodata = identities["info/repodata_record.json"]
+        if any(
+            index.get(key) != requirement[key]
+            for key in ("name", "version", "build")
+        ) or any(
+            repodata.get(key) != requirement[key]
+            for key in ("name", "version", "build")
+        ) or any(
+            repodata.get(key) != requirement[key]
+            for key in ("url", "sha256")
+        ) or repodata.get("fn") != requirement["filename"]:
+            raise MaterializationError(
+                f"extracted Conda package identity does not match its seed record: {dist}"
+            )
+        if requirement["url"] not in urls:
+            raise MaterializationError(
+                f"package-cache metadata cannot resolve exact selected URL: {requirement['url']}"
+            )
+        archive = cache_root / str(requirement["filename"])
+        archive_present = archive.is_file() and not archive.is_symlink()
+        if archive.exists() or archive.is_symlink():
+            if not archive_present:
+                raise MaterializationError(
+                    f"selected Conda archive is unsafe: {archive}"
+                )
+            if freeze._sha256_file(archive) != requirement["sha256"]:
+                raise MaterializationError(
+                    f"selected Conda archive digest drifted: {archive}"
+                )
+        elif not allow_missing_archives:
+            raise MaterializationError(f"selected Conda archive is absent: {archive}")
+        validated.append(
+            {
+                **requirement,
+                "archive_present": archive_present,
+                "extracted_index_sha256": freeze._sha256_file(
+                    extracted / "info" / "index.json"
+                ),
+                "extracted_repodata_record_sha256": freeze._sha256_file(
+                    extracted / "info" / "repodata_record.json"
+                ),
+            }
+        )
+    return validated
+
+
+def _package_cache_seed_plan(
+    *,
+    source_cache: Path,
+    harness_seed: Path,
+    serving_seed: Path,
+) -> dict[str, Any]:
+    requirements = _required_cache_packages(harness_seed, serving_seed)
+    validated = _validate_cache_package_payloads(
+        source_cache, requirements, allow_missing_archives=True
+    )
+    selected = set(PACKAGE_CACHE_METADATA_ENTRIES)
+    for requirement in validated:
+        selected.add(str(requirement["dist"]))
+        if requirement["archive_present"]:
+            selected.add(str(requirement["filename"]))
+    inventory = _selected_cache_inventory(source_cache, sorted(selected))
+    return {
+        "requirements": requirements,
+        "validated_packages": validated,
+        "selected_top_level_entries": sorted(selected),
+        "inventory": inventory,
+    }
+
+
+def _package_cache_seed_plan_binding(
+    source_cache: Path, plan: Mapping[str, Any]
+) -> dict[str, Any]:
+    inventory = plan["inventory"]
+    requirements = plan["requirements"]
+    validated = plan["validated_packages"]
+    binding = {
+        "source_package_cache": str(source_cache),
+        "inventory_sha256": inventory["inventory_sha256"],
+        "inventory_entry_count": inventory["entry_count"],
+        "inventory_file_count": inventory["file_count"],
+        "inventory_total_file_bytes": inventory["total_file_bytes"],
+        "requirements_sha256": _sha256_bytes(_json_bytes(requirements)),
+        "required_package_count": len(requirements),
+        "archive_count": sum(
+            bool(row["archive_present"]) for row in validated
+        ),
+        "selected_top_level_entries": list(
+            plan["selected_top_level_entries"]
+        ),
+    }
+    binding["input_id"] = _sha256_bytes(_json_bytes(binding))
+    return binding
+
+
+def selected_package_cache_input_binding(
+    *,
+    source_package_cache: str | Path,
+    harness_seed: str | Path,
+    serving_seed: str | Path,
+) -> dict[str, Any]:
+    """Return the deterministic, content-bound cache input selected for cloning."""
+
+    source_cache = _safe_existing_directory(
+        source_package_cache, description="source Conda package cache"
+    )
+    harness = _safe_existing_directory(
+        harness_seed, description="normalized harness environment seed"
+    )
+    serving = _safe_existing_directory(
+        serving_seed, description="normalized serving environment seed"
+    )
+    plan = _package_cache_seed_plan(
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+    return _package_cache_seed_plan_binding(source_cache, plan)
+
+
+def _validated_package_cache_seed_input(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    required = {
+        "source_package_cache",
+        "inventory_sha256",
+        "inventory_entry_count",
+        "inventory_file_count",
+        "inventory_total_file_bytes",
+        "requirements_sha256",
+        "required_package_count",
+        "archive_count",
+        "selected_top_level_entries",
+        "input_id",
+    }
+    if not isinstance(value, Mapping) or set(value) != required:
+        raise MaterializationError(
+            "expected package-cache seed input has the wrong fields"
+        )
+    result = dict(value)
+    candidate = dict(result)
+    input_id = candidate.pop("input_id", None)
+    selected = result.get("selected_top_level_entries")
+    count_fields = (
+        "inventory_entry_count",
+        "inventory_file_count",
+        "inventory_total_file_bytes",
+        "required_package_count",
+        "archive_count",
+    )
+    if (
+        not isinstance(result.get("source_package_cache"), str)
+        or not Path(result["source_package_cache"]).is_absolute()
+        or any(
+            _SHA256_RE.fullmatch(str(result.get(field, ""))) is None
+            for field in ("inventory_sha256", "requirements_sha256")
+        )
+        or any(
+            not isinstance(result.get(field), int)
+            or isinstance(result.get(field), bool)
+            or result[field] < 0
+            for field in count_fields
+        )
+        or result["inventory_entry_count"] < 1
+        or result["inventory_file_count"] < 1
+        or result["required_package_count"] < 1
+        or result["archive_count"] > result["required_package_count"]
+        or not isinstance(selected, list)
+        or not selected
+        or sorted(set(selected)) != selected
+        or any(
+            not isinstance(item, str)
+            or not item
+            or Path(item).name != item
+            for item in selected
+        )
+        or input_id != _sha256_bytes(_json_bytes(candidate))
+    ):
+        raise MaterializationError(
+            "expected package-cache seed input is invalid"
+        )
+    return result
+
+
+def _inventory_binding(path: Path, inventory: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "filename": path.name,
+        "sha256": freeze._sha256_file(path),
+        "inventory_sha256": inventory["inventory_sha256"],
+        "entry_count": inventory["entry_count"],
+        "file_count": inventory["file_count"],
+        "total_file_bytes": inventory["total_file_bytes"],
+    }
+
+
+def _verify_package_cache_symlinks(root: Path) -> dict[str, int]:
+    """Allow unresolved package-internal links while rejecting external dependencies.
+
+    Extracted Conda packages commonly contain relative links whose targets are
+    supplied by another package only when the environment is linked.  Resolving such
+    links in the cache would reject valid artifacts.  Their lexical target must,
+    however, stay within the same selected top-level package payload.
+    """
+
+    if root.is_symlink() or not root.is_dir():
+        raise MaterializationError(
+            f"package-cache symlink audit root is absent or symlinked: {root}"
+        )
+    count = 0
+    unresolved = 0
+    for directory, directory_names, file_names in os.walk(
+        root, followlinks=False
+    ):
+        directory_names.sort()
+        file_names.sort()
+        for name in [*directory_names, *file_names]:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                continue
+            count += 1
+            relative = PurePosixPath(path.relative_to(root).as_posix())
+            target = os.readlink(path)
+            if not target or target.startswith("/"):
+                raise MaterializationError(
+                    f"package-cache seed has an absolute/empty symlink: {path}"
+                )
+            lexical = PurePosixPath(
+                posixpath.normpath(
+                    f"{relative.parent.as_posix()}/{target}"
+                )
+            )
+            if (
+                lexical.is_absolute()
+                or not lexical.parts
+                or lexical.parts[0] in {"", ".", ".."}
+                or lexical.parts[0] != relative.parts[0]
+            ):
+                raise MaterializationError(
+                    "package-cache seed symlink escapes its selected package: "
+                    f"{path} -> {target}"
+                )
+            try:
+                path.resolve(strict=True)
+            except (OSError, RuntimeError):
+                unresolved += 1
+    return {
+        "symlink_count": count,
+        "unresolved_internal_symlink_count": unresolved,
+        "external_symlink_count": 0,
+    }
+
+
+def _publish_exact_artifact(path: Path, payload: Mapping[str, Any]) -> None:
+    try:
+        freeze._atomic_write_exact(path, _json_bytes(payload))
+    except freeze.ReleaseFreezeError as exc:
+        raise MaterializationError(str(exc)) from exc
+
+
+def _verify_package_cache_seed(
+    output_root: Path, *, require_preclone_runtime_identity: bool = False
+) -> dict[str, Any]:
+    inventory_path = output_root / PACKAGE_CACHE_SEED_INVENTORY
+    intent_path = output_root / PACKAGE_CACHE_SEED_INTENT
+    complete_path = output_root / PACKAGE_CACHE_SEED_COMPLETE
+    if (
+        inventory_path.is_symlink()
+        or not inventory_path.is_file()
+        or stat.S_IMODE(inventory_path.stat().st_mode) & 0o222
+    ):
+        raise MaterializationError(
+            f"package-cache seed inventory is absent or unsafe: {inventory_path}"
+        )
+    inventory = _read_json(
+        inventory_path, description="package-cache seed inventory"
+    )
+    try:
+        capture._validated_content_inventory(
+            inventory, description="package-cache seed inventory"
+        )
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    intent = _verify_stage(intent_path, stage="package_cache_seed_intent")
+    complete = _verify_stage(complete_path, stage="package_cache_seed")
+    _require_exact_fields(
+        intent,
+        {
+            "schema_version",
+            "release_id",
+            "stage",
+            "protocol",
+            "source_package_cache",
+            "seed_path",
+            "runtime_cache_path",
+            "requirements",
+            "selected_top_level_entries",
+            "inventory",
+            "record_sha256",
+        },
+        description="package-cache seed intent",
+    )
+    _require_exact_fields(
+        complete,
+        {
+            "schema_version",
+            "release_id",
+            "stage",
+            "protocol",
+            "source_package_cache",
+            "seed_path",
+            "runtime_cache_path",
+            "intent",
+            "inventory",
+            "requirements_sha256",
+            "required_package_count",
+            "archive_count",
+            "validated_packages",
+            "source_seed_copy_audit",
+            "source_runtime_copy_audit",
+            "preclone_seed_runtime_copy_audit",
+            "seed_content_inventory",
+            "seed_symlink_audit",
+            "sealed_read_only",
+            "record_sha256",
+        },
+        description="package-cache seed completion",
+    )
+    inventory_record = _inventory_binding(inventory_path, inventory)
+    if (
+        intent.get("protocol") != PACKAGE_CACHE_SEED_INTENT_PROTOCOL
+        or complete.get("protocol") != PACKAGE_CACHE_SEED_PROTOCOL
+        or intent.get("inventory") != inventory_record
+        or complete.get("inventory") != inventory_record
+        or intent.get("source_package_cache")
+        != complete.get("source_package_cache")
+        or intent.get("seed_path") != complete.get("seed_path")
+        or intent.get("runtime_cache_path")
+        != complete.get("runtime_cache_path")
+        or complete.get("intent")
+        != {
+            "filename": PACKAGE_CACHE_SEED_INTENT,
+            "sha256": freeze._sha256_file(intent_path),
+            "record_sha256": intent["record_sha256"],
+        }
+    ):
+        raise MaterializationError("package-cache seed intent/completion binding drifted")
+    requirements = intent.get("requirements")
+    selected = intent.get("selected_top_level_entries")
+    if (
+        not isinstance(requirements, list)
+        or not requirements
+        or not isinstance(selected, list)
+        or sorted(set(selected)) != selected
+        or complete.get("requirements_sha256")
+        != _sha256_bytes(_json_bytes(requirements))
+        or complete.get("required_package_count") != len(requirements)
+    ):
+        raise MaterializationError("package-cache seed requirements are invalid")
+    seed = _safe_existing_directory(
+        intent["seed_path"], description="package-cache immutable seed"
+    )
+    runtime_cache = _safe_existing_directory(
+        intent["runtime_cache_path"], description="release-local package cache"
+    )
+    if (
+        seed != output_root / PACKAGE_CACHE_SEED_DIRECTORY
+        or runtime_cache != output_root / PACKAGE_CACHE_DIRECTORY
+    ):
+        raise MaterializationError("package-cache seed paths escaped materialization root")
+    live_seed_content = _content_inventory_identity(seed)
+    if complete.get("seed_content_inventory") != live_seed_content:
+        raise MaterializationError("immutable package-cache seed content drifted")
+    try:
+        capture._assert_read_only(seed)
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    seed_symlinks = _verify_package_cache_symlinks(seed)
+    if (
+        complete.get("sealed_read_only") is not True
+        or complete.get("seed_symlink_audit") != seed_symlinks
+    ):
+        raise MaterializationError("immutable package-cache seed sealing drifted")
+    validated = _validate_cache_package_payloads(
+        seed, requirements, allow_missing_archives=True
+    )
+    expected_selected = set(PACKAGE_CACHE_METADATA_ENTRIES)
+    for row in validated:
+        expected_selected.add(str(row["dist"]))
+        if row["archive_present"]:
+            expected_selected.add(str(row["filename"]))
+    copy_fields = {
+        "source_regular_file_count",
+        "destination_regular_file_count",
+        "shared_regular_inode_count",
+    }
+    if (
+        validated != complete.get("validated_packages")
+        or selected != sorted(expected_selected)
+        or complete.get("archive_count")
+        != sum(bool(row["archive_present"]) for row in validated)
+        or any(
+            not isinstance(complete.get(field), dict)
+            or set(complete[field]) != copy_fields
+            or complete[field].get("shared_regular_inode_count") != 0
+            for field in (
+                "source_seed_copy_audit",
+                "source_runtime_copy_audit",
+                "preclone_seed_runtime_copy_audit",
+            )
+        )
+    ):
+        raise MaterializationError("package-cache selected package identity drifted")
+    copy_audit = verify_independent_copy(seed, runtime_cache)
+    preclone_copy = complete.get("preclone_seed_runtime_copy_audit")
+    if (
+        not isinstance(preclone_copy, dict)
+        or set(preclone_copy)
+        != {
+            "source_regular_file_count",
+            "destination_regular_file_count",
+            "shared_regular_inode_count",
+        }
+        or preclone_copy.get("shared_regular_inode_count") != 0
+        or preclone_copy.get("source_regular_file_count")
+        != copy_audit["source_regular_file_count"]
+    ):
+        raise MaterializationError(
+            "release-local package cache no longer proves an independent seed copy"
+        )
+    if require_preclone_runtime_identity:
+        try:
+            runtime_inventory = capture.directory_inventory(runtime_cache)
+        except capture.EnvironmentCaptureError as exc:
+            raise MaterializationError(str(exc)) from exc
+        if runtime_inventory != inventory:
+            raise MaterializationError(
+                "pre-clone release-local package cache drifted from its seed"
+            )
+        if copy_audit != preclone_copy:
+            raise MaterializationError(
+                "pre-clone release-local package cache copy audit drifted"
+            )
+    return complete
+
+
+def _materialize_package_cache_seed(
+    *,
+    output_root: Path,
+    source_cache: Path,
+    harness_seed: Path,
+    serving_seed: Path,
+    expected_plan: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build and seal the deterministic cache seed before invoking Conda."""
+
+    plan = (
+        _package_cache_seed_plan(
+            source_cache=source_cache,
+            harness_seed=harness_seed,
+            serving_seed=serving_seed,
+        )
+        if expected_plan is None
+        else dict(expected_plan)
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
+    inventory_path = output_root / PACKAGE_CACHE_SEED_INVENTORY
+    _publish_exact_artifact(inventory_path, plan["inventory"])
+    inventory_record = _inventory_binding(inventory_path, plan["inventory"])
+    seed = output_root / PACKAGE_CACHE_SEED_DIRECTORY
+    runtime_cache = output_root / PACKAGE_CACHE_DIRECTORY
+    intent = _stage_payload(
+        "package_cache_seed_intent",
+        {
+            "protocol": PACKAGE_CACHE_SEED_INTENT_PROTOCOL,
+            "source_package_cache": str(source_cache),
+            "seed_path": str(seed),
+            "runtime_cache_path": str(runtime_cache),
+            "requirements": plan["requirements"],
+            "selected_top_level_entries": plan[
+                "selected_top_level_entries"
+            ],
+            "inventory": inventory_record,
+        },
+    )
+    _publish_exact_artifact(output_root / PACKAGE_CACHE_SEED_INTENT, intent)
+    complete_path = output_root / PACKAGE_CACHE_SEED_COMPLETE
+    if complete_path.is_file() and not complete_path.is_symlink():
+        clone_started = any(
+            (output_root / STAGE_FILENAMES[stage]).is_file()
+            for stage in ("harness_clone", "serving_clone")
+        )
+        return _verify_package_cache_seed(
+            output_root,
+            require_preclone_runtime_identity=not clone_started,
+        )
+    try:
+        _copy_cache_inventory_bound(source_cache, seed, plan["inventory"])
+        live_source = _selected_cache_inventory(
+            source_cache, plan["selected_top_level_entries"]
+        )
+        copied = capture.directory_inventory(seed)
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    if live_source != plan["inventory"]:
+        raise MaterializationError(
+            "source package cache drifted during seed construction"
+        )
+    if _inventory_content_sha256(copied) != _inventory_content_sha256(
+        plan["inventory"]
+    ):
+        raise MaterializationError(
+            "package-cache seed differs from its marker-first inventory"
+        )
+    source_seed_copy = verify_independent_copy(source_cache, seed)
+    try:
+        seed_symlinks = _verify_package_cache_symlinks(seed)
+        capture._seal_tree(seed)
+        capture._assert_read_only(seed)
+        _copy_cache_inventory_bound(seed, runtime_cache, plan["inventory"])
+        runtime_inventory = capture.directory_inventory(runtime_cache)
+        runtime_symlinks = _verify_package_cache_symlinks(runtime_cache)
+    except capture.EnvironmentCaptureError as exc:
+        raise MaterializationError(str(exc)) from exc
+    if runtime_inventory != plan["inventory"]:
+        raise MaterializationError(
+            "release-local package cache differs from its immutable seed"
+        )
+    source_runtime_copy = verify_independent_copy(source_cache, runtime_cache)
+    seed_runtime_copy = verify_independent_copy(seed, runtime_cache)
+    if runtime_symlinks != seed_symlinks:
+        raise MaterializationError(
+            "release-local package cache symlinks differ from its immutable seed"
+        )
+    validated_seed = _validate_cache_package_payloads(
+        seed, plan["requirements"], allow_missing_archives=True
+    )
+    complete = _stage_payload(
+        "package_cache_seed",
+        {
+            "protocol": PACKAGE_CACHE_SEED_PROTOCOL,
+            "source_package_cache": str(source_cache),
+            "seed_path": str(seed),
+            "runtime_cache_path": str(runtime_cache),
+            "intent": {
+                "filename": PACKAGE_CACHE_SEED_INTENT,
+                "sha256": freeze._sha256_file(
+                    output_root / PACKAGE_CACHE_SEED_INTENT
+                ),
+                "record_sha256": intent["record_sha256"],
+            },
+            "inventory": inventory_record,
+            "requirements_sha256": _sha256_bytes(
+                _json_bytes(plan["requirements"])
+            ),
+            "required_package_count": len(plan["requirements"]),
+            "archive_count": sum(
+                bool(row["archive_present"]) for row in validated_seed
+            ),
+            "validated_packages": validated_seed,
+            "source_seed_copy_audit": source_seed_copy,
+            "source_runtime_copy_audit": source_runtime_copy,
+            "preclone_seed_runtime_copy_audit": seed_runtime_copy,
+            "seed_content_inventory": _content_inventory_identity(seed),
+            "seed_symlink_audit": seed_symlinks,
+            "sealed_read_only": True,
+        },
+    )
+    _publish_exact_artifact(complete_path, complete)
+    return _verify_package_cache_seed(
+        output_root, require_preclone_runtime_identity=True
+    )
 
 
 def verify_independent_copy(source: Path, destination: Path) -> dict[str, int]:
@@ -885,7 +1856,7 @@ def _materialize_worktree(
     else:
         _run(
             (
-                "git",
+                "/usr/bin/git",
                 "-C",
                 str(source_repository),
                 "clone",
@@ -897,7 +1868,7 @@ def _materialize_worktree(
         )
         _run(
             (
-                "git",
+                "/usr/bin/git",
                 "-C",
                 str(worktree),
                 "checkout",
@@ -966,7 +1937,7 @@ def _materialize_clone(
             )
         return recorded
     cache = (
-        output_root / "conda-package-cache"
+        output_root / PACKAGE_CACHE_DIRECTORY
         if package_cache is None
         else package_cache
     )
@@ -1020,16 +1991,37 @@ def _verify_pip_check(prefix: Path) -> dict[str, Any]:
 
 
 def _materialize_package_cache(
-    *, output_root: Path, package_cache: Path, conda_executable: Path
+    *,
+    output_root: Path,
+    package_cache: Path,
+    conda_executable: Path,
+    package_cache_seed: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Checksum and seal the release-local cache populated by offline clones."""
+    """Checksum and seal the preseeded release-local cache used by offline clones."""
 
     stage = "package_cache"
     stage_path = output_root / STAGE_FILENAMES[stage]
+    live_seed = _verify_package_cache_seed(output_root)
+    seed_record = {
+        "filename": PACKAGE_CACHE_SEED_COMPLETE,
+        "sha256": freeze._sha256_file(
+            output_root / PACKAGE_CACHE_SEED_COMPLETE
+        ),
+        "record_sha256": live_seed["record_sha256"],
+        "seed_content_inventory_sha256": live_seed[
+            "seed_content_inventory"
+        ]["content_inventory_sha256"],
+        "required_package_count": live_seed["required_package_count"],
+    }
+    if package_cache_seed.get("record_sha256") != live_seed["record_sha256"]:
+        raise MaterializationError("package-cache seed stage binding drifted")
     if stage_path.is_file():
         payload = _verify_stage(stage_path, stage=stage)
         live = _content_inventory_identity(package_cache)
-        if payload.get("content_inventory") != live:
+        if (
+            payload.get("content_inventory") != live
+            or payload.get("package_cache_seed") != seed_record
+        ):
             raise MaterializationError("release-local Conda package cache drifted")
         freeze._assert_read_only(package_cache)
         return payload
@@ -1054,6 +2046,7 @@ def _materialize_package_cache(
                 "path": str(conda_executable),
                 "sha256": tool_sha256,
             },
+            "package_cache_seed": seed_record,
             "offline": True,
             "pip_interoperability": False,
             "sealed_read_only": True,
@@ -1225,7 +2218,7 @@ def _archive_release_build_evidence(
         value
         for value in _run(
             (
-                "git",
+                "/usr/bin/git",
                 "-C",
                 str(release_worktree),
                 "ls-files",
@@ -1478,7 +2471,7 @@ def _load_completed_build_evidence(
         value
         for value in _run(
             (
-                "git",
+                "/usr/bin/git",
                 "-C",
                 str(release_worktree),
                 "ls-files",
@@ -1511,6 +2504,7 @@ def _materialization_paths(
     release_worktree: str | Path,
     source_harness_prefix: str | Path,
     source_serving_prefix: str | Path,
+    source_package_cache: str | Path,
     harness_prefix: str | Path,
     serving_prefix: str | Path,
 ) -> dict[str, Path]:
@@ -1530,6 +2524,9 @@ def _materialization_paths(
         ),
         "source_serving_prefix": _safe_existing_directory(
             source_serving_prefix, description="source serving prefix"
+        ),
+        "source_package_cache": _safe_existing_directory(
+            source_package_cache, description="source Conda package cache"
         ),
         "harness_prefix": _safe_destination(
             harness_prefix, description="production harness prefix"
@@ -1553,6 +2550,15 @@ def _materialization_paths(
     ):
         raise MaterializationError(
             "materialization output and environment capture roots overlap"
+        )
+    if (
+        paths["source_package_cache"] == paths["output_root"]
+        or _is_relative_to(
+            paths["source_package_cache"], paths["output_root"]
+        )
+    ):
+        raise MaterializationError(
+            "source Conda package cache is owned by the materialization output"
         )
     for role in ("source_harness_prefix", "source_serving_prefix"):
         if not _is_relative_to(paths[role], capture_root):
@@ -1636,9 +2642,11 @@ def materialize_release(
     release_worktree: str | Path,
     source_harness_prefix: str | Path,
     source_serving_prefix: str | Path,
+    source_package_cache: str | Path,
     harness_prefix: str | Path,
     serving_prefix: str | Path,
-    conda_executable: str | Path,
+    conda_toolchain_root: str | Path,
+    expected_package_cache_seed_input: Mapping[str, Any],
     apply: bool = False,
 ) -> dict[str, Any]:
     paths = _materialization_paths(
@@ -1648,11 +2656,41 @@ def materialize_release(
         release_worktree=release_worktree,
         source_harness_prefix=source_harness_prefix,
         source_serving_prefix=source_serving_prefix,
+        source_package_cache=source_package_cache,
         harness_prefix=harness_prefix,
         serving_prefix=serving_prefix,
     )
-    conda = _conda_executable(conda_executable)
-    conda_sha256 = freeze._sha256_file(conda)
+    try:
+        toolchain_binding = (
+            conda_toolchain.verified_conda_toolchain_binding(
+                conda_toolchain_root,
+                exercise=True,
+            )
+        )
+    except (
+        OSError,
+        conda_toolchain.CondaToolchainProvisionError,
+    ) as exc:
+        raise MaterializationError(
+            f"sealed Conda toolchain verification failed: {exc}"
+        ) from exc
+    expected_cache_input = _validated_package_cache_seed_input(
+        expected_package_cache_seed_input
+    )
+    verified_toolchain_root = Path(
+        toolchain_binding["toolchain_root"]
+    ).resolve(strict=True)
+    for name, path in paths.items():
+        if (
+            verified_toolchain_root == path
+            or _is_relative_to(verified_toolchain_root, path)
+            or _is_relative_to(path, verified_toolchain_root)
+        ):
+            raise MaterializationError(
+                "sealed Conda toolchain overlaps materialization path "
+                f"{name}={path}"
+            )
+    conda = Path(toolchain_binding["conda_executable"]["path"])
     capture_binding = _verified_environment_capture_binding(
         capture_root=paths["environment_capture_root"],
         harness_seed=paths["source_harness_prefix"],
@@ -1670,12 +2708,23 @@ def materialize_release(
                 "release_worktree",
                 "source_harness_prefix",
                 "source_serving_prefix",
+                "source_package_cache",
                 "harness_prefix",
                 "serving_prefix",
             )
         }
         if report["paths"] != expected or report["tag_commit"] != commit:
             raise MaterializationError("completed materialization belongs to different inputs")
+        if report["conda_toolchain"] != toolchain_binding:
+            raise MaterializationError(
+                "completed materialization belongs to a different sealed "
+                "Conda toolchain"
+            )
+        if report["package_cache_seed_input"] != expected_cache_input:
+            raise MaterializationError(
+                "completed materialization belongs to a different selected "
+                "package-cache input"
+            )
         return {**report, "status": "already_complete"}
     try:
         source_identity = freeze.verify_clean_exact_tag(paths["source_repository"])
@@ -1686,6 +2735,19 @@ def materialize_release(
         ) from exc
     if source_identity["git_commit"] != commit:
         raise MaterializationError("clean source identity differs from release tag")
+    cache_seed_plan = _package_cache_seed_plan(
+        source_cache=paths["source_package_cache"],
+        harness_seed=paths["source_harness_prefix"],
+        serving_seed=paths["source_serving_prefix"],
+    )
+    cache_seed_plan_binding = _package_cache_seed_plan_binding(
+        paths["source_package_cache"], cache_seed_plan
+    )
+    if cache_seed_plan_binding != expected_cache_input:
+        raise MaterializationError(
+            "selected package-cache input differs from the expected sealed "
+            "binding"
+        )
     plan = {
         "schema_version": SCHEMA_VERSION,
         "release_id": RELEASE_ID,
@@ -1698,11 +2760,13 @@ def materialize_release(
             if key != "output_root"
         },
         "output_root": str(paths["output_root"]),
+        "conda_toolchain": toolchain_binding,
         "conda_creation_tool": {
             "path": str(conda),
-            "sha256": conda_sha256,
+            "sha256": toolchain_binding["conda_executable"]["sha256"],
         },
         "environment_capture": capture_binding,
+        "package_cache_seed_input": cache_seed_plan_binding,
         "clone_contract": {
             "command": (
                 "conda create --yes --copy --offline --no-default-packages "
@@ -1713,8 +2777,12 @@ def materialize_release(
             "CONDA_PIP_INTEROP_ENABLED": "false",
             "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
             "release_local_package_cache": str(
-                paths["output_root"] / "conda-package-cache"
+                paths["output_root"] / PACKAGE_CACHE_DIRECTORY
             ),
+            "immutable_package_cache_seed": str(
+                paths["output_root"] / PACKAGE_CACHE_SEED_DIRECTORY
+            ),
+            "package_cache_seed_protocol": PACKAGE_CACHE_SEED_PROTOCOL,
             "shared_regular_inode_count": 0,
             "source_prefix_target_symlink_count": 0,
             "unresolvable_symlink_count": 0,
@@ -1736,7 +2804,14 @@ def materialize_release(
         paths["source_harness_prefix"],
         paths["source_serving_prefix"],
     )
-    package_cache = paths["output_root"] / "conda-package-cache"
+    package_cache = paths["output_root"] / PACKAGE_CACHE_DIRECTORY
+    package_cache_seed = _materialize_package_cache_seed(
+        output_root=paths["output_root"],
+        source_cache=paths["source_package_cache"],
+        harness_seed=paths["source_harness_prefix"],
+        serving_seed=paths["source_serving_prefix"],
+        expected_plan=cache_seed_plan,
+    )
     worktree_stage = _materialize_worktree(
         source_repository=paths["source_repository"],
         worktree=paths["release_worktree"],
@@ -1765,6 +2840,7 @@ def materialize_release(
         output_root=paths["output_root"],
         package_cache=package_cache,
         conda_executable=conda,
+        package_cache_seed=package_cache_seed,
     )
     git_identity = {
         key: worktree_stage[key]
@@ -1841,8 +2917,10 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
             "source_tree_sha256",
             "paths",
             "output_root",
+            "conda_toolchain",
             "conda_creation_tool",
             "environment_capture",
+            "package_cache_seed_input",
             "clone_contract",
             "harness_install_contract",
             "complete",
@@ -1876,6 +2954,7 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         "release_worktree",
         "source_harness_prefix",
         "source_serving_prefix",
+        "source_package_cache",
         "harness_prefix",
         "serving_prefix",
     }
@@ -1883,13 +2962,14 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         raise MaterializationError("materialization marker has the wrong path fields")
     paths: dict[str, Path] = {}
     for key, value in raw_paths.items():
-        if key == "source_repository":
-            # Source checkout is provenance only after publication.  It may be
-            # retired or unavailable; verification must not consult it.
+        if key in {"source_repository", "source_package_cache"}:
+            # The source checkout and mutable source package cache are provenance
+            # only after publication.  They may be retired or unavailable; sealed
+            # verification consults the immutable cache seed instead.
             candidate = Path(str(value))
             if not candidate.is_absolute():
                 raise MaterializationError(
-                    "recorded source repository path is not absolute"
+                    f"recorded {key} path is not absolute"
                 )
             paths[key] = candidate
         else:
@@ -1904,12 +2984,46 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
     )
     if live_capture != capture_binding:
         raise MaterializationError("sealed environment-capture binding drifted")
+    recorded_toolchain = marker.get("conda_toolchain")
+    if not isinstance(recorded_toolchain, dict):
+        raise MaterializationError(
+            "materialization lacks sealed Conda toolchain binding"
+        )
+    toolchain_root = recorded_toolchain.get("toolchain_root")
+    if (
+        not isinstance(toolchain_root, str)
+        or not Path(toolchain_root).is_absolute()
+    ):
+        raise MaterializationError(
+            "materialization Conda toolchain root is malformed"
+        )
+    try:
+        live_toolchain = (
+            conda_toolchain.verified_conda_toolchain_binding(
+                toolchain_root,
+                exercise=True,
+            )
+        )
+    except (
+        OSError,
+        conda_toolchain.CondaToolchainProvisionError,
+    ) as exc:
+        raise MaterializationError(
+            f"sealed Conda toolchain verification failed: {exc}"
+        ) from exc
+    if live_toolchain != recorded_toolchain:
+        raise MaterializationError(
+            "sealed Conda toolchain binding drifted"
+        )
     conda_tool = marker.get("conda_creation_tool")
     if (
         not isinstance(conda_tool, dict)
         or set(conda_tool) != {"path", "sha256"}
-        or not Path(str(conda_tool.get("path", ""))).is_absolute()
-        or _SHA256_RE.fullmatch(str(conda_tool.get("sha256", ""))) is None
+        or conda_tool
+        != {
+            "path": live_toolchain["conda_executable"]["path"],
+            "sha256": live_toolchain["conda_executable"]["sha256"],
+        }
     ):
         raise MaterializationError("Conda creation-tool provenance is malformed")
     expected_clone_contract = {
@@ -1922,6 +3036,10 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         "CONDA_PIP_INTEROP_ENABLED": "false",
         "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
         "release_local_package_cache": str(root / "conda-package-cache"),
+        "immutable_package_cache_seed": str(
+            root / PACKAGE_CACHE_SEED_DIRECTORY
+        ),
+        "package_cache_seed_protocol": PACKAGE_CACHE_SEED_PROTOCOL,
         "shared_regular_inode_count": 0,
         "source_prefix_target_symlink_count": 0,
         "unresolvable_symlink_count": 0,
@@ -2009,6 +3127,7 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
             "path",
             "content_inventory",
             "conda_creation_tool",
+            "package_cache_seed",
             "offline",
             "pip_interoperability",
             "sealed_read_only",
@@ -2199,13 +3318,52 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         or serving_pip_check != marker.get("serving_pip_check")
     ):
         raise MaterializationError("materialized pip-check evidence drifted")
+    seed_stage = _verify_package_cache_seed(root)
+    seed_intent = _verify_stage(
+        root / PACKAGE_CACHE_SEED_INTENT,
+        stage="package_cache_seed_intent",
+    )
+    seed_inventory = _read_json(
+        root / PACKAGE_CACHE_SEED_INVENTORY,
+        description="package-cache seed inventory",
+    )
+    expected_seed_input = {
+        "source_package_cache": seed_intent["source_package_cache"],
+        "inventory_sha256": seed_inventory["inventory_sha256"],
+        "inventory_entry_count": seed_inventory["entry_count"],
+        "inventory_file_count": seed_inventory["file_count"],
+        "inventory_total_file_bytes": seed_inventory["total_file_bytes"],
+        "requirements_sha256": seed_stage["requirements_sha256"],
+        "required_package_count": seed_stage["required_package_count"],
+        "archive_count": seed_stage["archive_count"],
+        "selected_top_level_entries": seed_intent[
+            "selected_top_level_entries"
+        ],
+    }
+    expected_seed_input["input_id"] = _sha256_bytes(
+        _json_bytes(expected_seed_input)
+    )
+    if marker.get("package_cache_seed_input") != expected_seed_input:
+        raise MaterializationError(
+            "materialization package-cache seed input identity drifted"
+        )
     cache_stage = stages["package_cache"]
-    cache = root / "conda-package-cache"
+    cache = root / PACKAGE_CACHE_DIRECTORY
+    expected_seed_record = {
+        "filename": PACKAGE_CACHE_SEED_COMPLETE,
+        "sha256": freeze._sha256_file(root / PACKAGE_CACHE_SEED_COMPLETE),
+        "record_sha256": seed_stage["record_sha256"],
+        "seed_content_inventory_sha256": seed_stage[
+            "seed_content_inventory"
+        ]["content_inventory_sha256"],
+        "required_package_count": seed_stage["required_package_count"],
+    }
     if (
         cache_stage.get("path") != str(cache)
         or cache_stage.get("offline") is not True
         or cache_stage.get("pip_interoperability") is not False
         or cache_stage.get("sealed_read_only") is not True
+        or cache_stage.get("package_cache_seed") != expected_seed_record
         or _content_inventory_identity(cache)
         != cache_stage.get("content_inventory")
         or cache_stage.get("conda_creation_tool") != conda_tool
@@ -2227,10 +3385,17 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         "paths": {key: str(value) for key, value in paths.items()},
         "harness_package": binding,
         "environment_capture": live_capture,
+        "conda_toolchain": live_toolchain,
         "conda_creation_tool": dict(conda_tool),
+        "package_cache_seed_input": dict(
+            marker["package_cache_seed_input"]
+        ),
         "conda_package_cache_sha256": cache_stage["content_inventory"][
             "content_inventory_sha256"
         ],
+        "conda_package_cache_seed_sha256": seed_stage[
+            "seed_content_inventory"
+        ]["content_inventory_sha256"],
         "copy_contract": (
             "offline_normalized_seed_clone_no_shared_regular_inodes"
         ),
@@ -2252,9 +3417,20 @@ def _build_parser() -> argparse.ArgumentParser:
     materialize.add_argument("--release-worktree", type=Path, required=True)
     materialize.add_argument("--source-harness-prefix", type=Path, required=True)
     materialize.add_argument("--source-serving-prefix", type=Path, required=True)
+    materialize.add_argument("--source-package-cache", type=Path, required=True)
     materialize.add_argument("--harness-prefix", type=Path, required=True)
     materialize.add_argument("--serving-prefix", type=Path, required=True)
-    materialize.add_argument("--conda-executable", type=Path, required=True)
+    materialize.add_argument(
+        "--conda-toolchain-root", type=Path, required=True
+    )
+    materialize.add_argument(
+        "--expected-package-cache-seed-input-json",
+        required=True,
+        help=(
+            "exact canonical selected-cache binding sealed by the "
+            "materialization pilot"
+        ),
+    )
     materialize.add_argument("--apply", action="store_true")
     verify = subparsers.add_parser("verify", help="verify a completed materialization")
     verify.add_argument("--output-root", type=Path, required=True)
@@ -2267,6 +3443,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "verify":
             report = verify_materialization(args.output_root)
         else:
+            def reject_duplicates(
+                pairs: list[tuple[str, Any]],
+            ) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise MaterializationError(
+                            "expected package-cache seed input duplicates "
+                            f"JSON key {key!r}"
+                        )
+                    result[key] = value
+                return result
+
+            expected_cache_input = json.loads(
+                args.expected_package_cache_seed_input_json,
+                object_pairs_hook=reject_duplicates,
+                parse_constant=lambda token: (_ for _ in ()).throw(
+                    MaterializationError(
+                        "expected package-cache seed input contains "
+                        f"non-finite value {token}"
+                    )
+                ),
+            )
+            if not isinstance(expected_cache_input, dict):
+                raise MaterializationError(
+                    "expected package-cache seed input must be a JSON object"
+                )
             report = materialize_release(
                 output_root=args.output_root,
                 environment_capture_root=args.environment_capture_root,
@@ -2274,9 +3477,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 release_worktree=args.release_worktree,
                 source_harness_prefix=args.source_harness_prefix,
                 source_serving_prefix=args.source_serving_prefix,
+                source_package_cache=args.source_package_cache,
                 harness_prefix=args.harness_prefix,
                 serving_prefix=args.serving_prefix,
-                conda_executable=args.conda_executable,
+                conda_toolchain_root=args.conda_toolchain_root,
+                expected_package_cache_seed_input=expected_cache_input,
                 apply=args.apply,
             )
     except (OSError, UnicodeError, ValueError, MaterializationError) as exc:

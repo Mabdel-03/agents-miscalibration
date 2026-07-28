@@ -46,13 +46,13 @@ if _BUNDLE_DIRECTORY not in sys.path:
 try:
     from scripts.verify_schema5_recovery_evidence import (
         EvidenceVerificationError,
-        R3_PROTOCOL,
+        R4_PROTOCOL,
         verify_recovery_evidence,
     )
 except ModuleNotFoundError:  # ``python -I /absolute/path/to/this_script.py``
     from verify_schema5_recovery_evidence import (  # type: ignore[no-redef]
         EvidenceVerificationError,
-        R3_PROTOCOL,
+        R4_PROTOCOL,
         verify_recovery_evidence,
     )
 
@@ -61,15 +61,15 @@ SCHEDULER_EVIDENCE_NAME = "SCHEDULER_EVIDENCE.json"
 MAIL_STATE_NAME = "MAIL_DELIVERY.json"
 COMPLETE_MARKER_NAME = "RECOVERY_SENTINEL_COMPLETE.json"
 LOCK_NAME = ".schema5_recovery_sentinel.lock"
-SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r3-recovery-scheduler-evidence"
-MAIL_PROTOCOL = "schema5-v1.2-r3-recovery-sentinel-mail"
-MARKER_PROTOCOL = "schema5-v1.2-r3-recovery-sentinel-outcome"
+SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r4-recovery-scheduler-evidence"
+MAIL_PROTOCOL = "schema5-v1.2-r4-recovery-sentinel-mail"
+MARKER_PROTOCOL = "schema5-v1.2-r4-recovery-sentinel-outcome"
 STAGE_SCHEDULER_EVIDENCE_NAME = "STAGE_SCHEDULER_EVIDENCE.json"
 STAGE_COMPLETE_MARKER_NAME = "STAGE_SENTINEL_COMPLETE.json"
 STAGE_SCHEDULER_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-recovery-stage-scheduler-evidence"
+    "schema5-v1.2-r4-recovery-stage-scheduler-evidence"
 )
-STAGE_MARKER_PROTOCOL = "schema5-v1.2-r3-recovery-stage-sentinel-outcome"
+STAGE_MARKER_PROTOCOL = "schema5-v1.2-r4-recovery-stage-sentinel-outcome"
 STAGE_SENTINEL_PREFIX = "stage_failure_sentinel_"
 PRODUCTION_STAGE_NAMES = (
     "source_checkout",
@@ -98,10 +98,10 @@ STAGE_SENTINEL_NAMES = tuple(
     f"{STAGE_SENTINEL_PREFIX}{stage}" for stage in PRODUCTION_STAGE_NAMES
 )
 CAPACITY_TRANSIENT_PROTOCOL = (
-    "schema5-v1.2-r3-fleet-capacity-transient-receipt"
+    "schema5-v1.2-r4-fleet-capacity-transient-receipt"
 )
 CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-fleet-capacity-transient-evidence"
+    "schema5-v1.2-r4-fleet-capacity-transient-evidence"
 )
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
 CAPACITY_TRANSIENT_EVIDENCE_NAME = "FLEET_CAPACITY_TRANSIENT_EVIDENCE.json"
@@ -109,7 +109,7 @@ CAPACITY_PREIMAGE_ROOT_NAME = "sealed-preimages"
 CAPACITY_PREIMAGE_MANIFEST_NAME = "PREIMAGE_MANIFEST.json"
 CAPACITY_PREIMAGE_INVENTORY_NAME = "PREIMAGE_INVENTORY.sha256"
 CAPACITY_PREIMAGE_COMPLETE_NAME = "PREIMAGE_ARCHIVE_COMPLETE.json"
-CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r3-capacity-preimage-archive"
+CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r4-capacity-preimage-archive"
 CAPACITY_TRANSIENT_REASONS = frozenset({"Priority", "Resources"})
 CAPACITY_TRANSIENT_EXPECTED_REPLICAS = 22
 CAPACITY_TRANSIENT_EXPECTED_GPUS = 24
@@ -125,20 +125,20 @@ QUALIFICATION_FAILURE_DRAIN_NAME = (
     "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
 )
 QUALIFICATION_FAILURE_DRAIN_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-failure-drain-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-failure-drain-intent-v3"
 )
 QUALIFICATION_REFILL_ROOT_NAME = "refill-reconciliations"
 QUALIFICATION_POINTER_ROOT_NAME = "attempt-pointers"
 QUALIFICATION_ATTEMPT_ROOT_NAME = "attempts"
 QUALIFICATION_RUN_ROOT_NAME = "throughput-qualification-attempts"
 QUALIFICATION_POINTER_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r4-throughput-qualification-attempt-pointer-v1"
 )
 QUALIFICATION_CURRENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r4-throughput-qualification-current-attempt-v1"
 )
 QUALIFICATION_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-failure-v3"
+    "schema5-v1.2-r4-throughput-qualification-failure-v4"
 )
 QUALIFICATION_FAILURE_SCHEMA_VERSION = 3
 QUALIFICATION_POINTER_FIELDS = frozenset(
@@ -193,6 +193,7 @@ QUALIFICATION_FAILURE_FIELDS = frozenset(
         "attempt",
         "readiness_generation",
         "reason",
+        "admission_capacity_certificate",
         "additive_scaling_requirement",
         "scheduler_capacity_mutated",
         "rerun_requirement",
@@ -201,6 +202,25 @@ QUALIFICATION_FAILURE_FIELDS = frozenset(
         "refill_reconciliations",
         "failure_id",
     }
+)
+QUALIFICATION_ADMISSION_CERTIFICATE_FIELDS = frozenset(
+    {
+        "path",
+        "sha256",
+        "certificate_id",
+        "capacity_generation",
+        "effective_fleet_contract_sha256",
+        "effective_logical_replicas",
+        "effective_active_gpus",
+        "wave_passed",
+        "selected_cell_count",
+        "target_cell_count",
+        "shortfall_cells",
+        "theoretical_packing_upper_bound",
+    }
+)
+QUALIFICATION_PREFLIGHT_CERTIFICATE_PROTOCOL = (
+    "schema5-v1.2-r4-throughput-preflight-capacity-certificate-v1"
 )
 QUALIFICATION_FAILURE_DRAIN_BINDING_FIELDS = frozenset(
     {
@@ -2846,7 +2866,7 @@ def _validate_capacity_transient_receipt(
         or evidence.get("schema_version") != 1
         or evidence.get("protocol") != CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL
         or evidence.get("passed") is not True
-        or evidence.get("chain_protocol") != R3_PROTOCOL
+        or evidence.get("chain_protocol") != R4_PROTOCOL
         or evidence.get("chain_id") != manifest["chain_id"]
         or evidence.get("chain_generation") != generation
         or evidence.get("manifest") != verified["manifest_path"]
@@ -3113,6 +3133,130 @@ def _bind_capacity_corruption(
     return result
 
 
+def _qualification_admission_certificate_binding(
+    *,
+    failure: Mapping[str, Any],
+    readiness_root: Path,
+    readiness: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the exact sealed admission certificate carried by a failure."""
+
+    binding = failure.get("admission_capacity_certificate")
+    if (
+        not isinstance(binding, Mapping)
+        or set(binding) != QUALIFICATION_ADMISSION_CERTIFICATE_FIELDS
+    ):
+        raise SentinelError(
+            "qualification failure admission-certificate binding is malformed"
+        )
+    path = Path(str(binding.get("path", "")))
+    if (
+        not path.is_absolute()
+        or path.resolve() != path
+        or path.is_symlink()
+        or not path.is_file()
+        or path.lstat().st_nlink != 1
+        or stat.S_IMODE(path.stat().st_mode) & 0o222
+    ):
+        raise SentinelError(
+            "qualification admission certificate is unsafe or mutable"
+        )
+    try:
+        path.relative_to(readiness_root)
+    except ValueError as exc:
+        raise SentinelError(
+            "qualification admission certificate escapes readiness"
+        ) from exc
+    certificate = _read_json(
+        path,
+        description="qualification admission capacity certificate",
+    )
+    certificate_identity = dict(certificate)
+    certificate_id = certificate_identity.pop("certificate_id", None)
+    wave = certificate.get("wave")
+    generation = binding.get("capacity_generation")
+    selected = binding.get("selected_cell_count")
+    target = binding.get("target_cell_count")
+    shortfall = binding.get("shortfall_cells")
+    upper_bound = binding.get("theoretical_packing_upper_bound")
+    generation_one_path = (
+        readiness_root / "PREFLIGHT_CAPACITY_CERTIFICATE.json"
+    ).resolve()
+    if (
+        binding.get("sha256") != _sha256(path)
+        or binding.get("certificate_id") != certificate_id
+        or certificate_id
+        != _sha256_bytes(_canonical_json(certificate_identity))
+        or certificate.get("schema_version")
+        != QUALIFICATION_FAILURE_SCHEMA_VERSION
+        or certificate.get("protocol")
+        != QUALIFICATION_PREFLIGHT_CERTIFICATE_PROTOCOL
+        or certificate.get("passed") is not True
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+        or certificate.get("capacity_generation") != generation
+        or readiness.get("capacity_generation") != generation
+        or certificate.get("proposed_effective_fleet_contract_sha256")
+        != binding.get("effective_fleet_contract_sha256")
+        or readiness.get("fleet_contract_sha256")
+        != binding.get("effective_fleet_contract_sha256")
+        or certificate.get("effective_logical_replicas")
+        != binding.get("effective_logical_replicas")
+        or certificate.get("effective_active_gpus")
+        != binding.get("effective_active_gpus")
+        or not isinstance(wave, Mapping)
+        or wave.get("passed") is not binding.get("wave_passed")
+        or certificate.get("selected_cell_count") != selected
+        or wave.get("selected_cell_count") != selected
+        or wave.get("target_active_cells") != target
+        or wave.get("shortfall_cells") != shortfall
+        or not isinstance(selected, int)
+        or isinstance(selected, bool)
+        or not isinstance(target, int)
+        or isinstance(target, bool)
+        or target != 384
+        or not isinstance(shortfall, int)
+        or isinstance(shortfall, bool)
+        or shortfall != target - selected
+        or not isinstance(upper_bound, int)
+        or isinstance(upper_bound, bool)
+        or upper_bound < selected
+        or (
+            binding.get("wave_passed") is False
+            and not (0 < shortfall and upper_bound < target)
+        )
+        or (
+            binding.get("wave_passed") is True
+            and not (shortfall == 0 and selected == target)
+        )
+        or (generation == 1 and path != generation_one_path)
+        or (generation > 1 and path == generation_one_path)
+    ):
+        raise SentinelError(
+            "qualification admission certificate identity or accounting drifted"
+        )
+    return dict(binding)
+
+
+def _static_admission_shortfall_reason_valid(
+    reason: str,
+    certificate: Mapping[str, Any],
+) -> bool:
+    if certificate.get("wave_passed") is not False:
+        return False
+    expected = (
+        "static admission capacity shortfall in generation "
+        f"{certificate['capacity_generation']}: signed certificate selected "
+        f"{int(certificate['selected_cell_count']):,}/"
+        f"{int(certificate['target_cell_count']):,} cells with a "
+        f"{int(certificate['shortfall_cells']):,}-cell shortfall; "
+        "theoretical packing upper bound "
+        f"{int(certificate['theoretical_packing_upper_bound']):,}"
+    )
+    return reason == expected
+
+
 def _qualification_capacity_failure_binding(
     *,
     verified: Mapping[str, Any],
@@ -3356,6 +3500,17 @@ def _qualification_capacity_failure_binding(
     failure_id = identity.pop("failure_id", None)
     scaling = failure.get("additive_scaling_requirement")
     reason = str(failure.get("reason", ""))
+    admission_certificate = (
+        _qualification_admission_certificate_binding(
+            failure=failure,
+            readiness_root=readiness_root,
+            readiness=readiness,
+        )
+    )
+    measured_rate_shortfall = bool(
+        "qualification throughput" in reason
+        and "is below" in reason
+    )
     expected_attempt = {
         "path": str(pointer_path),
         "sha256": _sha256(pointer_path),
@@ -3385,8 +3540,7 @@ def _qualification_capacity_failure_binding(
         or failure.get("attempt") != expected_attempt
         or failure.get("readiness_generation")
         != readiness
-        or "qualification throughput" not in reason
-        or "is below" not in reason
+        or not measured_rate_shortfall
         or failure.get("scheduler_capacity_mutated") is not False
         or not isinstance(failure.get("failure_drain_intent"), Mapping)
         or not isinstance(failure.get("cycle_run_roots"), list)
@@ -3419,6 +3573,13 @@ def _qualification_capacity_failure_binding(
         "attempt": expected_attempt,
         "serving_profile": profile,
         "tensor_parallel_size": tp,
+        "failure_kind": "measured_throughput_shortfall",
+        "capacity_generation": admission_certificate[
+            "capacity_generation"
+        ],
+        "admission_certificate_id": admission_certificate[
+            "certificate_id"
+        ],
         "failed_job_id": str(row.get("job_id")),
         "failed_comment": str(row.get("comment")),
         "submission_receipt_id": receipt.get("receipt_id"),
@@ -3918,7 +4079,7 @@ def _validate_stage_scheduler_evidence(
         or evidence.get("schema_version") != 1
         or evidence.get("protocol") != STAGE_SCHEDULER_EVIDENCE_PROTOCOL
         or evidence.get("passed") is not True
-        or evidence.get("chain_protocol") != R3_PROTOCOL
+        or evidence.get("chain_protocol") != R4_PROTOCOL
         or evidence.get("chain_id") != manifest.get("chain_id")
         or evidence.get("manifest") != verified["manifest_path"]
         or evidence.get("manifest_sha256") != verified["manifest_sha256"]
@@ -3997,7 +4158,7 @@ def _validate_scheduler_evidence(
         or evidence["schema_version"] != 1
         or evidence["protocol"] != SCHEDULER_EVIDENCE_PROTOCOL
         or evidence["passed"] is not True
-        or evidence["chain_protocol"] != R3_PROTOCOL
+        or evidence["chain_protocol"] != R4_PROTOCOL
         or evidence["chain_id"] != manifest["chain_id"]
         or evidence["manifest"] != verified["manifest_path"]
         or evidence["manifest_sha256"] != verified["manifest_sha256"]
@@ -4367,7 +4528,7 @@ def _attempt_mail(
             f"{target_stage} {classification}"
         )
         body = (
-            "Schema-5 v1.2-r3 fail-fast stage observation\n\n"
+            "Schema-5 v1.2-r4 fail-fast stage observation\n\n"
             f"Stage: {target_stage}\n"
             f"Classification: {classification}\n"
             f"Target job: {outcome.get('target_job_id')}\n"
@@ -4380,7 +4541,7 @@ def _attempt_mail(
     else:
         subject = f"[agents-scaling:recovery] {classification}"
         body = (
-            "Schema-5 v1.2-r3 recovery-chain outcome\n\n"
+            "Schema-5 v1.2-r4 recovery-chain outcome\n\n"
             f"Classification: {classification}\n"
             f"Chain: {evidence['chain_id']}\n"
             f"Evidence: {path.parent / SCHEDULER_EVIDENCE_NAME}\n"
@@ -4586,7 +4747,7 @@ def _validate_marker(
         or marker["schema_version"] != 1
         or marker["protocol"] != MARKER_PROTOCOL
         or marker["passed"] is not True
-        or marker["chain_protocol"] != R3_PROTOCOL
+        or marker["chain_protocol"] != R4_PROTOCOL
         or marker["chain_id"] != evidence["chain_id"]
         or marker["manifest"] != verified["manifest_path"]
         or marker["manifest_sha256"] != verified["manifest_sha256"]
@@ -4711,7 +4872,7 @@ def _validate_stage_marker(
         or marker.get("schema_version") != 1
         or marker.get("protocol") != STAGE_MARKER_PROTOCOL
         or marker.get("passed") is not True
-        or marker.get("chain_protocol") != R3_PROTOCOL
+        or marker.get("chain_protocol") != R4_PROTOCOL
         or marker.get("chain_id") != evidence["chain_id"]
         or marker.get("manifest") != verified["manifest_path"]
         or marker.get("manifest_sha256") != verified["manifest_sha256"]
@@ -4754,9 +4915,9 @@ def _verified_inputs(
         verified = verify_recovery_evidence(chain_manifest, submission_receipt)
     except EvidenceVerificationError as exc:
         raise SentinelError(str(exc)) from exc
-    if verified["chain_protocol"] != R3_PROTOCOL:
+    if verified["chain_protocol"] != R4_PROTOCOL:
         raise SentinelError(
-            "the afterany recovery sentinel accepts only schema5-v1.2-r3 evidence"
+            "the afterany recovery sentinel accepts only schema5-v1.2-r4 evidence"
         )
     return verified
 
@@ -4929,7 +5090,7 @@ def run_sentinel(
     sleeper: Sleeper | None = None,
     maximum_mail_attempts: int = SYNCHRONOUS_MAIL_ATTEMPT_LIMIT,
 ) -> dict[str, Any]:
-    """Evaluate or durably publish one exact v1.2-r3 recovery-chain outcome."""
+    """Evaluate or durably publish one exact v1.2-r4 recovery-chain outcome."""
 
     if not recipient or any(character in recipient for character in "\r\n"):
         raise SentinelError("mail recipient is empty or unsafe")
@@ -5113,7 +5274,7 @@ def run_sentinel(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate the exact schema-5 v1.2-r3 recovery-chain receipt and publish "
+            "Evaluate the exact schema-5 v1.2-r4 recovery-chain receipt and publish "
             "marker-last immutable outcome evidence."
         )
     )

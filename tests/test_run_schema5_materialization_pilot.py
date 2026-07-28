@@ -26,7 +26,70 @@ SETUPTOOLS_ARTIFACT_SHA256 = (
 )
 
 
-def test_all_fresh_pilot_wire_protocols_identify_r3() -> None:
+def _fake_toolchain_binding(value: str | Path) -> dict:
+    root = Path(value).resolve()
+    executable = root / "bin" / "conda"
+    inventory_rows = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            inventory_rows.append(
+                (
+                    path.relative_to(root).as_posix(),
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                    path.stat().st_size,
+                )
+            )
+    inventory_sha256 = hashlib.sha256(
+        pilot._canonical_bytes(inventory_rows)
+    ).hexdigest()
+    executable_bytes = executable.read_bytes()
+    binding = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+        "release_tag": pilot.REQUIRED_TAG,
+        "chain_namespace": "schema5-v1.2-r4",
+        "toolchain_root": str(root),
+        "base_prefix": str(root),
+        "completion_marker": {
+            "path": str(root / "CONDA_TOOLCHAIN_COMPLETE.json"),
+            "sha256": "1" * 64,
+            "size": 1,
+        },
+        "marker_id": "2" * 64,
+        "installer_contract": {
+            "filename": "Miniforge3-Linux-x86_64.sh",
+            "release": "Miniforge3-25.11.0-1",
+            "sha256": "3" * 64,
+            "conda_version": "25.11.0",
+        },
+        "intent_id": "4" * 64,
+        "conda_executable": {
+            "path": str(executable),
+            "sha256": hashlib.sha256(executable_bytes).hexdigest(),
+            "size": len(executable_bytes),
+            "mode": executable.stat().st_mode & 0o777,
+            "link_count": executable.stat().st_nlink,
+        },
+        "runtime_identity_sha256": inventory_sha256,
+        "complete_prefix_inventory_sha256": inventory_sha256,
+        "read_only_probes": {"probe_count": 2},
+    }
+    binding["binding_id"] = hashlib.sha256(
+        pilot._canonical_bytes(binding)
+    ).hexdigest()
+    return binding
+
+
+@pytest.fixture(autouse=True)
+def _mock_sealed_conda_toolchain(monkeypatch):
+    monkeypatch.setattr(
+        pilot.conda_toolchain,
+        "verified_conda_toolchain_binding",
+        lambda root, exercise=True: _fake_toolchain_binding(root),
+    )
+
+
+def test_all_fresh_pilot_wire_protocols_identify_r4() -> None:
     protocols = {
         pilot.PILOT_QUARANTINE_PROTOCOL,
         pilot.PILOT_QUARANTINE_INTENT_PROTOCOL,
@@ -40,8 +103,59 @@ def test_all_fresh_pilot_wire_protocols_identify_r3() -> None:
         pilot.SUBMISSION_ACCEPTED_PROTOCOL,
     }
 
-    assert all("schema5-v1.2-r3-" in protocol for protocol in protocols)
-    assert all("schema5-v1.2-r2-" not in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r4-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r3-" not in protocol for protocol in protocols)
+
+
+def test_pilot_cli_accepts_only_sealed_toolchain_root() -> None:
+    parser = pilot._build_parser()
+    choices = next(
+        action.choices
+        for action in parser._actions
+        if hasattr(action, "choices") and action.choices
+    )
+    for command in ("run", "render-sbatch", "conda-toolchain-binding"):
+        options = {
+            option
+            for action in choices[command]._actions
+            for option in action.option_strings
+        }
+        assert "--conda-toolchain-root" in options
+        assert "--conda-executable" not in options
+    assert "conda-runtime-identity" not in choices
+
+
+def test_pilot_subprocess_environment_rejects_hostile_command_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile = {
+        "PATH": "/tmp/hostile-bin:/usr/bin",
+        "BASH_ENV": "/tmp/hostile-bash-env",
+        "LD_PRELOAD": "/tmp/hostile.so",
+        "GIT_DIR": "/tmp/hostile-git-dir",
+        "GIT_CONFIG_PARAMETERS": "'core.hooksPath=/tmp/hostile-hooks'",
+        "GIT_REPLACE_REF_BASE": "refs/hostile",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/tmp/hostile-hooks",
+        "SBATCH_PARTITION": "hostile",
+        "SQUEUE_FORMAT": "hostile",
+        "SACCT_FORMAT": "hostile",
+        "SCONTROL_ALL": "hostile",
+        "SLURM_CONF": "/tmp/hostile-slurm.conf",
+        "BASH_FUNC_git%%": "() { false; }",
+    }
+    for key, value in hostile.items():
+        monkeypatch.setenv(key, value)
+
+    environment = pilot._sanitized_process_environment()
+
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
 
 
 def _run(*argv: str, cwd: Path) -> str:
@@ -94,6 +208,7 @@ def _conda_record(*, name: str, version: str, build: str, digest: str) -> dict:
         "name": name,
         "version": version,
         "build": build,
+        "fn": f"{name}-{version}-{build}.conda",
         "sha256": digest,
         "url": f"https://conda.example.invalid/noarch/{name}-{version}-{build}.conda",
     }
@@ -254,6 +369,35 @@ def _inputs(tmp_path: Path, *, annotated: bool = True) -> tuple[dict, Path]:
         f"#!{conda_python}\n: > {conda_called}\nexit 97\n", encoding="utf-8"
     )
     conda.chmod(0o755)
+    package_cache = tmp_path / "source-package-cache"
+    extracted = package_cache / "python-3.11.13-h1_0"
+    (extracted / "info").mkdir(parents=True)
+    python_record = _conda_record(
+        name="python", version="3.11.13", build="h1_0", digest="1" * 64
+    )
+    (extracted / "info" / "index.json").write_text(
+        json.dumps(
+            {
+                key: python_record[key]
+                for key in ("name", "version", "build")
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (extracted / "info" / "repodata_record.json").write_text(
+        json.dumps(python_record, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (extracted / "payload").write_text("python package\n", encoding="utf-8")
+    (package_cache / "cache").mkdir()
+    (package_cache / "cache" / "channel.json").write_text(
+        '{"packages": {}}\n', encoding="utf-8"
+    )
+    (package_cache / "urls").write_text("", encoding="utf-8")
+    (package_cache / "urls.txt").write_text(
+        python_record["url"] + "\n", encoding="utf-8"
+    )
     return (
         {
             "pilot_root": tmp_path / "pilot",
@@ -272,7 +416,8 @@ def _inputs(tmp_path: Path, *, annotated: bool = True) -> tuple[dict, Path]:
             ),
             "reconciliation_incident": incident,
             "recovered_setuptools_record": recovered,
-            "conda_executable": conda,
+            "conda_toolchain_root": conda_base,
+            "source_package_cache": package_cache,
             "durable_git_release_marker": durable_marker,
         },
         conda_called,
@@ -310,10 +455,25 @@ def _install_stage_doubles(
                 "release_worktree",
                 "source_harness_prefix",
                 "source_serving_prefix",
+                "source_package_cache",
                 "harness_prefix",
                 "serving_prefix",
             )
         }
+        toolchain_binding = _fake_toolchain_binding(
+            kwargs["conda_toolchain_root"]
+        )
+        package_cache_seed_input = (
+            pilot.materialize.selected_package_cache_input_binding(
+                source_package_cache=kwargs["source_package_cache"],
+                harness_seed=kwargs["source_harness_prefix"],
+                serving_seed=kwargs["source_serving_prefix"],
+            )
+        )
+        assert (
+            kwargs["expected_package_cache_seed_input"]
+            == package_cache_seed_input
+        )
         report = {
             "release_id": pilot.RELEASE_ID,
             "materialization_id": "b" * 64,
@@ -326,13 +486,14 @@ def _install_stage_doubles(
             "source_tree_sha256": "c" * 64,
             "paths": paths,
             "environment_capture": {"capture_id": "d" * 64},
+            "conda_toolchain": toolchain_binding,
             "conda_creation_tool": {
-                "path": str(Path(kwargs["conda_executable"]).resolve()),
-                "sha256": hashlib.sha256(
-                    Path(kwargs["conda_executable"]).read_bytes()
-                ).hexdigest(),
+                "path": toolchain_binding["conda_executable"]["path"],
+                "sha256": toolchain_binding["conda_executable"]["sha256"],
             },
+            "package_cache_seed_input": package_cache_seed_input,
             "conda_package_cache_sha256": "e" * 64,
+            "conda_package_cache_seed_sha256": "9" * 64,
         }
         if not apply:
             return {**report, "status": "dry_run"}
@@ -357,9 +518,10 @@ def _install_stage_doubles(
                 symlinks=True,
                 copy_function=copy_function,
             )
+            cache_seed = output / "conda-package-cache-seed"
             cache = output / "conda-package-cache"
-            cache.mkdir()
-            (cache / "cache-record").write_text("offline cache\n", encoding="utf-8")
+            shutil.copytree(kwargs["source_package_cache"], cache_seed)
+            shutil.copytree(cache_seed, cache)
             marker.write_text(
                 json.dumps({"materialization_id": report["materialization_id"]}) + "\n",
                 encoding="utf-8",
@@ -382,6 +544,9 @@ def _install_stage_doubles(
     def fake_freeze(*, apply=False, **kwargs):
         assert "conda_executable" not in kwargs
         output = Path(kwargs["output_root"])
+        materialization_report = materialization_reports[
+            str(output.parent.resolve())
+        ]
         report = {
             "release_id": pilot.RELEASE_ID,
             "release_bundle_id": "f" * 64,
@@ -401,6 +566,7 @@ def _install_stage_doubles(
             "materialization_id": "b" * 64,
             "harness_environment_manifest_sha256": "1" * 64,
             "serving_environment_manifest_sha256": "2" * 64,
+            "conda_package_cache_seed_sha256": "9" * 64,
             "model_contract_sha256": "3" * 64,
             "fleet_contract_sha256": "4" * 64,
             "logical_replica_count": 22,
@@ -472,6 +638,9 @@ def _install_stage_doubles(
                 "git_commit": report["git_commit"],
                 "release_tag_object": report["release_tag_object"],
                 "source_tree_sha256": report["source_tree_sha256"],
+                "conda_package_cache_seed_sha256": report[
+                    "conda_package_cache_seed_sha256"
+                ],
                 "transport_uncertainty_binding": (
                     pilot.control.scheduler_safety
                     .expected_transport_uncertainty_binding()
@@ -509,6 +678,12 @@ def _install_stage_doubles(
                 "serving_environment_sha256": report[
                     "serving_environment_manifest_sha256"
                 ],
+                "conda_toolchain": materialization_report[
+                    "conda_toolchain"
+                ],
+                "package_cache_seed_input": materialization_report[
+                    "package_cache_seed_input"
+                ],
             }
             (output / pilot.freeze.RELEASE_IDENTITY_FILENAME).write_text(
                 json.dumps(
@@ -530,6 +705,7 @@ def _install_stage_doubles(
                 Path(kwargs["release_worktree"]),
                 Path(kwargs["harness_prefix"]),
                 Path(kwargs["serving_prefix"]),
+                output.parent / "conda-package-cache-seed",
                 output.parent / "conda-package-cache",
             ):
                 _seal_tree(root)
@@ -626,18 +802,27 @@ def test_rendered_sbatch_is_exact_immutable_no_requeue_and_rerunnable(tmp_path):
     assert created["sbatch_sha256"] == repeated["sbatch_sha256"]
     text = sbatch.read_text(encoding="utf-8")
     assert "#SBATCH --no-requeue\n" in text
+    assert "#SBATCH --export=NONE\n" in text
+    assert "#SBATCH --export=ALL\n" not in text
     assert "#SBATCH --time=11:30:00\n" in text
     assert "#SBATCH --partition=sched_test\n" in text
     assert f"#SBATCH --output={logs}/schema5-materialization-pilot-%j.out\n" in text
     assert f"#SBATCH --error={logs}/schema5-materialization-pilot-%j.err\n" in text
     assert f"#SBATCH --chdir={inputs['release_checkout']}\n" in text
-    assert "#SBATCH --comment=asys-s5-pilot:r3:" in text
+    assert "#SBATCH --comment=asys-s5-pilot:r4:" in text
+    assert "export PATH=/usr/bin:/bin\nreadonly PATH\n" in text
     exact_script = (
         Path(inputs["release_checkout"])
         / "scripts"
         / "run_schema5_materialization_pilot.py"
     )
     assert str(exact_script) in text
+    assert (
+        f"--source-package-cache {inputs['source_package_cache']}" in text
+    )
+    assert (
+        f"--conda-toolchain-root {inputs['conda_toolchain_root']}" in text
+    )
     assert "--apply" in text
     assert sbatch.stat().st_mode & 0o222 == 0
     checksum = Path(str(sbatch) + ".sha256")
@@ -1214,13 +1399,22 @@ def test_real_two_prefix_orchestration_is_marker_last_idempotent_and_verifiable(
     assert verified["status"] == "verified"
     assert repeated["status"] == "already_complete"
     assert created["pilot_id"] == verified["pilot_id"] == repeated["pilot_id"]
-    assert verified["conda_executable"] == {
-        "path": str(Path(inputs["conda_executable"]).resolve()),
-        "sha256": hashlib.sha256(
-            Path(inputs["conda_executable"]).read_bytes()
-        ).hexdigest(),
-        "size": Path(inputs["conda_executable"]).stat().st_size,
-    }
+    assert verified["conda_toolchain"] == _fake_toolchain_binding(
+        inputs["conda_toolchain_root"]
+    )
+    assert len(verified["package_cache_seed_input"]["input_id"]) == 64
+    assert (
+        json.loads(
+            (
+                Path(inputs["pilot_root"]) / pilot.INTENT_MARKER
+            ).read_text(encoding="utf-8")
+        )["inputs"]["source_package_cache"]
+        == str(Path(inputs["source_package_cache"]).resolve())
+    )
+    assert verified["source_package_cache"] == str(
+        Path(inputs["source_package_cache"]).resolve()
+    )
+    assert verified["conda_package_cache_seed_sha256"] == "9" * 64
     assert verified["ownership_policy_sha256"] == hashlib.sha256(
         Path(inputs["ownership_policy"]).read_bytes()
     ).hexdigest()
@@ -1296,7 +1490,7 @@ def test_underlying_conda_runtime_drift_is_detected_without_invoking_conda(
     inputs, conda_called = _inputs(tmp_path)
     _install_stage_doubles(monkeypatch)
     created = pilot.run_materialization_pilot(**inputs, apply=True)
-    entrypoint = Path(inputs["conda_executable"])
+    entrypoint = Path(inputs["conda_toolchain_root"]) / "bin" / "conda"
     entrypoint_sha256 = hashlib.sha256(entrypoint.read_bytes()).hexdigest()
     module = (
         entrypoint.parent.parent
@@ -1308,14 +1502,14 @@ def test_underlying_conda_runtime_drift_is_detected_without_invoking_conda(
     )
     module.write_text("__version__ = 'drifted'\n", encoding="utf-8")
     assert hashlib.sha256(entrypoint.read_bytes()).hexdigest() == entrypoint_sha256
-    # Sealed evidence remains independently verifiable, but creation-time resume is
-    # fenced by the complete base-runtime identity.
-    assert pilot._verify_materialization_pilot_semantic(inputs["pilot_root"])[
-        "pilot_id"
-    ] == created["pilot_id"]
     with pytest.raises(
         pilot.MaterializationPilotError,
-        match="completed pilot belongs to different explicit inputs",
+        match="toolchain binding drifted",
+    ):
+        pilot._verify_materialization_pilot_semantic(inputs["pilot_root"])
+    with pytest.raises(
+        pilot.MaterializationPilotError,
+        match="toolchain binding drifted",
     ):
         pilot.run_materialization_pilot(**inputs, apply=True)
     assert not conda_called.exists()
@@ -1348,6 +1542,75 @@ def test_pilot_crash_before_final_audit_resumes_without_redrawing_stages(
     assert pilot._verify_materialization_pilot_semantic(inputs["pilot_root"])[
         "pilot_id"
     ] == recovered["pilot_id"]
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("package-cache", "toolchain", "paths"),
+)
+def test_pilot_resume_rejects_authentic_but_stale_materialization_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    inputs, _conda_called = _inputs(tmp_path)
+    _install_stage_doubles(monkeypatch)
+    real_materialize = pilot.materialize.materialize_release
+    apply_attempts = 0
+
+    def crash_first_apply(*, apply=False, **kwargs):
+        nonlocal apply_attempts
+        if apply:
+            apply_attempts += 1
+            if apply_attempts == 1:
+                raise RuntimeError("simulated crash before materialization apply")
+        return real_materialize(apply=apply, **kwargs)
+
+    monkeypatch.setattr(
+        pilot.materialize,
+        "materialize_release",
+        crash_first_apply,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="simulated crash before materialization apply",
+    ):
+        pilot.run_materialization_pilot(**inputs, apply=True)
+
+    evidence_path = (
+        Path(inputs["pilot_root"])
+        / pilot.STAGE_EVIDENCE_FILENAMES[("materialization", "dry_run")]
+    )
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    if drift == "package-cache":
+        evidence["report"]["package_cache_seed_input"]["input_id"] = "0" * 64
+    elif drift == "toolchain":
+        evidence["report"]["conda_toolchain"]["toolchain_id"] = "0" * 64
+    else:
+        evidence["report"]["paths"]["source_package_cache"] = (
+            str(tmp_path / "different-source-package-cache")
+        )
+    evidence = pilot._stage_evidence_payload(
+        stage="materialization",
+        phase="dry_run",
+        report=evidence["report"],
+    )
+    evidence_path.chmod(0o644)
+    evidence_path.write_bytes(pilot._json_bytes(evidence))
+
+    with pytest.raises(
+        pilot.MaterializationPilotError,
+        match="dry/apply/verify immutable phase binding differs",
+    ):
+        pilot.run_materialization_pilot(**inputs, apply=True)
+
+    # The resumed transaction must reject the stale preflight before its first
+    # mutating materialization call.
+    assert apply_attempts == 1
+    assert not (
+        Path(pilot._layout(inputs["pilot_root"])["materialization_root"])
+        / pilot.materialize.COMPLETE_MARKER
+    ).exists()
 
 
 def test_pilot_withholds_completion_if_any_live_source_byte_changes(

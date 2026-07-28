@@ -42,7 +42,7 @@ LEASE_TTL_SECONDS = 420.0
 LEASE_CLOCK_SKEW_SECONDS = 30.0
 _CHUNK_SIZE = 8 * 1024 * 1024
 _SHA256_LENGTH = 64
-_SCHEMA3_RELEASE_IDS = {"sweep-recovery-schema5-v1.2"}
+_SCHEMA4_RELEASE_IDS = {"sweep-recovery-schema5-v1.2"}
 _REQUIRED_OFFLINE_ENVIRONMENT = {
     "HF_DATASETS_OFFLINE": "1",
     "HF_HUB_OFFLINE": "1",
@@ -390,7 +390,7 @@ def _validate_schema3_locks(locks: Mapping[str, Any], *, role: str) -> None:
         _validate_sha(digest, description=f"{role} Conda artifact digest")
 
 
-def _validate_schema3_environment_manifest(
+def _validate_schema4_environment_manifest(
     manifest: Mapping[str, Any],
     *,
     role: str,
@@ -412,11 +412,13 @@ def _validate_schema3_environment_manifest(
         "sealed_read_only",
         "offline_environment",
         "conda_creation_tool",
+        "conda_toolchain",
         "environment_seed",
         "ownership_policy",
         "integrity_normalization_policy",
         "normalization_receipt",
         "conda_package_cache_sha256",
+        "conda_package_cache_seed_sha256",
         "runtime",
         "locks",
         "release_package",
@@ -426,16 +428,17 @@ def _validate_schema3_environment_manifest(
     }
     if set(manifest) != required_fields:
         raise RuntimeIntegrityError(
-            f"{role} schema-3 environment manifest has the wrong fields"
+            f"{role} schema-4 environment manifest has the wrong fields"
         )
     if manifest.get("offline_environment") != _REQUIRED_OFFLINE_ENVIRONMENT:
         raise RuntimeIntegrityError(
-            f"{role} schema-3 offline environment contract is invalid"
+            f"{role} schema-4 offline environment contract is invalid"
         )
 
     locks = manifest.get("locks")
     runtime = manifest.get("runtime")
     conda_tool = manifest.get("conda_creation_tool")
+    conda_toolchain = manifest.get("conda_toolchain")
     seed = manifest.get("environment_seed")
     policy = manifest.get("ownership_policy")
     integrity_policy = manifest.get("integrity_normalization_policy")
@@ -446,6 +449,7 @@ def _validate_schema3_environment_manifest(
         or not isinstance(runtime, dict)
         or not isinstance(conda_tool, dict)
         or set(conda_tool) != {"path", "sha256"}
+        or not isinstance(conda_toolchain, dict)
         or not isinstance(seed, dict)
         or set(seed)
         != {
@@ -465,7 +469,7 @@ def _validate_schema3_environment_manifest(
         != {"inventory_sha256", "entry_count", "file_count", "total_file_bytes"}
     ):
         raise RuntimeIntegrityError(
-            f"{role} schema-3 environment provenance is malformed"
+            f"{role} schema-4 environment provenance is malformed"
         )
 
     _validate_schema3_locks(locks, role=role)
@@ -503,6 +507,10 @@ def _validate_schema3_environment_manifest(
             manifest.get("conda_package_cache_sha256"),
             f"{role} Conda package-cache digest",
         ),
+        (
+            manifest.get("conda_package_cache_seed_sha256"),
+            f"{role} Conda package-cache seed digest",
+        ),
     ):
         _validate_sha(value, description=description)
 
@@ -528,8 +536,12 @@ def _validate_schema3_environment_manifest(
                 "integrity_normalization_policy": integrity_policy,
                 "normalization_receipt": normalization,
                 "conda_creation_tool": conda_tool,
+                "conda_toolchain": conda_toolchain,
                 "conda_package_cache_sha256": manifest[
                     "conda_package_cache_sha256"
+                ],
+                "conda_package_cache_seed_sha256": manifest[
+                    "conda_package_cache_seed_sha256"
                 ],
                 "inventory_sha256": inventory["inventory_sha256"],
             }
@@ -567,7 +579,7 @@ def verify_environment_manifest_live(
     expected_inventory = manifest.get("directory_inventory")
     schema_version = manifest.get("schema_version")
     if (
-        schema_version not in {1, 3}
+        schema_version not in {1, 4}
         or manifest.get("release_id") != release_id
         or manifest.get("role") != role
         or manifest_prefix != resolved
@@ -575,7 +587,7 @@ def verify_environment_manifest_live(
         or not isinstance(expected_inventory, dict)
     ):
         raise RuntimeIntegrityError(f"{role} environment manifest identity is invalid")
-    if release_id in _SCHEMA3_RELEASE_IDS and schema_version != 3:
+    if release_id in _SCHEMA4_RELEASE_IDS and schema_version != 4:
         raise RuntimeIntegrityError(
             f"{role} environment manifest schema downgrade is forbidden for {release_id}"
         )
@@ -588,8 +600,8 @@ def verify_environment_manifest_live(
     runtime = manifest.get("runtime")
     if not isinstance(locks, dict) or not isinstance(runtime, dict):
         raise RuntimeIntegrityError(f"{role} environment manifest lacks frozen runtime/locks")
-    if schema_version == 3:
-        expected_content = _validate_schema3_environment_manifest(
+    if schema_version == 4:
+        expected_content = _validate_schema4_environment_manifest(
             manifest,
             role=role,
             inventory=inventory,

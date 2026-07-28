@@ -35,8 +35,155 @@ from scripts import run_schema5_throughput_qualification as qualification
 CLUSTER_FIXTURES = Path(__file__).parent / "fixtures" / "slurm_schema5_cluster"
 
 
+def _toolchain_binding(root: str | Path) -> dict:
+    toolchain = Path(root).resolve()
+    binding = {
+        "schema_version": control.conda_toolchain.SCHEMA_VERSION,
+        "protocol": control.conda_toolchain.PROTOCOL,
+        "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
+        "chain_namespace": "schema5-v1.2-r4",
+        "toolchain_root": str(toolchain),
+        "base_prefix": str(toolchain / "base"),
+        "completion_marker": {
+            "path": str(
+                toolchain / control.conda_toolchain.MARKER_NAME
+            ),
+            "sha256": "1" * 64,
+            "size": 1,
+        },
+        "marker_id": "2" * 64,
+        "installer_contract": (
+            control.conda_toolchain.PINNED_INSTALLER_CONTRACT.as_dict()
+        ),
+        "intent_id": "3" * 64,
+        "conda_executable": {
+            "path": str(toolchain / "base/bin/conda"),
+            "sha256": "4" * 64,
+            "size": 1,
+            "mode": 0o555,
+            "link_count": 1,
+        },
+        "runtime_identity_sha256": "5" * 64,
+        "complete_prefix_inventory_sha256": "6" * 64,
+        "read_only_probes": {"probe_count": 2},
+    }
+    binding["binding_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                binding,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    return binding
+
+
+def _package_cache_seed_input(path: str | Path) -> dict:
+    binding = {
+        "source_package_cache": str(Path(path).resolve()),
+        "inventory_sha256": "7" * 64,
+        "inventory_entry_count": 1,
+        "inventory_file_count": 1,
+        "inventory_total_file_bytes": 1,
+        "requirements_sha256": "8" * 64,
+        "required_package_count": 1,
+        "archive_count": 0,
+        "selected_top_level_entries": ["cache", "urls", "urls.txt"],
+    }
+    binding["input_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                binding,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    return binding
+
+
+@pytest.fixture(autouse=True)
+def _stub_conda_toolchain_verification(monkeypatch):
+    monkeypatch.setattr(
+        control.conda_toolchain,
+        "verified_conda_toolchain_binding",
+        lambda root, exercise=True: _toolchain_binding(root),
+    )
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_control_subprocess_environment_rejects_ambient_command_authority(
+    monkeypatch,
+):
+    hostile = {
+        "PATH": "/tmp/hostile-bin:/usr/bin",
+        "ASYS_RELEASE_ID": "ambient-release",
+        "BASH_ENV": "/tmp/hostile-bash-env",
+        "BASH_FUNC_squeue%%": "() { echo forged; }",
+        "CONDA_PREFIX": "/tmp/hostile-conda",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "/tmp/hostile-hook",
+        "GIT_DIR": "/tmp/hostile-git",
+        "GIT_REPLACE_REF_BASE": "refs/hostile/",
+        "HF_HOME": "/tmp/hostile-hf",
+        "LD_AUDIT": "/tmp/hostile-audit.so",
+        "LD_PRELOAD": "/tmp/hostile.so",
+        "PYTHONPATH": "/tmp/hostile-python",
+        "SACCT_FORMAT": "forged",
+        "SBATCH_PARTITION": "forged",
+        "SCONTROL_ALL": "forged",
+        "SLURM_CONF": "/tmp/hostile-slurm.conf",
+        "SQUEUE_FORMAT": "forged",
+        "TRANSFORMERS_CACHE": "/tmp/hostile-transformers",
+        "VLLM_CONFIG_ROOT": "/tmp/hostile-vllm",
+    }
+    for name, value in hostile.items():
+        monkeypatch.setenv(name, value)
+
+    environment = control._sanitized_subprocess_environment()
+
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["LANG"] == environment["LC_ALL"] == "C"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
+
+
+def test_default_control_scheduler_runner_uses_absolute_tool_and_clean_env(
+    monkeypatch,
+):
+    observed: dict[str, object] = {}
+    monkeypatch.setenv("PATH", "/tmp/hostile-bin")
+    monkeypatch.setenv("SBATCH_PARTITION", "hostile")
+    monkeypatch.setenv("GIT_DIR", "/tmp/hostile-git")
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        observed["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(control.subprocess, "run", fake_run)
+    completed = control._run_subprocess(["squeue", "--version"])
+
+    assert completed.returncode == 0
+    assert observed["argv"] == ["/usr/bin/squeue", "--version"]
+    environment = observed["kwargs"]["env"]
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert "SBATCH_PARTITION" not in environment
+    assert "GIT_DIR" not in environment
 
 
 def _artifact(path: Path, payload: str) -> tuple[str, str]:
@@ -155,43 +302,8 @@ def make_pins(tmp_path: Path) -> dict:
     )
     fleet_payload = json.loads(fleet_target.read_text(encoding="utf-8"))
     effective_payload = copy.deepcopy(fleet_payload)
-    additions = {
-        "0.6B": 3,
-        "1.7B": 3,
-        "4B": 3,
-        "8B": 2,
-        "14B": 3,
-        "32B": 4,
-    }
-    for profile in effective_payload["profiles"]:
-        profile_name = profile["serving_profile"]
-        for _ in range(additions.get(profile_name, 0)):
-            index = len(profile["replicas"])
-            replica = dict(profile["replicas"][-1])
-            replica.update(
-                {
-                    "replica_index": index,
-                    "replica_id": expected_replica_id(
-                        profile_name, index
-                    ),
-                    "scheduler_job_name": expected_scheduler_job_name(
-                        profile_name, index
-                    ),
-                }
-            )
-            profile["replicas"].append(replica)
-    effective_payload["logical_replica_count"] = sum(
-        len(profile["replicas"])
-        for profile in effective_payload["profiles"]
-    )
-    effective_payload["allocated_gpu_count"] = sum(
-        int(profile["tensor_parallel_size"]) * len(profile["replicas"])
-        for profile in effective_payload["profiles"]
-    )
     effective_target = tmp_path / "fleet_contract.capacity-v1.json"
-    effective_target.write_bytes(
-        protected_capacity.canonical_bytes(effective_payload)
-    )
+    effective_target.write_bytes(fleet_target.read_bytes())
     effective_hash = _sha(effective_target)
     effective_target.with_suffix(".sha256").write_text(
         f"{effective_hash}  {effective_target.name}\n",
@@ -319,22 +431,38 @@ def make_pins(tmp_path: Path) -> dict:
             "sha256": certificate_sha256,
             "certificate_id": certificate["certificate_id"],
         },
+        "static_feasibility_wave_passed": certificate["wave"]["passed"],
+        "static_feasibility_selected_cell_count": certificate[
+            "selected_cell_count"
+        ],
+        "static_feasibility_target_cell_count": certificate["wave"][
+            "target_active_cells"
+        ],
+        "static_feasibility_shortfall_cells": certificate["wave"][
+            "shortfall_cells"
+        ],
+        "static_feasibility_configured_client_ceiling": certificate["wave"][
+            "target_active_cells"
+        ],
+        "static_feasibility_certified_saturation_target": certificate[
+            "selected_cell_count"
+        ],
         "base_active_logical_replicas": 22,
         "base_active_gpus": 24,
         "base_active_topology": base_topology,
         "base_active_topology_sha256": (
             protected_capacity._sha256_value(base_topology)
         ),
-        "additive_reserved_logical_replicas": 18,
-        "additive_reserved_gpus": 18,
-        "additive_reserved_tp1_replicas": 18,
+        "additive_reserved_logical_replicas": 0,
+        "additive_reserved_gpus": 0,
+        "additive_reserved_tp1_replicas": 0,
         "additive_reserved_tp2_replicas": 0,
         "additive_reserved_topology": additive_topology,
         "additive_reserved_topology_sha256": (
             protected_capacity._sha256_value(additive_topology)
         ),
-        "effective_active_logical_replicas": 40,
-        "effective_active_gpus": 42,
+        "effective_active_logical_replicas": 22,
+        "effective_active_gpus": 24,
         "effective_active_topology": effective_topology,
         "effective_active_topology_sha256": (
             protected_capacity._sha256_value(effective_topology)
@@ -347,16 +475,16 @@ def make_pins(tmp_path: Path) -> dict:
         "retained_warm_turnover_topology_sha256": (
             protected_capacity._sha256_value(warm_topology)
         ),
-        "attested_total_gpus": 46,
+        "attested_total_gpus": 28,
         "job_element_accounting": {
             "cell_job_elements": 384,
-            "active_server_job_elements": 40,
+            "active_server_job_elements": 22,
             "warm_turnover_job_elements": 3,
-            "controller_monitor_other_held_job_elements": 21,
+            "controller_monitor_other_held_job_elements": 39,
             "total_non_cell_reserve_job_elements": 64,
             "total_canary_job_elements": 448,
         },
-        "active_gpus": 42,
+        "active_gpus": 24,
         "warm_headroom_gpus": 4,
         "cell_ceiling": 384,
         "reserve_jobs": 64,
@@ -370,7 +498,7 @@ def make_pins(tmp_path: Path) -> dict:
         "scheduler_user": "test_user",
         "scheduler_max_jobs": None,
         "scheduler_max_submit_jobs": 500,
-        "running_scientific_jobs": 427,
+        "running_scientific_jobs": 409,
         "minimum_scientific_wall_seconds": 86_400,
         "scientific_qos_contracts": [
             {
@@ -379,7 +507,7 @@ def make_pins(tmp_path: Path) -> dict:
                 "max_jobs_per_user": None,
                 "max_submit_jobs_per_user": 500,
                 "required_wall_seconds": 86_400,
-                "required_running_jobs": 427,
+                "required_running_jobs": 409,
                 "required_submit_jobs": 448,
             }
         ],
@@ -405,10 +533,10 @@ def make_pins(tmp_path: Path) -> dict:
                 "partition_preempt_mode": "OFF",
                 "qos_preempt_mode": "OFF",
                 "base_active_gpus": 24,
-                "reserved_additive_gpus": 18,
-                "effective_active_gpus": 42,
+                "reserved_additive_gpus": 0,
+                "effective_active_gpus": 24,
                 "retained_warm_turnover_gpus": 4,
-                "attested_total_gpus": 46,
+                "attested_total_gpus": 28,
                 "partition_cpus": 4096,
                 "partition_memory_mib": 33_554_432,
                 "partition_gpus": 64,
@@ -488,6 +616,12 @@ def make_pins(tmp_path: Path) -> dict:
         "path": str((tmp_path / "conda").resolve()),
         "sha256": "1" * 64,
     }
+    conda_toolchain = _toolchain_binding(
+        tmp_path / control.conda_toolchain.TOOLCHAIN_DIRECTORY_NAME
+    )
+    package_cache_seed_input = _package_cache_seed_input(
+        tmp_path / "source-package-cache"
+    )
     ownership_policy = {
         "path": str((tmp_path / "environment_ownership_policy.v1.json").resolve()),
         "sha256": "2" * 64,
@@ -502,6 +636,7 @@ def make_pins(tmp_path: Path) -> dict:
         "sha256": "b" * 64,
     }
     conda_package_cache_sha256 = "3" * 64
+    conda_package_cache_seed_sha256 = "c" * 64
     capture_id = "4" * 64
     capture_marker_sha256 = "5" * 64
     for role, prefix, manifest_path in (
@@ -542,12 +677,16 @@ def make_pins(tmp_path: Path) -> dict:
             "prefix": str(prefix),
             "sealed_read_only": True,
             "offline_environment": control.REQUIRED_OFFLINE_ENVIRONMENT,
+            "conda_toolchain": conda_toolchain,
             "conda_creation_tool": conda_creation_tool,
             "environment_seed": environment_seed,
             "ownership_policy": ownership_policy,
             "integrity_normalization_policy": integrity_normalization_policy,
             "normalization_receipt": normalization_receipt,
             "conda_package_cache_sha256": conda_package_cache_sha256,
+            "conda_package_cache_seed_sha256": (
+                conda_package_cache_seed_sha256
+            ),
             "runtime": runtime,
             "locks": locks,
             "release_package": None,
@@ -566,8 +705,12 @@ def make_pins(tmp_path: Path) -> dict:
                         integrity_normalization_policy
                     ),
                     "normalization_receipt": normalization_receipt,
+                    "conda_toolchain": conda_toolchain,
                     "conda_creation_tool": conda_creation_tool,
                     "conda_package_cache_sha256": conda_package_cache_sha256,
+                    "conda_package_cache_seed_sha256": (
+                        conda_package_cache_seed_sha256
+                    ),
                     "inventory_sha256": inventory["inventory_sha256"],
                 }
             )
@@ -619,6 +762,11 @@ def make_pins(tmp_path: Path) -> dict:
         "serving_environment_prefix": str(serving),
         "serving_environment_manifest_path": str(serving_manifest_path),
         "serving_environment_sha256": serving_hash,
+        "conda_toolchain": conda_toolchain,
+        "package_cache_seed_input": package_cache_seed_input,
+        "conda_package_cache_seed_sha256": (
+            conda_package_cache_seed_sha256
+        ),
         "hf_home": str(hf_home),
         "results_root": str(results_root),
         "server_pool_root": str(server_pool),
@@ -634,6 +782,9 @@ def make_pins(tmp_path: Path) -> dict:
         "release_worktree": str(release),
         "source_harness_prefix": str(harness) + ".source",
         "source_serving_prefix": str(serving) + ".source",
+        "source_package_cache": str(
+            (tmp_path / "source-package-cache").resolve()
+        ),
         "harness_prefix": str(harness),
         "serving_prefix": str(serving),
     }
@@ -667,6 +818,11 @@ def make_pins(tmp_path: Path) -> dict:
         if role == "package_cache":
             stage_payload["content_inventory"] = {
                 "content_inventory_sha256": conda_package_cache_sha256
+            }
+            stage_payload["package_cache_seed"] = {
+                "seed_content_inventory_sha256": (
+                    conda_package_cache_seed_sha256
+                )
             }
         stage_payload["record_sha256"] = hashlib.sha256(
             (
@@ -709,7 +865,9 @@ def make_pins(tmp_path: Path) -> dict:
         "publication_protocol": "stage_records_fsync_marker_last",
         "stage_records": materialization_stage_records,
         "environment_capture": environment_capture,
+        "conda_toolchain": conda_toolchain,
         "conda_creation_tool": conda_creation_tool,
+        "package_cache_seed_input": package_cache_seed_input,
     }
     materialization_marker["materialization_id"] = hashlib.sha256(
         (
@@ -750,8 +908,13 @@ def make_pins(tmp_path: Path) -> dict:
         "paths": materialization_paths,
         "stage_records": materialization_stage_records,
         "environment_capture": environment_capture,
+        "conda_toolchain": conda_toolchain,
         "conda_creation_tool": conda_creation_tool,
+        "package_cache_seed_input": package_cache_seed_input,
         "conda_package_cache_sha256": conda_package_cache_sha256,
+        "conda_package_cache_seed_sha256": (
+            conda_package_cache_seed_sha256
+        ),
     }
     fragment_fields = {
         "release_id",
@@ -771,6 +934,9 @@ def make_pins(tmp_path: Path) -> dict:
         "serving_environment_prefix",
         "serving_environment_manifest_path",
         "serving_environment_sha256",
+        "conda_toolchain",
+        "package_cache_seed_input",
+        "conda_package_cache_seed_sha256",
     }
     identity_path = release_bundle / control.RELEASE_IDENTITY_FILENAME
     identity_path.write_text(
@@ -1256,7 +1422,9 @@ def _gate_metrics(control_state: dict, gate: str) -> dict:
                 certificate.effective_logical_replicas
             ),
             "effective_active_gpus": certificate.effective_active_gpus,
-            "selected_cell_count": protected_capacity.CLIENT_JOB_ELEMENTS,
+            "selected_cell_count": int(
+                certificate.payload["selected_cell_count"]
+            ),
         }
     if gate == "protected_capacity":
         authority = control.effective_protected_capacity_binding(
@@ -1883,7 +2051,7 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                         )
                         smoke_attempt_binding = {
                             "protocol": (
-                                "schema5-v1.2-r3-smoke-attempt-binding-v1"
+                                "schema5-v1.2-r4-smoke-attempt-binding-v1"
                             ),
                             "attempt_id": (
                                 "a000001-g000001-c000001-"
@@ -2340,7 +2508,7 @@ def attest_test_production_authorizations(
     ):
         return
     root = state_dir / "production-authorization-fixture"
-    manifest_path = root / "RECOVERY_CHAIN_SCHEMA5_V1_2_R3.json"
+    manifest_path = root / "RECOVERY_CHAIN_SCHEMA5_V1_2_R4.json"
     chain_id = "1" * 64
     manifest = {
         "schema_version": 1,
@@ -2369,7 +2537,7 @@ def attest_test_production_authorizations(
     qualification_id = "3" * 64
     qualification_marker = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-throughput-qualification-v1",
+        "protocol": "schema5-v1.2-r4-throughput-qualification-v1",
         "passed": True,
         "release_id": control.PRODUCTION_RELEASE_ID,
         "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
@@ -2395,7 +2563,7 @@ def attest_test_production_authorizations(
     pointer = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r3-throughput-qualification-attempt-pointer-v1"
+            "schema5-v1.2-r4-throughput-qualification-attempt-pointer-v1"
         ),
         "chain_id": chain_id,
         "attempt_id": attempt_id,
@@ -2407,7 +2575,7 @@ def attest_test_production_authorizations(
     current_attempt = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r3-throughput-qualification-current-attempt-v1"
+            "schema5-v1.2-r4-throughput-qualification-current-attempt-v1"
         ),
         "attempt_id": attempt_id,
         "pointer": str(pointer_path.resolve()),
@@ -2425,13 +2593,13 @@ def attest_test_production_authorizations(
     watchdog_id = "7" * 64
     drill_payload = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-external-watchdog-drill-v1",
+        "protocol": "schema5-v1.2-r4-external-watchdog-drill-v1",
         "drill_id": drill_id,
         "control_sha256": current["immutable_sha256"],
     }
     watchdog_payload = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-external-watchdog-v1",
+        "protocol": "schema5-v1.2-r4-external-watchdog-v1",
         "marker_id": watchdog_id,
         "control_sha256": current["immutable_sha256"],
     }
@@ -3641,7 +3809,7 @@ def _watchdog_deployment_evidence(state_dir: Path, path: Path) -> Path:
         "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
         "release_git_commit": current["immutable"]["git_commit"],
         "release_tag_object": "b" * 40,
-        "chain_namespace": "schema5-v1.2-r3",
+        "chain_namespace": "schema5-v1.2-r4",
         "deployment_id": "1" * 64,
         "watchdog_code_sha256": "2" * 64,
         "immutable_release_sha256": "3" * 64,
@@ -3742,6 +3910,62 @@ def test_init_is_paused_idempotent_and_freezes_pins(tmp_path):
     changed["git_commit"] = "c" * 40
     with pytest.raises(control.ImmutablePinError, match="idempotent|completion marker"):
         control.initialize_control(state_dir, pins=changed)
+
+
+def test_static_release_input_bindings_reject_self_consistent_substitution(
+    tmp_path,
+):
+    toolchain = _toolchain_binding(
+        tmp_path / control.conda_toolchain.TOOLCHAIN_DIRECTORY_NAME
+    )
+    assert control._validate_conda_toolchain_binding_static(toolchain) == toolchain
+    substituted_toolchain = copy.deepcopy(toolchain)
+    substituted_toolchain["conda_executable"]["path"] = str(
+        tmp_path / "foreign-conda"
+    )
+    substituted_toolchain["binding_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                {
+                    key: value
+                    for key, value in substituted_toolchain.items()
+                    if key != "binding_id"
+                },
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    with pytest.raises(control.ImmutablePinError, match="toolchain binding"):
+        control._validate_conda_toolchain_binding_static(
+            substituted_toolchain
+        )
+
+    cache = _package_cache_seed_input(tmp_path / "source-package-cache")
+    assert control._validate_package_cache_seed_input_binding(cache) == cache
+    substituted_cache = copy.deepcopy(cache)
+    substituted_cache["selected_top_level_entries"] = ["../escape"]
+    substituted_cache["input_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                {
+                    key: value
+                    for key, value in substituted_cache.items()
+                    if key != "input_id"
+                },
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    with pytest.raises(control.ImmutablePinError, match="package-cache"):
+        control._validate_package_cache_seed_input_binding(substituted_cache)
 
 
 @pytest.mark.parametrize(
@@ -4859,7 +5083,7 @@ def test_release_bundle_rejects_bound_materialization_stage_drift(tmp_path):
 def test_v12_release_and_environment_schema_downgrades_are_rejected(tmp_path):
     pins = make_pins(tmp_path)
     assert pins["release_id"] == "sweep-recovery-schema5-v1.2"
-    assert control.PRODUCTION_OPERATIONAL_TAG == "sweep-recovery-schema5-v1.2-r3"
+    assert control.PRODUCTION_OPERATIONAL_TAG == "sweep-recovery-schema5-v1.2-r4"
 
     downgraded_pins = copy.deepcopy(pins)
     downgraded_pins["release_id"] = "sweep-recovery-schema5-v1.1"
@@ -4871,22 +5095,22 @@ def test_v12_release_and_environment_schema_downgrades_are_rejected(tmp_path):
     )
     downgraded_environment = copy.deepcopy(harness_manifest)
     downgraded_environment["schema_version"] = 1
-    with pytest.raises(control.ImmutablePinError, match="sealed schema 3"):
-        control._validate_schema3_environment_manifest_static(
+    with pytest.raises(control.ImmutablePinError, match="sealed schema 4"):
+        control._validate_schema4_environment_manifest_static(
             downgraded_environment, role="harness"
         )
 
     provenance_drift = copy.deepcopy(harness_manifest)
     provenance_drift["ownership_policy"]["sha256"] = "b" * 64
     with pytest.raises(control.ImmutablePinError, match="content identity"):
-        control._validate_schema3_environment_manifest_static(
+        control._validate_schema4_environment_manifest_static(
             provenance_drift, role="harness"
         )
 
     integrity_policy_drift = copy.deepcopy(harness_manifest)
     integrity_policy_drift["integrity_normalization_policy"]["sha256"] = "c" * 64
     with pytest.raises(control.ImmutablePinError, match="content identity"):
-        control._validate_schema3_environment_manifest_static(
+        control._validate_schema4_environment_manifest_static(
             integrity_policy_drift, role="harness"
         )
 
@@ -5343,6 +5567,13 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
     text = path.read_text()
     assert path.name == "dispatch.g000007.abc123.sbatch"
     assert "#SBATCH --no-requeue" in text
+    assert "#SBATCH --export=NONE" in text
+    assert "#SBATCH --export=ALL" not in text
+    assert "export PATH=/usr/bin:/bin" in text
+    assert "readonly PATH" in text
+    assert "export GIT_NO_REPLACE_OBJECTS=1" in text
+    assert text.index("#SBATCH --export=NONE") < text.index("set -euo pipefail")
+    assert text.index("set -euo pipefail") < text.index("export PATH=/usr/bin:/bin")
     assert text.count("#SBATCH --partition=mit_preemptable\n") == 1
     assert "#SBATCH --partition=mit_normal" not in text
     assert "generation=7;intent=abc123" in text
@@ -5418,6 +5649,8 @@ def test_rendered_generation_files_are_immutable_and_disable_requeue(tmp_path):
     fleet_text = fleet_path.read_text()
     assert fleet_text.count("#SBATCH --partition=mit_preemptable\n") == 1
     assert "#SBATCH --partition=mit_normal" not in fleet_text
+    assert "#SBATCH --export=NONE" in fleet_text
+    assert "export PATH=/usr/bin:/bin" in fleet_text
     assert "source " not in fleet_text
     assert "mamba activate" not in fleet_text
     assert "export HF_DATASETS_OFFLINE=1" in fleet_text
@@ -5636,7 +5869,11 @@ def test_production_batch_validator_hard_enforces_slurm_contract(tmp_path):
 #SBATCH --time=12:00:00
 #SBATCH --signal=B:USR1@1200
 #SBATCH --no-requeue
+#SBATCH --export=NONE
 #SBATCH --array=0-23
+set -euo pipefail
+umask 027
+{control._trusted_shell_prelude()}\
 unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
@@ -5667,6 +5904,12 @@ exec {shlex.quote(execution["python"])} -u {shlex.quote(execution["dispatcher_sc
         control.validate_production_batch_sbatch(
             initialized,
             payload=payload.replace("#SBATCH --no-requeue\n", ""),
+            task_count=24,
+        )
+    with pytest.raises(control.ControlError, match="missing.*export=NONE"):
+        control.validate_production_batch_sbatch(
+            initialized,
+            payload=payload.replace("#SBATCH --export=NONE\n", ""),
             task_count=24,
         )
     with pytest.raises(control.ControlError, match="non-preemptible"):
@@ -12080,6 +12323,12 @@ def _capacity_contract_fixture(
         static_feasibility_certificate_path=certificate_path.resolve(),
         static_feasibility_certificate_sha256=certificate_sha256,
         static_feasibility_certificate_id=certificate_id,
+        static_feasibility_wave_passed=False,
+        static_feasibility_selected_cell_count=284,
+        static_feasibility_target_cell_count=384,
+        static_feasibility_shortfall_cells=100,
+        static_feasibility_configured_client_ceiling=384,
+        static_feasibility_certified_saturation_target=284,
     )
 
     def load_capacity_contract(observed_path, **kwargs):
@@ -12283,6 +12532,9 @@ def test_effective_capacity_loader_rejects_control_authority_drift(
     current = control.load_control(state_dir)
     loaded = control.load_effective_protected_capacity_contract(current)
     assert loaded.capacity_generation == 2
+    authority = control.effective_protected_capacity_binding(current)
+    assert authority["static_feasibility_configured_client_ceiling"] == 384
+    assert authority["static_feasibility_certified_saturation_target"] == 284
     assert (
         loaded.release_tag_object
         == current["immutable"]["release_tag_object"]
@@ -15535,6 +15787,9 @@ def test_autonomous_finalizer_accepts_inventory_pinned_internal_python_symlink(
     )
     payload = rendered.read_text(encoding="utf-8")
     assert f"exec {harness / 'bin' / 'python3.12'} -I -u" in payload
+    assert "#SBATCH --export=NONE" in payload
+    assert "export PATH=/usr/bin:/bin" in payload
+    assert "export GIT_NO_REPLACE_OBJECTS=1" in payload
     log_root = state_dir / control.FINALIZER_STATE_DIRNAME / "logs"
     assert log_root.is_dir()
     assert not log_root.is_symlink()

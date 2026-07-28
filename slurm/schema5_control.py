@@ -105,12 +105,13 @@ from agents_scaling.serving.registry import (
     collect_endpoint_history_catalog,
     server_pool_id,
 )
+from scripts import provision_schema5_conda_toolchain as conda_toolchain
 from scripts import schema5_email_ack
 
 CONTROL_SCHEMA_VERSION = 1
 CONTROL_PROTOCOL = "schema5-v1"
 PRODUCTION_RELEASE_ID = "sweep-recovery-schema5-v1.2"
-PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r3"
+PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r4"
 PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
 # All production ramp stages are authorized by the sealed protected-capacity
 # contract before control initialization.  A later capacity generation is reserved
@@ -118,9 +119,9 @@ PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
 PRODUCTION_NONPREEMPTIBLE_CELL_CAP = 384
 PRODUCTION_DESIGN_CELL_CAP = 384
 PRODUCTION_CONTROLLER_PARTITION = "mit_preemptable"
-RELEASE_BUNDLE_SCHEMA_VERSION = 4
-ENVIRONMENT_MANIFEST_SCHEMA_VERSION = 3
-MATERIALIZATION_SCHEMA_VERSION = 4
+RELEASE_BUNDLE_SCHEMA_VERSION = 5
+ENVIRONMENT_MANIFEST_SCHEMA_VERSION = 4
+MATERIALIZATION_SCHEMA_VERSION = 5
 CONTROL_FILENAME = "control.json"
 IMMUTABLE_PINS_FILENAME = "immutable_pins.json"
 TRANSITION_JOURNAL = "transitions.jsonl"
@@ -144,22 +145,22 @@ EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS = 1_800.0
 EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS = 3_600.0
 EXTERNAL_WATCHDOG_MIRROR_DIRNAME = "external_watchdog_mirror"
 EXTERNAL_WATCHDOG_STATUS_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-status-observation-v1"
+    "schema5-v1.2-r4-external-watchdog-status-observation-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-action-intent-v1"
+    "schema5-v1.2-r4-external-watchdog-action-intent-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-action-receipt-v1"
+    "schema5-v1.2-r4-external-watchdog-action-receipt-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-cycle-intent-v1"
+    "schema5-v1.2-r4-external-watchdog-cycle-intent-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-cycle-receipt-v1"
+    "schema5-v1.2-r4-external-watchdog-cycle-receipt-v1"
 )
 EXTERNAL_WATCHDOG_LATEST_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-latest-pointer-v1"
+    "schema5-v1.2-r4-external-watchdog-latest-pointer-v1"
 )
 EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS = 60.0
 EXTERNAL_WATCHDOG_MIRROR_STALE_SECONDS = 600.0
@@ -233,7 +234,7 @@ PRODUCTION_AUTHORIZATION_GATES = (
     "external_watchdog",
 )
 PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
-PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r3-production-authorization-v1"
+PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r4-production-authorization-v1"
 PRODUCTION_AUTHORIZATION_VERIFIER = (
     "scripts/render_schema5_recovery_chain_v12.py"
 )
@@ -357,13 +358,13 @@ CAPACITY_STATE_SCHEMA_VERSION = 1
 CAPACITY_STATE_PROTOCOL = "schema5-capacity-generation-v1"
 CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION = 1
 CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL = (
-    "schema5-v1.2-r3-client-placement-capacity-generation-v1"
+    "schema5-v1.2-r4-client-placement-capacity-generation-v1"
 )
 CLIENT_CAPACITY_BUILD_PROTOCOL = (
-    "schema5-v1.2-r3-client-capacity-build-v1"
+    "schema5-v1.2-r4-client-capacity-build-v1"
 )
 CLIENT_CAPACITY_SUBMISSION_PROTOCOL = (
-    "schema5-v1.2-r3-client-capacity-canary-submission-v1"
+    "schema5-v1.2-r4-client-capacity-canary-submission-v1"
 )
 CLIENT_CAPACITY_BUILD_INTENT = "CLIENT_CAPACITY_BUILD_INTENT.json"
 CLIENT_CAPACITY_CANARY_SBATCH = "client_capacity_canary.sbatch"
@@ -445,6 +446,68 @@ FINALIZER_JOB_TOKEN_PREFIX = "asys-schema5-finalizer-v1"
 FINALIZER_STATE_DIRNAME = "finalizer"
 EXACT_SBATCH_SUBMISSION_TRANSPORT = "stdin_exact_bytes_held_v1"
 SBATCH_SPOOL_RECEIPTS_DIRNAME = "sbatch-spool-receipts"
+TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_TRUSTED_SYSTEM_EXECUTABLES = {
+    "git": "/usr/bin/git",
+    "mail": "/usr/bin/mail",
+    "sacct": "/usr/bin/sacct",
+    "sbatch": "/usr/bin/sbatch",
+    "scancel": "/usr/bin/scancel",
+    "scontrol": "/usr/bin/scontrol",
+    "squeue": "/usr/bin/squeue",
+    "srun": "/usr/bin/srun",
+}
+_BLOCKED_SUBPROCESS_ENVIRONMENT = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_EXIT_ERROR",
+        "SLURM_TIME_FORMAT",
+        "VIRTUAL_ENV",
+    }
+)
+_BLOCKED_SUBPROCESS_ENVIRONMENT_PREFIXES = (
+    "ASYS_",
+    "BASH_FUNC_",
+    "CONDA_",
+    "HF_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_TRACE",
+    "PIP_",
+    "PYTHON",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+    "TRANSFORMERS_",
+    "VLLM_",
+)
 FINALIZER_REQUEST_INTENT_FILENAME = "FINALIZATION_REQUEST_INTENT.json"
 FINALIZER_REQUEST_INTENT_SCHEMA_VERSION = 2
 FINALIZER_REQUEST_INTENT_PROTOCOL = (
@@ -540,7 +603,7 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r3-smoke-attempt-binding-v1"
+    "schema5-v1.2-r4-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -2377,7 +2440,7 @@ def _new_finalization_state(
         "request_intent": None,
         "consumed_capacity_incidents": [],
         "output_root": str(
-            results_root / "recovery" / "schema5-v1.2-r3" / "final"
+            results_root / "recovery" / "schema5-v1.2-r4" / "final"
         ),
         "attempts": 0,
         "worker_attempts": [],
@@ -2827,7 +2890,7 @@ def _validate_finalization_state(
         str(control["immutable"]["results_root"])
     ).expanduser().resolve()
     expected_output = (
-        results_root / "recovery" / "schema5-v1.2-r3" / "final"
+        results_root / "recovery" / "schema5-v1.2-r4" / "final"
     )
     state = finalization.get("state")
     requested = finalization.get("requested_timestamp")
@@ -3449,6 +3512,9 @@ _IMMUTABLE_PIN_FIELDS = {
     "serving_environment_prefix",
     "serving_environment_manifest_path",
     "serving_environment_sha256",
+    "conda_toolchain",
+    "package_cache_seed_input",
+    "conda_package_cache_seed_sha256",
     "hf_home",
     "results_root",
     "server_pool_root",
@@ -3489,6 +3555,9 @@ _RELEASE_FRAGMENT_FIELDS = {
     "serving_environment_prefix",
     "serving_environment_manifest_path",
     "serving_environment_sha256",
+    "conda_toolchain",
+    "package_cache_seed_input",
+    "conda_package_cache_seed_sha256",
 }
 
 
@@ -3711,10 +3780,10 @@ def _assert_root_read_only(path: Path, *, description: str) -> None:
         raise ImmutablePinError(f"{description} is not sealed read-only: {path}")
 
 
-def _validate_schema3_environment_manifest_static(
+def _validate_schema4_environment_manifest_static(
     manifest: Mapping[str, Any], *, role: str
 ) -> None:
-    """Validate schema-3 provenance without consulting retired build inputs.
+    """Validate schema-4 provenance without consulting retired build inputs.
 
     The live-prefix byte scan is owned by the generation-scoped runtime-integrity
     attestation. This release-bundle verifier authenticates the complete manifest
@@ -3729,10 +3798,10 @@ def _validate_schema3_environment_manifest_static(
         or not isinstance(manifest.get("directory_inventory"), dict)
     ):
         raise ImmutablePinError(
-            f"{role} environment manifest is not sealed schema 3"
+            f"{role} environment manifest is not sealed schema 4"
         )
     try:
-        expected_content = runtime_integrity._validate_schema3_environment_manifest(
+        expected_content = runtime_integrity._validate_schema4_environment_manifest(
             manifest,
             role=role,
             inventory=manifest["directory_inventory"],
@@ -3745,6 +3814,169 @@ def _validate_schema3_environment_manifest_static(
         raise ImmutablePinError(
             f"{role} environment manifest content identity is invalid"
         )
+
+
+def _validate_package_cache_seed_input_binding(value: Any) -> dict[str, Any]:
+    required = {
+        "source_package_cache",
+        "inventory_sha256",
+        "inventory_entry_count",
+        "inventory_file_count",
+        "inventory_total_file_bytes",
+        "requirements_sha256",
+        "required_package_count",
+        "archive_count",
+        "selected_top_level_entries",
+        "input_id",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ImmutablePinError(
+            "selected Conda package-cache input binding has the wrong fields"
+        )
+    candidate = dict(value)
+    input_id = candidate.pop("input_id", None)
+    selected = value.get("selected_top_level_entries")
+    counts = (
+        "inventory_entry_count",
+        "inventory_file_count",
+        "inventory_total_file_bytes",
+        "required_package_count",
+        "archive_count",
+    )
+    expected_id = hashlib.sha256(
+        (
+            json.dumps(
+                candidate,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        not isinstance(value.get("source_package_cache"), str)
+        or not Path(value["source_package_cache"]).is_absolute()
+        or any(
+            _SHA256_RE.fullmatch(str(value.get(field, ""))) is None
+            for field in ("inventory_sha256", "requirements_sha256")
+        )
+        or any(
+            not isinstance(value.get(field), int)
+            or isinstance(value.get(field), bool)
+            or value[field] < 0
+            for field in counts
+        )
+        or value["inventory_entry_count"] < 1
+        or value["inventory_file_count"] < 1
+        or value["required_package_count"] < 1
+        or not isinstance(selected, list)
+        or not selected
+        or any(
+            not isinstance(item, str)
+            or not item
+            or Path(item).name != item
+            for item in selected
+        )
+        or sorted(set(selected)) != selected
+        or input_id != expected_id
+    ):
+        raise ImmutablePinError(
+            "selected Conda package-cache input binding is invalid"
+        )
+    return dict(value)
+
+
+def _validate_conda_toolchain_binding_static(value: Any) -> dict[str, Any]:
+    required = {
+        "schema_version",
+        "protocol",
+        "release_tag",
+        "chain_namespace",
+        "toolchain_root",
+        "base_prefix",
+        "completion_marker",
+        "marker_id",
+        "installer_contract",
+        "intent_id",
+        "conda_executable",
+        "runtime_identity_sha256",
+        "complete_prefix_inventory_sha256",
+        "read_only_probes",
+        "binding_id",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ImmutablePinError(
+            "sealed Conda toolchain binding has the wrong fields"
+        )
+    root = Path(str(value.get("toolchain_root", "")))
+    marker = value.get("completion_marker")
+    executable = value.get("conda_executable")
+    contract = value.get("installer_contract")
+    candidate = dict(value)
+    binding_id = candidate.pop("binding_id", None)
+    expected_id = hashlib.sha256(
+        (
+            json.dumps(
+                candidate,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        value.get("schema_version") != conda_toolchain.SCHEMA_VERSION
+        or value.get("protocol") != conda_toolchain.PROTOCOL
+        or value.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
+        or value.get("chain_namespace") != "schema5-v1.2-r4"
+        or not root.is_absolute()
+        or value.get("base_prefix") != str(root / "base")
+        or not isinstance(marker, dict)
+        or set(marker) != {"path", "sha256", "size"}
+        or marker.get("path")
+        != str(root / conda_toolchain.MARKER_NAME)
+        or not isinstance(executable, dict)
+        or set(executable)
+        != {"path", "sha256", "size", "mode", "link_count"}
+        or executable.get("path") != str(root / "base/bin/conda")
+        or not isinstance(contract, dict)
+        or contract
+        != conda_toolchain.PINNED_INSTALLER_CONTRACT.as_dict()
+        or not isinstance(value.get("read_only_probes"), dict)
+        or any(
+            _SHA256_RE.fullmatch(str(item)) is None
+            for item in (
+                marker.get("sha256"),
+                value.get("marker_id"),
+                value.get("intent_id"),
+                executable.get("sha256"),
+                value.get("runtime_identity_sha256"),
+                value.get("complete_prefix_inventory_sha256"),
+                binding_id,
+            )
+        )
+        or not isinstance(marker.get("size"), int)
+        or isinstance(marker.get("size"), bool)
+        or marker["size"] < 1
+        or not isinstance(executable.get("size"), int)
+        or isinstance(executable.get("size"), bool)
+        or executable["size"] < 1
+        or not isinstance(executable.get("mode"), int)
+        or isinstance(executable.get("mode"), bool)
+        or executable["mode"] & 0o222
+        or not isinstance(executable.get("link_count"), int)
+        or isinstance(executable.get("link_count"), bool)
+        or executable["link_count"] < 1
+        or binding_id != expected_id
+    ):
+        raise ImmutablePinError(
+            "sealed Conda toolchain binding is invalid"
+        )
+    return dict(value)
 
 
 def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
@@ -3925,8 +4157,11 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         "paths",
         "stage_records",
         "environment_capture",
+        "conda_toolchain",
         "conda_creation_tool",
+        "package_cache_seed_input",
         "conda_package_cache_sha256",
+        "conda_package_cache_seed_sha256",
     }
     expected_materialization_root = root.parent
     expected_materialization_marker = (
@@ -3938,6 +4173,10 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     ):
         raise ImmutablePinError("release materialization binding has the wrong fields")
     paths = materialization.get("paths")
+    recorded_toolchain = materialization.get("conda_toolchain")
+    package_cache_seed_input = materialization.get(
+        "package_cache_seed_input"
+    )
     if (
         materialization.get("schema_version") != MATERIALIZATION_SCHEMA_VERSION
         or materialization.get("release_id") != pins["release_id"]
@@ -3953,6 +4192,7 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
             "release_worktree",
             "source_harness_prefix",
             "source_serving_prefix",
+            "source_package_cache",
             "harness_prefix",
             "serving_prefix",
         }
@@ -3961,6 +4201,8 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         or paths.get("serving_prefix") != pins["serving_environment_prefix"]
         or not isinstance(materialization.get("stage_records"), dict)
         or not isinstance(materialization.get("environment_capture"), dict)
+        or not isinstance(recorded_toolchain, dict)
+        or recorded_toolchain != pins.get("conda_toolchain")
         or not isinstance(materialization.get("conda_creation_tool"), dict)
         or set(materialization.get("conda_creation_tool", {}))
         != {"path", "sha256"}
@@ -3979,12 +4221,44 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
             str(materialization.get("conda_package_cache_sha256", ""))
         )
         is None
+        or _SHA256_RE.fullmatch(
+            str(materialization.get("conda_package_cache_seed_sha256", ""))
+        )
+        is None
+        or package_cache_seed_input != pins.get("package_cache_seed_input")
         or expected_materialization_marker.is_symlink()
         or not expected_materialization_marker.is_file()
         or sha256_file(expected_materialization_marker)
         != materialization.get("marker_sha256")
     ):
         raise ImmutablePinError("release materialization binding is invalid")
+    _validate_package_cache_seed_input_binding(package_cache_seed_input)
+    _validate_conda_toolchain_binding_static(recorded_toolchain)
+    if (
+        not isinstance(recorded_toolchain.get("toolchain_root"), str)
+        or not Path(recorded_toolchain["toolchain_root"]).is_absolute()
+    ):
+        raise ImmutablePinError(
+            "release Conda toolchain binding is invalid"
+        )
+    try:
+        live_toolchain = (
+            conda_toolchain.verified_conda_toolchain_binding(
+                recorded_toolchain["toolchain_root"],
+                exercise=True,
+            )
+        )
+    except (
+        OSError,
+        conda_toolchain.CondaToolchainProvisionError,
+    ) as exc:
+        raise ImmutablePinError(
+            f"release Conda toolchain verification failed: {exc}"
+        ) from exc
+    if live_toolchain != recorded_toolchain:
+        raise ImmutablePinError(
+            "release Conda toolchain binding drifted"
+        )
     _assert_root_read_only(
         expected_materialization_marker,
         description="materialization completion marker",
@@ -4025,8 +4299,12 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         != pins["source_tree_sha256"]
         or materialization_marker.get("environment_capture")
         != materialization.get("environment_capture")
+        or materialization_marker.get("conda_toolchain")
+        != recorded_toolchain
         or materialization_marker.get("conda_creation_tool")
         != materialization.get("conda_creation_tool")
+        or materialization_marker.get("package_cache_seed_input")
+        != package_cache_seed_input
         or materialization_marker.get("stage_records")
         != materialization.get("stage_records")
         or materialization_id != materialization.get("materialization_id")
@@ -4086,13 +4364,21 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
     package_cache_identity = verified_stage_payloads["package_cache"].get(
         "content_inventory"
     )
+    package_cache_seed_identity = verified_stage_payloads["package_cache"].get(
+        "package_cache_seed"
+    )
     if (
         not isinstance(package_cache_identity, dict)
         or package_cache_identity.get("content_inventory_sha256")
         != materialization.get("conda_package_cache_sha256")
+        or not isinstance(package_cache_seed_identity, dict)
+        or package_cache_seed_identity.get(
+            "seed_content_inventory_sha256"
+        )
+        != materialization.get("conda_package_cache_seed_sha256")
     ):
         raise ImmutablePinError(
-            "materialization package-cache content identity drifted"
+            "materialization package-cache/seed content identity drifted"
         )
     git_identity = identity.get("git")
     if (
@@ -4150,6 +4436,7 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
         if (
             not isinstance(manifest, dict)
             or manifest.get("prefix") != pins[prefix_field]
+            or manifest.get("conda_toolchain") != recorded_toolchain
             or record.get("directory_inventory_sha256")
             != (
                 manifest.get("directory_inventory", {}).get("inventory_sha256")
@@ -4158,7 +4445,7 @@ def _validate_release_bundle(pins: Mapping[str, Any]) -> None:
             )
         ):
             raise ImmutablePinError(f"{role} environment manifest is not sealed")
-        _validate_schema3_environment_manifest_static(manifest, role=role)
+        _validate_schema4_environment_manifest_static(manifest, role=role)
         _assert_root_read_only(
             Path(str(pins[prefix_field])).resolve(), description=f"{role} environment"
         )
@@ -4202,7 +4489,7 @@ def _load_immutable_protected_capacity_contract(
 ) -> protected_capacity.ProtectedCapacityContract:
     """Load generation one, whose sealed bytes pin the annotated tag object."""
 
-    return protected_capacity.load_contract(
+    contract = protected_capacity.load_contract(
         immutable["protected_capacity_marker_path"],
         expected_release_git_commit=str(immutable["git_commit"]),
         expected_release_tag_object=str(
@@ -4216,6 +4503,39 @@ def _load_immutable_protected_capacity_contract(
         ),
         **_protected_capacity_source_expectations(immutable),
     )
+    expected_accounting = {
+        "cell_job_elements": 384,
+        "active_server_job_elements": 22,
+        "warm_turnover_job_elements": 3,
+        "controller_monitor_other_held_job_elements": 39,
+        "total_non_cell_reserve_job_elements": 64,
+        "total_canary_job_elements": 448,
+    }
+    if (
+        contract.capacity_generation != 1
+        or contract.base_active_logical_replicas != 22
+        or contract.base_active_gpus != 24
+        or contract.additive_reserved_logical_replicas != 0
+        or contract.additive_reserved_gpus != 0
+        or contract.effective_active_logical_replicas != 22
+        or contract.effective_active_gpus != 24
+        or contract.retained_warm_turnover_job_elements != 3
+        or contract.retained_warm_turnover_gpus != 4
+        or contract.attested_total_gpus != 28
+        or dict(contract.job_element_accounting) != expected_accounting
+        or contract.effective_fleet_contract_sha256
+        != contract.base_fleet_contract_sha256
+        or contract.additive_overlay_contract_path
+        != contract.effective_fleet_contract_path
+        or contract.additive_overlay_contract_sha256
+        != contract.base_fleet_contract_sha256
+    ):
+        raise ImmutablePinError(
+            "generation-one protected capacity is not the exact "
+            "22-replica/24-active-GPU + 3-warm-job/4-warm-GPU baseline "
+            "with 39 held non-cell slots"
+        )
+    return contract
 
 
 def _load_protected_capacity_contract(
@@ -4288,6 +4608,9 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
         "serving_environment_prefix",
         "serving_environment_manifest_path",
         "serving_environment_sha256",
+        "conda_toolchain",
+        "package_cache_seed_input",
+        "conda_package_cache_seed_sha256",
         "hf_home",
         "results_root",
         "server_pool_root",
@@ -4327,6 +4650,19 @@ def validate_immutable_pins(pins: Mapping[str, Any], *, verify_files: bool) -> N
     ):
         raise ImmutablePinError(
             "immutable transport-uncertainty binding digest drifted"
+        )
+    _validate_conda_toolchain_binding_static(pins["conda_toolchain"])
+    _validate_package_cache_seed_input_binding(
+        pins["package_cache_seed_input"]
+    )
+    if (
+        _SHA256_RE.fullmatch(
+            str(pins["conda_package_cache_seed_sha256"])
+        )
+        is None
+    ):
+        raise ImmutablePinError(
+            "immutable Conda package-cache seed digest is invalid"
         )
     if not isinstance(pins["dispatcher_command"], list) or not all(
         isinstance(item, str) and item for item in pins["dispatcher_command"]
@@ -7447,7 +7783,9 @@ def _validate_gate_metrics(
                 certificate.effective_logical_replicas
             ),
             "effective_active_gpus": certificate.effective_active_gpus,
-            "selected_cell_count": protected_capacity.CLIENT_JOB_ELEMENTS,
+            "selected_cell_count": int(
+                certificate.payload["selected_cell_count"]
+            ),
         }
         artifact = artifacts["preflight_capacity_certificate"][0]
         if artifact != certificate.path or sha256_file(artifact) != certificate.sha256:
@@ -8137,6 +8475,125 @@ def _authorization_lineage(
     return lineage
 
 
+def _sanitized_subprocess_environment() -> dict[str, str]:
+    """Return the fixed Git/Slurm command environment for the control plane."""
+
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name in _BLOCKED_SUBPROCESS_ENVIRONMENT or name.startswith(
+            _BLOCKED_SUBPROCESS_ENVIRONMENT_PREFIXES
+        ):
+            environment.pop(name, None)
+    environment.update(
+        {
+            "PATH": TRUSTED_SYSTEM_PATH,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat",
+        }
+    )
+    return environment
+
+
+def _trusted_shell_prelude() -> str:
+    """Return the fail-closed bootstrap shared by generated production jobs."""
+
+    return f"""\
+unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_NOSYSTEM GIT_CEILING_DIRECTORIES
+unset GIT_COMMON_DIR GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL
+unset GIT_CONFIG_NOSYSTEM GIT_CONFIG_PARAMETERS GIT_CONFIG_SYSTEM GIT_DIR
+unset GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_EXEC_PATH GIT_INDEX_FILE GIT_NAMESPACE
+unset GIT_NO_REPLACE_OBJECTS GIT_OBJECT_DIRECTORY GIT_REPLACE_REF_BASE
+unset GIT_SHALLOW_FILE GIT_SSH GIT_SSH_COMMAND GIT_TEMPLATE_DIR GIT_WORK_TREE
+unset SLURM_CLUSTERS SLURM_CONF SLURM_EXIT_ERROR SLURM_TIME_FORMAT
+while IFS= read -r ambient_name; do
+  case "$ambient_name" in
+    ASYS_*|BASH_FUNC_*|PIP_*|PYTHON*|CONDA_*|HF_*|TRANSFORMERS_*|VLLM_*|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_TRACE*|SACCT_*|SBATCH_*|SCONTROL_*|SQUEUE_*)
+      builtin unset -v "$ambient_name" 2>/dev/null || true
+      ;;
+  esac
+done < <(compgen -e)
+export PATH={TRUSTED_SYSTEM_PATH}
+readonly PATH
+while read -r _ _ ambient_function; do
+  builtin unset -f "$ambient_function"
+done < <(builtin declare -F)
+export LANG=C LC_ALL=C
+export GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
+export GIT_PAGER=cat PAGER=cat
+"""
+
+
+def _validate_trusted_sbatch_bootstrap(payload: str, *, description: str) -> None:
+    """Reject a job script that can inherit an ambient shell/toolchain authority."""
+
+    lines = [line.strip() for line in payload.splitlines()]
+    export_directives = [
+        line for line in lines if line.startswith("#SBATCH --export=")
+    ]
+    if export_directives != ["#SBATCH --export=NONE"]:
+        raise ControlError(
+            f"{description} must contain exactly one #SBATCH --export=NONE directive"
+        )
+    required = {
+        "set -euo pipefail",
+        "umask 027",
+        "unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD",
+        f"export PATH={TRUSTED_SYSTEM_PATH}",
+        "readonly PATH",
+        "export LANG=C LC_ALL=C",
+        (
+            "export GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+            "GIT_CONFIG_NOSYSTEM=1"
+        ),
+        (
+            "export GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 "
+            "GIT_TERMINAL_PROMPT=0"
+        ),
+    }
+    missing = sorted(required - set(lines))
+    if missing:
+        raise ControlError(
+            f"{description} lacks trusted shell bootstrap lines: "
+            + ", ".join(missing)
+        )
+    try:
+        directive_index = lines.index("#SBATCH --export=NONE")
+        strict_index = lines.index("set -euo pipefail")
+        scrub_index = lines.index(
+            "unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD"
+        )
+        path_index = lines.index(f"export PATH={TRUSTED_SYSTEM_PATH}")
+        locale_index = lines.index("export LANG=C LC_ALL=C")
+    except ValueError as exc:  # pragma: no cover - guarded by the required set
+        raise ControlError(f"{description} has an incomplete shell bootstrap") from exc
+    if not directive_index < strict_index < scrub_index < path_index < locale_index:
+        raise ControlError(
+            f"{description} initializes its trusted shell bootstrap out of order"
+        )
+
+
+def _trusted_system_argv(argv: Sequence[str]) -> list[str]:
+    command = list(argv)
+    if not command or not all(
+        isinstance(value, str) and value for value in command
+    ):
+        raise ControlError("scheduler subprocess argv is empty or invalid")
+    executable = _TRUSTED_SYSTEM_EXECUTABLES.get(command[0])
+    if executable is not None:
+        command[0] = executable
+    return command
+
+
 def _production_authorization_environment(
     control: Mapping[str, Any]
 ) -> dict[str, str]:
@@ -8145,17 +8602,10 @@ def _production_authorization_environment(
     harness = Path(
         str(control["immutable"]["harness_environment_prefix"])
     ).expanduser().resolve()
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith(("PYTHON", "PIP_", "CONDA_"))
-        and name
-        not in {
-            "VIRTUAL_ENV",
-            "LD_PRELOAD",
-            "LD_LIBRARY_PATH",
-        }
-    }
+    environment = _sanitized_subprocess_environment()
+    for name in tuple(environment):
+        if name.startswith(("PYTHON", "PIP_", "CONDA_")) or name == "VIRTUAL_ENV":
+            environment.pop(name, None)
     environment.update(
         {
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -10507,6 +10957,7 @@ def _cell_worker_binding_from_sbatch(
         f"#SBATCH --array=0-{task_count - 1}%{task_count}",
         "#SBATCH --signal=B:USR1@1200",
         "#SBATCH --no-requeue",
+        "#SBATCH --export=NONE",
     ):
         if directive_lines.count(directive) != 1:
             raise SchedulerAmbiguity(
@@ -12404,6 +12855,12 @@ def effective_protected_capacity_binding(
                 ),
                 "static_feasibility_certificate_id": (
                     contract.static_feasibility_certificate_id
+                ),
+                "static_feasibility_configured_client_ceiling": (
+                    contract.static_feasibility_configured_client_ceiling
+                ),
+                "static_feasibility_certified_saturation_target": (
+                    contract.static_feasibility_certified_saturation_target
                 ),
                 "effective_fleet_contract_path": str(
                     contract.effective_fleet_contract_path
@@ -14499,7 +14956,7 @@ def _launch_capacity_fleet_once(
     ) = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [*effective_fleet_supervisor_command(control), "--once"]
-    environment = os.environ.copy()
+    environment = _sanitized_subprocess_environment()
     environment.update(REQUIRED_OFFLINE_ENVIRONMENT)
     environment.update(
         {
@@ -16952,7 +17409,10 @@ def _finalizer_signal_handlers(
 
 def _finalizer_environment(control: Mapping[str, Any]) -> dict[str, str]:
     immutable = control["immutable"]
-    environment = os.environ.copy()
+    environment = _sanitized_subprocess_environment()
+    for name in tuple(environment):
+        if name.startswith(("PYTHON", "PIP_", "CONDA_")) or name == "VIRTUAL_ENV":
+            environment.pop(name, None)
     environment.update(production_environment(control))
     environment.update(
         {
@@ -21023,7 +21483,7 @@ def finalize_sweep(
     final_root = (
         output_root.expanduser().resolve()
         if output_root is not None
-        else results_root / "recovery" / "schema5-v1.2-r3" / "final"
+        else results_root / "recovery" / "schema5-v1.2-r4" / "final"
     )
     if (
         publisher_finalizer is not None
@@ -21929,10 +22389,12 @@ def _render_finalizer_sbatch(
 #SBATCH --time={FINALIZER_JOB_TIME_LIMIT}
 #SBATCH --signal=B:USR1@1200
 #SBATCH --no-requeue
+#SBATCH --export=NONE
 #SBATCH --output={shlex.quote(str(log))}
 
 set -euo pipefail
 umask 027
+{_trusted_shell_prelude()}\
 unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
@@ -21948,12 +22410,18 @@ exec {shlex.quote(str(python))} -I -u {shlex.quote(str(script))} \
 """
     required = {
         "#SBATCH --no-requeue",
+        "#SBATCH --export=NONE",
         "#SBATCH --signal=B:USR1@1200",
         f"#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}",
+        f"export PATH={TRUSTED_SYSTEM_PATH}",
+        "export GIT_NO_REPLACE_OBJECTS=1",
         f"--intent-id {intent_id} --attempt {attempt}",
     }
     if not all(fragment in payload for fragment in required):
         raise ControlError("rendered autonomous finalizer sbatch is incomplete")
+    _validate_trusted_sbatch_bootstrap(
+        payload, description="autonomous finalizer sbatch"
+    )
     if target.exists():
         if (
             target.is_symlink()
@@ -26712,7 +27180,7 @@ def _client_capacity_canary_sbatch(
         f"generation={capacity_generation}:target={target_ceiling}:"
         f"intent={intent_token}"
     )
-    return "\n".join(
+    payload = "\n".join(
         (
             "#!/bin/bash",
             f"#SBATCH --job-name=asys-s5-client-cap-g{capacity_generation}-{target_ceiling}",
@@ -26722,13 +27190,20 @@ def _client_capacity_canary_sbatch(
             "#SBATCH --mem=4G",
             "#SBATCH --time=00:10:00",
             "#SBATCH --no-requeue",
+            "#SBATCH --export=NONE",
             f"#SBATCH --output={output_path}",
             "",
             "set -euo pipefail",
+            "umask 027",
+            _trusted_shell_prelude().rstrip(),
             "/bin/true",
             "",
         )
     )
+    _validate_trusted_sbatch_bootstrap(
+        payload, description="client-capacity canary sbatch"
+    )
+    return payload
 
 
 def _client_capacity_canary_job_name(
@@ -28464,6 +28939,7 @@ def _capture_client_capacity_canary(
         for token in submit_tokens[1:]
         if not token.startswith("-")
     ]
+    sbatch_payload = sbatch_path.read_text(encoding="utf-8")
     if (
         observed_job != job_id
         or state.split("+", 1)[0] != "COMPLETED"
@@ -28481,13 +28957,16 @@ def _capture_client_capacity_canary(
         or submit_tokens[1:] != list(expected_submit_argv)[1:]
         or submitted_paths != [sbatch_path.resolve()]
         or sha256_file(sbatch_path) != sbatch_sha256
-        or "#SBATCH --no-requeue"
-        not in sbatch_path.read_text(encoding="utf-8").splitlines()
+        or "#SBATCH --no-requeue" not in sbatch_payload.splitlines()
+        or "#SBATCH --export=NONE" not in sbatch_payload.splitlines()
     ):
         raise ControlError(
             "client-capacity canary does not prove the exact completed "
             "1-CPU/4-GiB/no-requeue placement"
         )
+    _validate_trusted_sbatch_bootstrap(
+        sbatch_payload, description="completed client-capacity canary sbatch"
+    )
     return {
         "passed": True,
         "capacity_generation": capacity_generation,
@@ -30020,6 +30499,8 @@ def parse_scheduler_rows(
 
 
 def _run_subprocess(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    command = _trusted_system_argv(argv)
+    environment = _sanitized_subprocess_environment()
     if isinstance(argv, _ExactSbatchInvocation):
         try:
             submission_text = argv.stdin_bytes.decode("utf-8")
@@ -30028,19 +30509,21 @@ def _run_subprocess(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
                 f"exact sbatch payload is not UTF-8: {exc}"
             ) from exc
         return subprocess.run(
-            list(argv),
+            command,
             capture_output=True,
             text=True,
             check=False,
             timeout=60.0,
             input=submission_text,
+            env=environment,
         )
     return subprocess.run(
-        list(argv),
+        command,
         capture_output=True,
         text=True,
         check=False,
         timeout=15.0,
+        env=environment,
     )
 
 
@@ -31583,6 +32066,7 @@ def validate_production_batch_sbatch(
         "#SBATCH --time=12:00:00",
         "#SBATCH --signal=B:USR1@1200",
         "#SBATCH --no-requeue",
+        "#SBATCH --export=NONE",
     }
     stripped_lines = [line.strip() for line in payload.splitlines()]
     lines = set(stripped_lines)
@@ -31592,6 +32076,9 @@ def validate_production_batch_sbatch(
             "rendered production cell batch weakens required Slurm contract; missing "
             + ", ".join(missing)
         )
+    _validate_trusted_sbatch_bootstrap(
+        payload, description="production cell batch"
+    )
     partitions = [
         line for line in stripped_lines if line.startswith("#SBATCH --partition=")
     ]
@@ -31750,6 +32237,7 @@ def validate_controller_generation_sbatch(
     control_script = release_worktree / "slurm" / "schema5_control.py"
     exact_lines = {
         "#SBATCH --no-requeue",
+        "#SBATCH --export=NONE",
         f"#SBATCH --partition={PRODUCTION_CONTROLLER_PARTITION}",
         "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV",
         "export PYTHONDONTWRITEBYTECODE=1",
@@ -31808,6 +32296,9 @@ def validate_controller_generation_sbatch(
             "rendered controller generation lacks the immutable runtime contract: "
             + ", ".join(missing)
         )
+    _validate_trusted_sbatch_bootstrap(
+        payload, description="production controller generation"
+    )
     partition_directives = [
         line
         for line in ordered_stripped_lines
@@ -33505,7 +33996,7 @@ def _validate_watchdog_deployment_evidence(
         or value.get("release_git_commit") != control["immutable"]["git_commit"]
         or value.get("release_tag_object")
         != capacity_contract.release_tag_object
-        or value.get("chain_namespace") != "schema5-v1.2-r3"
+        or value.get("chain_namespace") != "schema5-v1.2-r4"
         or value.get("control_sha256") != control["immutable_sha256"]
         or value.get("liveness_email") != control["alert_email"]
         or value.get("forced_command_only") is not True
@@ -34067,8 +34558,11 @@ def _render_drill_sbatch(
             "#SBATCH --mem=4G",
             "#SBATCH --time=01:00:00",
             "#SBATCH --no-requeue",
+            "#SBATCH --export=NONE",
             f"#SBATCH --output={log_path}",
             "set -euo pipefail",
+            "umask 027",
+            _trusted_shell_prelude().rstrip(),
             "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV",
             "export PYTHONDONTWRITEBYTECODE=1",
             "export PYTHONNOUSERSITE=1",
@@ -34079,6 +34573,9 @@ def _render_drill_sbatch(
             "exec " + " ".join(shlex.quote(item) for item in argv),
             "",
         ]
+    )
+    _validate_trusted_sbatch_bootstrap(
+        payload, description="controller kill-drill sbatch"
     )
     if target.exists() or target.is_symlink():
         if (
@@ -35851,7 +36348,7 @@ def complete_external_watchdog_drill(
             "release_tag": PRODUCTION_OPERATIONAL_TAG,
             "release_git_commit": deployment["release_git_commit"],
             "release_tag_object": deployment["release_tag_object"],
-            "chain_namespace": "schema5-v1.2-r3",
+            "chain_namespace": "schema5-v1.2-r4",
             "deployment_id": deployment["deployment_id"],
             "watchdog_code_sha256": deployment["watchdog_code_sha256"],
             "immutable_release_sha256": deployment[
@@ -37469,12 +37966,13 @@ def _attempt_alert_email(
             proc = mail_runner(["mail", "-s", subject, recipient], body)
         else:
             proc = subprocess.run(
-                ["mail", "-s", subject, recipient],
+                _trusted_system_argv(["mail", "-s", subject, recipient]),
                 input=body,
                 capture_output=True,
                 text=True,
                 check=False,
                 timeout=30.0,
+                env=_sanitized_subprocess_environment(),
             )
         delivered = proc.returncode == 0
         error = None if delivered else proc.stderr.strip()[:500]
@@ -40779,7 +41277,7 @@ def _start_monitor_process(
         log_path = Path(str(attempt["log_path"]))
         log_path.parent.mkdir(parents=True, exist_ok=True)
         output = log_path.open("a", encoding="utf-8")
-        environment = os.environ.copy()
+        environment = _sanitized_subprocess_environment()
         environment.update(production_environment(control))
         environment["ASYS_SCHEMA5_CONTROL"] = str(_state_path(state_dir).resolve())
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -41261,7 +41759,7 @@ def supervise(
                 if role == "dispatcher"
                 else effective_fleet_supervisor_command(control)
             )
-            environment = os.environ.copy()
+            environment = _sanitized_subprocess_environment()
             environment.update(production_environment(control))
             environment["ASYS_SCHEMA5_CONTROL"] = str(_state_path(state_dir).resolve())
             child = subprocess.Popen(command, env=environment, start_new_session=True)

@@ -11,14 +11,14 @@ before publication, re-executes every recorded read-only scheduler capture:
 * canary evidence binding those exact placements and scheduler-evidence identity
   to effective ``Requeue=0`` observations.
 
-Both objects must carry the exact schema-5 v1.2-r3 release and chain namespace.
+Both objects must carry the exact schema-5 v1.2-r4 release and chain namespace.
 The release commit and annotated-tag object are also supplied as explicit trust
 anchors so that two consistently substituted evidence files cannot authorize a
 different release.  The scheduler evidence additionally binds the exact canary
 element accounting: 384 clients plus an inclusive 64-job non-cell reserve made up
-  of the frozen 22-replica/24-GPU base plus an 18-replica/18-GPU additive
-  reservation (40 active server elements and 42 active GPUs), three warm-turnover
-  allocations (four GPUs), and 21 held controller/monitor/other placeholders.  Thus
+  of the frozen 22-replica/24-GPU base with zero prelaunch additive replicas,
+  three warm-turnover allocations (four GPUs), and 39 held
+  controller/monitor/other placeholders.  Thus
   the canary is executable under the minimum accepted 448-job submit limit rather
   than requiring 64 slots in addition to its serving allocations.
 
@@ -47,14 +47,14 @@ from agents_scaling.serving import protected_capacity as runtime_capacity
 
 SCHEMA_VERSION = 4
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
-CHAIN_NAMESPACE = "schema5-v1.2-r3"
-PROTOCOL = "schema5-v1.2-r3-protected-capacity-v4"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
+CHAIN_NAMESPACE = "schema5-v1.2-r4"
+PROTOCOL = "schema5-v1.2-r4-protected-capacity-v4"
 SCHEDULER_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-protected-capacity-scheduler-evidence-v4"
+    "schema5-v1.2-r4-protected-capacity-scheduler-evidence-v4"
 )
 CANARY_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-protected-capacity-canary-evidence-v4"
+    "schema5-v1.2-r4-protected-capacity-canary-evidence-v4"
 )
 CAPACITY_SOURCE = (
     "sealed_protected_canary+partition_inventory+association"
@@ -66,7 +66,7 @@ PROTECTED_CAPACITY_MARKER_NAME = MARKER_FILENAME
 
 BASE_ACTIVE_GPUS = 24
 BASE_LOGICAL_REPLICAS = 22
-PRODUCTION_ACTIVE_GPUS = 42
+PRODUCTION_ACTIVE_GPUS = 24
 RETAINED_WARM_TURNOVER_GPUS = 4
 PRODUCTION_ATTESTED_GPUS = (
     PRODUCTION_ACTIVE_GPUS + RETAINED_WARM_TURNOVER_GPUS
@@ -244,6 +244,12 @@ _MARKER_FIELDS = {
     "additive_overlay_contract_path",
     "additive_overlay_contract_sha256",
     "static_feasibility_certificate",
+    "static_feasibility_wave_passed",
+    "static_feasibility_selected_cell_count",
+    "static_feasibility_target_cell_count",
+    "static_feasibility_shortfall_cells",
+    "static_feasibility_configured_client_ceiling",
+    "static_feasibility_certified_saturation_target",
     "base_active_logical_replicas",
     "base_active_gpus",
     "base_active_topology",
@@ -639,6 +645,7 @@ def _validate_scheduler_server_rows(
     rows: Any,
     *,
     preempt_type: str,
+    capacity_generation: int,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if not isinstance(rows, list) or not rows:
         raise ProtectedCapacityError(
@@ -692,16 +699,30 @@ def _validate_scheduler_server_rows(
         raise ProtectedCapacityError(
             "base active serving GPU total differs from the frozen 24-GPU fleet"
         )
+    initial_generation = capacity_generation == 1
     if (
         len(normalized) != 1
         or totals["retained_warm_turnover_gpus"]
         != RETAINED_WARM_TURNOVER_GPUS
-        or totals["effective_active_gpus"] != PRODUCTION_ACTIVE_GPUS
-        or totals["attested_total_gpus"] != PRODUCTION_ATTESTED_GPUS
+        or totals["attested_total_gpus"]
+        != totals["effective_active_gpus"]
+        + totals["retained_warm_turnover_gpus"]
+        or (
+            initial_generation
+            and (
+                totals["effective_active_gpus"] != PRODUCTION_ACTIVE_GPUS
+                or totals["attested_total_gpus"]
+                != PRODUCTION_ATTESTED_GPUS
+            )
+        )
+        or (
+            not initial_generation
+            and totals["effective_active_gpus"] <= BASE_ACTIVE_GPUS
+        )
     ):
         raise ProtectedCapacityError(
-            "exactly one server capacity placement must remain at 42 active "
-            "plus four retained warm turnover GPUs"
+            "server capacity placement does not match the generation-scoped "
+            "active fleet plus four retained warm-turnover GPUs"
         )
     normalized.sort(
         key=lambda row: (
@@ -931,7 +952,7 @@ def _validate_occupancy_preflight(
     interval = value.get("observation_interval_seconds")
     if (
         value.get("protocol")
-        != "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
+        != "schema5-v1.2-r4-protected-capacity-occupancy-preflight-v3"
         or _SHA256_RE.fullmatch(str(value.get("plan_id", ""))) is None
         or preflight_id
         != hashlib.sha256(canonical_bytes(identity)).hexdigest()
@@ -2194,6 +2215,18 @@ def _derive_capacity_from_raw_sources(
         ),
         "additive_overlay_contract_sha256": effective_fleet["sha256"],
         "static_feasibility_certificate": dict(certificate_binding),
+        "static_feasibility_wave_passed": certificate.wave_passed,
+        "static_feasibility_selected_cell_count": (
+            certificate.selected_cell_count
+        ),
+        "static_feasibility_target_cell_count": certificate.target_cell_count,
+        "static_feasibility_shortfall_cells": certificate.shortfall_cells,
+        "static_feasibility_configured_client_ceiling": (
+            certificate.target_cell_count
+        ),
+        "static_feasibility_certified_saturation_target": (
+            certificate.selected_cell_count
+        ),
         "base_active_logical_replicas": base_fleet["logical_replicas"],
         "base_active_gpus": base_fleet["allocated_gpus"],
         "base_active_topology": base_fleet["topology"],
@@ -2341,6 +2374,11 @@ def validate_scheduler_evidence(
         minimum=BASE_LOGICAL_REPLICAS,
         description="scheduler effective active logical replicas",
     )
+    capacity_generation = _require_integer(
+        evidence.get("capacity_generation"),
+        minimum=1,
+        description="scheduler capacity generation",
+    )
     job_element_accounting = _validate_job_element_accounting(
         evidence.get("job_element_accounting"),
         active_server_job_elements=effective_logical_replicas,
@@ -2359,6 +2397,7 @@ def validate_scheduler_evidence(
     servers, server_totals = _validate_scheduler_server_rows(
         evidence.get("scientific_server_placements"),
         preempt_type=str(preempt_type),
+        capacity_generation=capacity_generation,
     )
     clients, client_totals = _validate_scheduler_client_rows(
         evidence.get("scientific_client_placements"),
@@ -2512,6 +2551,12 @@ def validate_scheduler_evidence(
                 "additive_overlay_contract_path",
                 "additive_overlay_contract_sha256",
                 "static_feasibility_certificate",
+                "static_feasibility_wave_passed",
+                "static_feasibility_selected_cell_count",
+                "static_feasibility_target_cell_count",
+                "static_feasibility_shortfall_cells",
+                "static_feasibility_configured_client_ceiling",
+                "static_feasibility_certified_saturation_target",
                 "base_active_logical_replicas",
                 "base_active_gpus",
                 "base_active_topology",
@@ -2750,6 +2795,12 @@ def build_marker(
                 "additive_overlay_contract_path",
                 "additive_overlay_contract_sha256",
                 "static_feasibility_certificate",
+                "static_feasibility_wave_passed",
+                "static_feasibility_selected_cell_count",
+                "static_feasibility_target_cell_count",
+                "static_feasibility_shortfall_cells",
+                "static_feasibility_configured_client_ceiling",
+                "static_feasibility_certified_saturation_target",
                 "base_active_logical_replicas",
                 "base_active_gpus",
                 "base_active_topology",
@@ -2921,7 +2972,7 @@ def validate_marker_payload(
     expected_dispatcher_source_sha256: str | None = None,
     expected_qualification_runner_source_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Validate the exact marker schema used by the r3 chain renderer."""
+    """Validate the exact marker schema used by the r4 chain renderer."""
 
     _require_exact_fields(
         marker,
@@ -2979,6 +3030,11 @@ def validate_marker_payload(
         minimum=BASE_ACTIVE_GPUS,
         description="protected-capacity effective active GPUs",
     )
+    capacity_generation = _require_integer(
+        marker.get("capacity_generation"),
+        minimum=1,
+        description="protected-capacity capacity generation",
+    )
     expected_running_jobs = (
         MIN_CLIENT_SLOTS
         + effective_count
@@ -3004,6 +3060,7 @@ def validate_marker_payload(
     servers, server_totals = _validate_scheduler_server_rows(
         marker.get("scientific_server_placements"),
         preempt_type=str(marker.get("preempt_type")),
+        capacity_generation=capacity_generation,
     )
     clients, client_totals = _validate_scheduler_client_rows(
         marker.get("scientific_client_placements"),
@@ -3244,6 +3301,19 @@ def validate_marker_payload(
         != certificate.base_fleet_contract_sha256
         or marker.get("effective_fleet_contract_sha256")
         != certificate.effective_fleet_contract_sha256
+        or marker.get("static_feasibility_wave_passed")
+        is not certificate.wave_passed
+        or marker.get("static_feasibility_selected_cell_count")
+        != certificate.selected_cell_count
+        or marker.get("static_feasibility_target_cell_count")
+        != certificate.target_cell_count
+        or marker.get("static_feasibility_shortfall_cells")
+        != certificate.shortfall_cells
+        or marker.get("static_feasibility_configured_client_ceiling")
+        != certificate.target_cell_count
+        or marker.get("static_feasibility_certified_saturation_target")
+        != certificate.selected_cell_count
+        or marker.get("cell_ceiling") != certificate.target_cell_count
         or marker.get("additive_overlay_contract_sha256")
         != certificate.additive_overlay_contract_sha256
         or base_count != BASE_LOGICAL_REPLICAS

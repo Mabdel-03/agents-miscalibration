@@ -12,11 +12,6 @@ import pytest
 
 from scripts import publish_schema5_protected_capacity as capacity
 from scripts import run_schema5_throughput_qualification as qualification
-from agents_scaling.serving.fleet_contract import (
-    expected_replica_id,
-    expected_scheduler_job_name,
-)
-
 COMMIT = "1" * 40
 TAG_OBJECT = "2" * 40
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -86,44 +81,14 @@ def _write_authority_file(path: Path, raw: bytes) -> Path:
 
 
 def _capacity_authority(root: Path) -> dict[str, object]:
-    """Create one real solver-certified dynamic fleet authority."""
+    """Create the real solver-certified zero-delta baseline authority."""
 
     base_path = _write_authority_file(
         root / "schema5_fleet.base.json",
         FLEET_RAW.encode("utf-8"),
     )
     effective = json.loads(FLEET_RAW)
-    additions = {
-        "0.6B": 3,
-        "1.7B": 3,
-        "4B": 3,
-        "8B": 2,
-        "14B": 3,
-        "32B": 4,
-    }
-    for profile in effective["profiles"]:
-        name = profile["serving_profile"]
-        for _ in range(additions.get(name, 0)):
-            index = len(profile["replicas"])
-            replica = dict(profile["replicas"][-1])
-            replica.update(
-                {
-                    "replica_index": index,
-                    "replica_id": expected_replica_id(name, index),
-                    "scheduler_job_name": expected_scheduler_job_name(
-                        name, index
-                    ),
-                }
-            )
-            profile["replicas"].append(replica)
-    effective["logical_replica_count"] = sum(
-        len(profile["replicas"]) for profile in effective["profiles"]
-    )
-    effective["allocated_gpu_count"] = sum(
-        int(profile["tensor_parallel_size"]) * len(profile["replicas"])
-        for profile in effective["profiles"]
-    )
-    effective_raw = capacity.canonical_bytes(effective)
+    effective_raw = FLEET_RAW.encode("utf-8")
     effective_path = _write_authority_file(
         root / "schema5_fleet.capacity-v1.json",
         effective_raw,
@@ -188,15 +153,15 @@ def _empty_occupancy_preflight() -> dict[str, object]:
 
     identity = {
         "protocol": (
-            "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
+            "schema5-v1.2-r4-protected-capacity-occupancy-preflight-v3"
         ),
         "plan_id": "3" * 64,
         "observation_interval_seconds": 60.0,
         "scheduler_account": "account",
         "scientific_qos": "client_science",
-        "association_max_jobs": 427,
+        "association_max_jobs": 409,
         "qos_max_jobs": None,
-        "effective_max_jobs": 427,
+        "effective_max_jobs": 409,
         "association_max_submit_jobs": 448,
         "qos_max_submit_jobs": 448,
         "effective_max_submit_jobs": 448,
@@ -205,7 +170,7 @@ def _empty_occupancy_preflight() -> dict[str, object]:
         "existing_qos_job_elements": 0,
         "existing_association_running_job_elements": 0,
         "existing_qos_running_job_elements": 0,
-        "required_new_running_job_elements": 427,
+        "required_new_running_job_elements": 409,
         "required_new_job_elements": 448,
         "first_observation": observation(900.0),
         "second_observation": observation(960.0),
@@ -289,7 +254,7 @@ def _scheduler_identity(root: Path) -> dict[str, object]:
         ),
         (
             f"302|reserve|PENDING|cpu_protected|client_science|"
-            f"21|21|21504|0|0|43200|reserve-000|{'f' * 64}"
+            f"39|39|39936|0|0|43200|reserve-000|{'f' * 64}"
         ),
     ]
     servers = [
@@ -299,10 +264,10 @@ def _scheduler_identity(root: Path) -> dict[str, object]:
             "partition_preempt_mode": "OFF",
             "qos_preempt_mode": "OFF",
             "base_active_gpus": 24,
-            "reserved_additive_gpus": 18,
-            "effective_active_gpus": 42,
+            "reserved_additive_gpus": 0,
+            "effective_active_gpus": 24,
             "retained_warm_turnover_gpus": 4,
-            "attested_total_gpus": 46,
+            "attested_total_gpus": 28,
             "partition_cpus": 4096,
             "partition_memory_mib": 33_554_432,
             "partition_gpus": 64,
@@ -347,7 +312,7 @@ def _scheduler_identity(root: Path) -> dict[str, object]:
         "association_configuration": _source(
             "sacctmgr",
             [
-                "cluster|account|tester|client_science,gpu_science|427|448"
+                "cluster|account|tester|client_science,gpu_science|409|448"
             ],
             kind="associations",
         ),
@@ -418,9 +383,9 @@ def _scheduler_identity(root: Path) -> dict[str, object]:
         "expected_total_job_elements": 448,
         "job_element_accounting": {
             "cell_job_elements": 384,
-            "active_server_job_elements": 40,
+            "active_server_job_elements": 22,
             "warm_turnover_job_elements": 3,
-            "controller_monitor_other_held_job_elements": 21,
+            "controller_monitor_other_held_job_elements": 39,
             "total_non_cell_reserve_job_elements": 64,
             "total_canary_job_elements": 448,
         },
@@ -460,6 +425,56 @@ def _scheduler(root: Path) -> dict[str, object]:
         _scheduler_identity(root),
         identity_field="evidence_id",
     )
+
+
+def test_server_capacity_totals_are_baseline_exact_then_generation_dynamic() -> None:
+    baseline = {
+        "partition": "gpu_protected",
+        "qos": "gpu_science",
+        "partition_preempt_mode": "OFF",
+        "qos_preempt_mode": "OFF",
+        "base_active_gpus": 24,
+        "reserved_additive_gpus": 0,
+        "effective_active_gpus": 24,
+        "retained_warm_turnover_gpus": 4,
+        "attested_total_gpus": 28,
+        "partition_cpus": 4096,
+        "partition_memory_mib": 33_554_432,
+        "partition_gpus": 64,
+        "partition_nodes": 8,
+    }
+    rows, totals = capacity._validate_scheduler_server_rows(
+        [baseline],
+        preempt_type="preempt/qos",
+        capacity_generation=1,
+    )
+    assert rows == [baseline]
+    assert totals["effective_active_gpus"] == 24
+    assert totals["attested_total_gpus"] == 28
+
+    expanded = {
+        **baseline,
+        "reserved_additive_gpus": 2,
+        "effective_active_gpus": 26,
+        "attested_total_gpus": 30,
+    }
+    with pytest.raises(
+        capacity.ProtectedCapacityError,
+        match="generation-scoped",
+    ):
+        capacity._validate_scheduler_server_rows(
+            [expanded],
+            preempt_type="preempt/qos",
+            capacity_generation=1,
+        )
+    rows, totals = capacity._validate_scheduler_server_rows(
+        [expanded],
+        preempt_type="preempt/qos",
+        capacity_generation=2,
+    )
+    assert rows == [expanded]
+    assert totals["effective_active_gpus"] == 26
+    assert totals["attested_total_gpus"] == 30
 
 
 def _canary_identity(
@@ -613,8 +628,14 @@ def test_apply_publishes_only_read_only_marker_last(tmp_path: Path) -> None:
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert set(marker) == capacity._MARKER_FIELDS
     assert marker["protocol"] == capacity.PROTOCOL
-    assert marker["active_gpus"] == 42
+    assert marker["active_gpus"] == 24
     assert marker["warm_headroom_gpus"] == 4
+    assert marker["static_feasibility_wave_passed"] is False
+    assert marker["static_feasibility_selected_cell_count"] == 278
+    assert marker["static_feasibility_target_cell_count"] == 384
+    assert marker["static_feasibility_shortfall_cells"] == 106
+    assert marker["static_feasibility_configured_client_ceiling"] == 384
+    assert marker["static_feasibility_certified_saturation_target"] == 278
     assert marker["cell_ceiling"] == 384
     assert marker["reserve_jobs"] == 64
     assert marker["submit_headroom"] == 448
@@ -805,7 +826,7 @@ def test_higher_scheduler_limit_preserves_exact_448_element_contract(
         scheduler,
         "association_configuration",
         [
-            "cluster|account|tester|client_science,gpu_science|427|500"
+            "cluster|account|tester|client_science,gpu_science|409|500"
         ],
     )
     scheduler["scientific_qos_contracts"] = [
@@ -845,7 +866,7 @@ def test_higher_scheduler_limit_preserves_exact_448_element_contract(
     assert marker["submit_headroom"] == 448
 
 
-@pytest.mark.parametrize("residual", [20, 22])
+@pytest.mark.parametrize("residual", [38, 40])
 def test_residual_held_reserve_must_fill_dynamic_64_job_reserve(
     tmp_path: Path,
     residual: int,
@@ -855,7 +876,7 @@ def test_residual_held_reserve_must_fill_dynamic_64_job_reserve(
     evidence_root.mkdir()
     recovery_root.mkdir()
     scheduler = _scheduler(evidence_root)
-    reserve_total = 40 + 3 + residual
+    reserve_total = 22 + 3 + residual
     total = 384 + reserve_total
     accounting = scheduler["job_element_accounting"]
     assert isinstance(accounting, dict)
@@ -874,11 +895,11 @@ def test_residual_held_reserve_must_fill_dynamic_64_job_reserve(
         raw = source["raw_output"]
         assert isinstance(raw, str)
         changed = raw.replace(
-                "302|reserve|PENDING|cpu_protected|client_science|"
-                "21|21|21504|0|0|43200|reserve-000",
-                "302|reserve|PENDING|cpu_protected|client_science|"
-                f"{residual}|{residual}|{residual * 1024}|0|0|43200|"
-                "reserve-000",
+            "302|reserve|PENDING|cpu_protected|client_science|"
+            "39|39|39936|0|0|43200|reserve-000",
+            "302|reserve|PENDING|cpu_protected|client_science|"
+            f"{residual}|{residual}|{residual * 1024}|0|0|43200|"
+            "reserve-000",
         )
         assert changed != raw
         _replace_source_rows(
@@ -971,7 +992,7 @@ def test_marker_canonically_sorts_authorized_placements(tmp_path: Path) -> None:
         "association_configuration",
             [
                 "cluster|account|tester|"
-                "a_science,client_science,gpu_science,z_science|427|448"
+                "a_science,client_science,gpu_science,z_science|409|448"
             ],
     )
     scheduler = _reseal_scheduler(scheduler)

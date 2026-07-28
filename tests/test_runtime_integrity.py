@@ -16,7 +16,7 @@ from agents_scaling.experiment.qid_checkpoint import CoordinateAdmissionClosed
 
 
 # Most tests below exercise the backward-compatible schema-1 verifier.  Keep their
-# synthetic release on the retired protocol; v1.2 has dedicated schema-3 fixtures
+# synthetic release on the retired protocol; v1.2 has dedicated schema-4 fixtures
 # and must never accept a schema downgrade.
 RELEASE_ID = "sweep-recovery-schema5-v1.1"
 RELEASE_ID_V12 = "sweep-recovery-schema5-v1.2"
@@ -76,7 +76,7 @@ def _environment(tmp_path: Path, role: str) -> dict[str, str]:
     }
 
 
-def _schema3_environment(tmp_path: Path, role: str) -> dict[str, str]:
+def _schema4_environment(tmp_path: Path, role: str) -> dict[str, str]:
     environment = _environment(tmp_path, role)
     manifest_path = Path(environment["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -92,6 +92,41 @@ def _schema3_environment(tmp_path: Path, role: str) -> dict[str, str]:
         "conda_creation_tool": {
             "path": f"/sealed/build-tools/{role}/conda",
             "sha256": "2" * 64,
+        },
+        "conda_toolchain": {
+            "schema_version": 1,
+            "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+            "release_tag": "sweep-recovery-schema5-v1.2-r4",
+            "chain_namespace": "schema5-v1.2-r4",
+            "toolchain_root": "/sealed/build-tools/schema5-v1.2-r4",
+            "base_prefix": "/sealed/build-tools/schema5-v1.2-r4/base",
+            "completion_marker": {
+                "path": (
+                    "/sealed/build-tools/schema5-v1.2-r4/"
+                    "CONDA_TOOLCHAIN_COMPLETE.json"
+                ),
+                "sha256": "b" * 64,
+                "size": 4096,
+            },
+            "marker_id": "c" * 64,
+            "installer_contract": {
+                "filename": "Miniforge3-Linux-x86_64.sh",
+                "release": "Miniforge3-25.11.0-1",
+                "sha256": "d" * 64,
+                "conda_version": "25.11.0",
+            },
+            "intent_id": "e" * 64,
+            "conda_executable": {
+                "path": "/sealed/build-tools/schema5-v1.2-r4/base/bin/conda",
+                "sha256": "f" * 64,
+                "size": 512,
+                "mode": 0o555,
+                "link_count": 1,
+            },
+            "runtime_identity_sha256": "1" * 64,
+            "complete_prefix_inventory_sha256": "2" * 64,
+            "read_only_probes": {"offline": True},
+            "binding_id": "3" * 64,
         },
         "environment_seed": {
             "capture_id": "3" * 64,
@@ -112,10 +147,11 @@ def _schema3_environment(tmp_path: Path, role: str) -> dict[str, str]:
         },
         "normalization_receipt": {"id": "7" * 64},
         "conda_package_cache_sha256": "8" * 64,
+        "conda_package_cache_seed_sha256": "a" * 64,
     }
     manifest.update(
         {
-            "schema_version": 3,
+            "schema_version": 4,
             "release_id": RELEASE_ID_V12,
             "offline_environment": {
                 "HF_DATASETS_OFFLINE": "1",
@@ -145,8 +181,12 @@ def _schema3_environment(tmp_path: Path, role: str) -> dict[str, str]:
                 ],
                 "normalization_receipt": provenance["normalization_receipt"],
                 "conda_creation_tool": provenance["conda_creation_tool"],
+                "conda_toolchain": provenance["conda_toolchain"],
                 "conda_package_cache_sha256": provenance[
                     "conda_package_cache_sha256"
+                ],
+                "conda_package_cache_seed_sha256": provenance[
+                    "conda_package_cache_seed_sha256"
                 ],
                 "inventory_sha256": inventory["inventory_sha256"],
             }
@@ -170,8 +210,8 @@ def _rewrite_environment_manifest(
     return manifest
 
 
-def test_schema3_manifest_verifies_without_mutable_build_inputs(tmp_path):
-    environment = _schema3_environment(tmp_path, "harness")
+def test_schema4_manifest_verifies_without_mutable_build_inputs(tmp_path):
+    environment = _schema4_environment(tmp_path, "harness")
 
     observed = integrity.verify_environment_manifest_live(
         role="harness",
@@ -191,7 +231,7 @@ def test_schema3_manifest_verifies_without_mutable_build_inputs(tmp_path):
     assert not Path(manifest["conda_creation_tool"]["path"]).exists()
 
 
-def test_schema3_manifest_rejects_schema_downgrade(tmp_path):
+def test_schema4_manifest_rejects_schema_downgrade(tmp_path):
     environment = _environment(tmp_path, "harness")
     _rewrite_environment_manifest(
         environment,
@@ -211,6 +251,10 @@ def test_schema3_manifest_rejects_schema_downgrade(tmp_path):
 @pytest.mark.parametrize(
     ("transform", "match"),
     [
+        (
+            lambda manifest: manifest.__setitem__("conda_toolchain", []),
+            "schema-4 environment provenance is malformed",
+        ),
         (
             lambda manifest: manifest["environment_seed"].__setitem__(
                 "capture_id", "not-a-digest"
@@ -237,8 +281,8 @@ def test_schema3_manifest_rejects_schema_downgrade(tmp_path):
         ),
     ],
 )
-def test_schema3_manifest_rejects_malformed_provenance(tmp_path, transform, match):
-    environment = _schema3_environment(tmp_path, "serving")
+def test_schema4_manifest_rejects_malformed_provenance(tmp_path, transform, match):
+    environment = _schema4_environment(tmp_path, "serving")
     _rewrite_environment_manifest(environment, transform)
 
     with pytest.raises(integrity.RuntimeIntegrityError, match=match):
@@ -251,8 +295,8 @@ def test_schema3_manifest_rejects_malformed_provenance(tmp_path, transform, matc
         )
 
 
-def test_schema3_manifest_content_identity_binds_valid_provenance(tmp_path):
-    environment = _schema3_environment(tmp_path, "serving")
+def test_schema4_manifest_content_identity_binds_valid_provenance(tmp_path):
+    environment = _schema4_environment(tmp_path, "serving")
     _rewrite_environment_manifest(
         environment,
         lambda manifest: manifest["environment_seed"].__setitem__(

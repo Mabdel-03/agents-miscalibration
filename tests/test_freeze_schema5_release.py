@@ -24,12 +24,112 @@ _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE = (
 )
 
 
+def _toolchain_binding(root: Path) -> dict:
+    toolchain = root / "conda-toolchain-miniforge3-25.11.0-1"
+    binding = {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+        "release_tag": freeze.REQUIRED_GIT_TAG,
+        "chain_namespace": "schema5-v1.2-r4",
+        "toolchain_root": str(toolchain),
+        "base_prefix": str(toolchain / "base"),
+        "completion_marker": {
+            "path": str(toolchain / "CONDA_TOOLCHAIN_COMPLETE.json"),
+            "sha256": "1" * 64,
+            "size": 1,
+        },
+        "marker_id": "2" * 64,
+        "installer_contract": (
+            schema5_control.conda_toolchain.PINNED_INSTALLER_CONTRACT.as_dict()
+        ),
+        "intent_id": "4" * 64,
+        "conda_executable": {
+            "path": str(toolchain / "base/bin/conda"),
+            "sha256": "5" * 64,
+            "size": 1,
+            "mode": 0o555,
+            "link_count": 1,
+        },
+        "runtime_identity_sha256": "6" * 64,
+        "complete_prefix_inventory_sha256": "7" * 64,
+        "read_only_probes": {"probe_count": 2},
+    }
+    binding["binding_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                binding,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    return binding
+
+
+def _package_cache_seed_input(root: Path) -> dict:
+    binding = {
+        "source_package_cache": str(root / "source-package-cache"),
+        "inventory_sha256": "9" * 64,
+        "inventory_entry_count": 1,
+        "inventory_file_count": 1,
+        "inventory_total_file_bytes": 1,
+        "requirements_sha256": "a" * 64,
+        "required_package_count": 1,
+        "archive_count": 0,
+        "selected_top_level_entries": ["cache", "urls", "urls.txt"],
+    }
+    binding["input_id"] = hashlib.sha256(
+        (
+            json.dumps(
+                binding,
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    return binding
+
+
 def test_operational_retry_tag_is_distinct_from_stable_release_id() -> None:
     assert freeze.RELEASE_ID == "sweep-recovery-schema5-v1.2"
-    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r3"
+    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r4"
     assert materialize.RELEASE_ID == freeze.RELEASE_ID
     assert materialize.REQUIRED_TAG == freeze.REQUIRED_GIT_TAG
     assert freeze.REQUIRED_GIT_TAG != freeze.RELEASE_ID
+
+
+def test_probe_environment_rejects_hostile_git_and_scheduler_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile = {
+        "PATH": "/tmp/attacker-bin",
+        "BASH_ENV": "/tmp/attacker-env",
+        "LD_PRELOAD": "/tmp/attacker.so",
+        "GIT_DIR": "/tmp/attacker-git",
+        "GIT_CONFIG_PARAMETERS": "'core.hooksPath=/tmp/attacker-hooks'",
+        "GIT_REPLACE_REF_BASE": "refs/attacker",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/tmp/attacker-hooks",
+        "SBATCH_PARTITION": "attacker",
+        "SACCT_FORMAT": "attacker",
+        "CONDA_PREFIX": "/tmp/attacker-conda",
+        "PIP_INDEX_URL": "https://attacker.invalid/simple",
+    }
+    for key, value in hostile.items():
+        monkeypatch.setenv(key, value)
+    environment = freeze._python_probe_environment()
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +156,7 @@ def _stub_materialization_binding(monkeypatch):
                 "release_worktree": str(release_worktree),
                 "source_harness_prefix": str(harness_prefix) + ".source",
                 "source_serving_prefix": str(serving_prefix) + ".source",
+                "source_package_cache": str(root / "source-package-cache"),
                 "harness_prefix": str(harness_prefix),
                 "serving_prefix": str(serving_prefix),
             },
@@ -94,7 +195,10 @@ def _stub_materialization_binding(monkeypatch):
                 "path": str(root / "creation-conda"),
                 "sha256": "d" * 64,
             },
+            "conda_toolchain": _toolchain_binding(root),
+            "package_cache_seed_input": _package_cache_seed_input(root),
             "conda_package_cache_sha256": "e" * 64,
+            "conda_package_cache_seed_sha256": "0" * 64,
         }
 
     monkeypatch.setattr(freeze, "_verified_materialization_binding", binding)
@@ -102,6 +206,13 @@ def _stub_materialization_binding(monkeypatch):
         freeze,
         "_verify_bound_materialization_evidence",
         lambda evidence, **kwargs: dict(evidence),
+    )
+    monkeypatch.setattr(
+        schema5_control.conda_toolchain,
+        "verified_conda_toolchain_binding",
+        lambda root, exercise=True: _toolchain_binding(
+            Path(root).resolve().parent
+        ),
     )
 
 
@@ -313,8 +424,10 @@ def _v12_materialization_evidence(root: Path) -> tuple[dict, dict, str]:
         "ownership_policy_sha256",
         "integrity_normalization_policy_sha256",
         "normalization_receipt_id",
+        "conda_toolchain_binding_id",
         "conda_creation_tool_sha256",
         "conda_package_cache_sha256",
+        "conda_package_cache_seed_sha256",
     ),
 )
 def test_environment_manifest_rejects_self_consistent_upstream_substitution(
@@ -330,8 +443,10 @@ def test_environment_manifest_rejects_self_consistent_upstream_substitution(
     binding = {
         "paths": {"harness_prefix": str(prefix)},
         "environment_capture": capture_binding,
+        "conda_toolchain": _toolchain_binding(root),
         "conda_creation_tool": conda_tool,
         "conda_package_cache_sha256": cache_sha,
+        "conda_package_cache_seed_sha256": "0" * 64,
     }
     inventory = {
         "inventory_sha256": "1" * 64,
@@ -350,6 +465,7 @@ def test_environment_manifest_rejects_self_consistent_upstream_substitution(
         "prefix": str(prefix),
         "sealed_read_only": False,
         "offline_environment": dict(freeze.REQUIRED_OFFLINE_ENVIRONMENT),
+        "conda_toolchain": _toolchain_binding(root),
         "conda_creation_tool": dict(conda_tool),
         "environment_seed": {
             "capture_id": capture_binding["capture_id"],
@@ -379,6 +495,7 @@ def test_environment_manifest_rejects_self_consistent_upstream_substitution(
             ]
         },
         "conda_package_cache_sha256": cache_sha,
+        "conda_package_cache_seed_sha256": "0" * 64,
         "runtime": {},
         "locks": {"conda_explicit": [], "pip_freeze_all": []},
         "release_package": release_package,
@@ -406,11 +523,15 @@ def test_environment_manifest_rejects_self_consistent_upstream_substitution(
                     "normalization_receipt": payload[
                         "normalization_receipt"
                     ],
+                    "conda_toolchain": payload["conda_toolchain"],
                     "conda_creation_tool": payload[
                         "conda_creation_tool"
                     ],
                     "conda_package_cache_sha256": payload[
                         "conda_package_cache_sha256"
+                    ],
+                    "conda_package_cache_seed_sha256": payload[
+                        "conda_package_cache_seed_sha256"
                     ],
                     "inventory_sha256": inventory["inventory_sha256"],
                 }
@@ -448,10 +569,14 @@ def test_environment_manifest_rejects_self_consistent_upstream_substitution(
         payload["integrity_normalization_policy"]["sha256"] = "e" * 64
     elif field == "normalization_receipt_id":
         payload["normalization_receipt"]["id"] = "f" * 64
+    elif field == "conda_toolchain_binding_id":
+        payload["conda_toolchain"]["binding_id"] = "f" * 64
     elif field == "conda_creation_tool_sha256":
         payload["conda_creation_tool"]["sha256"] = "f" * 64
-    else:
+    elif field == "conda_package_cache_sha256":
         payload["conda_package_cache_sha256"] = "f" * 64
+    else:
+        payload["conda_package_cache_seed_sha256"] = "f" * 64
     payload["environment_content_sha256"] = content_sha()
 
     with pytest.raises(
@@ -490,6 +615,7 @@ def _install_real_materialization_evidence(
         "release_worktree": str(inputs["release_worktree"]),
         "source_harness_prefix": str(source_harness),
         "source_serving_prefix": str(source_serving),
+        "source_package_cache": str(tmp_path / "source-package-cache"),
         "harness_prefix": str(inputs["harness_prefix"]),
         "serving_prefix": str(inputs["serving_prefix"]),
     }
@@ -506,6 +632,9 @@ def _install_real_materialization_evidence(
         if name == "package_cache":
             stage_payload["content_inventory"] = {
                 "content_inventory_sha256": package_cache_sha256
+            }
+            stage_payload["package_cache_seed"] = {
+                "seed_content_inventory_sha256": "0" * 64
             }
         stage_payload["record_sha256"] = hashlib.sha256(
             materialize._json_bytes(stage_payload)
@@ -529,7 +658,9 @@ def _install_real_materialization_evidence(
         "publication_protocol": "stage_records_fsync_marker_last",
         "stage_records": stage_records,
         "environment_capture": environment_capture,
+        "conda_toolchain": _toolchain_binding(root),
         "conda_creation_tool": conda_creation_tool,
+        "package_cache_seed_input": _package_cache_seed_input(root),
     }
     marker["materialization_id"] = hashlib.sha256(
         materialize._json_bytes(marker)
@@ -545,8 +676,11 @@ def _install_real_materialization_evidence(
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": paths,
         "environment_capture": environment_capture,
+        "conda_toolchain": _toolchain_binding(root),
         "conda_creation_tool": conda_creation_tool,
+        "package_cache_seed_input": _package_cache_seed_input(root),
         "conda_package_cache_sha256": package_cache_sha256,
+        "conda_package_cache_seed_sha256": "0" * 64,
     }
     monkeypatch.setattr(materialize, "verify_materialization", lambda path: dict(report))
     monkeypatch.setattr(
@@ -865,6 +999,7 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         "release_worktree": str(inputs["release_worktree"]),
         "source_harness_prefix": str(tmp_path / "source-harness"),
         "source_serving_prefix": str(tmp_path / "source-serving"),
+        "source_package_cache": str(tmp_path / "source-package-cache"),
         "harness_prefix": str(inputs["harness_prefix"]),
         "serving_prefix": str(inputs["serving_prefix"]),
     }
@@ -881,6 +1016,9 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         if name == "package_cache":
             stage_payload["content_inventory"] = {
                 "content_inventory_sha256": package_cache_sha256
+            }
+            stage_payload["package_cache_seed"] = {
+                "seed_content_inventory_sha256": "0" * 64
             }
         stage_payload["record_sha256"] = hashlib.sha256(
             materialize._json_bytes(stage_payload)
@@ -903,7 +1041,9 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         "complete": True,
         "stage_records": stage_records,
         "environment_capture": environment_capture,
+        "conda_toolchain": _toolchain_binding(root),
         "conda_creation_tool": conda_creation_tool,
+        "package_cache_seed_input": _package_cache_seed_input(root),
     }
     marker["materialization_id"] = hashlib.sha256(
         materialize._json_bytes(marker)
@@ -918,8 +1058,11 @@ def test_release_binding_requires_exact_verified_sibling_materialization(
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": paths,
         "environment_capture": environment_capture,
+        "conda_toolchain": _toolchain_binding(root),
         "conda_creation_tool": conda_creation_tool,
+        "package_cache_seed_input": _package_cache_seed_input(root),
         "conda_package_cache_sha256": package_cache_sha256,
+        "conda_package_cache_seed_sha256": "0" * 64,
     }
     monkeypatch.setattr(materialize, "verify_materialization", lambda path: dict(report))
 
@@ -1053,7 +1196,7 @@ def test_schema5_control_consumes_exact_v12_freezer_output(
     # exact control_pin_fragment rather than a hand-reconstructed schema fixture.
     schema5_control._validate_release_bundle(pins)
 
-    assert identity["schema_version"] == 4
+    assert identity["schema_version"] == 5
     assert identity["transport_uncertainty"]["binding"] == (
         schema5_control.scheduler_safety.expected_transport_uncertainty_binding()
     )
@@ -1063,7 +1206,7 @@ def test_schema5_control_consumes_exact_v12_freezer_output(
     assert identity["transport_uncertainty"]["source_tree_sha256"] == (
         pins["source_tree_sha256"]
     )
-    assert identity["materialization"]["schema_version"] == 4
+    assert identity["materialization"]["schema_version"] == 5
     assert {
         json.loads(
             (output / filename).read_text(encoding="utf-8")
@@ -1072,7 +1215,7 @@ def test_schema5_control_consumes_exact_v12_freezer_output(
             freeze.HARNESS_MANIFEST_FILENAME,
             freeze.SERVING_MANIFEST_FILENAME,
         )
-    } == {3}
+    } == {4}
 
     downgraded = dict(pins)
     downgraded["release_id"] = "sweep-recovery-schema5-v1.1"
@@ -1099,7 +1242,7 @@ def test_schema5_control_rejects_environment_schema1_freezer_downgrade(
 
     with pytest.raises(
         schema5_control.ImmutablePinError,
-        match="harness environment manifest is not sealed schema 3",
+        match="harness environment manifest is not sealed schema 4",
     ):
         schema5_control._validate_release_bundle(pins)
 
@@ -1351,6 +1494,7 @@ def test_sealed_release_verification_is_self_contained_after_sources_disappear(
             "sha256": "d" * 64,
         }
         assert manifest["conda_package_cache_sha256"] == "e" * 64
+        assert manifest["conda_package_cache_seed_sha256"] == "0" * 64
     for source in mutable_sources:
         shutil.rmtree(source)
     worktree = inputs["release_worktree"]

@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 
 import pytest
 
 from scripts import publish_schema5_durable_git_release as publisher
+
+
+def test_git_environment_rejects_hostile_repository_and_scheduler_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile = {
+        "PATH": "/tmp/attacker-bin",
+        "BASH_ENV": "/tmp/attacker-env",
+        "LD_PRELOAD": "/tmp/attacker.so",
+        "GIT_DIR": "/tmp/attacker-git",
+        "GIT_OBJECT_DIRECTORY": "/tmp/attacker-objects",
+        "GIT_CONFIG_PARAMETERS": "'core.hooksPath=/tmp/attacker-hooks'",
+        "GIT_REPLACE_REF_BASE": "refs/attacker",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/tmp/attacker-hooks",
+        "SBATCH_PARTITION": "attacker",
+        "SQUEUE_FORMAT": "attacker",
+    }
+    for key, value in hostile.items():
+        monkeypatch.setenv(key, value)
+    environment = publisher._sanitized_process_environment()
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
 
 
 def _git(cwd: Path, *argv: str) -> str:
@@ -38,7 +65,7 @@ def _repositories(tmp_path: Path) -> tuple[Path, Path]:
         "-a",
         publisher.RELEASE_TAG,
         "-m",
-        "schema-5 v1.2-r3",
+        "schema-5 v1.2-r4",
     )
     _git(repository, "remote", "add", "durable", str(remote))
     _git(
@@ -120,6 +147,46 @@ def test_durable_release_rejects_dirty_or_unpushed_identity(tmp_path):
             remote="durable",
             remote_commit_ref=publisher.DURABLE_COMMIT_REF,
         )
+
+
+def test_durable_release_rejects_git_replacement_refs(tmp_path):
+    repository, _remote = _repositories(tmp_path)
+    trusted_commit = _git(repository, "rev-parse", "HEAD")
+    (repository / "release.txt").write_text("substituted\n", encoding="utf-8")
+    _git(repository, "add", "release.txt")
+    _git(repository, "commit", "-m", "replacement")
+    replacement_commit = _git(repository, "rev-parse", "HEAD")
+    _git(repository, "reset", "--hard", trusted_commit)
+    _git(repository, "replace", trusted_commit, replacement_commit)
+    assert _git(repository, "show", f"{trusted_commit}:release.txt") == "substituted"
+
+    with pytest.raises(
+        publisher.DurableGitReleaseError,
+        match="forbidden Git replacement refs",
+    ):
+        publisher.publish(
+            repository=repository,
+            recovery_root=tmp_path / "recovery",
+            remote="durable",
+            remote_commit_ref=publisher.DURABLE_COMMIT_REF,
+        )
+    assert (
+        subprocess.run(
+            ["/usr/bin/git", "show", f"{trusted_commit}:release.txt"],
+            cwd=repository,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "LC_ALL": "C",
+            },
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        == "schema five\n"
+    )
 
 
 def test_marker_binding_rejects_bundle_tamper(tmp_path):
@@ -217,7 +284,7 @@ def test_completed_publication_requires_same_remote_ref_identity(tmp_path):
 
     with pytest.raises(
         publisher.DurableGitReleaseError,
-        match="exact refs/heads/schema5-v1.2-r3",
+        match="exact refs/heads/schema5-v1.2-r4",
     ):
         publisher.publish(
             repository=repository,

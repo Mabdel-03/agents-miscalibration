@@ -23,32 +23,32 @@ from typing import Any, Mapping, Sequence
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
-CHAIN_NAMESPACE = "schema5-v1.2-r3"
-DRILL_PROTOCOL = "schema5-v1.2-r3-external-watchdog-drill-v1"
-READY_PROTOCOL = "schema5-v1.2-r3-external-watchdog-v1"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
+CHAIN_NAMESPACE = "schema5-v1.2-r4"
+DRILL_PROTOCOL = "schema5-v1.2-r4-external-watchdog-drill-v1"
+READY_PROTOCOL = "schema5-v1.2-r4-external-watchdog-v1"
 DEPLOYMENT_EVIDENCE_PROTOCOL = "schema5-external-watchdog-deployment-evidence-v1"
 DRILL_EVIDENCE_PROTOCOL = "schema5-external-watchdog-drill-evidence-v1"
 LIVENESS_EVIDENCE_PROTOCOL = "schema5-external-watchdog-liveness-evidence-v1"
 DRILL_MARKER = "EXTERNAL_WATCHDOG_KILL_DRILL_COMPLETE.json"
 READY_MARKER = "WATCHDOG_READY.json"
 BOOTSTRAP_ATTESTATION_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-attestation-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-attestation-v1"
 )
 BOOTSTRAP_READY_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-deployment-ready-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-deployment-ready-v1"
 )
 BOOTSTRAP_READY_MARKER = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_READY.json"
 )
 BOOTSTRAP_ARM_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-arm-intent-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-arm-intent-v1"
 )
 BOOTSTRAP_ARM_INTENT_MARKER = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARM_INTENT.json"
 )
 BOOTSTRAP_ARMED_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-armed-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-armed-v1"
 )
 BOOTSTRAP_ARMED_MARKER = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARMED.json"
@@ -893,7 +893,7 @@ def publish_bootstrap(
                     == _sha256_bytes(_canonical(provenance_identity))
                     and provenance.get("protocol")
                     == (
-                        "schema5-v1.2-r3-bootstrap-"
+                        "schema5-v1.2-r4-bootstrap-"
                         "generation-provenance-v1"
                     )
                     and provenance.get("passed") is True
@@ -946,7 +946,7 @@ def publish_bootstrap(
             set(row) == observation_fields
             and row.get("schema_version") == 1
             and row.get("protocol")
-            == "schema5-v1.2-r3-bootstrap-status-v1"
+            == "schema5-v1.2-r4-bootstrap-status-v1"
             and row.get("passed") is True
             and isinstance(row.get("observed_at_timestamp"), (int, float))
             and not isinstance(row.get("observed_at_timestamp"), bool)
@@ -1190,7 +1190,7 @@ def publish_bootstrap(
         or SHA256.fullmatch(bundle_id) is None
         or bundle_id != _sha256_bytes(_canonical(bundle_identity))
         or bundle.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-bundle-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-bundle-v1"
         or bundle.get("release_git_commit") != git_commit
         or bundle.get("release_tag_object") != tag_object
         or bundle.get("chain_manifest_sha256")
@@ -1212,7 +1212,7 @@ def publish_bootstrap(
         or deployment_evidence_id
         != _sha256_bytes(_canonical(deployment_identity))
         or deployment.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-deployment-evidence-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-deployment-evidence-v1"
         or deployment.get("passed") is not True
         or deployment.get("bundle_id") != bundle_id
         or deployment.get("bundle_sha256")
@@ -1268,7 +1268,7 @@ def publish_bootstrap(
         or drill_evidence_id
         != _sha256_bytes(_canonical(drill_identity))
         or drill_evidence.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-drill-evidence-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-drill-evidence-v1"
         or drill_evidence.get("passed") is not True
         or drill_evidence.get("bundle_id") != bundle_id
         or drill_evidence.get("deployment_id")

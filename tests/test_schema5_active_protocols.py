@@ -14,6 +14,8 @@ from scripts import build_schema5_watchdog_deployment as watchdog_deployment
 from scripts import init_schema5_smokes as smoke_init
 from scripts import publish_schema5_durable_git_release as durable_git
 from scripts import publish_schema5_watchdog_ready as watchdog_ready
+from scripts import materialize_schema5_release as materializer
+from scripts import provision_schema5_conda_toolchain as conda_toolchain
 from scripts import render_schema5_recovery_chain_v12 as renderer
 from scripts import run_schema5_materialization_pilot as materialization_pilot
 from scripts import run_schema5_slurm_fleet_canary as fleet_canary
@@ -21,8 +23,20 @@ from scripts import run_schema5_smokes as smokes
 from scripts import run_schema5_throughput_qualification as qualification
 from scripts import schema5_bootstrap_watchdog as bootstrap_watchdog
 from scripts import schema5_recovery_sentinel as sentinel
+from scripts import seal_recovery_evidence as recovery_sealer
 from scripts import verify_schema5_recovery_evidence as recovery_verifier
 from slurm import schema5_control as control
+
+
+def test_throughput_producer_and_renderer_protocols_are_identical() -> None:
+    assert (
+        renderer.THROUGHPUT_QUALIFICATION_SCHEDULER_PROTOCOL
+        == qualification.SCHEDULER_PROTOCOL
+    )
+    assert (
+        renderer.THROUGHPUT_QUALIFICATION_SEMANTIC_PROTOCOL
+        == qualification.SEMANTIC_PROTOCOL
+    )
 
 
 ACTIVE_SOURCE_PATHS = (
@@ -96,7 +110,7 @@ HISTORICAL_R2_LITERALS = Counter(
         (
             "scripts/seal_recovery_evidence.py",
             "schema5-v1.2-r2-r1-zero-result-mutation-receipt-v1",
-        ): 1,
+        ): 2,
         (
             "scripts/verify_schema5_recovery_evidence.py",
             "schema5-v1.2-r2-recovery-chain",
@@ -113,7 +127,7 @@ HISTORICAL_R2_LITERALS = Counter(
 )
 
 
-def test_fresh_schema5_artifact_protocols_identify_r3() -> None:
+def test_fresh_schema5_artifact_protocols_identify_r4() -> None:
     protocols = {
         control.PRODUCTION_AUTHORIZATION_PROTOCOL,
         control.CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL,
@@ -157,6 +171,9 @@ def test_fresh_schema5_artifact_protocols_identify_r3() -> None:
         renderer.SENTINEL_BOOTSTRAP_PROTOCOL,
         renderer.SOURCE_CHECKOUT_SEAL_PROTOCOL,
         renderer.PREREQUISITE_PROTOCOL,
+        conda_toolchain.PROTOCOL,
+        materializer.PACKAGE_CACHE_SEED_INTENT_PROTOCOL,
+        materializer.PACKAGE_CACHE_SEED_PROTOCOL,
         sentinel.SCHEDULER_EVIDENCE_PROTOCOL,
         sentinel.MAIL_PROTOCOL,
         sentinel.MARKER_PROTOCOL,
@@ -164,16 +181,16 @@ def test_fresh_schema5_artifact_protocols_identify_r3() -> None:
         sentinel.STAGE_MARKER_PROTOCOL,
     }
     assert protocols
-    assert all("schema5-v1.2-r3-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r4-" in protocol for protocol in protocols)
     assert all("schema5-v1.2-r2-" not in protocol for protocol in protocols)
 
 
 def test_active_protocol_producers_and_consumers_are_atomic() -> None:
     assert (
         qualification.RECOVERY_CHAIN_PROTOCOL
-        == readiness.R3_PROTOCOL
-        == recovery_verifier.R3_PROTOCOL
-        == "schema5-v1.2-r3-recovery-chain"
+        == readiness.R4_PROTOCOL
+        == recovery_verifier.R4_PROTOCOL
+        == "schema5-v1.2-r4-recovery-chain"
     )
     assert (
         control.SMOKE_ATTEMPT_BINDING_PROTOCOL
@@ -252,3 +269,27 @@ def test_all_remaining_r2_literals_are_explicit_immutable_history() -> None:
                 ):
                     observed[(relative, value)] += 1
     assert observed == HISTORICAL_R2_LITERALS
+
+
+def test_r3_literals_are_confined_to_immutable_failure_history() -> None:
+    root = Path(__file__).resolve().parents[1]
+    observed_sources: set[str] = set()
+    for directory in ("scripts", "slurm", "src"):
+        for path in sorted((root / directory).rglob("*.py")):
+            relative = str(path.relative_to(root))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            for node in ast.walk(tree):
+                value = node.value if isinstance(node, ast.Constant) else None
+                if isinstance(value, str) and (
+                    "schema5-v1.2-r3" in value
+                    or "sweep-recovery-schema5-v1.2-r3" in value
+                ):
+                    observed_sources.add(relative)
+    assert observed_sources == {
+        "scripts/render_schema5_recovery_chain_v12.py",
+        "scripts/seal_recovery_evidence.py",
+    }
+    assert (
+        recovery_sealer._R3_PRELAUNCH_FAILURE_SEAL_PROTOCOL
+        == "schema5-v1.2-r3-prelaunch-failure-seal-v1"
+    )

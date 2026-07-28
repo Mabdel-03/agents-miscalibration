@@ -132,12 +132,12 @@ def test_dry_run_derives_exact_fixed_delta_without_writing(
         materializer.EXPECTED_COUNTS
     )
     assert report["fixed_additive_profile_delta"] == {
-        "0.6B": 3,
-        "1.7B": 3,
-        "4B": 3,
-        "8B": 2,
-        "14B": 3,
-        "32B": 4,
+        "0.6B": 0,
+        "1.7B": 0,
+        "4B": 0,
+        "8B": 0,
+        "14B": 0,
+        "32B": 0,
         "0.6B-long": 0,
         "1.7B-long": 0,
         "4B-long": 0,
@@ -145,7 +145,7 @@ def test_dry_run_derives_exact_fixed_delta_without_writing(
         "14B-long": 0,
         "32B-long": 0,
     }
-    assert sum(report["fixed_additive_profile_delta"].values()) == 18
+    assert sum(report["fixed_additive_profile_delta"].values()) == 0
     assert report["effective_profile_replicas"] == dict(
         materializer.EXPECTED_EFFECTIVE_COUNTS
     )
@@ -156,7 +156,7 @@ def test_dry_run_derives_exact_fixed_delta_without_writing(
     ).exists()
 
 
-def test_apply_publishes_valid_40_replica_42_gpu_contract_marker_last(
+def test_apply_publishes_byte_identical_22_replica_24_gpu_contract_marker_last(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -193,8 +193,10 @@ def test_apply_publishes_valid_40_replica_42_gpu_contract_marker_last(
         expected_sha256=digest,
         allow_capacity_layout=True,
     )
-    assert len(fleet.replicas) == 40
-    assert sum(row.gpus_per_replica for row in fleet.replicas) == 42
+    assert output.read_bytes() == Path(fixture["base"]).read_bytes()
+    assert digest == fixture["base_sha256"]
+    assert len(fleet.replicas) == 22
+    assert sum(row.gpus_per_replica for row in fleet.replicas) == 24
     assert {
         profile: len(rows)
         for profile, rows in fleet.by_profile.items()
@@ -206,10 +208,10 @@ def test_apply_publishes_valid_40_replica_42_gpu_contract_marker_last(
     )
     assert marker["protocol"] == materializer.PROTOCOL
     assert marker["passed"] is True
-    assert marker["additive_logical_replicas"] == 18
-    assert marker["additive_allocated_gpus"] == 18
-    assert marker["effective_logical_replicas"] == 40
-    assert marker["effective_allocated_gpus"] == 42
+    assert marker["additive_logical_replicas"] == 0
+    assert marker["additive_allocated_gpus"] == 0
+    assert marker["effective_logical_replicas"] == 22
+    assert marker["effective_allocated_gpus"] == 24
     assert (
         marker["runbook_inputs"]["effective_fleet_contract"]
         == marker["runbook_inputs"]["additive_overlay_contract"]
@@ -384,7 +386,7 @@ def test_mutable_tagged_input_and_wrong_tag_object_are_rejected(
         materializer.materialize(**arguments, apply=False)
 
 
-def test_all_added_replicas_preserve_base_placement_and_use_canonical_ids(
+def test_zero_delta_preserves_every_base_replica_and_profile_byte_for_byte(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -409,40 +411,12 @@ def test_all_added_replicas_preserve_base_placement_and_use_canonical_ids(
         for row in effective["profiles"]
     }
 
+    assert effective == base
     for profile, delta in materializer.FIXED_ADDITIVE_PROFILE_DELTA.items():
+        assert delta == 0
         old = base_profiles[profile]["replicas"]
         new = effective_profiles[profile]["replicas"]
-        assert new[: len(old)] == old
-        assert len(new) == len(old) + delta
-        for index, replica in enumerate(new[len(old) :], start=len(old)):
-            assert replica["replica_index"] == index
-            assert replica["replica_id"] == (
-                materializer.expected_replica_id(profile, index)
-            )
-            assert replica["scheduler_job_name"] == (
-                materializer.expected_scheduler_job_name(
-                    profile, index
-                )
-            )
-            assert {
-                key: value
-                for key, value in replica.items()
-                if key
-                not in {
-                    "replica_index",
-                    "replica_id",
-                    "scheduler_job_name",
-                }
-            } == {
-                key: value
-                for key, value in old[-1].items()
-                if key
-                not in {
-                    "replica_index",
-                    "replica_id",
-                    "scheduler_job_name",
-                }
-            }
+        assert new == old
 
 
 def test_sibling_publication_lock_rejects_symlink_and_hardlink(

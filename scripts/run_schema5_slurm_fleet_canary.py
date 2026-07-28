@@ -96,7 +96,7 @@ TURNOVER_POINTER_FILENAME = "PROMOTED_ENDPOINT.json"
 TURNOVER_COMPLETE_FILENAME = "TURNOVER_COMPLETE.json"
 TURNOVER_PROFILE = "turnover-canary"
 TURNOVER_PORT_DERIVATION_PROTOCOL = (
-    "schema5-v1.2-r3-turnover-run-token-port-derivation-v1"
+    "schema5-v1.2-r4-turnover-run-token-port-derivation-v1"
 )
 # Use a broad unprivileged namespace instead of one fixed three-port tuple.  The
 # complete marker-first 128-bit run token and allocation index select the initial
@@ -107,7 +107,7 @@ TURNOVER_PORT_MAX = 64_999
 TURNOVER_MAX_ALLOCATIONS = 5
 ROLLOUT_GENERATION = 1
 PROFILE = "canary-cpu"
-REQUIRED_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
+REQUIRED_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
 CANARY_GIT_PATH = "scripts/run_schema5_slurm_fleet_canary.py"
 FLEET_TRANSACTIONS_GIT_PATH = (
     "src/agents_scaling/serving/fleet_transactions.py"
@@ -115,11 +115,52 @@ FLEET_TRANSACTIONS_GIT_PATH = (
 DURABLE_GIT_PUBLISHER_GIT_PATH = (
     "scripts/publish_schema5_durable_git_release.py"
 )
-CODE_IDENTITY_PROTOCOL = "schema5-v1.2-r3-slurm-canary-code-v3"
+CODE_IDENTITY_PROTOCOL = "schema5-v1.2-r4-slurm-canary-code-v3"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _TOKEN_RE = re.compile(r"[0-9a-f]{32}\Z")
 _JOB_NAME_RE = re.compile(r"asys-s5-serve-[A-Za-z0-9_.-]{1,96}\Z")
+_TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_UNTRUSTED_PROCESS_ENVIRONMENT_KEYS = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_TIME_FORMAT",
+    }
+)
+_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES = (
+    "BASH_FUNC_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+)
 
 
 def _default_canary_root() -> Path:
@@ -129,7 +170,7 @@ def _default_canary_root() -> Path:
         / "recovery"
         / "schema5-v1"
         / "slurm_canaries"
-        / "schema5-v1.2-r3"
+        / "schema5-v1.2-r4"
     )
 
 
@@ -143,6 +184,28 @@ class SlurmFleetCanaryError(RuntimeError):
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
+
+
+def _sanitized_process_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _UNTRUSTED_PROCESS_ENVIRONMENT_KEYS
+        and not key.startswith(_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES)
+    }
+    environment.update(
+        {
+            "PATH": _TRUSTED_SYSTEM_PATH,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    return environment
 
 
 def _production_runner(
@@ -169,6 +232,11 @@ def _production_runner(
                 f"production canary runner requires {name}={value!r}"
             )
         options[name] = value
+    if "env" in options:
+        raise SlurmFleetCanaryError(
+            "production canary runner does not accept a caller environment"
+        )
+    options["env"] = _sanitized_process_environment()
     timeout = options.setdefault("timeout", DEFAULT_COMMAND_TIMEOUT_SECONDS)
     if (
         not isinstance(timeout, (int, float))
@@ -268,10 +336,11 @@ def _sha256_file(path: Path) -> str:
 def _git(*arguments: str) -> str:
     try:
         completed = subprocess.run(
-            ("git", "-C", str(REPO), *arguments),
+            ("/usr/bin/git", "-C", str(REPO), *arguments),
             capture_output=True,
             text=True,
             check=False,
+            env=_sanitized_process_environment(),
         )
     except OSError as exc:
         raise SlurmFleetCanaryError(f"cannot execute Git: {exc}") from exc
@@ -791,12 +860,16 @@ def _job_script(
         "#SBATCH --cpus-per-task=1\n"
         "#SBATCH --mem=128M\n"
         "#SBATCH --no-requeue\n"
+        "#SBATCH --export=NONE\n"
         "#SBATCH --output=/dev/null\n"
         "#SBATCH --error=/dev/null\n"
+        "\n"
         "set -euo pipefail\n"
+        "export PATH=/usr/bin:/bin LC_ALL=C LANG=C\n"
+        "readonly PATH\n"
         "trap 'exit 0' TERM INT\n"
         "while :; do\n"
-        "  sleep 30\n"
+        "  /usr/bin/sleep 30\n"
         "done\n"
     )
 
@@ -830,8 +903,10 @@ def _turnover_job_script(
     return (
         header
         + "set -euo pipefail\n"
+        + "export PATH=/usr/bin:/bin LC_ALL=C LANG=C\n"
+        + "readonly PATH\n"
         + f"PORT={port}\n"
-        + "python3 - \"$PORT\" <<'PY'\n"
+        + "/usr/bin/python3 - \"$PORT\" <<'PY'\n"
         + "import json\n"
         + "import sys\n"
         + "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
@@ -4681,7 +4756,7 @@ def _dependency_job_scripts(
         )
     alert_marker = root / DEPENDENCY_ALERT_MARKER_FILENAME
     child_marker = root / DEPENDENCY_FORBIDDEN_CHILD_MARKER_FILENAME
-    common = (
+    common_directives = (
         "#!/bin/bash\n"
         f"#SBATCH --partition={partition}\n"
         f"#SBATCH --qos={qos}\n"
@@ -4689,17 +4764,25 @@ def _dependency_job_scripts(
         "#SBATCH --mem=256M\n"
         f"#SBATCH --time={time_limit}\n"
         "#SBATCH --no-requeue\n"
+        "#SBATCH --export=NONE\n"
+    )
+    common_body = (
+        "\n"
         "set -euo pipefail\n"
         "umask 027\n"
+        "export PATH=/usr/bin:/bin LC_ALL=C LANG=C\n"
+        "readonly PATH\n"
     )
     root_script = (
-        common
+        common_directives
         + "#SBATCH --job-name=asys-s5-serve-dep-root\n"
+        + common_body
         + "exit 42\n"
     )
     child_script = (
-        common
+        common_directives
         + "#SBATCH --job-name=asys-s5-serve-dep-child\n"
+        + common_body
         + f"printf 'INVALID\\n' > {shlex.quote(str(child_marker))}\n"
         + "exit 99\n"
     )
@@ -4735,8 +4818,9 @@ def _dependency_job_scripts(
         "        pass\n"
     )
     sentinel_script = (
-        common
+        common_directives
         + "#SBATCH --job-name=asys-s5-serve-dep-sentinel\n"
+        + common_body
         + f"{shlex.quote(sys.executable)} - "
         + f"{shlex.quote(str(alert_marker))} <<'PY'\n"
         + marker_program

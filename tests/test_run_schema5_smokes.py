@@ -649,6 +649,8 @@ def test_preproduction_smoke_allows_exact_capacity_readiness_drain(
             static_feasibility_certificate_id=contract[
                 "static_feasibility_certificate_id"
             ],
+            static_feasibility_configured_client_ceiling=384,
+            static_feasibility_certified_saturation_target=278,
             effective_fleet_contract_path=Path(contract["path"]),
             effective_fleet_contract_sha256=contract["sha256"],
             base_fleet_contract_sha256=contract[

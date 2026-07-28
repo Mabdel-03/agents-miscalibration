@@ -118,7 +118,7 @@ AUTHORITATIVE_SCHEMA5_RUN_IDS = frozenset(
     }
 )
 QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-execution-authority-v2"
+    "schema5-v1.2-r4-throughput-qualification-execution-authority-v2"
 )
 QUALIFICATION_EXECUTION_AUTHORITY_SCHEMA_VERSION = 2
 ELIGIBLE_STATES = {
@@ -4306,6 +4306,62 @@ def _render_batch_sbatch(
         runtime_setup = "\n".join(
             (
                 "# Schema-5 cells never source common.sh or activate an ambient env.",
+                "umask 027",
+                "unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD",
+                (
+                    "unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_NOSYSTEM "
+                    "GIT_CEILING_DIRECTORIES"
+                ),
+                (
+                    "unset GIT_COMMON_DIR GIT_CONFIG GIT_CONFIG_COUNT "
+                    "GIT_CONFIG_GLOBAL"
+                ),
+                (
+                    "unset GIT_CONFIG_NOSYSTEM GIT_CONFIG_PARAMETERS "
+                    "GIT_CONFIG_SYSTEM GIT_DIR"
+                ),
+                (
+                    "unset GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_EXEC_PATH "
+                    "GIT_INDEX_FILE GIT_NAMESPACE"
+                ),
+                (
+                    "unset GIT_NO_REPLACE_OBJECTS GIT_OBJECT_DIRECTORY "
+                    "GIT_REPLACE_REF_BASE"
+                ),
+                (
+                    "unset GIT_SHALLOW_FILE GIT_SSH GIT_SSH_COMMAND "
+                    "GIT_TEMPLATE_DIR GIT_WORK_TREE"
+                ),
+                "unset SLURM_CLUSTERS SLURM_CONF SLURM_EXIT_ERROR SLURM_TIME_FORMAT",
+                "while IFS= read -r ambient_name; do",
+                '  case "$ambient_name" in',
+                (
+                    "    ASYS_*|BASH_FUNC_*|PIP_*|PYTHON*|CONDA_*|HF_*|"
+                    "TRANSFORMERS_*|VLLM_*|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|"
+                    "GIT_TRACE*|SACCT_*|SBATCH_*|SCONTROL_*|SQUEUE_*)"
+                ),
+                (
+                    '      builtin unset -v "$ambient_name" '
+                    "2>/dev/null || true"
+                ),
+                "      ;;",
+                "  esac",
+                "done < <(compgen -e)",
+                "export PATH=/usr/bin:/bin",
+                "readonly PATH",
+                "while read -r _ _ ambient_function; do",
+                '  builtin unset -f "$ambient_function"',
+                "done < <(builtin declare -F)",
+                "export LANG=C LC_ALL=C",
+                (
+                    "export GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+                    "GIT_CONFIG_NOSYSTEM=1"
+                ),
+                (
+                    "export GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 "
+                    "GIT_TERMINAL_PROMPT=0"
+                ),
+                "export GIT_PAGER=cat PAGER=cat",
                 "unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV",
                 "export PYTHONDONTWRITEBYTECODE=1",
                 "export PYTHONNOUSERSITE=1",

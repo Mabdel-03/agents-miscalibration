@@ -1,52 +1,88 @@
-# Schema-5 v1.2-r3 recovery and production runbook
+# Schema-5 v1.2-r4 recovery and production runbook
 
 This is the authoritative operator entry point for the clean schema-5 production
 rerun. The scientific run IDs and manifests remain unchanged; the operational
-release is `sweep-recovery-schema5-v1.2-r3`, the logical release is
-`sweep-recovery-schema5-v1.2`, and the chain namespace is `schema5-v1.2-r3`.
+release is `sweep-recovery-schema5-v1.2-r4`, the logical release is
+`sweep-recovery-schema5-v1.2`, and the chain namespace is `schema5-v1.2-r4`.
 
 The v1.1-r1 chain is sealed forensic evidence. Never submit, repair, or reuse its
 `g0001` proposal, partial release, checkout, jobs, logs, intents, or repair namespace.
 Use `verify_schema5_recovery_evidence.py` to inspect r1 without executing its code.
 
+Run every local shell block below, in order, in the same dedicated Bash process.
+The first block enables fail-fast and unset-variable handling for that process;
+do not paste a later mutation or submission block into an uninitialized shell.
+
 ## Fixed identities
 
 ```bash
+set -euo pipefail
+
+# Establish the command trust boundary before the first executable or command
+# substitution. Keep this prelude in the same Bash process as every later block.
+unset BASH_ENV ENV CDPATH LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_EXEC_PATH
+unset GIT_TEMPLATE_DIR GIT_NAMESPACE GIT_SSH GIT_SSH_COMMAND
+unset GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+unset GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+unset GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE
+unset SLURM_CONF SLURM_CLUSTERS SLURM_TIME_FORMAT
+while IFS= read -r ambient_name; do
+  case "$ambient_name" in
+    BASH_FUNC_*|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|SBATCH_*|SACCT_*|SCONTROL_*|SQUEUE_*)
+      unset "$ambient_name"
+      ;;
+  esac
+done < <(compgen -e)
+export PATH=/usr/bin:/bin
+readonly PATH
+export LC_ALL=C LANG=C
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_ATTR_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1
+export GIT_TERMINAL_PROMPT=0
+
 repo=/orcd/data/tpoggio/001/mabdel03/agents_scaling
 results=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results
 recovery="$results/recovery/schema5-v1"
 state="$results/.dispatcher-schema5-v1"
 pool="$results/server_pools/schema5-v1"
-tag=sweep-recovery-schema5-v1.2-r3
+tag=sweep-recovery-schema5-v1.2-r4
 release_id=sweep-recovery-schema5-v1.2
 slurm_user=mabdel03
-chain_manifest="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_2_R3.json"
-pilot_checkout="$recovery/materialization_pilot_source_checkout_v1_2_r3"
-pilot_root="$recovery/materialization_pilots/schema5-v1.2-r3"
-canary_root="$recovery/slurm_canaries/schema5-v1.2-r3"
+chain_manifest="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_2_R4.json"
+pilot_checkout="$recovery/materialization_pilot_source_checkout_v1_2_r4"
+pilot_root="$recovery/materialization_pilots/schema5-v1.2-r4"
+canary_root="$recovery/slurm_canaries/schema5-v1.2-r4"
 dev_python="$(realpath -e /orcd/home/002/mabdel03/conda_envs/asys_env/bin/python)"
-conda_exe=/orcd/data/lhtsai/001/om2/mabdel03/miniforge3/bin/conda
+conda_toolchain_namespace="$recovery/toolchains/schema5-v1.2-r4"
+conda_toolchain_root="$conda_toolchain_namespace/conda-toolchain-miniforge3-25.11.0-1"
+source_package_cache=/orcd/home/002/mabdel03/.conda/pkgs
 sealed_python="$pilot_root/materialization/harness-environment/bin/python"
 durable_remote=origin
-durable_commit_ref=refs/heads/schema5-v1.2-r3
-durable_marker="$recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"
+durable_commit_ref=refs/heads/schema5-v1.2-r4
+durable_marker="$recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R4_COMPLETE.json"
 r2_canary_tree="$recovery/slurm_canaries/schema5-v1.2-r2"
 r2_canary_failure_root="$recovery/canary_failures/schema5-v1.2-r2"
 r2_canary_failure_marker="$r2_canary_failure_root/CANARY_FAILURE_SEALED.json"
 r2_release_checkout="$recovery/materialization_pilot_source_checkout_v1_2_r2"
 r2_zero_mutation="$recovery/r1_acceptance/ZERO_RESULT_MUTATION_RECEIPT.json"
 r2_snapshot_marker="$recovery/pre_repair/SNAPSHOT_COMPLETE.json"
+r3_release_checkout="$recovery/materialization_pilot_source_checkout_v1_2_r3"
+r3_durable_marker="$recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"
+r3_prelaunch_failure_root="$recovery/prelaunch_failures/schema5-v1.2-r3"
+r3_prelaunch_failure_marker="$r3_prelaunch_failure_root/PRELAUNCH_FAILURE_SEALED.json"
 ```
 
 The three authoritative run IDs contain exactly 4,680, 14,400, and 3,600 cells,
 respectively: 22,680 cells and 4,524,660 expected QIDs in total. Production remains
 paused until every gate below passes.
 
-## Immutable r2 to r3 lineage
+## Immutable r2 and r3 to r4 lineage
 
 The annotated r2 tag, remote `refs/heads/schema5-v1.2-r2` branch, durable Git bundle
 and checksum, and `DURABLE_GIT_RELEASE_COMPLETE.json` remain immutable historical
-evidence. Do not move, overwrite, delete, or republish any of them under an r3 name.
+evidence. Do not move, overwrite, delete, or republish any of them under an r4 name.
 The r2 live composite canary failed deterministically while capturing scheduler
 output. Its disposition is `requires_superseding_release`; it is not eligible for an
 r2 suffix repair.
@@ -103,20 +139,46 @@ cancels a job and does not mutate experiment results. Repeated apply must report
 `already_sealed` after rechecking complete scheduler truth and must not rewrite the
 marker, either inventory, or either scheduler-evidence record.
 
-The r3 renderer must verify and bind the exact seal path, raw SHA-256, size, and
+The r4 renderer must verify and bind the exact seal path, raw SHA-256, size, and
 `seal_id` into its immutable prerequisite evidence before rendering, and reverify
 that binding at submission. A missing, writable, symlinked, malformed, or mismatched
-seal fails closed. All r3 pilot, canary, source-checkout, job/log, protected-capacity,
-repair, and sentinel paths are fresh r3 paths; no r2 completion marker is copied
+seal fails closed. All r4 pilot, canary, source-checkout, job/log, protected-capacity,
+repair, and sentinel paths are fresh r4 paths; no r2 completion marker is copied
 forward.
 
 Only immutable prerequisite evidence produced by the historical r2 flow retains
 a `schema5-v1.2-r2-*` protocol. Every fresh protected-capacity, watchdog, pilot,
-client-capacity, and other active wire payload uses a `schema5-v1.2-r3-*`
-protocol, an r3-specific artifact path, and binds the r3 tag and
-`chain_namespace=schema5-v1.2-r3` wherever that chain namespace is part of the
-payload schema. Operational artifact basenames are r3-specific; r2 names appear
+client-capacity, and other active wire payload uses a `schema5-v1.2-r4-*`
+protocol, an r4-specific artifact path, and binds the r4 tag and
+`chain_namespace=schema5-v1.2-r4` wherever that chain namespace is part of the
+payload schema. Operational artifact basenames are r4-specific; r2 names appear
 only in the explicit immutable historical lineage and failure-seal inputs above.
+
+The annotated r3 tag and durable bundle are also immutable history. Release r3 is
+commit `acd723ba9a99d88e77f7d752268bc31205c3a808`, annotated tag object
+`fa87b283974afc1fa48fcb22b61e6ae7eec4bb36`, tag
+`sweep-recovery-schema5-v1.2-r3`, and namespace `schema5-v1.2-r3`. Its real
+prelaunch probes exposed two deterministic materialization defects before any
+scheduler job was submitted: the recorded broken internal compiler-tool symlink in
+the shared Miniforge runtime and an unseeded release-local offline package cache.
+The shared runtime must remain untouched and must never be executed by r4.
+
+The r4-tagged sealer archives the two canonical probe envelopes marker-first under
+`$recovery/prelaunch_failures/schema5-v1.2-r3`, binds the existing explicit
+zero-result-mutation receipt, and publishes `$r3_prelaunch_failure_marker` last. The
+exact producer, sealing, and `verify-prelaunch-failure` commands appear after the
+tagged r4 checkout and toolchain are created below; there is intentionally no
+executable verification block here because the seal does not exist yet. The
+independently callable verifier ultimately consumes only that sealed root.
+
+It rechecks the exact r3 release identities, both required classifications, compact
+canonical envelope and inventory hashes, marker/intent self-hashes, recursive
+read-only state, `retry_in_place=false`,
+`requires_superseding_release=true`, the explicit zero-result-mutation basis, and
+empty scheduler-job lists. The renderer persists the complete portable binding
+returned under protocol
+`schema5-v1.2-r3-prelaunch-failure-seal-binding-v1`; a substituted, incomplete,
+writable, or internally rehashed-but-wrong release seal fails closed.
 
 ## Before-tag gates
 
@@ -146,7 +208,7 @@ rewrite runtime files. Normalization happens only inside copied seeds, archives
 complete preimages before atomic changes, and proves pathwise that the full pre/post
 inventory delta contains only the stale Setuptools Conda record (when present) and
 the applicable `RECORD` paths. It must project to zero shared `RECORD` paths.
-The r3 production prerequisite and environment-capture job accept only Conda
+The r4 production prerequisite and environment-capture job accept only Conda
 reconciliation incident SHA-256
 `9f588ce4ffc4aeb5a3ac494a35244604e4eb100a7190b18d9eb3c568468fdb09`
 with incident ID
@@ -154,13 +216,14 @@ with incident ID
 both harness and serving stale-record flags must be exactly `false`.
 [SCHEMA5_RELEASE.md](SCHEMA5_RELEASE.md) records the exact hashes.
 
-## Freeze and test the r3 source
+## Freeze and test the r4 source
 
 Create an annotated tag only from the reviewed, clean commit:
 
 ```bash
 git -C "$repo" status --short
 test -z "$(git -C "$repo" status --porcelain=v1 --untracked-files=all)"
+test -z "$(git -C "$repo" for-each-ref --format='%(refname)' refs/replace)"
 git -C "$repo" tag -a "$tag" -m "Durable schema-5 v1.2 recovery release"
 commit="$(git -C "$repo" rev-list -n 1 "$tag")"
 test "$(git -C "$repo" cat-file -t "refs/tags/$tag")" = tag
@@ -189,7 +252,7 @@ jq -e --arg commit "$commit" \
 ```
 
 Create the prerequisite pilot checkout in its own namespace. The production DAG owns
-the distinct `release_source_checkout_v1_2_r3` path and requires that path to be
+the distinct `release_source_checkout_v1_2_r4` path and requires that path to be
 absent when rendered.
 
 ```bash
@@ -200,6 +263,175 @@ test "$(git -C "$pilot_checkout" rev-parse "refs/tags/$tag")" = \
   "$(git -C "$repo" rev-parse "refs/tags/$tag")"
 git -C "$pilot_checkout" fsck --full --strict
 test -z "$(git -C "$pilot_checkout" status --porcelain=v1 --untracked-files=all)"
+```
+
+Provision and verify the r4-only Conda toolchain from the exact tagged checkout.
+This operation uses the pinned cached installer, never the shared Miniforge
+executable and never Conda from either developer prefix:
+
+```bash
+conda_installer=/orcd/data/lhtsai/001/om2/mabdel03/Miniforge3-Linux-x86_64.sh
+conda_provisioner="$pilot_checkout/scripts/provision_schema5_conda_toolchain.py"
+if [[ ! -e "$conda_toolchain_namespace" ]]; then
+  install -d -m 0755 -- "$conda_toolchain_namespace"
+fi
+test -d "$conda_toolchain_namespace"
+test ! -L "$conda_toolchain_namespace"
+"$dev_python" -I "$conda_provisioner" provision \
+  --installer "$conda_installer" \
+  --namespace-root "$conda_toolchain_namespace"
+"$dev_python" -I "$conda_provisioner" provision \
+  --installer "$conda_installer" \
+  --namespace-root "$conda_toolchain_namespace" \
+  --apply
+"$dev_python" -I "$conda_provisioner" verify \
+  --toolchain-root "$conda_toolchain_root"
+```
+
+The provision marker is marker-last, read-only, and bound to the pinned installer
+SHA-256. Verification needs neither the installer nor another Conda installation.
+Follow [SCHEMA5_R4_CONDA_TOOLCHAIN.md](SCHEMA5_R4_CONDA_TOOLCHAIN.md) for the complete
+link, inode, offline-probe, and crash-quarantine contract.
+
+Produce the two r3 prelaunch-failure envelopes only after the r4 toolchain above has
+sealed. These are narrow, read-only reproductions of the two defects; they are not
+arbitrary commands labeled after the fact. Both commands use one private temporary
+root. The recorder rejects a different interpreter, script, argument order, input
+root, environment key, output path, exit code, or diagnostic signature.
+The tagged sealer itself runs under the already resolved harness Python and imports
+the tagged r4 provisioner in-process. That provisioner performs the complete
+marker/runtime/inventory binding without executing the sealed toolchain; only after
+that independent check may the exact probe command launch the sealed r4 Python or
+Conda executable.
+
+The broken-link probe executes the exact r3
+`run_schema5_materialization_pilot.py` at commit
+`acd723ba9a99d88e77f7d752268bc31205c3a808` (file SHA-256
+`85e198c5…8d863a`) with the sealed r4 Python, `-I`, and `-B`. Its
+`conda-runtime-identity` subcommand reads, but never executes, the recorded shared
+Conda base. The offline probe executes only the sealed r4 Conda and clones that same
+sealed base into the declared temporary destination. Its package cache must exist and
+be completely empty before the first apply.
+
+```bash
+r4_probe_python="$conda_toolchain_root/base/bin/python"
+r4_probe_conda="$conda_toolchain_root/base/bin/conda"
+r4_sealer="$pilot_checkout/scripts/seal_recovery_evidence.py"
+r3_pilot="$r3_release_checkout/scripts/run_schema5_materialization_pilot.py"
+recorded_shared_conda_base=/orcd/data/lhtsai/001/om2/mabdel03/miniforge3
+recorded_shared_conda="$recorded_shared_conda_base/bin/conda"
+r3_probe_root="/tmp/schema5-r3-prelaunch-${slurm_user}-r4"
+r3_broken_envelope="$r3_probe_root/FAILURE_UNSAFE_RECORDED_BROKEN_INTERNAL_SYMLINK.source.json"
+r3_offline_envelope="$r3_probe_root/FAILURE_OFFLINE_CLONE_UNSEEDED_RELEASE_LOCAL_CACHE.source.json"
+r3_offline_cache="$r3_probe_root/empty-conda-pkgs"
+r3_offline_destination="$r3_probe_root/offline-clone-destination"
+
+if [[ ! -e "$r3_probe_root" ]]; then
+  install -d -m 0700 -- "$r3_probe_root"
+fi
+test -d "$r3_probe_root" && test ! -L "$r3_probe_root"
+test "$(stat -c %u "$r3_probe_root")" = "$(id -u)"
+test "$(( 8#$(stat -c %a "$r3_probe_root") & 8#022 ))" -eq 0
+if [[ ! -e "$r3_offline_cache" ]]; then
+  install -d -m 0700 -- "$r3_offline_cache"
+fi
+test -d "$r3_offline_cache" && test ! -L "$r3_offline_cache"
+
+r3_probe_common_environment=(
+  --environment HOME "$r3_probe_root/home"
+  --environment PYTHONDONTWRITEBYTECODE 1
+  --environment PYTHONNOUSERSITE 1
+  --environment TEMP "$r3_probe_root/tmp"
+  --environment TMP "$r3_probe_root/tmp"
+  --environment TMPDIR "$r3_probe_root/tmp"
+  --environment XDG_CACHE_HOME "$r3_probe_root/xdg-cache"
+  --environment XDG_CONFIG_HOME "$r3_probe_root/xdg-config"
+  --environment XDG_DATA_HOME "$r3_probe_root/xdg-data"
+  --environment XDG_STATE_HOME "$r3_probe_root/xdg-state"
+)
+r3_broken_probe=(
+  "$dev_python" -I -B "$r4_sealer" record-prelaunch-attempt
+  --output "$r3_broken_envelope"
+  --classification unsafe_recorded_broken_internal_symlink
+  --cwd "$r3_release_checkout"
+  "${r3_probe_common_environment[@]}"
+  --input-root tagged-r3-release-checkout "$r3_release_checkout"
+  --input-root tagged-r4-release-checkout "$pilot_checkout"
+  --input-root sealed-r4-conda-toolchain "$conda_toolchain_root"
+  --input-root recorded-shared-conda-base "$recorded_shared_conda_base"
+  --write-root "$r3_probe_root"
+)
+r3_broken_command=(
+  "$r4_probe_python" -I -B "$r3_pilot"
+  conda-runtime-identity --conda-executable "$recorded_shared_conda"
+)
+"${r3_broken_probe[@]}" --command "${r3_broken_command[@]}"
+"${r3_broken_probe[@]}" --apply --command "${r3_broken_command[@]}"
+"${r3_broken_probe[@]}" --apply --command "${r3_broken_command[@]}"
+
+if [[ ! -f "$r3_offline_envelope" ]]; then
+  test -z "$(find "$r3_offline_cache" -mindepth 1 -print -quit)"
+  test ! -e "$r3_offline_destination" && test ! -L "$r3_offline_destination"
+fi
+r3_offline_probe=(
+  "$dev_python" -I -B "$r4_sealer" record-prelaunch-attempt
+  --output "$r3_offline_envelope"
+  --classification offline_clone_unseeded_release_local_cache
+  --cwd "$r3_release_checkout"
+  "${r3_probe_common_environment[@]}"
+  --environment CONDA_ENVS_PATH "$r3_probe_root/conda-envs"
+  --environment CONDA_NO_PLUGINS true
+  --environment CONDA_OFFLINE true
+  --environment CONDA_PIP_INTEROP_ENABLED false
+  --environment CONDA_PKGS_DIRS "$r3_offline_cache"
+  --input-root tagged-r3-release-checkout "$r3_release_checkout"
+  --input-root tagged-r4-release-checkout "$pilot_checkout"
+  --input-root sealed-r4-conda-toolchain "$conda_toolchain_root"
+  --write-root "$r3_probe_root"
+)
+r3_offline_command=(
+  "$r4_probe_conda" create --yes --offline
+  --clone "$conda_toolchain_root/base"
+  --prefix "$r3_offline_destination"
+)
+"${r3_offline_probe[@]}" --command "${r3_offline_command[@]}"
+"${r3_offline_probe[@]}" --apply --command "${r3_offline_command[@]}"
+"${r3_offline_probe[@]}" --apply --command "${r3_offline_command[@]}"
+
+r3_prelaunch_seal=(
+  "$dev_python" -I -B "$r4_sealer" seal-prelaunch-failure
+  --evidence-root "$r3_prelaunch_failure_root"
+  --durable-release-marker "$r3_durable_marker"
+  --release-checkout "$r3_release_checkout"
+  --failure-envelope "$r3_broken_envelope"
+  --failure-envelope "$r3_offline_envelope"
+  --mutation-evidence "$r2_zero_mutation"
+  --mutation-evidence "$r2_snapshot_marker"
+)
+"${r3_prelaunch_seal[@]}"
+"${r3_prelaunch_seal[@]}" --apply
+"${r3_prelaunch_seal[@]}" --apply
+```
+
+The first invocation of each array is a dry-run, the first `--apply` records or seals,
+and the repeated `--apply` must adopt the identical immutable artifact without
+rerunning either failure. The recorder inventories the tagged r3 checkout, tagged r4
+checkout, sealed r4 toolchain, and—only for the runtime-identity probe—the recorded
+shared base before and after execution. The exact command shapes bind every mutable
+HOME, XDG, Conda cache/environment, temporary, destination, and envelope path below
+`$r3_probe_root`; the sealer therefore does not infer zero mutation from an
+operator-authored Boolean. The shared-base inventory uses the exact historical
+runtime-identity boundary, excluding only top-level `.conda`, `conda-bld`, `envs`,
+and `pkgs`; the known broken `libexec` link and every runtime path the probe can read
+remain inside the before/after inventory.
+
+Independently verify the resulting immutable r3 prelaunch-failure seal using only the
+sealed root and the exact tagged r4 verifier. This is a hard render prerequisite:
+
+```bash
+"$dev_python" -I -B "$r4_sealer" \
+  verify-prelaunch-failure \
+  --evidence-root "$r3_prelaunch_failure_root"
 ```
 
 Run the genuine isolated schema-4 composite Slurm canary from that tagged checkout.
@@ -260,7 +492,9 @@ may inject it.
 ## Required two-prefix materialization pilot
 
 Follow [SCHEMA5_RELEASE.md](SCHEMA5_RELEASE.md) to render and submit the durable
-11.5-hour, `--no-requeue` pilot job from the exact tagged checkout. The pilot must
+11.5-hour, `--no-requeue` pilot job from the exact tagged checkout. Pilot schema 5
+drives materialization schema 5; neither schema accepts the retired unseeded-cache
+or arbitrary shared-Conda interface. The pilot must
 publish `PILOT_COMPLETE.json`, join its exact terminal `COMPLETED|0:0` scheduler
 record through `accept-scheduler`, publish
 `PILOT_SCHEDULER_ACCEPTED.json` last, and independently verify both markers. It
@@ -278,9 +512,11 @@ proves:
 Do not render the production chain until both pilot markers verify. Interactive
 `run --apply` output and a semantic pilot marker without scheduler acceptance are
 deliberately insufficient.
-The schema-4 verifier report exposes both independent policy hashes, the pilot's exact
+The schema-5 pilot verifier report exposes both independent policy hashes, the
+pilot's exact
 harness and serving
-`live_source_inventory_sha256` values and the Conda executable's canonical path,
+`live_source_inventory_sha256` values, the sealed Conda-toolchain binding, the
+checksummed source-package-cache seed, the verified entrypoint's canonical path,
 SHA-256, size, absolute shebang interpreter, and repeated full base-runtime inventory
 (excluding only caches and child environment roots). These are production admission
 inputs, not informational metadata. It also binds the pilot's sealed materialized harness: its canonical
@@ -297,9 +533,9 @@ acceptance to prove idempotency, and verify in this order:
 
 ```bash
 pilot_script="$pilot_checkout/scripts/run_schema5_materialization_pilot.py"
-pilot_sbatch="$recovery/jobs/schema5-v1.2-r3-materialization-pilot.sbatch"
+pilot_sbatch="$recovery/jobs/schema5-v1.2-r4-materialization-pilot.sbatch"
 pilot_receipt="$pilot_sbatch.receipt.json"
-pilot_logs="$recovery/logs/materialization-pilot-r3"
+pilot_logs="$recovery/logs/materialization-pilot-r4"
 ownership_policy="$pilot_checkout/configs/environment_ownership_policy.v1.json"
 integrity_policy="$pilot_checkout/configs/environment_integrity_normalization_policy.v1.json"
 reconciliation_incident="$recovery/post_snapshot_incidents/2026-07-23_conda_pip_interop_source_metadata_reconciliation.json"
@@ -317,7 +553,8 @@ pilot_render=(
   --integrity-normalization-policy "$integrity_policy"
   --reconciliation-incident "$reconciliation_incident"
   --recovered-setuptools-record "$recovered_setuptools"
-  --conda-executable "$conda_exe"
+  --conda-toolchain-root "$conda_toolchain_root"
+  --source-package-cache "$source_package_cache"
   --durable-git-release-marker "$durable_marker"
 )
 "${pilot_render[@]}"
@@ -446,11 +683,11 @@ been published by its approved evidence builder:
 
 ```bash
 protected_capacity="$recovery/PROTECTED_CAPACITY_COMPLETE.json"
-protected_canary_root="$recovery/protected_capacity/schema5-v1.2-r3"
+protected_canary_root="$recovery/protected_capacity/schema5-v1.2-r4"
 protected_builder="$pilot_checkout/scripts/build_schema5_protected_capacity_evidence.py"
 protected_publisher="$pilot_checkout/scripts/publish_schema5_protected_capacity.py"
 effective_fleet_tool="$pilot_checkout/scripts/materialize_schema5_effective_fleet.py"
-effective_fleet_root="$recovery/effective-fleet-schema5-v1.2-r3"
+effective_fleet_root="$recovery/effective-fleet-schema5-v1.2-r4"
 qualification_runner="$pilot_checkout/scripts/run_schema5_throughput_qualification.py"
 fleet_contract="$pilot_checkout/configs/schema5_fleet.v1.json"
 model_contract="$pilot_checkout/configs/model_contracts.v1.json"
@@ -464,8 +701,10 @@ test "$release_git_commit" = "$commit"
 test "$(git -C "$pilot_checkout" cat-file -t "refs/tags/$tag")" = tag
 test "${#capacity_token}" -eq 32
 
-# Derive the one authorized 40-replica/42-GPU effective fleet from the tagged
-# 22-replica/24-GPU base. The first command is a non-mutating dry run.
+# Publish the generation-one effective-fleet transaction from the tagged
+# 22-replica/24-GPU base with a zero additive delta. Its bytes and SHA-256 must
+# equal the base contract even though it has its own canonical transaction path.
+# The first command is a non-mutating dry run.
 effective_fleet_args=(
   --release-worktree "$pilot_checkout"
   --release-git-commit "$release_git_commit"
@@ -503,10 +742,14 @@ test "$effective_fleet_contract" = \
 test "$additive_overlay_contract" = "$effective_fleet_contract"
 test "$additive_overlay_contract_sha256" = \
   "$effective_fleet_contract_sha256"
+test "$effective_fleet_contract_sha256" = "$fleet_contract_sha256"
 test "${#effective_fleet_marker_id}" -eq 64
 
-# Prove the fixed effective fleet can sustain the exact 384-cell qualification
-# wave before any scientific QID is drawn. The certificate is marker-last and
+# Seal the exact generation-one base-fleet admission wave before any scientific
+# QID is drawn. The truthful base result is 278/384 selected cells, a 106-cell
+# shortfall, and 12 microbatches (11x24 plus 14). That shortfall is expected to
+# drive the qualification-only controlled capacity transition; it is not
+# permission to preinstall additive replicas. The certificate is marker-last and
 # the first invocation remains non-mutating.
 static_capacity_certificate="$recovery/readiness/PREFLIGHT_CAPACITY_CERTIFICATE.json"
 static_capacity_args=(
@@ -539,7 +782,7 @@ test "${#static_capacity_certificate_sha256}" -eq 64
 test "${#static_capacity_certificate_id}" -eq 64
 
 # Non-mutating plan. Review exactly 448 canary job elements: 384 clients,
-# 40 active servers, three warm-turnover allocations, and 21 held reserve elements.
+# 22 active servers, three warm-turnover allocations, and 39 held reserve elements.
 "$sealed_python" -I "$protected_builder" run \
   --root "$protected_canary_root" \
   --recovery-root "$recovery" \
@@ -607,28 +850,29 @@ The `--apply` invocation is the only command above that submits jobs. It resumes
 marker-first transaction after interruption and publishes the completion marker
 last; never choose a new token for a retry.
 
-The preceding effective-fleet publication uses protocol
-`schema5-v1.2-r3-effective-fleet-materialization-v1`. Its create-once intent binds
+The preceding generation-one effective-fleet publication uses protocol
+`schema5-v1.2-r4-effective-fleet-materialization-v1`. Its create-once intent binds
 the exact annotated tag, full source tree, model/base contracts, publisher,
-dispatcher, and qualification-runner bytes. It deterministically applies only
-`0.6B:+3, 1.7B:+3, 4B:+3, 8B:+2, 14B:+3, 32B:+4`; all long-profile deltas are zero.
+dispatcher, and qualification-runner bytes. It deterministically applies a zero
+delta to every serving profile before qualification.
 `schema5_fleet.effective.v1.json` and its exact checksum are read-only, and
 `EFFECTIVE_FLEET_COMPLETE.json` is published last only after both the runtime fleet
-loader and additive-prefix validator prove 22/24 + 18/18 = 40/42. Never construct
+loader and additive-prefix validator prove base = effective = 22/24 and zero
+additive replicas/GPUs. Never construct
 the effective contract with `jq`, copy a test fixture, or edit its JSON.
 
 `PROTECTED_CAPACITY_COMPLETE.json` is a schema-4, regular, non-symlink, read-only
 JSON object bound to the exact release ID, annotated tag, commit, tag object, and
-`schema5-v1.2-r3` namespace. It uses a semantic canonical-JSON `marker_id`; the
+`schema5-v1.2-r4` namespace. It uses a semantic canonical-JSON `marker_id`; the
 chain additionally binds its raw SHA-256 and size. Never hand-author, copy forward,
 or rehash this marker.
 
 `PROTECTED_CAPACITY_COMPLETE.json` uses protocol
-`schema5-v1.2-r3-protected-capacity-v4` and capacity source
+`schema5-v1.2-r4-protected-capacity-v4` and capacity source
 `sealed_protected_canary+partition_inventory+association`. It must prove at least
-the frozen 22-replica/24-GPU base fleet, the zero-QID-qualified additive overlay,
-an effective 40-replica/42-active-GPU fleet, and four separately retained
-warm-headroom GPUs. It must also prove a protected 384-cell ceiling plus a 64-job
+the frozen 22-replica/24-GPU base fleet, a zero-additive generation-one effective
+fleet with identical bytes/SHA-256, and four separately retained warm-headroom GPUs
+across three warm jobs. It must also prove a protected 384-cell ceiling plus a 64-job
 reserve, submit headroom of at least 448 jobs, at least 384 CPUs and 1,572,864 MiB
 for clients, and complete `squeue` plus `sacct` reconciliation. Both scientific
 server and scientific client placement must attest `PreemptMode=OFF`. The marker
@@ -644,11 +888,12 @@ protected capacity.
 Immediately before every production server `sbatch`, the live server partition
 must still be `UP` and its aggregate CPU, memory, GPU, and node inventory must
 exactly equal the sealed placement inventory; the aggregate GPU inventory must
-also cover all 42 active GPUs plus the separately retained four-GPU warm envelope.
+also cover all 24 active GPUs plus the separately retained four-GPU warm envelope,
+for exactly 28 attested GPUs before qualification.
 This is a live drift gate, not a claim that transiently idle GPUs are reserved.
 
 The 64-job reserve is inclusive, not additive. Its sealed category accounting is
-exactly 40 active server elements, three warm-turnover elements, and 21 held
+exactly 22 active server elements, three warm-turnover elements, and 39 held
 controller/monitor/other placeholders. Together with the 384 client elements, the
 real canary therefore submits exactly 448 elements. Before its first `sbatch`, two
 complete `squeue`/exact-ID `sacct` occupancy observations 60 seconds apart must be
@@ -666,7 +911,7 @@ drill through the forced command, and publishes
 The drill binds the deployment, watchdog code, immutable release, control, commit,
 and annotated-tag object; it proves recovery within 900 seconds with zero duplicate
 jobs, duplicate admission intents, or fairness mutation. `WATCHDOG_READY.json`,
-protocol `schema5-v1.2-r3-external-watchdog-v1`, additionally binds a
+protocol `schema5-v1.2-r4-external-watchdog-v1`, additionally binds a
 forced-command-only restriction, an exact 300-second timer, two scheduler
 observations at least 60 seconds apart, and an acknowledged liveness email.
 Production resume fails closed until the renderer's post-initialization watchdog
@@ -690,7 +935,7 @@ watchdog_tool="$watchdog_release/scripts/build_schema5_watchdog_deployment.py"
 watchdog_bundle="$recovery/readiness/external_watchdog/deployment_bundle"
 watchdog_evidence="$recovery/readiness/external_watchdog"
 watchdog_public_key="$watchdog_evidence/watchdog_vm_ed25519.pub"
-watchdog_vm_stage=/var/tmp/schema5-watchdog-v1.2-r3
+watchdog_vm_stage=/var/tmp/schema5-watchdog-v1.2-r4
 watchdog_vm_python=/opt/agents-scaling-watchdog/python
 watchdog_vm_release=/opt/agents-scaling-watchdog/release
 watchdog_vm_config=/etc/agents-scaling-watchdog/watchdog.json
@@ -859,12 +1104,17 @@ that marker last.
 
 ## Post-tag and pre-render gates
 
-After publishing the annotated r3 tag, exact remote branch, and durable Git marker,
+After publishing the annotated r4 tag, exact remote branch, and durable Git marker,
 but before rendering the 43-job chain, require all of the following:
 
-- the clean detached r3 pilot checkout resolves to the exact annotated tag object and
+- the clean detached r4 pilot checkout resolves to the exact annotated tag object and
   commit and has no object alternates;
-- the genuine r3 composite Slurm canary verifies at its fresh canonical root;
+- the release-local Conda toolchain verifies from its marker-last sealed root, and
+  the source package cache passes the schema-5 copy-plan audit without invoking
+  Conda;
+- the immutable r3 prelaunch-failure seal independently verifies both deterministic
+  failures, zero scheduler jobs, and explicit zero-result-mutation evidence;
+- the genuine r4 composite Slurm canary verifies at its fresh canonical root;
 - both the materialization pilot completion and scheduler-acceptance markers verify
   under the sealed pilot harness;
 - `PROTECTED_CAPACITY_COMPLETE.json` proves protected non-preemptible scientific
@@ -879,7 +1129,7 @@ but before rendering the 43-job chain, require all of the following:
   truth is available and unambiguous.
 
 The canary, pilot, and protected-capacity evidence are deliberately post-tag and
-pre-render because they bind the annotated r3 tag and commit. Bootstrap-watchdog
+pre-render because they bind the annotated r4 tag and commit. Bootstrap-watchdog
 operator inputs are needed before root release but are not render prerequisites.
 Production watchdog evidence necessarily binds stage-10 paused control, so it is
 produced after initialization and verified by stage 19.
@@ -903,7 +1153,8 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
   --dev-python "$dev_python" \
   --source-harness-prefix /orcd/home/002/mabdel03/conda_envs/asys_env \
   --source-serving-prefix /orcd/home/002/mabdel03/conda_envs/serve_env \
-  --conda-executable "$conda_exe" \
+  --conda-toolchain-root "$conda_toolchain_root" \
+  --source-package-cache "$source_package_cache" \
   --materialization-pilot-root "$pilot_root" \
   --slurm-canary-root "$canary_root" \
   --partition mit_normal --slurm-user "$slurm_user"
@@ -916,7 +1167,8 @@ export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
   --dev-python "$dev_python" \
   --source-harness-prefix /orcd/home/002/mabdel03/conda_envs/asys_env \
   --source-serving-prefix /orcd/home/002/mabdel03/conda_envs/serve_env \
-  --conda-executable "$conda_exe" \
+  --conda-toolchain-root "$conda_toolchain_root" \
+  --source-package-cache "$source_package_cache" \
   --materialization-pilot-root "$pilot_root" \
   --slurm-canary-root "$canary_root" \
   --partition mit_normal --slurm-user "$slurm_user" \
@@ -929,10 +1181,10 @@ submit_result="$("$sealed_python" -I "$renderer" submit \
 jq -e '.status == "awaiting_bootstrap_watchdog" and
   .launch_marker_complete == false' <<<"$submit_result"
 
-chain_receipt="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_2_R3_SUBMISSION.json"
+chain_receipt="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_2_R4_SUBMISSION.json"
 generation_provenance="$recovery/BOOTSTRAP_GENERATION_PROVENANCE.json"
 root_release="$recovery/RECOVERY_CHAIN_ROOT_RELEASE_COMPLETE.json"
-launch_complete="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_2_R3_LAUNCHED.json"
+launch_complete="$recovery/RECOVERY_CHAIN_SCHEMA5_V1_2_R4_LAUNCHED.json"
 jq -e --arg manifest "$chain_manifest" \
   '.passed == true and .no_requeue == true and .manifest == $manifest and
    .root_initial_hold == true and
@@ -964,7 +1216,7 @@ bootstrap_observation_2="$bootstrap_root/canonical-observation-2.json"
 bootstrap_authorized_keys_snapshot="$bootstrap_root/authorized_keys.snapshot"
 bootstrap_public_key="$bootstrap_root/bootstrap_vm_ed25519.pub"
 watchdog_public_key="$(realpath -e "$PRODUCTION_WATCHDOG_PUBLIC_KEY")"
-bootstrap_vm_stage=/var/tmp/schema5-bootstrap-watchdog-v1.2-r3
+bootstrap_vm_stage=/var/tmp/schema5-bootstrap-watchdog-v1.2-r4
 bootstrap_vm_python=/opt/agents-scaling-bootstrap-watchdog/venv/bin/python
 bootstrap_vm_release=/opt/agents-scaling-bootstrap-watchdog/release
 bootstrap_vm_config=/etc/agents-scaling-bootstrap-watchdog/watchdog.json
@@ -988,8 +1240,8 @@ test -f "$watchdog_tool" && test ! -w "$watchdog_tool"
 # can only print a diagnostic and exit 78 if accidentally released. Its root remains
 # held throughout the drill, and its job IDs/comments must be disjoint from canonical.
 isolated_root="$recovery/isolated_cancellation_drill"
-isolated_manifest="$isolated_root/RECOVERY_CHAIN_SCHEMA5_V1_2_R3.json"
-isolated_receipt="$isolated_root/RECOVERY_CHAIN_SCHEMA5_V1_2_R3_SUBMISSION.json"
+isolated_manifest="$isolated_root/RECOVERY_CHAIN_SCHEMA5_V1_2_R4.json"
+isolated_receipt="$isolated_root/RECOVERY_CHAIN_SCHEMA5_V1_2_R4_SUBMISSION.json"
 isolated_repair_result="$isolated_root/BOOTSTRAP_REPAIR_RESULT.json"
 "$sealed_python" -I "$renderer" prepare-isolated-bootstrap-drill \
   --chain-manifest "$chain_manifest"
@@ -1013,7 +1265,7 @@ jq -e --slurpfile canonical "$chain_receipt" '
   (($isolated_comments - $canonical_comments) | length) ==
     ($isolated_comments | length)
 ' "$isolated_receipt"
-test ! -e "$recovery/recovery_chain_repairs_v1_2_r3"
+test ! -e "$recovery/recovery_chain_repairs_v1_2_r4"
 test ! -e "$root_release"
 test ! -e "$launch_complete"
 
@@ -1239,7 +1491,7 @@ recovery_seconds="$(jq -nr \
 
 # Publish the attestation marker last, then READY -> ARM_INTENT -> ARMED. The
 # canonical root still has no release, launch, or repair marker at this boundary.
-test ! -e "$recovery/recovery_chain_repairs_v1_2_r3"
+test ! -e "$recovery/recovery_chain_repairs_v1_2_r4"
 test ! -e "$root_release"
 test ! -e "$launch_complete"
 "$sealed_python" -I "$watchdog_tool" bootstrap-attestation \
@@ -1301,7 +1553,7 @@ and spooled scripts. Two complete scheduler cuts at least 60 seconds apart and t
 isolated cancellation drill must be sealed before `READY`, `ARM_INTENT`, and
 `ARMED` are published. Only the explicit `release-root --apply` transaction records
 the marker-first exact-ID release intent and invokes `scontrol release`.
-`RECOVERY_CHAIN_SCHEMA5_V1_2_R3_LAUNCHED.json` is published last. A crash after
+`RECOVERY_CHAIN_SCHEMA5_V1_2_R4_LAUNCHED.json` is published last. A crash after
 release is reconciled by the exact job/comment instead of issuing a second release.
 The same transaction holds the first resubmitted job of each repair generation until
 that generation's complete repair receipt and inherited marker-last provenance exist.
@@ -1350,7 +1602,7 @@ complete `squeue` plus `sacct` truth and requires its target stage to be termina
 its own exact `afterany:<target-job-id>` allocation to be running. It publishes
 `STAGE_SCHEDULER_EVIDENCE.json`, persists bounded email-delivery attempts for every
 non-success terminal state, and publishes `STAGE_SENTINEL_COMPLETE.json` last under
-`recovery_chain_stage_sentinels/schema5-v1.2-r3/gNNNN/<stage>/`. A stage observation
+`recovery_chain_stage_sentinels/schema5-v1.2-r4/gNNNN/<stage>/`. A stage observation
 explicitly has no repair authority. The aggregate sentinel remains the sole causal
 classifier and suffix-repair authority; it also verifies that every stage observer
 terminated successfully. Thus a failure in either parallel readiness branch is
@@ -1366,7 +1618,7 @@ the other 42 jobs; explicit successful `production_resume`; verified production
 watchdog readiness; running, healthy control with no drain, alert, or safety hold;
 and both exact controller chains live and fresh. It publishes
 `RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_HANDOFF_COMPLETE.json` last under protocol
-`schema5-v1.2-r3-bootstrap-watchdog-handoff-v1`, binding the generation, receipt,
+`schema5-v1.2-r4-bootstrap-watchdog-handoff-v1`, binding the generation, receipt,
 root release, launch, generation-zero arm, watchdog/control identity, aggregate
 sentinel, production resume, and authority-transfer flags. Only after that sealed
 marker exists does the bootstrap watchdog refuse further repair and become a no-op.
@@ -1375,13 +1627,16 @@ bootstrap chain; a crash after it leaves no required recovery-chain work.
 
 The durable Git release marker, pilot and canary roots, and protected-capacity
 marker are required
-pre-render inputs at their canonical r3 paths. Rendering fails if any of those
+pre-render inputs at their canonical r4 paths. Rendering fails if any of those
 inputs is missing, writable, symlinked, tampered, belongs to another
-tag/commit/chain namespace, or fails its sealed verifier. Chain schema 10 binds the
+tag/commit/chain namespace, or fails its sealed verifier. Chain schema 11 and
+prerequisite-evidence schema 7 bind the
 durable bundle/checksum marker and the protected-capacity path, raw SHA-256, size,
 and self-hash identity, as well as the
-pilot/canary verifier reports, annotated tag object, commit, prerequisite source
-hashes, and the real dependency-cascade proof. Watchdog drill/readiness markers are
+pilot/canary verifier reports, the complete r3 prelaunch-failure portable binding,
+the sealed toolchain and package-cache source identities, annotated tag object,
+commit, prerequisite source hashes, and the real dependency-cascade proof. Watchdog
+drill/readiness markers are
 stage-19 outputs and therefore are deliberately absent from the render prerequisite
 contract.
 The prerequisite evidence binds the tagged
@@ -1408,7 +1663,7 @@ exit or checkout mutation. It independently checks the bundled verifier's regula
 file type, non-symlink path, read-only mode, size, and exact tagged SHA-256 before
 executing it; after cloning, it applies the same checks to the target tagged verifier
 before rerunning both full prerequisite verifiers. It then seals the entire checkout
-read-only and publishes `SOURCE_CHECKOUT_SCHEMA5_V1_2_R3_COMPLETE.json` last; jobs
+read-only and publishes `SOURCE_CHECKOUT_SCHEMA5_V1_2_R4_COMPLETE.json` last; jobs
 02–05 recheck the annotated tag object, commit, clean status, worktree/index diff,
 and full `git fsck` immediately before use. Every fail-fast and aggregate `afterany`
 sentinel performs the same independent checks on its bundled sentinel executable
@@ -1519,15 +1774,18 @@ smoke attempt carries the new fleet contract, capacity generation, rollout
 generation, and trusted endpoint-catalog ID. Reusing a prior-generation success or a
 fixed smoke evidence path fails closed.
 
-The r3 controller implements the complete `24 -> 96 -> 192 -> 384` rollout state
+The r4 controller implements the complete `24 -> 96 -> 192 -> 384` rollout state
 machine, and launch authorization now requires protected placement for that full
 design ceiling before the first ceiling-24 cell is admitted. Scientific cell arrays
 and every scientific serving allocation must use authorization-bound partitions with
 `PreemptMode=OFF`; neither clients nor servers may use `mit_preemptable`,
 `ou_bcs_low`, or any other preemptible placement. The protected-capacity marker must
 already prove the 384-cell ceiling, 64-job reserve, 448-job submit headroom, full
-CPU/memory reservation, the 22-replica/24-GPU immutable base, the qualified
-40-replica/42-active-GPU effective fleet, and four warm-headroom GPUs.
+CPU/memory reservation, and the generation-one 22-replica/24-active-GPU effective
+fleet with zero additive capacity, three warm jobs, four warm-headroom GPUs, and
+28 total attested GPUs. Any additive replicas are authorized only after a failed
+qualification attempt publishes a controlled capacity transition and the affected
+fleet/readiness/smoke gates are rerun.
 
 Live admission preserves the same inclusive contract:
 `min(384 - active/pending cells, 448 - all live user job elements,
@@ -1656,7 +1914,7 @@ when its complete evidence is available. `apply` derives the completed canary ID
 that sealed accepted marker, recaptures live scheduler/QOS truth, revalidates all
 generation-bound post-transition readiness gates, and publishes
 `CLIENT_CAPACITY_COMPLETE.json` last. The authorization protocol is
-`schema5-v1.2-r3-client-placement-capacity-generation-v1`; it binds the immutable
+`schema5-v1.2-r4-client-placement-capacity-generation-v1`; it binds the immutable
 control hash, current capacity contract/generation, exact target ceiling,
 `PreemptMode=OFF`, CPU, memory, submit headroom, apply-time capture timestamp, and all
 four rehashed evidence identities.
@@ -1755,7 +2013,7 @@ qualification="$release_worktree/scripts/run_schema5_throughput_qualification.py
 ```
 
 This command performs no scheduler mutation. It verifies paused control, unchanged
-r3 release/scientific identities, the original sealed failure and receipt, the
+r4 release/scientific identities, the original sealed failure and receipt, the
 authoritative additive contract, and strictly newer capacity, rollout, catalog,
 fleet, and readiness bindings. Only then may `repair-chain --apply` resubmit the
 stage-18 suffix. The suffix includes stage 18, its observer, `controller_drill`,

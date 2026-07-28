@@ -50,6 +50,19 @@ class ForcedCommandError(RuntimeError):
     """The forced command request is outside the watchdog authority."""
 
 
+def _child_process_environment() -> dict[str, str]:
+    """Return the complete environment delegated to the frozen control command."""
+
+    return {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+    }
+
+
 def _canonical_path(path: Path, *, description: str, kind: str) -> Path:
     """Resolve one fixed deployment path without accepting symlink traversal."""
 
@@ -731,7 +744,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 harness_environment_sha256=args.harness_environment_sha256,
                 control_sha256=args.control_sha256,
             )
-        proc = subprocess.run(command, check=False)
+        proc = subprocess.run(
+            command,
+            check=False,
+            env=_child_process_environment(),
+        )
         return int(proc.returncode)
     except (ForcedCommandError, OSError) as exc:
         print(

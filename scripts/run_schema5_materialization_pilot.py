@@ -9,7 +9,8 @@ default.  Under ``--apply`` it:
 * inventories both live developer prefixes before any stage;
 * runs capture dry/apply/verify without invoking Conda;
 * runs materialization dry/apply/verify, allowing Conda to clone only normalized
-  seeds inside the isolated pilot root;
+  seeds through an independently copied, immutable package-cache seed inside the
+  isolated pilot root;
 * runs release freeze dry/apply/verify without invoking Conda;
 * proves the live prefixes did not change across the complete transaction;
 * proves exactly one Setuptools 81 distribution and no Setuptools 82 ownership
@@ -19,8 +20,8 @@ default.  Under ``--apply`` it:
   publishing ``PILOT_COMPLETE.json`` as the final evidence file.
 
 Completed evidence can be verified without the mutable live prefixes, the original
-checkout, or an external Conda executable.  The supplied Conda executable is hashed
-as creation provenance but is never queried about either live prefix.
+checkout, or an external Conda executable.  The release-local sealed Conda toolchain
+is completely reverified and may operate only against isolated scratch.
 
 The narrow ``quarantine`` command preserves a canonical pilot interrupted by a
 proved scheduler/node transient or explicit external cancellation.  It binds the
@@ -62,13 +63,13 @@ if str(REPO) not in sys.path:
 from scripts import capture_schema5_environments as capture  # noqa: E402
 from scripts import freeze_schema5_release as freeze  # noqa: E402
 from scripts import materialize_schema5_release as materialize  # noqa: E402
+from scripts import provision_schema5_conda_toolchain as conda_toolchain  # noqa: E402
 from scripts import publish_schema5_durable_git_release as durable_git  # noqa: E402
-from scripts import schema5_conda_runtime_identity as conda_identity  # noqa: E402
 from scripts import seal_recovery_evidence as recovery_evidence  # noqa: E402
 from slurm import schema5_control as control  # noqa: E402
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 RELEASE_ID = freeze.RELEASE_ID
 REQUIRED_TAG = freeze.REQUIRED_GIT_TAG
 COMPLETE_MARKER = "PILOT_COMPLETE.json"
@@ -104,20 +105,20 @@ _SETUPTOOLS_82_PATH_RE = re.compile(
 )
 _CHUNK_SIZE = 8 * 1024 * 1024
 SBATCH_TIME_LIMIT = "11:30:00"
-SBATCH_JOB_NAME = "asys-s5-materialization-pilot-r3"
+SBATCH_JOB_NAME = "asys-s5-materialization-pilot-r4"
 _SBATCH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.%/+=:-]+\Z")
-PILOT_QUARANTINE_PROTOCOL = "schema5-v1.2-r3-materialization-pilot-quarantine"
+PILOT_QUARANTINE_PROTOCOL = "schema5-v1.2-r4-materialization-pilot-quarantine"
 PILOT_QUARANTINE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-materialization-pilot-quarantine-intent"
+    "schema5-v1.2-r4-materialization-pilot-quarantine-intent"
 )
 SCHEDULER_ATTEMPTS_DIRECTORY = "scheduler_attempts"
 SCHEDULER_INTENT_FILENAME = "SCHEDULER_INTENT.json"
 SCHEDULER_SPOOLED_SCRIPT_FILENAME = "SPOOLED_BATCH_SCRIPT.sbatch"
 SCHEDULER_ACTIVE_FILENAME = "SCHEDULER_ACTIVE.json"
 SCHEDULER_ACCEPTANCE_FILENAME = "PILOT_SCHEDULER_ACCEPTED.json"
-SCHEDULER_INTENT_PROTOCOL = "schema5-v1.2-r3-pilot-scheduler-intent"
-SCHEDULER_ACTIVE_PROTOCOL = "schema5-v1.2-r3-pilot-scheduler-active"
-SCHEDULER_ACCEPTANCE_PROTOCOL = "schema5-v1.2-r3-pilot-scheduler-acceptance"
+SCHEDULER_INTENT_PROTOCOL = "schema5-v1.2-r4-pilot-scheduler-intent"
+SCHEDULER_ACTIVE_PROTOCOL = "schema5-v1.2-r4-pilot-scheduler-active"
+SCHEDULER_ACCEPTANCE_PROTOCOL = "schema5-v1.2-r4-pilot-scheduler-acceptance"
 SUBMISSION_INTENT_FILENAME = "PILOT_SUBMISSION_INTENT.json"
 SUBMISSION_ACCEPTED_FILENAME = "PILOT_SUBMISSION_ACCEPTED.json"
 SUBMISSION_DIRECTORY = "scheduler_submission"
@@ -125,13 +126,74 @@ SUBMISSION_ATTEMPTS_DIRECTORY = "attempts"
 SUBMISSION_ATTEMPT_INTENT_FILENAME = "ATTEMPT_INTENT.json"
 SUBMISSION_RESULT_FILENAME = "SBATCH_RESULT.json"
 SUBMISSION_ABSENT_FILENAME = "NO_ACCEPTED_JOB.json"
-SUBMISSION_INTENT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-intent"
-SUBMISSION_ATTEMPT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-attempt"
-SUBMISSION_RESULT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-result"
-SUBMISSION_ABSENT_PROTOCOL = "schema5-v1.2-r3-pilot-submission-absent"
-SUBMISSION_ACCEPTED_PROTOCOL = "schema5-v1.2-r3-pilot-submission-accepted"
+SUBMISSION_INTENT_PROTOCOL = "schema5-v1.2-r4-pilot-submission-intent"
+SUBMISSION_ATTEMPT_PROTOCOL = "schema5-v1.2-r4-pilot-submission-attempt"
+SUBMISSION_RESULT_PROTOCOL = "schema5-v1.2-r4-pilot-submission-result"
+SUBMISSION_ABSENT_PROTOCOL = "schema5-v1.2-r4-pilot-submission-absent"
+SUBMISSION_ACCEPTED_PROTOCOL = "schema5-v1.2-r4-pilot-submission-accepted"
 DEFAULT_SUBMISSION_VISIBILITY_TIMEOUT = 900.0
 DEFAULT_SUBMISSION_POLL_SECONDS = 2.0
+TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_BLOCKED_PROCESS_ENVIRONMENT = {
+    "BASH_ENV",
+    "CDPATH",
+    "ENV",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_EXEC_PATH",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_TEMPLATE_DIR",
+    "GIT_WORK_TREE",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "SLURM_CLUSTERS",
+    "SLURM_CONF",
+    "SLURM_TIME_FORMAT",
+}
+
+
+def _sanitized_process_environment() -> dict[str, str]:
+    """Return a deterministic command environment for Git and Slurm clients."""
+
+    environment = dict(os.environ)
+    for key in tuple(environment):
+        if (
+            key in _BLOCKED_PROCESS_ENVIRONMENT
+            or key.startswith("BASH_FUNC_")
+            or key.startswith("GIT_CONFIG_KEY_")
+            or key.startswith("GIT_CONFIG_VALUE_")
+            or key.startswith("SBATCH_")
+            or key.startswith("SACCT_")
+            or key.startswith("SCONTROL_")
+            or key.startswith("SQUEUE_")
+        ):
+            environment.pop(key, None)
+    environment.update(
+        {
+            "PATH": TRUSTED_SYSTEM_PATH,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    return environment
 _SLURM_MEMORY_RE = re.compile(
     r"(?P<amount>[0-9]+(?:\.[0-9]+)?)(?P<unit>[KMGT]?)"
     r"(?P<scope>[cn]?)\Z",
@@ -342,11 +404,15 @@ def _validate_isolation(
     release_checkout: Path,
     harness_source: Path,
     serving_source: Path,
+    source_package_cache: Path,
+    conda_toolchain_root: Path,
 ) -> None:
     observed = {
         "release checkout": release_checkout,
         "harness source": harness_source,
         "serving source": serving_source,
+        "source package cache": source_package_cache,
+        "sealed Conda toolchain": conda_toolchain_root,
     }
     roots = list(observed.items())
     for index, (left_name, left) in enumerate(roots):
@@ -369,10 +435,11 @@ def _validate_isolation(
 def _git(repository: Path, *arguments: str) -> str:
     try:
         completed = subprocess.run(
-            ("git", "-C", str(repository), *arguments),
+            ("/usr/bin/git", "-C", str(repository), *arguments),
             capture_output=True,
             text=True,
             check=False,
+            env=_sanitized_process_environment(),
         )
     except OSError as exc:
         raise MaterializationPilotError(f"cannot execute Git: {exc}") from exc
@@ -436,7 +503,12 @@ def _layout(root: Path) -> dict[str, str]:
         "release_worktree": str(materialization_root / "release-worktree"),
         "harness_prefix": str(materialization_root / "harness-environment"),
         "serving_prefix": str(materialization_root / "serving-environment"),
-        "conda_package_cache": str(materialization_root / "conda-package-cache"),
+        "conda_package_cache_seed": str(
+            materialization_root / materialize.PACKAGE_CACHE_SEED_DIRECTORY
+        ),
+        "conda_package_cache": str(
+            materialization_root / materialize.PACKAGE_CACHE_DIRECTORY
+        ),
         # The freezer deliberately discovers its materialization proof in the parent
         # of the release directory.
         "release_bundle": str(materialization_root / "release"),
@@ -456,14 +528,30 @@ def _input_binding(
     integrity_normalization_policy: Path,
     reconciliation_incident: Path,
     recovered_setuptools_record: Path,
-    conda_executable: Path,
+    conda_toolchain_root: Path,
+    source_package_cache: Path,
     durable_git_release_marker: Path,
 ) -> dict[str, Any]:
     durable_binding = durable_git.marker_binding(durable_git_release_marker)
+    try:
+        toolchain_binding = (
+            conda_toolchain.verified_conda_toolchain_binding(
+                conda_toolchain_root,
+                exercise=True,
+            )
+        )
+    except (
+        OSError,
+        conda_toolchain.CondaToolchainProvisionError,
+    ) as exc:
+        raise MaterializationPilotError(
+            f"sealed Conda toolchain verification failed: {exc}"
+        ) from exc
     return {
         "release_checkout": str(release_checkout),
         "harness_source": str(harness_source),
         "serving_source": str(serving_source),
+        "source_package_cache": str(source_package_cache),
         "ownership_policy": {
             "path": str(ownership_policy),
             "sha256": _sha256_file(ownership_policy),
@@ -480,96 +568,9 @@ def _input_binding(
             "path": str(recovered_setuptools_record),
             "sha256": _sha256_file(recovered_setuptools_record),
         },
-        "conda_executable": {
-            "path": str(conda_executable),
-            "sha256": _sha256_file(conda_executable),
-            "size": conda_executable.stat().st_size,
-        },
-        "conda_runtime_toolchain": conda_identity.conda_runtime_identity(
-            conda_executable
-        ),
+        "conda_toolchain": toolchain_binding,
         "durable_git_release": durable_binding,
     }
-
-
-def _validate_conda_runtime_binding(binding: Any) -> dict[str, Any]:
-    required = {
-        "schema_version",
-        "protocol",
-        "base_prefix",
-        "excluded_top_level",
-        "conda_executable",
-        "shebang_interpreter",
-        "runtime_inventory",
-        "identity_sha256",
-    }
-    if not isinstance(binding, dict) or set(binding) != required:
-        raise MaterializationPilotError(
-            "pilot Conda runtime-toolchain binding fields are invalid"
-        )
-    identity = dict(binding)
-    identity_sha256 = identity.pop("identity_sha256", None)
-    executable = binding.get("conda_executable")
-    interpreter = binding.get("shebang_interpreter")
-    inventory = binding.get("runtime_inventory")
-    if (
-        binding.get("schema_version") != conda_identity.SCHEMA_VERSION
-        or binding.get("protocol") != conda_identity.PROTOCOL
-        or not isinstance(binding.get("base_prefix"), str)
-        or not Path(binding["base_prefix"]).is_absolute()
-        or binding.get("excluded_top_level")
-        != list(conda_identity.EXCLUDED_TOP_LEVEL)
-        or not isinstance(executable, dict)
-        or set(executable) != {"path", "sha256", "size"}
-        or not isinstance(interpreter, dict)
-        or set(interpreter)
-        != {"path", "resolved_path", "sha256", "size"}
-        or not isinstance(inventory, dict)
-        or set(inventory)
-        != {
-            "file_count",
-            "directory_count",
-            "symlink_count",
-            "total_bytes",
-            "inventory_sha256",
-        }
-        or any(
-            not isinstance(inventory.get(field), int)
-            or isinstance(inventory.get(field), bool)
-            or inventory[field] < 0
-            for field in (
-                "file_count",
-                "directory_count",
-                "symlink_count",
-                "total_bytes",
-            )
-        )
-        or inventory["file_count"] <= 0
-        or any(
-            _SHA256_RE.fullmatch(str(value)) is None
-            for value in (
-                executable.get("sha256"),
-                interpreter.get("sha256"),
-                inventory.get("inventory_sha256"),
-                identity_sha256,
-            )
-        )
-        or any(
-            not isinstance(record.get("path"), str)
-            or not Path(record["path"]).is_absolute()
-            or not isinstance(record.get("size"), int)
-            or isinstance(record.get("size"), bool)
-            or record["size"] <= 0
-            for record in (executable, interpreter)
-        )
-        or not isinstance(interpreter.get("resolved_path"), str)
-        or not Path(interpreter["resolved_path"]).is_absolute()
-        or identity_sha256 != _sha256_bytes(_canonical_bytes(identity))
-    ):
-        raise MaterializationPilotError(
-            "pilot Conda runtime-toolchain binding identity is invalid"
-        )
-    return dict(binding)
 
 
 def _without_status(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -627,6 +628,88 @@ def _record_stage_evidence(
         root / STAGE_EVIDENCE_FILENAMES[(stage, phase)], _json_bytes(payload)
     )
     return _read_stage_evidence(root, stage=stage, phase=phase)
+
+
+_MATERIALIZATION_PHASE_BINDING_FIELDS = (
+    "release_id",
+    "tag_commit",
+    "source_tree_sha256",
+    "paths",
+    "environment_capture",
+    "conda_toolchain",
+    "conda_creation_tool",
+    "package_cache_seed_input",
+)
+
+
+def _materialization_phase_binding(
+    report: Mapping[str, Any],
+    *,
+    description: str,
+) -> dict[str, Any]:
+    """Extract the immutable inputs shared by dry/apply/verify reports.
+
+    A pilot may resume after a crash and therefore may encounter an authentic,
+    checksummed dry-run record from an earlier attempt.  Its cache selection or
+    toolchain can nevertheless be stale.  Treating the phase file's own digest as
+    sufficient would allow apply to run with inputs other than those preflighted.
+    """
+
+    missing = [
+        field
+        for field in _MATERIALIZATION_PHASE_BINDING_FIELDS
+        if field not in report
+    ]
+    if missing:
+        raise MaterializationPilotError(
+            f"{description} lacks immutable phase binding fields: "
+            + ", ".join(missing)
+        )
+    binding = {
+        field: report[field]
+        for field in _MATERIALIZATION_PHASE_BINDING_FIELDS
+    }
+    if (
+        binding["release_id"] != RELEASE_ID
+        or _COMMIT_RE.fullmatch(str(binding["tag_commit"])) is None
+        or _SHA256_RE.fullmatch(
+            str(binding["source_tree_sha256"])
+        )
+        is None
+        or not isinstance(binding["paths"], dict)
+        or not isinstance(binding["environment_capture"], dict)
+        or not isinstance(binding["conda_toolchain"], dict)
+        or not isinstance(binding["conda_creation_tool"], dict)
+        or not isinstance(binding["package_cache_seed_input"], dict)
+    ):
+        raise MaterializationPilotError(
+            f"{description} has a malformed immutable phase binding"
+        )
+    return binding
+
+
+def _require_identical_materialization_phase_bindings(
+    reports: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not reports:
+        raise MaterializationPilotError(
+            "materialization phase binding comparison has no reports"
+        )
+    bindings = {
+        phase: _materialization_phase_binding(
+            report,
+            description=f"materialization {phase} report",
+        )
+        for phase, report in reports.items()
+    }
+    reference_phase, reference = next(iter(bindings.items()))
+    for phase, binding in bindings.items():
+        if binding != reference:
+            raise MaterializationPilotError(
+                "materialization dry/apply/verify immutable phase binding "
+                f"differs between {reference_phase} and {phase}"
+            )
+    return reference
 
 
 def _run_dry_once(
@@ -865,6 +948,9 @@ _SEALED_INODE_EDGES = (
     ("serving_seed", "serving_prefix"),
     ("harness_seed", "serving_seed"),
     ("harness_prefix", "serving_prefix"),
+    ("conda_package_cache_seed", "conda_package_cache"),
+    ("conda_package_cache_seed", "harness_prefix"),
+    ("conda_package_cache_seed", "serving_prefix"),
     ("conda_package_cache", "harness_prefix"),
     ("conda_package_cache", "serving_prefix"),
 )
@@ -874,6 +960,10 @@ _TRANSACTION_INODE_EDGES = (
     ("serving_source", "serving_seed"),
     ("harness_source", "harness_prefix"),
     ("serving_source", "serving_prefix"),
+    ("source_package_cache", "conda_package_cache_seed"),
+    ("source_package_cache", "conda_package_cache"),
+    ("source_package_cache", "harness_prefix"),
+    ("source_package_cache", "serving_prefix"),
     *_SEALED_INODE_EDGES,
 )
 
@@ -890,6 +980,9 @@ def _pilot_roots(
         "serving_seed": capture_root / "seeds" / "serving",
         "harness_prefix": Path(layout["harness_prefix"]),
         "serving_prefix": Path(layout["serving_prefix"]),
+        "conda_package_cache_seed": Path(
+            layout["conda_package_cache_seed"]
+        ),
         "conda_package_cache": Path(layout["conda_package_cache"]),
     }
     if inputs is not None:
@@ -898,6 +991,9 @@ def _pilot_roots(
                 "release_checkout": Path(str(inputs["release_checkout"])),
                 "harness_source": Path(str(inputs["harness_source"])),
                 "serving_source": Path(str(inputs["serving_source"])),
+                "source_package_cache": Path(
+                    str(inputs["source_package_cache"])
+                ),
             }
         )
     for name, root in roots.items():
@@ -1166,6 +1262,19 @@ def _validate_artifact_inventory(root: Path, artifacts: Any) -> None:
 def _validate_intent(payload: Mapping[str, Any]) -> None:
     candidate = dict(payload)
     intent_id = candidate.pop("intent_id", None)
+    inputs = payload.get("inputs")
+    expected_input_fields = {
+        "release_checkout",
+        "harness_source",
+        "serving_source",
+        "source_package_cache",
+        "ownership_policy",
+        "integrity_normalization_policy",
+        "reconciliation_incident",
+        "recovered_setuptools_record",
+        "conda_toolchain",
+        "durable_git_release",
+    }
     if (
         set(payload)
         != {
@@ -1189,14 +1298,17 @@ def _validate_intent(payload: Mapping[str, Any]) -> None:
         != "intent_first_stage_evidence_pilot_marker_last"
         or payload.get("expected_tag") != REQUIRED_TAG
         or not isinstance(payload.get("git_identity"), dict)
-        or not isinstance(payload.get("inputs"), dict)
+        or not isinstance(inputs, dict)
+        or set(inputs) != expected_input_fields
         or not isinstance(payload.get("layout"), dict)
         or not isinstance(payload.get("live_source_inventories"), dict)
         or payload.get("conda_scope_contract")
         != {
             "capture_invokes_conda": False,
             "freeze_invokes_conda": False,
-            "materialization_conda_source": "normalized_read_only_seeds_only",
+            "materialization_conda_source": (
+                "normalized_read_only_seeds_and_immutable_preseeded_cache_only"
+            ),
             "live_prefix_conda_queries": 0,
         }
         or intent_id != _sha256_bytes(_canonical_bytes(candidate))
@@ -1275,7 +1387,8 @@ def render_materialization_pilot_sbatch(
     integrity_normalization_policy: str | Path,
     reconciliation_incident: str | Path,
     recovered_setuptools_record: str | Path,
-    conda_executable: str | Path,
+    conda_toolchain_root: str | Path,
+    source_package_cache: str | Path,
     durable_git_release_marker: str | Path,
     apply: bool = False,
 ) -> dict[str, Any]:
@@ -1297,8 +1410,12 @@ def render_materialization_pilot_sbatch(
         recovered_setuptools_record,
         description="recovered Setuptools Conda record",
     )
-    conda = _existing_file(
-        conda_executable, description="Conda executable", executable=True
+    toolchain_root = _existing_directory(
+        conda_toolchain_root,
+        description="sealed Conda toolchain root",
+    )
+    package_cache_source = _existing_directory(
+        source_package_cache, description="source Conda package cache"
     )
     durable_marker = _existing_file(
         durable_git_release_marker,
@@ -1312,6 +1429,8 @@ def render_materialization_pilot_sbatch(
         release_checkout=checkout,
         harness_source=harness,
         serving_source=serving,
+        source_package_cache=package_cache_source,
+        conda_toolchain_root=toolchain_root,
     )
     git_identity = _verify_exact_annotated_checkout(
         checkout, expected_tag=expected_tag, expected_commit=expected_commit
@@ -1343,6 +1462,7 @@ def render_materialization_pilot_sbatch(
             or _is_relative_to(candidate, checkout)
             or _is_relative_to(candidate, harness)
             or _is_relative_to(candidate, serving)
+            or _is_relative_to(candidate, package_cache_source)
         ):
             raise MaterializationPilotError(
                 f"{description} must remain outside pilot inputs and output root"
@@ -1367,7 +1487,8 @@ def render_materialization_pilot_sbatch(
         integrity_normalization_policy=integrity_policy,
         reconciliation_incident=incident,
         recovered_setuptools_record=recovered,
-        conda_executable=conda,
+        conda_toolchain_root=toolchain_root,
+        source_package_cache=package_cache_source,
         durable_git_release_marker=durable_marker,
     )
     if (
@@ -1409,7 +1530,7 @@ def render_materialization_pilot_sbatch(
     }
     launch_binding["launch_id"] = _sha256_bytes(_canonical_bytes(launch_binding))
     comment = (
-        "asys-s5-pilot:r3:"
+        "asys-s5-pilot:r4:"
         f"commit={expected_commit[:12]}:"
         f"launch={launch_binding['launch_id'][:16]}"
     )
@@ -1440,8 +1561,10 @@ def render_materialization_pilot_sbatch(
         str(incident),
         "--recovered-setuptools-record",
         str(recovered),
-        "--conda-executable",
-        str(conda),
+        "--conda-toolchain-root",
+        str(toolchain_root),
+        "--source-package-cache",
+        str(package_cache_source),
         "--durable-git-release-marker",
         str(durable_marker),
         "--sbatch-receipt",
@@ -1458,7 +1581,7 @@ def render_materialization_pilot_sbatch(
             "#SBATCH --cpus-per-task=1",
             "#SBATCH --mem=8G",
             "#SBATCH --open-mode=append",
-            "#SBATCH --export=ALL",
+            "#SBATCH --export=NONE",
             f"#SBATCH --chdir={checkout}",
             f"#SBATCH --output={output_log}",
             f"#SBATCH --error={error_log}",
@@ -1467,15 +1590,33 @@ def render_materialization_pilot_sbatch(
             "set -euo pipefail",
             (
                 "unset PYTHONPATH PYTHONHOME VIRTUAL_ENV CONDA_PREFIX "
-                "CONDA_DEFAULT_ENV LD_LIBRARY_PATH LD_PRELOAD"
+                "CONDA_DEFAULT_ENV LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT "
+                "BASH_ENV ENV CDPATH GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR "
+                "GIT_INDEX_FILE GIT_OBJECT_DIRECTORY "
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_EXEC_PATH "
+                "GIT_TEMPLATE_DIR GIT_NAMESPACE GIT_SSH GIT_SSH_COMMAND "
+                "GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS "
+                "GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM "
+                "GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE SLURM_CONF "
+                "SLURM_CLUSTERS SLURM_TIME_FORMAT"
             ),
             (
                 "while IFS= read -r ambient_name; do case \"$ambient_name\" in "
-                "PIP_*|CONDA_*) unset \"$ambient_name\" ;; esac; "
+                "PIP_*|CONDA_*|BASH_FUNC_*|GIT_CONFIG_KEY_*|"
+                "GIT_CONFIG_VALUE_*|SBATCH_*|SACCT_*|SCONTROL_*|SQUEUE_*) "
+                "unset \"$ambient_name\" ;; esac; "
                 "done < <(compgen -e)"
             ),
             "export PYTHONNOUSERSITE=1",
             "export PYTHONDONTWRITEBYTECODE=1",
+            f"export PATH={TRUSTED_SYSTEM_PATH}",
+            "readonly PATH",
+            (
+                "export GIT_CONFIG_GLOBAL=/dev/null "
+                "GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 "
+                "GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 "
+                "LC_ALL=C LANG=C"
+            ),
             (
                 "export PIP_CONFIG_FILE=/dev/null PIP_NO_INPUT=1 "
                 "PIP_DISABLE_PIP_VERSION_CHECK=1"
@@ -1602,6 +1743,7 @@ def _validate_pilot_sbatch_receipt(
         or f"#SBATCH --job-name={SBATCH_JOB_NAME}\n" not in sbatch_text
         or "#SBATCH --cpus-per-task=1\n" not in sbatch_text
         or "#SBATCH --mem=8G\n" not in sbatch_text
+        or "#SBATCH --export=NONE\n" not in sbatch_text
         or f"#SBATCH --comment={slurm.get('comment')}\n" not in sbatch_text
     ):
         raise MaterializationPilotError(
@@ -1618,7 +1760,11 @@ def _scheduler_runner(
     if runner is not None:
         return runner
     return lambda argv: subprocess.run(
-        argv, capture_output=True, text=True, check=False
+        argv,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_sanitized_process_environment(),
     )
 
 
@@ -4781,7 +4927,11 @@ def quarantine_interrupted_pilot(
     scheduler_runner = (
         (
             lambda argv: subprocess.run(
-                argv, capture_output=True, text=True, check=False
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=_sanitized_process_environment(),
             )
         )
         if runner is None
@@ -5026,7 +5176,8 @@ def run_materialization_pilot(
     integrity_normalization_policy: str | Path,
     reconciliation_incident: str | Path,
     recovered_setuptools_record: str | Path,
-    conda_executable: str | Path,
+    conda_toolchain_root: str | Path,
+    source_package_cache: str | Path,
     durable_git_release_marker: str | Path,
     sbatch_receipt: str | Path | None = None,
     scheduler_job_id: str | None = None,
@@ -5052,8 +5203,12 @@ def run_materialization_pilot(
         recovered_setuptools_record,
         description="recovered Setuptools Conda record",
     )
-    conda = _existing_file(
-        conda_executable, description="Conda executable", executable=True
+    toolchain_root = _existing_directory(
+        conda_toolchain_root,
+        description="sealed Conda toolchain root",
+    )
+    package_cache_source = _existing_directory(
+        source_package_cache, description="source Conda package cache"
     )
     durable_marker = _existing_file(
         durable_git_release_marker,
@@ -5064,6 +5219,8 @@ def run_materialization_pilot(
         release_checkout=checkout,
         harness_source=harness,
         serving_source=serving,
+        source_package_cache=package_cache_source,
+        conda_toolchain_root=toolchain_root,
     )
     git_identity = _verify_exact_annotated_checkout(
         checkout, expected_tag=expected_tag, expected_commit=expected_commit
@@ -5076,7 +5233,8 @@ def run_materialization_pilot(
         integrity_normalization_policy=integrity_policy,
         reconciliation_incident=incident,
         recovered_setuptools_record=recovered,
-        conda_executable=conda,
+        conda_toolchain_root=toolchain_root,
+        source_package_cache=package_cache_source,
         durable_git_release_marker=durable_marker,
     )
     if (
@@ -5186,7 +5344,9 @@ def run_materialization_pilot(
         "conda_scope_contract": {
             "capture_invokes_conda": False,
             "freeze_invokes_conda": False,
-            "materialization_conda_source": "normalized_read_only_seeds_only",
+            "materialization_conda_source": (
+                "normalized_read_only_seeds_and_immutable_preseeded_cache_only"
+            ),
             "live_prefix_conda_queries": 0,
         },
     }
@@ -5231,6 +5391,13 @@ def run_materialization_pilot(
     )
     capture_report = capture.verify_capture(layout["environment_capture_root"])
     seeds = capture_report["seed_prefixes"]
+    expected_package_cache_seed_input = (
+        materialize.selected_package_cache_input_binding(
+            source_package_cache=package_cache_source,
+            harness_seed=seeds["harness"],
+            serving_seed=seeds["serving"],
+        )
+    )
 
     materialize_kwargs = {
         "output_root": layout["materialization_root"],
@@ -5239,36 +5406,78 @@ def run_materialization_pilot(
         "release_worktree": layout["release_worktree"],
         "source_harness_prefix": seeds["harness"],
         "source_serving_prefix": seeds["serving"],
+        "source_package_cache": package_cache_source,
         "harness_prefix": layout["harness_prefix"],
         "serving_prefix": layout["serving_prefix"],
-        "conda_executable": conda,
+        "conda_toolchain_root": toolchain_root,
+        "expected_package_cache_seed_input": (
+            expected_package_cache_seed_input
+        ),
     }
 
     def gated_materialize(*, apply_stage: bool) -> Mapping[str, Any]:
-        if (
-            conda_identity.conda_runtime_identity(conda)
-            != inputs["conda_runtime_toolchain"]
-        ):
+        try:
+            live_toolchain = (
+                conda_toolchain.verified_conda_toolchain_binding(
+                    toolchain_root,
+                    exercise=True,
+                )
+            )
+        except (
+            OSError,
+            conda_toolchain.CondaToolchainProvisionError,
+        ) as exc:
             raise MaterializationPilotError(
-                "Conda runtime toolchain drifted immediately before materialization"
+                f"sealed Conda toolchain verification failed: {exc}"
+            ) from exc
+        if live_toolchain != inputs["conda_toolchain"]:
+            raise MaterializationPilotError(
+                "sealed Conda toolchain drifted immediately before "
+                "materialization"
             )
         return materialize.materialize_release(
             **materialize_kwargs,
             apply=apply_stage,
         )
 
-    _run_dry_once(
-        root,
-        stage="materialization",
-        operation=lambda: gated_materialize(apply_stage=False),
+    current_materialization_dry_report = dict(
+        gated_materialize(apply_stage=False)
     )
-    _run_apply_and_verify(
+    if current_materialization_dry_report.get("status") != "dry_run":
+        raise MaterializationPilotError(
+            "materialization current preflight did not return dry_run status"
+        )
+    materialization_dry_evidence = _run_dry_once(
         root,
         stage="materialization",
-        apply_operation=lambda: gated_materialize(apply_stage=True),
-        verify_operation=lambda: materialize.verify_materialization(
-            layout["materialization_root"]
-        ),
+        operation=lambda: current_materialization_dry_report,
+    )
+    # Compare a replayed dry-run with a freshly recomputed binding before the
+    # first mutating materialization operation.
+    _require_identical_materialization_phase_bindings(
+        {
+            "persisted-dry-run": materialization_dry_evidence["report"],
+            "current-dry-run": _without_status(
+                current_materialization_dry_report
+            ),
+        }
+    )
+    materialization_apply_evidence, materialization_verify_evidence = (
+        _run_apply_and_verify(
+            root,
+            stage="materialization",
+            apply_operation=lambda: gated_materialize(apply_stage=True),
+            verify_operation=lambda: materialize.verify_materialization(
+                layout["materialization_root"]
+            ),
+        )
+    )
+    _require_identical_materialization_phase_bindings(
+        {
+            "dry-run": materialization_dry_evidence["report"],
+            "apply": materialization_apply_evidence["report"],
+            "verify": materialization_verify_evidence["report"],
+        }
     )
 
     freeze_kwargs = {
@@ -5373,6 +5582,9 @@ def run_materialization_pilot(
             ],
             "release_bundle_id": stage_reports["freeze"]["release_bundle_id"],
         },
+        "package_cache_seed_input": stage_reports[
+            "materialization"
+        ]["package_cache_seed_input"],
         "audit_id": audit["audit_id"],
     }
     marker["pilot_id"] = _sha256_bytes(_canonical_bytes(marker))
@@ -5410,6 +5622,7 @@ def _verify_materialization_pilot_semantic(
         "artifacts",
         "live_source_inventories",
         "stage_ids",
+        "package_cache_seed_input",
         "audit_id",
         "pilot_id",
     }
@@ -5434,28 +5647,42 @@ def _verify_materialization_pilot_semantic(
 
     intent = _read_json(root / INTENT_MARKER, description="pilot intent")
     _validate_intent(intent)
-    conda_binding = intent.get("inputs", {}).get("conda_executable")
-    conda_runtime_binding = _validate_conda_runtime_binding(
-        intent.get("inputs", {}).get("conda_runtime_toolchain")
+    recorded_toolchain = intent.get("inputs", {}).get("conda_toolchain")
+    source_package_cache = intent.get("inputs", {}).get(
+        "source_package_cache"
     )
     if (
-        not isinstance(conda_binding, dict)
-        or set(conda_binding) != {"path", "sha256", "size"}
-        or not isinstance(conda_binding.get("path"), str)
-        or not Path(conda_binding["path"]).is_absolute()
-        or "\n" in conda_binding["path"]
-        or "\r" in conda_binding["path"]
-        or _SHA256_RE.fullmatch(str(conda_binding.get("sha256", ""))) is None
-        or not isinstance(conda_binding.get("size"), int)
-        or isinstance(conda_binding.get("size"), bool)
-        or conda_binding["size"] <= 0
+        not isinstance(recorded_toolchain, dict)
+        or not isinstance(recorded_toolchain.get("toolchain_root"), str)
+        or not Path(recorded_toolchain["toolchain_root"]).is_absolute()
     ):
         raise MaterializationPilotError(
-            "pilot Conda executable creation binding is invalid"
+            "pilot sealed Conda toolchain binding is invalid"
         )
-    if conda_runtime_binding["conda_executable"] != conda_binding:
+    try:
+        live_toolchain = conda_toolchain.verified_conda_toolchain_binding(
+            recorded_toolchain["toolchain_root"],
+            exercise=True,
+        )
+    except (
+        OSError,
+        conda_toolchain.CondaToolchainProvisionError,
+    ) as exc:
         raise MaterializationPilotError(
-            "pilot Conda entrypoint and runtime-toolchain bindings disagree"
+            f"sealed Conda toolchain verification failed: {exc}"
+        ) from exc
+    if live_toolchain != recorded_toolchain:
+        raise MaterializationPilotError(
+            "pilot sealed Conda toolchain binding drifted"
+        )
+    if (
+        not isinstance(source_package_cache, str)
+        or not Path(source_package_cache).is_absolute()
+        or "\n" in source_package_cache
+        or "\r" in source_package_cache
+    ):
+        raise MaterializationPilotError(
+            "pilot source package-cache binding is invalid"
         )
     if any(
         marker.get(field) != intent.get(field)
@@ -5495,9 +5722,13 @@ def _verify_materialization_pilot_semantic(
             )
         inventories[role] = before
 
+    phase_evidence: dict[str, dict[str, dict[str, Any]]] = {}
     for stage in ("capture", "materialization", "freeze"):
+        phase_evidence[stage] = {}
         for phase in ("dry_run", "apply", "verify"):
-            _read_stage_evidence(root, stage=stage, phase=phase)
+            phase_evidence[stage][phase] = _read_stage_evidence(
+                root, stage=stage, phase=phase
+            )
 
     current_reports = {
         "capture": _without_status(
@@ -5518,6 +5749,30 @@ def _verify_materialization_pilot_semantic(
             raise MaterializationPilotError(
                 f"{stage} sealed verification report drifted"
             )
+    materialization_report = current_reports["materialization"]
+    _require_identical_materialization_phase_bindings(
+        {
+            "dry-run": phase_evidence["materialization"]["dry_run"][
+                "report"
+            ],
+            "apply": phase_evidence["materialization"]["apply"]["report"],
+            "verify": phase_evidence["materialization"]["verify"]["report"],
+            "current-verify": materialization_report,
+        }
+    )
+    package_cache_seed_input = materialization_report.get(
+        "package_cache_seed_input"
+    )
+    if (
+        materialization_report.get("conda_toolchain") != live_toolchain
+        or not isinstance(package_cache_seed_input, dict)
+        or marker.get("package_cache_seed_input")
+        != package_cache_seed_input
+    ):
+        raise MaterializationPilotError(
+            "pilot materialization toolchain or selected package-cache "
+            "input binding drifted"
+        )
     capture_report = current_reports["capture"]
     incident_path = Path(capture_report["reconciliation_incident_path"])
     incident = _read_json(
@@ -5560,6 +5815,13 @@ def _verify_materialization_pilot_semantic(
         ],
         "release_bundle_id": current_reports["freeze"]["release_bundle_id"],
     }
+    package_cache_seed_sha256 = current_reports["materialization"].get(
+        "conda_package_cache_seed_sha256"
+    )
+    if _SHA256_RE.fullmatch(str(package_cache_seed_sha256)) is None:
+        raise MaterializationPilotError(
+            "materialization lacks immutable package-cache seed identity"
+        )
     if marker.get("stage_ids") != expected_stage_ids:
         raise MaterializationPilotError("pilot stage identity binding drifted")
 
@@ -5628,8 +5890,10 @@ def _verify_materialization_pilot_semantic(
         "integrity_normalization_policy_sha256": audit[
             "integrity_normalization_policy_sha256"
         ],
-        "conda_executable": dict(conda_binding),
-        "conda_runtime_toolchain": conda_runtime_binding,
+        "conda_toolchain": live_toolchain,
+        "source_package_cache": source_package_cache,
+        "package_cache_seed_input": dict(package_cache_seed_input),
+        "conda_package_cache_seed_sha256": package_cache_seed_sha256,
         "reconciliation_incident": reconciliation_incident,
         "durable_git_release": dict(
             intent["inputs"]["durable_git_release"]
@@ -5699,7 +5963,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--reconciliation-incident", type=Path, required=True)
     run.add_argument("--recovered-setuptools-record", type=Path, required=True)
-    run.add_argument("--conda-executable", type=Path, required=True)
+    run.add_argument("--conda-toolchain-root", type=Path, required=True)
+    run.add_argument("--source-package-cache", type=Path, required=True)
     run.add_argument(
         "--durable-git-release-marker", type=Path, required=True
     )
@@ -5725,7 +5990,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     render.add_argument("--reconciliation-incident", type=Path, required=True)
     render.add_argument("--recovered-setuptools-record", type=Path, required=True)
-    render.add_argument("--conda-executable", type=Path, required=True)
+    render.add_argument("--conda-toolchain-root", type=Path, required=True)
+    render.add_argument("--source-package-cache", type=Path, required=True)
     render.add_argument(
         "--durable-git-release-marker", type=Path, required=True
     )
@@ -5775,10 +6041,10 @@ def _build_parser() -> argparse.ArgumentParser:
     acceptance.add_argument("--job-id", required=True)
     acceptance.add_argument("--apply", action="store_true")
     runtime = subparsers.add_parser(
-        "conda-runtime-identity",
-        help="inventory the complete Conda base runtime without invoking Conda",
+        "conda-toolchain-binding",
+        help="fully verify and bind the sealed release-local Conda toolchain",
     )
-    runtime.add_argument("--conda-executable", type=Path, required=True)
+    runtime.add_argument("--conda-toolchain-root", type=Path, required=True)
     quarantine = subparsers.add_parser(
         "quarantine",
         help=(
@@ -5815,9 +6081,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 poll_seconds=args.poll_seconds,
                 apply=args.apply,
             )
-        elif args.command == "conda-runtime-identity":
-            report = conda_identity.conda_runtime_identity(
-                args.conda_executable
+        elif args.command == "conda-toolchain-binding":
+            report = conda_toolchain.verified_conda_toolchain_binding(
+                args.conda_toolchain_root,
+                exercise=True,
             )
         elif args.command == "quarantine":
             report = quarantine_interrupted_pilot(
@@ -5844,7 +6111,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 reconciliation_incident=args.reconciliation_incident,
                 recovered_setuptools_record=args.recovered_setuptools_record,
-                conda_executable=args.conda_executable,
+                conda_toolchain_root=args.conda_toolchain_root,
+                source_package_cache=args.source_package_cache,
                 durable_git_release_marker=args.durable_git_release_marker,
                 apply=args.apply,
             )
@@ -5862,7 +6130,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 reconciliation_incident=args.reconciliation_incident,
                 recovered_setuptools_record=args.recovered_setuptools_record,
-                conda_executable=args.conda_executable,
+                conda_toolchain_root=args.conda_toolchain_root,
+                source_package_cache=args.source_package_cache,
                 durable_git_release_marker=args.durable_git_release_marker,
                 sbatch_receipt=args.sbatch_receipt,
                 require_scheduler=True,
@@ -5875,7 +6144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture.EnvironmentCaptureError,
         materialize.MaterializationError,
         freeze.ReleaseFreezeError,
-        conda_identity.CondaRuntimeIdentityError,
+        conda_toolchain.CondaToolchainProvisionError,
         MaterializationPilotError,
     ) as exc:
         print(f"[schema5-materialization-pilot] ERROR: {exc}", file=sys.stderr)

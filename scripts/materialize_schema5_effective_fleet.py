@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Materialize the one production-qualified schema-5 effective fleet.
+"""Materialize the initial production schema-5 effective fleet.
 
-The frozen release contains the immutable 22-replica/24-GPU base fleet.  Protected
-capacity and throughput qualification require one exact additive extension:
+The frozen release contains the immutable 22-replica/24-GPU base fleet.  The
+initial protected-capacity and throughput-qualification generation must use that
+fleet exactly: its additive delta is zero and the effective contract is
+byte-for-byte identical to the tagged base contract.  Additional replicas may be
+introduced only after a sealed throughput-qualification failure through the
+controlled capacity-transition workflow.
 
-* +3 replicas each for the 0.6B, 1.7B, 4B, and 14B standard profiles;
-* +2 replicas for the 8B standard profile;
-* +4 replicas for the 32B standard profile; and
-* no changes to any long-context profile.
-
-All additions are TP=1, yielding exactly 40 logical replicas and 42 active GPUs.
-This tool constructs that contract from the tagged base; operators must never
-hand-author it.  Publication is marker-first/marker-last and create-once:
+This tool constructs the initial effective-fleet transaction from the tagged base;
+operators must never hand-author it.  Publication is marker-first/marker-last and
+create-once:
 
 ``EFFECTIVE_FLEET_INTENT.json``
     freezes the exact release, inputs, output bytes, and fixed delta;
@@ -61,10 +60,10 @@ from slurm import schema5_control as control  # noqa: E402
 
 
 SCHEMA_VERSION = 1
-PROTOCOL = "schema5-v1.2-r3-effective-fleet-materialization-v1"
+PROTOCOL = "schema5-v1.2-r4-effective-fleet-materialization-v1"
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
-CHAIN_NAMESPACE = "schema5-v1.2-r3"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
+CHAIN_NAMESPACE = "schema5-v1.2-r4"
 
 BASE_FILENAME = "schema5_fleet.v1.json"
 MODEL_FILENAME = "model_contracts.v1.json"
@@ -74,12 +73,12 @@ INTENT_FILENAME = "EFFECTIVE_FLEET_INTENT.json"
 COMPLETE_FILENAME = "EFFECTIVE_FLEET_COMPLETE.json"
 
 FIXED_ADDITIVE_PROFILE_DELTA: Mapping[str, int] = {
-    "0.6B": 3,
-    "1.7B": 3,
-    "4B": 3,
-    "8B": 2,
-    "14B": 3,
-    "32B": 4,
+    "0.6B": 0,
+    "1.7B": 0,
+    "4B": 0,
+    "8B": 0,
+    "14B": 0,
+    "32B": 0,
     "0.6B-long": 0,
     "1.7B-long": 0,
     "4B-long": 0,
@@ -93,10 +92,10 @@ EXPECTED_EFFECTIVE_COUNTS: Mapping[str, int] = {
 }
 EXPECTED_BASE_LOGICAL_REPLICAS = 22
 EXPECTED_BASE_GPUS = 24
-EXPECTED_ADDITIVE_LOGICAL_REPLICAS = 18
-EXPECTED_ADDITIVE_GPUS = 18
-EXPECTED_EFFECTIVE_LOGICAL_REPLICAS = 40
-EXPECTED_EFFECTIVE_GPUS = 42
+EXPECTED_ADDITIVE_LOGICAL_REPLICAS = 0
+EXPECTED_ADDITIVE_GPUS = 0
+EXPECTED_EFFECTIVE_LOGICAL_REPLICAS = 22
+EXPECTED_EFFECTIVE_GPUS = 24
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_OBJECT_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -540,7 +539,7 @@ def _validate_candidate(
         != EXPECTED_EFFECTIVE_GPUS
     ):
         raise EffectiveFleetMaterializationError(
-            "effective fleet differs from the fixed 22/24 + 18/18 = 40/42 design"
+            "initial effective fleet differs from the exact zero-delta 22/24 design"
         )
 
 
@@ -613,7 +612,11 @@ def _prepare_transaction(
         base_raw, description="base fleet contract"
     )
     candidate_payload = _construct_effective_payload(base_payload)
-    candidate_raw = _canonical_bytes(candidate_payload)
+    if candidate_payload != base_payload:
+        raise EffectiveFleetMaterializationError(
+            "zero-delta effective fleet changed tagged base semantics"
+        )
+    candidate_raw = base_raw
     candidate_sha256 = _sha256_bytes(candidate_raw)
     checksum_raw = (
         f"{candidate_sha256}  {OUTPUT_FILENAME}\n".encode("ascii")

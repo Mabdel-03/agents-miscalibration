@@ -1100,6 +1100,32 @@ def collect_health_state(
                 state, verify_files=True
             )
         )
+        if int(capacity_contract.capacity_generation) == 1 and (
+            len(effective_fleet.replicas) != 22
+            or sum(
+                replica.gpus_per_replica
+                for replica in effective_fleet.replicas
+            )
+            != 24
+            or capacity_contract.effective_active_logical_replicas != 22
+            or capacity_contract.effective_active_gpus != 24
+            or capacity_contract.additive_reserved_logical_replicas != 0
+            or capacity_contract.additive_reserved_gpus != 0
+            or capacity_contract.retained_warm_turnover_job_elements != 3
+            or capacity_contract.retained_warm_turnover_gpus != 4
+            or capacity_contract.attested_total_gpus != 28
+            or capacity_contract.job_element_accounting.get(
+                "controller_monitor_other_held_job_elements"
+            )
+            != 39
+            or capacity_contract.effective_fleet_contract_sha256
+            != capacity_contract.base_fleet_contract_sha256
+        ):
+            raise protected_capacity.ProtectedCapacityError(
+                "generation-one monitor identity is not the exact "
+                "22-logical/24-active + 3-warm/4-GPU, 28-GPU-attested "
+                "prequalification baseline"
+            )
         live_client_capacity = (
             protected_capacity.capture_live_client_capacity(
                 capacity_contract,

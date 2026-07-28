@@ -31,8 +31,82 @@ FLEET_SHA256 = builder.sha256_file(FLEET_PATH)
 MODEL_SHA256 = builder.sha256_file(MODEL_PATH)
 
 
+def test_builder_scheduler_subprocess_rejects_hostile_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+    hostile = {
+        "PATH": "/tmp/hostile-bin",
+        "BASH_ENV": "/tmp/hostile-bash-env",
+        "GIT_DIR": "/tmp/hostile-git",
+        "GIT_REPLACE_REF_BASE": "refs/hostile/",
+        "LD_PRELOAD": "/tmp/hostile.so",
+        "PYTHONPATH": "/tmp/hostile-python",
+        "SBATCH_PARTITION": "hostile",
+        "SLURM_CONF": "/tmp/hostile-slurm.conf",
+        "SQUEUE_FORMAT": "hostile",
+    }
+    for name, value in hostile.items():
+        monkeypatch.setenv(name, value)
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        observed["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+    result = builder._invoke(None, ["squeue", "--version"], timeout=3.0)
+
+    assert result.returncode == 0
+    assert observed["argv"] == ["/usr/bin/squeue", "--version"]
+    environment = observed["kwargs"]["env"]
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["LANG"] == environment["LC_ALL"] == "C"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
+
+
+def test_capacity_allocation_script_has_noninheriting_trusted_bootstrap(
+    tmp_path: Path,
+) -> None:
+    payload = builder._render_script(
+        root=tmp_path,
+        token=TOKEN,
+        role="client",
+        chunk_index=0,
+        chunk_tasks=24,
+        cpus_per_task=1,
+        memory_mib_per_task=4096,
+        gpus_per_task=0,
+        time_limit="12:00:00",
+        shape_id="client",
+        partition="ou_bcs_normal",
+        qos="normal",
+    )
+
+    assert payload.count("#SBATCH --export=NONE\n") == 1
+    assert "#SBATCH --export=ALL" not in payload
+    assert "export PATH=/usr/bin:/bin" in payload
+    assert "readonly PATH" in payload
+    assert "export GIT_NO_REPLACE_OBJECTS=1" in payload
+    assert payload.index("#SBATCH --export=NONE") < payload.index(
+        "set -euo pipefail"
+    )
+    assert payload.index("set -euo pipefail") < payload.index(
+        "export PATH=/usr/bin:/bin"
+    )
+    syntax = subprocess.run(
+        ["/bin/bash", "-n"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+
 def _capacity_authority(parent: Path) -> dict[str, object]:
-    """Materialize one real, solver-certified 40-replica test authority."""
+    """Materialize the real solver-certified zero-delta baseline authority."""
 
     authority = parent / "capacity-authority"
     authority.mkdir(parents=True, exist_ok=True)
@@ -94,46 +168,21 @@ def _capacity_authority(parent: Path) -> dict[str, object]:
     )
     effective = authority / "schema5_fleet.capacity-v1.json"
     payload = json.loads(FLEET_PATH.read_text(encoding="utf-8"))
-    additions = {
-        "0.6B": 3,
-        "1.7B": 3,
-        "4B": 3,
-        "8B": 2,
-        "14B": 3,
-        "32B": 4,
-    }
-    for profile in payload["profiles"]:
-        name = profile["serving_profile"]
-        for _ in range(additions.get(name, 0)):
-            index = len(profile["replicas"])
-            added = dict(profile["replicas"][-1])
-            added.update(
-                {
-                    "replica_index": index,
-                    "replica_id": expected_replica_id(name, index),
-                    "scheduler_job_name": expected_scheduler_job_name(
-                        name, index
-                    ),
-                }
-            )
-            profile["replicas"].append(added)
-    payload["logical_replica_count"] = sum(
-        len(profile["replicas"]) for profile in payload["profiles"]
-    )
-    payload["allocated_gpu_count"] = sum(
-        int(profile["tensor_parallel_size"]) * len(profile["replicas"])
-        for profile in payload["profiles"]
-    )
-    raw = builder.canonical_bytes(payload)
+    raw = base_raw
     if not effective.exists():
         effective.write_bytes(raw)
         effective.chmod(0o444)
     assert effective.read_bytes() == raw
     effective_sha256 = builder.sha256_file(effective)
     sidecar = effective.with_suffix(".sha256")
-    sidecar.write_text(
-        f"{effective_sha256}  {effective.name}\n",
-        encoding="utf-8",
+    if not sidecar.exists():
+        sidecar.write_text(
+            f"{effective_sha256}  {effective.name}\n",
+            encoding="utf-8",
+        )
+        sidecar.chmod(0o444)
+    assert sidecar.read_text(encoding="utf-8") == (
+        f"{effective_sha256}  {effective.name}\n"
     )
     base_counts = {
         profile["serving_profile"]: len(profile["replicas"])
@@ -207,6 +256,137 @@ def _capacity_cli_arguments(parent: Path) -> list[str]:
         "--capacity-generation",
         str(authority["capacity_generation"]),
     ]
+
+
+def test_capacity_authority_accepts_generation_two_tp2_shortfall(
+    tmp_path: Path,
+) -> None:
+    authority = _capacity_authority(tmp_path)
+    payload = json.loads(FLEET_PATH.read_text(encoding="utf-8"))
+    profile = next(
+        row
+        for row in payload["profiles"]
+        if row["serving_profile"] == "32B-long"
+    )
+    index = len(profile["replicas"])
+    replica = dict(profile["replicas"][-1])
+    replica.update(
+        {
+            "replica_index": index,
+            "replica_id": expected_replica_id("32B-long", index),
+            "scheduler_job_name": expected_scheduler_job_name(
+                "32B-long", index
+            ),
+        }
+    )
+    profile["replicas"].append(replica)
+    payload["logical_replica_count"] = sum(
+        len(row["replicas"]) for row in payload["profiles"]
+    )
+    payload["allocated_gpu_count"] = sum(
+        int(row["tensor_parallel_size"]) * len(row["replicas"])
+        for row in payload["profiles"]
+    )
+    effective_path = (
+        tmp_path / "capacity-authority" / "schema5_fleet.capacity-g2.json"
+    )
+    effective_path.write_bytes(builder.canonical_bytes(payload))
+    effective_path.chmod(0o444)
+    effective_sha256 = builder.sha256_file(effective_path)
+    effective_path.with_suffix(".sha256").write_text(
+        f"{effective_sha256}  {effective_path.name}\n",
+        encoding="utf-8",
+    )
+    effective_path.with_suffix(".sha256").chmod(0o444)
+
+    release_worktree = Path(authority["release_worktree"])
+    source_tree_sha256 = builder.sha256_tree(release_worktree)
+    dispatcher_source_sha256 = builder.sha256_file(
+        release_worktree / "slurm" / "dispatch_sweeps.py"
+    )
+    qualification_runner_source_sha256 = builder.sha256_file(
+        release_worktree
+        / "scripts"
+        / "run_schema5_throughput_qualification.py"
+    )
+    base_counts = {
+        row["serving_profile"]: (
+            len(row["replicas"])
+            - (1 if row["serving_profile"] == "32B-long" else 0)
+        )
+        for row in payload["profiles"]
+    }
+    effective_counts = {
+        row["serving_profile"]: len(row["replicas"])
+        for row in payload["profiles"]
+    }
+    certificate = qualification.build_preflight_capacity_certificate(
+        capacity_generation=2,
+        release_git_commit=COMMIT,
+        source_tree_sha256=source_tree_sha256,
+        release_fleet_contract_sha256=FLEET_SHA256,
+        base_fleet_contract_sha256=FLEET_SHA256,
+        proposed_effective_fleet_contract_sha256=effective_sha256,
+        additive_overlay_contract_sha256=effective_sha256,
+        base_profile_replicas=base_counts,
+        effective_profile_replicas=effective_counts,
+        dispatcher_source_sha256=dispatcher_source_sha256,
+        qualification_runner_source_sha256=(
+            qualification_runner_source_sha256
+        ),
+    )
+    certificate_path = (
+        tmp_path
+        / "capacity-authority"
+        / "capacity-generations"
+        / "c000002"
+        / builder.runtime_capacity.STATIC_FEASIBILITY_FILENAME
+    )
+    certificate_path.parent.mkdir(parents=True)
+    certificate_path.write_bytes(builder.canonical_bytes(certificate))
+    certificate_path.chmod(0o444)
+
+    base_fleet = builder._load_frozen_fleet(
+        fleet_contract_path=Path(authority["base_fleet_contract_path"]),
+        fleet_contract_sha256=str(
+            authority["base_fleet_contract_sha256"]
+        ),
+        model_contract_path=Path(authority["model_contract_path"]),
+        model_contract_sha256=str(authority["model_contract_sha256"]),
+        allow_capacity_layout=False,
+    )
+    effective_fleet = builder._load_frozen_fleet(
+        fleet_contract_path=effective_path,
+        fleet_contract_sha256=effective_sha256,
+        model_contract_path=Path(authority["model_contract_path"]),
+        model_contract_sha256=str(authority["model_contract_sha256"]),
+        allow_capacity_layout=True,
+    )
+    observed = builder._validate_effective_capacity_authority(
+        base_fleet=base_fleet,
+        effective_fleet=effective_fleet,
+        additive_overlay_path=effective_path,
+        additive_overlay_sha256=effective_sha256,
+        static_feasibility_certificate_path=certificate_path,
+        static_feasibility_certificate_sha256=builder.sha256_file(
+            certificate_path
+        ),
+        static_feasibility_certificate_id=certificate["certificate_id"],
+        capacity_generation=2,
+        release_git_commit=COMMIT,
+        source_tree_sha256=source_tree_sha256,
+        dispatcher_source_sha256=dispatcher_source_sha256,
+        qualification_runner_source_sha256=(
+            qualification_runner_source_sha256
+        ),
+    )
+
+    assert observed.capacity_generation == 2
+    assert observed.additive_tp1_logical_replicas == 0
+    assert observed.additive_tp2_logical_replicas == 1
+    assert observed.wave_passed is False
+    assert observed.selected_cell_count == 284
+    assert observed.shortfall_cells == 100
 
 
 def test_sacct_start_times_use_scheduler_local_wall_time(
@@ -800,18 +980,18 @@ def test_dry_run_is_nonmutating_and_every_array_is_at_most_24(
     assert not root.exists()
     roles = report["plan"]["roles"]
     expected_chunks = {
-        "server_active": 40,
+        "server_active": 22,
         "server_warm": 3,
         "client": 16,
-        "reserve": 1,
+        "reserve": 2,
     }
     assert {
         role: len(record["chunks"]) for role, record in roles.items()
     } == expected_chunks
-    assert roles["server_active"]["tasks"] == 40
+    assert roles["server_active"]["tasks"] == 22
     assert roles["server_warm"]["tasks"] == 3
     assert roles["client"]["tasks"] == 384
-    assert roles["reserve"]["tasks"] == 21
+    assert roles["reserve"]["tasks"] == 39
     assert sum(record["tasks"] for record in roles.values()) == 448
     assert report["plan"]["expected_total_job_elements"] == 448
     release_worktree = Path(str(plan["release_worktree"]))
@@ -842,9 +1022,9 @@ def test_dry_run_is_nonmutating_and_every_array_is_at_most_24(
     )
     assert report["plan"]["job_element_accounting"] == {
         "cell_job_elements": 384,
-        "active_server_job_elements": 40,
+        "active_server_job_elements": 22,
         "warm_turnover_job_elements": 3,
-        "controller_monitor_other_held_job_elements": 21,
+        "controller_monitor_other_held_job_elements": 39,
         "total_non_cell_reserve_job_elements": 64,
         "total_canary_job_elements": 448,
     }
@@ -910,10 +1090,10 @@ def test_prepare_is_idempotent_and_persists_all_chunk_intents(
     ledger = json.loads(
         (root / builder.LEDGER_FILENAME).read_text(encoding="utf-8")
     )
-    assert len(ledger["jobs"]) == 60
-    assert len({row["comment"] for row in ledger["jobs"].values()}) == 60
+    assert len(ledger["jobs"]) == 43
+    assert len({row["comment"] for row in ledger["jobs"].values()}) == 43
     scripts = sorted((root / "sbatch").glob("*.sbatch"))
-    assert len(scripts) == 60
+    assert len(scripts) == 43
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o444 for path in scripts)
     intent_path = root / builder.INTENT_FILENAME
     assert stat.S_IMODE(intent_path.stat().st_mode) == 0o444
@@ -952,13 +1132,13 @@ def test_apply_submits_and_observes_full_concurrent_capacity_then_publishes(
     )
 
     assert report["status"] == "complete"
-    assert len(scheduler.submissions) == 60
+    assert len(scheduler.submissions) == 43
     assert sum(
         int(chunk["gpus"])
         for record in plan["roles"].values()
         for chunk in record["chunks"]
         if record["gpus"]
-    ) == 46
+    ) == 28
     assert sum(
         int(chunk["tasks"])
         for chunk in plan["roles"]["client"]["chunks"]
@@ -966,11 +1146,11 @@ def test_apply_submits_and_observes_full_concurrent_capacity_then_publishes(
     assert sum(
         int(chunk["tasks"])
         for chunk in plan["roles"]["reserve"]["chunks"]
-    ) == 21
+    ) == 39
     assert sum(
         int(record["tasks"]) for record in plan["roles"].values()
     ) == 448
-    assert len(scheduler.cancellations) == 1
+    assert len(scheduler.cancellations) == 2
     marker = publisher.verify_marker(
         recovery_root,
         expected_release_git_commit=COMMIT,
@@ -983,7 +1163,7 @@ def test_apply_submits_and_observes_full_concurrent_capacity_then_publishes(
             plan["qualification_runner_source_sha256"]
         ),
     )
-    assert marker["active_gpus"] == 42
+    assert marker["active_gpus"] == 24
     assert marker["warm_headroom_gpus"] == 4
     assert marker["cell_ceiling"] == 384
     assert marker["reserve_jobs"] == 64
@@ -1079,7 +1259,7 @@ def test_exact_448_canary_includes_existing_global_occupancy(
     )
 
     assert report["status"] == "complete"
-    assert len(scheduler.submissions) == 60
+    assert len(scheduler.submissions) == 43
     ledger = builder._load_ledger(root, plan=builder._load_plan(root))
     preflight = ledger["occupancy_preflight"]
     assert preflight["existing_job_elements"] == 52

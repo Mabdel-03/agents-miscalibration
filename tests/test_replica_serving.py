@@ -87,6 +87,14 @@ def test_render_long_profile_uses_tp2_40k_but_serves_model_identity(tmp_path):
     assert f"--server-pool-id \"{registry.server_pool_id(tmp_path)}\"" in text
     assert f'--run-root "{tmp_path.resolve()}"' in text
     assert "#SBATCH --no-requeue" in text
+    assert "#SBATCH --export=NONE" in text
+    assert "#SBATCH --export=ALL" not in text
+    assert "unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD" in text
+    assert "export PATH=/usr/bin:/bin" in text
+    assert "readonly PATH" in text
+    assert "export GIT_NO_REPLACE_OBJECTS=1" in text
+    assert text.index("#SBATCH --export=NONE") < text.index("set -euo pipefail")
+    assert text.index("set -euo pipefail") < text.index("export PATH=/usr/bin:/bin")
     assert "#SBATCH --gres=gpu:a100:2" in text
     assert "--tensor-parallel-size 2" in text
     assert "--max-model-len 40960" in text
@@ -924,6 +932,10 @@ def _frozen_environment_render_kwargs(tmp_path, *, generation=1):
                 "path": f"/sealed/build-tools/{role}/conda",
                 "sha256": "2" * 64,
             },
+            "conda_toolchain": {
+                "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+                "binding_id": "b" * 64,
+            },
             "environment_seed": {
                 "capture_id": "3" * 64,
                 "capture_marker_sha256": "4" * 64,
@@ -943,9 +955,10 @@ def _frozen_environment_render_kwargs(tmp_path, *, generation=1):
             },
             "normalization_receipt": {"id": "7" * 64},
             "conda_package_cache_sha256": "8" * 64,
+            "conda_package_cache_seed_sha256": "a" * 64,
         }
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "release_id": release_id,
             "role": role,
             "prefix": str(prefix.resolve()),
@@ -982,8 +995,12 @@ def _frozen_environment_render_kwargs(tmp_path, *, generation=1):
                         "normalization_receipt"
                     ],
                     "conda_creation_tool": provenance["conda_creation_tool"],
+                    "conda_toolchain": provenance["conda_toolchain"],
                     "conda_package_cache_sha256": provenance[
                         "conda_package_cache_sha256"
+                    ],
+                    "conda_package_cache_seed_sha256": provenance[
+                        "conda_package_cache_seed_sha256"
                     ],
                     "inventory_sha256": inventory["inventory_sha256"],
                 }
@@ -3767,6 +3784,12 @@ def test_fleet_tick_revalidates_stable_scheduler_policy_under_transaction_lock(
                 ),
                 static_feasibility_certificate_sha256="a" * 64,
                 static_feasibility_certificate_id="b" * 64,
+                static_feasibility_wave_passed=True,
+                static_feasibility_selected_cell_count=384,
+                static_feasibility_target_cell_count=384,
+                static_feasibility_shortfall_cells=0,
+                static_feasibility_configured_client_ceiling=384,
+                static_feasibility_certified_saturation_target=384,
                 fleet_contract_sha256=fleet.sha256,
                 active_fleet_topology_sha256="9" * 64,
                 base_active_logical_replicas=len(fleet.replicas),

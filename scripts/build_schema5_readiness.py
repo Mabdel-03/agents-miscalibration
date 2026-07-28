@@ -70,7 +70,7 @@ from scripts.audit_context_capacity import AuditFilters, selected_cells  # noqa:
 from scripts import schema5_email_ack  # noqa: E402
 from scripts.verify_schema5_recovery_evidence import (  # noqa: E402
     EvidenceVerificationError,
-    R3_PROTOCOL,
+    R4_PROTOCOL,
     verify_recovery_evidence,
 )
 from slurm import keepalive  # noqa: E402
@@ -85,10 +85,10 @@ EXPECTED_DENSE_REQUESTS = 43_092
 EXPECTED_SEVEN_CELLS = 288
 EXPECTED_SEVEN_REQUESTS = 57_456
 CAPACITY_TRANSIENT_PROTOCOL = (
-    "schema5-v1.2-r3-fleet-capacity-transient-receipt"
+    "schema5-v1.2-r4-fleet-capacity-transient-receipt"
 )
 CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-fleet-capacity-transient-evidence"
+    "schema5-v1.2-r4-fleet-capacity-transient-evidence"
 )
 CAPACITY_TRANSIENT_EVIDENCE_NAME = "FLEET_CAPACITY_TRANSIENT_EVIDENCE.json"
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
@@ -104,7 +104,7 @@ CAPACITY_PREIMAGE_ROOT_NAME = "sealed-preimages"
 CAPACITY_PREIMAGE_MANIFEST_NAME = "PREIMAGE_MANIFEST.json"
 CAPACITY_PREIMAGE_INVENTORY_NAME = "PREIMAGE_INVENTORY.sha256"
 CAPACITY_PREIMAGE_COMPLETE_NAME = "PREIMAGE_ARCHIVE_COMPLETE.json"
-CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r3-capacity-preimage-archive"
+CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r4-capacity-preimage-archive"
 
 
 class EvidenceError(RuntimeError):
@@ -1039,6 +1039,80 @@ def _paused_next_generation_runtime_environment(
     return {name: str(environment[name]) for name in required}
 
 
+def _validate_capacity_wave_admission_fence(
+    control: Mapping[str, Any],
+    *,
+    fleet_binding: Mapping[str, Any],
+    contract: protected_capacity.ProtectedCapacityContract,
+) -> dict[str, Any]:
+    """Join the fleet authority to its configured ceiling and saturation cut.
+
+    The 384-client value is a Slurm admission ceiling, not a promise of 384
+    simultaneous endpoint leases.  The signed WDRR selection is the independently
+    certified saturation target that qualification keeps filled and refilled.
+    A sub-ceiling target is valid in every generation and is not itself a reason
+    to pause admission or initiate a capacity transition.
+    """
+
+    del control
+    authority = fleet_binding.get("protected_capacity")
+    summary = {
+        "capacity_generation": contract.capacity_generation,
+        "path": str(contract.static_feasibility_certificate_path),
+        "sha256": contract.static_feasibility_certificate_sha256,
+        "certificate_id": contract.static_feasibility_certificate_id,
+        "effective_fleet_contract_sha256": (
+            contract.effective_fleet_contract_sha256
+        ),
+        "wave_passed": contract.static_feasibility_wave_passed,
+        "selected_cell_count": (
+            contract.static_feasibility_selected_cell_count
+        ),
+        "target_cell_count": contract.static_feasibility_target_cell_count,
+        "shortfall_cells": contract.static_feasibility_shortfall_cells,
+        "configured_client_ceiling": (
+            contract.static_feasibility_configured_client_ceiling
+        ),
+        "certified_saturation_target": (
+            contract.static_feasibility_certified_saturation_target
+        ),
+    }
+    if (
+        not isinstance(authority, Mapping)
+        or type(fleet_binding.get("capacity_generation")) is not int
+        or fleet_binding.get("capacity_generation")
+        != contract.capacity_generation
+        or fleet_binding.get("sha256")
+        != contract.effective_fleet_contract_sha256
+        or authority.get("static_feasibility_certificate_path")
+        != summary["path"]
+        or authority.get("static_feasibility_certificate_sha256")
+        != summary["sha256"]
+        or authority.get("static_feasibility_certificate_id")
+        != summary["certificate_id"]
+        or authority.get("effective_fleet_contract_sha256")
+        != summary["effective_fleet_contract_sha256"]
+        or type(summary["selected_cell_count"]) is not int
+        or type(summary["target_cell_count"]) is not int
+        or type(summary["shortfall_cells"]) is not int
+        or not 0 < summary["selected_cell_count"] <= 384
+        or summary["target_cell_count"] != 384
+        or summary["configured_client_ceiling"] != 384
+        or summary["configured_client_ceiling"]
+        != summary["target_cell_count"]
+        or summary["certified_saturation_target"]
+        != summary["selected_cell_count"]
+        or summary["shortfall_cells"]
+        != summary["target_cell_count"] - summary["selected_cell_count"]
+        or summary["wave_passed"]
+        is not (summary["shortfall_cells"] == 0)
+    ):
+        raise EvidenceError(
+            "fleet readiness capacity generation/certificate/wave binding drifted"
+        )
+    return summary
+
+
 def _verify_registry(
     *,
     pool_root: Path,
@@ -1386,6 +1460,43 @@ def build_fleet_gate(
         != fleet_binding["allocated_gpus"]
     ):
         raise EvidenceError("fleet readiness differs from its capacity generation")
+    if int(fleet_binding["capacity_generation"]) == 1:
+        try:
+            initial_capacity = (
+                control_plane.load_effective_protected_capacity_contract(
+                    control, verify_files=True
+                )
+            )
+        except (
+            control_plane.ControlError,
+            control_plane.ImmutablePinError,
+            protected_capacity.ProtectedCapacityError,
+        ) as exc:
+            raise EvidenceError(
+                f"prequalification capacity baseline is invalid: {exc}"
+            ) from exc
+        if (
+            fleet_binding["logical_replicas"] != 22
+            or fleet_binding["allocated_gpus"] != 24
+            or initial_capacity.effective_active_logical_replicas != 22
+            or initial_capacity.effective_active_gpus != 24
+            or initial_capacity.additive_reserved_logical_replicas != 0
+            or initial_capacity.additive_reserved_gpus != 0
+            or initial_capacity.retained_warm_turnover_job_elements != 3
+            or initial_capacity.retained_warm_turnover_gpus != 4
+            or initial_capacity.attested_total_gpus != 28
+            or initial_capacity.job_element_accounting.get(
+                "controller_monitor_other_held_job_elements"
+            )
+            != 39
+            or initial_capacity.effective_fleet_contract_sha256
+            != initial_capacity.base_fleet_contract_sha256
+        ):
+            raise EvidenceError(
+                "prequalification fleet readiness must use exactly 22 logical "
+                "replicas/24 active GPUs, zero additive replicas, 3 warm jobs/"
+                "4 warm GPUs, 28 attested GPUs, and 39 held non-cell slots"
+            )
 
     transaction_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None
     control_scheduler_reader = None
@@ -1475,6 +1586,11 @@ def build_fleet_gate(
             control_plane.load_effective_protected_capacity_contract(
                 control, verify_files=True
             )
+        )
+        _validate_capacity_wave_admission_fence(
+            control,
+            fleet_binding=fleet_binding,
+            contract=protected_contract,
         )
         protected_capacity.authorize_client(
             protected_contract,
@@ -2142,6 +2258,43 @@ def _validate_raw_fleet_readiness(
         allow_capacity_layout=True,
     )
     fleet.verify_pool_root(pool_root)
+    if int(fleet_binding["capacity_generation"]) == 1:
+        try:
+            initial_capacity = (
+                control_plane.load_effective_protected_capacity_contract(
+                    control, verify_files=True
+                )
+            )
+        except (
+            control_plane.ControlError,
+            control_plane.ImmutablePinError,
+            protected_capacity.ProtectedCapacityError,
+        ) as exc:
+            raise EvidenceError(
+                f"raw prequalification capacity baseline is invalid: {exc}"
+            ) from exc
+        if (
+            len(fleet.replicas) != 22
+            or sum(replica.gpus_per_replica for replica in fleet.replicas)
+            != 24
+            or initial_capacity.effective_active_logical_replicas != 22
+            or initial_capacity.effective_active_gpus != 24
+            or initial_capacity.additive_reserved_logical_replicas != 0
+            or initial_capacity.additive_reserved_gpus != 0
+            or initial_capacity.retained_warm_turnover_job_elements != 3
+            or initial_capacity.retained_warm_turnover_gpus != 4
+            or initial_capacity.attested_total_gpus != 28
+            or initial_capacity.job_element_accounting.get(
+                "controller_monitor_other_held_job_elements"
+            )
+            != 39
+            or initial_capacity.effective_fleet_contract_sha256
+            != initial_capacity.base_fleet_contract_sha256
+        ):
+            raise EvidenceError(
+                "raw prequalification fleet evidence is not the exact "
+                "22-logical/24-active + 3-warm/4-GPU, 28-GPU-attested baseline"
+            )
     try:
         transport_binding = (
             scheduler_safety.validate_transport_uncertainty_binding(
@@ -2219,6 +2372,11 @@ def _validate_raw_fleet_readiness(
             control_plane.load_effective_protected_capacity_contract(
                 control, verify_files=True
             )
+        )
+        _validate_capacity_wave_admission_fence(
+            control,
+            fleet_binding=fleet_binding,
+            contract=protected_contract,
         )
         if not isinstance(stored_client_capacity, Mapping):
             raise protected_capacity.ProtectedCapacityError(
@@ -3199,9 +3357,9 @@ def _verified_capacity_chain_binding(
         verified = verify_recovery_evidence(chain_manifest, submission_receipt)
     except EvidenceVerificationError as exc:
         raise EvidenceError(f"capacity-transient chain evidence is invalid: {exc}") from exc
-    if verified["chain_protocol"] != R3_PROTOCOL:
+    if verified["chain_protocol"] != R4_PROTOCOL:
         raise EvidenceError(
-            "capacity-transient receipt accepts only the active r3 wire protocol"
+            "capacity-transient receipt accepts only the active r4 wire protocol"
         )
     manifest = verified["manifest"]
     receipt = verified["submission_receipt"]
@@ -3339,7 +3497,7 @@ def _validate_capacity_transient_evidence(
         or payload.get("schema_version") != 1
         or payload.get("protocol") != CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL
         or payload.get("passed") is not True
-        or payload.get("chain_protocol") != R3_PROTOCOL
+        or payload.get("chain_protocol") != R4_PROTOCOL
         or payload.get("chain_id") != verified["manifest"]["chain_id"]
         or payload.get("chain_generation") != binding["chain_generation"]
         or payload.get("manifest") != verified["manifest_path"]
@@ -4967,7 +5125,7 @@ def build_fleet_capacity_transient_receipt(
                 "schema_version": 1,
                 "protocol": CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL,
                 "passed": True,
-                "chain_protocol": R3_PROTOCOL,
+                "chain_protocol": R4_PROTOCOL,
                 "chain_id": verified["manifest"]["chain_id"],
                 "chain_generation": binding["chain_generation"],
                 "manifest": verified["manifest_path"],

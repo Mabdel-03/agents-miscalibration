@@ -487,9 +487,15 @@ def _spooled_job_provenance(
         port_match is None
         or int(port_match.group("port")) != _port_for(profile.name, replica_index)
         or "#SBATCH --no-requeue" not in script
+        or "#SBATCH --export=NONE" not in script
         or "importlib.metadata.version(\"vllm\") == \"0.21.0\"" not in script
         or "export PYTHONDONTWRITEBYTECODE=1" not in script
         or "export PYTHONPATH=" not in script
+        or "unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD"
+        not in script
+        or "export PATH=/usr/bin:/bin" not in script
+        or "readonly PATH" not in script
+        or "export GIT_NO_REPLACE_OBJECTS=1" not in script
         or (
             "unset PYTHONHOME VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV "
             "LD_LIBRARY_PATH LD_PRELOAD"
@@ -1218,6 +1224,7 @@ def _validate_fleet_script_contract(
         f"#SBATCH --mem={replica.memory}",
         f"#SBATCH --time={replica.time_limit}",
         "#SBATCH --no-requeue",
+        "#SBATCH --export=NONE",
         f'export ASYS_ROLLOUT_GENERATION="{rollout_generation}"',
     )
     if any(
@@ -1233,6 +1240,11 @@ def _validate_fleet_script_contract(
         or f'--fleet-contract-sha256 "{fleet_sha256}"' not in script
         or f'--replica-id "{replica.replica_id}"' not in script
         or f'--replica-index {replica.replica_index}' not in script
+        or "unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD"
+        not in script
+        or "export PATH=/usr/bin:/bin" not in script
+        or "readonly PATH" not in script
+        or "export GIT_NO_REPLACE_OBJECTS=1" not in script
     ):
         raise FleetContractError(
             f"rendered script omits frozen identity for {replica.replica_id}"

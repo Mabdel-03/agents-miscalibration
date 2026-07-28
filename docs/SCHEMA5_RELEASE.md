@@ -7,21 +7,31 @@ identity.
 
 ## Superseding operational lineage
 
-The current operational tag is `sweep-recovery-schema5-v1.2-r3` and its chain
-namespace is `schema5-v1.2-r3`. The r2 tag, remote branch, durable bundle/checksum,
-and `DURABLE_GIT_RELEASE_COMPLETE.json` are immutable historical evidence and must
-not be moved, rewritten, or copied into r3 paths. The deterministic r2 live-canary
+The current operational tag is `sweep-recovery-schema5-v1.2-r4` and its chain
+namespace is `schema5-v1.2-r4`. The r2 and r3 tags, remote branches, durable
+bundles/checksums, and completion markers are immutable historical evidence and must
+not be moved, rewritten, or copied into r4 paths. The deterministic r2 live-canary
 scheduler-capture failure has disposition `requires_superseding_release`; its
 original partial tree remains recursively read-only in place and is bound by
 `$schema5_recovery/canary_failures/schema5-v1.2-r2/CANARY_FAILURE_SEALED.json`
 using protocol `schema5-v1.2-r2-partial-canary-failure-seal-v1`.
 
-The r3 recovery renderer must verify and bind that exact seal before render and
-submission. All r3 pilot, canary, source-checkout, batch-job/log, and
-protected-capacity roots are new. Every newly created r3 artifact uses a
-`schema5-v1.2-r3-*` protocol identity and binds the r3 tag and namespace. An r2
-protocol is accepted only while verifying the explicitly named immutable r2
-canary/quarantine evidence above; it is never emitted for fresh production state.
+The immutable r3 release (`acd723ba9a99d88e77f7d752268bc31205c3a808`, annotated
+tag object `fa87b283974afc1fa48fcb22b61e6ae7eec4bb36`) exposed two deterministic
+prelaunch defects: the shared Miniforge runtime contains a recorded broken internal
+compiler-tool symlink, and its release-local offline clone cache was not seeded.
+No r3 scheduler job or scientific mutation followed. The marker-last evidence at
+`$schema5_recovery/prelaunch_failures/schema5-v1.2-r3/PRELAUNCH_FAILURE_SEALED.json`
+must verify under `schema5-v1.2-r3-prelaunch-failure-seal-v1`, contain both exact
+failure classifications, set `retry_in_place=false` and
+`requires_superseding_release=true`, and report an empty scheduler-job list.
+
+The r4 recovery renderer must independently verify and bind both exact historical
+seals before render and submission. All r4 pilot, canary, source-checkout, batch-job/log, and
+protected-capacity roots are new. Every newly created r4 artifact uses a
+`schema5-v1.2-r4-*` protocol identity and binds the r4 tag and namespace. An r2
+or r3 protocol is accepted only while verifying the explicitly named immutable
+historical evidence above; it is never emitted for fresh production state.
 
 ## Contract
 
@@ -35,6 +45,16 @@ The release pipeline has three distinct marker-last steps:
    `MATERIALIZATION_COMPLETE.json` only after all stages validate.
 3. `freeze_schema5_release.py` inventories and seals those live inputs and publishes
    `RELEASE_COMPLETE.json` only after re-reading every input and artifact.
+
+Prelaunch protected capacity is deliberately the tagged base fleet, not a speculative
+scale-up: generation one has 22 logical replicas on 24 active GPUs, zero additive
+replicas/GPUs, three warm-turnover jobs using four GPUs, and exactly 28 attested GPUs.
+The inclusive 64-job non-cell reserve is 22 active servers + 3 warm jobs + 39 held
+controller/monitor/other slots; with 384 clients this is exactly 448 submitted job
+elements. The zero-QID admission certificate truthfully records the base fleet's
+278/384 selected cells and 106-cell shortfall. Additive replicas are permitted only
+after qualification fails and a controlled capacity transition publishes a new
+generation and reruns the affected readiness and smoke gates.
 
 No program invokes Conda against either developer prefix. Capture uses neither
 hardlinks nor reflinks and requires equal source-before, source-after, and copied
@@ -139,19 +159,26 @@ Dry-run first:
 
 ```bash
 schema5_recovery=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/recovery/schema5-v1
-schema5_conda=/orcd/data/lhtsai/001/om2/mabdel03/miniforge3/bin/conda
-schema5_pilot="$schema5_recovery/materialization_pilots/schema5-v1.2-r3"
-# The production DAG owns release_source_checkout_v1_2_r3 and requires it to be
+schema5_pilot="$schema5_recovery/materialization_pilots/schema5-v1.2-r4"
+schema5_conda_toolchain_root="$schema5_recovery/toolchains/schema5-v1.2-r4/conda-toolchain-miniforge3-25.11.0-1"
+schema5_source_package_cache=/orcd/home/002/mabdel03/.conda/pkgs
+# The production DAG owns release_source_checkout_v1_2_r4 and requires it to be
 # absent at render time.  Keep the prerequisite pilot checkout in its own namespace.
-schema5_checkout="$schema5_recovery/materialization_pilot_source_checkout_v1_2_r3"
+schema5_checkout="$schema5_recovery/materialization_pilot_source_checkout_v1_2_r4"
 schema5_commit="$(git -C "$schema5_checkout" rev-parse HEAD)"
+test "$(git -C "$schema5_checkout" rev-parse refs/tags/sweep-recovery-schema5-v1.2-r4^{commit})" = "$schema5_commit"
+test -z "$(git -C "$schema5_checkout" status --porcelain=v1 --untracked-files=all)"
+test ! -e "$schema5_checkout/.git/objects/info/alternates"
 schema5_dev_python="$(realpath -e /orcd/home/002/mabdel03/conda_envs/asys_env/bin/python)"
 schema5_pilot_script="$schema5_checkout/scripts/run_schema5_materialization_pilot.py"
+
+"$schema5_dev_python" -I "$schema5_checkout/scripts/provision_schema5_conda_toolchain.py" verify \
+  --toolchain-root "$schema5_conda_toolchain_root"
 
 "$schema5_dev_python" -I "$schema5_pilot_script" run \
   --pilot-root "$schema5_pilot" \
   --release-checkout "$schema5_checkout" \
-  --expected-tag sweep-recovery-schema5-v1.2-r3 \
+  --expected-tag sweep-recovery-schema5-v1.2-r4 \
   --expected-commit "$schema5_commit" \
   --harness-source /orcd/home/002/mabdel03/conda_envs/asys_env \
   --serving-source /orcd/home/002/mabdel03/conda_envs/serve_env \
@@ -159,8 +186,9 @@ schema5_pilot_script="$schema5_checkout/scripts/run_schema5_materialization_pilo
   --integrity-normalization-policy "$schema5_checkout/configs/environment_integrity_normalization_policy.v1.json" \
   --reconciliation-incident "$schema5_recovery/post_snapshot_incidents/2026-07-23_conda_pip_interop_source_metadata_reconciliation.json" \
   --recovered-setuptools-record "$schema5_recovery/releases/quarantine/sweep-recovery-schema5-v1.1.partial-job-18555913/environments/harness/conda-meta/setuptools-82.0.1-pyh332efcf_0.json" \
-  --conda-executable "$schema5_conda" \
-  --durable-git-release-marker "$schema5_recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"
+  --conda-toolchain-root "$schema5_conda_toolchain_root" \
+  --source-package-cache "$schema5_source_package_cache" \
+  --durable-git-release-marker "$schema5_recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R4_COMPLETE.json"
 ```
 
 Do not add `--apply` to that interactive command. The immutable batch job rendered
@@ -181,11 +209,13 @@ The superseding recovery-chain renderer requires this exact canonical pilot root
 runs the complete tagged pilot verifier, then binds the canonical root, marker hash
 and size, full report and report hash, pilot ID, release tag object and commit, and
 the exact tagged pilot/capture/materialize/freeze/runtime-inventory source hashes into
-chain schema 6. Creation-time gates rerun immediately before scheduler submission;
+chain schema 11 and prerequisite-evidence schema 7. Creation-time gates rerun
+immediately before scheduler submission;
 sealed chain verification uses the immutable bundle and sealed evidence without the
-mutable source checkout or external Conda installation. Pilot schema 4 also exports
+mutable source checkout or external Conda installation. Pilot schema 5 also exports
 the exact full live harness and serving inventory hashes and the tested Conda
-entrypoint, absolute shebang interpreter, and repeated full base-runtime inventory
+toolchain marker, verified entrypoint, absolute shebang interpreter, and repeated
+full base-runtime inventory
 (excluding only package caches and child environment roots). Production capture must
 match both live-prefix inventory hashes before and after copying; production
 materialization checks both the entrypoint and complete runtime-toolchain identity
@@ -196,9 +226,9 @@ Render the durable batch job from the same exact annotated checkout rather than
 running the apply phase interactively:
 
 ```bash
-schema5_pilot_sbatch="$schema5_recovery/jobs/schema5-v1.2-r3-materialization-pilot.sbatch"
+schema5_pilot_sbatch="$schema5_recovery/jobs/schema5-v1.2-r4-materialization-pilot.sbatch"
 schema5_pilot_receipt="$schema5_pilot_sbatch.receipt.json"
-schema5_pilot_logs="$schema5_recovery/logs/materialization-pilot-r3"
+schema5_pilot_logs="$schema5_recovery/logs/materialization-pilot-r4"
 
 "$schema5_dev_python" -I "$schema5_pilot_script" render-sbatch \
   --sbatch-path "$schema5_pilot_sbatch" \
@@ -207,7 +237,7 @@ schema5_pilot_logs="$schema5_recovery/logs/materialization-pilot-r3"
   --python-executable "$schema5_dev_python" \
   --pilot-root "$schema5_pilot" \
   --release-checkout "$schema5_checkout" \
-  --expected-tag sweep-recovery-schema5-v1.2-r3 \
+  --expected-tag sweep-recovery-schema5-v1.2-r4 \
   --expected-commit "$schema5_commit" \
   --harness-source /orcd/home/002/mabdel03/conda_envs/asys_env \
   --serving-source /orcd/home/002/mabdel03/conda_envs/serve_env \
@@ -215,8 +245,9 @@ schema5_pilot_logs="$schema5_recovery/logs/materialization-pilot-r3"
   --integrity-normalization-policy "$schema5_checkout/configs/environment_integrity_normalization_policy.v1.json" \
   --reconciliation-incident "$schema5_recovery/post_snapshot_incidents/2026-07-23_conda_pip_interop_source_metadata_reconciliation.json" \
   --recovered-setuptools-record "$schema5_recovery/releases/quarantine/sweep-recovery-schema5-v1.1.partial-job-18555913/environments/harness/conda-meta/setuptools-82.0.1-pyh332efcf_0.json" \
-  --conda-executable "$schema5_conda" \
-  --durable-git-release-marker "$schema5_recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"
+  --conda-toolchain-root "$schema5_conda_toolchain_root" \
+  --source-package-cache "$schema5_source_package_cache" \
+  --durable-git-release-marker "$schema5_recovery/DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R4_COMPLETE.json"
 ```
 
 Repeat the render with `--apply`, review the immutable `.sbatch`, `.sha256`, and
@@ -422,8 +453,8 @@ candidate.
 ## Materialize
 
 First finish and test the source, create the exact tag
-`sweep-recovery-schema5-v1.2-r3`, and make the fresh
-`release_source_checkout_v1_2_r3` checkout containing only that tag's tracked files.
+`sweep-recovery-schema5-v1.2-r4`, and make the fresh
+`release_source_checkout_v1_2_r4` checkout containing only that tag's tracked files.
 The operational retry tag is distinct from the production artifact ID
 `sweep-recovery-schema5-v1.2`. The materializer rejects a source checkout whose `HEAD`,
 status, or source-tree hash differs from the tag. Do not reuse the cancelled v1.1
@@ -437,7 +468,11 @@ First capture the environments. The following is a dry run because it omits
 schema5_recovery=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/recovery/schema5-v1
 schema5_release_base="$schema5_recovery/releases/sweep-recovery-schema5-v1.2"
 schema5_capture="$schema5_recovery/environment_captures/sweep-recovery-schema5-v1.2"
-schema5_conda=/orcd/data/lhtsai/001/om2/mabdel03/miniforge3/bin/conda
+schema5_conda_toolchain_root="$schema5_recovery/toolchains/schema5-v1.2-r4/conda-toolchain-miniforge3-25.11.0-1"
+schema5_source_package_cache=/orcd/home/002/mabdel03/.conda/pkgs
+schema5_checkout="$schema5_recovery/materialization_pilot_source_checkout_v1_2_r4"
+schema5_pilot="$schema5_recovery/materialization_pilots/schema5-v1.2-r4"
+schema5_pilot_python="$schema5_pilot/materialization/harness-environment/bin/python"
 
 python scripts/capture_schema5_environments.py capture \
   --output-root "$schema5_capture" \
@@ -451,30 +486,48 @@ python scripts/capture_schema5_environments.py capture \
 
 Repeat the exact command with `--apply`, then verify it with
 `capture_schema5_environments.py verify --output-root "$schema5_capture"`. Next
-dry-run materialization:
+extract the exact cache-input contract from the already verified schema-5 pilot.
+Do not recompute or hand-author this JSON:
 
 ```bash
-python scripts/materialize_schema5_release.py materialize \
+test -f "$schema5_pilot/PILOT_COMPLETE.json"
+test ! -L "$schema5_pilot/PILOT_COMPLETE.json"
+schema5_expected_cache_input="$(
+  "$schema5_pilot_python" -I -c \
+    'import json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps(p["package_cache_seed_input"], sort_keys=True, separators=(",", ":")))' \
+    "$schema5_pilot/PILOT_COMPLETE.json"
+)"
+
+env LD_LIBRARY_PATH="$schema5_pilot/materialization/harness-environment/lib" \
+"$schema5_pilot_python" -I \
+"$schema5_checkout/scripts/materialize_schema5_release.py" materialize \
   --output-root "$schema5_release_base" \
   --environment-capture-root "$schema5_capture" \
-  --source-repository "$schema5_recovery/release_source_checkout_v1_2_r3" \
+  --source-repository "$schema5_checkout" \
   --release-worktree "$schema5_release_base/worktree" \
   --source-harness-prefix "$schema5_capture/seeds/harness" \
   --source-serving-prefix "$schema5_capture/seeds/serving" \
+  --source-package-cache "$schema5_source_package_cache" \
   --harness-prefix "$schema5_release_base/environments/harness" \
   --serving-prefix "$schema5_release_base/environments/serving" \
-  --conda-executable "$schema5_conda"
+  --expected-package-cache-seed-input-json "$schema5_expected_cache_input" \
+  --conda-toolchain-root "$schema5_conda_toolchain_root"
 ```
 
 Review the resolved paths and tag commit, then repeat the exact command with `--apply`.
 Because the two physical copies are large, run the apply command inside a durable,
 `--no-requeue` batch allocation with enough wall time. Do not run two materializers
-against the same destination.
+against the same destination. Materialization schema 5 first verifies the sealed
+release-local toolchain and then copies the exact required package artifacts and
+cache metadata from `--source-package-cache` into its checksummed local seed. It
+never executes the shared Miniforge base or invokes Conda against either live
+developer prefix.
 
-Verify the completed materialization independently:
+Verify the completed materialization independently with the same tagged tool:
 
 ```bash
-python scripts/materialize_schema5_release.py verify \
+"$schema5_pilot_python" -I \
+"$schema5_checkout/scripts/materialize_schema5_release.py" verify \
   --output-root "$schema5_release_base"
 ```
 

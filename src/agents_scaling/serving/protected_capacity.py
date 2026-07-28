@@ -33,35 +33,44 @@ from agents_scaling.serving.profiles import SERVING_PROFILES
 
 
 SCHEMA_VERSION = 4
-PROTOCOL = "schema5-v1.2-r3-protected-capacity-v4"
+PROTOCOL = "schema5-v1.2-r4-protected-capacity-v4"
 STATIC_FEASIBILITY_SCHEMA_VERSION = 3
 STATIC_FEASIBILITY_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-preflight-capacity-certificate-v1"
+    "schema5-v1.2-r4-throughput-preflight-capacity-certificate-v1"
 )
 LIVE_CLIENT_CAPACITY_PROTOCOL = (
-    "schema5-v1.2-r3-live-protected-client-capacity-v3"
+    "schema5-v1.2-r4-live-protected-client-capacity-v3"
 )
 TRUSTED_SCIENTIFIC_PROVENANCE_PROTOCOL = (
-    "schema5-v1.2-r3-trusted-scientific-job-provenance-v1"
+    "schema5-v1.2-r4-trusted-scientific-job-provenance-v1"
 )
 CAPACITY_SOURCE = (
     "sealed_protected_canary+partition_inventory+association"
 )
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
-CHAIN_NAMESPACE = "schema5-v1.2-r3"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
+CHAIN_NAMESPACE = "schema5-v1.2-r4"
 MARKER_FILENAME = "PROTECTED_CAPACITY_COMPLETE.json"
 STATIC_FEASIBILITY_FILENAME = "PREFLIGHT_CAPACITY_CERTIFICATE.json"
 BASE_LOGICAL_REPLICAS = 22
 BASE_ACTIVE_GPUS = 24
-PRODUCTION_ACTIVE_GPUS = 42
+PRODUCTION_ACTIVE_GPUS = BASE_ACTIVE_GPUS
 RETAINED_WARM_TURNOVER_JOB_ELEMENTS = 3
 RETAINED_WARM_TURNOVER_GPUS = 4
 PRODUCTION_ATTESTED_GPUS = (
     PRODUCTION_ACTIVE_GPUS + RETAINED_WARM_TURNOVER_GPUS
 )
 CLIENT_JOB_ELEMENTS = 384
+PREQUALIFICATION_SELECTED_CELL_COUNT = 278
+PREQUALIFICATION_SHORTFALL_CELL_COUNT = (
+    CLIENT_JOB_ELEMENTS - PREQUALIFICATION_SELECTED_CELL_COUNT
+)
 TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS = 64
+PREQUALIFICATION_HELD_NON_CELL_JOB_ELEMENTS = (
+    TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
+    - BASE_LOGICAL_REPLICAS
+    - RETAINED_WARM_TURNOVER_JOB_ELEMENTS
+)
 TOTAL_SUBMIT_HEADROOM = CLIENT_JOB_ELEMENTS + TOTAL_NON_CELL_RESERVE_JOB_ELEMENTS
 PRODUCTION_SERVING_PROFILES = tuple(sorted(EXPECTED_COUNTS))
 MIN_SCIENTIFIC_WALL_SECONDS = 86_400
@@ -102,6 +111,12 @@ _MARKER_FIELDS = {
     "additive_overlay_contract_path",
     "additive_overlay_contract_sha256",
     "static_feasibility_certificate",
+    "static_feasibility_wave_passed",
+    "static_feasibility_selected_cell_count",
+    "static_feasibility_target_cell_count",
+    "static_feasibility_shortfall_cells",
+    "static_feasibility_configured_client_ceiling",
+    "static_feasibility_certified_saturation_target",
     "base_active_logical_replicas",
     "base_active_gpus",
     "base_active_topology",
@@ -285,6 +300,12 @@ class ProtectedCapacityContract:
     static_feasibility_certificate_path: Path
     static_feasibility_certificate_sha256: str
     static_feasibility_certificate_id: str
+    static_feasibility_wave_passed: bool
+    static_feasibility_selected_cell_count: int
+    static_feasibility_target_cell_count: int
+    static_feasibility_shortfall_cells: int
+    static_feasibility_configured_client_ceiling: int
+    static_feasibility_certified_saturation_target: int
     fleet_contract_sha256: str
     active_fleet_topology_sha256: str
     base_active_logical_replicas: int
@@ -335,7 +356,14 @@ class ProtectedCapacityContract:
 
 @dataclass(frozen=True)
 class StaticFeasibilityCertificate:
-    """Sealed zero-QID proof that the effective fleet admits the 384-cell wave."""
+    """Sealed zero-QID trace of the exact sequential-WDRR admission wave.
+
+    Generation one truthfully records the unscaled base fleet's 278-cell
+    saturation cut against the separately configured 384-client Slurm ceiling.
+    Later controlled additive generations may preserve a different authenticated
+    cut.  A sub-ceiling cut is valid capacity evidence: it is filled and refilled
+    during qualification, while scaling is driven only by measured throughput.
+    """
 
     path: Path
     sha256: str
@@ -356,6 +384,10 @@ class StaticFeasibilityCertificate:
     additive_allocated_gpus: int
     additive_topology_sha256: str
     selected_cell_ids_sha256: str
+    wave_passed: bool
+    selected_cell_count: int
+    target_cell_count: int
+    shortfall_cells: int
     payload: Mapping[str, Any]
 
 
@@ -849,6 +881,26 @@ def load_static_feasibility_certificate(
         field="static feasibility capacity_generation",
         minimum=1,
     )
+    generation_directory = f"c{capacity_generation:06d}"
+    if (
+        certificate_path.name != STATIC_FEASIBILITY_FILENAME
+        or (
+            capacity_generation == 1
+            and certificate_path.parent.name == generation_directory
+            and certificate_path.parent.parent.name == "capacity-generations"
+        )
+        or (
+            capacity_generation > 1
+            and (
+                certificate_path.parent.name != generation_directory
+                or certificate_path.parent.parent.name
+                != "capacity-generations"
+            )
+        )
+    ):
+        raise ProtectedCapacityError(
+            "static feasibility certificate path is not generation-addressed"
+        )
     if (
         payload.get("schema_version") != STATIC_FEASIBILITY_SCHEMA_VERSION
         or payload.get("protocol") != STATIC_FEASIBILITY_PROTOCOL
@@ -874,7 +926,6 @@ def load_static_feasibility_certificate(
         or payload.get("run_weights")
         != {"schema5_throughput_qualification_v1": 1.0}
         or payload.get("initial_fairness") != {"cursor": 0, "deficits": {}}
-        or payload.get("selected_cell_count") != CLIENT_JOB_ELEMENTS
         or (expected_sha256 is not None and digest != expected_sha256)
         or (
             expected_certificate_id is not None
@@ -1010,6 +1061,31 @@ def load_static_feasibility_certificate(
     microbatches = wave.get("microbatches")
     selected_wave = wave.get("selected_wave")
     deficits = final_fairness.get("deficits")
+    selected_cell_count = payload.get("selected_cell_count")
+    wave_selected_cell_count = wave.get("selected_cell_count")
+    target_cell_count = wave.get("target_active_cells")
+    shortfall_cells = wave.get("shortfall_cells")
+    wave_passed = wave.get("passed")
+    if (
+        not isinstance(selected_cell_count, int)
+        or isinstance(selected_cell_count, bool)
+        or not 1 <= selected_cell_count <= CLIENT_JOB_ELEMENTS
+        or wave_selected_cell_count != selected_cell_count
+        or target_cell_count != CLIENT_JOB_ELEMENTS
+        or shortfall_cells != CLIENT_JOB_ELEMENTS - selected_cell_count
+        or wave_passed
+        is not (
+            selected_cell_count == CLIENT_JOB_ELEMENTS
+            and shortfall_cells == 0
+        )
+    ):
+        raise ProtectedCapacityError(
+            "static feasibility wave cardinality/pass state is inconsistent"
+        )
+    full_batches, final_batch = divmod(selected_cell_count, 24)
+    expected_microbatch_sizes = [24] * full_batches
+    if final_batch:
+        expected_microbatch_sizes.append(final_batch)
     if (
         payload.get("base_logical_replicas") != sum(base.values())
         or payload.get("base_allocated_gpus") != base_gpus
@@ -1022,11 +1098,11 @@ def load_static_feasibility_certificate(
         or payload.get("additive_topology_sha256")
         != _sha256_value(additive_topology)
         or not isinstance(microbatches, list)
-        or len(microbatches) != 16
+        or len(microbatches) != len(expected_microbatch_sizes)
         or payload.get("microbatch_trace_sha256")
         != _sha256_value(microbatches)
         or not isinstance(selected_wave, list)
-        or len(selected_wave) != CLIENT_JOB_ELEMENTS
+        or len(selected_wave) != selected_cell_count
         or len(
             {
                 row.get("cell_id")
@@ -1035,21 +1111,19 @@ def load_static_feasibility_certificate(
                 and isinstance(row.get("cell_id"), str)
             }
         )
-        != CLIENT_JOB_ELEMENTS
+        != selected_cell_count
         or payload.get("selected_cell_ids_sha256")
         != _sha256_value([row["cell_id"] for row in selected_wave])
-        or wave.get("passed") is not True
-        or wave.get("target_active_cells") != CLIENT_JOB_ELEMENTS
-        or wave.get("selected_cell_count") != CLIENT_JOB_ELEMENTS
-        or wave.get("shortfall_cells") != 0
         or wave.get("maximum_microbatch") != 24
         or wave.get("fanout_slots_per_replica") != 24
-        or wave.get("microbatch_count") != 16
-        or any(
-            not isinstance(batch, dict)
-            or batch.get("selected_count") != 24
+        or wave.get("microbatch_count") != len(expected_microbatch_sizes)
+        or [
+            batch.get("selected_count")
+            if isinstance(batch, dict)
+            else None
             for batch in microbatches
-        )
+        ]
+        != expected_microbatch_sizes
         or wave.get("profile_replicas") != effective
         or final_fairness.get("cursor") != wave.get("ending_cursor")
         or deficits != wave.get("ending_deficits")
@@ -1061,10 +1135,35 @@ def load_static_feasibility_certificate(
             or not math.isfinite(float(value))
             for key, value in deficits.items()
         )
+        or (
+            capacity_generation == 1
+            and (
+                payload["proposed_effective_fleet_contract_sha256"]
+                != payload["base_fleet_contract_sha256"]
+                or payload["additive_overlay_contract_sha256"]
+                != payload["base_fleet_contract_sha256"]
+                or effective != base
+                or tp1 != 0
+                or tp2 != 0
+                or additive_gpus != 0
+                or additive_topology != []
+                or selected_cell_count
+                != PREQUALIFICATION_SELECTED_CELL_COUNT
+                or wave_passed is not False
+            )
+        )
+        or (
+            capacity_generation > 1
+            and (
+                tp1 + tp2 < 1
+                or additive_gpus < 1
+                or effective_gpus <= base_gpus
+            )
+        )
     ):
         raise ProtectedCapacityError(
-            "static feasibility certificate does not prove the exact 384-cell "
-            "sequential admission wave"
+            "static feasibility certificate does not prove the generation's "
+            "exact sequential admission wave"
         )
     return StaticFeasibilityCertificate(
         path=certificate_path,
@@ -1094,6 +1193,10 @@ def load_static_feasibility_certificate(
         additive_allocated_gpus=additive_gpus,
         additive_topology_sha256=str(payload["additive_topology_sha256"]),
         selected_cell_ids_sha256=str(payload["selected_cell_ids_sha256"]),
+        wave_passed=bool(wave_passed),
+        selected_cell_count=int(selected_cell_count),
+        target_cell_count=int(target_cell_count),
+        shortfall_cells=int(shortfall_cells),
         payload=dict(payload),
     )
 
@@ -1644,7 +1747,19 @@ def load_contract(
         or effective_logical_replicas
         != certificate.effective_logical_replicas
         or effective_active_gpus != certificate.effective_active_gpus
-        or effective_active_gpus != PRODUCTION_ACTIVE_GPUS
+        or payload.get("static_feasibility_wave_passed")
+        is not certificate.wave_passed
+        or payload.get("static_feasibility_selected_cell_count")
+        != certificate.selected_cell_count
+        or payload.get("static_feasibility_target_cell_count")
+        != certificate.target_cell_count
+        or payload.get("static_feasibility_shortfall_cells")
+        != certificate.shortfall_cells
+        or payload.get("static_feasibility_configured_client_ceiling")
+        != certificate.target_cell_count
+        or payload.get("static_feasibility_certified_saturation_target")
+        != certificate.selected_cell_count
+        or payload.get("cell_ceiling") != certificate.target_cell_count
         or additive_count
         != additive_tp1 + additive_tp2
         or additive_count
@@ -1656,6 +1771,27 @@ def load_contract(
         or additive_tp2 != certificate.additive_tp2_logical_replicas
         or effective_logical_replicas != base_count + additive_count
         or effective_active_gpus != base_gpus + additive_gpus
+        or (
+            capacity_generation == 1
+            and (
+                effective_logical_replicas != BASE_LOGICAL_REPLICAS
+                or effective_active_gpus != PRODUCTION_ACTIVE_GPUS
+                or additive_count != 0
+                or additive_gpus != 0
+                or additive_tp1 != 0
+                or additive_tp2 != 0
+                or payload.get("effective_fleet_contract_sha256")
+                != payload.get("base_fleet_contract_sha256")
+                or payload.get("additive_overlay_contract_path")
+                != payload.get("effective_fleet_contract_path")
+                or payload.get("additive_overlay_contract_sha256")
+                != payload.get("base_fleet_contract_sha256")
+            )
+        )
+        or (
+            capacity_generation > 1
+            and (additive_count < 1 or additive_gpus < 1)
+        )
         or base_ids.intersection(additive_ids)
         or effective_by_id != combined_by_id
         or warm_count != RETAINED_WARM_TURNOVER_JOB_ELEMENTS
@@ -1663,14 +1799,22 @@ def load_contract(
         or payload.get("retained_warm_turnover_tp1_allocations") != 2
         or payload.get("retained_warm_turnover_tp2_allocations") != 1
         or sorted(int(row["gpus"]) for row in warm_topology) != [1, 1, 2]
-        or attested_total_gpus != PRODUCTION_ATTESTED_GPUS
         or attested_total_gpus != effective_active_gpus + warm_gpus
+        or (
+            capacity_generation == 1
+            and attested_total_gpus != PRODUCTION_ATTESTED_GPUS
+        )
         or payload.get("active_gpus") != effective_active_gpus
         or payload.get("warm_headroom_gpus") != warm_gpus
         or not isinstance(accounting, dict)
         or set(accounting) != _JOB_ELEMENT_ACCOUNTING_FIELDS
         or accounting != expected_accounting
-        or expected_held <= 0
+        or expected_held < 0
+        or (
+            capacity_generation == 1
+            and expected_held
+            != PREQUALIFICATION_HELD_NON_CELL_JOB_ELEMENTS
+        )
         or any(
             payload.get(hash_field) != _sha256_value(payload.get(value_field))
             for value_field, hash_field in (
@@ -1827,6 +1971,16 @@ def load_contract(
         static_feasibility_certificate_path=certificate.path,
         static_feasibility_certificate_sha256=certificate.sha256,
         static_feasibility_certificate_id=certificate.certificate_id,
+        static_feasibility_wave_passed=certificate.wave_passed,
+        static_feasibility_selected_cell_count=certificate.selected_cell_count,
+        static_feasibility_target_cell_count=certificate.target_cell_count,
+        static_feasibility_shortfall_cells=certificate.shortfall_cells,
+        static_feasibility_configured_client_ceiling=(
+            certificate.target_cell_count
+        ),
+        static_feasibility_certified_saturation_target=(
+            certificate.selected_cell_count
+        ),
         fleet_contract_sha256=str(payload["fleet_contract_sha256"]),
         active_fleet_topology_sha256=str(
             payload["active_fleet_topology_sha256"]
@@ -2160,16 +2314,16 @@ def verify_live_placements(
             if (
                 observed_inventory != expected_inventory
                 or placement.capacity["effective_active_gpus"]
-                != PRODUCTION_ACTIVE_GPUS
+                != contract.effective_active_gpus
                 or placement.capacity["retained_warm_turnover_gpus"]
                 != RETAINED_WARM_TURNOVER_GPUS
                 or placement.capacity["attested_total_gpus"]
-                != PRODUCTION_ATTESTED_GPUS
-                or inventory["gpus"] < PRODUCTION_ATTESTED_GPUS
+                != contract.attested_total_gpus
+                or inventory["gpus"] < contract.attested_total_gpus
             ):
                 raise ProtectedCapacityError(
                     "live protected server partition TRES/node inventory "
-                    "differs from the sealed 42-active plus 4-warm capacity "
+                    "differs from the sealed effective-active plus 4-warm capacity "
                     "authority"
                 )
             live_partition_inventories.append(

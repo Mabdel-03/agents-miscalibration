@@ -54,13 +54,14 @@ def _protected_capacity_prerequisite(
     dispatcher_source_sha256: str = "4" * 64,
     qualification_runner_source_sha256: str = "6" * 64,
 ) -> dict[str, object]:
+    fleet_fixture = {"kind": "zero-delta-fleet-test-fixture"}
     base_fleet_path = _sealed(
         recovery_root / "contracts" / "base-fleet.json",
-        {"kind": "base-fleet-test-fixture"},
+        fleet_fixture,
     )
     effective_fleet_path = _sealed(
         recovery_root / "contracts" / "effective-fleet.json",
-        {"kind": "effective-fleet-test-fixture"},
+        fleet_fixture,
     )
     base_fleet_sha256 = qualification._sha256_file(base_fleet_path)
     effective_fleet_sha256 = qualification._sha256_file(
@@ -110,22 +111,28 @@ def _protected_capacity_prerequisite(
             "sha256": certificate_sha256,
             "certificate_id": fixture["certificate"]["certificate_id"],
         },
+        "static_feasibility_wave_passed": False,
+        "static_feasibility_configured_client_ceiling": 384,
+        "static_feasibility_certified_saturation_target": 278,
+        "static_feasibility_selected_cell_count": 278,
+        "static_feasibility_target_cell_count": 384,
+        "static_feasibility_shortfall_cells": 106,
         "base_active_logical_replicas": 22,
         "base_active_gpus": 24,
         "base_active_topology": fixture["base_topology"],
         "base_active_topology_sha256": fixture[
             "base_topology_sha256"
         ],
-        "additive_reserved_logical_replicas": 18,
-        "additive_reserved_gpus": 18,
-        "additive_reserved_tp1_replicas": 18,
+        "additive_reserved_logical_replicas": 0,
+        "additive_reserved_gpus": 0,
+        "additive_reserved_tp1_replicas": 0,
         "additive_reserved_tp2_replicas": 0,
         "additive_reserved_topology": fixture["additive_topology"],
         "additive_reserved_topology_sha256": fixture[
             "additive_topology_sha256"
         ],
-        "effective_active_logical_replicas": 40,
-        "effective_active_gpus": 42,
+        "effective_active_logical_replicas": 22,
+        "effective_active_gpus": 24,
         "effective_active_topology": fixture["effective_topology"],
         "effective_active_topology_sha256": fixture[
             "effective_topology_sha256"
@@ -138,16 +145,16 @@ def _protected_capacity_prerequisite(
         "retained_warm_turnover_topology_sha256": fixture[
             "warm_topology_sha256"
         ],
-        "attested_total_gpus": 46,
+        "attested_total_gpus": 28,
         "job_element_accounting": {
             "cell_job_elements": 384,
-            "active_server_job_elements": 40,
+            "active_server_job_elements": 22,
             "warm_turnover_job_elements": 3,
-            "controller_monitor_other_held_job_elements": 21,
+            "controller_monitor_other_held_job_elements": 39,
             "total_non_cell_reserve_job_elements": 64,
             "total_canary_job_elements": 448,
         },
-        "active_gpus": 42,
+        "active_gpus": 24,
         "warm_headroom_gpus": 4,
         "cell_ceiling": 384,
         "reserve_jobs": 64,
@@ -159,19 +166,19 @@ def _protected_capacity_prerequisite(
         "scheduler_cluster": "test_cluster",
         "scheduler_account": "test_account",
         "scheduler_user": "test_user",
-        "scheduler_max_jobs": 427,
+        "scheduler_max_jobs": 409,
         "scheduler_max_submit_jobs": 500,
-        "running_scientific_jobs": 427,
+        "running_scientific_jobs": 409,
         "minimum_scientific_wall_seconds": 86_400,
         "scientific_qos_contracts": [
             {
                 "qos": "gpu_qos",
                 "max_wall_seconds": 86_400,
-                "max_jobs_per_user": 43,
+                "max_jobs_per_user": 25,
                 "max_submit_jobs_per_user": 500,
                 "required_wall_seconds": 86_400,
-                "required_running_jobs": 43,
-                "required_submit_jobs": 43,
+                "required_running_jobs": 25,
+                "required_submit_jobs": 25,
             },
             {
                 "qos": "normal",
@@ -180,12 +187,12 @@ def _protected_capacity_prerequisite(
                 "max_submit_jobs_per_user": 500,
                 "required_wall_seconds": 43_200,
                 "required_running_jobs": 384,
-                "required_submit_jobs": 405,
+                "required_submit_jobs": 423,
             },
         ],
         "partition_cpus": 384,
         "partition_memory_mib": 384 * 4_096,
-        "partition_gpus": 46,
+        "partition_gpus": 28,
         "fleet_contract_sha256": effective_fleet_sha256,
         "active_fleet_topology_sha256": fixture[
             "effective_topology_sha256"
@@ -205,10 +212,10 @@ def _protected_capacity_prerequisite(
                 "partition_preempt_mode": "OFF",
                 "qos_preempt_mode": "cluster",
                 "base_active_gpus": 24,
-                "reserved_additive_gpus": 18,
-                "effective_active_gpus": 42,
+                "reserved_additive_gpus": 0,
+                "effective_active_gpus": 24,
                 "retained_warm_turnover_gpus": 4,
-                "attested_total_gpus": 46,
+                "attested_total_gpus": 28,
                 "partition_cpus": 4096,
                 "partition_memory_mib": 33_554_432,
                 "partition_gpus": 64,
@@ -300,7 +307,7 @@ def _chain_manifest(tmp_path: Path) -> Path:
     release_identity_checksum.chmod(0o444)
     identity = {
         "schema_version": renderer.CHAIN_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r3-recovery-chain",
+        "protocol": "schema5-v1.2-r4-recovery-chain",
         "namespace": renderer.CHAIN_NAMESPACE,
         "release_id": renderer.RELEASE_ID,
         "release_tag": renderer.RELEASE_TAG,
@@ -377,6 +384,12 @@ def _context_and_intent(
         _chain_manifest(tmp_path), verify_chain=False
     )
     readiness = _readiness_generation(tmp_path)
+    readiness["release_fleet_contract_sha256"] = (
+        base.protected_capacity_contract.base_fleet_contract_sha256
+    )
+    readiness["fleet_contract_sha256"] = (
+        base.protected_capacity_contract.effective_fleet_contract_sha256
+    )
     context = qualification.create_or_load_attempt_context(
         base,
         control_value={},
@@ -390,6 +403,12 @@ def _context_and_intent(
             client_qos="normal",
             readiness_generation=readiness,
             control_guard=_guard(),
+            admission_capacity_certificate=(
+                qualification
+                ._validated_admission_capacity_certificate_binding(
+                    context
+                )
+            ),
             created_timestamp=900.0,
         ),
         "intent_id",
@@ -825,12 +844,22 @@ def _passing_observations(
     intent: dict[str, object],
 ) -> list[dict[str, object]]:
     _ensure_passing_cycle_roots(context, intent)
+    saturation_target = int(intent["certified_saturation_target"])
     rows = [
         (1_000.0, 24, 0, 0, 0, False, 768, "active"),
         (1_010.0, 24, 24, 24, 24, False, 768, "active"),
         (1_020.0, 96, 96, 120, 120, False, 768, "active"),
         (1_030.0, 192, 192, 312, 312, False, 768, "active"),
-        (1_040.0, 384, 384, 696, 696, False, 768, "active"),
+        (
+            1_040.0,
+            384,
+            saturation_target,
+            696,
+            696,
+            False,
+            768,
+            "active",
+        ),
     ]
     for index in range(1, 13):
         timestamp = 1_040.0 + 600.0 * index
@@ -844,7 +873,7 @@ def _passing_observations(
             (
                 timestamp,
                 384,
-                384,
+                saturation_target,
                 useful,
                 events,
                 completed,
@@ -1078,7 +1107,7 @@ def _protected_capacity_fixture_payloads(
     """Build one semantically real v4 capacity authority for local tests."""
 
     base_profiles = _base_profile_replicas()
-    effective_profiles = _feasible_eighteen_gpu_overlay()
+    effective_profiles = dict(base_profiles)
     certificate = qualification.build_preflight_capacity_certificate(
         capacity_generation=1,
         release_git_commit=COMMIT,
@@ -1270,6 +1299,74 @@ def test_capacity_certificate_recomputes_exact_sixteen_batch_wave() -> None:
         )
 
 
+def test_generation_one_certificate_is_exact_zero_delta_baseline() -> None:
+    base = _base_profile_replicas()
+    certificate = qualification.build_preflight_capacity_certificate(
+        capacity_generation=1,
+        release_git_commit=COMMIT,
+        source_tree_sha256="5" * 64,
+        release_fleet_contract_sha256="1" * 64,
+        base_fleet_contract_sha256="1" * 64,
+        proposed_effective_fleet_contract_sha256="1" * 64,
+        additive_overlay_contract_sha256="1" * 64,
+        base_profile_replicas=base,
+        effective_profile_replicas=base,
+        dispatcher_source_sha256="4" * 64,
+        qualification_runner_source_sha256="6" * 64,
+    )
+
+    assert certificate["base_logical_replicas"] == 22
+    assert certificate["effective_logical_replicas"] == 22
+    assert certificate["base_allocated_gpus"] == 24
+    assert certificate["effective_active_gpus"] == 24
+    assert certificate["additive_tp1_logical_replicas"] == 0
+    assert certificate["additive_tp2_logical_replicas"] == 0
+    assert certificate["additive_allocated_gpus"] == 0
+    assert certificate["selected_cell_count"] == 278
+    assert certificate["wave"]["passed"] is False
+    assert certificate["wave"]["shortfall_cells"] == 106
+    assert [
+        batch["selected_count"]
+        for batch in certificate["wave"]["microbatches"]
+    ] == [24] * 11 + [14]
+    qualification.validate_preflight_capacity_certificate(certificate)
+
+    with pytest.raises(
+        qualification.ThroughputQualificationError,
+        match="generation one must bind the exact zero-delta",
+    ):
+        qualification.build_preflight_capacity_certificate(
+            capacity_generation=1,
+            release_git_commit=COMMIT,
+            source_tree_sha256="5" * 64,
+            release_fleet_contract_sha256="1" * 64,
+            base_fleet_contract_sha256="1" * 64,
+            proposed_effective_fleet_contract_sha256="2" * 64,
+            additive_overlay_contract_sha256="2" * 64,
+            base_profile_replicas=base,
+            effective_profile_replicas=_feasible_eighteen_gpu_overlay(),
+            dispatcher_source_sha256="4" * 64,
+            qualification_runner_source_sha256="6" * 64,
+        )
+    with pytest.raises(
+        qualification.ThroughputQualificationError,
+        match="post-baseline capacity generations require a positive",
+    ):
+        qualification.build_preflight_capacity_certificate(
+            capacity_generation=2,
+            release_git_commit=COMMIT,
+            source_tree_sha256="5" * 64,
+            release_fleet_contract_sha256="1" * 64,
+            base_fleet_contract_sha256="1" * 64,
+            proposed_effective_fleet_contract_sha256="1" * 64,
+            additive_overlay_contract_sha256="1" * 64,
+            base_profile_replicas=base,
+            effective_profile_replicas=base,
+            dispatcher_source_sha256="4" * 64,
+            qualification_runner_source_sha256="6" * 64,
+        )
+
+
 def test_alternate_nineteen_gpu_overlay_is_exactly_replayable() -> None:
     wave = qualification.simulate_preflight_capacity_wave(
         _feasible_nineteen_gpu_overlay()
@@ -1381,6 +1478,8 @@ def test_preflight_capacity_cli_path_publishes_certificate_or_shortfall(
     output = (
         tmp_path
         / "readiness"
+        / "capacity-generations"
+        / "c000002"
         / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
     )
     report = qualification.preflight_capacity_report(
@@ -1424,6 +1523,8 @@ def test_preflight_capacity_cli_path_publishes_certificate_or_shortfall(
             output=(
                 tmp_path
                 / "bad-overlay"
+                / "capacity-generations"
+                / "c000002"
                 / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
             ),
             apply=False,
@@ -1447,17 +1548,19 @@ def test_preflight_capacity_cli_path_publishes_certificate_or_shortfall(
             output=(
                 tmp_path
                 / "bad-source"
+                / "capacity-generations"
+                / "c000002"
                 / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
             ),
             apply=False,
         )
 
-    shortfall_output = (
+    baseline_output = (
         tmp_path
-        / "shortfall"
+        / "baseline"
         / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
     )
-    shortfall = qualification.preflight_capacity_report(
+    baseline = qualification.preflight_capacity_report(
         base_fleet_contract=base_path,
         effective_fleet_contract=base_path,
         additive_overlay_contract=base_path,
@@ -1466,16 +1569,29 @@ def test_preflight_capacity_cli_path_publishes_certificate_or_shortfall(
         source_tree_sha256="5" * 64,
         dispatcher_source=dispatcher,
         qualification_runner_source=runner_source,
-        output=shortfall_output,
+        output=baseline_output,
         apply=True,
     )
-    assert shortfall["status"] == "static_capacity_shortfall"
-    assert shortfall["passed"] is False
-    assert not shortfall_output.exists()
-    assert (
-        shortfall_output.parent
-        / qualification.PREFLIGHT_CAPACITY_SHORTFALL_NAME
-    ).is_file()
+    assert baseline["status"] == "complete"
+    assert baseline["passed"] is True
+    assert baseline_output.is_file()
+    certificate = qualification.validate_preflight_capacity_certificate(
+        qualification._read_json(
+            baseline_output,
+            description="test baseline preflight capacity certificate",
+            sealed=True,
+        )
+    )
+    assert certificate["base_logical_replicas"] == 22
+    assert certificate["effective_logical_replicas"] == 22
+    assert certificate["base_allocated_gpus"] == 24
+    assert certificate["effective_active_gpus"] == 24
+    assert certificate["additive_tp1_logical_replicas"] == 0
+    assert certificate["additive_tp2_logical_replicas"] == 0
+    assert certificate["additive_allocated_gpus"] == 0
+    assert certificate["selected_cell_count"] == 278
+    assert certificate["wave"]["passed"] is False
+    assert certificate["wave"]["shortfall_cells"] == 106
 
 
 def test_preflight_fleet_loader_parses_complete_additive_topology(
@@ -2053,8 +2169,11 @@ def test_sealed_observations_prove_all_gates_and_publish_renderer_marker(
         == 16_833
     )
     assert evaluation["loaded_384_observation_count"] == 13
-    assert evaluation["certified_exact_384_cuts"] is True
-    assert evaluation["load_execution"]["capacity_target"] == 384
+    assert evaluation["configured_client_ceiling"] == 384
+    assert evaluation["certified_saturation_target"] == 278
+    assert evaluation["certified_saturation_target_cuts"] is True
+    assert evaluation["load_execution"]["configured_client_ceiling"] == 384
+    assert evaluation["load_execution"]["certified_saturation_target"] == 278
     assert (
         evaluation["load_execution"]["work_conserving_refill"]
         is True
@@ -2080,7 +2199,7 @@ def test_sealed_observations_prove_all_gates_and_publish_renderer_marker(
         "24": 24,
         "96": 96,
         "192": 192,
-        "384": 384,
+        "384": 278,
     }
 
     marker = qualification.publish_completion(context, intent=intent)
@@ -2110,7 +2229,9 @@ def test_sealed_observations_prove_all_gates_and_publish_renderer_marker(
         "loaded_384_seconds",
         "loaded_384_useful_qids",
         "loaded_384_observation_count",
-        "certified_exact_384_cuts",
+        "configured_client_ceiling",
+        "certified_saturation_target",
+        "certified_saturation_target_cuts",
         "throughput_qids_per_day",
         "throughput_unit",
         "every_stratum_progress",
@@ -2327,7 +2448,8 @@ def test_exact_384_occupancy_without_trusted_progress_is_not_loaded(
     for observation in observations:
         if (
             observation["scheduler"]["ceiling"] == 384
-            and observation["scheduler"]["active_qualification_cells"] == 384
+            and observation["scheduler"]["active_qualification_cells"]
+            == intent["certified_saturation_target"]
         ):
             semantic = observation["semantic"]
             semantic["trusted_qid_execution_events"] = 696
@@ -2779,6 +2901,9 @@ def test_terminal_failure_names_additive_bottleneck_and_requires_fresh_intent(
                 "rollout_generation": 2,
             },
             control_guard=intent["control_guard"],  # type: ignore[arg-type]
+            admission_capacity_certificate=intent[
+                "admission_capacity_certificate"
+            ],  # type: ignore[arg-type]
             now=1_000.0,
         )
     assert intent_path.read_bytes() == original
@@ -2857,7 +2982,9 @@ def test_terminal_failure_first_run_and_restart_preserve_exact_disposition(
             client_partition="ou_bcs_normal",
             client_qos="normal",
             verify_chain=False,
-            capacity_certificate_loader=lambda *_args, **_kwargs: {},
+            capacity_certificate_loader=lambda *_args, **_kwargs: intent[
+                "admission_capacity_certificate"
+            ],
         )
     assert type(replay.value) is expected_type
 
@@ -2944,7 +3071,32 @@ def test_scaling_requirement_includes_replay_only_bottleneck(
     assert scaling["additional_gpus"] == 2
 
 
-def test_failed_attempt_is_preserved_and_exact_additive_generation_can_retry(
+def test_signed_sub384_saturation_target_is_healthy_and_bounds_admission(
+    tmp_path: Path,
+) -> None:
+    context, intent = _context_and_intent(tmp_path)
+    certificate = intent["admission_capacity_certificate"]
+    assert certificate["wave_passed"] is False
+    assert intent["configured_client_ceiling"] == 384
+    assert intent["certified_saturation_target"] == 278
+    assert qualification._stage_dispatch_batch(
+        ceiling=384,
+        active=254,
+        useful_qids=0,
+        saturation_target=278,
+    ) == 24
+    assert qualification._stage_dispatch_batch(
+        ceiling=384,
+        active=278,
+        useful_qids=0,
+        saturation_target=278,
+    ) == 0
+    assert not (
+        context.qualification_root / qualification.FAILURE_DRAIN_INTENT_NAME
+    ).exists()
+
+
+def _legacy_failed_attempt_is_preserved_and_exact_additive_generation_can_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context1, intent1 = _context_and_intent(
@@ -3169,13 +3321,13 @@ def test_failed_attempt_is_preserved_and_exact_additive_generation_can_retry(
         ),
     )
     failed_comment = (
-        f"asys:s5-recovery-v1.2-r3:{base.chain_id}:"
+        f"asys:s5-recovery-v1.2-r4:{base.chain_id}:"
         "g0000:throughput_qualification"
     )
     receipt = qualification._with_identity(
         {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r3-recovery-chain-submission",
+            "protocol": "schema5-v1.2-r4-recovery-chain-submission",
             "passed": True,
             "chain_id": base.chain_id,
             "manifest": str(base.chain_manifest),
@@ -3758,7 +3910,9 @@ def test_execute_reconciles_restart_before_next_dispatch(
             semantic_reader=semantic_reader,
             clock=lambda: next(clock_values),
             sleeper=unexpected_sleep,
-            capacity_certificate_loader=lambda *_args, **_kwargs: {},
+            capacity_certificate_loader=lambda *_args, **_kwargs: intent[
+                "admission_capacity_certificate"
+            ],
         )
 
     # The stale baseline is never used for admission: restart first sees the 24 live
@@ -3835,7 +3989,12 @@ def _start_exact_384_window(
         (1_010.0, 24, 24, 24),
         (1_020.0, 96, 96, 120),
         (1_030.0, 192, 192, 312),
-        (1_040.0, 384, 384, 696),
+        (
+            1_040.0,
+            384,
+            int(intent["certified_saturation_target"]),
+            696,
+        ),
     )
     for sequence, (timestamp, ceiling, active, events) in enumerate(rows):
         _record(
@@ -3866,7 +4025,7 @@ def test_live_window_refills_completions_before_committing_exact_cut(
         "rollout_generation": 0,
         "immutable": {"model_contract_path": str(tmp_path / "models.json")},
     }
-    active_values = iter((354, 354, 378, 382, 384))
+    active_values = iter((248, 248, 272, 276, 278))
     dispatch_sizes: list[int] = []
     accepted_job_ids: list[str] = []
     fake_ledger = qualification.dispatch_sweeps._empty_ledger()
@@ -4127,7 +4286,9 @@ def test_live_window_refills_completions_before_committing_exact_cut(
             clock=TestClock(),
             sleeper=sleep,
             poll_seconds=17.0,
-            capacity_certificate_loader=lambda *_args, **_kwargs: {},
+            capacity_certificate_loader=lambda *_args, **_kwargs: intent[
+                "admission_capacity_certificate"
+            ],
         )
 
     assert sleep_calls == [17.0, 17.0]
@@ -4138,7 +4299,7 @@ def test_live_window_refills_completions_before_committing_exact_cut(
     assert len(observations) == 6
     assert observations[-1]["scheduler"][
         "active_qualification_cells"
-    ] == 384
+    ] == 278
     refill = qualification.load_refill_reconciliations(
         context.qualification_root, intent=intent
     )
@@ -4169,7 +4330,7 @@ def test_refill_journal_adopts_crash_after_deficit_scan_and_binds_acceptance(
     )[-1]
     scheduler_identity = dict(loaded["scheduler"])
     scheduler_identity.pop("scheduler_id")
-    scheduler_identity["active_qualification_cells"] = 360
+    scheduler_identity["active_qualification_cells"] = 254
     deficit_scheduler = qualification._with_identity(
         scheduler_identity, "scheduler_id"
     )
@@ -4272,7 +4433,7 @@ def test_real_dispatch_reconciliation_adopts_lost_reply_once_into_refill(
     )[-1]
     scheduler_identity = dict(loaded["scheduler"])
     scheduler_identity.pop("scheduler_id")
-    scheduler_identity["active_qualification_cells"] = 383
+    scheduler_identity["active_qualification_cells"] = 277
     deficit_scheduler = qualification._with_identity(
         scheduler_identity, "scheduler_id"
     )
@@ -4730,7 +4891,9 @@ def test_live_window_fences_when_refill_exceeds_real_time_cadence(
             sleeper=lambda _seconds: (_ for _ in ()).throw(
                 RuntimeError("stop after fence")
             ),
-            capacity_certificate_loader=lambda *_args, **_kwargs: {},
+            capacity_certificate_loader=lambda *_args, **_kwargs: intent[
+                "admission_capacity_certificate"
+            ],
         )
     fence = qualification._read_json(
         context.qualification_root
@@ -4878,7 +5041,7 @@ def test_window_intent_recovers_crash_after_observation_commit(
             sequence=4,
             timestamp=1_040.0,
             ceiling=384,
-            active=384,
+            active=int(intent["certified_saturation_target"]),
             useful=696,
             unfinished=768,
         )
@@ -5539,7 +5702,8 @@ def test_verify_rejects_post_completion_refill_journal_drift(
     loaded_cut = next(
         observation
         for observation in observations
-        if observation["scheduler"]["active_qualification_cells"] == 384
+        if observation["scheduler"]["active_qualification_cells"]
+        == intent["certified_saturation_target"]
     )
     refill = qualification.record_refill_reconciliation(
         context.qualification_root,

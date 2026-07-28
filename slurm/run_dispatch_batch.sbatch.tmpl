@@ -10,6 +10,7 @@
 #SBATCH --output={LOG_DIR}/dispatch_%A_%a.out
 #SBATCH --signal=B:USR1@1200
 #SBATCH --no-requeue
+#SBATCH --export=NONE
 
 set -euo pipefail
 {RUNTIME_SETUP}

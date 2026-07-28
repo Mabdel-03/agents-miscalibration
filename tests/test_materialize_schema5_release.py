@@ -14,6 +14,77 @@ import pytest
 from scripts import materialize_schema5_release as materialize
 
 
+def test_production_cli_accepts_only_sealed_toolchain_root() -> None:
+    parser = materialize._build_parser()
+    materialize_parser = next(
+        action.choices["materialize"]
+        for action in parser._actions
+        if hasattr(action, "choices") and action.choices
+    )
+    options = {
+        option
+        for action in materialize_parser._actions
+        for option in action.option_strings
+    }
+    assert "--conda-toolchain-root" in options
+    assert "--conda-executable" not in options
+    assert "--expected-package-cache-seed-input-json" in options
+    expected_action = next(
+        action
+        for action in materialize_parser._actions
+        if "--expected-package-cache-seed-input-json"
+        in action.option_strings
+    )
+    assert expected_action.required is True
+
+
+def _toolchain_binding(value: str | Path) -> dict:
+    executable = Path(value).resolve()
+    payload = executable.read_bytes()
+    root = executable
+    return {
+        "schema_version": 1,
+        "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+        "release_tag": materialize.REQUIRED_TAG,
+        "chain_namespace": "schema5-v1.2-r4",
+        "toolchain_root": str(root),
+        "base_prefix": str(executable.parent),
+        "completion_marker": {
+            "path": str(root / "CONDA_TOOLCHAIN_COMPLETE.json"),
+            "sha256": "1" * 64,
+            "size": 1,
+        },
+        "marker_id": "2" * 64,
+        "installer_contract": {
+            "filename": "Miniforge3-Linux-x86_64.sh",
+            "release": "Miniforge3-25.11.0-1",
+            "sha256": "3" * 64,
+            "conda_version": "25.11.0",
+        },
+        "intent_id": "4" * 64,
+        "conda_executable": {
+            "path": str(executable),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+            "mode": executable.stat().st_mode & 0o777,
+            "link_count": executable.stat().st_nlink,
+        },
+        "runtime_identity_sha256": "5" * 64,
+        "complete_prefix_inventory_sha256": "6" * 64,
+        "read_only_probes": {"probe_count": 2},
+        "binding_id": "7" * 64,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _mock_verified_conda_toolchain(monkeypatch):
+    monkeypatch.setattr(
+        materialize.conda_toolchain,
+        "verified_conda_toolchain_binding",
+        lambda root, exercise=True: _toolchain_binding(root),
+    )
+
+
 def test_capture_binding_preserves_separate_policy_identities(
     tmp_path, monkeypatch
 ):
@@ -81,11 +152,20 @@ def test_command_environment_rejects_hostile_pip_and_conda_configuration(
         "PIP_TARGET": "/tmp/attacker-target",
         "PIP_PREFIX": "/tmp/attacker-prefix",
         "PIP_CONFIG_FILE": "/tmp/attacker-pip.conf",
+        "PYTHONWARNINGS": "error",
         "CONDA_PREFIX": "/tmp/attacker-prefix",
         "CONDA_SOLVER": "classic",
         "CONDA_PLUGINS_AUTO_ACCEPT_TOS": "yes",
         "CONDARC": "/tmp/attacker-condarc",
         "LD_PRELOAD": "/tmp/attacker.so",
+        "PATH": "/tmp/attacker-bin",
+        "GIT_DIR": "/tmp/attacker-git",
+        "GIT_CONFIG_PARAMETERS": "'core.hooksPath=/tmp/attacker-hooks'",
+        "GIT_REPLACE_REF_BASE": "refs/attacker",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/tmp/attacker-hooks",
+        "SBATCH_PARTITION": "attacker",
+        "SQUEUE_FORMAT": "attacker",
     }
     for name, value in hostile.items():
         monkeypatch.setenv(name, value)
@@ -96,13 +176,25 @@ def test_command_environment_rejects_hostile_pip_and_conda_configuration(
     assert environment["CONDARC"] == os.devnull
     assert environment["CONDA_NO_PLUGINS"] == "true"
     assert environment["CONDA_OFFLINE"] == "true"
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
     assert "PIP_INDEX_URL" not in environment
     assert "PIP_TARGET" not in environment
     assert "PIP_PREFIX" not in environment
+    assert "PYTHONWARNINGS" not in environment
     assert "CONDA_PREFIX" not in environment
     assert "CONDA_SOLVER" not in environment
     assert "CONDA_PLUGINS_AUTO_ACCEPT_TOS" not in environment
     assert "LD_PRELOAD" not in environment
+    assert "GIT_DIR" not in environment
+    assert "GIT_CONFIG_PARAMETERS" not in environment
+    assert "GIT_REPLACE_REF_BASE" not in environment
+    assert "GIT_CONFIG_KEY_0" not in environment
+    assert "GIT_CONFIG_VALUE_0" not in environment
+    assert "SBATCH_PARTITION" not in environment
+    assert "SQUEUE_FORMAT" not in environment
 
 
 def _run(*argv: str, cwd: Path) -> str:
@@ -143,6 +235,8 @@ def _source_prefix(tmp_path: Path, name: str) -> Path:
             {
                 "name": "python",
                 "version": "3.11",
+                "build": "test",
+                "fn": "python-3.11-test.conda",
                 "url": "https://conda.example.invalid/python-3.11-test.conda",
                 "sha256": "1" * 64,
             }
@@ -152,6 +246,44 @@ def _source_prefix(tmp_path: Path, name: str) -> Path:
     (prefix / "bin").mkdir()
     (prefix / "bin" / "python").write_text("python\n", encoding="utf-8")
     return prefix
+
+
+def _source_package_cache(tmp_path: Path) -> Path:
+    cache = tmp_path / "source-package-cache"
+    extracted = cache / "python-3.11-test"
+    (extracted / "info").mkdir(parents=True)
+    identity = {
+        "name": "python",
+        "version": "3.11",
+        "build": "test",
+    }
+    (extracted / "info" / "index.json").write_text(
+        json.dumps(identity, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (extracted / "info" / "repodata_record.json").write_text(
+        json.dumps(
+            {
+                **identity,
+                "fn": "python-3.11-test.conda",
+                "url": "https://conda.example.invalid/python-3.11-test.conda",
+                "sha256": "1" * 64,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (extracted / "payload").write_text("python package\n", encoding="utf-8")
+    (cache / "cache").mkdir()
+    (cache / "cache" / "channel.json").write_text(
+        '{"packages": {}}\n', encoding="utf-8"
+    )
+    (cache / "urls").write_text("", encoding="utf-8")
+    (cache / "urls.txt").write_text(
+        "https://conda.example.invalid/python-3.11-test.conda\n",
+        encoding="utf-8",
+    )
+    return cache
 
 
 def _fake_conda(tmp_path: Path) -> Path:
@@ -221,6 +353,14 @@ def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(
         },
     )
     release_root = tmp_path / "release"
+    source_package_cache = _source_package_cache(tmp_path)
+    expected_cache_input = (
+        materialize.selected_package_cache_input_binding(
+            source_package_cache=source_package_cache,
+            harness_seed=source_harness,
+            serving_seed=source_serving,
+        )
+    )
 
     report = materialize.materialize_release(
         output_root=release_root,
@@ -229,13 +369,40 @@ def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(
         release_worktree=release_root / "worktree",
         source_harness_prefix=source_harness,
         source_serving_prefix=source_serving,
+        source_package_cache=source_package_cache,
         harness_prefix=release_root / "environments" / "harness",
         serving_prefix=release_root / "environments" / "serving",
-        conda_executable=_fake_conda(tmp_path),
+        conda_toolchain_root=_fake_conda(tmp_path),
+        expected_package_cache_seed_input=expected_cache_input,
     )
 
     assert report["status"] == "dry_run"
     assert report["tag_commit"] == commit
+    assert report["package_cache_seed_input"] == {
+        "source_package_cache": str(
+            (tmp_path / "source-package-cache").resolve()
+        ),
+        "inventory_sha256": report["package_cache_seed_input"][
+            "inventory_sha256"
+        ],
+        "inventory_entry_count": 9,
+        "inventory_file_count": 6,
+        "inventory_total_file_bytes": report["package_cache_seed_input"][
+            "inventory_total_file_bytes"
+        ],
+        "requirements_sha256": report["package_cache_seed_input"][
+            "requirements_sha256"
+        ],
+        "required_package_count": 1,
+        "archive_count": 0,
+        "selected_top_level_entries": [
+            "cache",
+            "python-3.11-test",
+            "urls",
+            "urls.txt",
+        ],
+        "input_id": report["package_cache_seed_input"]["input_id"],
+    }
     assert report["clone_contract"] == {
         "command": (
             "conda create --yes --copy --offline --no-default-packages "
@@ -246,12 +413,67 @@ def test_materialization_dry_run_is_read_only_and_plans_copy_semantics(
         "CONDA_PIP_INTEROP_ENABLED": "false",
         "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
         "release_local_package_cache": str(release_root / "conda-package-cache"),
+        "immutable_package_cache_seed": str(
+            release_root / "conda-package-cache-seed"
+        ),
+        "package_cache_seed_protocol": materialize.PACKAGE_CACHE_SEED_PROTOCOL,
         "shared_regular_inode_count": 0,
         "source_prefix_target_symlink_count": 0,
         "unresolvable_symlink_count": 0,
     }
     assert report["harness_install_contract"]["editable"] is False
     assert report["harness_install_contract"]["index_access"] is False
+    assert not release_root.exists()
+
+
+def test_materialization_rejects_cache_drift_from_expected_binding_before_output(
+    tmp_path, monkeypatch
+):
+    repository, _commit = _tagged_repository(tmp_path)
+    capture_root = tmp_path / "capture"
+    source_harness = _source_prefix(capture_root / "seeds", "harness")
+    source_serving = _source_prefix(capture_root / "seeds", "serving")
+    source_package_cache = _source_package_cache(tmp_path)
+    expected_cache_input = (
+        materialize.selected_package_cache_input_binding(
+            source_package_cache=source_package_cache,
+            harness_seed=source_harness,
+            serving_seed=source_serving,
+        )
+    )
+    (source_package_cache / "urls.txt").write_text(
+        (source_package_cache / "urls.txt").read_text(encoding="utf-8")
+        + "https://conda.example.invalid/unselected.conda\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        materialize,
+        "_verified_environment_capture_binding",
+        lambda **kwargs: {
+            "release_id": materialize.RELEASE_ID,
+            "capture_id": "c" * 64,
+        },
+    )
+    release_root = tmp_path / "release"
+
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="differs from the expected sealed binding",
+    ):
+        materialize.materialize_release(
+            output_root=release_root,
+            environment_capture_root=capture_root,
+            source_repository=repository,
+            release_worktree=release_root / "worktree",
+            source_harness_prefix=source_harness,
+            source_serving_prefix=source_serving,
+            source_package_cache=source_package_cache,
+            harness_prefix=release_root / "environments" / "harness",
+            serving_prefix=release_root / "environments" / "serving",
+            conda_toolchain_root=_fake_conda(tmp_path),
+            expected_package_cache_seed_input=expected_cache_input,
+        )
+
     assert not release_root.exists()
 
 
@@ -272,6 +494,14 @@ def test_materialization_rejects_dirty_or_non_tag_source_checkout(
     )
     (repository / "untracked.txt").write_text("dirty\n", encoding="utf-8")
     release_root = tmp_path / "release"
+    source_package_cache = _source_package_cache(tmp_path)
+    expected_cache_input = (
+        materialize.selected_package_cache_input_binding(
+            source_package_cache=source_package_cache,
+            harness_seed=source_harness,
+            serving_seed=source_serving,
+        )
+    )
 
     with pytest.raises(materialize.MaterializationError, match="clean exact production tag"):
         materialize.materialize_release(
@@ -281,9 +511,11 @@ def test_materialization_rejects_dirty_or_non_tag_source_checkout(
             release_worktree=release_root / "worktree",
             source_harness_prefix=source_harness,
             source_serving_prefix=source_serving,
+            source_package_cache=source_package_cache,
             harness_prefix=release_root / "environments" / "harness",
             serving_prefix=release_root / "environments" / "serving",
-            conda_executable=_fake_conda(tmp_path),
+            conda_toolchain_root=_fake_conda(tmp_path),
+            expected_package_cache_seed_input=expected_cache_input,
         )
 
     assert not release_root.exists()
@@ -307,6 +539,7 @@ def test_verifier_rejects_rehashed_materialization_contract_substitution(
         "release_worktree": str(tmp_path / "worktree"),
         "source_harness_prefix": str(tmp_path / "harness-seed"),
         "source_serving_prefix": str(tmp_path / "serving-seed"),
+        "source_package_cache": str(tmp_path / "source-package-cache"),
         "harness_prefix": str(tmp_path / "harness"),
         "serving_prefix": str(tmp_path / "serving"),
     }
@@ -322,9 +555,11 @@ def test_verifier_rejects_rehashed_materialization_contract_substitution(
         "git_tag": materialize.REQUIRED_TAG,
         "source_tree_sha256": "2" * 64,
     }
+    conda_path = _fake_conda(tmp_path)
+    toolchain_binding = _toolchain_binding(conda_path)
     conda_tool = {
-        "path": str(tmp_path / "archived-conda"),
-        "sha256": "3" * 64,
+        "path": str(conda_path.resolve()),
+        "sha256": toolchain_binding["conda_executable"]["sha256"],
     }
     marker = {
         "schema_version": materialize.SCHEMA_VERSION,
@@ -334,8 +569,25 @@ def test_verifier_rejects_rehashed_materialization_contract_substitution(
         "source_tree_sha256": git_identity["source_tree_sha256"],
         "paths": paths,
         "output_root": str(root),
+        "conda_toolchain": toolchain_binding,
         "conda_creation_tool": conda_tool,
         "environment_capture": capture_binding,
+        "package_cache_seed_input": {
+            "source_package_cache": paths["source_package_cache"],
+            "inventory_sha256": "4" * 64,
+            "inventory_entry_count": 1,
+            "inventory_file_count": 1,
+            "inventory_total_file_bytes": 1,
+            "requirements_sha256": "5" * 64,
+            "required_package_count": 1,
+            "archive_count": 0,
+            "selected_top_level_entries": [
+                "cache",
+                "python-3.11-test",
+                "urls",
+                "urls.txt",
+            ],
+        },
         "clone_contract": {
             "command": (
                 "conda create --yes --copy --offline --no-default-packages "
@@ -347,6 +599,12 @@ def test_verifier_rejects_rehashed_materialization_contract_substitution(
             "CONDA_ADD_PIP_AS_PYTHON_DEPENDENCY": "false",
             "release_local_package_cache": str(
                 root / "conda-package-cache"
+            ),
+            "immutable_package_cache_seed": str(
+                root / "conda-package-cache-seed"
+            ),
+            "package_cache_seed_protocol": (
+                materialize.PACKAGE_CACHE_SEED_PROTOCOL
             ),
             "shared_regular_inode_count": 0,
             "source_prefix_target_symlink_count": 0,
@@ -407,6 +665,223 @@ def test_copy_verifier_rejects_shared_regular_inodes(tmp_path):
     ] == 0
     with pytest.raises(materialize.MaterializationError, match="shares 1 regular-file"):
         materialize.verify_independent_copy(source, linked)
+
+
+def test_package_cache_seed_is_marker_first_real_copy_and_replay_safe(
+    tmp_path, monkeypatch
+):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    unrelated = source_cache / "unrelated-9.9-build"
+    unrelated.mkdir()
+    (unrelated / "payload").write_text("not selected\n", encoding="utf-8")
+    output = tmp_path / "materialization"
+    observed_marker_first = []
+    original_copy = materialize._copy_cache_inventory_bound
+
+    def observing_copy(source, destination, inventory):
+        observed_marker_first.append(
+            (output / materialize.PACKAGE_CACHE_SEED_INTENT).is_file()
+        )
+        return original_copy(source, destination, inventory)
+
+    monkeypatch.setattr(
+        materialize, "_copy_cache_inventory_bound", observing_copy
+    )
+    first = materialize._materialize_package_cache_seed(
+        output_root=output,
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+    second = materialize._materialize_package_cache_seed(
+        output_root=output,
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+
+    seed = output / materialize.PACKAGE_CACHE_SEED_DIRECTORY
+    runtime = output / materialize.PACKAGE_CACHE_DIRECTORY
+    assert first == second
+    assert first["required_package_count"] == 1
+    assert first["archive_count"] == 0
+    assert observed_marker_first and all(observed_marker_first)
+    assert not (seed / unrelated.name).exists()
+    assert not (runtime / unrelated.name).exists()
+    assert materialize.verify_independent_copy(source_cache, seed)[
+        "shared_regular_inode_count"
+    ] == 0
+    assert materialize.verify_independent_copy(seed, runtime)[
+        "shared_regular_inode_count"
+    ] == 0
+    materialize.capture._assert_read_only(seed)
+    source_cache.rename(tmp_path / "retired-source-package-cache")
+    assert materialize._verify_package_cache_seed(
+        output, require_preclone_runtime_identity=True
+    ) == first
+
+
+def test_package_cache_seed_resumes_exact_partial_copy(tmp_path):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    output = tmp_path / "materialization"
+    seed = output / materialize.PACKAGE_CACHE_SEED_DIRECTORY
+    plan = materialize._package_cache_seed_plan(
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+    partial_rows = [
+        row
+        for row in plan["inventory"]["entries"]
+        if Path(row["path"]).parts[0] in {"urls", "urls.txt"}
+    ]
+    partial = materialize._inventory_from_entries(partial_rows)
+    materialize.capture.copy_inventory_bound(source_cache, seed, partial)
+
+    report = materialize._materialize_package_cache_seed(
+        output_root=output,
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+
+    assert report["required_package_count"] == 1
+    assert materialize._verify_package_cache_seed(
+        output, require_preclone_runtime_identity=True
+    ) == report
+
+
+def test_package_cache_seed_resumes_after_copy_was_sealed_before_marker(
+    tmp_path,
+):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    output = tmp_path / "materialization"
+    seed = output / materialize.PACKAGE_CACHE_SEED_DIRECTORY
+    plan = materialize._package_cache_seed_plan(
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+    materialize.capture.copy_inventory_bound(
+        source_cache, seed, plan["inventory"]
+    )
+    materialize.capture._seal_tree(seed)
+
+    report = materialize._materialize_package_cache_seed(
+        output_root=output,
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+
+    assert report["sealed_read_only"] is True
+    assert materialize._verify_package_cache_seed(
+        output, require_preclone_runtime_identity=True
+    ) == report
+
+
+def test_package_cache_seed_recovers_sigkill_partial_file_temporary(tmp_path):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    output = tmp_path / "materialization"
+    seed = output / materialize.PACKAGE_CACHE_SEED_DIRECTORY
+    partial = seed / ".urls.txt.schema5-cache-copying"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"truncated")
+
+    report = materialize._materialize_package_cache_seed(
+        output_root=output,
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+
+    assert report["sealed_read_only"] is True
+    assert not partial.exists()
+    assert (
+        seed / "urls.txt"
+    ).read_bytes() == (source_cache / "urls.txt").read_bytes()
+
+
+def test_package_cache_seed_rejects_hardlinked_partial_copy(tmp_path):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    output = tmp_path / "materialization"
+    seed = output / materialize.PACKAGE_CACHE_SEED_DIRECTORY
+    shutil.copytree(source_cache, seed, copy_function=os.link)
+
+    with pytest.raises(
+        materialize.MaterializationError, match="shares .* regular-file inode"
+    ):
+        materialize._materialize_package_cache_seed(
+            output_root=output,
+            source_cache=source_cache,
+            harness_seed=harness,
+            serving_seed=serving,
+        )
+
+
+def test_package_cache_seed_requires_repository_metadata_and_exact_urls(tmp_path):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    (source_cache / "urls.txt").write_text(
+        "https://conda.example.invalid/wrong.conda\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        materialize.MaterializationError, match="cannot resolve exact selected URL"
+    ):
+        materialize._package_cache_seed_plan(
+            source_cache=source_cache,
+            harness_seed=harness,
+            serving_seed=serving,
+        )
+
+
+def test_package_cache_seed_allows_unresolved_internal_link_but_rejects_escape(
+    tmp_path,
+):
+    harness = _source_prefix(tmp_path, "harness-seed")
+    serving = _source_prefix(tmp_path, "serving-seed")
+    source_cache = _source_package_cache(tmp_path)
+    package = source_cache / "python-3.11-test"
+    (package / "lib").mkdir()
+    (package / "lib" / "internal-missing").symlink_to(
+        "provided-when-linked.so"
+    )
+
+    report = materialize._materialize_package_cache_seed(
+        output_root=tmp_path / "accepted",
+        source_cache=source_cache,
+        harness_seed=harness,
+        serving_seed=serving,
+    )
+    assert report["seed_symlink_audit"] == {
+        "symlink_count": 1,
+        "unresolved_internal_symlink_count": 1,
+        "external_symlink_count": 0,
+    }
+
+    (package / "lib" / "escape").symlink_to("../../outside")
+    with pytest.raises(
+        materialize.MaterializationError,
+        match="symlink escapes its selected package",
+    ):
+        materialize._materialize_package_cache_seed(
+            output_root=tmp_path / "rejected",
+            source_cache=source_cache,
+            harness_seed=harness,
+            serving_seed=serving,
+        )
 
 
 def test_safe_destination_rejects_lexical_leaf_symlink(tmp_path):

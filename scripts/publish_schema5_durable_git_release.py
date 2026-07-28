@@ -25,11 +25,11 @@ from typing import Any, Mapping, Sequence
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
-CHAIN_NAMESPACE = "schema5-v1.2-r3"
-DURABLE_COMMIT_REF = "refs/heads/schema5-v1.2-r3"
-PROTOCOL = "schema5-v1.2-r3-durable-git-release-v1"
-MARKER_NAME = "DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R3_COMPLETE.json"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
+CHAIN_NAMESPACE = "schema5-v1.2-r4"
+DURABLE_COMMIT_REF = "refs/heads/schema5-v1.2-r4"
+PROTOCOL = "schema5-v1.2-r4-durable-git-release-v1"
+MARKER_NAME = "DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R4_COMPLETE.json"
 BUNDLE_DIRECTORY = "git_release"
 BUNDLE_NAME = f"{RELEASE_TAG}.bundle"
 CHECKSUM_NAME = f"{BUNDLE_NAME}.sha256"
@@ -37,6 +37,47 @@ _OBJECT = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _REMOTE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _REMOTE_REF = re.compile(r"refs/(?:heads|releases)/[A-Za-z0-9._/+@-]+\Z")
+_TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_UNTRUSTED_PROCESS_ENVIRONMENT_KEYS = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_TIME_FORMAT",
+    }
+)
+_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES = (
+    "BASH_FUNC_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+)
 
 
 class DurableGitReleaseError(RuntimeError):
@@ -47,6 +88,28 @@ def _canonical(value: object) -> bytes:
     return (
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
     ).encode("utf-8")
+
+
+def _sanitized_process_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _UNTRUSTED_PROCESS_ENVIRONMENT_KEYS
+        and not key.startswith(_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES)
+    }
+    environment.update(
+        {
+            "PATH": _TRUSTED_SYSTEM_PATH,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    return environment
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -218,6 +281,7 @@ def _run(
     description: str,
     timeout: float = 300,
 ) -> str:
+    environment = _sanitized_process_environment()
     try:
         completed = subprocess.run(
             list(argv),
@@ -226,12 +290,7 @@ def _run(
             capture_output=True,
             check=False,
             timeout=timeout,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_TERMINAL_PROMPT": "0",
-                "LC_ALL": "C",
-            },
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DurableGitReleaseError(f"{description} failed: {exc}") from exc
@@ -251,30 +310,44 @@ def _local_identity(repository: Path) -> dict[str, str]:
         raise DurableGitReleaseError("release repository is not a Git checkout")
     tag_ref = f"refs/tags/{RELEASE_TAG}"
     tag_type = _run(
-        ["git", "cat-file", "-t", tag_ref],
+        ["/usr/bin/git", "cat-file", "-t", tag_ref],
         cwd=repository,
         description="annotated-tag type query",
     )
     tag_object = _run(
-        ["git", "rev-parse", "--verify", tag_ref],
+        ["/usr/bin/git", "rev-parse", "--verify", tag_ref],
         cwd=repository,
         description="annotated-tag object query",
     )
     commit = _run(
-        ["git", "rev-parse", "--verify", f"{tag_ref}^{{commit}}"],
+        ["/usr/bin/git", "rev-parse", "--verify", f"{tag_ref}^{{commit}}"],
         cwd=repository,
         description="annotated-tag commit query",
     )
     head = _run(
-        ["git", "rev-parse", "--verify", "HEAD"],
+        ["/usr/bin/git", "rev-parse", "--verify", "HEAD"],
         cwd=repository,
         description="HEAD query",
     )
     status = _run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        ["/usr/bin/git", "status", "--porcelain=v1", "--untracked-files=all"],
         cwd=repository,
         description="clean-worktree query",
     )
+    replacement_refs = _run(
+        [
+            "/usr/bin/git",
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/replace",
+        ],
+        cwd=repository,
+        description="replacement-ref query",
+    )
+    if replacement_refs:
+        raise DurableGitReleaseError(
+            "release checkout contains forbidden Git replacement refs"
+        )
     if (
         tag_type != "tag"
         or _OBJECT.fullmatch(tag_object) is None
@@ -308,14 +381,14 @@ def _remote_identity(
             f"{DURABLE_COMMIT_REF}"
         )
     remote_url = _run(
-        ["git", "remote", "get-url", remote],
+        ["/usr/bin/git", "remote", "get-url", remote],
         cwd=repository,
         description="remote URL query",
     )
     tag_ref = f"refs/tags/{RELEASE_TAG}"
     output = _run(
         [
-            "git",
+            "/usr/bin/git",
             "ls-remote",
             "--exit-code",
             remote,
@@ -363,12 +436,18 @@ def _verify_bundle(
 ) -> tuple[str, int]:
     raw = _stable_bytes(bundle, description="Git release bundle")
     _run(
-        ["git", "bundle", "verify", str(bundle)],
+        ["/usr/bin/git", "bundle", "verify", str(bundle)],
         cwd=repository,
         description="Git bundle verification",
     )
     heads = _run(
-        ["git", "bundle", "list-heads", str(bundle), f"refs/tags/{RELEASE_TAG}"],
+        [
+            "/usr/bin/git",
+            "bundle",
+            "list-heads",
+            str(bundle),
+            f"refs/tags/{RELEASE_TAG}",
+        ],
         cwd=repository,
         description="Git bundle tag query",
     )
@@ -573,7 +652,7 @@ def publish(
             temporary_bundle = Path(temporary_name) / BUNDLE_NAME
             _run(
                 [
-                    "git",
+                    "/usr/bin/git",
                     "bundle",
                     "create",
                     str(temporary_bundle),

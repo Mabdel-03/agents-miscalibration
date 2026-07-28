@@ -1,4 +1,4 @@
-"""Focused contracts for the superseding schema-5 v1.2-r3 recovery chain."""
+"""Focused contracts for the superseding schema-5 v1.2-r4 recovery chain."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import shlex
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,101 @@ from scripts import verify_schema5_recovery_evidence
 
 COMMIT = "2" * 40
 TAG_OBJECT = "3" * 40
+
+
+def test_renderer_subprocess_environment_rejects_hostile_command_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile = {
+        "PATH": "/tmp/hostile-bin:/usr/bin",
+        "BASH_ENV": "/tmp/hostile-bash-env",
+        "LD_AUDIT": "/tmp/hostile-audit.so",
+        "LD_PRELOAD": "/tmp/hostile.so",
+        "GIT_DIR": "/tmp/hostile-git-dir",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": "/tmp/hostile-hooks",
+        "GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='hostile'",
+        "GIT_REPLACE_REF_BASE": "refs/hostile-replacements/",
+        "GIT_SHALLOW_FILE": "/tmp/hostile-shallow",
+        "SBATCH_PARTITION": "hostile",
+        "SQUEUE_FORMAT": "hostile",
+        "SACCT_FORMAT": "hostile",
+        "SLURM_CONF": "/tmp/hostile-slurm.conf",
+        "BASH_FUNC_git%%": "() { false; }",
+    }
+    for name, value in hostile.items():
+        monkeypatch.setenv(name, value)
+
+    environment = chain._sanitized_process_environment()
+
+    assert environment["PATH"] == chain.TRUSTED_SYSTEM_PATH
+    assert environment["LANG"] == "C"
+    assert environment["LC_ALL"] == "C"
+    assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_ATTR_NOSYSTEM"] == "1"
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert environment["GIT_OPTIONAL_LOCKS"] == "0"
+    assert environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert not (set(hostile) - {"PATH"}).intersection(environment)
+
+
+def test_default_runner_pins_slurm_client_and_sanitizes_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        observed["environment"] = dict(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(chain.subprocess, "run", fake_run)
+    result = chain._default_runner(["squeue", "--version"])
+
+    assert result.returncode == 0
+    assert observed["argv"] == ["/usr/bin/squeue", "--version"]
+    environment = observed["environment"]
+    assert isinstance(environment, dict)
+    assert environment["PATH"] == chain.TRUSTED_SYSTEM_PATH
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_exact_release_rejects_git_replace_refs(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    def git(*arguments: str) -> str:
+        completed = subprocess.run(
+            ["/usr/bin/git", "-C", str(repository), *arguments],
+            text=True,
+            capture_output=True,
+            check=True,
+            env=chain._sanitized_process_environment(),
+        )
+        return completed.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "schema5@example.invalid")
+    git("config", "user.name", "Schema5 Test")
+    payload = repository / "payload.txt"
+    payload.write_text("trusted\n", encoding="utf-8")
+    git("add", "payload.txt")
+    git("commit", "-q", "-m", "trusted")
+    trusted_commit = git("rev-parse", "HEAD")
+    git("tag", "-a", chain.RELEASE_TAG, "-m", "trusted release")
+    assert chain.verify_release_tag(repository)["git_commit"] == trusted_commit
+
+    payload.write_text("replacement\n", encoding="utf-8")
+    git("add", "payload.txt")
+    git("commit", "-q", "-m", "replacement")
+    replacement_commit = git("rev-parse", "HEAD")
+    git("reset", "--hard", "-q", trusted_commit)
+    git("replace", trusted_commit, replacement_commit)
+
+    with pytest.raises(chain.ChainError, match="replacement refs"):
+        chain.verify_release_tag(repository)
 
 
 def _base_profile_replicas() -> dict[str, int]:
@@ -50,17 +146,7 @@ def _base_profile_replicas() -> dict[str, int]:
 
 
 def _effective_profile_replicas() -> dict[str, int]:
-    result = _base_profile_replicas()
-    for profile, count in {
-        "0.6B": 3,
-        "1.7B": 3,
-        "4B": 3,
-        "8B": 2,
-        "14B": 3,
-        "32B": 4,
-    }.items():
-        result[profile] += count
-    return result
+    return _base_profile_replicas()
 
 
 @lru_cache(maxsize=None)
@@ -160,7 +246,7 @@ def _write_protected_capacity_fixture(
     base_path = contracts / "base-fleet.json"
     effective_path = contracts / "effective-fleet.json"
     _json(base_path, {"kind": "base-fleet-test-fixture"})
-    _json(effective_path, {"kind": "effective-fleet-test-fixture"})
+    _json(effective_path, {"kind": "base-fleet-test-fixture"})
     base_sha256 = chain._sha256(base_path)
     effective_sha256 = chain._sha256(effective_path)
     payloads = _capacity_payloads(base_sha256, effective_sha256)
@@ -201,22 +287,28 @@ def _write_protected_capacity_fixture(
                     "certificate_id"
                 ],
             },
+            "static_feasibility_wave_passed": False,
+            "static_feasibility_configured_client_ceiling": 384,
+            "static_feasibility_certified_saturation_target": 278,
+            "static_feasibility_selected_cell_count": 278,
+            "static_feasibility_target_cell_count": 384,
+            "static_feasibility_shortfall_cells": 106,
             "base_active_logical_replicas": 22,
             "base_active_gpus": 24,
             "base_active_topology": payloads["base_topology"],
             "base_active_topology_sha256": digest(
                 payloads["base_topology"]
             ),
-            "additive_reserved_logical_replicas": 18,
-            "additive_reserved_gpus": 18,
-            "additive_reserved_tp1_replicas": 18,
+            "additive_reserved_logical_replicas": 0,
+            "additive_reserved_gpus": 0,
+            "additive_reserved_tp1_replicas": 0,
             "additive_reserved_tp2_replicas": 0,
             "additive_reserved_topology": payloads["additive_topology"],
             "additive_reserved_topology_sha256": digest(
                 payloads["additive_topology"]
             ),
-            "effective_active_logical_replicas": 40,
-            "effective_active_gpus": 42,
+            "effective_active_logical_replicas": 22,
+            "effective_active_gpus": 24,
             "effective_active_topology": payloads["effective_topology"],
             "effective_active_topology_sha256": digest(
                 payloads["effective_topology"]
@@ -229,16 +321,16 @@ def _write_protected_capacity_fixture(
             "retained_warm_turnover_topology_sha256": digest(
                 payloads["warm_topology"]
             ),
-            "attested_total_gpus": 46,
+            "attested_total_gpus": 28,
             "job_element_accounting": {
                 "cell_job_elements": 384,
-                "active_server_job_elements": 40,
+                "active_server_job_elements": 22,
                 "warm_turnover_job_elements": 3,
-                "controller_monitor_other_held_job_elements": 21,
+                "controller_monitor_other_held_job_elements": 39,
                 "total_non_cell_reserve_job_elements": 64,
                 "total_canary_job_elements": 448,
             },
-            "active_gpus": 42,
+            "active_gpus": 24,
             "warm_headroom_gpus": 4,
             "cell_ceiling": 384,
             "reserve_jobs": 64,
@@ -250,9 +342,9 @@ def _write_protected_capacity_fixture(
             "scheduler_cluster": "test_cluster",
             "scheduler_account": "test_account",
             "scheduler_user": "test_user",
-            "scheduler_max_jobs": 427,
+            "scheduler_max_jobs": 409,
             "scheduler_max_submit_jobs": 500,
-            "running_scientific_jobs": 427,
+            "running_scientific_jobs": 409,
             "minimum_scientific_wall_seconds": 86_400,
             "scientific_qos_contracts": [
                 {
@@ -262,21 +354,21 @@ def _write_protected_capacity_fixture(
                     "max_submit_jobs_per_user": 500,
                     "required_wall_seconds": 43_200,
                     "required_running_jobs": 384,
-                    "required_submit_jobs": 405,
+                    "required_submit_jobs": 423,
                 },
                 {
                     "qos": "gpu_science",
                     "max_wall_seconds": 86_400,
-                    "max_jobs_per_user": 43,
+                    "max_jobs_per_user": 25,
                     "max_submit_jobs_per_user": 500,
                     "required_wall_seconds": 86_400,
-                    "required_running_jobs": 43,
-                    "required_submit_jobs": 43,
+                    "required_running_jobs": 25,
+                    "required_submit_jobs": 25,
                 },
             ],
             "partition_cpus": 384,
             "partition_memory_mib": 1_572_864,
-            "partition_gpus": 46,
+            "partition_gpus": 28,
             "fleet_contract_sha256": effective_sha256,
             "active_fleet_topology_sha256": digest(
                 payloads["effective_topology"]
@@ -290,10 +382,10 @@ def _write_protected_capacity_fixture(
                     "partition_preempt_mode": "OFF",
                     "qos_preempt_mode": "OFF",
                     "base_active_gpus": 24,
-                    "reserved_additive_gpus": 18,
-                    "effective_active_gpus": 42,
+                    "reserved_additive_gpus": 0,
+                    "effective_active_gpus": 24,
                     "retained_warm_turnover_gpus": 4,
-                    "attested_total_gpus": 46,
+                    "attested_total_gpus": 28,
                     "partition_cpus": 4096,
                     "partition_memory_mib": 33_554_432,
                     "partition_gpus": 64,
@@ -512,7 +604,7 @@ def _paths(
         "annotated_tag": True,
         "remote_query_read_only": True,
         "remote": "durable",
-        "remote_commit_ref": "refs/heads/schema5-v1.2-r3",
+        "remote_commit_ref": "refs/heads/schema5-v1.2-r4",
         "remote_commit": COMMIT,
         "remote_tag_object": TAG_OBJECT,
         "remote_peeled_commit": COMMIT,
@@ -607,7 +699,12 @@ def _paths(
         encoding="utf-8",
     )
     dev_python.chmod(0o755)
-    conda_base = tmp_path / "miniforge"
+    conda_base = (
+        recovery
+        / "toolchains"
+        / chain.CHAIN_NAMESPACE
+        / chain.conda_toolchain.TOOLCHAIN_DIRECTORY_NAME
+    )
     (conda_base / "bin").mkdir(parents=True)
     (conda_base / "lib" / "python3.12" / "site-packages" / "conda").mkdir(
         parents=True
@@ -622,6 +719,80 @@ def _paths(
     conda = conda_base / "bin" / "conda"
     conda.write_text(f"#!{conda_python}\n# fixture entrypoint\n", encoding="utf-8")
     conda.chmod(0o755)
+    source_package_cache = tmp_path / "source-conda-package-cache"
+    source_package_cache.mkdir()
+    conda_marker = conda_base / chain.conda_toolchain.MARKER_NAME
+    _json(conda_marker, {"fixture": "sealed-r4-toolchain"})
+    sealed_conda_toolchain = {
+        "schema_version": chain.conda_toolchain.SCHEMA_VERSION,
+        "protocol": chain.conda_toolchain.PROTOCOL,
+        "release_tag": chain.RELEASE_TAG,
+        "chain_namespace": chain.CHAIN_NAMESPACE,
+        "toolchain_root": str(conda_base),
+        "base_prefix": str(conda_base),
+        "completion_marker": {
+            "path": str(conda_marker),
+            "sha256": chain._sha256(conda_marker),
+            "size": conda_marker.stat().st_size,
+        },
+        "marker_id": "1" * 64,
+        "installer_contract": (
+            chain.conda_toolchain.PINNED_INSTALLER_CONTRACT.as_dict()
+        ),
+        "intent_id": "2" * 64,
+        "conda_executable": {
+            "path": str(conda),
+            "sha256": chain._sha256(conda),
+            "size": conda.stat().st_size,
+            "mode": 0o755,
+            "link_count": 1,
+        },
+        "runtime_identity_sha256": "3" * 64,
+        "complete_prefix_inventory_sha256": "4" * 64,
+        "read_only_probes": {"fixture": True},
+    }
+    sealed_conda_toolchain["binding_id"] = chain._sha256_bytes(
+        chain._canonical_json(sealed_conda_toolchain)
+    )
+    _json(
+        conda_base / "FIXTURE_TOOLCHAIN_BINDING.json",
+        sealed_conda_toolchain,
+    )
+    expected_conda_sha256 = chain._sha256(conda)
+    expected_conda_module_sha256 = chain._sha256(
+        conda_base
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "conda"
+        / "__init__.py"
+    )
+
+    def verified_toolchain(root: Path, *, exercise: bool = True):
+        assert Path(root) == conda_base
+        assert isinstance(exercise, bool)
+        module = (
+            conda_base
+            / "lib"
+            / "python3.12"
+            / "site-packages"
+            / "conda"
+            / "__init__.py"
+        )
+        if (
+            not conda.is_file()
+            or not module.is_file()
+            or chain._sha256(conda) != expected_conda_sha256
+            or chain._sha256(module) != expected_conda_module_sha256
+        ):
+            raise chain.ChainError(
+                "Conda runtime toolchain differs from sealed pilot provenance"
+            )
+        return json.loads(json.dumps(sealed_conda_toolchain))
+
+    monkeypatch.setattr(
+        chain, "_verified_conda_toolchain_binding", verified_toolchain
+    )
     pilot_root = recovery / "materialization_pilots" / chain.CHAIN_NAMESPACE
     canary_root = recovery / "slurm_canaries" / chain.CHAIN_NAMESPACE
     _json(pilot_root / chain.MATERIALIZATION_PILOT_MARKER, {"complete": True})
@@ -649,8 +820,59 @@ def _paths(
     (pilot_harness / "bin").chmod(0o555)
     (pilot_harness / "lib").chmod(0o555)
     pilot_harness.chmod(0o555)
-    sealed_conda_toolchain = (
-        schema5_conda_runtime_identity.conda_runtime_identity(conda)
+    r3_root = (
+        recovery / seal_recovery_evidence.R3_PRELAUNCH_FAILURE_RELATIVE_ROOT
+    )
+    r3_marker = r3_root / "PRELAUNCH_FAILURE_SEALED.json"
+    _json(r3_marker, {"fixture": "sealed-r3-prelaunch-failure"})
+    r3_binding = {
+        "schema_version": 1,
+        "protocol": (
+            "schema5-v1.2-r3-prelaunch-failure-seal-binding-v1"
+        ),
+        "root": str(r3_root),
+        "marker": {
+            "path": str(r3_marker),
+            "sha256": chain._sha256(r3_marker),
+            "size": r3_marker.stat().st_size,
+            "seal_id": "5" * 64,
+        },
+        "release_id": chain.RELEASE_ID,
+        "release_tag": chain.SUPERSEDED_R3_RELEASE_TAG,
+        "release_git_commit": chain.SUPERSEDED_R3_RELEASE_COMMIT,
+        "release_tag_object": chain.SUPERSEDED_R3_RELEASE_TAG_OBJECT,
+        "chain_namespace": chain.SUPERSEDED_R3_CHAIN_NAMESPACE,
+        "classification": (
+            "deterministic_materialization_contract_failure_sealed_fail_closed"
+        ),
+        "failure_classifications": list(
+            chain.SUPERSEDED_R3_FAILURE_CLASSIFICATIONS
+        ),
+        "retry_in_place": False,
+        "requires_superseding_release": True,
+        "pre_scheduler_submission": True,
+        "scheduler_evidence_required": False,
+        "known_scheduler_job_ids": [],
+        "mutation_claim": "zero_result_mutation",
+        "archive_inventory_sha256": "8" * 64,
+    }
+    _json(r3_root / "FIXTURE_PRELAUNCH_BINDING.json", r3_binding)
+
+    def verify_r3(root: Path):
+        assert Path(root) == r3_root
+        if (
+            not r3_marker.is_file()
+            or stat.S_IMODE(r3_marker.stat().st_mode) & 0o222
+            or chain._sha256(r3_marker)
+            != r3_binding["marker"]["sha256"]
+        ):
+            raise seal_recovery_evidence.EvidenceError("fixture r3 seal drift")
+        return json.loads(json.dumps(r3_binding))
+
+    monkeypatch.setattr(
+        chain.recovery_evidence,
+        "verify_prelaunch_failure_seal",
+        verify_r3,
     )
 
     marker = recovery / "pre_repair" / "SNAPSHOT_COMPLETE.json"
@@ -802,7 +1024,8 @@ def _paths(
         dev_python=dev_python,
         source_harness=source_harness,
         source_serving=source_serving,
-        conda_executable=conda,
+        conda_toolchain_root=conda_base,
+        source_package_cache=source_package_cache,
         materialization_pilot_root=pilot_root,
         slurm_canary_root=canary_root,
     )
@@ -826,10 +1049,30 @@ def _paths(
                 received_paths.repository, commit=COMMIT
             )
         }
+        cache_input = {
+            "source_package_cache": str(
+                received_paths.source_package_cache
+            ),
+            "inventory_sha256": "9" * 64,
+            "inventory_entry_count": 53,
+            "inventory_file_count": 6771,
+            "inventory_total_file_bytes": 1_875_066_230,
+            "requirements_sha256": "a" * 64,
+            "required_package_count": 27,
+            "archive_count": 23,
+            "selected_top_level_entries": [
+                "cache",
+                "urls",
+                "urls.txt",
+            ],
+        }
+        cache_input["input_id"] = chain._sha256_bytes(
+            chain._canonical_json(cache_input)
+        )
         return {
             "materialization_pilot": {
                 "status": "verified",
-                "schema_version": 4,
+                "schema_version": 5,
                 "release_id": chain.RELEASE_ID,
                 "expected_tag": chain.RELEASE_TAG,
                 "expected_commit": COMMIT,
@@ -846,7 +1089,7 @@ def _paths(
                     "receipt": str(
                         received_paths.recovery_root
                         / "jobs"
-                        / "schema5-v1.2-r3-materialization-pilot.sbatch.receipt.json"
+                        / "schema5-v1.2-r4-materialization-pilot.sbatch.receipt.json"
                     ),
                     "receipt_sha256": "c" * 64,
                     "receipt_id": "d" * 64,
@@ -866,16 +1109,11 @@ def _paths(
                 "integrity_normalization_policy_sha256": records[
                     chain.INTEGRITY_NORMALIZATION_POLICY_GIT_PATH
                 ]["sha256"],
-                "conda_executable": {
-                    "path": str(received_paths.conda_executable),
-                    "sha256": hashlib.sha256(
-                        received_paths.conda_executable.read_bytes()
-                    ).hexdigest(),
-                    "size": received_paths.conda_executable.stat().st_size,
-                },
-                "conda_runtime_toolchain": (
-                    sealed_conda_toolchain
+                "conda_toolchain": sealed_conda_toolchain,
+                "source_package_cache": str(
+                    received_paths.source_package_cache
                 ),
+                "package_cache_seed_input": cache_input,
                 "verifier_runtime": {
                     "harness_prefix": str(pilot_harness),
                     "environment_manifest_path": str(pilot_manifest),
@@ -992,15 +1230,6 @@ def _paths(
     )
     monkeypatch.setattr(
         chain,
-        "_invoke_conda_runtime_identity",
-        lambda received_paths, **_kwargs: (
-            schema5_conda_runtime_identity.conda_runtime_identity(
-                received_paths.conda_executable
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        chain,
         "_verify_sealed_r1_protocol_contract",
         lambda _paths, contract, **_kwargs: json.loads(
             json.dumps(contract, sort_keys=True)
@@ -1021,16 +1250,44 @@ def _paths(
 def _stub_tagged_release(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, bytes]:
-    payloads = {
-        git_path: (
-            "#!/usr/bin/env python3\n"
-            f"# exact tagged fixture: {git_path}\n"
-        ).encode("utf-8")
-        for git_path in {
-            *chain.BUNDLED_TOOL_GIT_PATHS,
-            *chain.PREREQUISITE_CODE_GIT_PATHS,
-        }
-    }
+    payloads = {}
+    for git_path in {
+        *chain.BUNDLED_TOOL_GIT_PATHS,
+        *chain.PREREQUISITE_CODE_GIT_PATHS,
+    }:
+        if git_path == "scripts/seal_recovery_evidence.py":
+            source = """\
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+def verify_prelaunch_failure_seal(root):
+    return json.loads(
+        (Path(root) / "FIXTURE_PRELAUNCH_BINDING.json").read_text(
+            encoding="utf-8"
+        )
+    )
+"""
+        elif git_path == "scripts/provision_schema5_conda_toolchain.py":
+            source = """\
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+def verified_conda_toolchain_binding(root, *, exercise=True):
+    assert isinstance(exercise, bool)
+    return json.loads(
+        (Path(root) / "FIXTURE_TOOLCHAIN_BINDING.json").read_text(
+            encoding="utf-8"
+        )
+    )
+"""
+        else:
+            source = (
+                "#!/usr/bin/env python3\n"
+                f"# exact tagged fixture: {git_path}\n"
+            )
+        payloads[git_path] = source.encode("utf-8")
     monkeypatch.setattr(
         chain,
         "verify_release_tag",
@@ -1122,7 +1379,7 @@ def _render_applied(
     return payloads, json.loads(paths.chain_manifest.read_text(encoding="utf-8"))
 
 
-def _publish_r3_throughput_attempt(
+def _publish_r4_throughput_attempt(
     paths: chain.RecoveryPaths,
     manifest: dict,
     *,
@@ -1155,14 +1412,14 @@ def _publish_r3_throughput_attempt(
         (1_010.0, 24, 24, 24),
         (1_020.0, 96, 96, 120),
         (1_030.0, 192, 192, 312),
-        (1_040.0, 384, 384, 696),
+        (1_040.0, 384, 278, 696),
     ]
     for index in range(1, 13):
         rows.append(
             (
                 1_040.0 + 600.0 * index,
                 384,
-                384,
+                278,
                 696 + (16_833 * index) // 12,
             )
         )
@@ -1392,14 +1649,15 @@ def _publish_r3_throughput_attempt(
         "replay_execution_events_total": 2_169,
         "cycle_count": 2,
         "cycle_inventory": final_cycles,
-        "capacity_target": 384,
-        "certified_exact_384_cuts": True,
+        "configured_client_ceiling": 384,
+        "certified_saturation_target": 278,
+        "certified_saturation_target_cuts": True,
         "work_conserving_refill": True,
         "sealed_refill_deficit_journal": True,
         "refill_deficit_scan_count": 0,
         "refill_wall_seconds": 0.0,
         "rate_denominator_includes_refill_wall_time": True,
-        "minimum_unfinished_assignments": 384,
+        "minimum_unfinished_assignments": 278,
         "all_strata_progress": True,
         "stratum_execution_event_deltas": deltas,
         "throughput_events_per_day": 201_996,
@@ -1476,7 +1734,9 @@ def _publish_r3_throughput_attempt(
             "loaded_384_seconds": 7_200,
             "loaded_384_useful_qids": 16_833,
             "loaded_384_observation_count": 13,
-            "certified_exact_384_cuts": True,
+            "configured_client_ceiling": 384,
+            "certified_saturation_target": 278,
+            "certified_saturation_target_cuts": True,
             "throughput_qids_per_day": 201_996,
             "throughput_unit": "trusted_qid_execution_events",
             "every_stratum_progress": True,
@@ -1492,6 +1752,11 @@ def _publish_throughput_qualification(
     paths: chain.RecoveryPaths, manifest: dict
 ) -> dict[str, object]:
     prerequisite = manifest["prerequisite_evidence"]
+    protected_capacity = json.loads(
+        Path(prerequisite["protected_capacity"]["marker"]).read_text(
+            encoding="utf-8"
+        )
+    )
 
     def compact(name: str, identity_field: str) -> dict[str, object]:
         record = prerequisite[name]
@@ -1515,8 +1780,12 @@ def _publish_throughput_qualification(
         "inventory_sha256": "9" * 64,
         "catalog_payload_sha256": "a" * 64,
         "allowed_generation_tuple_count": 24,
-        "release_fleet_contract_sha256": "b" * 64,
-        "fleet_contract_sha256": "c" * 64,
+        "release_fleet_contract_sha256": protected_capacity[
+            "base_fleet_contract_sha256"
+        ],
+        "fleet_contract_sha256": protected_capacity[
+            "effective_fleet_contract_sha256"
+        ],
         "capacity_generation": 1,
         "rollout_generation": 1,
     }
@@ -1581,7 +1850,7 @@ def _publish_throughput_qualification(
         },
         identity_field="current_id",
     )
-    marker = _publish_r3_throughput_attempt(
+    marker = _publish_r4_throughput_attempt(
         paths,
         manifest,
         pointer_path=pointer_path,
@@ -1633,7 +1902,10 @@ def _promote_throughput_qualification_to_additive_successor(
         "requirement": "add one replica (1 GPU)",
         "capacity_mutated": False,
     }
-    failure_reason = "qualification throughput is below threshold"
+    failure_reason = (
+        "qualification throughput from 1 trusted execution events in 7200 "
+        "seconds (12/day) is below 201,994"
+    )
     drain_observation_path = sorted(
         (attempt1_root / "observations").glob("OBSERVATION_*.json")
     )[-1]
@@ -1647,7 +1919,7 @@ def _promote_throughput_qualification_to_additive_successor(
                 chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
             ),
             "protocol": (
-                "schema5-v1.2-r3-throughput-qualification-"
+                "schema5-v1.2-r4-throughput-qualification-"
                 "failure-drain-intent-v3"
             ),
             "qualification_intent_id": "d" * 64,
@@ -1663,6 +1935,13 @@ def _promote_throughput_qualification_to_additive_successor(
     )
     evidence = json.loads(
         Path(marker["evidence"]["path"]).read_text(encoding="utf-8")
+    )
+    admission_certificate_path = (
+        paths.readiness
+        / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
+    )
+    admission_certificate = json.loads(
+        admission_certificate_path.read_text(encoding="utf-8")
     )
     failure = _identified_json(
         attempt1_root / chain.THROUGHPUT_QUALIFICATION_FAILURE_NAME,
@@ -1681,6 +1960,26 @@ def _promote_throughput_qualification_to_additive_successor(
             ),
             "readiness_generation": pointer1["readiness_generation"],
             "reason": failure_reason,
+            "admission_capacity_certificate": {
+                "path": str(admission_certificate_path),
+                "sha256": chain._sha256(admission_certificate_path),
+                "certificate_id": admission_certificate[
+                    "certificate_id"
+                ],
+                "capacity_generation": 1,
+                "effective_fleet_contract_sha256": (
+                    admission_certificate[
+                        "proposed_effective_fleet_contract_sha256"
+                    ]
+                ),
+                "effective_logical_replicas": 22,
+                "effective_active_gpus": 24,
+                "wave_passed": False,
+                "selected_cell_count": 278,
+                "target_cell_count": 384,
+                "shortfall_cells": 106,
+                "theoretical_packing_upper_bound": 315,
+            },
             "additive_scaling_requirement": scaling,
             "scheduler_capacity_mutated": False,
             "failure_drain_intent": {
@@ -1821,7 +2120,7 @@ def _promote_throughput_qualification_to_additive_successor(
     manifest = json.loads(
         paths.chain_manifest.read_text(encoding="utf-8")
     )
-    successor = _publish_r3_throughput_attempt(
+    successor = _publish_r4_throughput_attempt(
         paths,
         manifest,
         pointer_path=pointer2_path,
@@ -1865,7 +2164,10 @@ def _replace_throughput_success_with_failure(
         "requirement": "add one replica (1 GPU)",
         "capacity_mutated": False,
     }
-    failure_reason = "qualification throughput is below threshold"
+    failure_reason = (
+        "qualification throughput from 1 trusted execution events in 7200 "
+        "seconds (12/day) is below 201,994"
+    )
     drain_observation_path = sorted(
         (attempt_root / "observations").glob("OBSERVATION_*.json")
     )[-1]
@@ -1879,7 +2181,7 @@ def _replace_throughput_success_with_failure(
                 chain.THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION
             ),
             "protocol": (
-                "schema5-v1.2-r3-throughput-qualification-"
+                "schema5-v1.2-r4-throughput-qualification-"
                 "failure-drain-intent-v3"
             ),
             "qualification_intent_id": "d" * 64,
@@ -1896,6 +2198,13 @@ def _replace_throughput_success_with_failure(
     evidence = json.loads(
         Path(marker["evidence"]["path"]).read_text(encoding="utf-8")
     )
+    admission_certificate_path = (
+        paths.readiness
+        / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
+    )
+    admission_certificate = json.loads(
+        admission_certificate_path.read_text(encoding="utf-8")
+    )
     failure = _identified_json(
         attempt_root / chain.THROUGHPUT_QUALIFICATION_FAILURE_NAME,
         {
@@ -1910,6 +2219,26 @@ def _replace_throughput_success_with_failure(
             "attempt": marker["attempt"],
             "readiness_generation": pointer["readiness_generation"],
             "reason": failure_reason,
+            "admission_capacity_certificate": {
+                "path": str(admission_certificate_path),
+                "sha256": chain._sha256(admission_certificate_path),
+                "certificate_id": admission_certificate[
+                    "certificate_id"
+                ],
+                "capacity_generation": 1,
+                "effective_fleet_contract_sha256": (
+                    admission_certificate[
+                        "proposed_effective_fleet_contract_sha256"
+                    ]
+                ),
+                "effective_logical_replicas": 22,
+                "effective_active_gpus": 24,
+                "wave_passed": False,
+                "selected_cell_count": 278,
+                "target_cell_count": 384,
+                "shortfall_cells": 106,
+                "theoretical_packing_upper_bound": 315,
+            },
             "additive_scaling_requirement": scaling,
             "scheduler_capacity_mutated": False,
             "failure_drain_intent": {
@@ -1943,11 +2272,17 @@ def _replace_throughput_success_with_failure(
         },
         identity_field="failure_id",
     )
+    _json(
+        attempt_root / "QUALIFICATION_INTENT.json",
+        {
+            "protected_capacity": marker["protected_capacity"],
+        },
+    )
     _seal_test_tree(attempt_root)
     return pointer_path, pointer, failure
 
 
-def test_r3_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
+def test_r4_render_adopts_snapshot_captures_seeds_and_has_afterany_sentinel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = _paths(tmp_path, monkeypatch)
@@ -2334,7 +2669,7 @@ def test_protected_capacity_source_and_placement_bindings_fail_closed(
     elif mutation == "placement_total_drift":
         marker["scientific_server_placements"][0][
             "effective_active_gpus"
-        ] = 43
+        ] = 25
     else:
         marker["scientific_server_placements"] = [
             {
@@ -2343,10 +2678,10 @@ def test_protected_capacity_source_and_placement_bindings_fail_closed(
                 "partition_preempt_mode": "OFF",
                 "qos_preempt_mode": "OFF",
                 "base_active_gpus": 24,
-                "reserved_additive_gpus": 18,
-                "effective_active_gpus": 42,
+                "reserved_additive_gpus": 0,
+                "effective_active_gpus": 24,
                 "retained_warm_turnover_gpus": 0,
-                "attested_total_gpus": 42,
+                "attested_total_gpus": 24,
             },
             {
                 "partition": "a_gpu",
@@ -2450,7 +2785,9 @@ def test_throughput_qualification_binds_full_384_capacity(
     assert verified["loaded_384_seconds"] == 7_200
     assert verified["loaded_384_useful_qids"] == 16_833
     assert verified["loaded_384_observation_count"] == 13
-    assert verified["certified_exact_384_cuts"] is True
+    assert verified["configured_client_ceiling"] == 384
+    assert verified["certified_saturation_target"] == 278
+    assert verified["certified_saturation_target_cuts"] is True
     assert verified["throughput_qids_per_day"] == 201_996
 
     marker["throughput_qids_per_day"] = 201_993
@@ -2482,7 +2819,7 @@ def test_throughput_qualification_binds_full_384_capacity(
         ("loaded_384_seconds", 0),
         ("loaded_384_useful_qids", 0),
         ("loaded_384_observation_count", 1),
-        ("certified_exact_384_cuts", False),
+        ("certified_saturation_target_cuts", False),
     ],
 )
 def test_throughput_qualification_requires_loaded_384_evidence(
@@ -3118,7 +3455,7 @@ def _arm_bootstrap_watchdog(
                     submitted[item] for item in dependencies
                 ],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r3:"
+                    "asys:s5-recovery-v1.2-r4:"
                     f"{isolated_manifest['chain_id']}:g0000:{name}"
                 ),
                 "script": manifest_row["script"],
@@ -3322,7 +3659,7 @@ def _arm_bootstrap_watchdog(
     deployment = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r3-bootstrap-watchdog-"
+            "schema5-v1.2-r4-bootstrap-watchdog-"
             "deployment-evidence-v1"
         ),
         "passed": True,
@@ -3404,7 +3741,7 @@ def _arm_bootstrap_watchdog(
     journal = {
         "schema_version": chain.SUBMISSION_SCHEMA_VERSION,
         "protocol": (
-            "schema5-v1.2-r3-recovery-chain-repair-journal"
+            "schema5-v1.2-r4-recovery-chain-repair-journal"
         ),
         "chain_id": isolated_manifest["chain_id"],
         "repair_generation": 1,
@@ -3427,7 +3764,7 @@ def _arm_bootstrap_watchdog(
             row["name"]: {
                 "name": row["name"],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r3:"
+                    "asys:s5-recovery-v1.2-r4:"
                     f"{isolated_manifest['chain_id']}:g0001:{row['name']}"
                 ),
                 "job_id": new_ids[row["name"]],
@@ -3450,7 +3787,7 @@ def _arm_bootstrap_watchdog(
                     submitted[item] for item in row["dependencies"]
                 ],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r3:"
+                    "asys:s5-recovery-v1.2-r4:"
                     f"{isolated_manifest['chain_id']}:g0001:{name}"
                 ),
                 "script": row["script"],
@@ -3467,7 +3804,7 @@ def _arm_bootstrap_watchdog(
         if key not in {"receipt_id"}
     }
     repair_receipt.update(
-        protocol="schema5-v1.2-r3-recovery-chain-repair",
+        protocol="schema5-v1.2-r4-recovery-chain-repair",
         submission_journal=str(journal_path),
         submission_journal_sha256=chain._sha256(journal_path),
         repair_generation=1,
@@ -3521,7 +3858,7 @@ def _arm_bootstrap_watchdog(
     repair_provenance = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r3-bootstrap-generation-provenance-v1"
+            "schema5-v1.2-r4-bootstrap-generation-provenance-v1"
         ),
         "passed": True,
         "release_git_commit": manifest["release_git_commit"],
@@ -3926,7 +4263,7 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
     assert not canonical_comments & isolated_comments
     assert all(
         comment.startswith(
-            "asys:s5-recovery-v1.2-r3:"
+            "asys:s5-recovery-v1.2-r4:"
             f"{isolated_manifest['chain_id']}:g0000:"
         )
         for comment in isolated_comments
@@ -3942,6 +4279,11 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
     assert not (paths.recovery_root / chain.LAUNCH_COMPLETE_NAME).exists()
 
     first_script = Path(isolated_manifest["jobs"][0]["script"])
+    isolated_text = first_script.read_text(encoding="utf-8")
+    assert "#SBATCH --export=NONE\n" in isolated_text
+    assert "#SBATCH --export=ALL\n" not in isolated_text
+    assert f"export PATH={chain.TRUSTED_SYSTEM_PATH}\n" in isolated_text
+    assert "GIT_NO_REPLACE_OBJECTS=1" in isolated_text
     first_script.chmod(0o644)
     first_script.write_bytes(first_script.read_bytes() + b"# drift\n")
     first_script.chmod(0o444)
@@ -3956,19 +4298,19 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
     ("scheduler_kwargs", "message"),
     [
         (
-            {"dependency_drift": "asys-s5v12r3-resume"},
+            {"dependency_drift": "asys-s5v12r4-resume"},
             "scontrol acceptance provenance drifted",
         ),
         (
-            {"dependency_or_drift": "asys-s5v12r3-resume"},
+            {"dependency_or_drift": "asys-s5v12r4-resume"},
             "OR semantics",
         ),
         (
-            {"requeue_drift": "asys-s5v12r3-resume"},
+            {"requeue_drift": "asys-s5v12r4-resume"},
             "scontrol acceptance provenance drifted",
         ),
         (
-            {"spool_drift": "asys-s5v12r3-resume"},
+            {"spool_drift": "asys-s5v12r4-resume"},
             "spooled sbatch differs",
         ),
         (
@@ -3976,11 +4318,11 @@ def test_isolated_bootstrap_drill_is_inert_disjoint_and_submittable(
             "foreign squeue job collides",
         ),
         (
-            {"missing_squeue": "asys-s5v12r3-resume"},
+            {"missing_squeue": "asys-s5v12r4-resume"},
             "squeue set is incomplete",
         ),
         (
-            {"missing_sacct": "asys-s5v12r3-resume"},
+            {"missing_sacct": "asys-s5v12r4-resume"},
             "sacct set is incomplete",
         ),
     ],
@@ -4109,7 +4451,7 @@ def test_chain_scheduler_acceptance_crash_after_direct_spool_write_resumes(
         now=1_721_750_400.0,
     )
     _arm_bootstrap_watchdog(paths, scheduler)
-    scheduler.crash_after_spool_write = "asys-s5v12r3-resume"
+    scheduler.crash_after_spool_write = "asys-s5v12r4-resume"
 
     with pytest.raises(
         KeyboardInterrupt, match="after scheduler spool write"
@@ -5109,7 +5451,7 @@ def test_rebound_r1_hashes_cannot_replace_native_protocol_validation(
         )
 
 
-def test_r3_requires_semantic_r1_idempotency_and_zero_mutation_receipts(
+def test_r4_requires_semantic_r1_idempotency_and_zero_mutation_receipts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5294,9 +5636,206 @@ def test_prerequisite_roots_are_explicit_and_canonical(
             dev_python=paths.dev_python,
             source_harness=paths.source_harness,
             source_serving=paths.source_serving,
-            conda_executable=paths.conda_executable,
+            conda_toolchain_root=paths.conda_toolchain_root,
+            source_package_cache=paths.source_package_cache,
             materialization_pilot_root=wrong,
             slurm_canary_root=paths.slurm_canary_root,
+        )
+
+
+def test_render_cli_accepts_only_canonical_toolchain_and_cache_inputs() -> None:
+    parser = chain._build_parser()
+    arguments = [
+        "render",
+        "--repository",
+        "/repository",
+        "--results-root",
+        "/results",
+        "--recovery-root",
+        "/results/recovery/schema5-v1",
+        "--hf-home",
+        "/hf",
+        "--dev-python",
+        "/harness/bin/python",
+        "--source-harness-prefix",
+        "/harness",
+        "--source-serving-prefix",
+        "/serving",
+        "--conda-toolchain-root",
+        "/results/recovery/schema5-v1/toolchains/schema5-v1.2-r4/"
+        "conda-toolchain-miniforge3-25.11.0-1",
+        "--source-package-cache",
+        "/cache",
+        "--materialization-pilot-root",
+        "/results/recovery/schema5-v1/materialization_pilots/schema5-v1.2-r4",
+        "--slurm-canary-root",
+        "/results/recovery/schema5-v1/slurm_canaries/schema5-v1.2-r4",
+    ]
+    parsed = parser.parse_args(arguments)
+    assert parsed.conda_toolchain_root.name == (
+        chain.conda_toolchain.TOOLCHAIN_DIRECTORY_NAME
+    )
+    assert parsed.source_package_cache == Path("/cache")
+    assert not hasattr(parsed, "conda_executable")
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                *arguments,
+                "--conda-executable",
+                "/shared/miniforge/bin/conda",
+            ]
+        )
+
+
+def test_noncanonical_or_shared_conda_toolchain_root_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    shared = tmp_path / "shared-miniforge"
+    shared.mkdir()
+    with pytest.raises(
+        chain.ChainError,
+        match="Conda toolchain root must be the canonical",
+    ):
+        chain.recovery_paths(
+            repository=paths.repository,
+            results_root=paths.results_root,
+            recovery_root=paths.recovery_root,
+            hf_home=paths.hf_home,
+            dev_python=paths.dev_python,
+            source_harness=paths.source_harness,
+            source_serving=paths.source_serving,
+            conda_toolchain_root=shared,
+            source_package_cache=paths.source_package_cache,
+            materialization_pilot_root=paths.materialization_pilot_root,
+            slurm_canary_root=paths.slurm_canary_root,
+        )
+
+
+def test_schema4_pilot_is_rejected_by_r4_renderer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    original = chain._invoke_tagged_prerequisite_verifiers
+
+    def schema4(*args, **kwargs):
+        reports = original(*args, **kwargs)
+        reports["materialization_pilot"]["schema_version"] = 4
+        return reports
+
+    monkeypatch.setattr(
+        chain, "_invoke_tagged_prerequisite_verifiers", schema4
+    )
+    with pytest.raises(
+        chain.ChainError,
+        match="sealed prerequisite evidence does not belong",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
+        )
+
+
+def test_generated_materialization_argv_parses_with_schema5_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import materialize_schema5_release as materializer
+
+    paths = _paths(tmp_path, monkeypatch)
+    _render_applied(paths, monkeypatch)
+    source = (
+        paths.jobs_root / "04_release_materialize.sbatch"
+    ).read_text(encoding="utf-8")
+    anchor = f"{paths.source_checkout}/scripts/materialize_schema5_release.py"
+    start = source.index(f"{anchor} materialize \\\n")
+    command_start = source.rfind("\n", 0, start) + 1
+    command_end = source.index(
+        "\n", source.index("--conda-toolchain-root", command_start)
+    )
+    # The first rendered assignment ends at the closing quote immediately before
+    # the Python renderer resumes.  Shell continuation removal yields the exact
+    # argv passed to the tagged materializer.
+    rendered_command = source[command_start:command_end].replace("\\\n", " ")
+    tokens = shlex.split(rendered_command)
+    tool_index = tokens.index(anchor)
+    parsed = materializer._build_parser().parse_args(tokens[tool_index + 1 :])
+    assert parsed.conda_toolchain_root == paths.conda_toolchain_root
+    assert parsed.source_package_cache == paths.source_package_cache
+    expected_cache_input = json.loads(
+        parsed.expected_package_cache_seed_input_json
+    )
+    assert (
+        chain._validate_package_cache_seed_input(
+            expected_cache_input,
+            source_package_cache=paths.source_package_cache,
+        )
+        == expected_cache_input
+    )
+    assert not hasattr(parsed, "conda_executable")
+
+
+@pytest.mark.parametrize("fault", ("missing", "writable", "tampered"))
+def test_r3_prelaunch_failure_seal_faults_block_render(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    marker = paths.superseded_r3_prelaunch_failure_marker
+    if fault == "missing":
+        marker.unlink()
+    elif fault == "writable":
+        marker.chmod(0o644)
+    else:
+        marker.chmod(0o644)
+        marker.write_bytes(marker.read_bytes() + b" ")
+        marker.chmod(0o444)
+    with pytest.raises(
+        chain.ChainError,
+        match="superseded r3 prelaunch-failure seal is invalid",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
+        )
+
+
+def test_r3_prelaunch_release_substitution_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, monkeypatch)
+    _stub_tagged_release(monkeypatch)
+    original = chain.recovery_evidence.verify_prelaunch_failure_seal
+
+    def substituted(root: Path):
+        binding = original(root)
+        binding["release_tag"] = chain.RELEASE_TAG
+        return binding
+
+    monkeypatch.setattr(
+        chain.recovery_evidence,
+        "verify_prelaunch_failure_seal",
+        substituted,
+    )
+    with pytest.raises(
+        chain.ChainError,
+        match="superseded r3 prelaunch-failure seal binding drifted",
+    ):
+        chain.render_chain(
+            paths,
+            partition="mit_normal",
+            slurm_user="tester",
+            apply=False,
         )
 
 
@@ -5440,9 +5979,14 @@ def test_live_source_inventory_and_conda_identity_flow_into_production_jobs(
     assert f"captured_harness={paths.captured_harness}" in materialize
     assert '"$captured_harness/bin/python"' in materialize
     assert str(paths.source_harness / "bin/python") not in materialize
-    assert "pilot-bound Conda executable hash drifted" in materialize
-    assert pilot["conda_executable"]["sha256"] in materialize
-    assert str(pilot["conda_executable"]["size"]) in materialize
+    assert "verify_conda_runtime_toolchain" in materialize
+    assert "verified_conda_toolchain_binding" in materialize
+    assert pilot["conda_toolchain"]["binding_id"] in materialize
+    assert "--conda-toolchain-root" in materialize
+    assert "--source-package-cache" in materialize
+    assert "--expected-package-cache-seed-input-json" in materialize
+    assert "verify_package_cache_input" in materialize
+    assert pilot["package_cache_seed_input"]["input_id"] in materialize
 
     # No pre-freeze production allocation executes the mutable developer Python.
     for name in (
@@ -5532,18 +6076,23 @@ def test_maintenance_preflight_executes_with_stdlib_only_and_exact_scoping(
     assert "openai" not in chain.MAINTENANCE_PREFLIGHT_PYTHON
 
 
-def test_conda_byte_drift_leaves_sealed_verify_available_but_blocks_submission(
+def test_conda_byte_drift_blocks_sealed_verify_and_submission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = _paths(tmp_path, monkeypatch)
     _render_applied(paths, monkeypatch)
-    paths.conda_executable.write_bytes(
-        paths.conda_executable.read_bytes() + b"# drift after pilot\n"
+    conda_executable = paths.conda_toolchain_root / "bin" / "conda"
+    conda_executable.write_bytes(
+        conda_executable.read_bytes() + b"# drift after pilot\n"
     )
-    paths.conda_executable.chmod(0o755)
+    conda_executable.chmod(0o755)
 
-    assert chain.verify_chain(paths.chain_manifest)["passed"] is True
+    with pytest.raises(
+        chain.ChainError,
+        match="Conda runtime toolchain differs from sealed pilot provenance",
+    ):
+        chain.verify_chain(paths.chain_manifest)
     called = False
 
     def scheduler(_argv):
@@ -5554,8 +6103,7 @@ def test_conda_byte_drift_leaves_sealed_verify_available_but_blocks_submission(
     with pytest.raises(
         chain.ChainError,
         match=(
-            "Conda executable differs from sealed pilot provenance"
-            "|Conda runtime toolchain differs from sealed pilot provenance"
+            "Conda runtime toolchain differs from sealed pilot provenance"
         ),
     ):
         chain.submit_chain(paths.chain_manifest, apply=True, runner=scheduler)
@@ -5583,9 +6131,10 @@ def test_underlying_conda_module_drift_blocks_submission_with_same_entrypoint(
 ) -> None:
     paths = _paths(tmp_path, monkeypatch)
     _render_applied(paths, monkeypatch)
-    entrypoint_sha256 = chain._sha256(paths.conda_executable)
+    conda_executable = paths.conda_toolchain_root / "bin" / "conda"
+    entrypoint_sha256 = chain._sha256(conda_executable)
     module = (
-        paths.conda_executable.parent.parent
+        paths.conda_toolchain_root
         / "lib"
         / "python3.12"
         / "site-packages"
@@ -5593,8 +6142,12 @@ def test_underlying_conda_module_drift_blocks_submission_with_same_entrypoint(
         / "__init__.py"
     )
     module.write_text("__version__ = 'drifted-under-entrypoint'\n", encoding="utf-8")
-    assert chain._sha256(paths.conda_executable) == entrypoint_sha256
-    assert chain.verify_chain(paths.chain_manifest)["passed"] is True
+    assert chain._sha256(conda_executable) == entrypoint_sha256
+    with pytest.raises(
+        chain.ChainError,
+        match="Conda runtime toolchain differs from sealed pilot provenance",
+    ):
+        chain.verify_chain(paths.chain_manifest)
 
     scheduler_called = False
 
@@ -5615,16 +6168,14 @@ def test_underlying_conda_module_drift_blocks_submission_with_same_entrypoint(
     assert scheduler_called is False
 
 
-def test_sealed_chain_verify_needs_neither_source_checkout_nor_external_conda(
+def test_sealed_chain_verify_needs_no_mutable_source_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = _paths(tmp_path, monkeypatch)
     _render_applied(paths, monkeypatch)
     repository_gone = tmp_path / "repository.removed"
-    conda_gone = tmp_path / "miniforge.removed"
     paths.repository.rename(repository_gone)
-    paths.conda_executable.parent.parent.rename(conda_gone)
 
     report = chain.verify_chain(paths.chain_manifest)
     assert report["passed"] is True
@@ -5665,12 +6216,12 @@ def test_submission_argv_uses_manifest_dependency_type() -> None:
     assert chain.submission_argv(
         record,
         dependency_job_ids=["101", "202"],
-        comment="asys:s5-recovery-v1.2-r3:abc:g0000:failure_sentinel",
+        comment="asys:s5-recovery-v1.2-r4:abc:g0000:failure_sentinel",
     ) == [
         "sbatch",
         "--parsable",
         "--no-requeue",
-        "--comment=asys:s5-recovery-v1.2-r3:abc:g0000:failure_sentinel",
+        "--comment=asys:s5-recovery-v1.2-r4:abc:g0000:failure_sentinel",
         "--dependency=afterany:101:202",
         "/recovery/20_failure_sentinel.sbatch",
     ]
@@ -5711,7 +6262,7 @@ def test_repair_consumes_generation_scoped_sentinel_classification(
     }
     scheduler = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-recovery-scheduler-evidence",
+        "protocol": "schema5-v1.2-r4-recovery-scheduler-evidence",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -5726,7 +6277,7 @@ def test_repair_consumes_generation_scoped_sentinel_classification(
     _json(evidence_path, scheduler)
     marker = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-recovery-sentinel-outcome",
+        "protocol": "schema5-v1.2-r4-recovery-sentinel-outcome",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -6000,7 +6551,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     ]
     receipt_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-recovery-chain-submission",
+        "protocol": "schema5-v1.2-r4-recovery-chain-submission",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -6121,7 +6672,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     evidence_path = sentinel_root / "SCHEDULER_EVIDENCE.json"
     evidence_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-recovery-scheduler-evidence",
+        "protocol": "schema5-v1.2-r4-recovery-scheduler-evidence",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -6140,7 +6691,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     _json(evidence_path, evidence)
     completion_identity = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-recovery-sentinel-outcome",
+        "protocol": "schema5-v1.2-r4-recovery-sentinel-outcome",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
@@ -6180,6 +6731,91 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
         "capacity_generation": 2,
         "rollout_generation": 2,
     }
+    target_capacity_root = (
+        paths.recovery_root / "capacity-generations" / "c000002"
+    )
+    target_protected_path = (
+        target_capacity_root / chain.PROTECTED_CAPACITY_MARKER_NAME
+    ).resolve()
+    target_protected = _identified_json(
+        target_protected_path,
+        {
+            "schema_version": 1,
+            "protocol": chain.PROTECTED_CAPACITY_PROTOCOL,
+            "capacity_generation": 2,
+            "effective_fleet_contract_sha256": readiness2[
+                "fleet_contract_sha256"
+            ],
+        },
+        identity_field="marker_id",
+    )
+    target_certificate_path = (
+        paths.readiness
+        / "capacity-generations"
+        / "c000002"
+        / qualification.PREFLIGHT_CAPACITY_CERTIFICATE_NAME
+    ).resolve()
+    effective_counts = _base_profile_replicas()
+    effective_counts["0.6B"] += 1
+    target_certificate = qualification.build_preflight_capacity_certificate(
+        capacity_generation=2,
+        release_git_commit=COMMIT,
+        source_tree_sha256=protected_marker["source_tree_sha256"],
+        release_fleet_contract_sha256=protected_marker[
+            "base_fleet_contract_sha256"
+        ],
+        base_fleet_contract_sha256=protected_marker[
+            "base_fleet_contract_sha256"
+        ],
+        proposed_effective_fleet_contract_sha256=readiness2[
+            "fleet_contract_sha256"
+        ],
+        additive_overlay_contract_sha256=readiness2[
+            "fleet_contract_sha256"
+        ],
+        base_profile_replicas=_base_profile_replicas(),
+        effective_profile_replicas=effective_counts,
+        dispatcher_source_sha256=protected_marker[
+            "dispatcher_source_sha256"
+        ],
+        qualification_runner_source_sha256=protected_marker[
+            "qualification_runner_source_sha256"
+        ],
+    )
+    _json(target_certificate_path, target_certificate)
+    target_certificate_binding = {
+        "path": str(target_certificate_path),
+        "sha256": chain._sha256(target_certificate_path),
+        "certificate_id": target_certificate["certificate_id"],
+        "capacity_generation": 2,
+        "effective_fleet_contract_sha256": readiness2[
+            "fleet_contract_sha256"
+        ],
+        "effective_logical_replicas": 23,
+        "effective_active_gpus": 25,
+        "wave_passed": False,
+        "selected_cell_count": 284,
+        "target_cell_count": 384,
+        "shortfall_cells": 100,
+        "theoretical_packing_upper_bound": 326,
+    }
+    monkeypatch.setattr(
+        chain.protected_capacity,
+        "load_contract",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            capacity_generation=2,
+            effective_fleet_contract_sha256=readiness2[
+                "fleet_contract_sha256"
+            ],
+            static_feasibility_certificate_path=target_certificate_path,
+            static_feasibility_certificate_sha256=chain._sha256(
+                target_certificate_path
+            ),
+            static_feasibility_certificate_id=target_certificate[
+                "certificate_id"
+            ],
+        ),
+    )
     paused_identity = {
         "immutable_sha256": "2" * 64,
         "desired_state": "paused",
@@ -6196,10 +6832,7 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     )
     transition_identity = {
         "schema_version": 1,
-        "protocol": (
-            "schema5-v1.2-r3-throughput-qualification-"
-            "capacity-transition-v1"
-        ),
+        "protocol": chain.THROUGHPUT_QUALIFICATION_TRANSITION_PROTOCOL,
         "passed": True,
         "release_id": chain.RELEASE_ID,
         "release_tag": chain.RELEASE_TAG,
@@ -6209,11 +6842,20 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
         "chain_id": manifest["chain_id"],
         "manifest": str(paths.chain_manifest),
         "manifest_sha256": chain._sha256(paths.chain_manifest),
-        "protected_capacity": {
-            "marker": str(protected_path),
-            "marker_sha256": chain._sha256(protected_path),
-            "marker_id": protected_marker["marker_id"],
+        "from_protected_capacity": qualification_marker[
+            "protected_capacity"
+        ],
+        "to_protected_capacity": {
+            "marker": str(target_protected_path),
+            "marker_sha256": chain._sha256(target_protected_path),
+            "marker_id": target_protected["marker_id"],
         },
+        "from_admission_capacity_certificate": failure[
+            "admission_capacity_certificate"
+        ],
+        "to_admission_capacity_certificate": (
+            target_certificate_binding
+        ),
         "failed_attempt": qualification_marker["attempt"],
         "failure": {
             "path": str(
@@ -6261,7 +6903,10 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
                 "exact-required-profile-delta"
             ),
         },
-        "readiness_generation": readiness2,
+        "from_readiness_generation": pointer[
+            "readiness_generation"
+        ],
+        "to_readiness_generation": readiness2,
         "created_at": chain.datetime.fromtimestamp(
             2_000.0, tz=chain.timezone.utc
         ).isoformat(),
@@ -6269,7 +6914,8 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
     }
     transition_path = (
         paths.throughput_qualification_root
-        / "QUALIFICATION_CAPACITY_TRANSITION_COMPLETE.json"
+        / chain.THROUGHPUT_QUALIFICATION_TRANSITION_DIRECTORY
+        / "c000001-to-c000002.json"
     )
     states = {
         str(row["name"]): {
@@ -6302,6 +6948,23 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
         transition_path,
         transition_identity,
         identity_field="transition_id",
+    )
+    _identified_json(
+        paths.throughput_qualification_root
+        / chain.THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_NAME,
+        {
+            "schema_version": 1,
+            "protocol": (
+                chain.THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_PROTOCOL
+            ),
+            "path": str(transition_path),
+            "sha256": chain._sha256(transition_path),
+            "transition_id": transition["transition_id"],
+            "from_capacity_generation": 1,
+            "to_capacity_generation": 2,
+            "failed_attempt_id": pointer["attempt_id"],
+        },
+        identity_field="pointer_id",
     )
     assert chain._sentinel_repair_jobs(
         manifest=manifest,
@@ -6340,7 +7003,10 @@ def test_qualification_capacity_transition_authorizes_only_exact_suffix(
         _json(transition_path, drifted)
     with pytest.raises(
         chain.ChainError,
-        match="qualification capacity-transition repair binding",
+        match=(
+            "qualification capacity-transition repair binding|"
+            "current qualification capacity-transition pointer does not bind"
+        ),
     ):
         chain._sentinel_repair_jobs(
             manifest=manifest,
@@ -7019,6 +7685,15 @@ def test_every_production_stage_is_fenced_by_marker_last_launch_authorization(
     bodies = {spec.name: spec.body.rstrip() for spec in specs}
     for record in manifest["jobs"]:
         text = Path(record["script"]).read_text(encoding="utf-8")
+        assert "#SBATCH --export=NONE\n" in text
+        assert "#SBATCH --export=ALL\n" not in text
+        assert f"export PATH={chain.TRUSTED_SYSTEM_PATH}\n" in text
+        assert "readonly PATH\n" in text
+        assert "GIT_NO_REPLACE_OBJECTS=1" in text
+        assert "builtin unset -f \"$ambient_function\"" in text
+        assert text.index(f"export PATH={chain.TRUSTED_SYSTEM_PATH}") < text.index(
+            bodies[record["name"]]
+        )
         if (
             record["name"] == "failure_sentinel"
             or record["name"].startswith(chain.STAGE_SENTINEL_PREFIX)
@@ -7039,6 +7714,9 @@ def test_every_production_stage_is_fenced_by_marker_last_launch_authorization(
         assert '"cell_ceiling": 384' in text
         assert '"submit_headroom": 448' in text
         assert '"memory_mib": 1572864' in text
+        assert text.index(f"export PATH={chain.TRUSTED_SYSTEM_PATH}") < text.index(
+            token
+        )
         assert text.index(token) < text.index(bodies[record["name"]])
     controller_drill = (
         paths.jobs_root / "19_controller_drill.sbatch"

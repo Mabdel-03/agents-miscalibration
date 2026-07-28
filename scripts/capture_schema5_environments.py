@@ -32,7 +32,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 REPO = Path(__file__).resolve().parent.parent
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
 POLICY_FILENAME = "environment_ownership_policy.v1.json"
 INTEGRITY_POLICY_FILENAME = "environment_integrity_normalization_policy.v1.json"

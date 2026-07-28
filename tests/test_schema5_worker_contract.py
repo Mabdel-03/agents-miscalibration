@@ -116,6 +116,10 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
                 "path": f"/sealed/build-tools/{role}/conda",
                 "sha256": "2" * 64,
             },
+            "conda_toolchain": {
+                "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+                "binding_id": "b" * 64,
+            },
             "environment_seed": {
                 "capture_id": "3" * 64,
                 "capture_marker_sha256": "4" * 64,
@@ -135,9 +139,10 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
             },
             "normalization_receipt": {"id": "7" * 64},
             "conda_package_cache_sha256": "8" * 64,
+            "conda_package_cache_seed_sha256": "a" * 64,
         }
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "release_id": "sweep-recovery-schema5-v1.2",
             "role": role,
             "prefix": str(prefix.resolve()),
@@ -182,8 +187,12 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
                     ],
                     "normalization_receipt": provenance["normalization_receipt"],
                     "conda_creation_tool": provenance["conda_creation_tool"],
+                    "conda_toolchain": provenance["conda_toolchain"],
                     "conda_package_cache_sha256": provenance[
                         "conda_package_cache_sha256"
+                    ],
+                    "conda_package_cache_seed_sha256": provenance[
+                        "conda_package_cache_seed_sha256"
                     ],
                     "inventory_sha256": inventory["inventory_sha256"],
                 }
@@ -1189,5 +1198,8 @@ def test_cell_sbatch_templates_signal_early_and_disable_requeue():
         text = (repo / relative).read_text(encoding="utf-8")
         assert "#SBATCH --signal=B:USR1@1200" in text
         assert "#SBATCH --no-requeue" in text
+        if relative == "slurm/run_dispatch_batch.sbatch.tmpl":
+            assert "#SBATCH --export=NONE" in text
+            assert "#SBATCH --export=ALL" not in text
     legacy = (repo / "slurm/run_cell_array.sbatch.tmpl").read_text(encoding="utf-8")
     assert "exec python -m agents_scaling.experiment.run_one" in legacy

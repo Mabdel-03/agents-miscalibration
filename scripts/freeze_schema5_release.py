@@ -5,7 +5,7 @@ This tool deliberately does not create a Git worktree, install an environment, o
 submit scheduler jobs.  It seals identities that an operator has already materialized:
 
 * a clean worktree at the exact operational retry tag
-  ``sweep-recovery-schema5-v1.2-r3``;
+  ``sweep-recovery-schema5-v1.2-r4``;
 * harness and serving Conda prefixes, including reproducible Conda/pip locks;
 * the frozen Qwen model/tokenizer contract; and
 * the canonical 22-replica/24-GPU fleet contract.
@@ -68,12 +68,55 @@ from agents_scaling.runtime_integrity import (  # noqa: E402
 from slurm.schema5_control import sha256_tree  # noqa: E402
 
 
-RELEASE_SCHEMA_VERSION = 4
-ENVIRONMENT_SCHEMA_VERSION = 3
+RELEASE_SCHEMA_VERSION = 5
+ENVIRONMENT_SCHEMA_VERSION = 4
 FLEET_SCHEMA_VERSION = 1
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-REQUIRED_GIT_TAG = "sweep-recovery-schema5-v1.2-r3"
+REQUIRED_GIT_TAG = "sweep-recovery-schema5-v1.2-r4"
 FLEET_ID = "schema5-v1"
+_TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_UNTRUSTED_PROCESS_ENVIRONMENT_KEYS = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_TIME_FORMAT",
+    }
+)
+_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES = (
+    "BASH_FUNC_",
+    "CONDA_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "PIP_",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+)
 HARNESS_MANIFEST_FILENAME = "harness_environment.schema5-v1.json"
 SERVING_MANIFEST_FILENAME = "serving_environment.schema5-v1.json"
 RELEASE_IDENTITY_FILENAME = "release_identity.schema5-v1.json"
@@ -247,13 +290,16 @@ def _read_json_object(path: Path, *, description: str) -> dict[str, Any]:
 
 
 def _run(argv: Sequence[str], *, env: Mapping[str, str] | None = None) -> str:
+    process_environment = (
+        _python_probe_environment() if env is None else dict(env)
+    )
     try:
         completed = subprocess.run(
             list(argv),
             capture_output=True,
             text=True,
             check=False,
-            env=None if env is None else dict(env),
+            env=process_environment,
         )
     except OSError as exc:
         raise ReleaseFreezeError(f"cannot execute {argv[0]!r}: {exc}") from exc
@@ -266,14 +312,35 @@ def _run(argv: Sequence[str], *, env: Mapping[str, str] | None = None) -> str:
 
 
 def _python_probe_environment() -> dict[str, str]:
-    blocked = {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"}
+    blocked = {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "CONDA_PREFIX",
+    }
     environment = {
-        key: value for key, value in os.environ.items() if key not in blocked
+        key: value
+        for key, value in os.environ.items()
+        if key not in blocked
+        and key not in _UNTRUSTED_PROCESS_ENVIRONMENT_KEYS
+        and not key.startswith(_UNTRUSTED_PROCESS_ENVIRONMENT_PREFIXES)
     }
     environment.update(
         {
+            "PATH": _TRUSTED_SYSTEM_PATH,
+            "LC_ALL": "C",
+            "LANG": "C",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PIP_NO_INDEX": "1",
+            "PIP_NO_INPUT": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_CONFIG_FILE": os.devnull,
         }
     )
     return environment
@@ -322,7 +389,7 @@ def _verify_nonoverlap(output_root: Path, observed_roots: Iterable[Path]) -> Non
 
 
 def _git(worktree: Path, *args: str) -> str:
-    return _run(("git", "-C", str(worktree), *args)).strip()
+    return _run(("/usr/bin/git", "-C", str(worktree), *args)).strip()
 
 
 def _influential_ignored_paths(worktree: Path) -> tuple[str, ...]:
@@ -350,6 +417,13 @@ def verify_clean_exact_tag(worktree: Path) -> dict[str, str]:
     commit = _git(worktree, "rev-parse", "HEAD")
     if _GIT_COMMIT_RE.fullmatch(commit) is None:
         raise ReleaseFreezeError(f"Git HEAD is not an exact commit: {commit!r}")
+    replacement_refs = _git(
+        worktree, "for-each-ref", "--format=%(refname)", "refs/replace"
+    )
+    if replacement_refs:
+        raise ReleaseFreezeError(
+            "release worktree contains forbidden Git replacement refs"
+        )
     status = _git(worktree, "status", "--porcelain=v1", "--untracked-files=all")
     if status:
         raise ReleaseFreezeError("release worktree is not clean")
@@ -1137,11 +1211,13 @@ def _environment_manifest(
     inventory = directory_inventory(prefix)
     capture_binding = materialization_binding.get("environment_capture")
     conda_creation_tool = materialization_binding.get("conda_creation_tool")
+    conda_toolchain = materialization_binding.get("conda_toolchain")
     if (
         not isinstance(capture_binding, Mapping)
         or not isinstance(conda_creation_tool, Mapping)
         or set(conda_creation_tool) != {"path", "sha256"}
         or _SHA256_RE.fullmatch(str(conda_creation_tool.get("sha256", ""))) is None
+        or not isinstance(conda_toolchain, Mapping)
     ):
         raise ReleaseFreezeError(
             "materialization lacks sealed environment/tool provenance"
@@ -1171,6 +1247,7 @@ def _environment_manifest(
         "prefix": str(prefix),
         "sealed_read_only": sealed_read_only,
         "offline_environment": dict(REQUIRED_OFFLINE_ENVIRONMENT),
+        "conda_toolchain": dict(conda_toolchain),
         "conda_creation_tool": dict(conda_creation_tool),
         "environment_seed": {
             "capture_id": capture_binding["capture_id"],
@@ -1198,6 +1275,9 @@ def _environment_manifest(
         "conda_package_cache_sha256": materialization_binding[
             "conda_package_cache_sha256"
         ],
+        "conda_package_cache_seed_sha256": materialization_binding[
+            "conda_package_cache_seed_sha256"
+        ],
         "runtime": runtime,
         "locks": {
             "conda_explicit": record_lock,
@@ -1219,9 +1299,13 @@ def _environment_manifest(
                     "integrity_normalization_policy"
                 ],
                 "normalization_receipt": payload["normalization_receipt"],
+                "conda_toolchain": payload["conda_toolchain"],
                 "conda_creation_tool": payload["conda_creation_tool"],
                 "conda_package_cache_sha256": payload[
                     "conda_package_cache_sha256"
+                ],
+                "conda_package_cache_seed_sha256": payload[
+                    "conda_package_cache_seed_sha256"
                 ],
                 "inventory_sha256": inventory["inventory_sha256"],
             }
@@ -1524,8 +1608,13 @@ def _verified_materialization_binding(
         "paths": report["paths"],
         "stage_records": stage_records,
         "environment_capture": report["environment_capture"],
+        "conda_toolchain": report["conda_toolchain"],
         "conda_creation_tool": report["conda_creation_tool"],
+        "package_cache_seed_input": report["package_cache_seed_input"],
         "conda_package_cache_sha256": report["conda_package_cache_sha256"],
+        "conda_package_cache_seed_sha256": report[
+            "conda_package_cache_seed_sha256"
+        ],
     }
 
 
@@ -1542,8 +1631,10 @@ def _verify_bound_materialization_evidence(
 
     # Re-run the authoritative materialization verifier.  It reads only the
     # immutable capture seeds, release-local cache, tagged worktree, production
-    # prefixes, and archived stage records; it never invokes Conda or consults the
-    # retired developer prefixes/source checkout.  This prevents a collection of
+    # prefixes, archived stage records, and the sealed release-local Conda
+    # toolchain.  The latter is exercised only against isolated writable scratch;
+    # no external Conda or retired developer prefix/source checkout is consulted.
+    # This prevents a collection of
     # individually self-hashed but semantically substituted stage records from
     # becoming a valid release provenance chain.
     materialization_root = output_root.parent
@@ -1600,9 +1691,14 @@ def _verify_bound_materialization_evidence(
         "paths": report["paths"],
         "stage_records": stage_records,
         "environment_capture": report["environment_capture"],
+        "conda_toolchain": report["conda_toolchain"],
         "conda_creation_tool": report["conda_creation_tool"],
+        "package_cache_seed_input": report["package_cache_seed_input"],
         "conda_package_cache_sha256": report[
             "conda_package_cache_sha256"
+        ],
+        "conda_package_cache_seed_sha256": report[
+            "conda_package_cache_seed_sha256"
         ],
     }
     if (
@@ -1759,6 +1855,15 @@ def _build_release_material(
         "serving_environment_prefix": str(serving_prefix),
         "serving_environment_manifest_path": str(serving_path),
         "serving_environment_sha256": _sha256_bytes(serving_bytes),
+        "conda_toolchain": dict(
+            materialization_binding["conda_toolchain"]
+        ),
+        "package_cache_seed_input": dict(
+            materialization_binding["package_cache_seed_input"]
+        ),
+        "conda_package_cache_seed_sha256": materialization_binding[
+            "conda_package_cache_seed_sha256"
+        ],
     }
     identity_bytes = _json_bytes(identity)
     artifacts = {
@@ -2025,12 +2130,14 @@ def _verify_manifest_environment(
         "prefix",
         "sealed_read_only",
         "offline_environment",
+        "conda_toolchain",
         "conda_creation_tool",
         "environment_seed",
         "ownership_policy",
         "integrity_normalization_policy",
         "normalization_receipt",
         "conda_package_cache_sha256",
+        "conda_package_cache_seed_sha256",
         "runtime",
         "locks",
         "release_package",
@@ -2057,6 +2164,7 @@ def _verify_manifest_environment(
     locks = payload.get("locks")
     runtime = payload.get("runtime")
     conda_record = payload.get("conda_creation_tool")
+    conda_toolchain = payload.get("conda_toolchain")
     environment_seed = payload.get("environment_seed")
     ownership_policy = payload.get("ownership_policy")
     integrity_normalization_policy = payload.get(
@@ -2070,6 +2178,7 @@ def _verify_manifest_environment(
         or not isinstance(runtime, dict)
         or not isinstance(conda_record, dict)
         or set(conda_record) != {"path", "sha256"}
+        or not isinstance(conda_toolchain, dict)
         or not isinstance(environment_seed, dict)
         or set(environment_seed)
         != {
@@ -2115,6 +2224,10 @@ def _verify_manifest_environment(
         (
             payload.get("conda_package_cache_sha256"),
             "Conda package-cache SHA",
+        ),
+        (
+            payload.get("conda_package_cache_seed_sha256"),
+            "Conda package-cache seed SHA",
         ),
     ):
         if _SHA256_RE.fullmatch(str(value)) is None:
@@ -2168,8 +2281,13 @@ def _verify_manifest_environment(
         or conda_record != materialization_binding.get(
             "conda_creation_tool"
         )
+        or conda_toolchain != materialization_binding.get(
+            "conda_toolchain"
+        )
         or payload.get("conda_package_cache_sha256")
         != materialization_binding.get("conda_package_cache_sha256")
+        or payload.get("conda_package_cache_seed_sha256")
+        != materialization_binding.get("conda_package_cache_seed_sha256")
         or payload.get("prefix") != expected_prefix
     ):
         raise ReleaseFreezeError(
@@ -2214,9 +2332,13 @@ def _verify_manifest_environment(
                     integrity_normalization_policy
                 ),
                 "normalization_receipt": normalization_receipt,
+                "conda_toolchain": conda_toolchain,
                 "conda_creation_tool": conda_record,
                 "conda_package_cache_sha256": payload[
                     "conda_package_cache_sha256"
+                ],
+                "conda_package_cache_seed_sha256": payload[
+                    "conda_package_cache_seed_sha256"
                 ],
                 "inventory_sha256": inventory["inventory_sha256"],
             }
@@ -2524,6 +2646,15 @@ def verify_release_bundle(output_root: str | Path) -> dict[str, Any]:
         ],
         "serving_environment_sha256": environment_records["serving"][
             "manifest_sha256"
+        ],
+        "conda_toolchain": dict(
+            materialization_binding["conda_toolchain"]
+        ),
+        "package_cache_seed_input": dict(
+            materialization_binding["package_cache_seed_input"]
+        ),
+        "conda_package_cache_seed_sha256": materialization_binding[
+            "conda_package_cache_seed_sha256"
         ],
     }
     if identity.get("control_pin_fragment") != expected_control_fragment:

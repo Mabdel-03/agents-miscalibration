@@ -82,7 +82,7 @@ def _load_sibling_publisher() -> Any:
 publisher = _load_sibling_publisher()
 
 
-PROTOCOL = "schema5-v1.2-r3-protected-capacity-builder-v4"
+PROTOCOL = "schema5-v1.2-r4-protected-capacity-builder-v4"
 INTENT_FILENAME = "PROTECTED_CAPACITY_BUILD_INTENT.json"
 LEDGER_FILENAME = "protected_capacity_build_ledger.json"
 SCHEDULER_EVIDENCE_FILENAME = "PROTECTED_CAPACITY_SCHEDULER_EVIDENCE.json"
@@ -128,6 +128,70 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _SAFE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _JOB_ID_RE = re.compile(r"([0-9]+)(?:_([0-9]+))?\Z")
+TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_TRUSTED_EXECUTABLES = {
+    name: f"/usr/bin/{name}"
+    for name in (
+        "git",
+        "sacct",
+        "sacctmgr",
+        "sbatch",
+        "scancel",
+        "scontrol",
+        "squeue",
+    )
+}
+_BLOCKED_ENVIRONMENT_EXACT = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_EXIT_ERROR",
+        "SLURM_TIME_FORMAT",
+        "VIRTUAL_ENV",
+    }
+)
+_BLOCKED_ENVIRONMENT_PREFIXES = (
+    "ASYS_",
+    "BASH_FUNC_",
+    "CONDA_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_TRACE",
+    "HF_",
+    "PIP_",
+    "PYTHON",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+    "TRANSFORMERS_",
+    "VLLM_",
+)
 
 
 class ProtectedCapacityBuildError(RuntimeError):
@@ -135,7 +199,7 @@ class ProtectedCapacityBuildError(RuntimeError):
 
 
 def canonical_bytes(value: Any) -> bytes:
-    return (
+    payload = (
         json.dumps(
             value,
             indent=2,
@@ -145,6 +209,7 @@ def canonical_bytes(value: Any) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+    return payload
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -465,14 +530,42 @@ def _invoke(
     *,
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
+    command = list(argv)
+    if not command:
+        raise ProtectedCapacityBuildError("scheduler command is empty")
+    trusted_executable = _TRUSTED_EXECUTABLES.get(command[0])
+    if trusted_executable is not None:
+        command[0] = trusted_executable
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name in _BLOCKED_ENVIRONMENT_EXACT or name.startswith(
+            _BLOCKED_ENVIRONMENT_PREFIXES
+        ):
+            environment.pop(name, None)
+    environment.update(
+        {
+            "PATH": TRUSTED_SYSTEM_PATH,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat",
+        }
+    )
     try:
         result = (
             subprocess.run(
-                list(argv),
+                command,
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=environment,
             )
             if runner is None
             else runner(list(argv), timeout=timeout)
@@ -618,7 +711,7 @@ def _validate_effective_capacity_authority(
     dispatcher_source_sha256: str,
     qualification_runner_source_sha256: str,
 ) -> runtime_capacity.StaticFeasibilityCertificate:
-    """Prove one exact additive fleet and its zero-QID admission certificate."""
+    """Prove the exact generation-scoped fleet and zero-QID certificate."""
 
     if (
         type(capacity_generation) is not int
@@ -656,12 +749,36 @@ def _validate_effective_capacity_authority(
         )
     base_counts = _profile_counts(base_fleet)
     effective_counts = _profile_counts(effective_fleet)
-    if any(
+    has_reduction = any(
         effective_counts[profile] < base_counts[profile]
         for profile in base_counts
-    ) or effective_counts == base_counts:
+    )
+    zero_delta = effective_counts == base_counts
+    generation_one_baseline = (
+        capacity_generation == 1
+        and zero_delta
+        and len(base_fleet.replicas) == BASE_ACTIVE_SERVER_JOB_ELEMENTS
+        and sum(
+            replica.gpus_per_replica for replica in base_fleet.replicas
+        )
+        == BASE_ACTIVE_GPUS
+        and effective_fleet.sha256 == base_fleet.sha256
+    )
+    if has_reduction:
         raise ProtectedCapacityBuildError(
-            "effective fleet must be a nonempty additive extension of the base"
+            "effective fleet cannot remove frozen base replicas"
+        )
+    if capacity_generation == 1 and not generation_one_baseline:
+        raise ProtectedCapacityBuildError(
+            "capacity generation one must use the exact zero-delta "
+            "22-replica/24-GPU base fleet"
+        )
+    if capacity_generation > 1 and (
+        zero_delta or effective_fleet.sha256 == base_fleet.sha256
+    ):
+        raise ProtectedCapacityBuildError(
+            "post-baseline capacity generations require a nonempty additive "
+            "fleet transition"
         )
     try:
         certificate = runtime_capacity.load_static_feasibility_certificate(
@@ -1201,6 +1318,39 @@ def _chunk_comment(token: str, role: str, chunk_index: int) -> str:
     return f"{_job_comment(token, role)}:{chunk_index:03d}"
 
 
+def _trusted_shell_prelude() -> str:
+    """Sanitize a capacity allocation before any external executable runs."""
+
+    return """\
+unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_NOSYSTEM GIT_CEILING_DIRECTORIES
+unset GIT_COMMON_DIR GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL
+unset GIT_CONFIG_NOSYSTEM GIT_CONFIG_PARAMETERS GIT_CONFIG_SYSTEM GIT_DIR
+unset GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_EXEC_PATH GIT_INDEX_FILE GIT_NAMESPACE
+unset GIT_NO_REPLACE_OBJECTS GIT_OBJECT_DIRECTORY GIT_REPLACE_REF_BASE
+unset GIT_SHALLOW_FILE GIT_SSH GIT_SSH_COMMAND GIT_TEMPLATE_DIR GIT_WORK_TREE
+unset SLURM_CLUSTERS SLURM_CONF SLURM_EXIT_ERROR SLURM_TIME_FORMAT
+while IFS= read -r ambient_name; do
+  case "$ambient_name" in
+    ASYS_CAPACITY_PLAN_ID)
+      ;;
+    ASYS_*|BASH_FUNC_*|PIP_*|PYTHON*|CONDA_*|HF_*|TRANSFORMERS_*|VLLM_*|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_TRACE*|SACCT_*|SBATCH_*|SCONTROL_*|SQUEUE_*)
+      builtin unset -v "$ambient_name" 2>/dev/null || true
+      ;;
+  esac
+done < <(compgen -e)
+export PATH=/usr/bin:/bin
+readonly PATH
+while read -r _ _ ambient_function; do
+  builtin unset -f "$ambient_function"
+done < <(builtin declare -F)
+export LANG=C LC_ALL=C
+export GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
+export GIT_PAGER=cat PAGER=cat
+"""
+
+
 def _render_script(
     *,
     root: Path,
@@ -1227,7 +1377,7 @@ def _render_script(
         '{"array_job_id":"%s","plan_id":"%s","role":"%s",'
         '"script_sha256":"%s","shape_id":"%s","task_id":%s,"token":"%s"}'
     )
-    return (
+    payload = (
         "#!/bin/bash\n"
         f"#SBATCH --job-name=asys-s5-cap-{role.replace('_', '-')}\n"
         f"#SBATCH --partition={partition}\n"
@@ -1236,9 +1386,12 @@ def _render_script(
         f"#SBATCH --mem={memory_mib_per_task}M\n"
         f"#SBATCH --time={time_limit}\n"
         "#SBATCH --no-requeue\n"
+        "#SBATCH --export=NONE\n"
         f"#SBATCH --array=0-{chunk_tasks - 1}%{chunk_tasks}\n"
         f"{gres}"
         "set -euo pipefail\n"
+        "umask 027\n"
+        f"{_trusted_shell_prelude()}"
         "[[ \"${ASYS_CAPACITY_PLAN_ID:-}\" =~ ^[0-9a-f]{64}$ ]]\n"
         f"readonly ASYS_CAPACITY_INTENT_TOKEN={_shell_quote(token)}\n"
         "script_sha256=\"$(sha256sum -- \"$0\" | awk '{print $1}')\"\n"
@@ -1262,6 +1415,25 @@ def _render_script(
         "fi\n"
         f"while [[ ! -f {_shell_quote(str(release))} ]]; do sleep 2; done\n"
     )
+    lines = [line.strip() for line in payload.splitlines()]
+    if (
+        [line for line in lines if line.startswith("#SBATCH --export=")]
+        != ["#SBATCH --export=NONE"]
+        or lines.count("#SBATCH --no-requeue") != 1
+        or lines.count("export PATH=/usr/bin:/bin") != 1
+        or lines.count("readonly PATH") != 1
+        or lines.count("export LANG=C LC_ALL=C") != 1
+        or lines.index("set -euo pipefail")
+        >= lines.index("export PATH=/usr/bin:/bin")
+        or lines.index("export PATH=/usr/bin:/bin")
+        >= lines.index(
+            'script_sha256="$(sha256sum -- "$0" | awk \'{print $1}\')"'
+        )
+    ):
+        raise ProtectedCapacityBuildError(
+            "rendered capacity allocation lacks its trusted shell bootstrap"
+        )
+    return payload
 
 
 def _shell_quote(value: str) -> str:
@@ -1783,7 +1955,7 @@ def _validate_occupancy_preflight(
         not isinstance(value, dict)
         or set(value) != required
         or value.get("protocol")
-        != "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
+        != "schema5-v1.2-r4-protected-capacity-occupancy-preflight-v3"
         or value.get("plan_id") != plan.get("plan_id")
         or value.get("scientific_qos") != plan.get("qos")
         or not isinstance(value.get("scheduler_account"), str)
@@ -2498,7 +2670,7 @@ def _verify_submit_headroom_preflight(
         )
     receipt: dict[str, Any] = {
         "protocol": (
-            "schema5-v1.2-r3-protected-capacity-occupancy-preflight-v3"
+            "schema5-v1.2-r4-protected-capacity-occupancy-preflight-v3"
         ),
         "plan_id": str(plan["plan_id"]),
         "observation_interval_seconds": float(observation_interval_seconds),

@@ -29,6 +29,153 @@ from agents_scaling.serving.registry import ServerEntry
 IMMUTABLE_SHA = "a" * 64
 
 
+def _wave_fence_fixture(
+    tmp_path: Path,
+    *,
+    generation: int,
+    wave_passed: bool,
+) -> tuple[dict, dict, SimpleNamespace]:
+    certificate = (
+        tmp_path
+        / "capacity-generations"
+        / f"c{generation:06d}"
+        / "PREFLIGHT_CAPACITY_CERTIFICATE.json"
+    ).resolve()
+    selected = 384 if wave_passed else (278 if generation == 1 else 284)
+    shortfall = 384 - selected
+    fleet_sha256 = "b" * 64
+    contract = SimpleNamespace(
+        capacity_generation=generation,
+        static_feasibility_certificate_path=certificate,
+        static_feasibility_certificate_sha256="c" * 64,
+        static_feasibility_certificate_id="d" * 64,
+        effective_fleet_contract_sha256=fleet_sha256,
+        static_feasibility_wave_passed=wave_passed,
+        static_feasibility_selected_cell_count=selected,
+        static_feasibility_target_cell_count=384,
+        static_feasibility_shortfall_cells=shortfall,
+        static_feasibility_configured_client_ceiling=384,
+        static_feasibility_certified_saturation_target=selected,
+    )
+    authority = {
+        "static_feasibility_certificate_path": str(certificate),
+        "static_feasibility_certificate_sha256": "c" * 64,
+        "static_feasibility_certificate_id": "d" * 64,
+        "effective_fleet_contract_sha256": fleet_sha256,
+    }
+    binding = {
+        "capacity_generation": generation,
+        "sha256": fleet_sha256,
+        "protected_capacity": authority,
+    }
+    control_value: dict = {
+        "desired_state": "running",
+        "drain_requested": False,
+        "capacity": {
+            "current_generation": generation,
+            "active_transition": None,
+        },
+        "admission_safety_hold": {
+            "active": False,
+            "reasons": [],
+        },
+    }
+    return control_value, binding, contract
+
+
+def test_capacity_wave_fence_accepts_generation_addressed_intermediate_tp2(
+    tmp_path: Path,
+) -> None:
+    control_value, binding, contract = _wave_fence_fixture(
+        tmp_path,
+        generation=2,
+        wave_passed=False,
+    )
+    summary = readiness._validate_capacity_wave_admission_fence(
+        control_value,
+        fleet_binding=binding,
+        contract=contract,
+    )
+
+    assert summary == {
+        "capacity_generation": 2,
+        "path": str(
+            (
+                tmp_path
+                / "capacity-generations"
+                / "c000002"
+                / "PREFLIGHT_CAPACITY_CERTIFICATE.json"
+            ).resolve()
+        ),
+        "sha256": "c" * 64,
+        "certificate_id": "d" * 64,
+        "effective_fleet_contract_sha256": "b" * 64,
+        "wave_passed": False,
+        "selected_cell_count": 284,
+        "target_cell_count": 384,
+        "shortfall_cells": 100,
+        "configured_client_ceiling": 384,
+        "certified_saturation_target": 284,
+    }
+
+
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "certificate-path",
+        "fleet-hash",
+        "configured-ceiling",
+        "saturation-target",
+    ),
+)
+def test_capacity_wave_fence_rejects_unbound_intermediate(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    control_value, binding, contract = _wave_fence_fixture(
+        tmp_path,
+        generation=2,
+        wave_passed=False,
+    )
+    if drift == "certificate-path":
+        binding["protected_capacity"][
+            "static_feasibility_certificate_path"
+        ] = str((tmp_path / "wrong.json").resolve())
+    elif drift == "fleet-hash":
+        binding["sha256"] = "e" * 64
+    elif drift == "configured-ceiling":
+        contract.static_feasibility_configured_client_ceiling = 383
+    else:
+        contract.static_feasibility_certified_saturation_target = 283
+
+    with pytest.raises(readiness.EvidenceError):
+        readiness._validate_capacity_wave_admission_fence(
+            control_value,
+            fleet_binding=binding,
+            contract=contract,
+        )
+
+
+def test_capacity_wave_fence_preserves_exact_generation_one_shortfall(
+    tmp_path: Path,
+) -> None:
+    control_value, binding, contract = _wave_fence_fixture(
+        tmp_path,
+        generation=1,
+        wave_passed=False,
+    )
+    summary = readiness._validate_capacity_wave_admission_fence(
+        control_value,
+        fleet_binding=binding,
+        contract=contract,
+    )
+    assert summary["selected_cell_count"] == 278
+    assert summary["shortfall_cells"] == 106
+    assert summary["wave_passed"] is False
+    assert summary["configured_client_ceiling"] == 384
+    assert summary["certified_saturation_target"] == 278
+
+
 def _capacity_readiness_control(tmp_path: Path, *, rollout_generation: int = 3):
     contract = {
         "capacity_generation": 2,
@@ -951,6 +1098,39 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
     profile_counts = {
         name: len(replicas) for name, replicas in fleet.by_profile.items()
     }
+    certificate_path = (
+        tmp_path
+        / "readiness"
+        / "capacity-generations"
+        / "c000002"
+        / "PREFLIGHT_CAPACITY_CERTIFICATE.json"
+    ).resolve()
+    protected_authority = {
+        "capacity_generation": 2,
+        "path": str(
+            (tmp_path / "PROTECTED_CAPACITY_COMPLETE.json").resolve()
+        ),
+        "sha256": "3" * 64,
+        "marker_id": "4" * 64,
+        "static_feasibility_certificate_path": str(certificate_path),
+        "static_feasibility_certificate_sha256": "5" * 64,
+        "static_feasibility_certificate_id": "6" * 64,
+        "effective_fleet_contract_sha256": fleet_hash,
+    }
+    protected_contract = SimpleNamespace(
+        marker_id="1" * 64,
+        capacity_generation=2,
+        static_feasibility_certificate_path=certificate_path,
+        static_feasibility_certificate_sha256="5" * 64,
+        static_feasibility_certificate_id="6" * 64,
+        effective_fleet_contract_sha256=fleet_hash,
+        static_feasibility_wave_passed=False,
+        static_feasibility_selected_cell_count=284,
+        static_feasibility_target_cell_count=384,
+        static_feasibility_shortfall_cells=100,
+        static_feasibility_configured_client_ceiling=384,
+        static_feasibility_certified_saturation_target=284,
+    )
     monkeypatch.setattr(
         readiness.control_plane,
         "effective_fleet_contract_binding",
@@ -964,6 +1144,7 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
                 replica.gpus_per_replica for replica in fleet.replicas
             ),
             "profile_replicas": profile_counts,
+            "protected_capacity": dict(protected_authority),
         },
     )
     client_contract = {
@@ -980,16 +1161,8 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
     monkeypatch.setattr(
         readiness.control_plane,
         "load_effective_protected_capacity_contract",
-        lambda *_args, **_kwargs: SimpleNamespace(marker_id="1" * 64),
+        lambda *_args, **_kwargs: protected_contract,
     )
-    protected_authority = {
-        "capacity_generation": 1,
-        "path": str(
-            (tmp_path / "PROTECTED_CAPACITY_COMPLETE.json").resolve()
-        ),
-        "sha256": "3" * 64,
-        "marker_id": "4" * 64,
-    }
     monkeypatch.setattr(
         readiness.control_plane,
         "effective_protected_capacity_binding",
@@ -998,7 +1171,7 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
     monkeypatch.setattr(
         readiness.control_plane,
         "_load_protected_capacity_contract",
-        lambda *_args, **_kwargs: SimpleNamespace(marker_id="1" * 64),
+        lambda *_args, **_kwargs: protected_contract,
     )
     monkeypatch.setattr(
         readiness.protected_capacity,
@@ -1277,7 +1450,24 @@ def test_fleet_gate_publishes_22_replica_scheduler_registry_http_graph(
 
     current = {
         "immutable_sha256": IMMUTABLE_SHA,
+        "desired_state": "paused",
+        "drain_requested": True,
         "rollout_generation": 0,
+        "capacity": {
+            "current_generation": 2,
+            "active_transition": {
+                "transition_id": "capacity-g000001-to-g000002-fleet-gate",
+                "phase": "readiness_pending",
+                "to_generation": 2,
+            },
+        },
+        "admission_safety_hold": {
+            "active": True,
+            "reasons": [
+                "capacity-transition:"
+                "capacity-g000001-to-g000002-fleet-gate"
+            ],
+        },
         "immutable": {
             "release_worktree": str(Path.cwd().resolve()),
             "release_id": "sweep-recovery-schema5-v1.2",
@@ -1418,7 +1608,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r3",
+            release_tag="sweep-recovery-schema5-v1.2-r4",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=False,
@@ -1435,7 +1625,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
         output=active,
         chain_id="c" * 64,
         challenge_generation=0,
-        release_tag="sweep-recovery-schema5-v1.2-r3",
+        release_tag="sweep-recovery-schema5-v1.2-r4",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1477,7 +1667,7 @@ def test_email_gate_requires_delivery_and_one_time_acknowledgement(
         "acknowledged": True,
         "chain_id": "c" * 64,
         "request_id": raw_request["request_id"],
-        "release_tag": "sweep-recovery-schema5-v1.2-r3",
+        "release_tag": "sweep-recovery-schema5-v1.2-r4",
         "release_git_commit": "b" * 40,
         "challenge_generation": 0,
         "challenge_id": raw_request["challenge_id"],
@@ -1548,7 +1738,7 @@ def test_email_delivery_retries_reuse_token_only_in_live_process(
         output=active,
         chain_id="c" * 64,
         challenge_generation=3,
-        release_tag="sweep-recovery-schema5-v1.2-r3",
+        release_tag="sweep-recovery-schema5-v1.2-r4",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1613,7 +1803,7 @@ def test_email_failed_delivery_publishes_no_challenge(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r3",
+            release_tag="sweep-recovery-schema5-v1.2-r4",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1659,7 +1849,7 @@ def test_email_challenge_rejects_generation_and_tool_ancestor_symlinks(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r3",
+            release_tag="sweep-recovery-schema5-v1.2-r4",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1684,7 +1874,7 @@ def test_email_challenge_rejects_generation_and_tool_ancestor_symlinks(
             output=active,
             chain_id="c" * 64,
             challenge_generation=0,
-            release_tag="sweep-recovery-schema5-v1.2-r3",
+            release_tag="sweep-recovery-schema5-v1.2-r4",
             release_git_commit="b" * 40,
             acknowledgement_script=linked_tools / real_tool.name,
             apply=True,
@@ -1721,7 +1911,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
         output=active,
         chain_id="c" * 64,
         challenge_generation=0,
-        release_tag="sweep-recovery-schema5-v1.2-r3",
+        release_tag="sweep-recovery-schema5-v1.2-r4",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1735,7 +1925,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
         output=active,
         chain_id="c" * 64,
         challenge_generation=1,
-        release_tag="sweep-recovery-schema5-v1.2-r3",
+        release_tag="sweep-recovery-schema5-v1.2-r4",
         release_git_commit="b" * 40,
         acknowledgement_script=ack_script,
         apply=True,
@@ -1789,7 +1979,7 @@ def test_email_repair_supersedes_pending_token_and_blocks_cross_chain_replay(
             output=active,
             chain_id="d" * 64,
             challenge_generation=1,
-            release_tag="sweep-recovery-schema5-v1.2-r3",
+            release_tag="sweep-recovery-schema5-v1.2-r4",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1827,7 +2017,7 @@ def test_email_activation_crash_leaves_old_pointer_and_next_repair_supersedes(
             output=active,
             chain_id="c" * 64,
             challenge_generation=generation,
-            release_tag="sweep-recovery-schema5-v1.2-r3",
+            release_tag="sweep-recovery-schema5-v1.2-r4",
             release_git_commit="b" * 40,
             acknowledgement_script=ack_script,
             apply=True,
@@ -1905,7 +2095,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
         "jobs": [
             {
                 "name": "fleet_readiness",
-                "job_name": "asys-s5-r3-fleet-ready",
+                "job_name": "asys-s5-r4-fleet-ready",
             }
         ],
     }
@@ -1916,7 +2106,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
                 "name": "fleet_readiness",
                 "job_id": "4242",
                 "comment": (
-                    "asys:s5-recovery-v1.2-r3:"
+                    "asys:s5-recovery-v1.2-r4:"
                     + "e" * 64
                     + ":g0000:fleet_readiness"
                 ),
@@ -1925,7 +2115,7 @@ def _capacity_chain_binding(tmp_path: Path) -> dict:
     }
     return {
         "verified": {
-                "chain_protocol": readiness.R3_PROTOCOL,
+                "chain_protocol": readiness.R4_PROTOCOL,
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": _sha(manifest_path),
             "manifest": manifest,
@@ -2264,7 +2454,7 @@ def _archive_capacity_preimage(
     binding = readiness._build_capacity_preimage_archive(
         parent=archive_parent,
         fleet=fleet,
-        chain_id="schema5-v1.2-r3",
+        chain_id="schema5-v1.2-r4",
         chain_generation=1,
         readiness_job_id="4242",
         scheduler_runner=scheduler_runner,
@@ -2291,7 +2481,7 @@ def _validate_capacity_preimage_fixture(
     return readiness._validate_capacity_preimage_archive(
         binding,
         fleet=fleet,
-        chain_id="schema5-v1.2-r3",
+        chain_id="schema5-v1.2-r4",
         chain_generation=1,
         readiness_job_id="4242",
     )

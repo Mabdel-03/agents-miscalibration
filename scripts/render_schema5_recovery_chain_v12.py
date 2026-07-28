@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render, verify, and transactionally submit the schema-5 v1.2-r3 recovery DAG.
+"""Render, verify, and transactionally submit the schema-5 v1.2-r4 recovery DAG.
 
 The recovery jobs are deliberately generated outside the Git checkout.  A successful
 ``render --apply`` publishes immutable generation-specific sbatch files first and the
@@ -41,6 +41,8 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 from scripts import publish_schema5_durable_git_release as durable_git  # noqa: E402
+from scripts import provision_schema5_conda_toolchain as conda_toolchain  # noqa: E402
+from scripts import seal_recovery_evidence as recovery_evidence  # noqa: E402
 from agents_scaling.experiment.completion import (  # noqa: E402
     trusted_generation_catalog_errors,
 )
@@ -53,20 +55,20 @@ from agents_scaling.serving import protected_capacity  # noqa: E402
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
-CHAIN_NAMESPACE = "schema5-v1.2-r3"
-CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R3.json"
-SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.submission.json"
-SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R3_SUBMISSION.json"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
+CHAIN_NAMESPACE = "schema5-v1.2-r4"
+CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R4.json"
+SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R4.submission.json"
+SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R4_SUBMISSION.json"
 DEPENDENCY_POLICY_CHECKS_ROOT_NAME = "dependency_policy_checks"
 ROOT_RELEASE_INTENT_NAME = "RECOVERY_CHAIN_ROOT_RELEASE_INTENT.json"
 ROOT_RELEASE_COMPLETE_NAME = "RECOVERY_CHAIN_ROOT_RELEASE_COMPLETE.json"
-LAUNCH_COMPLETE_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R3_LAUNCHED.json"
+LAUNCH_COMPLETE_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R4_LAUNCHED.json"
 BOOTSTRAP_WATCHDOG_READY_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_READY.json"
 )
 BOOTSTRAP_WATCHDOG_READY_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-deployment-ready-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-deployment-ready-v1"
 )
 BOOTSTRAP_WATCHDOG_ARM_INTENT_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARM_INTENT.json"
@@ -75,19 +77,19 @@ BOOTSTRAP_WATCHDOG_ARMED_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARMED.json"
 )
 BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-armed-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-armed-v1"
 )
 BOOTSTRAP_WATCHDOG_HANDOFF_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_HANDOFF_COMPLETE.json"
 )
 BOOTSTRAP_WATCHDOG_HANDOFF_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-watchdog-handoff-v1"
+    "schema5-v1.2-r4-bootstrap-watchdog-handoff-v1"
 )
 BOOTSTRAP_HEARTBEAT_MAX_AGE_SECONDS = 600
 BOOTSTRAP_OBSERVATIONS_ROOT_NAME = "bootstrap_watchdog_observations"
 BOOTSTRAP_ISOLATED_DRILL_DIRECTORY = "isolated_cancellation_drill"
 BOOTSTRAP_ISOLATED_RENDER_LOCK_NAME = (
-    ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.isolated-drill-render.lock"
+    ".RECOVERY_CHAIN_SCHEMA5_V1_2_R4.isolated-drill-render.lock"
 )
 BOOTSTRAP_REPAIR_RESULT_NAME = "BOOTSTRAP_REPAIR_RESULT.json"
 BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE = 78
@@ -101,13 +103,13 @@ BOOTSTRAP_DESCENDANT_ARMED_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_DESCENDANT_ARMED.json"
 )
 BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL = (
-    "schema5-v1.2-r3-bootstrap-descendant-armed-v1"
+    "schema5-v1.2-r4-bootstrap-descendant-armed-v1"
 )
 SCHEDULER_ACCEPTANCE_COMPLETE_NAME = (
     "RECOVERY_CHAIN_SCHEDULER_ACCEPTANCE_COMPLETE.json"
 )
 SCHEDULER_ACCEPTANCE_PROTOCOL = (
-    "schema5-v1.2-r3-recovery-scheduler-acceptance-v1"
+    "schema5-v1.2-r4-recovery-scheduler-acceptance-v1"
 )
 SCHEDULER_ACCEPTANCE_INTENT_NAME = (
     "RECOVERY_CHAIN_SCHEDULER_ACCEPTANCE_INTENT.json"
@@ -118,8 +120,8 @@ DEPENDENCY_POLICY_CONTRACT = (
     "afterok+per_stage_afterany+aggregate_afterany_sentinel+kill_invalid_depend"
     "+held_root+sealed_dependency_cascade"
 )
-REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_2_r3"
-CAPACITY_TRANSIENT_ROOT_NAME = "fleet_capacity_transients_v1_2_r3"
+REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_2_r4"
+CAPACITY_TRANSIENT_ROOT_NAME = "fleet_capacity_transients_v1_2_r4"
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
 PROTECTED_CAPACITY_MARKER_NAME = "PROTECTED_CAPACITY_COMPLETE.json"
 PROTECTED_CAPACITY_PROTOCOL = protected_capacity.PROTOCOL
@@ -128,6 +130,11 @@ PROTECTED_MINIMUM_SCIENTIFIC_WALL_SECONDS = (
     protected_capacity.MIN_SCIENTIFIC_WALL_SECONDS
 )
 PROTECTED_CLIENT_WALL_SECONDS = protected_capacity.CLIENT_WALL_SECONDS
+PROTECTED_RUNNING_SCIENTIFIC_JOBS = (
+    protected_capacity.CLIENT_JOB_ELEMENTS
+    + protected_capacity.BASE_LOGICAL_REPLICAS
+    + protected_capacity.RETAINED_WARM_TURNOVER_JOB_ELEMENTS
+)
 DURABLE_GIT_RELEASE_MARKER_NAME = durable_git.MARKER_NAME
 DURABLE_GIT_RELEASE_PROTOCOL = durable_git.PROTOCOL
 SUPERSEDED_R2_CANARY_FAILURE_RELATIVE_PATH = (
@@ -147,13 +154,25 @@ SUPERSEDED_R2_CANARY_FAILURE_SEAL_ID = (
 )
 SUPERSEDED_R2_CANARY_FAILURE_FILE_COUNT = 18
 SUPERSEDED_R2_CANARY_FAILURE_TOTAL_BYTES = 28_960
+SUPERSEDED_R3_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r3"
+SUPERSEDED_R3_RELEASE_COMMIT = (
+    "acd723ba9a99d88e77f7d752268bc31205c3a808"
+)
+SUPERSEDED_R3_RELEASE_TAG_OBJECT = (
+    "fa87b283974afc1fa48fcb22b61e6ae7eec4bb36"
+)
+SUPERSEDED_R3_CHAIN_NAMESPACE = "schema5-v1.2-r3"
+SUPERSEDED_R3_FAILURE_CLASSIFICATIONS = (
+    "unsafe_recorded_broken_internal_symlink",
+    "offline_clone_unseeded_release_local_cache",
+)
 WATCHDOG_READY_MARKER_NAME = "WATCHDOG_READY.json"
-WATCHDOG_READY_PROTOCOL = "schema5-v1.2-r3-external-watchdog-v1"
+WATCHDOG_READY_PROTOCOL = "schema5-v1.2-r4-external-watchdog-v1"
 EXTERNAL_WATCHDOG_DRILL_MARKER_NAME = (
     "EXTERNAL_WATCHDOG_KILL_DRILL_COMPLETE.json"
 )
 EXTERNAL_WATCHDOG_DRILL_PROTOCOL = (
-    "schema5-v1.2-r3-external-watchdog-drill-v1"
+    "schema5-v1.2-r4-external-watchdog-drill-v1"
 )
 THROUGHPUT_QUALIFICATION_ROOT_NAME = (
     "schema5_throughput_qualification_v1"
@@ -162,41 +181,41 @@ THROUGHPUT_QUALIFICATION_MARKER_NAME = (
     "THROUGHPUT_QUALIFICATION_COMPLETE.json"
 )
 THROUGHPUT_QUALIFICATION_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-v3"
+    "schema5-v1.2-r4-throughput-qualification-v3"
 )
 THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION = 3
 THROUGHPUT_QUALIFICATION_PLAN_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-load-plan-v3"
+    "schema5-v1.2-r4-throughput-qualification-load-plan-v3"
 )
 THROUGHPUT_QUALIFICATION_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-evidence-v3"
+    "schema5-v1.2-r4-throughput-qualification-evidence-v3"
 )
 THROUGHPUT_QUALIFICATION_SCHEDULER_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-scheduler-v3"
+    "schema5-v1.2-r4-throughput-qualification-scheduler-evidence-v3"
 )
 THROUGHPUT_QUALIFICATION_SEMANTIC_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-semantic-v3"
+    "schema5-v1.2-r4-throughput-qualification-semantic-evidence-v3"
 )
 THROUGHPUT_QUALIFICATION_OBSERVATION_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-observation-v3"
+    "schema5-v1.2-r4-throughput-qualification-observation-v3"
 )
 THROUGHPUT_QUALIFICATION_WINDOW_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-load-window-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-load-window-intent-v3"
 )
 THROUGHPUT_QUALIFICATION_CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-cycle-intent-v3"
+    "schema5-v1.2-r4-throughput-qualification-cycle-intent-v3"
 )
 THROUGHPUT_QUALIFICATION_ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r4-throughput-qualification-attempt-pointer-v1"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_ATTEMPT_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r4-throughput-qualification-current-attempt-v1"
 )
 THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-failure-v3"
+    "schema5-v1.2-r4-throughput-qualification-failure-v4"
 )
 THROUGHPUT_QUALIFICATION_LEGACY_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r3-throughput-qualification-failure-v1"
+    "schema5-v1.2-r4-throughput-qualification-failure-v1"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_ATTEMPT_NAME = "CURRENT_ATTEMPT.json"
 THROUGHPUT_QUALIFICATION_ATTEMPT_DIRECTORY = "attempts"
@@ -205,6 +224,16 @@ THROUGHPUT_QUALIFICATION_RUN_DIRECTORY = (
     "throughput-qualification-attempts"
 )
 THROUGHPUT_QUALIFICATION_FAILURE_NAME = "QUALIFICATION_FAILURE.json"
+THROUGHPUT_QUALIFICATION_TRANSITION_DIRECTORY = "capacity-transitions"
+THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_NAME = (
+    "CURRENT_CAPACITY_TRANSITION.json"
+)
+THROUGHPUT_QUALIFICATION_TRANSITION_PROTOCOL = (
+    "schema5-v1.2-r4-throughput-qualification-capacity-transition-v2"
+)
+THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_PROTOCOL = (
+    "schema5-v1.2-r4-throughput-qualification-current-capacity-transition-v1"
+)
 THROUGHPUT_QUALIFICATION_CELLS = 768
 THROUGHPUT_QUALIFICATION_QIDS = 15_360
 THROUGHPUT_QUALIFICATION_CEILINGS = (24, 96, 192, 384)
@@ -215,21 +244,23 @@ THROUGHPUT_QUALIFICATION_MIN_QIDS_PER_DAY = 201_994
 THROUGHPUT_QUALIFICATION_MIN_EXECUTION_EVENTS = 16_833
 QUARANTINE_ROOT_NAME = "quarantine"
 QUARANTINE_EVIDENCE_ROOT_NAME = "materialization_quarantines"
-RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.render.lock"
-SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R3.submit.lock"
+RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R4.render.lock"
+SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R4.submit.lock"
 SENTINEL_TOOL_FILENAME = "schema5_recovery_sentinel.py"
 SENTINEL_BOOTSTRAP_ROOT_NAME = "sentinel_bootstraps"
 SENTINEL_BOOTSTRAP_MARKER_NAME = "BOOTSTRAP_COMPLETE.json"
 SENTINEL_BOOTSTRAP_INVENTORY_NAME = "BOOTSTRAP_PAYLOAD.sha256"
-SENTINEL_BOOTSTRAP_PROTOCOL = "schema5-v1.2-r3-sentinel-bootstrap"
-SOURCE_CHECKOUT_SEAL_NAME = "SOURCE_CHECKOUT_SCHEMA5_V1_2_R3_COMPLETE.json"
-SOURCE_CHECKOUT_SEAL_PROTOCOL = "schema5-v1.2-r3-source-checkout-seal-v1"
+SENTINEL_BOOTSTRAP_PROTOCOL = "schema5-v1.2-r4-sentinel-bootstrap"
+SOURCE_CHECKOUT_SEAL_NAME = "SOURCE_CHECKOUT_SCHEMA5_V1_2_R4_COMPLETE.json"
+SOURCE_CHECKOUT_SEAL_PROTOCOL = "schema5-v1.2-r4-source-checkout-seal-v1"
 BUNDLED_TOOL_GIT_PATHS = (
     "scripts/schema5_recovery_sentinel.py",
     "scripts/verify_schema5_recovery_evidence.py",
     "scripts/render_schema5_recovery_chain.py",
     "scripts/render_schema5_recovery_chain_v12.py",
     "scripts/schema5_conda_runtime_identity.py",
+    "scripts/provision_schema5_conda_toolchain.py",
+    "scripts/seal_recovery_evidence.py",
 )
 MATERIALIZATION_PILOT_GIT_PATH = "scripts/run_schema5_materialization_pilot.py"
 OWNERSHIP_POLICY_GIT_PATH = "configs/environment_ownership_policy.v1.json"
@@ -249,6 +280,8 @@ PREREQUISITE_CODE_GIT_PATHS = (
     "scripts/materialize_schema5_release.py",
     "scripts/freeze_schema5_release.py",
     "scripts/schema5_conda_runtime_identity.py",
+    "scripts/provision_schema5_conda_toolchain.py",
+    "scripts/seal_recovery_evidence.py",
     OWNERSHIP_POLICY_GIT_PATH,
     INTEGRITY_NORMALIZATION_POLICY_GIT_PATH,
     SLURM_CANARY_GIT_PATH,
@@ -257,7 +290,7 @@ PREREQUISITE_CODE_GIT_PATHS = (
 )
 MATERIALIZATION_PILOT_MARKER = "PILOT_COMPLETE.json"
 SLURM_CANARY_MARKER = "CANARY_COMPLETE.json"
-PREREQUISITE_PROTOCOL = "schema5-v1.2-r3-prerequisite-evidence-v6"
+PREREQUISITE_PROTOCOL = "schema5-v1.2-r4-prerequisite-evidence-v7"
 PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256 = (
     "9f588ce4ffc4aeb5a3ac494a35244604e4eb100a7190b18d9eb3c568468fdb09"
 )
@@ -265,7 +298,7 @@ PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID = (
     "2abfc4fab5828cd1e965ff822e54e55462b1a6a2b280b7f47eebd90cadcfd872"
 )
 R1_PROTOCOL_VERIFICATION_PROTOCOL = (
-    "schema5-v1.2-r3-native-r1-evidence-verification-v1"
+    "schema5-v1.2-r4-native-r1-evidence-verification-v1"
 )
 R1_CHAIN_PROTOCOL = "schema5-v1.1-r1-recovery-chain"
 R1_EVIDENCE_DISPATCH_PROTOCOL = "schema5-recovery-evidence-protocol-dispatch"
@@ -276,7 +309,7 @@ R1_PROTOCOL_TOOL_GIT_PATHS = (
     R1_NATIVE_RENDERER_GIT_PATH,
     "scripts/render_schema5_recovery_chain_v12.py",
 )
-CHAIN_SCHEMA_VERSION = 10
+CHAIN_SCHEMA_VERSION = 11
 SUBMISSION_SCHEMA_VERSION = 4
 VISIBILITY_GRACE_SECONDS = 300.0
 LAUNCH_GATE_TIMEOUT_SECONDS = 1_200
@@ -298,19 +331,19 @@ SMOKE_RUN_IDS = (
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r3-smoke-attempt-pointer-v1"
+    "schema5-v1.2-r4-smoke-attempt-pointer-v1"
 )
 SMOKE_CURRENT_SELECTOR_PROTOCOL = (
-    "schema5-v1.2-r3-smoke-current-selector-v1"
+    "schema5-v1.2-r4-smoke-current-selector-v1"
 )
 SMOKE_ATTEMPT_COMPLETE_PROTOCOL = (
-    "schema5-v1.2-r3-smoke-attempt-complete-v1"
+    "schema5-v1.2-r4-smoke-attempt-complete-v1"
 )
 SMOKE_ATTEMPT_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r3-smoke-attempt-failure-v1"
+    "schema5-v1.2-r4-smoke-attempt-failure-v1"
 )
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r3-smoke-attempt-binding-v1"
+    "schema5-v1.2-r4-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -475,6 +508,7 @@ EXPECTED_JOB_ORDER = tuple(row[0] for row in EXPECTED_JOB_CONTRACT)
 MAINTENANCE_PREFLIGHT_PYTHON = r"""import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -576,6 +610,89 @@ class ChainError(RuntimeError):
     """The recovery chain cannot be rendered, verified, or safely submitted."""
 
 
+def _verified_conda_toolchain_binding(
+    toolchain_root: Path,
+    *,
+    exercise: bool = True,
+) -> dict[str, Any]:
+    """Return the complete portable binding for the canonical sealed toolchain."""
+
+    try:
+        binding = conda_toolchain.verified_conda_toolchain_binding(
+            toolchain_root,
+            exercise=exercise,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        conda_toolchain.CondaToolchainProvisionError,
+    ) as exc:
+        raise ChainError(f"sealed Conda toolchain is invalid: {exc}") from exc
+    if not isinstance(binding, dict):
+        raise ChainError("sealed Conda toolchain verifier returned invalid evidence")
+    return json.loads(json.dumps(binding, sort_keys=True))
+
+
+def _validate_package_cache_seed_input(
+    binding: Any,
+    *,
+    source_package_cache: Path,
+) -> dict[str, Any]:
+    required = {
+        "source_package_cache",
+        "inventory_sha256",
+        "inventory_entry_count",
+        "inventory_file_count",
+        "inventory_total_file_bytes",
+        "requirements_sha256",
+        "required_package_count",
+        "archive_count",
+        "selected_top_level_entries",
+        "input_id",
+    }
+    if not isinstance(binding, dict) or set(binding) != required:
+        raise ChainError("pilot selected package-cache binding fields drifted")
+    identity = dict(binding)
+    input_id = identity.pop("input_id")
+    integer_fields = (
+        "inventory_entry_count",
+        "inventory_file_count",
+        "inventory_total_file_bytes",
+        "required_package_count",
+        "archive_count",
+    )
+    selected = binding.get("selected_top_level_entries")
+    if (
+        binding.get("source_package_cache") != str(source_package_cache)
+        or _SHA256.fullmatch(str(binding.get("inventory_sha256", "")))
+        is None
+        or _SHA256.fullmatch(str(binding.get("requirements_sha256", "")))
+        is None
+        or any(
+            not isinstance(binding.get(field), int)
+            or isinstance(binding.get(field), bool)
+            or binding[field] < 0
+            for field in integer_fields
+        )
+        or binding["archive_count"] > binding["required_package_count"]
+        or not isinstance(selected, list)
+        or selected != sorted(set(selected))
+        or any(
+            not isinstance(value, str)
+            or not value
+            or "/" in value
+            or "\n" in value
+            or "\r" in value
+            for value in selected
+        )
+        or _SHA256.fullmatch(str(input_id)) is None
+        or input_id != _sha256_bytes(_canonical_json(identity))
+    ):
+        raise ChainError("pilot selected package-cache binding is invalid")
+    return json.loads(json.dumps(binding, sort_keys=True))
+
+
 @dataclass(frozen=True)
 class RecoveryPaths:
     repository: Path
@@ -593,7 +710,8 @@ class RecoveryPaths:
     dev_python: Path
     source_harness: Path
     source_serving: Path
-    conda_executable: Path
+    conda_toolchain_root: Path
+    source_package_cache: Path
     environment_capture_root: Path
     captured_harness: Path
     captured_serving: Path
@@ -652,6 +770,21 @@ class RecoveryPaths:
         )
 
     @property
+    def superseded_r3_prelaunch_failure_root(self) -> Path:
+        return (
+            self.recovery_root
+            / "prelaunch_failures"
+            / "schema5-v1.2-r3"
+        )
+
+    @property
+    def superseded_r3_prelaunch_failure_marker(self) -> Path:
+        return (
+            self.superseded_r3_prelaunch_failure_root
+            / "PRELAUNCH_FAILURE_SEALED.json"
+        )
+
+    @property
     def external_watchdog_drill_marker(self) -> Path:
         return self.recovery_root / EXTERNAL_WATCHDOG_DRILL_MARKER_NAME
 
@@ -685,11 +818,119 @@ class JobSpec:
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
+TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
+_TRUSTED_EXECUTABLES = {
+    "bash": "/bin/bash",
+    "git": "/usr/bin/git",
+    "sacct": "/usr/bin/sacct",
+    "sbatch": "/usr/bin/sbatch",
+    "scontrol": "/usr/bin/scontrol",
+    "squeue": "/usr/bin/squeue",
+}
+_BLOCKED_PROCESS_ENVIRONMENT = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_ATTR_NOSYSTEM",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "SLURM_CLUSTERS",
+        "SLURM_CONF",
+        "SLURM_EXIT_ERROR",
+        "SLURM_TIME_FORMAT",
+    }
+)
+_BLOCKED_PROCESS_ENVIRONMENT_PREFIXES = (
+    "BASH_FUNC_",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_TRACE",
+    "SACCT_",
+    "SBATCH_",
+    "SCONTROL_",
+    "SQUEUE_",
+)
+
+
+def _sanitized_process_environment() -> dict[str, str]:
+    """Return the fixed command trust boundary used by Git and Slurm clients."""
+
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name in _BLOCKED_PROCESS_ENVIRONMENT or name.startswith(
+            _BLOCKED_PROCESS_ENVIRONMENT_PREFIXES
+        ):
+            environment.pop(name, None)
+    environment.update(
+        {
+            "PATH": TRUSTED_SYSTEM_PATH,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat",
+        }
+    )
+    return environment
+
+
+def _trusted_command_argv(argv: Sequence[str]) -> list[str]:
+    """Resolve security-sensitive system commands independently of ambient PATH."""
+
+    command = list(argv)
+    if not command or not all(isinstance(value, str) and value for value in command):
+        raise ChainError("trusted subprocess argv is empty or invalid")
+    trusted = _TRUSTED_EXECUTABLES.get(command[0])
+    if trusted is not None:
+        command[0] = trusted
+    return command
+
+
+def _default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Run an internal scheduler command under the fixed process environment."""
+
+    return subprocess.run(
+        _trusted_command_argv(argv),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_sanitized_process_environment(),
+    )
+
 
 def _job_comment(chain_id: str, name: str, generation: int) -> str:
     if generation < 0:
         raise ChainError("recovery-chain submission generation cannot be negative")
-    return f"asys:s5-recovery-v1.2-r3:{chain_id}:g{generation:04d}:{name}"
+    return f"asys:s5-recovery-v1.2-r4:{chain_id}:g{generation:04d}:{name}"
 
 
 def _utc_now() -> str:
@@ -907,7 +1148,8 @@ def recovery_paths(
     dev_python: Path,
     source_harness: Path,
     source_serving: Path,
-    conda_executable: Path,
+    conda_toolchain_root: Path,
+    source_package_cache: Path,
     materialization_pilot_root: Path,
     slurm_canary_root: Path,
 ) -> RecoveryPaths:
@@ -962,16 +1204,34 @@ def recovery_paths(
         environment_prefix=source_harness,
         description="development Python",
     )
-    conda_executable = _absolute(
-        conda_executable, description="Conda executable"
+    conda_toolchain_root = _absolute(
+        conda_toolchain_root, description="sealed Conda toolchain root"
     )
-    if not conda_executable.is_file() or not os.access(conda_executable, os.X_OK):
-        raise ChainError(f"Conda executable is missing or not executable: {conda_executable}")
+    expected_toolchain_root = (
+        recovery_root
+        / "toolchains"
+        / CHAIN_NAMESPACE
+        / conda_toolchain.TOOLCHAIN_DIRECTORY_NAME
+    )
+    if conda_toolchain_root != expected_toolchain_root:
+        raise ChainError(
+            "Conda toolchain root must be the canonical "
+            f"{expected_toolchain_root}, got {conda_toolchain_root}"
+        )
+    source_package_cache = _absolute(
+        source_package_cache, description="source Conda package cache"
+    )
+    if not source_package_cache.is_dir():
+        raise ChainError(
+            "source Conda package cache is not an existing directory: "
+            f"{source_package_cache}"
+        )
+    _verified_conda_toolchain_binding(conda_toolchain_root)
     return RecoveryPaths(
         repository=repository,
         results_root=results_root,
         recovery_root=recovery_root,
-        source_checkout=recovery_root / "release_source_checkout_v1_2_r3",
+        source_checkout=recovery_root / "release_source_checkout_v1_2_r4",
         release_root=release,
         worktree=release / "worktree",
         identity=release / "identity",
@@ -983,7 +1243,8 @@ def recovery_paths(
         dev_python=dev_python,
         source_harness=source_harness,
         source_serving=source_serving,
-        conda_executable=conda_executable,
+        conda_toolchain_root=conda_toolchain_root,
+        source_package_cache=source_package_cache,
         environment_capture_root=(
             recovery_root / "environment_captures" / RELEASE_ID
         ),
@@ -1013,7 +1274,7 @@ def recovery_paths(
 
 _BOOTSTRAP_RELATIVE_PATH = re.compile(r"[A-Za-z0-9._+@/-]+\Z")
 _PYTHON_STDLIB_DIRECTORY = re.compile(r"python([0-9]+)\.([0-9]+)\Z")
-_BOOTSTRAP_PROBE_TOKEN = "schema5_v1_2_r3_sentinel_bootstrap_ok"
+_BOOTSTRAP_PROBE_TOKEN = "schema5_v1_2_r4_sentinel_bootstrap_ok"
 
 
 def _bootstrap_stdlib_root(paths: RecoveryPaths) -> Path:
@@ -1426,20 +1687,14 @@ def _verify_sentinel_bootstrap(
         "os,pathlib,re,shlex,stat,subprocess,tempfile,time,typing,uuid;"
         f"print('{_BOOTSTRAP_PROBE_TOKEN}')"
     )
-    probe_environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key
-        not in {
-            "CONDA_DEFAULT_ENV",
-            "CONDA_PREFIX",
-            "LD_LIBRARY_PATH",
-            "LD_PRELOAD",
+    probe_environment = _sanitized_process_environment()
+    for name in tuple(probe_environment):
+        if name.startswith(("PIP_", "CONDA_")) or name in {
             "PYTHONHOME",
             "PYTHONPATH",
             "VIRTUAL_ENV",
-        }
-    }
+        }:
+            probe_environment.pop(name, None)
     probe_environment.update(
         {
             "LD_LIBRARY_PATH": str(root / "lib"),
@@ -1587,18 +1842,14 @@ def _sentinel_bootstrap_contract(paths: RecoveryPaths) -> dict[str, Any]:
 
 
 def _run_checked(argv: Sequence[str], *, cwd: Path | None = None) -> str:
-    environment = dict(os.environ)
-    # Git's otherwise read-only queries may opportunistically refresh the index.
-    # Recovery verification must remain valid after the exact checkout is sealed.
-    environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         proc = subprocess.run(
-            list(argv),
+            _trusted_command_argv(argv),
             cwd=cwd,
             text=True,
             capture_output=True,
             check=False,
-            env=environment,
+            env=_sanitized_process_environment(),
         )
     except OSError as exc:
         raise ChainError(f"cannot execute {argv[0]}: {exc}") from exc
@@ -1615,10 +1866,11 @@ def _tagged_file_bytes(repository: Path, commit: str, relative: str) -> bytes:
         raise ChainError(f"invalid tagged Git commit: {commit!r}")
     try:
         proc = subprocess.run(
-            ["git", "show", f"{commit}:{relative}"],
+            ["/usr/bin/git", "show", f"{commit}:{relative}"],
             cwd=repository,
             capture_output=True,
             check=False,
+            env=_sanitized_process_environment(),
         )
     except OSError as exc:
         raise ChainError(f"cannot read tagged recovery tool {relative}: {exc}") from exc
@@ -1637,15 +1889,13 @@ def _run_checked_bytes(
 ) -> bytes:
     """Run one read-only command without decoding or stripping its output."""
 
-    environment = dict(os.environ)
-    environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         proc = subprocess.run(
-            list(argv),
+            _trusted_command_argv(argv),
             cwd=cwd,
             capture_output=True,
             check=False,
-            env=environment,
+            env=_sanitized_process_environment(),
         )
     except OSError as exc:
         raise ChainError(f"cannot execute {argv[0]}: {exc}") from exc
@@ -1780,9 +2030,24 @@ def _protected_capacity_release_source_binding(
     }
 
 
+def _reject_git_replace_refs(repository: Path) -> None:
+    """Reject local object substitution even though replacement use is disabled."""
+
+    replacement_refs = _run_checked(
+        ["git", "for-each-ref", "--format=%(refname)", "refs/replace"],
+        cwd=repository,
+    ).splitlines()
+    if replacement_refs:
+        raise ChainError(
+            "exact release checkout contains forbidden Git replacement refs: "
+            + ", ".join(replacement_refs[:10])
+        )
+
+
 def verify_release_tag(repository: Path) -> dict[str, str]:
     if not repository.is_dir() or not (repository / ".git").exists():
         raise ChainError(f"source repository is not a Git checkout: {repository}")
+    _reject_git_replace_refs(repository)
     tag_type = _run_checked(
         ["git", "cat-file", "-t", f"refs/tags/{RELEASE_TAG}"], cwd=repository
     )
@@ -1825,6 +2090,7 @@ def _verify_exact_tag_checkout(
     )
     if not (checkout / ".git").exists():
         raise ChainError(f"prerequisite verifier checkout is not Git-backed: {checkout}")
+    _reject_git_replace_refs(checkout)
     tag_ref = f"refs/tags/{RELEASE_TAG}"
     if (
         _run_checked(["git", "cat-file", "-t", tag_ref], cwd=checkout) != "tag"
@@ -1898,19 +2164,14 @@ def _run_json_verifier(
 def _sanitized_python_environment(*, library: Path) -> dict[str, str]:
     """Return a deterministic, offline Python/pip/Conda subprocess environment."""
 
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith(("PIP_", "CONDA_"))
-        and name
-        not in {
+    environment = _sanitized_process_environment()
+    for name in tuple(environment):
+        if name.startswith(("PIP_", "CONDA_")) or name in {
             "PYTHONHOME",
             "PYTHONPATH",
             "VIRTUAL_ENV",
-            "LD_PRELOAD",
-            "LD_LIBRARY_PATH",
-        }
-    }
+        }:
+            environment.pop(name, None)
     environment.update(
         {
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -2009,40 +2270,6 @@ def _invoke_tagged_prerequisite_verifiers(
         description="tagged Slurm-canary verifier",
     )
     return {"materialization_pilot": pilot, "slurm_canary": canary}
-
-
-def _invoke_conda_runtime_identity(
-    paths: RecoveryPaths,
-    *,
-    checkout: Path,
-    expected_commit: str,
-    verifier_python: Path,
-    verifier_library: Path,
-) -> dict[str, Any]:
-    git_path = "scripts/schema5_conda_runtime_identity.py"
-    expected = _tagged_file_bytes(checkout, expected_commit, git_path)
-    tool = _require_canonical_path(
-        checkout / git_path,
-        description="tagged Conda runtime identity tool",
-        kind="file",
-    )
-    if tool.stat().st_size != len(expected) or _sha256(tool) != _sha256_bytes(
-        expected
-    ):
-        raise ChainError("tagged Conda runtime identity tool drifted")
-    report = _run_json_verifier(
-        [
-            str(verifier_python),
-            "-I",
-            str(tool),
-            "--conda-executable",
-            str(paths.conda_executable),
-        ],
-        environment=_sanitized_python_environment(library=verifier_library),
-        timeout=18_000.0,
-        description="pilot-bound Conda runtime-toolchain inventory",
-    )
-    return report
 
 
 def _sealed_prerequisite_marker(
@@ -2320,6 +2547,7 @@ def _validate_scientific_qos_contracts(
     *,
     server_qos: set[str],
     client_qos: set[str],
+    expected_running_jobs: int,
 ) -> None:
     """Prove exact QOS job-count and walltime support for every placement."""
 
@@ -2408,7 +2636,7 @@ def _validate_scientific_qos_contracts(
             int(row["required_running_jobs"])
             for row in by_qos.values()
         )
-        != PROTECTED_RUNNING_SCIENTIFIC_JOBS
+        != expected_running_jobs
         or sum(
             int(row["required_submit_jobs"])
             for row in by_qos.values()
@@ -2431,7 +2659,7 @@ def _validate_scientific_qos_contracts(
         )
     ):
         raise ChainError(
-            "protected scientific QOS contracts do not prove 409 running "
+            "protected scientific QOS contracts do not prove the exact running "
             "jobs, 448 submitted jobs, 24-hour serving, and 12-hour cells"
         )
 
@@ -2589,6 +2817,7 @@ def _validate_protected_capacity_marker(
         marker.get("scientific_qos_contracts"),
         server_qos=server_qos,
         client_qos=client_qos,
+        expected_running_jobs=PROTECTED_RUNNING_SCIENTIFIC_JOBS,
     )
     scheduler_max_jobs = marker.get("scheduler_max_jobs")
     source_fields = (
@@ -3362,6 +3591,71 @@ def _launch_prerequisite_binding(
     }
 
 
+def _verified_superseded_r3_prelaunch_failure(
+    paths: RecoveryPaths,
+) -> dict[str, Any]:
+    expected_root = (
+        paths.recovery_root
+        / recovery_evidence.R3_PRELAUNCH_FAILURE_RELATIVE_ROOT
+    )
+    if paths.superseded_r3_prelaunch_failure_root != expected_root:
+        raise ChainError("superseded r3 prelaunch-failure root is not canonical")
+    try:
+        binding = recovery_evidence.verify_prelaunch_failure_seal(
+            expected_root
+        )
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        recovery_evidence.EvidenceError,
+    ) as exc:
+        raise ChainError(
+            f"superseded r3 prelaunch-failure seal is invalid: {exc}"
+        ) from exc
+    marker = binding.get("marker") if isinstance(binding, dict) else None
+    if (
+        not isinstance(binding, dict)
+        or binding.get("root") != str(expected_root)
+        or binding.get("protocol")
+        != "schema5-v1.2-r3-prelaunch-failure-seal-binding-v1"
+        or binding.get("release_id") != RELEASE_ID
+        or binding.get("release_tag") != SUPERSEDED_R3_RELEASE_TAG
+        or binding.get("release_git_commit")
+        != SUPERSEDED_R3_RELEASE_COMMIT
+        or binding.get("release_tag_object")
+        != SUPERSEDED_R3_RELEASE_TAG_OBJECT
+        or binding.get("chain_namespace")
+        != SUPERSEDED_R3_CHAIN_NAMESPACE
+        or binding.get("classification")
+        != "deterministic_materialization_contract_failure_sealed_fail_closed"
+        or binding.get("failure_classifications")
+        != list(SUPERSEDED_R3_FAILURE_CLASSIFICATIONS)
+        or not isinstance(marker, dict)
+        or set(marker) != {"path", "sha256", "size", "seal_id"}
+        or marker.get("path")
+        != str(paths.superseded_r3_prelaunch_failure_marker)
+        or _SHA256.fullmatch(str(marker.get("sha256", ""))) is None
+        or _SHA256.fullmatch(str(marker.get("seal_id", ""))) is None
+        or not isinstance(marker.get("size"), int)
+        or isinstance(marker.get("size"), bool)
+        or marker["size"] <= 0
+        or binding.get("retry_in_place") is not False
+        or binding.get("requires_superseding_release") is not True
+        or binding.get("pre_scheduler_submission") is not True
+        or binding.get("scheduler_evidence_required") is not False
+        or binding.get("known_scheduler_job_ids") != []
+        or _SHA256.fullmatch(
+            str(binding.get("archive_inventory_sha256", ""))
+        )
+        is None
+    ):
+        raise ChainError(
+            "superseded r3 prelaunch-failure seal binding drifted"
+        )
+    return json.loads(json.dumps(binding, sort_keys=True))
+
+
 def _external_launch_prerequisite_contract(
     paths: RecoveryPaths, *, git_identity: Mapping[str, str]
 ) -> dict[str, dict[str, Any]]:
@@ -3382,6 +3676,7 @@ def _external_launch_prerequisite_contract(
     superseded_r2, superseded_r2_raw = (
         _validate_superseded_r2_canary_failure_marker(paths)
     )
+    superseded_r3 = _verified_superseded_r3_prelaunch_failure(paths)
     return {
         "durable_git_release": {
             **_launch_prerequisite_binding(
@@ -3406,6 +3701,7 @@ def _external_launch_prerequisite_contract(
             "job_id": SUPERSEDED_R2_CANARY_JOB_ID,
             "retry_in_place": False,
         },
+        "superseded_r3_prelaunch_failure": superseded_r3,
         "protected_capacity": _launch_prerequisite_binding(
             path=paths.protected_capacity_marker,
             marker=protected,
@@ -3446,6 +3742,7 @@ def _sealed_external_launch_prerequisite_contract(
     superseded_r2, superseded_r2_raw = (
         _validate_superseded_r2_canary_failure_marker(paths)
     )
+    superseded_r3 = _verified_superseded_r3_prelaunch_failure(paths)
     return {
         "durable_git_release": {
             **_launch_prerequisite_binding(
@@ -3470,6 +3767,7 @@ def _sealed_external_launch_prerequisite_contract(
             "job_id": SUPERSEDED_R2_CANARY_JOB_ID,
             "retry_in_place": False,
         },
+        "superseded_r3_prelaunch_failure": superseded_r3,
         "protected_capacity": _launch_prerequisite_binding(
             path=paths.protected_capacity_marker,
             marker=protected,
@@ -3477,99 +3775,6 @@ def _sealed_external_launch_prerequisite_contract(
             identity_field="marker_id",
         ),
     }
-
-
-def _verify_external_executable_binding(
-    path: Path,
-    binding: Mapping[str, Any],
-    *,
-    description: str,
-) -> None:
-    path = _require_canonical_path(path, description=description, kind="file")
-    if (
-        binding.get("path") != str(path)
-        or not os.access(path, os.X_OK)
-        or path.stat().st_size != binding.get("size")
-        or _sha256(path) != binding.get("sha256")
-    ):
-        raise ChainError(f"{description} differs from sealed pilot provenance")
-
-
-def _validate_conda_runtime_toolchain_binding(
-    binding: Any,
-    *,
-    executable_binding: Mapping[str, Any],
-) -> dict[str, Any]:
-    required = {
-        "schema_version",
-        "protocol",
-        "base_prefix",
-        "excluded_top_level",
-        "conda_executable",
-        "shebang_interpreter",
-        "runtime_inventory",
-        "identity_sha256",
-    }
-    if not isinstance(binding, dict) or set(binding) != required:
-        raise ChainError("pilot Conda runtime-toolchain fields drifted")
-    identity = dict(binding)
-    identity_sha256 = identity.pop("identity_sha256", None)
-    inventory = binding.get("runtime_inventory")
-    interpreter = binding.get("shebang_interpreter")
-    if (
-        binding.get("schema_version") != 1
-        or binding.get("protocol")
-        != "schema5-conda-runtime-toolchain-identity-v1"
-        or binding.get("conda_executable") != executable_binding
-        or not isinstance(binding.get("base_prefix"), str)
-        or not Path(binding["base_prefix"]).is_absolute()
-        or binding.get("excluded_top_level")
-        != [".conda", "conda-bld", "envs", "pkgs"]
-        or not isinstance(interpreter, dict)
-        or set(interpreter)
-        != {"path", "resolved_path", "sha256", "size"}
-        or not isinstance(inventory, dict)
-        or set(inventory)
-        != {
-            "file_count",
-            "directory_count",
-            "symlink_count",
-            "total_bytes",
-            "inventory_sha256",
-        }
-        or inventory.get("file_count", 0) <= 0
-        or any(
-            not isinstance(inventory.get(field), int)
-            or isinstance(inventory.get(field), bool)
-            or inventory[field] < 0
-            for field in (
-                "file_count",
-                "directory_count",
-                "symlink_count",
-                "total_bytes",
-            )
-        )
-        or any(
-            _SHA256.fullmatch(str(value)) is None
-            for value in (
-                interpreter.get("sha256"),
-                inventory.get("inventory_sha256"),
-                identity_sha256,
-            )
-        )
-        or identity_sha256
-        != _sha256_bytes(
-            json.dumps(
-                identity,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
-                allow_nan=False,
-            ).encode("utf-8")
-        )
-    ):
-        raise ChainError("pilot Conda runtime-toolchain identity is invalid")
-    return dict(binding)
 
 
 def _verify_pilot_runtime_binding(
@@ -3677,13 +3882,20 @@ def _validate_prerequisite_reports(
         if isinstance(pilot, dict)
         else None
     )
-    conda_binding = (
-        pilot.get("conda_executable") if isinstance(pilot, dict) else None
+    pilot_conda_toolchain = (
+        pilot.get("conda_toolchain") if isinstance(pilot, dict) else None
     )
-    conda_toolchain = (
-        pilot.get("conda_runtime_toolchain")
+    source_package_cache = (
+        pilot.get("source_package_cache") if isinstance(pilot, dict) else None
+    )
+    package_cache_seed_input = (
+        pilot.get("package_cache_seed_input")
         if isinstance(pilot, dict)
         else None
+    )
+    validated_cache_input = _validate_package_cache_seed_input(
+        package_cache_seed_input,
+        source_package_cache=paths.source_package_cache,
     )
     verifier_runtime = (
         pilot.get("verifier_runtime") if isinstance(pilot, dict) else None
@@ -3738,7 +3950,7 @@ def _validate_prerequisite_reports(
     if (
         not isinstance(pilot, dict)
         or pilot.get("status") != "verified"
-        or pilot.get("schema_version") != 4
+        or pilot.get("schema_version") != 5
         or pilot.get("release_id") != RELEASE_ID
         or pilot.get("expected_tag") != RELEASE_TAG
         or pilot.get("expected_commit") != git_identity["git_commit"]
@@ -3805,14 +4017,10 @@ def _validate_prerequisite_reports(
         != code_by_path.get(
             INTEGRITY_NORMALIZATION_POLICY_GIT_PATH, {}
         ).get("sha256")
-        or not isinstance(conda_binding, dict)
-        or set(conda_binding) != {"path", "sha256", "size"}
-        or conda_binding.get("path") != str(paths.conda_executable)
-        or not isinstance(conda_binding.get("sha256"), str)
-        or _SHA256.fullmatch(conda_binding["sha256"]) is None
-        or not isinstance(conda_binding.get("size"), int)
-        or isinstance(conda_binding.get("size"), bool)
-        or conda_binding["size"] <= 0
+        or source_package_cache != str(paths.source_package_cache)
+        or package_cache_seed_input != validated_cache_input
+        or pilot_conda_toolchain
+        != _verified_conda_toolchain_binding(paths.conda_toolchain_root)
         or not isinstance(canary, dict)
         or canary.get("schema_version") != 4
         or canary.get("kind")
@@ -3891,16 +4099,7 @@ def _validate_prerequisite_reports(
         raise ChainError(
             "sealed prerequisite evidence does not belong to the exact release code"
         )
-    _validate_conda_runtime_toolchain_binding(
-        conda_toolchain,
-        executable_binding=conda_binding,
-    )
     if verify_live_bindings:
-        _verify_external_executable_binding(
-            paths.conda_executable,
-            conda_binding,
-            description="pilot-bound Conda executable",
-        )
         _verify_pilot_runtime_binding(paths, verifier_runtime)
 
 
@@ -3960,19 +4159,12 @@ def _prerequisite_evidence_contract(
         sealed_python = verifier_python
         sealed_library = verifier_library
     if sealed_python is None or sealed_library is None:
-        raise ChainError("sealed pilot runtime is unavailable for Conda inventory")
-    live_conda_toolchain = _invoke_conda_runtime_identity(
-        paths,
-        checkout=verifier_checkout,
-        expected_commit=git_identity["git_commit"],
-        verifier_python=sealed_python,
-        verifier_library=sealed_library,
+        raise ChainError("sealed pilot runtime is unavailable")
+    live_conda_toolchain = _verified_conda_toolchain_binding(
+        paths.conda_toolchain_root
     )
-    if (
-        live_conda_toolchain
-        != reports["materialization_pilot"].get(
-            "conda_runtime_toolchain"
-        )
+    if live_conda_toolchain != reports["materialization_pilot"].get(
+        "conda_toolchain"
     ):
         raise ChainError(
             "Conda runtime toolchain differs from sealed pilot provenance"
@@ -4009,12 +4201,15 @@ def _prerequisite_evidence_contract(
             "integrity_normalization_policy_sha256": reports[
                 "materialization_pilot"
             ]["integrity_normalization_policy_sha256"],
-            "conda_executable": dict(
-                reports["materialization_pilot"]["conda_executable"]
+            "conda_toolchain": dict(
+                reports["materialization_pilot"]["conda_toolchain"]
             ),
-            "conda_runtime_toolchain": dict(
+            "source_package_cache": reports[
+                "materialization_pilot"
+            ]["source_package_cache"],
+            "package_cache_seed_input": dict(
                 reports["materialization_pilot"][
-                    "conda_runtime_toolchain"
+                    "package_cache_seed_input"
                 ]
             ),
             "verifier_runtime": dict(
@@ -4120,6 +4315,7 @@ def _validate_prerequisite_evidence_contract(
         "tagged_code",
         "durable_git_release",
         "superseded_r2_canary_failure",
+        "superseded_r3_prelaunch_failure",
         "protected_capacity",
         "materialization_pilot",
         "slurm_canary",
@@ -4170,9 +4366,7 @@ def _validate_prerequisite_evidence_contract(
         contract.get(name) != binding
         for name, binding in expected_external.items()
     ):
-        raise ChainError(
-            "protected-capacity prerequisite binding drifted"
-        )
+        raise ChainError("external launch-prerequisite binding drifted")
 
     records: dict[str, dict[str, Any]] = {}
     for name, root, marker_name, id_field in (
@@ -4204,8 +4398,9 @@ def _validate_prerequisite_evidence_contract(
                 "live_source_inventory_sha256",
                 "ownership_policy_sha256",
                 "integrity_normalization_policy_sha256",
-                "conda_executable",
-                "conda_runtime_toolchain",
+                "conda_toolchain",
+                "source_package_cache",
+                "package_cache_seed_input",
                 "verifier_runtime",
                 "reconciliation_incident",
             }
@@ -4263,11 +4458,15 @@ def _validate_prerequisite_evidence_contract(
                     != record["verifier_report"].get(
                         "integrity_normalization_policy_sha256"
                     )
-                    or record.get("conda_executable")
-                    != record["verifier_report"].get("conda_executable")
-                    or record.get("conda_runtime_toolchain")
+                    or record.get("conda_toolchain")
+                    != record["verifier_report"].get("conda_toolchain")
+                    or record.get("source_package_cache")
                     != record["verifier_report"].get(
-                        "conda_runtime_toolchain"
+                        "source_package_cache"
+                    )
+                    or record.get("package_cache_seed_input")
+                    != record["verifier_report"].get(
+                        "package_cache_seed_input"
                     )
                     or record.get("verifier_runtime")
                     != record["verifier_report"].get("verifier_runtime")
@@ -4358,6 +4557,37 @@ def _validate_prerequisite_evidence_contract(
 
 def _q(path_or_value: object) -> str:
     return shlex.quote(str(path_or_value))
+
+
+def _trusted_shell_prelude() -> str:
+    """Sanitize every generated job before any launch-authorization command."""
+
+    return f"""\
+unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ATTR_NOSYSTEM GIT_CEILING_DIRECTORIES
+unset GIT_COMMON_DIR GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL
+unset GIT_CONFIG_NOSYSTEM GIT_CONFIG_PARAMETERS GIT_CONFIG_SYSTEM GIT_DIR
+unset GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_EXEC_PATH GIT_INDEX_FILE GIT_NAMESPACE
+unset GIT_NO_REPLACE_OBJECTS GIT_OBJECT_DIRECTORY GIT_REPLACE_REF_BASE
+unset GIT_SHALLOW_FILE GIT_SSH GIT_SSH_COMMAND GIT_TEMPLATE_DIR GIT_WORK_TREE
+unset SLURM_CLUSTERS SLURM_CONF SLURM_EXIT_ERROR SLURM_TIME_FORMAT
+while IFS= read -r ambient_name; do
+  case "$ambient_name" in
+    BASH_FUNC_*|PIP_*|CONDA_*|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_TRACE*|SACCT_*|SBATCH_*|SCONTROL_*|SQUEUE_*)
+      builtin unset -v "$ambient_name" 2>/dev/null || true
+      ;;
+  esac
+done < <(compgen -e)
+export PATH={TRUSTED_SYSTEM_PATH}
+readonly PATH
+while read -r _ _ ambient_function; do
+  builtin unset -f "$ambient_function"
+done < <(builtin declare -F)
+export LANG=C LC_ALL=C
+export GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
+export GIT_PAGER=cat PAGER=cat
+"""
 
 
 def _common_exports(paths: RecoveryPaths) -> str:
@@ -4536,7 +4766,7 @@ launch_gate_comment="$(
     sed -n 's/^Comment=//p' |
     head -n 1
 )"
-if [[ ! "$launch_gate_comment" =~ ^asys:s5-recovery-v1\.2-r3:([0-9a-f]{64}):g([0-9]{4}):([A-Za-z0-9._-]+)$ ]]; then
+if [[ ! "$launch_gate_comment" =~ ^asys:s5-recovery-v1\.2-r4:([0-9a-f]{64}):g([0-9]{4}):([A-Za-z0-9._-]+)$ ]]; then
   echo "launch gate scheduler comment is malformed" >&2
   exit 2
 fi
@@ -4566,7 +4796,7 @@ while [[ ! -f "$launch_gate_receipt" || -L "$launch_gate_receipt" ||
   fi
   sleep 1
 done
-env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" - \
+env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S - \
   "$launch_gate_manifest" \
   "$launch_gate_evidence_root" \
   "$launch_gate_receipt" \
@@ -4580,13 +4810,16 @@ env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" - \
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
 import re
+import runpy
 import stat
 import sys
+import types
 from typing import NoReturn
 
 
@@ -4739,7 +4972,7 @@ except ValueError:
 if generation < 0 or not job_id.isdigit():
     fail("scheduler generation or job ID is invalid")
 expected_comment = (
-    f"asys:s5-recovery-v1.2-r3:{chain_id}:g{generation:04d}:{stage_name}"
+    f"asys:s5-recovery-v1.2-r4:{chain_id}:g{generation:04d}:{stage_name}"
 )
 if scheduler_comment != expected_comment:
     fail("scheduler comment does not equal the runtime identity")
@@ -4756,7 +4989,7 @@ manifest_identity = dict(manifest)
 manifest_chain_id = manifest_identity.pop("chain_id", None)
 if (
     manifest.get("schema_version") != __CHAIN_SCHEMA_VERSION__
-    or manifest.get("protocol") != "schema5-v1.2-r3-recovery-chain"
+    or manifest.get("protocol") != "schema5-v1.2-r4-recovery-chain"
     or manifest_chain_id != chain_id
     or require_sha256(manifest_chain_id, "manifest chain ID")
     != digest(canonical_json(manifest_identity))
@@ -4780,6 +5013,120 @@ if stage_name not in manifest_by_name or stage_name == "failure_sentinel":
 canary_source = manifest.get("prerequisite_evidence")
 if not isinstance(canary_source, dict):
     fail("manifest prerequisite evidence is invalid")
+
+r3_binding = canary_source.get("superseded_r3_prelaunch_failure")
+r3_root = (
+    Path(str(manifest.get("recovery_root", "")))
+    / "prelaunch_failures"
+    / "schema5-v1.2-r3"
+)
+bundle = manifest.get("recovery_tool_bundle")
+sealer_record = next(
+    (
+        row
+        for row in bundle
+        if isinstance(row, dict)
+        and row.get("git_path") == "scripts/seal_recovery_evidence.py"
+    ),
+    None,
+) if isinstance(bundle, list) else None
+if (
+    not isinstance(r3_binding, dict)
+    or r3_binding.get("root") != str(r3_root)
+    or not isinstance(sealer_record, dict)
+):
+    fail("superseded r3 prelaunch-failure binding is absent")
+sealer_path = Path(str(sealer_record.get("path", "")))
+try:
+    sealer_metadata = os.lstat(sealer_path)
+except OSError as error:
+    fail(f"bundled r3 seal verifier is unavailable: {error}")
+if (
+    stat.S_ISLNK(sealer_metadata.st_mode)
+    or not stat.S_ISREG(sealer_metadata.st_mode)
+    or stat.S_IMODE(sealer_metadata.st_mode) & 0o222
+    or sealer_metadata.st_size != sealer_record.get("size")
+    or digest(sealer_path.read_bytes()) != sealer_record.get("sha256")
+):
+    fail("bundled r3 seal verifier drifted")
+try:
+    observed_r3_binding = runpy.run_path(str(sealer_path))[
+        "verify_prelaunch_failure_seal"
+    ](r3_root)
+except Exception as error:
+    fail(f"superseded r3 prelaunch-failure verification failed: {error}")
+if observed_r3_binding != r3_binding:
+    fail("superseded r3 prelaunch-failure seal differs from manifest")
+
+toolchain_binding = manifest.get("conda_toolchain")
+toolchain_root = Path(str(manifest.get("conda_toolchain_root", "")))
+
+
+def bundled_record(git_path: str) -> tuple[dict[str, object], Path]:
+    record = next(
+        (
+            row
+            for row in bundle
+            if isinstance(row, dict) and row.get("git_path") == git_path
+        ),
+        None,
+    ) if isinstance(bundle, list) else None
+    if not isinstance(record, dict):
+        fail(f"immutable tool binding is absent: {git_path}")
+    path = Path(str(record.get("path", "")))
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        fail(f"immutable tool is unavailable ({git_path}): {error}")
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) & 0o222
+        or metadata.st_size != record.get("size")
+        or digest(path.read_bytes()) != record.get("sha256")
+    ):
+        fail(f"immutable tool drifted: {git_path}")
+    return record, path
+
+
+_, runtime_identity_path = bundled_record(
+    "scripts/schema5_conda_runtime_identity.py"
+)
+_, toolchain_verifier_path = bundled_record(
+    "scripts/provision_schema5_conda_toolchain.py"
+)
+try:
+    package = types.ModuleType("scripts")
+    package.__path__ = []
+    sys.modules["scripts"] = package
+    runtime_spec = importlib.util.spec_from_file_location(
+        "scripts.schema5_conda_runtime_identity",
+        runtime_identity_path,
+    )
+    if runtime_spec is None or runtime_spec.loader is None:
+        fail("cannot load bundled Conda runtime verifier")
+    runtime_module = importlib.util.module_from_spec(runtime_spec)
+    sys.modules[runtime_spec.name] = runtime_module
+    runtime_spec.loader.exec_module(runtime_module)
+    toolchain_spec = importlib.util.spec_from_file_location(
+        "scripts.provision_schema5_conda_toolchain",
+        toolchain_verifier_path,
+    )
+    if toolchain_spec is None or toolchain_spec.loader is None:
+        fail("cannot load bundled Conda toolchain verifier")
+    toolchain_module = importlib.util.module_from_spec(toolchain_spec)
+    sys.modules[toolchain_spec.name] = toolchain_module
+    toolchain_spec.loader.exec_module(toolchain_module)
+    observed_toolchain = toolchain_module.verified_conda_toolchain_binding(
+        toolchain_root,
+        exercise=True,
+    )
+except SystemExit:
+    raise
+except Exception as error:
+    fail(f"sealed Conda toolchain verification failed: {error}")
+if observed_toolchain != toolchain_binding:
+    fail("sealed Conda toolchain differs from manifest")
 
 
 def require_launch_prerequisite(
@@ -5005,18 +5352,18 @@ def protected_placement_totals(
         if (
             len(normalized) != 1
             or totals["base_active_gpus"] != 24
-            or totals["reserved_additive_gpus"] != 18
-            or totals["effective_active_gpus"] != 42
+            or totals["reserved_additive_gpus"] != 0
+            or totals["effective_active_gpus"] != 24
             or totals["retained_warm_turnover_gpus"] != 4
-            or totals["attested_total_gpus"] != 46
+            or totals["attested_total_gpus"] != 28
             or totals["partition_cpus"] < 1
             or totals["partition_memory_mib"] < 1
-            or totals["partition_gpus"] < 46
+            or totals["partition_gpus"] < 28
             or totals["partition_nodes"] < 1
         ):
             fail(
                 "protected scientific server placement does not bind the "
-                "exact 42-active plus 4-warm partition inventory"
+                "exact 24-active plus 4-warm partition inventory"
             )
     return totals
 
@@ -5139,6 +5486,12 @@ protected_fields = {
     "effective_fleet_contract_path", "effective_fleet_contract_sha256",
     "additive_overlay_contract_path", "additive_overlay_contract_sha256",
     "static_feasibility_certificate",
+    "static_feasibility_wave_passed",
+    "static_feasibility_configured_client_ceiling",
+    "static_feasibility_certified_saturation_target",
+    "static_feasibility_selected_cell_count",
+    "static_feasibility_target_cell_count",
+    "static_feasibility_shortfall_cells",
     "base_active_logical_replicas", "base_active_gpus",
     "base_active_topology", "base_active_topology_sha256",
     "additive_reserved_logical_replicas", "additive_reserved_gpus",
@@ -5281,9 +5634,10 @@ certificate_batches = (
     if isinstance(certificate_wave, dict)
     else None
 )
+expected_certificate_batch_sizes = [24] * 11 + [14]
 if (
     protected_certificate.get("protocol")
-    != "schema5-v1.2-r3-throughput-preflight-capacity-certificate-v1"
+    != "schema5-v1.2-r4-throughput-preflight-capacity-certificate-v1"
     or protected_certificate.get("passed") is not True
     or protected_certificate.get("certificate_id")
     != certificate_binding.get("certificate_id")
@@ -5315,14 +5669,27 @@ if (
     != protected.get("effective_active_gpus")
     or protected_certificate.get("additive_allocated_gpus")
     != protected.get("additive_reserved_gpus")
-    or protected_certificate.get("selected_cell_count") != 384
+    or protected_certificate.get("selected_cell_count") != 278
     or not isinstance(certificate_batches, list)
-    or len(certificate_batches) != 16
-    or any(
-        not isinstance(batch, dict)
-        or batch.get("selected_count") != 24
+    or [
+        batch.get("selected_count")
+        if isinstance(batch, dict)
+        else None
         for batch in certificate_batches
-    )
+    ]
+    != expected_certificate_batch_sizes
+    or not isinstance(certificate_wave, dict)
+    or certificate_wave.get("passed") is not False
+    or certificate_wave.get("target_active_cells") != 384
+    or certificate_wave.get("selected_cell_count") != 278
+    or certificate_wave.get("shortfall_cells") != 106
+    or certificate_wave.get("microbatch_count") != 12
+    or protected.get("static_feasibility_wave_passed") is not False
+    or protected.get("static_feasibility_configured_client_ceiling") != 384
+    or protected.get("static_feasibility_certified_saturation_target") != 278
+    or protected.get("static_feasibility_selected_cell_count") != 278
+    or protected.get("static_feasibility_target_cell_count") != 384
+    or protected.get("static_feasibility_shortfall_cells") != 106
 ):
     fail("protected static-feasibility certificate binding drifted")
 for value_field, hash_field in (
@@ -5382,13 +5749,32 @@ if (
     or expected_protected_accounting[
         "controller_monitor_other_held_job_elements"
     ]
-    <= 0
+    != 39
     or protected.get("fleet_contract_sha256")
     != protected.get("effective_fleet_contract_sha256")
     or protected.get("active_fleet_topology_sha256")
     != protected.get("effective_active_topology_sha256")
     or protected.get("base_active_logical_replicas") != 22
     or protected.get("base_active_gpus") != 24
+    or protected.get("capacity_generation") != 1
+    or protected.get("effective_active_logical_replicas") != 22
+    or protected.get("effective_active_gpus") != 24
+    or protected.get("additive_reserved_logical_replicas") != 0
+    or protected.get("additive_reserved_gpus") != 0
+    or protected.get("additive_reserved_tp1_replicas") != 0
+    or protected.get("additive_reserved_tp2_replicas") != 0
+    or protected.get("additive_reserved_topology") != []
+    or protected.get("effective_fleet_contract_sha256")
+    != protected.get("base_fleet_contract_sha256")
+    or protected.get("additive_overlay_contract_path")
+    != protected.get("effective_fleet_contract_path")
+    or protected.get("additive_overlay_contract_sha256")
+    != protected.get("base_fleet_contract_sha256")
+    or protected.get("effective_active_topology")
+    != protected.get("base_active_topology")
+    or protected.get("attested_total_gpus") != 28
+    or protected.get("active_gpus") != 24
+    or protected.get("warm_headroom_gpus") != 4
     or protected.get("effective_active_logical_replicas")
     != (
         protected.get("base_active_logical_replicas")
@@ -5488,9 +5874,9 @@ repair_fields = initial_fields | {
 }
 expected_receipt_fields = initial_fields if generation == 0 else repair_fields
 expected_receipt_protocol = (
-    "schema5-v1.2-r3-recovery-chain-submission"
+    "schema5-v1.2-r4-recovery-chain-submission"
     if generation == 0
-    else "schema5-v1.2-r3-recovery-chain-repair"
+    else "schema5-v1.2-r4-recovery-chain-repair"
 )
 if (
     set(receipt) != expected_receipt_fields
@@ -5528,7 +5914,7 @@ policy = require_backing_file(
     beneath=evidence_root,
 )
 if (
-    policy.get("protocol") != "schema5-v1.2-r3-live-dependency-policy-v1"
+    policy.get("protocol") != "schema5-v1.2-r4-live-dependency-policy-v1"
     or policy.get("phase") != "pre_submission"
     or policy.get("kill_invalid_depend") is not True
     or "kill_invalid_depend" not in policy.get("dependency_parameters", [])
@@ -5592,7 +5978,7 @@ for manifest_row, record in zip(manifest_jobs, receipt_jobs, strict=True):
         ):
             fail(f"repair receipt generation drifted: {name}")
     expected_record_comment = (
-        f"asys:s5-recovery-v1.2-r3:{chain_id}:"
+        f"asys:s5-recovery-v1.2-r4:{chain_id}:"
         f"g{record_generation:04d}:{name}"
     )
     if record.get("comment") != expected_record_comment:
@@ -5688,7 +6074,7 @@ if (
     set(release) != release_fields
     or release.get("schema_version") != SCHEMA_VERSION
     or release.get("protocol")
-    != "schema5-v1.2-r3-recovery-root-release-v1"
+    != "schema5-v1.2-r4-recovery-root-release-v1"
     or release.get("receipt") != str(receipt_path)
     or release.get("receipt_sha256") != digest(receipt_raw)
     or release.get("receipt_id") != receipt.get("receipt_id")
@@ -5854,7 +6240,7 @@ else:
     )
     if (
         generation_acceptance.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-generation-provenance-v1"
+        != "schema5-v1.2-r4-bootstrap-generation-provenance-v1"
         or generation_acceptance.get("passed") is not True
         or generation_acceptance.get("chain_id") != chain_id
         or generation_acceptance.get("submission_receipt")
@@ -5914,7 +6300,7 @@ release_policy = require_backing_file(
 )
 if (
     release_policy.get("protocol")
-    != "schema5-v1.2-r3-live-dependency-policy-v1"
+    != "schema5-v1.2-r4-live-dependency-policy-v1"
     or release_policy.get("phase") != "root_release"
     or release_policy.get("kill_invalid_depend") is not True
     or "kill_invalid_depend"
@@ -5958,7 +6344,7 @@ for ordinal, attempt_binding in enumerate(
     )
     if (
         attempt_intent.get("protocol")
-        != "schema5-v1.2-r3-root-release-attempt-intent-v1"
+        != "schema5-v1.2-r4-root-release-attempt-intent-v1"
         or attempt_intent.get("attempt") != ordinal
         or attempt_intent.get("root_index") != release_root_index
         or attempt_intent.get("root_name")
@@ -5975,7 +6361,7 @@ for ordinal, attempt_binding in enumerate(
         or attempt_intent.get("dependency_policy_check_sha256")
         != release.get("dependency_policy_check_sha256")
         or attempt_result.get("protocol")
-        != "schema5-v1.2-r3-root-release-attempt-result-v1"
+        != "schema5-v1.2-r4-root-release-attempt-result-v1"
         or attempt_result.get("attempt") != ordinal
         or attempt_result.get("root_index") != release_root_index
         or attempt_result.get("root_name")
@@ -6068,7 +6454,7 @@ if (
     set(launch) != launch_fields
     or launch.get("schema_version") != SCHEMA_VERSION
     or launch.get("protocol")
-    != "schema5-v1.2-r3-recovery-chain-launched-v1"
+    != "schema5-v1.2-r4-recovery-chain-launched-v1"
     or launch.get("receipt") != str(receipt_path)
     or launch.get("receipt_sha256") != digest(receipt_raw)
     or launch.get("receipt_id") != receipt.get("receipt_id")
@@ -6293,10 +6679,10 @@ comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
   echo "source checkout scheduler comment is ambiguous" >&2
   exit 2
 }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:([0-9a-f]{{64}}):g[0-9]{{4}}:source_checkout$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r4:([0-9a-f]{{64}}):g[0-9]{{4}}:source_checkout$ ]]; then
   scheduler_chain_id="${{BASH_REMATCH[1]}}"
 else
-  echo "source checkout scheduler identity is outside the immutable r3 chain" >&2
+  echo "source checkout scheduler identity is outside the immutable r4 chain" >&2
   exit 2
 fi
 # Authenticate the sealed interpreter and its complete stdlib/native-library
@@ -7060,41 +7446,34 @@ def _materialize_body(
     commit: str,
     tag_object: str,
     expected_source_inventories: Mapping[str, str],
-    conda_binding: Mapping[str, Any],
-    conda_runtime_binding: Mapping[str, Any],
-    conda_identity_payload: bytes,
+    conda_toolchain_binding: Mapping[str, Any],
+    package_cache_seed_input: Mapping[str, Any],
 ) -> str:
+    validated_cache_input = _validate_package_cache_seed_input(
+        dict(package_cache_seed_input),
+        source_package_cache=paths.source_package_cache,
+    )
     if (
         set(expected_source_inventories) != {"harness", "serving"}
         or any(
             not isinstance(value, str) or _SHA256.fullmatch(value) is None
             for value in expected_source_inventories.values()
         )
-        or set(conda_binding) != {"path", "sha256", "size"}
-        or conda_binding.get("path") != str(paths.conda_executable)
-        or not isinstance(conda_binding.get("sha256"), str)
-        or _SHA256.fullmatch(conda_binding["sha256"]) is None
-        or not isinstance(conda_binding.get("size"), int)
-        or isinstance(conda_binding.get("size"), bool)
-        or conda_binding["size"] <= 0
+        or conda_toolchain_binding
+        != _verified_conda_toolchain_binding(paths.conda_toolchain_root)
+        or dict(package_cache_seed_input) != validated_cache_input
     ):
         raise ChainError("pilot materialization input binding is incomplete")
-    _validate_conda_runtime_toolchain_binding(
-        conda_runtime_binding,
-        executable_binding=conda_binding,
-    )
-    if not conda_identity_payload:
-        raise ChainError("Conda runtime identity tool payload is missing")
     tool = paths.source_checkout / "scripts" / "materialize_schema5_release.py"
     capture_tool = (
         paths.source_checkout / "scripts" / "capture_schema5_environments.py"
     )
     captured_harness = paths.captured_harness
-    conda_identity_tool = (
-        paths.jobs_root / "schema5_conda_runtime_identity.py"
+    encoded_conda_toolchain = json.dumps(
+        dict(conda_toolchain_binding), sort_keys=True
     )
-    encoded_conda_runtime = json.dumps(
-        dict(conda_runtime_binding), sort_keys=True
+    encoded_cache_input = json.dumps(
+        dict(package_cache_seed_input), sort_keys=True
     )
     python = (
         'env LD_LIBRARY_PATH="$captured_harness/lib" '
@@ -7107,10 +7486,12 @@ def _materialize_body(
   --release-worktree {_q(paths.worktree)} \\
   --source-harness-prefix {_q(paths.captured_harness)} \\
   --source-serving-prefix {_q(paths.captured_serving)} \\
+  --source-package-cache {_q(paths.source_package_cache)} \\
   --environment-capture-root {_q(paths.environment_capture_root)} \\
   --harness-prefix {_q(paths.harness)} \\
   --serving-prefix {_q(paths.serving)} \\
-  --conda-executable {_q(paths.conda_executable)}"""
+  --expected-package-cache-seed-input-json {_q(encoded_cache_input)} \\
+  --conda-toolchain-root {_q(paths.conda_toolchain_root)}"""
     return (
         _common_exports(paths)
         + _sentinel_bootstrap_runtime_shell(paths)
@@ -7120,8 +7501,6 @@ def _materialize_body(
         + f"""\
 capture_marker={_q(paths.environment_capture_root / 'ENVIRONMENT_CAPTURE_COMPLETE.json')}
 captured_harness={_q(captured_harness)}
-conda_executable={_q(paths.conda_executable)}
-conda_identity_tool={_q(conda_identity_tool)}
 env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S \\
   {_q(capture_tool)} verify --output-root {_q(paths.environment_capture_root)}
 env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S - \\
@@ -7154,40 +7533,51 @@ captured_python="$(realpath -e -- "$captured_harness/bin/python")"
   echo "captured harness seed is writable" >&2
   exit 2
 }}
-verify_conda_executable() {{
-{_executable_bytes_shell_check(
-    variable="conda_executable",
-    expected_sha256=str(conda_binding["sha256"]),
-    expected_size=int(conda_binding["size"]),
-    description="pilot-bound Conda executable",
-)}
-}}
-{_immutable_tool_shell_check(
-    variable="conda_identity_tool",
-    expected_sha256=_sha256_bytes(conda_identity_payload),
-    expected_size=len(conda_identity_payload),
-    description="bundled Conda runtime identity tool",
-)}
 verify_conda_runtime_toolchain() {{
-  conda_runtime_report="$(mktemp)"
-  env LD_LIBRARY_PATH="$captured_harness/lib" "$captured_python" -I -S \
-    "$conda_identity_tool" --conda-executable "$conda_executable" \
-    >"$conda_runtime_report"
   env LD_LIBRARY_PATH="$captured_harness/lib" "$captured_python" -I -S - \
-    {_q(encoded_conda_runtime)} "$conda_runtime_report" <<'PY'
+    {_q(paths.source_checkout)} {_q(paths.conda_toolchain_root)} \
+    {_q(encoded_conda_toolchain)} <<'PY'
 import json
-from pathlib import Path
 import sys
 
-expected = json.loads(sys.argv[1])
-observed = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+sys.path.insert(0, sys.argv[1])
+from scripts.provision_schema5_conda_toolchain import (
+    verified_conda_toolchain_binding,
+)
+observed = verified_conda_toolchain_binding(sys.argv[2], exercise=True)
+expected = json.loads(sys.argv[3])
 if observed != expected:
     raise SystemExit(
         "Conda runtime toolchain differs from sealed pilot provenance"
     )
 PY
-  rm -f -- "$conda_runtime_report"
 }}
+verify_package_cache_input() {{
+  env LD_LIBRARY_PATH="$captured_harness/lib" "$captured_python" -I -S - \
+    {_q(paths.source_checkout)} {_q(paths.source_package_cache)} \
+    {_q(paths.captured_harness)} {_q(paths.captured_serving)} \
+    {_q(encoded_cache_input)} <<'PY'
+import json
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from scripts.materialize_schema5_release import (
+    selected_package_cache_input_binding,
+)
+observed = selected_package_cache_input_binding(
+    source_package_cache=sys.argv[2],
+    harness_seed=sys.argv[3],
+    serving_seed=sys.argv[4],
+)
+expected = json.loads(sys.argv[5])
+if observed != expected:
+    raise SystemExit(
+        "production selected package-cache input differs from sealed pilot provenance"
+    )
+PY
+}}
+verify_conda_runtime_toolchain
+verify_package_cache_input
 if [[ -e {_q(paths.release_root)} || -L {_q(paths.release_root)} ]]; then
   if [[ -f {_q(paths.release_root / 'MATERIALIZATION_COMPLETE.json')} && \
         ! -L {_q(paths.release_root / 'MATERIALIZATION_COMPLETE.json')} ]]; then
@@ -7197,12 +7587,13 @@ if [[ -e {_q(paths.release_root)} || -L {_q(paths.release_root)} ]]; then
   echo "partial materialization is preserved at {_q(paths.release_root)}; run the explicit quarantine-materialization command before repair" >&2
   exit 3
 fi
-verify_conda_executable
 verify_conda_runtime_toolchain
+verify_package_cache_input
 ionice -c 2 -n 7 nice -n 10 {command}
-verify_conda_executable
 verify_conda_runtime_toolchain
+verify_package_cache_input
 ionice -c 2 -n 7 nice -n 10 {command} --apply
+verify_conda_runtime_toolchain
 exec ionice -c 2 -n 7 nice -n 10 {python} {_q(tool)} verify \\
   --output-root {_q(paths.release_root)}
 """
@@ -7514,7 +7905,7 @@ squeue_comment="$(squeue -h -j "$SLURM_JOB_ID" -o '%k')"
   echo "email readiness scheduler comment sources disagree" >&2
   exit 2
 }}
-email_comment_re="^asys:s5-recovery-v1\\\\.2-r3:${{chain_id}}:g([0-9]{{4}}):email_readiness$"
+email_comment_re="^asys:s5-recovery-v1\\\\.2-r4:${{chain_id}}:g([0-9]{{4}}):email_readiness$"
 [[ "$job_comment" =~ $email_comment_re ]] || {{
   echo "email readiness scheduler comment is not bound to this chain" >&2
   exit 2
@@ -7586,10 +7977,10 @@ echo "fleet did not satisfy readiness within the bounded 10-hour window; checkin
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "fleet readiness scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:[0-9a-f]{{64}}:(g[0-9]{{4}}):fleet_readiness$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r4:[0-9a-f]{{64}}:(g[0-9]{{4}}):fleet_readiness$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "fleet readiness scheduler comment is outside the immutable r3 namespace: $comment" >&2
+  echo "fleet readiness scheduler comment is outside the immutable r4 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -7981,11 +8372,53 @@ done
     )
 
 
+def _r3_prelaunch_seal_shell_check(
+    paths: RecoveryPaths,
+    *,
+    sealer_payload: bytes,
+) -> str:
+    sealer = paths.jobs_root / "seal_recovery_evidence.py"
+    if not sealer_payload:
+        raise ChainError("bundled r3 prelaunch-seal verifier is missing")
+    return f"""\
+r3_seal_verifier={_q(sealer)}
+{_immutable_tool_shell_check(
+    variable="r3_seal_verifier",
+    expected_sha256=_sha256_bytes(sealer_payload),
+    expected_size=len(sealer_payload),
+    description="bundled r3 prelaunch-seal verifier",
+)}
+env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S - \
+  "$r3_seal_verifier" \
+  {_q(paths.superseded_r3_prelaunch_failure_root)} \
+  {_q(paths.chain_manifest)} <<'PY'
+import json
+from pathlib import Path
+import runpy
+import sys
+
+verifier, root, manifest_path = sys.argv[1:]
+observed = runpy.run_path(verifier)[
+    "verify_prelaunch_failure_seal"
+](Path(root))
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+expected = manifest.get("prerequisite_evidence", {{}}).get(
+    "superseded_r3_prelaunch_failure"
+)
+if observed != expected:
+    raise SystemExit(
+        "superseded r3 prelaunch-failure seal differs from chain manifest"
+    )
+PY
+"""
+
+
 def _failure_sentinel_body(
     paths: RecoveryPaths,
     *,
     sentinel_payload: bytes,
     renderer_payload: bytes,
+    sealer_payload: bytes,
 ) -> str:
     # This tool is copied from the tagged commit into the immutable job namespace.
     # It therefore remains runnable even when the source-checkout stage itself fails.
@@ -8012,13 +8445,14 @@ renderer={_q(renderer)}
     expected_size=renderer_size,
     description="bundled recovery renderer",
 )}
+{_r3_prelaunch_seal_shell_check(paths, sealer_payload=sealer_payload)}
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "sentinel scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:[0-9a-f]{{64}}:(g[0-9]{{4}}):failure_sentinel$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r4:[0-9a-f]{{64}}:(g[0-9]{{4}}):failure_sentinel$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "sentinel scheduler comment is outside the immutable r3 namespace: $comment" >&2
+  echo "sentinel scheduler comment is outside the immutable r4 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -8080,6 +8514,7 @@ def _stage_failure_sentinel_body(
     *,
     stage_name: str,
     sentinel_payload: bytes,
+    sealer_payload: bytes,
 ) -> str:
     """Render one independent, fail-fast observer for an exact production stage."""
 
@@ -8099,13 +8534,14 @@ sentinel_tool={_q(tool)}
     expected_size=tool_size,
     description="bundled recovery sentinel",
 )}
+{_r3_prelaunch_seal_shell_check(paths, sealer_payload=sealer_payload)}
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "stage sentinel scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r3:[0-9a-f]{{64}}:(g[0-9]{{4}}):{re.escape(observer_name)}$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r4:[0-9a-f]{{64}}:(g[0-9]{{4}}):{re.escape(observer_name)}$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "stage sentinel scheduler comment is outside the immutable r3 namespace: $comment" >&2
+  echo "stage sentinel scheduler comment is outside the immutable r4 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -8157,12 +8593,12 @@ def job_specs(
             "integrity_normalization_policy_sha256"
         ),
     }
-    conda_binding = pilot.get("conda_executable")
-    conda_runtime_binding = pilot.get("conda_runtime_toolchain")
+    conda_toolchain_binding = pilot.get("conda_toolchain")
+    package_cache_seed_input = pilot.get("package_cache_seed_input")
     reconciliation_incident = pilot.get("reconciliation_incident")
     if not isinstance(source_inventories, Mapping) or not isinstance(
-        conda_binding, Mapping
-    ) or not isinstance(conda_runtime_binding, Mapping) or not isinstance(
+        conda_toolchain_binding, Mapping
+    ) or not isinstance(package_cache_seed_input, Mapping) or not isinstance(
         reconciliation_incident, Mapping
     ) or any(
         not isinstance(value, str) or _SHA256.fullmatch(value) is None
@@ -8235,11 +8671,8 @@ def job_specs(
                 commit=commit,
                 tag_object=tag_object,
                 expected_source_inventories=source_inventories,
-                conda_binding=conda_binding,
-                conda_runtime_binding=conda_runtime_binding,
-                conda_identity_payload=bundled_tools[
-                    "schema5_conda_runtime_identity.py"
-                ],
+                conda_toolchain_binding=conda_toolchain_binding,
+                package_cache_seed_input=package_cache_seed_input,
             ),
         ),
         JobSpec(
@@ -8317,6 +8750,9 @@ def job_specs(
                     paths,
                     stage_name=stage,
                     sentinel_payload=bundled_tools[SENTINEL_TOOL_FILENAME],
+                    sealer_payload=bundled_tools[
+                        "seal_recovery_evidence.py"
+                    ],
                 ),
                 dependency_type="afterany",
             )
@@ -8333,6 +8769,9 @@ def job_specs(
                 paths,
                 sentinel_payload=bundled_tools[SENTINEL_TOOL_FILENAME],
                 renderer_payload=renderer_payload,
+                sealer_payload=bundled_tools[
+                    "seal_recovery_evidence.py"
+                ],
             ),
             dependency_type="afterany",
         ),
@@ -8344,7 +8783,7 @@ def _job_name(name: str) -> str:
         stage = name.removeprefix(STAGE_SENTINEL_PREFIX)
         if stage not in PRODUCTION_STAGE_NAMES:
             raise ChainError(f"unknown stage-sentinel job name: {name!r}")
-        return f"asys-s5v12r3-alert-{PRODUCTION_STAGE_NAMES.index(stage):02d}"
+        return f"asys-s5v12r4-alert-{PRODUCTION_STAGE_NAMES.index(stage):02d}"
     shortened = {
         "snapshot_adopt_verify": "snapshot-adopt",
         "environment_capture": "env-capture",
@@ -8369,7 +8808,7 @@ def _job_name(name: str) -> str:
         "legacy_retire": "retire",
         "failure_sentinel": "sentinel",
     }[name]
-    return f"asys-s5v12r3-{shortened}"
+    return f"asys-s5v12r4-{shortened}"
 
 
 def render_sbatch(spec: JobSpec, paths: RecoveryPaths, *, partition: str) -> bytes:
@@ -8389,10 +8828,12 @@ def render_sbatch(spec: JobSpec, paths: RecoveryPaths, *, partition: str) -> byt
 #SBATCH --mem={spec.memory}
 #SBATCH --time={spec.time_limit}
 #SBATCH --no-requeue
+#SBATCH --export=NONE
 #SBATCH --output={log}
 
 set -euo pipefail
 umask 027
+{_trusted_shell_prelude().rstrip()}
 {launch_gate.rstrip()}
 {spec.body.rstrip()}
 """
@@ -8463,7 +8904,7 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
         for spec in ordered
     )
     if observed_contract != EXPECTED_JOB_CONTRACT:
-        raise ChainError("recovery DAG differs from the fixed v1.2-r3 job contract")
+        raise ChainError("recovery DAG differs from the fixed v1.2-r4 job contract")
     by_name = {spec.name: spec for spec in ordered}
     for earlier, later in zip(HEAVY_SERIAL_ORDER, HEAVY_SERIAL_ORDER[1:]):
         if earlier not in _ancestors(later, by_name):
@@ -8519,9 +8960,9 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
 
 def _preflight_fresh_destinations(paths: RecoveryPaths) -> None:
     for description, path in (
-        ("v1.2-r3 source checkout", paths.source_checkout),
+        ("v1.2-r4 source checkout", paths.source_checkout),
         (
-            "v1.2-r3 source checkout seal",
+            "v1.2-r4 source checkout seal",
             paths.recovery_root / SOURCE_CHECKOUT_SEAL_NAME,
         ),
         ("v1.2 production release root", paths.release_root),
@@ -8624,7 +9065,7 @@ def _manifest_payload(
         )
     identity = {
         "schema_version": CHAIN_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r3-recovery-chain",
+        "protocol": "schema5-v1.2-r4-recovery-chain",
         "namespace": CHAIN_NAMESPACE,
         "release_id": RELEASE_ID,
         "release_tag": git_identity["release_tag"],
@@ -8645,7 +9086,13 @@ def _manifest_payload(
         "sentinel_bootstrap": sentinel_bootstrap,
         "source_harness_prefix": str(paths.source_harness),
         "source_serving_prefix": str(paths.source_serving),
-        "conda_executable": str(paths.conda_executable),
+        "conda_toolchain_root": str(paths.conda_toolchain_root),
+        "conda_toolchain": dict(
+            prerequisite_evidence["materialization_pilot"][
+                "conda_toolchain"
+            ]
+        ),
+        "source_package_cache": str(paths.source_package_cache),
         "environment_capture_root": str(paths.environment_capture_root),
         "captured_harness_prefix": str(paths.captured_harness),
         "captured_serving_prefix": str(paths.captured_serving),
@@ -8738,10 +9185,12 @@ def _isolated_bootstrap_script(
 #SBATCH --mem={memory}
 #SBATCH --time={time_limit}
 #SBATCH --no-requeue
+#SBATCH --export=NONE
 #SBATCH --output={log}
 
 set -euo pipefail
 umask 077
+{_trusted_shell_prelude().rstrip()}
 printf '%s\\n' 'schema5 isolated bootstrap cancellation drill: execution is forbidden' >&2
 exit {BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE}
 """.encode("utf-8")
@@ -8779,7 +9228,7 @@ def _isolated_bootstrap_manifest_payload(
         {
             "recovery_root": str(isolated_root),
             "source_checkout": str(
-                isolated_root / "release_source_checkout_v1_2_r3"
+                isolated_root / "release_source_checkout_v1_2_r4"
             ),
             "release_root": str(
                 isolated_root / "releases" / RELEASE_ID
@@ -9220,9 +9669,9 @@ def render_chain(
     if not apply:
         _preflight_fresh_destinations(paths)
         for description, path in (
-            ("v1.2-r3 job namespace", paths.jobs_root),
-            ("v1.2-r3 log namespace", paths.logs_root),
-            ("v1.2-r3 chain manifest", paths.chain_manifest),
+            ("v1.2-r4 job namespace", paths.jobs_root),
+            ("v1.2-r4 log namespace", paths.logs_root),
+            ("v1.2-r4 chain manifest", paths.chain_manifest),
         ):
             if path.exists() or path.is_symlink():
                 raise ChainError(f"{description} must be fresh and absent: {path}")
@@ -9344,7 +9793,7 @@ def verify_bound_prerequisites(
     prerequisite = manifest.get("prerequisite_evidence")
     if (
         manifest.get("schema_version") != CHAIN_SCHEMA_VERSION
-        or manifest.get("protocol") != "schema5-v1.2-r3-recovery-chain"
+        or manifest.get("protocol") != "schema5-v1.2-r4-recovery-chain"
         or chain_id != expected_chain_id
         or not isinstance(chain_id, str)
         or _SHA256.fullmatch(chain_id) is None
@@ -9416,9 +9865,13 @@ def verify_bound_prerequisites(
             manifest.get("source_serving_prefix"),
             description="manifest source serving prefix",
         ),
-        conda_executable=_manifest_path(
-            manifest.get("conda_executable"),
-            description="manifest Conda executable",
+        conda_toolchain_root=_manifest_path(
+            manifest.get("conda_toolchain_root"),
+            description="manifest Conda toolchain root",
+        ),
+        source_package_cache=_manifest_path(
+            manifest.get("source_package_cache"),
+            description="manifest source Conda package cache",
         ),
         environment_capture_root=_manifest_path(
             manifest.get("environment_capture_root"),
@@ -9471,6 +9924,10 @@ def verify_bound_prerequisites(
         verifier_python=verifier_python,
         verifier_library=verifier_library,
     )
+    if manifest.get("conda_toolchain") != contract[
+        "materialization_pilot"
+    ].get("conda_toolchain"):
+        raise ChainError("scheduler-bound Conda toolchain binding drifted")
     native_r1_id = None
     if not markers_only:
         sealed_python, sealed_library = _verify_pilot_runtime_binding(
@@ -9589,7 +10046,9 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         "sentinel_bootstrap",
         "source_harness_prefix",
         "source_serving_prefix",
-        "conda_executable",
+        "conda_toolchain_root",
+        "conda_toolchain",
+        "source_package_cache",
         "environment_capture_root",
         "captured_harness_prefix",
         "captured_serving_prefix",
@@ -9618,7 +10077,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
     chain_id = identity.pop("chain_id")
     if (
         manifest["schema_version"] != CHAIN_SCHEMA_VERSION
-        or manifest["protocol"] != "schema5-v1.2-r3-recovery-chain"
+        or manifest["protocol"] != "schema5-v1.2-r4-recovery-chain"
         or manifest["namespace"] != CHAIN_NAMESPACE
         or manifest["release_id"] != RELEASE_ID
         or manifest["release_tag"] != RELEASE_TAG
@@ -9701,9 +10160,13 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
                 manifest["source_serving_prefix"],
                 description="manifest source serving prefix",
             ),
-            conda_executable=_manifest_path(
-                manifest["conda_executable"],
-                description="manifest Conda executable",
+            conda_toolchain_root=_manifest_path(
+                manifest["conda_toolchain_root"],
+                description="manifest Conda toolchain root",
+            ),
+            source_package_cache=_manifest_path(
+                manifest["source_package_cache"],
+                description="manifest source Conda package cache",
             ),
             environment_capture_root=_manifest_path(
                 manifest["environment_capture_root"],
@@ -9749,7 +10212,8 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         "dev_python",
         "source_harness_prefix",
         "source_serving_prefix",
-        "conda_executable",
+        "conda_toolchain_root",
+        "source_package_cache",
         "environment_capture_root",
         "captured_harness_prefix",
         "captured_serving_prefix",
@@ -9773,7 +10237,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         raise ChainError("recovery-chain prerequisite roots are not canonical")
     expected_paths = {
         "recovery_root": results_root / "recovery" / "schema5-v1",
-        "source_checkout": recovery_root / "release_source_checkout_v1_2_r3",
+        "source_checkout": recovery_root / "release_source_checkout_v1_2_r4",
         "release_root": recovery_root / "releases" / RELEASE_ID,
         "state_root": results_root / ".dispatcher-schema5-v1",
         "server_pool_root": results_root / "server_pools" / "schema5-v1",
@@ -9781,6 +10245,12 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         "logs_root": recovery_root / "logs" / CHAIN_NAMESPACE,
         "immutable_pins": recovery_root / "immutable_pins.schema5-v1.json",
         "readiness_root": recovery_root / "readiness",
+        "conda_toolchain_root": (
+            recovery_root
+            / "toolchains"
+            / CHAIN_NAMESPACE
+            / conda_toolchain.TOOLCHAIN_DIRECTORY_NAME
+        ),
         "environment_capture_root": (
             recovery_root / "environment_captures" / RELEASE_ID
         ),
@@ -9833,7 +10303,8 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
                 dev_python=paths_by_name["dev_python"],
                 source_harness=paths_by_name["source_harness_prefix"],
                 source_serving=paths_by_name["source_serving_prefix"],
-                conda_executable=paths_by_name["conda_executable"],
+                conda_toolchain_root=paths_by_name["conda_toolchain_root"],
+                source_package_cache=paths_by_name["source_package_cache"],
                 environment_capture_root=paths_by_name["environment_capture_root"],
                 captured_harness=paths_by_name["captured_harness_prefix"],
                 captured_serving=paths_by_name["captured_serving_prefix"],
@@ -9865,7 +10336,8 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         dev_python=paths_by_name["dev_python"],
         source_harness=paths_by_name["source_harness_prefix"],
         source_serving=paths_by_name["source_serving_prefix"],
-        conda_executable=paths_by_name["conda_executable"],
+        conda_toolchain_root=paths_by_name["conda_toolchain_root"],
+        source_package_cache=paths_by_name["source_package_cache"],
         environment_capture_root=paths_by_name["environment_capture_root"],
         captured_harness=paths_by_name["captured_harness_prefix"],
         captured_serving=paths_by_name["captured_serving_prefix"],
@@ -9889,6 +10361,10 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         markers_only=False,
         sealed_only=True,
     )
+    if manifest.get("conda_toolchain") != verified_prerequisites[
+        "materialization_pilot"
+    ].get("conda_toolchain"):
+        raise ChainError("recovery-chain Conda toolchain binding drifted")
     bundled_tools: dict[str, bytes] = {}
     bundle_records = manifest.get("recovery_tool_bundle")
     if not isinstance(bundle_records, list):
@@ -10283,7 +10759,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         jobs_root / "04_release_materialize.sbatch"
     ).read_text(encoding="utf-8")
     conda_tool_auth = materialize_text.find(
-        "bundled Conda runtime identity tool hash drifted"
+        "verified_conda_toolchain_binding"
     )
     first_conda_runtime_gate = materialize_text.find(
         "verify_conda_runtime_toolchain",
@@ -10295,10 +10771,20 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         or materialize_text.count("verify_conda_runtime_toolchain") < 3
         or "Conda runtime toolchain differs from sealed pilot provenance"
         not in materialize_text
+        or "selected_package_cache_input_binding" not in materialize_text
+        or materialize_text.count("verify_package_cache_input") < 3
+        or (
+            "production selected package-cache input differs from sealed "
+            "pilot provenance"
+        )
+        not in materialize_text
+        or "--conda-toolchain-root" not in materialize_text
+        or "--source-package-cache" not in materialize_text
+        or "--conda-executable" in materialize_text
     ):
         raise ChainError(
-            "materialization does not revalidate the complete Conda runtime "
-            "before both invocation boundaries"
+            "materialization does not revalidate the complete Conda toolchain "
+            "and selected cache input before both invocation boundaries"
         )
     sentinel_text = (jobs_root / "42_failure_sentinel.sbatch").read_text(
         encoding="utf-8"
@@ -10475,6 +10961,7 @@ _QUALIFICATION_FAILURE_FIELDS = {
     "attempt",
     "readiness_generation",
     "reason",
+    "admission_capacity_certificate",
     "additive_scaling_requirement",
     "scheduler_capacity_mutated",
     "rerun_requirement",
@@ -10489,6 +10976,7 @@ _QUALIFICATION_LEGACY_FAILURE_FIELDS = (
         "failure_drain_intent",
         "cycle_run_roots",
         "refill_reconciliations",
+        "admission_capacity_certificate",
     }
 )
 _QUALIFICATION_SCALING_FIELDS = {
@@ -11708,7 +12196,9 @@ _THROUGHPUT_MARKER_FIELDS = {
     "loaded_384_seconds",
     "loaded_384_useful_qids",
     "loaded_384_observation_count",
-    "certified_exact_384_cuts",
+    "configured_client_ceiling",
+    "certified_saturation_target",
+    "certified_saturation_target_cuts",
     "throughput_qids_per_day",
     "throughput_unit",
     "every_stratum_progress",
@@ -11748,8 +12238,9 @@ _THROUGHPUT_LOAD_FIELDS = {
     "replay_execution_events_total",
     "cycle_count",
     "cycle_inventory",
-    "capacity_target",
-    "certified_exact_384_cuts",
+    "configured_client_ceiling",
+    "certified_saturation_target",
+    "certified_saturation_target_cuts",
     "work_conserving_refill",
     "sealed_refill_deficit_journal",
     "refill_deficit_scan_count",
@@ -11833,7 +12324,7 @@ def _qualification_tree_inventory(
     }
 
 
-def _verify_r3_throughput_evidence(
+def _verify_r4_throughput_evidence(
     *,
     attempt_root: Path,
     marker: Mapping[str, Any],
@@ -12034,9 +12525,16 @@ def _verify_r3_throughput_evidence(
 
     start_sequence = load.get("window_start_sequence")
     end_sequence = load.get("window_end_sequence")
+    configured_ceiling = load.get("configured_client_ceiling")
+    saturation_target = load.get("certified_saturation_target")
     if (
         load.get("unit") != "trusted_qid_execution_events"
         or load.get("repeated_coordinates") is not True
+        or configured_ceiling
+        != THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+        or not isinstance(saturation_target, int)
+        or isinstance(saturation_target, bool)
+        or not 0 < saturation_target <= configured_ceiling
         or not isinstance(start_sequence, int)
         or isinstance(start_sequence, bool)
         or not isinstance(end_sequence, int)
@@ -12052,11 +12550,11 @@ def _verify_r3_throughput_evidence(
         semantic = observation["semantic"]
         return bool(
             scheduler.get("ceiling")
-            == THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+            == configured_ceiling
             and scheduler.get("active_qualification_cells")
-            == THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+            == saturation_target
             and scheduler.get("unfinished_load_assignments")
-            >= THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+            >= saturation_target
             and semantic.get("integrity_incidents") == 0
             and semantic.get("transport_censor_incidents") == 0
             and semantic.get("load_integrity_incidents") == 0
@@ -12068,7 +12566,7 @@ def _verify_r3_throughput_evidence(
         or any(clean_loaded_cut(row) for row in observations[:start_sequence])
     ):
         raise ChainError(
-            "throughput window is not bound to the first clean exact-384 cut"
+            "throughput window is not bound to the first signed saturation cut"
         )
     window = observations[start_sequence : end_sequence + 1]
     for prior, current in zip(window, window[1:]):
@@ -12110,9 +12608,9 @@ def _verify_r3_throughput_evidence(
         or load.get("window_end_timestamp") != end_time
         or load.get("window_duration_seconds") != math.floor(duration)
         or load.get("trusted_execution_events") != events
-        or load.get("capacity_target")
+        or load.get("configured_client_ceiling")
         != THROUGHPUT_QUALIFICATION_CEILINGS[-1]
-        or load.get("certified_exact_384_cuts") is not True
+        or load.get("certified_saturation_target_cuts") is not True
         or load.get("work_conserving_refill") is not True
         or load.get("sealed_refill_deficit_journal") is not True
         or not isinstance(load.get("refill_deficit_scan_count"), int)
@@ -12125,7 +12623,7 @@ def _verify_r3_throughput_evidence(
         or load.get("rate_denominator_includes_refill_wall_time")
         is not True
         or load.get("minimum_unfinished_assignments")
-        != THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+        != saturation_target
         or load.get("all_strata_progress") is not True
         or load.get("stratum_execution_event_deltas") != deltas
         or load.get("throughput_events_per_day") != throughput
@@ -12473,7 +12971,7 @@ def verify_throughput_qualification(
             "throughput-qualification marker does not bind the exact "
             "current attempt"
         )
-    evidence_report = _verify_r3_throughput_evidence(
+    evidence_report = _verify_r4_throughput_evidence(
         attempt_root=attempt_root,
         marker=marker,
     )
@@ -12503,7 +13001,11 @@ def verify_throughput_qualification(
         != evidence_report["events"]
         or marker.get("loaded_384_observation_count")
         != evidence_report["observation_count"]
-        or marker.get("certified_exact_384_cuts") is not True
+        or marker.get("configured_client_ceiling")
+        != THROUGHPUT_QUALIFICATION_CEILINGS[-1]
+        or marker.get("certified_saturation_target")
+        != load.get("certified_saturation_target")
+        or marker.get("certified_saturation_target_cuts") is not True
         or marker.get("throughput_qids_per_day")
         != evidence_report["throughput"]
         or marker.get("throughput_unit")
@@ -12537,8 +13039,14 @@ def verify_throughput_qualification(
         "loaded_384_observation_count": marker[
             "loaded_384_observation_count"
         ],
-        "certified_exact_384_cuts": marker[
-            "certified_exact_384_cuts"
+        "configured_client_ceiling": marker[
+            "configured_client_ceiling"
+        ],
+        "certified_saturation_target": marker[
+            "certified_saturation_target"
+        ],
+        "certified_saturation_target_cuts": marker[
+            "certified_saturation_target_cuts"
         ],
         "unique_design": marker["unique_design"],
         "load_execution": marker["load_execution"],
@@ -12875,9 +13383,9 @@ def _bootstrap_receipt_lineage(
     current_path = receipt_path
     seen: set[Path] = set()
     protocol = current.get("protocol")
-    if protocol == "schema5-v1.2-r3-recovery-chain-submission":
+    if protocol == "schema5-v1.2-r4-recovery-chain-submission":
         current_generation = 0
-    elif protocol == "schema5-v1.2-r3-recovery-chain-repair":
+    elif protocol == "schema5-v1.2-r4-recovery-chain-repair":
         current_generation = current.get("repair_generation")
         if (
             not isinstance(current_generation, int)
@@ -13064,7 +13572,7 @@ def _validate_bootstrap_scheduler_namespace(
     )
     observed: dict[str, dict[str, str]] = {}
     prefix = (
-        f"asys:s5-recovery-v1.2-r3:{manifest['chain_id']}:g"
+        f"asys:s5-recovery-v1.2-r4:{manifest['chain_id']}:g"
     )
     for argv in commands:
         process = runner(argv)
@@ -13164,7 +13672,7 @@ def _dependency_config_allows_fail_closed(
         raise ChainError("dependency-policy check timestamp must be finite")
     return {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-live-dependency-policy-v1",
+        "protocol": "schema5-v1.2-r4-live-dependency-policy-v1",
         "checked_at": timestamp,
         "argv": ["scontrol", "show", "config"],
         "returncode": int(proc.returncode),
@@ -13208,7 +13716,7 @@ def _validate_dependency_policy_check(
         set(payload) != expected
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r3-live-dependency-policy-v1"
+        != "schema5-v1.2-r4-live-dependency-policy-v1"
         or not isinstance(payload.get("phase"), str)
         or not payload["phase"]
         or (
@@ -13353,7 +13861,7 @@ def _validate_submission_journal(
     started_timestamp = journal["started_timestamp"]
     if (
         journal["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or journal["protocol"] != "schema5-v1.2-r3-recovery-chain-submission"
+        or journal["protocol"] != "schema5-v1.2-r4-recovery-chain-submission"
         or journal["chain_id"] != manifest["chain_id"]
         or journal["manifest"] != str(manifest_path)
         or journal["slurm_user"] != manifest["slurm_user"]
@@ -13535,7 +14043,7 @@ def _validate_submission_receipt(
     receipt_id = identity.pop("receipt_id")
     if (
         receipt["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or receipt["protocol"] != "schema5-v1.2-r3-recovery-chain-submission"
+        or receipt["protocol"] != "schema5-v1.2-r4-recovery-chain-submission"
         or receipt["passed"] is not True
         or receipt["chain_id"] != manifest["chain_id"]
         or receipt["manifest"] != str(manifest_path)
@@ -13809,7 +14317,7 @@ def _capture_scheduler_acceptance(
         str(row["comment"]) for row in receipt_jobs if isinstance(row, Mapping)
     }
     expected_comment_prefix = (
-        "asys:s5-recovery-v1.2-r3:"
+        "asys:s5-recovery-v1.2-r4:"
         f"{manifest['chain_id']}:g0000:"
     )
 
@@ -14342,7 +14850,7 @@ def _validate_scheduler_acceptance(
         }
         or intent.get("schema_version") != 1
         or intent.get("protocol")
-        != "schema5-v1.2-r3-recovery-scheduler-acceptance-intent-v1"
+        != "schema5-v1.2-r4-recovery-scheduler-acceptance-intent-v1"
         or intent.get("chain_id") != manifest.get("chain_id")
         or intent.get("submission_receipt") != str(receipt_path)
         or intent.get("submission_receipt_sha256") != _sha256(receipt_path)
@@ -14742,7 +15250,7 @@ def _ensure_scheduler_acceptance(
     intent = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r3-recovery-scheduler-acceptance-intent-v1"
+            "schema5-v1.2-r4-recovery-scheduler-acceptance-intent-v1"
         ),
         "chain_id": manifest["chain_id"],
         "submission_receipt": str(receipt_path),
@@ -15016,7 +15524,7 @@ def _validate_bootstrap_watchdog_deployment_ready(
         or bundle_id != payload["bundle_id"]
         or bundle_id != _sha256_bytes(_canonical_json(bundle_identity))
         or bundle.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-bundle-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-bundle-v1"
         or bundle.get("release_git_commit")
         != manifest.get("release_git_commit")
         or bundle.get("release_tag_object")
@@ -15115,7 +15623,7 @@ def _validate_bootstrap_watchdog_deployment_ready(
         or deployment_id
         != _sha256_bytes(_canonical_json(deployment_identity))
         or deployment.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-deployment-evidence-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-deployment-evidence-v1"
         or deployment.get("passed") is not True
         or deployment.get("bundle_id") != bundle_id
         or deployment.get("deployment_id")
@@ -15170,7 +15678,7 @@ def _validate_bootstrap_watchdog_deployment_ready(
         or drill_id != attestation.get("cancellation_drill_evidence_id")
         or drill_id != _sha256_bytes(_canonical_json(drill_identity))
         or drill.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-drill-evidence-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-drill-evidence-v1"
         or drill.get("passed") is not True
         or drill.get("bundle_id") != bundle_id
         or drill.get("deployment_id")
@@ -15353,7 +15861,7 @@ def _validate_bootstrap_watchdog_armed(
                 or observation_id
                 != _sha256_bytes(_canonical_json(artifact_identity))
                 or artifact.get("protocol")
-                != "schema5-v1.2-r3-bootstrap-status-v1"
+                != "schema5-v1.2-r4-bootstrap-status-v1"
                 or artifact.get("submission_receipt_id")
                 != receipt.get("receipt_id")
                 or artifact.get("submission_receipt_sha256")
@@ -15583,7 +16091,7 @@ def _validate_bootstrap_watchdog_armed(
         }
         or intent.get("schema_version") != 1
         or intent.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-watchdog-arm-intent-v1"
+        != "schema5-v1.2-r4-bootstrap-watchdog-arm-intent-v1"
         or intent.get("chain_id") != manifest.get("chain_id")
         or intent.get("submission_receipt") != str(receipt_path)
         or intent.get("submission_receipt_sha256") != _sha256(receipt_path)
@@ -16026,7 +16534,7 @@ def _ensure_bootstrap_descendant_armed(
     intent: dict[str, Any] = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r3-bootstrap-descendant-arm-intent-v1"
+            "schema5-v1.2-r4-bootstrap-descendant-arm-intent-v1"
         ),
         "chain_id": manifest["chain_id"],
         "repair_generation": generation,
@@ -16217,7 +16725,7 @@ def _validate_root_release_attempt_result(
         set(payload) != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r3-root-release-attempt-result-v1"
+        != "schema5-v1.2-r4-root-release-attempt-result-v1"
         or payload.get("attempt") != intent.get("attempt")
         or payload.get("root_index") != intent.get("root_index")
         or payload.get("root_name") != intent.get("root_name")
@@ -16297,7 +16805,7 @@ def _validate_root_release_complete(
     }
     initial_submission = (
         receipt.get("protocol")
-        == "schema5-v1.2-r3-recovery-chain-submission"
+        == "schema5-v1.2-r4-recovery-chain-submission"
     )
     if initial_submission:
         required |= {
@@ -16327,7 +16835,7 @@ def _validate_root_release_complete(
         set(payload) != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r3-recovery-root-release-v1"
+        != "schema5-v1.2-r4-recovery-root-release-v1"
         or not isinstance(payload.get("completed_at"), str)
         or payload.get("receipt") != str(receipt_path)
         or payload.get("receipt_sha256") != _sha256(receipt_path)
@@ -16467,7 +16975,7 @@ def _validate_root_release_complete(
             or attempt.get("schema_version")
             != SUBMISSION_SCHEMA_VERSION
             or attempt.get("protocol")
-            != "schema5-v1.2-r3-root-release-attempt-intent-v1"
+            != "schema5-v1.2-r4-root-release-attempt-intent-v1"
             or attempt.get("attempt") != ordinal
             or attempt.get("root_index") != root_index
             or attempt.get("job_id") != root_job_ids[root_index]
@@ -16727,7 +17235,7 @@ def _validate_launch_complete(
             "alert_latency_bound_seconds",
             "launch_id",
         }
-    if receipt.get("protocol") == "schema5-v1.2-r3-recovery-chain-submission":
+    if receipt.get("protocol") == "schema5-v1.2-r4-recovery-chain-submission":
         required |= {
             "bootstrap_watchdog_ready",
             "bootstrap_watchdog_ready_sha256",
@@ -16753,7 +17261,7 @@ def _validate_launch_complete(
         != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r3-recovery-chain-launched-v1"
+        != "schema5-v1.2-r4-recovery-chain-launched-v1"
         or payload.get("receipt") != str(receipt_path)
         or payload.get("receipt_sha256") != _sha256(receipt_path)
         or payload.get("receipt_id") != receipt.get("receipt_id")
@@ -16834,7 +17342,7 @@ def _ensure_recovery_root_released(
     launch_path = evidence_root / LAUNCH_COMPLETE_NAME
     initial_submission = (
         receipt.get("protocol")
-        == "schema5-v1.2-r3-recovery-chain-submission"
+        == "schema5-v1.2-r4-recovery-chain-submission"
     )
     bootstrap_binding: dict[str, Any] = {}
     if initial_submission:
@@ -16948,7 +17456,7 @@ def _ensure_recovery_root_released(
     def publish_launch(release: Mapping[str, Any]) -> dict[str, Any]:
         launch = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r3-recovery-chain-launched-v1",
+            "protocol": "schema5-v1.2-r4-recovery-chain-launched-v1",
             "completed_at": _utc_now(),
             "receipt": str(receipt_path),
             "receipt_sha256": _sha256(receipt_path),
@@ -17019,7 +17527,7 @@ def _ensure_recovery_root_released(
     intent_path = evidence_root / ROOT_RELEASE_INTENT_NAME
     release_intent = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r3-recovery-root-release-intent-v1",
+        "protocol": "schema5-v1.2-r4-recovery-root-release-intent-v1",
         "created_at": _utc_now(),
         "receipt": str(receipt_path),
         "receipt_sha256": _sha256(receipt_path),
@@ -17197,7 +17705,7 @@ def _ensure_recovery_root_released(
             adoption_result = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "protocol": (
-                    "schema5-v1.2-r3-root-release-attempt-result-v1"
+                    "schema5-v1.2-r4-root-release-attempt-result-v1"
                 ),
                 "attempt": ambiguous_intent["attempt"],
                 "completed_at": _utc_now(),
@@ -17249,7 +17757,7 @@ def _ensure_recovery_root_released(
             attempt_intent = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "protocol": (
-                    "schema5-v1.2-r3-root-release-attempt-intent-v1"
+                    "schema5-v1.2-r4-root-release-attempt-intent-v1"
                 ),
                 "attempt": attempt_number,
                 "created_at": _utc_now(),
@@ -17271,7 +17779,7 @@ def _ensure_recovery_root_released(
             result = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "protocol": (
-                    "schema5-v1.2-r3-root-release-attempt-result-v1"
+                    "schema5-v1.2-r4-root-release-attempt-result-v1"
                 ),
                 "attempt": attempt_number,
                 "completed_at": _utc_now(),
@@ -17388,7 +17896,7 @@ def _ensure_recovery_root_released(
         )
     release = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r3-recovery-root-release-v1",
+        "protocol": "schema5-v1.2-r4-recovery-root-release-v1",
         "completed_at": _utc_now(),
         "receipt": str(receipt_path),
         "receipt_sha256": _sha256(receipt_path),
@@ -17475,11 +17983,7 @@ def submit_chain(
             "job_count": len(jobs),
             "submission_plan": symbolic,
         }
-    runner = (
-        (lambda argv: subprocess.run(argv, text=True, capture_output=True, check=False))
-        if runner is None
-        else runner
-    )
+    runner = _default_runner if runner is None else runner
     fixed_timestamp = now is not None
     timestamp = time.time() if now is None else float(now)
     if not math.isfinite(timestamp):
@@ -17573,7 +18077,7 @@ def submit_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.2-r3-recovery-chain-submission",
+                "protocol": "schema5-v1.2-r4-recovery-chain-submission",
                 "chain_id": manifest["chain_id"],
                 "manifest": str(manifest_path),
                 "started_at": _utc_now(),
@@ -17715,7 +18219,7 @@ def submit_chain(
         _fsync_directory(journal_path.parent)
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r3-recovery-chain-submission",
+            "protocol": "schema5-v1.2-r4-recovery-chain-submission",
             "passed": True,
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
@@ -17946,15 +18450,7 @@ def release_recovery_root(
             "verified": verified,
             "live_prerequisites": live_prerequisites,
         }
-    runner = (
-        (
-            lambda argv: subprocess.run(
-                argv, text=True, capture_output=True, check=False
-            )
-        )
-        if runner is None
-        else runner
-    )
+    runner = _default_runner if runner is None else runner
     timestamp = time.time() if now is None else float(now)
     if not math.isfinite(timestamp):
         raise ChainError("root-release timestamp must be finite")
@@ -18205,15 +18701,7 @@ def publish_bootstrap_watchdog_handoff(
 
     if not apply:
         raise ChainError("bootstrap watchdog handoff is not published")
-    runner = (
-        (
-            lambda argv: subprocess.run(
-                argv, text=True, capture_output=True, check=False
-            )
-        )
-        if runner is None
-        else runner
-    )
+    runner = _default_runner if runner is None else runner
     with _exclusive_lock(
         recovery_root / SUBMISSION_LOCK_NAME,
         description="bootstrap watchdog handoff publisher",
@@ -18461,7 +18949,7 @@ def _validate_repair_receipt(
     if (
         set(receipt) != expected_fields
         or receipt.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or receipt.get("protocol") != "schema5-v1.2-r3-recovery-chain-repair"
+        or receipt.get("protocol") != "schema5-v1.2-r4-recovery-chain-repair"
         or receipt.get("passed") is not True
         or receipt.get("chain_id") != manifest["chain_id"]
         or receipt.get("manifest") != str(manifest_path)
@@ -18629,7 +19117,7 @@ def _validate_repair_journal(
     if (
         set(journal) != expected_fields
         or journal.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or journal.get("protocol") != "schema5-v1.2-r3-recovery-chain-repair-journal"
+        or journal.get("protocol") != "schema5-v1.2-r4-recovery-chain-repair-journal"
         or journal.get("chain_id") != manifest["chain_id"]
         or journal.get("repair_generation") != generation
         or journal.get("base_receipt") != str(base_path)
@@ -19014,7 +19502,7 @@ def _validate_capacity_transient_repair_binding(
         dict(binding) != expected_binding
         or marker.get("schema_version") != 1
         or marker.get("protocol")
-        != "schema5-v1.2-r3-fleet-capacity-transient-receipt"
+        != "schema5-v1.2-r4-fleet-capacity-transient-receipt"
         or marker.get("passed") is not True
         or marker.get("capacity_transient_root") is not True
         or marker.get("chain_id") != manifest["chain_id"]
@@ -19029,7 +19517,7 @@ def _validate_capacity_transient_repair_binding(
         or marker_id != _sha256_bytes(_canonical_json(marker_identity))
         or capacity_evidence.get("schema_version") != 1
         or capacity_evidence.get("protocol")
-        != "schema5-v1.2-r3-fleet-capacity-transient-evidence"
+        != "schema5-v1.2-r4-fleet-capacity-transient-evidence"
         or capacity_evidence.get("passed") is not True
         or capacity_evidence.get("chain_id") != manifest["chain_id"]
         or capacity_evidence.get("chain_generation") != generation
@@ -19071,6 +19559,109 @@ def _validate_capacity_transient_repair_binding(
     ):
         raise ChainError("fleet capacity-transient repair binding is invalid")
     return ["fleet_readiness"]
+
+
+def _load_qualification_capacity_transition_journal(
+    qualification_root: Path,
+) -> list[tuple[Path, dict[str, Any]]]:
+    root = (
+        qualification_root
+        / THROUGHPUT_QUALIFICATION_TRANSITION_DIRECTORY
+    )
+    if root.is_symlink() or not root.is_dir():
+        raise ChainError(
+            "qualification capacity-transition journal is missing or unsafe"
+        )
+    records: list[tuple[Path, dict[str, Any]]] = []
+    expected_from = 1
+    for path in sorted(root.iterdir()):
+        match = re.fullmatch(
+            r"c([0-9]{6})-to-c([0-9]{6})[.]json",
+            path.name,
+        )
+        marker, _ = _read_sealed_marker(
+            path,
+            description="qualification capacity-transition journal record",
+        )
+        _require_marker_identity(
+            marker,
+            identity_field="transition_id",
+            description="qualification capacity-transition journal record",
+        )
+        additive = marker.get("additive_transition")
+        if (
+            match is None
+            or not isinstance(additive, Mapping)
+            or marker.get("schema_version") != 1
+            or marker.get("protocol")
+            != THROUGHPUT_QUALIFICATION_TRANSITION_PROTOCOL
+            or marker.get("passed") is not True
+            or int(match.group(1)) != expected_from
+            or int(match.group(2)) != expected_from + 1
+            or additive.get("from_capacity_generation")
+            != expected_from
+            or additive.get("to_capacity_generation")
+            != expected_from + 1
+        ):
+            raise ChainError(
+                "qualification capacity-transition journal skips, duplicates, "
+                "or drifts from its generation identity"
+            )
+        records.append((path, marker))
+        expected_from += 1
+    if not records:
+        raise ChainError(
+            "qualification capacity-transition journal is empty"
+        )
+    pointer, _ = _read_sealed_marker(
+        qualification_root
+        / THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_NAME,
+        description="current qualification capacity-transition pointer",
+    )
+    required_pointer = {
+        "schema_version",
+        "protocol",
+        "path",
+        "sha256",
+        "transition_id",
+        "from_capacity_generation",
+        "to_capacity_generation",
+        "failed_attempt_id",
+        "pointer_id",
+    }
+    _require_marker_identity(
+        pointer,
+        identity_field="pointer_id",
+        description="current qualification capacity-transition pointer",
+    )
+    latest_path, latest = records[-1]
+    additive = latest["additive_transition"]
+    failed_attempt = latest.get("failed_attempt")
+    expected_pointer = {
+        "schema_version": 1,
+        "protocol": THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_PROTOCOL,
+        "path": str(latest_path),
+        "sha256": _sha256(latest_path),
+        "transition_id": latest["transition_id"],
+        "from_capacity_generation": additive[
+            "from_capacity_generation"
+        ],
+        "to_capacity_generation": additive["to_capacity_generation"],
+        "failed_attempt_id": (
+            failed_attempt.get("attempt_id")
+            if isinstance(failed_attempt, Mapping)
+            else None
+        ),
+    }
+    expected_pointer["pointer_id"] = _sha256_bytes(
+        _canonical_json(expected_pointer)
+    )
+    if set(pointer) != required_pointer or pointer != expected_pointer:
+        raise ChainError(
+            "current qualification capacity-transition pointer does not bind "
+            "the immutable journal head"
+        )
+    return records
 
 
 def _validate_qualification_capacity_transition_binding(
@@ -19264,9 +19855,18 @@ def _validate_qualification_capacity_transition_binding(
         or failure_marker.get("readiness_generation")
         != pointer["readiness_generation"]
         or failure_marker.get("scheduler_capacity_mutated") is not False
-        or "qualification throughput"
-        not in str(failure_marker.get("reason", ""))
-        or "is below" not in str(failure_marker.get("reason", ""))
+        or failure_binding.get("admission_certificate_id")
+        != (
+            failure_marker.get("admission_capacity_certificate", {})
+            .get("certificate_id")
+            if isinstance(
+                failure_marker.get("admission_capacity_certificate"),
+                Mapping,
+            )
+            else None
+        )
+        or failure_binding.get("failure_kind")
+        != "measured_throughput_shortfall"
         or not isinstance(scaling, Mapping)
         or set(scaling) != _QUALIFICATION_SCALING_FIELDS
         or profile not in _QUALIFICATION_SERVING_PROFILES
@@ -19279,14 +19879,69 @@ def _validate_qualification_capacity_transition_binding(
             "current throughput-qualification failure is not one exact "
             "throughput-only additive request"
         )
-    marker_path = (
-        qualification_root
-        / "QUALIFICATION_CAPACITY_TRANSITION_COMPLETE.json"
+    transition_journal = (
+        _load_qualification_capacity_transition_journal(
+            qualification_root
+        )
     )
-    marker, _ = _read_sealed_marker(
-        marker_path,
-        description="qualification capacity-transition authority",
-    )
+    if len(transition_journal) != len(pointers):
+        raise ChainError(
+            "qualification capacity-transition journal and failed-attempt "
+            "sequence differ in length"
+        )
+    for index, ((journal_path, journal_record), (failed_pointer_path, failed_pointer)) in enumerate(
+        zip(transition_journal, pointers, strict=True)
+    ):
+        failed_root = Path(str(failed_pointer["attempt_root"]))
+        journal_failure, _ = _read_sealed_marker(
+            failed_root / THROUGHPUT_QUALIFICATION_FAILURE_NAME,
+            description="journal-bound qualification failure",
+        )
+        journal_additive = journal_record.get("additive_transition")
+        target_readiness = journal_record.get(
+            "to_readiness_generation"
+        )
+        expected_target = (
+            pointers[index + 1][1]["readiness_generation"]
+            if index + 1 < len(pointers)
+            else target_readiness
+        )
+        if (
+            journal_path
+            != (
+                qualification_root
+                / THROUGHPUT_QUALIFICATION_TRANSITION_DIRECTORY
+                / (
+                    f"c{index + 1:06d}-to-"
+                    f"c{index + 2:06d}.json"
+                )
+            )
+            or not isinstance(journal_additive, Mapping)
+            or journal_record.get("failed_attempt")
+            != _qualification_attempt_binding(
+                failed_pointer_path,
+                failed_pointer,
+            )
+            or journal_record.get("failure", {}).get("failure_id")
+            != journal_failure.get("failure_id")
+            or journal_record.get("from_readiness_generation")
+            != failed_pointer["readiness_generation"]
+            or target_readiness != expected_target
+            or journal_additive.get("from_capacity_generation")
+            != failed_pointer["readiness_generation"][
+                "capacity_generation"
+            ]
+            or journal_additive.get("to_capacity_generation")
+            != failed_pointer["readiness_generation"][
+                "capacity_generation"
+            ]
+            + 1
+        ):
+            raise ChainError(
+                "qualification capacity-transition journal is not an exact "
+                "attempt-to-generation chain"
+            )
+    marker_path, marker = transition_journal[-1]
     required = {
         "schema_version",
         "protocol",
@@ -19299,14 +19954,18 @@ def _validate_qualification_capacity_transition_binding(
         "chain_id",
         "manifest",
         "manifest_sha256",
-        "protected_capacity",
+        "from_protected_capacity",
+        "to_protected_capacity",
+        "from_admission_capacity_certificate",
+        "to_admission_capacity_certificate",
         "failed_attempt",
         "failure",
         "submission_receipt",
         "failed_stage",
         "paused_control",
         "additive_transition",
-        "readiness_generation",
+        "from_readiness_generation",
+        "to_readiness_generation",
         "created_at",
         "created_timestamp",
         "transition_id",
@@ -19317,21 +19976,12 @@ def _validate_qualification_capacity_transition_binding(
         description="qualification capacity-transition authority",
     )
     additive = marker.get("additive_transition")
-    readiness = marker.get("readiness_generation")
+    from_readiness = marker.get("from_readiness_generation")
+    readiness = marker.get("to_readiness_generation")
     failed_stage = marker.get("failed_stage")
     receipt_binding = marker.get("submission_receipt")
     failure = marker.get("failure")
     paused = marker.get("paused_control")
-    protected = (
-        manifest.get("prerequisite_evidence", {})
-        if isinstance(manifest.get("prerequisite_evidence"), Mapping)
-        else {}
-    )
-    expected_protected = _qualification_prerequisite_binding(
-        protected.get("protected_capacity"),
-        identity_field="marker_id",
-        description="protected capacity",
-    )
     predecessor_readiness = pointer["readiness_generation"]
     readiness = _validate_qualification_readiness(
         readiness,
@@ -19349,6 +19999,68 @@ def _validate_qualification_capacity_transition_binding(
         readiness_marker_path,
         description="qualification transition trusted-generation marker",
     )
+    intent, _ = _read_sealed_marker(
+        attempt_root / "QUALIFICATION_INTENT.json",
+        description="failed qualification intent",
+    )
+    expected_from_protected = intent.get("protected_capacity")
+    to_protected = marker.get("to_protected_capacity")
+    if (
+        not isinstance(to_protected, Mapping)
+        or set(to_protected)
+        != {"marker", "marker_sha256", "marker_id"}
+    ):
+        raise ChainError(
+            "qualification transition target protected capacity is malformed"
+        )
+    prerequisites = manifest.get("prerequisite_evidence")
+    initial_protected_record = (
+        prerequisites.get("protected_capacity")
+        if isinstance(prerequisites, Mapping)
+        else None
+    )
+    initial_protected_binding = _qualification_prerequisite_binding(
+        initial_protected_record,
+        identity_field="marker_id",
+        description="initial protected capacity",
+    )
+    initial_protected_marker, _ = _read_sealed_marker(
+        Path(initial_protected_binding["marker"]),
+        description="initial protected capacity source authority",
+    )
+    try:
+        to_capacity_contract = protected_capacity.load_contract(
+            to_protected["marker"],
+            expected_release_git_commit=str(
+                manifest.get("release_git_commit", "")
+            ),
+            expected_release_tag_object=str(
+                manifest.get("release_tag_object", "")
+            ),
+            expected_marker_id=str(to_protected["marker_id"]),
+            expected_sha256=str(to_protected["marker_sha256"]),
+            expected_source_tree_sha256=str(
+                initial_protected_marker["source_tree_sha256"]
+            ),
+            expected_dispatcher_source_sha256=str(
+                initial_protected_marker["dispatcher_source_sha256"]
+            ),
+            expected_qualification_runner_source_sha256=str(
+                initial_protected_marker[
+                    "qualification_runner_source_sha256"
+                ]
+            ),
+        )
+    except protected_capacity.ProtectedCapacityError as exc:
+        raise ChainError(
+            f"qualification transition target protected capacity failed: {exc}"
+        ) from exc
+    from_certificate = failure_marker.get(
+        "admission_capacity_certificate"
+    )
+    to_certificate = marker.get(
+        "to_admission_capacity_certificate"
+    )
     timestamp = marker.get("created_timestamp")
     paused_identity = dict(paused) if isinstance(paused, Mapping) else {}
     paused_hash = paused_identity.pop("guard_sha256", None)
@@ -19356,10 +20068,7 @@ def _validate_qualification_capacity_transition_binding(
         set(marker) != required
         or marker.get("schema_version") != 1
         or marker.get("protocol")
-        != (
-            "schema5-v1.2-r3-throughput-qualification-"
-            "capacity-transition-v1"
-        )
+        != THROUGHPUT_QUALIFICATION_TRANSITION_PROTOCOL
         or marker.get("passed") is not True
         or marker.get("release_id") != RELEASE_ID
         or marker.get("release_tag") != RELEASE_TAG
@@ -19371,7 +20080,32 @@ def _validate_qualification_capacity_transition_binding(
         or marker.get("chain_id") != manifest.get("chain_id")
         or marker.get("manifest") != str(manifest_path)
         or marker.get("manifest_sha256") != _sha256(manifest_path)
-        or marker.get("protected_capacity") != expected_protected
+        or marker.get("from_protected_capacity")
+        != expected_from_protected
+        or marker.get("to_protected_capacity") != dict(to_protected)
+        or marker.get("from_admission_capacity_certificate")
+        != from_certificate
+        or not isinstance(from_certificate, Mapping)
+        or not isinstance(to_certificate, Mapping)
+        or marker.get("from_readiness_generation")
+        != predecessor_readiness
+        or from_readiness != predecessor_readiness
+        or to_capacity_contract.capacity_generation
+        != readiness["capacity_generation"]
+        or to_capacity_contract.effective_fleet_contract_sha256
+        != readiness["fleet_contract_sha256"]
+        or to_certificate.get("path")
+        != str(
+            to_capacity_contract.static_feasibility_certificate_path
+        )
+        or to_certificate.get("sha256")
+        != to_capacity_contract.static_feasibility_certificate_sha256
+        or to_certificate.get("certificate_id")
+        != to_capacity_contract.static_feasibility_certificate_id
+        or to_certificate.get("capacity_generation")
+        != readiness["capacity_generation"]
+        or to_certificate.get("effective_fleet_contract_sha256")
+        != readiness["fleet_contract_sha256"]
         or not isinstance(failure, Mapping)
         or set(failure) != {"path", "sha256", "failure_id"}
         or failure.get("path") != str(failure_path)
@@ -19524,7 +20258,7 @@ def _sentinel_repair_jobs(
     if (
         marker.get("schema_version") != 1
         or marker.get("protocol")
-        != "schema5-v1.2-r3-recovery-sentinel-outcome"
+        != "schema5-v1.2-r4-recovery-sentinel-outcome"
         or marker.get("passed") is not True
         or marker.get("chain_id") != manifest["chain_id"]
         or marker.get("manifest") != str(manifest_path)
@@ -19538,7 +20272,7 @@ def _sentinel_repair_jobs(
         or marker_id != _sha256_bytes(_canonical_json(marker_identity))
         or evidence.get("schema_version") != 1
         or evidence.get("protocol")
-        != "schema5-v1.2-r3-recovery-scheduler-evidence"
+        != "schema5-v1.2-r4-recovery-scheduler-evidence"
         or evidence.get("passed") is not True
         or evidence.get("chain_id") != manifest["chain_id"]
         or evidence.get("manifest") != str(manifest_path)
@@ -19958,7 +20692,7 @@ def _validate_bootstrap_generation_provenance(
         set(payload) != expected_fields
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-generation-provenance-v1"
+        != "schema5-v1.2-r4-bootstrap-generation-provenance-v1"
         or payload.get("passed") is not True
         or payload.get("release_git_commit")
         != manifest["release_git_commit"]
@@ -20466,7 +21200,7 @@ def _ensure_bootstrap_generation_provenance(
                 )
     payload: dict[str, Any] = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-bootstrap-generation-provenance-v1",
+        "protocol": "schema5-v1.2-r4-bootstrap-generation-provenance-v1",
         "passed": True,
         "release_git_commit": manifest["release_git_commit"],
         "release_tag_object": manifest["release_tag_object"],
@@ -20620,7 +21354,7 @@ def _validate_bootstrap_status_payload(
         set(payload) != required
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r3-bootstrap-status-v1"
+        != "schema5-v1.2-r4-bootstrap-status-v1"
         or payload.get("passed") is not True
         or payload.get("release_git_commit")
         != manifest["release_git_commit"]
@@ -20813,7 +21547,7 @@ def _validate_bootstrap_observation_pair(
         )
         or any(
             payload.get("protocol")
-            != "schema5-v1.2-r3-bootstrap-status-v1"
+            != "schema5-v1.2-r4-bootstrap-status-v1"
             or payload.get("passed") is not True
             or payload.get("release_git_commit")
             != manifest["release_git_commit"]
@@ -20941,15 +21675,7 @@ def bootstrap_status(
     manifest = _read_json(
         manifest_path, description="recovery-chain manifest"
     )
-    runner = (
-        (
-            lambda argv: subprocess.run(
-                argv, text=True, capture_output=True, check=False
-            )
-        )
-        if runner is None
-        else runner
-    )
+    runner = _default_runner if runner is None else runner
     timestamp = time.time() if now is None else float(now)
     if not math.isfinite(timestamp):
         raise ChainError("bootstrap observation timestamp must be finite")
@@ -21155,7 +21881,7 @@ def bootstrap_status(
             )
     observation: dict[str, Any] = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r3-bootstrap-status-v1",
+        "protocol": "schema5-v1.2-r4-bootstrap-status-v1",
         "passed": True,
         "observed_at_timestamp": timestamp,
         "release_git_commit": manifest["release_git_commit"],
@@ -21298,10 +22024,7 @@ def repair_chain(
     manifest_path = _lexical_absolute(manifest_path)
     verify_chain(manifest_path)
     manifest = _read_json(manifest_path, description="recovery-chain manifest")
-    runner = (
-        (lambda argv: subprocess.run(argv, text=True, capture_output=True, check=False))
-        if runner is None else runner
-    )
+    runner = _default_runner if runner is None else runner
     fixed_timestamp = now is not None
     timestamp = time.time() if now is None else float(now)
     if not math.isfinite(timestamp):
@@ -21654,7 +22377,7 @@ def repair_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.2-r3-recovery-chain-repair-journal",
+                "protocol": "schema5-v1.2-r4-recovery-chain-repair-journal",
                 "chain_id": manifest["chain_id"], "repair_generation": generation,
                 "base_receipt": str(base_path), "base_receipt_sha256": _sha256(base_path),
                 "repair_jobs": repair_names, "started_at": _utc_now(),
@@ -21864,7 +22587,7 @@ def repair_chain(
             })
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r3-recovery-chain-repair", "passed": True,
+            "protocol": "schema5-v1.2-r4-recovery-chain-repair", "passed": True,
             "chain_id": manifest["chain_id"], "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
             "submission_journal": str(journal_path),
@@ -22018,11 +22741,7 @@ def quarantine_partial_materialization(
     manifest_path = _lexical_absolute(manifest_path)
     verify_chain(manifest_path)
     manifest = _read_json(manifest_path, description="recovery-chain manifest")
-    runner = (
-        (lambda argv: subprocess.run(argv, text=True, capture_output=True, check=False))
-        if runner is None
-        else runner
-    )
+    runner = _default_runner if runner is None else runner
     recovery_root = _require_canonical_path(
         manifest_path.parent,
         description="recovery root",
@@ -22127,7 +22846,7 @@ def quarantine_partial_materialization(
 
         expected_intent = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r3-partial-materialization-quarantine-intent",
+            "protocol": "schema5-v1.2-r4-partial-materialization-quarantine-intent",
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
@@ -22179,7 +22898,7 @@ def quarantine_partial_materialization(
             completion_id = completion_identity.pop("completion_id", None)
             expected_completion = {
                 "schema_version": 1,
-                "protocol": "schema5-v1.2-r3-partial-materialization-quarantine",
+                "protocol": "schema5-v1.2-r4-partial-materialization-quarantine",
                 "passed": True,
                 "release_id": RELEASE_ID,
                 "materialize_job_id": materialize_job_id,
@@ -22304,7 +23023,7 @@ def quarantine_partial_materialization(
             raise ChainError("materialization quarantine rename did not preserve identity")
         completion = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r3-partial-materialization-quarantine",
+            "protocol": "schema5-v1.2-r4-partial-materialization-quarantine",
             "passed": True,
             "release_id": RELEASE_ID,
             "materialize_job_id": materialize_job_id,
@@ -22346,7 +23065,7 @@ def quarantine_partial_materialization(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    render = subparsers.add_parser("render", help="dry-run or publish the v1.2-r3 chain")
+    render = subparsers.add_parser("render", help="dry-run or publish the v1.2-r4 chain")
     render.add_argument("--repository", required=True, type=Path)
     render.add_argument("--results-root", required=True, type=Path)
     render.add_argument("--recovery-root", required=True, type=Path)
@@ -22354,7 +23073,8 @@ def _build_parser() -> argparse.ArgumentParser:
     render.add_argument("--dev-python", required=True, type=Path)
     render.add_argument("--source-harness-prefix", required=True, type=Path)
     render.add_argument("--source-serving-prefix", required=True, type=Path)
-    render.add_argument("--conda-executable", required=True, type=Path)
+    render.add_argument("--conda-toolchain-root", required=True, type=Path)
+    render.add_argument("--source-package-cache", required=True, type=Path)
     render.add_argument(
         "--materialization-pilot-root", required=True, type=Path
     )
@@ -22403,7 +23123,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--chain-manifest",
         required=True,
         type=Path,
-        help="canonical submitted r3 recovery-chain manifest",
+        help="canonical submitted r4 recovery-chain manifest",
     )
     isolated_drill.add_argument("--apply", action="store_true")
     release_root = subparsers.add_parser(
@@ -22487,7 +23207,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dev_python=args.dev_python,
                 source_harness=args.source_harness_prefix,
                 source_serving=args.source_serving_prefix,
-                conda_executable=args.conda_executable,
+                conda_toolchain_root=args.conda_toolchain_root,
+                source_package_cache=args.source_package_cache,
                 materialization_pilot_root=args.materialization_pilot_root,
                 slurm_canary_root=args.slurm_canary_root,
             )
