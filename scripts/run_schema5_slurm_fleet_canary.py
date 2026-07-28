@@ -96,7 +96,7 @@ TURNOVER_POINTER_FILENAME = "PROMOTED_ENDPOINT.json"
 TURNOVER_COMPLETE_FILENAME = "TURNOVER_COMPLETE.json"
 TURNOVER_PROFILE = "turnover-canary"
 TURNOVER_PORT_DERIVATION_PROTOCOL = (
-    "schema5-v1.2-r11-turnover-run-token-port-derivation-v1"
+    "schema5-v1.2-r12-turnover-run-token-port-derivation-v1"
 )
 # Use a broad unprivileged namespace instead of one fixed three-port tuple.  The
 # complete marker-first 128-bit run token and allocation index select the initial
@@ -107,7 +107,7 @@ TURNOVER_PORT_MAX = 64_999
 TURNOVER_MAX_ALLOCATIONS = 5
 ROLLOUT_GENERATION = 1
 PROFILE = "canary-cpu"
-REQUIRED_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r11"
+REQUIRED_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r12"
 CANARY_GIT_PATH = "scripts/run_schema5_slurm_fleet_canary.py"
 FLEET_TRANSACTIONS_GIT_PATH = (
     "src/agents_scaling/serving/fleet_transactions.py"
@@ -115,7 +115,7 @@ FLEET_TRANSACTIONS_GIT_PATH = (
 DURABLE_GIT_PUBLISHER_GIT_PATH = (
     "scripts/publish_schema5_durable_git_release.py"
 )
-CODE_IDENTITY_PROTOCOL = "schema5-v1.2-r11-slurm-canary-code-v3"
+CODE_IDENTITY_PROTOCOL = "schema5-v1.2-r12-slurm-canary-code-v3"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _TOKEN_RE = re.compile(r"[0-9a-f]{32}\Z")
@@ -170,7 +170,7 @@ def _default_canary_root() -> Path:
         / "recovery"
         / "schema5-v1"
         / "slurm_canaries"
-        / "schema5-v1.2-r11"
+        / "schema5-v1.2-r12"
     )
 
 

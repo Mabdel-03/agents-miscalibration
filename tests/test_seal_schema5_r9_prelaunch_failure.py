@@ -59,6 +59,17 @@ def test_r9_equivalent_diagnostic_accepts_multiple_canonical_fetches(tmp_path):
     assert len(urls) == 2
     assert urls[0].endswith("/linux-64/python.conda")
     assert urls[1].endswith("/noarch/pip.conda")
+    assert seal._validate_structural_diagnostic(
+        stdout=stdout,
+        stderr=stderr + "\n",
+        contract=contract,
+    ) == urls
+    with pytest.raises(seal.R9FailureSealError, match="stream drifted"):
+        seal._validate_structural_diagnostic(
+            stdout=stdout,
+            stderr=stderr + "\n\n",
+            contract=contract,
+        )
     with pytest.raises(seal.R9FailureSealError, match="stream drifted"):
         seal._validate_structural_diagnostic(
             stdout=stdout,

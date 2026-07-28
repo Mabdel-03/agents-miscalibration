@@ -117,7 +117,7 @@ def _frozen_serving_environment(tmp_path: Path) -> dict[str, str]:
                 "sha256": "2" * 64,
             },
             "conda_toolchain": {
-                "protocol": "schema5-v1.2-r11-offline-conda-toolchain-v1",
+                "protocol": "schema5-v1.2-r12-offline-conda-toolchain-v1",
                 "binding_id": "b" * 64,
             },
             "environment_seed": {

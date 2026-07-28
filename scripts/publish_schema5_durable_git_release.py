@@ -25,11 +25,11 @@ from typing import Any, Mapping, Sequence
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r11"
-CHAIN_NAMESPACE = "schema5-v1.2-r11"
-DURABLE_COMMIT_REF = "refs/heads/schema5-v1.2-r11"
-PROTOCOL = "schema5-v1.2-r11-durable-git-release-v1"
-MARKER_NAME = "DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R11_COMPLETE.json"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r12"
+CHAIN_NAMESPACE = "schema5-v1.2-r12"
+DURABLE_COMMIT_REF = "refs/heads/schema5-v1.2-r12"
+PROTOCOL = "schema5-v1.2-r12-durable-git-release-v1"
+MARKER_NAME = "DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R12_COMPLETE.json"
 BUNDLE_DIRECTORY = "git_release"
 BUNDLE_NAME = f"{RELEASE_TAG}.bundle"
 CHECKSUM_NAME = f"{BUNDLE_NAME}.sha256"

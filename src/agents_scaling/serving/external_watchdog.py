@@ -17,17 +17,17 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-WATCHDOG_PROTOCOL = "schema5-v1.2-r11-external-watchdog-v1"
+WATCHDOG_PROTOCOL = "schema5-v1.2-r12-external-watchdog-v1"
 WATCHDOG_SCHEMA_VERSION = 1
 WATCHDOG_INTERVAL_SECONDS = 300
 WATCHDOG_OBSERVATION_GAP_SECONDS = 60
 WATCHDOG_STALE_SECONDS = 600
-WATCHDOG_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r11"
+WATCHDOG_RELEASE_TAG = "sweep-recovery-schema5-v1.2-r12"
 WATCHDOG_CLUSTER_CYCLE_PROTOCOL = (
-    "schema5-v1.2-r11-external-watchdog-cycle-receipt-v1"
+    "schema5-v1.2-r12-external-watchdog-cycle-receipt-v1"
 )
 WATCHDOG_CLUSTER_LATEST_PROTOCOL = (
-    "schema5-v1.2-r11-external-watchdog-latest-pointer-v1"
+    "schema5-v1.2-r12-external-watchdog-latest-pointer-v1"
 )
 CONTROLLER_ROLES = ("dispatcher", "fleet_supervisor")
 WATCHDOG_DRILL_PROTOCOL = "schema5-external-watchdog-drill-intent-v1"

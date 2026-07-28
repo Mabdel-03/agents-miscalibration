@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal r9's deterministic offline-probe diagnostic-contract failure for r11."""
+"""Seal r9's deterministic offline-probe diagnostic-contract failure for r12."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 SCHEMA_VERSION = 1
 PROTOCOL = (
-    "schema5-v1.2-r9-prelaunch-offline-diagnostic-contract-failure-seal-v2"
+    "schema5-v1.2-r9-prelaunch-offline-diagnostic-contract-failure-seal-v3"
 )
 CLASSIFICATION = (
     "deterministic_prelaunch_offline_diagnostic_cardinality_failure"
@@ -54,6 +54,12 @@ R10_FAILURE_RELATIVE_ROOT = Path(
     "prelaunch_failures/schema5-v1.2-r10-r9-sealer"
 )
 R10_FAILURE_MARKER_NAME = "PRELAUNCH_R9_SEALER_FAILURE_SEALED.json"
+R11_FAILURE_RELATIVE_ROOT = Path(
+    "prelaunch_failures/schema5-v1.2-r11-r9-sealer"
+)
+R11_FAILURE_MARKER_NAME = (
+    "PRELAUNCH_EQUIVALENT_DIAGNOSTIC_FAILURE_SEALED.json"
+)
 EXPECTED_R9_REJECTION = (
     "r3 offline-cache probe lacks the canonical Conda OfflineError "
     "remote-fetch context"
@@ -291,6 +297,48 @@ def _r10_failure_binding(recovery: Path, scheduler_user: str) -> dict[str, Any]:
     return json.loads(json.dumps(binding, sort_keys=True))
 
 
+def _r11_failure_binding(recovery: Path, scheduler_user: str) -> dict[str, Any]:
+    path = Path(__file__).resolve().with_name(
+        "seal_schema5_r11_prelaunch_failure.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_schema5_r11_prelaunch_failure_binding", path
+    )
+    if spec is None or spec.loader is None:
+        raise R9FailureSealError("cannot load r11 failure-seal verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = recovery / R11_FAILURE_RELATIVE_ROOT
+    try:
+        binding = module.verify_failure_seal(
+            root,
+            recovery_root=recovery,
+            scheduler_user=scheduler_user,
+        )
+    except Exception as exc:
+        raise R9FailureSealError(
+            f"r11 delimiter-failure seal is invalid: {exc}"
+        ) from exc
+    if (
+        not isinstance(binding, dict)
+        or binding.get("passed") is not True
+        or binding.get("root") != str(root)
+        or binding.get("protocol") != module.PROTOCOL
+        or binding.get("release_tag") != module.R11_TAG
+        or binding.get("release_git_commit") != module.R11_COMMIT
+        or binding.get("chain_namespace") != module.R11_NAMESPACE
+        or binding.get("marker")
+        != str(root / R11_FAILURE_MARKER_NAME)
+        or binding.get("classification") != module.CLASSIFICATION
+        or binding.get("retry_in_place") is not False
+        or binding.get("requires_superseding_release") is not True
+        or binding.get("pre_scheduler_submission") is not True
+        or binding.get("known_scheduler_job_ids") != []
+    ):
+        raise R9FailureSealError("r11 delimiter-failure binding drifted")
+    return json.loads(json.dumps(binding, sort_keys=True))
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -489,7 +537,7 @@ def _scientific_state(recovery: Path) -> dict[str, Any]:
             f"r9 failure is not prelaunch zero-result evidence: {present}"
         )
     return {
-        "captured_before_r11_production_outputs": True,
+        "captured_before_r12_production_outputs": True,
         "result_mutation_count": 0,
         "scheduler_job_count": 0,
         "required_absent_paths_at_seal": required_absent,
@@ -770,6 +818,7 @@ def _intent_payload(
         "source_release": _release_binding(recovery),
         "sealed_r9_toolchain": _toolchain_binding(recovery),
         "sealed_r10_wrapper_failure": _r10_failure_binding(recovery, user),
+        "sealed_r11_delimiter_failure": _r11_failure_binding(recovery, user),
         "original_probe_state": source,
         "reproduction": _reproduction_contract(recovery, evidence),
         "scientific_state": _scientific_state(recovery),
@@ -795,6 +844,8 @@ def _validate_intent(
         or intent.get("sealed_r9_toolchain") != _toolchain_binding(recovery)
         or intent.get("sealed_r10_wrapper_failure")
         != _r10_failure_binding(recovery, user)
+        or intent.get("sealed_r11_delimiter_failure")
+        != _r11_failure_binding(recovery, user)
         or intent.get("reproduction") != _reproduction_contract(recovery, evidence)
         or intent.get("evidence_root") != str(evidence)
         or intent.get("scheduler") != _scheduler_quiescence(user)
@@ -803,7 +854,7 @@ def _validate_intent(
     state = intent.get("scientific_state")
     if (
         not isinstance(state, dict)
-        or state.get("captured_before_r11_production_outputs") is not True
+        or state.get("captured_before_r12_production_outputs") is not True
         or state.get("result_mutation_count") != 0
         or state.get("scheduler_job_count") != 0
     ):
@@ -857,7 +908,11 @@ def _validate_structural_diagnostic(
         r"[A-Za-z0-9_.+%-]+(?:[.]conda|[.]tar[.]bz2))[.]\n"
         r"This command is using a remote connection in offline mode[.]\n"
     )
+    if stderr.startswith("\n\n") or stderr.endswith("\n\n\n"):
+        raise R9FailureSealError("equivalent r9 OfflineError stream drifted")
     text = stderr[1:] if stderr.startswith("\n") else stderr
+    if text.endswith("\n\n"):
+        text = text[:-1]
     urls: list[str] = []
     offset = 0
     while offset < len(text):

@@ -150,3 +150,55 @@ def test_r10_failure_seal_is_dry_by_default_and_marker_last(
     assert marker.is_file()
     assert not stat.S_IMODE(marker.stat().st_mode) & 0o222
     assert not stat.S_IMODE(evidence.stat().st_mode) & 0o222
+
+
+def test_r10_seal_verification_allows_the_declared_r9_successor(
+    tmp_path, monkeypatch
+):
+    evidence = tmp_path / "r10-failure"
+    evidence.mkdir()
+    recovery = tmp_path / "recovery"
+    (recovery / seal.R9_EVIDENCE_RELATIVE).mkdir(parents=True)
+    volatile = tmp_path / "r9-successor-volatile"
+    volatile.mkdir()
+    monkeypatch.setattr(seal, "R9_VOLATILE_ROOT", volatile)
+    (evidence / seal.STDOUT_NAME).write_bytes(b"")
+    (evidence / seal.STDERR_NAME).write_text(
+        seal.EXPECTED_STDERR, encoding="utf-8"
+    )
+    monkeypatch.setattr(seal, "_verify_archive", lambda *_args: None)
+    observed_inventory = {"entry_count": 2}
+    proof = {
+        "returncode": 2,
+        "stdout": seal._file_ref(
+            evidence / seal.STDOUT_NAME, description="stdout"
+        ),
+        "stderr": seal._file_ref(
+            evidence / seal.STDERR_NAME, description="stderr"
+        ),
+        "exact_error_matched": True,
+        "failed_condition": (
+            "r9_cli_stderr_used_schema5_evidence_prefix_but_r10_expected_bare_error"
+        ),
+        "observed_incomplete_evidence": {
+            "inventory": observed_inventory
+        },
+        "observed_volatile_probe": {"inventory": observed_inventory},
+        "operator_diagnostic": {
+            "inventory": observed_inventory,
+            "authoritative_failure_evidence": False,
+        },
+        "reproduced_incomplete_evidence": {},
+        "reproduced_volatile_probe": {},
+        "canonical_r9_evidence_path_absent": True,
+        "canonical_r9_volatile_path_absent": True,
+        "known_scheduler_job_ids": [],
+        "result_mutation_count": 0,
+    }
+    intent = {
+        "observed_incomplete_evidence": {"inventory": observed_inventory},
+        "observed_volatile_probe": {"inventory": observed_inventory},
+        "operator_diagnostic": {"inventory": observed_inventory},
+    }
+
+    seal._verify_proof(evidence, recovery, intent, proof)
