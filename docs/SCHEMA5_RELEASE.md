@@ -113,11 +113,14 @@ The immutable r11 release (`6a4b100b3c2c866fe0154007fce42f90c2763864`,
 annotated tag object `f9d657147ff43d2abc16389e54f8323a012b6c68`) sealed the
 r10 failure, accepted the exact prefixed r9 recorder error, and then rejected the
 equivalent Conda diagnostic's single trailing blank-line delimiter before publishing
-the r9 marker. It submitted no scheduler job and mutated no scientific result. The
-r12 failure sealer archives and exactly reproduces both partial transactions and
-publishes
+the r9 marker. It submitted no scheduler job and mutated no scientific result.
+Cluster `/tmp` cleanup subsequently removed the redundant live probe copy and
+non-authoritative operator diagnostic. The r12 failure sealer binds the exact
+transcript-backed `original_probe_tree` already present in the incomplete
+transaction, explicitly records the two missing external paths without recreating
+their bytes, exactly reproduces the immutable r11 failure, and publishes
 `$schema5_recovery/prelaunch_failures/schema5-v1.2-r11-r9-sealer/PRELAUNCH_EQUIVALENT_DIAGNOSTIC_FAILURE_SEALED.json`
-under protocol `schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v1`.
+under protocol `schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v2`.
 
 The r12 recovery renderer must independently verify and bind all ten exact historical
 seals before render and submission. All r12 pilot, canary, source-checkout, batch-job/log, and

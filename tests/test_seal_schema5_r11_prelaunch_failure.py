@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import stat
 
+import pytest
+
 from scripts import seal_schema5_r11_prelaunch_failure as seal
 
 
@@ -45,7 +47,7 @@ def test_r11_failure_seal_is_dry_by_default_and_marker_last(
     observed_evidence = {"inventory": {"entry_count": 5}}
     observed_volatile = {"inventory": {"entry_count": 9}}
     diagnostic = {
-        "inventory": {"entry_count": 8},
+        "present_at_seal": False,
         "authoritative_failure_evidence": False,
     }
     intent = {
@@ -76,11 +78,11 @@ def test_r11_failure_seal_is_dry_by_default_and_marker_last(
         lambda *_args: observed_evidence,
     )
     monkeypatch.setattr(
-        seal, "_validate_volatile_tree", lambda *_args: observed_volatile
+        seal, "_observed_volatile_preimage", lambda *_args: observed_volatile
     )
     monkeypatch.setattr(
-        seal._base,
-        "_validate_operator_diagnostic",
+        seal,
+        "_operator_diagnostic_disposition",
         lambda *_args: diagnostic,
     )
     monkeypatch.setattr(
@@ -117,3 +119,77 @@ def test_r11_failure_seal_is_dry_by_default_and_marker_last(
     assert marker.is_file()
     assert not stat.S_IMODE(marker.stat().st_mode) & 0o222
     assert not stat.S_IMODE(evidence.stat().st_mode) & 0o222
+
+
+def test_r11_cleanup_disposition_uses_bound_archive_without_recreating_tmp(
+    tmp_path, monkeypatch
+):
+    recovery = tmp_path / "recovery"
+    incomplete = recovery / seal.R9_EVIDENCE_RELATIVE
+    archive = incomplete / seal.R9_ARCHIVE_NAME
+    archive.mkdir(parents=True)
+    volatile = tmp_path / "cleaned-volatile"
+    diagnostic = tmp_path / "cleaned-diagnostic"
+    monkeypatch.setattr(seal, "R9_VOLATILE_ROOT", volatile)
+    monkeypatch.setattr(seal, "OPERATOR_DIAGNOSTIC_ROOT", diagnostic)
+    inventory = {"entry_count": 17, "inventory_sha256": "bound"}
+    monkeypatch.setattr(
+        seal,
+        "_validate_volatile_tree",
+        lambda _recovery, root: {
+            "inventory": inventory,
+            "validated_root": str(root),
+        },
+    )
+    observed = {
+        "transcript": {
+            "sha256": "a" * 64,
+            "size": 42,
+            "transcript_id": "b" * 64,
+        }
+    }
+
+    preimage = seal._observed_volatile_preimage(
+        recovery, incomplete, observed
+    )
+    disposition = seal._operator_diagnostic_disposition(observed)
+
+    assert preimage["inventory"] == inventory
+    assert preimage["source_relative_path"] == seal.R9_ARCHIVE_NAME
+    assert preimage["external_path_present_at_seal"] is False
+    assert (
+        preimage["loss_classification"]
+        == seal.EXTERNAL_CLEANUP_CLASSIFICATION
+    )
+    assert disposition["present_at_seal"] is False
+    assert disposition["authoritative_failure_evidence"] is False
+    assert disposition["replacement_evidence"]["sha256"] == "a" * 64
+    assert not volatile.exists()
+    assert not diagnostic.exists()
+
+
+def test_r11_cleanup_disposition_rejects_reappearing_external_tree(
+    tmp_path, monkeypatch
+):
+    recovery = tmp_path / "recovery"
+    incomplete = recovery / seal.R9_EVIDENCE_RELATIVE
+    (incomplete / seal.R9_ARCHIVE_NAME).mkdir(parents=True)
+    volatile = tmp_path / "volatile"
+    volatile.mkdir()
+    monkeypatch.setattr(seal, "R9_VOLATILE_ROOT", volatile)
+
+    with pytest.raises(
+        seal.R11FailureSealError,
+        match="unexpectedly exists after recorded cleanup",
+    ):
+        seal._observed_volatile_preimage(
+            recovery,
+            incomplete,
+            {
+                "transcript": {
+                    "sha256": "a" * 64,
+                    "size": 1,
+                    "transcript_id": "b" * 64,
+                }
+            },
+        )

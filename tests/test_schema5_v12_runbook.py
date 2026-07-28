@@ -679,7 +679,8 @@ def test_r12_uses_fresh_operational_paths_and_binds_sealed_r2_r3_lineage() -> No
     assert "6a4b100b3c2c866fe0154007fce42f90c2763864" in lineage
     assert "f9d657147ff43d2abc16389e54f8323a012b6c68" in lineage
     assert "PRELAUNCH_EQUIVALENT_DIAGNOSTIC_FAILURE_SEALED.json" in lineage
-    assert "schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v1" in lineage
+    assert "schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v2" in lineage
+    assert "without reconstructing any lost bytes" in lineage
 
 
 def test_r5_cli_failure_seal_is_dry_apply_idempotent_and_verified() -> None:

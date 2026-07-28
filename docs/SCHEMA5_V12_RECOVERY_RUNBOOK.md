@@ -399,11 +399,17 @@ transaction contains the bound intent, exact recorder transcript, reproduced pro
 archive, and declared equivalent-reproduction residue. It submitted no scheduler
 job and changed no scientific result.
 
-After the r12 tag exists, the tagged r12 r11-failure sealer archives that observed
-partial transaction, volatile tree, and non-authoritative diagnostic; reproduces
-the exact immutable r11 failure once with captured output; archives the reproduced
-partial transaction; and publishes `$r11_prelaunch_failure_marker` last under
-protocol `schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v1` at
+Before r12 was tagged, cluster `/tmp` cleanup removed the redundant live probe tree
+and non-authoritative operator diagnostic. The incomplete transaction still contains
+the exact recorder transcript, reproduced `original_probe_tree`, and equivalent
+reproduction, with the archive inventory bound to the transcript. The tagged r12
+r11-failure sealer requires both external paths to remain absent, copies the bound
+`original_probe_tree` into the failure seal without reconstructing any lost bytes,
+and records the missing non-authoritative diagnostic as cleanup rather than evidence.
+It then reproduces the exact immutable r11 failure once with captured output,
+archives the reproduced partial transaction, and publishes
+`$r11_prelaunch_failure_marker` last under protocol
+`schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v2` at
 `prelaunch_failures/schema5-v1.2-r11-r9-sealer/PRELAUNCH_EQUIVALENT_DIAGNOSTIC_FAILURE_SEALED.json`.
 
 The corrected r12 r9 sealer requires both the r10 and r11 failure seals, accepts only the exact
@@ -445,8 +451,9 @@ Require all of the following before tagging:
 - the r10 failure marker independently reverifies, including its observed and
   reproduced partial transactions and zero scheduler/scientific mutation;
 - the r11 failure sealer dry run verifies the immutable r11 release, incomplete
-  marker-first evidence, failed volatile tree, non-authoritative operator diagnostic,
-  empty scheduler/scientific namespaces, and exact delimiter-failure reproduction;
+  marker-first evidence, the transcript-bound durable probe archive, explicit absence
+  of the cleaned non-authoritative `/tmp` inputs, empty scheduler/scientific
+  namespaces, and exact delimiter-failure reproduction;
 - the 7 TiB storage admission and existing inode gates above pass;
 - no legacy/schema-5 worker or controller jobs and no held cell locks;
 - a clean full test suite, checksum checks, and Git diff check;

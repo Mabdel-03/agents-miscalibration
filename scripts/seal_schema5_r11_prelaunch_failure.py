@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -16,9 +17,12 @@ from typing import Any, Mapping
 
 
 SCHEMA_VERSION = 1
-PROTOCOL = "schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v1"
+PROTOCOL = "schema5-v1.2-r11-equivalent-diagnostic-delimiter-failure-v2"
 CLASSIFICATION = (
     "deterministic_prelaunch_equivalent_diagnostic_trailing_blank_rejection"
+)
+EXTERNAL_CLEANUP_CLASSIFICATION = (
+    "external_tmp_cleanup_after_r11_failure_before_r12_seal"
 )
 R11_TAG = "sweep-recovery-schema5-v1.2-r11"
 R11_NAMESPACE = "schema5-v1.2-r11"
@@ -45,7 +49,6 @@ MARKER_NAME = "PRELAUNCH_EQUIVALENT_DIAGNOSTIC_FAILURE_SEALED.json"
 INTENT_NAME = "PRELAUNCH_EQUIVALENT_DIAGNOSTIC_FAILURE_INTENT.json"
 OBSERVED_EVIDENCE_NAME = "observed_incomplete_r9_seal"
 OBSERVED_VOLATILE_NAME = "observed_volatile_probe"
-DIAGNOSTIC_NAME = "operator_diagnostic_non_authoritative"
 REPRODUCED_EVIDENCE_NAME = "reproduced_incomplete_r9_seal"
 REPRODUCED_VOLATILE_NAME = "reproduced_volatile_probe"
 STDOUT_NAME = "r11-sealer.stdout"
@@ -284,6 +287,74 @@ def _validate_volatile_tree(recovery: Path, root: Path) -> dict[str, Any]:
     return report
 
 
+def _require_absent(path: Path, *, description: str) -> None:
+    if path.exists() or path.is_symlink():
+        raise R11FailureSealError(
+            f"{description} unexpectedly exists after recorded cleanup: {path}"
+        )
+
+
+def _observed_volatile_preimage(
+    recovery: Path,
+    incomplete_root: Path,
+    observed_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the durable r11 archive after its redundant /tmp source was cleaned."""
+
+    _require_absent(
+        R9_VOLATILE_ROOT, description="r11 failed volatile probe"
+    )
+    archive = incomplete_root / R9_ARCHIVE_NAME
+    state = _validate_volatile_tree(recovery, archive)
+    transcript = observed_evidence.get("transcript")
+    if not isinstance(transcript, dict):
+        raise R11FailureSealError(
+            "r11 incomplete evidence lacks its bound recorder transcript"
+        )
+    return {
+        "preimage_source": "incomplete_r9_seal_original_probe_tree",
+        "source_relative_path": R9_ARCHIVE_NAME,
+        "external_path": str(R9_VOLATILE_ROOT),
+        "external_path_present_at_seal": False,
+        "loss_classification": EXTERNAL_CLEANUP_CLASSIFICATION,
+        "transcript": {
+            "sha256": transcript.get("sha256"),
+            "size": transcript.get("size"),
+            "transcript_id": transcript.get("transcript_id"),
+        },
+        "inventory": state["inventory"],
+    }
+
+
+def _operator_diagnostic_disposition(
+    observed_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Record loss of a non-authoritative diagnostic without recreating it."""
+
+    _require_absent(
+        OPERATOR_DIAGNOSTIC_ROOT,
+        description="non-authoritative operator diagnostic",
+    )
+    transcript = observed_evidence.get("transcript")
+    if not isinstance(transcript, dict):
+        raise R11FailureSealError(
+            "r11 incomplete evidence lacks replacement transcript evidence"
+        )
+    return {
+        "path": str(OPERATOR_DIAGNOSTIC_ROOT),
+        "present_at_seal": False,
+        "authoritative_failure_evidence": False,
+        "purpose": "identified_exact_r9_cli_error_prefix",
+        "loss_classification": EXTERNAL_CLEANUP_CLASSIFICATION,
+        "replacement_evidence": {
+            "kind": "immutable_r11_exact_recorder_transcript",
+            "sha256": transcript.get("sha256"),
+            "size": transcript.get("size"),
+            "transcript_id": transcript.get("transcript_id"),
+        },
+    }
+
+
 def _scheduler_quiescence(user: str) -> dict[str, Any]:
     process = subprocess.run(
         ["/usr/bin/squeue", "-h", "-r", "-u", user, "-o", "%i|%j|%k|%T"],
@@ -358,9 +429,7 @@ def _reproduction_argv(recovery: Path, scheduler_user: str) -> list[str]:
 
 def _temporary_quarantine_paths() -> tuple[Path, ...]:
     return (
-        Path(f"{R9_VOLATILE_ROOT}-r11-failed-observed"),
         Path(f"{R9_VOLATILE_ROOT}-r11-failed-reproduced"),
-        Path(f"{OPERATOR_DIAGNOSTIC_ROOT}-observed"),
     )
 
 
@@ -454,16 +523,41 @@ def _execute_proof(
     observed_evidence = recovery / R9_EVIDENCE_RELATIVE
     archived_observed = evidence / OBSERVED_EVIDENCE_NAME
     _move_directory(observed_evidence, archived_observed)
-    observed_volatile = _archive_volatile(
-        R9_VOLATILE_ROOT,
-        Path(f"{R9_VOLATILE_ROOT}-r11-failed-observed"),
-        evidence / OBSERVED_VOLATILE_NAME,
+    _require_absent(
+        R9_VOLATILE_ROOT, description="r11 failed volatile probe"
     )
-    diagnostic = _archive_volatile(
+    _require_absent(
         OPERATOR_DIAGNOSTIC_ROOT,
-        Path(f"{OPERATOR_DIAGNOSTIC_ROOT}-observed"),
-        evidence / DIAGNOSTIC_NAME,
+        description="non-authoritative operator diagnostic",
     )
+    observed_volatile_source = archived_observed / R9_ARCHIVE_NAME
+    observed_volatile_archive = evidence / OBSERVED_VOLATILE_NAME
+    shutil.copytree(
+        observed_volatile_source,
+        observed_volatile_archive,
+        symlinks=True,
+        copy_function=shutil.copy2,
+    )
+    if (
+        _portable_inventory(observed_volatile_source)
+        != _portable_inventory(observed_volatile_archive)
+    ):
+        raise R11FailureSealError(
+            "durable observed volatile preimage copy drifted"
+        )
+    _remove_write_bits(observed_volatile_archive)
+    _require_recursively_read_only(observed_volatile_archive)
+    observed_volatile = {
+        "path": str(observed_volatile_archive),
+        **{
+            key: value
+            for key, value in intent["observed_volatile_probe"].items()
+            if key != "inventory"
+        },
+        "inventory": _portable_inventory(observed_volatile_archive),
+        "recursively_read_only": True,
+    }
+    diagnostic = dict(intent["operator_diagnostic"])
     if (
         _validate_incomplete_evidence(
             recovery, archived_observed, user
@@ -473,8 +567,7 @@ def _execute_proof(
             recovery, evidence / OBSERVED_VOLATILE_NAME
         )["inventory"]
         != intent["observed_volatile_probe"]["inventory"]
-        or _portable_inventory(evidence / DIAGNOSTIC_NAME)
-        != intent["operator_diagnostic"]["inventory"]
+        or diagnostic != intent["operator_diagnostic"]
     ):
         raise R11FailureSealError("observed r11 failure archive drifted")
     process = subprocess.run(
@@ -621,21 +714,28 @@ def _verify_proof(
     for name, field in (
         (OBSERVED_VOLATILE_NAME, "observed_volatile_probe"),
         (REPRODUCED_VOLATILE_NAME, "reproduced_volatile_probe"),
-        (DIAGNOSTIC_NAME, "operator_diagnostic"),
     ):
         record = proof.get(field)
         if not isinstance(record, dict):
             raise R11FailureSealError(f"r11 proof field is invalid: {field}")
         _verify_archive(evidence / name, record)
     if (
-        proof["operator_diagnostic"].get("authoritative_failure_evidence")
-        is not False
+        proof["operator_diagnostic"] != intent["operator_diagnostic"]
         or proof["observed_incomplete_evidence"].get("inventory")
         != intent["observed_incomplete_evidence"].get("inventory")
         or proof["observed_volatile_probe"].get("inventory")
         != intent["observed_volatile_probe"].get("inventory")
-        or proof["operator_diagnostic"].get("inventory")
-        != intent["operator_diagnostic"].get("inventory")
+        or proof["observed_volatile_probe"].get(
+            "external_path_present_at_seal"
+        )
+        is not False
+        or proof["observed_volatile_probe"].get("loss_classification")
+        != EXTERNAL_CLEANUP_CLASSIFICATION
+        or proof["operator_diagnostic"].get(
+            "authoritative_failure_evidence"
+        )
+        is not False
+        or proof["operator_diagnostic"].get("present_at_seal") is not False
     ):
         raise R11FailureSealError("r11 observed/preimage binding drifted")
 
@@ -738,11 +838,13 @@ def seal_failure(
     observed_evidence = _validate_incomplete_evidence(
         recovery, recovery / R9_EVIDENCE_RELATIVE, scheduler_user
     )
-    observed_volatile = _validate_volatile_tree(
-        recovery, R9_VOLATILE_ROOT
+    observed_volatile = _observed_volatile_preimage(
+        recovery,
+        recovery / R9_EVIDENCE_RELATIVE,
+        observed_evidence,
     )
-    diagnostic = _base._validate_operator_diagnostic(
-        OPERATOR_DIAGNOSTIC_ROOT
+    diagnostic = _operator_diagnostic_disposition(
+        observed_evidence
     )
     intent = _intent_payload(
         recovery,
