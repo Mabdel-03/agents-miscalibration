@@ -118,7 +118,7 @@ AUTHORITATIVE_SCHEMA5_RUN_IDS = frozenset(
     }
 )
 QUALIFICATION_EXECUTION_AUTHORITY_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-execution-authority-v2"
+    "schema5-v1.2-r9-throughput-qualification-execution-authority-v2"
 )
 QUALIFICATION_EXECUTION_AUTHORITY_SCHEMA_VERSION = 2
 ELIGIBLE_STATES = {

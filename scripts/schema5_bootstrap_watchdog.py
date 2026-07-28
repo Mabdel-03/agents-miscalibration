@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-PROTOCOL = "schema5-v1.2-r8-bootstrap-watchdog-config-v1"
-STATUS_PROTOCOL = "schema5-v1.2-r8-bootstrap-status-v1"
+PROTOCOL = "schema5-v1.2-r9-bootstrap-watchdog-config-v1"
+STATUS_PROTOCOL = "schema5-v1.2-r9-bootstrap-status-v1"
 RECOVERY_JOB_COUNT = 43
 SHA256 = __import__("re").compile(r"[0-9a-f]{64}\Z")
 GIT_OBJECT = __import__("re").compile(r"[0-9a-f]{40}\Z")
@@ -535,7 +535,7 @@ def _validate_status(
     }
     jobs_by_name: dict[str, Mapping[str, Any]] = {}
     comment_prefix = (
-        f"asys:s5-recovery-v1.2-r8:{config['chain_id']}:g"
+        f"asys:s5-recovery-v1.2-r9:{config['chain_id']}:g"
     )
     for row in status_jobs:
         if (
@@ -864,7 +864,7 @@ def run_once(
         action = "healthy_noop"
     result = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r8-bootstrap-watchdog-heartbeat-v1",
+        "protocol": "schema5-v1.2-r9-bootstrap-watchdog-heartbeat-v1",
         "passed": True,
         "observed_at_timestamp": second_at,
         "configuration_sha256": config_sha256,

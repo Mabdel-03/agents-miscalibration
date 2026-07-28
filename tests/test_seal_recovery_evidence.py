@@ -864,13 +864,13 @@ def _r3_probe_paths(
 ) -> tuple[Path, Path, Path, Path, Path, list[tuple[str, Path]], dict[str, str], list[str]]:
     recovery = root / "schema5-v1"
     r3_checkout = recovery / evidence._R3_RELEASE_CHECKOUT_DIRECTORY
-    r8_checkout = recovery / evidence._R8_RELEASE_CHECKOUT_DIRECTORY
-    toolchain = recovery / evidence._R8_TOOLCHAIN_RELATIVE_ROOT
+    r9_checkout = recovery / evidence._R9_RELEASE_CHECKOUT_DIRECTORY
+    toolchain = recovery / evidence._R9_TOOLCHAIN_RELATIVE_ROOT
     temporary = root / "schema5-r3-prelaunch-probe"
     expected_paths = {
         "tagged-r3-release-checkout": r3_checkout,
-        "tagged-r8-release-checkout": r8_checkout,
-        "sealed-r8-conda-toolchain": toolchain,
+        "tagged-r9-release-checkout": r9_checkout,
+        "sealed-r9-conda-toolchain": toolchain,
     }
     if classification == "unsafe_recorded_broken_internal_symlink":
         expected_paths["recorded-shared-conda-base"] = (
@@ -888,8 +888,10 @@ def _r3_probe_paths(
             str(toolchain / "base/bin/python"),
             "-I",
             "-B",
-            str(r3_checkout / evidence._R3_PILOT_RELATIVE_PATH),
-            "conda-runtime-identity",
+            str(
+                r3_checkout
+                / evidence._R3_RUNTIME_IDENTITY_RELATIVE_PATH
+            ),
             "--conda-executable",
             str(evidence._R3_SHARED_CONDA_EXECUTABLE),
         ]
@@ -908,7 +910,7 @@ def _r3_probe_paths(
     return (
         recovery,
         r3_checkout,
-        r8_checkout,
+        r9_checkout,
         toolchain,
         output,
         inputs,
@@ -924,7 +926,7 @@ def _r3_prelaunch_failure_envelope(
     (
         _recovery,
         r3_checkout,
-        _r8_checkout,
+        _r9_checkout,
         _toolchain,
         output,
         inputs,
@@ -939,7 +941,7 @@ def _r3_prelaunch_failure_envelope(
             / evidence._R3_BROKEN_SYMLINK_PATH
         )
         stderr = (
-            "[schema5-materialization-pilot] ERROR: "
+            "ERROR: "
             f"unsafe Conda runtime symlink {broken}: "
             "[Errno 2] No such file or directory: "
             f"'{evidence._R3_BROKEN_SYMLINK_MISSING_TARGET}'\n"
@@ -1046,14 +1048,14 @@ def _record_probe_fixture(
     (
         _recovery,
         r3_checkout,
-        r8_checkout,
+        r9_checkout,
         toolchain,
         output,
         inputs,
         environment,
         argv,
     ) = _r3_probe_paths(tmp_path, classification)
-    for path in (r3_checkout, r8_checkout, toolchain):
+    for path in (r3_checkout, r9_checkout, toolchain):
         path.mkdir(parents=True, exist_ok=True)
         (path / "fixture").write_text(path.name, encoding="utf-8")
     temporary = output.parent
@@ -1067,7 +1069,7 @@ def _record_probe_fixture(
         link.symlink_to(evidence._R3_BROKEN_SYMLINK_TARGET)
         broken = shared / evidence._R3_BROKEN_SYMLINK_PATH
         failure = (
-            "[schema5-materialization-pilot] ERROR: "
+            "ERROR: "
             f"unsafe Conda runtime symlink {broken}: "
             "[Errno 2] No such file or directory: "
             f"'{evidence._R3_BROKEN_SYMLINK_MISSING_TARGET}'\n"
@@ -1343,7 +1345,7 @@ def test_record_r3_prelaunch_attempt_brackets_immutable_verification_with_invent
         monkeypatch,
         "unsafe_recorded_broken_internal_symlink",
     )
-    toolchain = dict(kwargs["input_roots"])["sealed-r8-conda-toolchain"]
+    toolchain = dict(kwargs["input_roots"])["sealed-r9-conda-toolchain"]
 
     def mutating_verifier(**_kwargs):
         (toolchain / "fixture").write_text("mutated", encoding="utf-8")
@@ -1364,7 +1366,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (
         recovery,
         r3_checkout,
-        r8_checkout,
+        r9_checkout,
         toolchain,
         output,
         inputs,
@@ -1375,18 +1377,18 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     )
     temporary = output.parent
     temporary.mkdir(parents=True)
-    for checkout in (r3_checkout, r8_checkout):
+    for checkout in (r3_checkout, r9_checkout):
         (checkout / "scripts").mkdir(parents=True)
     r3_pilot = r3_checkout / evidence._R3_PILOT_RELATIVE_PATH
     r3_runtime = r3_checkout / evidence._R3_RUNTIME_IDENTITY_RELATIVE_PATH
     r3_pilot.write_text("exact r3 pilot\n", encoding="utf-8")
     r3_runtime.write_text("exact r3 runtime identity\n", encoding="utf-8")
-    r8_sealer = r8_checkout / evidence._R8_SEALER_RELATIVE_PATH
+    r9_sealer = r9_checkout / evidence._R9_SEALER_RELATIVE_PATH
     provisioner = (
-        r8_checkout / evidence._R8_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
+        r9_checkout / evidence._R9_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
     )
-    r8_sealer.write_text("exact r8 sealer\n", encoding="utf-8")
-    provisioner.write_text("exact r8 provisioner\n", encoding="utf-8")
+    r9_sealer.write_text("exact r9 sealer\n", encoding="utf-8")
+    provisioner.write_text("exact r9 provisioner\n", encoding="utf-8")
     (toolchain / "base/bin").mkdir(parents=True)
     (toolchain / "base/bin/python").write_text(
         "#!/bin/sh\n", encoding="utf-8"
@@ -1394,7 +1396,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (toolchain / "base/bin/conda").write_text(
         "#!/bin/sh\n", encoding="utf-8"
     )
-    monkeypatch.setattr(evidence, "__file__", str(r8_sealer))
+    monkeypatch.setattr(evidence, "__file__", str(r9_sealer))
     monkeypatch.setattr(
         evidence, "_R3_PILOT_SHA256", hashlib.sha256(r3_pilot.read_bytes()).hexdigest()
     )
@@ -1432,8 +1434,8 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
         return {
             "schema_version": evidence.conda_toolchain.SCHEMA_VERSION,
             "protocol": evidence.conda_toolchain.PROTOCOL,
-            "release_tag": "sweep-recovery-schema5-v1.2-r8",
-            "chain_namespace": "schema5-v1.2-r8",
+            "release_tag": "sweep-recovery-schema5-v1.2-r9",
+            "chain_namespace": "schema5-v1.2-r9",
             "toolchain_root": str(toolchain),
             "base_prefix": str(toolchain / "base"),
             "portable_shebang": {
@@ -1599,7 +1601,7 @@ def test_record_r3_prelaunch_attempt_withholds_envelope_on_source_mutation(
             / evidence._R3_BROKEN_SYMLINK_PATH
         )
         stderr = (
-            "[schema5-materialization-pilot] ERROR: "
+            "ERROR: "
             f"unsafe Conda runtime symlink {broken}: "
             "[Errno 2] No such file or directory: "
             f"'{evidence._R3_BROKEN_SYMLINK_MISSING_TARGET}'\n"

@@ -56,9 +56,9 @@ PACKAGE_CACHE_SEED_INVENTORY = "CONDA_PACKAGE_CACHE_SEED_INVENTORY.json"
 PACKAGE_CACHE_SEED_INTENT = "CONDA_PACKAGE_CACHE_SEED_INTENT.json"
 PACKAGE_CACHE_SEED_COMPLETE = "CONDA_PACKAGE_CACHE_SEED_COMPLETE.json"
 PACKAGE_CACHE_SEED_INTENT_PROTOCOL = (
-    "schema5-v1.2-r8-conda-package-cache-seed-intent-v1"
+    "schema5-v1.2-r9-conda-package-cache-seed-intent-v1"
 )
-PACKAGE_CACHE_SEED_PROTOCOL = "schema5-v1.2-r8-conda-package-cache-seed-v1"
+PACKAGE_CACHE_SEED_PROTOCOL = "schema5-v1.2-r9-conda-package-cache-seed-v1"
 PACKAGE_CACHE_METADATA_ENTRIES = ("cache", "urls", "urls.txt")
 ALLOWED_BUILD_EVIDENCE_ROOTS = (
     Path("src") / "agents_scaling.egg-info",

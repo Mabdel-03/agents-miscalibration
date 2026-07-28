@@ -82,7 +82,7 @@ def _load_sibling_publisher() -> Any:
 publisher = _load_sibling_publisher()
 
 
-PROTOCOL = "schema5-v1.2-r8-protected-capacity-builder-v4"
+PROTOCOL = "schema5-v1.2-r9-protected-capacity-builder-v4"
 INTENT_FILENAME = "PROTECTED_CAPACITY_BUILD_INTENT.json"
 LEDGER_FILENAME = "protected_capacity_build_ledger.json"
 SCHEDULER_EVIDENCE_FILENAME = "PROTECTED_CAPACITY_SCHEDULER_EVIDENCE.json"
@@ -1955,7 +1955,7 @@ def _validate_occupancy_preflight(
         not isinstance(value, dict)
         or set(value) != required
         or value.get("protocol")
-        != "schema5-v1.2-r8-protected-capacity-occupancy-preflight-v3"
+        != "schema5-v1.2-r9-protected-capacity-occupancy-preflight-v3"
         or value.get("plan_id") != plan.get("plan_id")
         or value.get("scientific_qos") != plan.get("qos")
         or not isinstance(value.get("scheduler_account"), str)
@@ -2670,7 +2670,7 @@ def _verify_submit_headroom_preflight(
         )
     receipt: dict[str, Any] = {
         "protocol": (
-            "schema5-v1.2-r8-protected-capacity-occupancy-preflight-v3"
+            "schema5-v1.2-r9-protected-capacity-occupancy-preflight-v3"
         ),
         "plan_id": str(plan["plan_id"]),
         "observation_interval_seconds": float(observation_interval_seconds),

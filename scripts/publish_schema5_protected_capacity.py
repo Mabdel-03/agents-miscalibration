@@ -11,7 +11,7 @@ before publication, re-executes every recorded read-only scheduler capture:
 * canary evidence binding those exact placements and scheduler-evidence identity
   to effective ``Requeue=0`` observations.
 
-Both objects must carry the exact schema-5 v1.2-r8 release and chain namespace.
+Both objects must carry the exact schema-5 v1.2-r9 release and chain namespace.
 The release commit and annotated-tag object are also supplied as explicit trust
 anchors so that two consistently substituted evidence files cannot authorize a
 different release.  The scheduler evidence additionally binds the exact canary
@@ -47,14 +47,14 @@ from agents_scaling.serving import protected_capacity as runtime_capacity
 
 SCHEMA_VERSION = 4
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r8"
-CHAIN_NAMESPACE = "schema5-v1.2-r8"
-PROTOCOL = "schema5-v1.2-r8-protected-capacity-v4"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r9"
+CHAIN_NAMESPACE = "schema5-v1.2-r9"
+PROTOCOL = "schema5-v1.2-r9-protected-capacity-v4"
 SCHEDULER_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r8-protected-capacity-scheduler-evidence-v4"
+    "schema5-v1.2-r9-protected-capacity-scheduler-evidence-v4"
 )
 CANARY_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r8-protected-capacity-canary-evidence-v4"
+    "schema5-v1.2-r9-protected-capacity-canary-evidence-v4"
 )
 CAPACITY_SOURCE = (
     "sealed_protected_canary+partition_inventory+association"
@@ -952,7 +952,7 @@ def _validate_occupancy_preflight(
     interval = value.get("observation_interval_seconds")
     if (
         value.get("protocol")
-        != "schema5-v1.2-r8-protected-capacity-occupancy-preflight-v3"
+        != "schema5-v1.2-r9-protected-capacity-occupancy-preflight-v3"
         or _SHA256_RE.fullmatch(str(value.get("plan_id", ""))) is None
         or preflight_id
         != hashlib.sha256(canonical_bytes(identity)).hexdigest()
@@ -2972,7 +2972,7 @@ def validate_marker_payload(
     expected_dispatcher_source_sha256: str | None = None,
     expected_qualification_runner_source_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Validate the exact marker schema used by the r8 chain renderer."""
+    """Validate the exact marker schema used by the r9 chain renderer."""
 
     _require_exact_fields(
         marker,

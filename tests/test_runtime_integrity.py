@@ -95,14 +95,14 @@ def _schema4_environment(tmp_path: Path, role: str) -> dict[str, str]:
         },
         "conda_toolchain": {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r8-offline-conda-toolchain-v1",
-            "release_tag": "sweep-recovery-schema5-v1.2-r8",
-            "chain_namespace": "schema5-v1.2-r8",
-            "toolchain_root": "/sealed/build-tools/schema5-v1.2-r8",
-            "base_prefix": "/sealed/build-tools/schema5-v1.2-r8/base",
+            "protocol": "schema5-v1.2-r9-offline-conda-toolchain-v1",
+            "release_tag": "sweep-recovery-schema5-v1.2-r9",
+            "chain_namespace": "schema5-v1.2-r9",
+            "toolchain_root": "/sealed/build-tools/schema5-v1.2-r9",
+            "base_prefix": "/sealed/build-tools/schema5-v1.2-r9/base",
             "completion_marker": {
                 "path": (
-                    "/sealed/build-tools/schema5-v1.2-r8/"
+                    "/sealed/build-tools/schema5-v1.2-r9/"
                     "CONDA_TOOLCHAIN_COMPLETE.json"
                 ),
                 "sha256": "b" * 64,
@@ -117,7 +117,7 @@ def _schema4_environment(tmp_path: Path, role: str) -> dict[str, str]:
             },
             "intent_id": "e" * 64,
             "conda_executable": {
-                "path": "/sealed/build-tools/schema5-v1.2-r8/base/bin/conda",
+                "path": "/sealed/build-tools/schema5-v1.2-r9/base/bin/conda",
                 "sha256": "f" * 64,
                 "size": 512,
                 "mode": 0o555,

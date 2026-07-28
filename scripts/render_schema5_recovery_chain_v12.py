@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render, verify, and transactionally submit the schema-5 v1.2-r8 recovery DAG.
+"""Render, verify, and transactionally submit the schema-5 v1.2-r9 recovery DAG.
 
 The recovery jobs are deliberately generated outside the Git checkout.  A successful
 ``render --apply`` publishes immutable generation-specific sbatch files first and the
@@ -47,6 +47,7 @@ from scripts import seal_schema5_r4_toolchain_failure as r4_toolchain_failure  #
 from scripts import seal_schema5_r5_prelaunch_failure as r5_prelaunch_failure  # noqa: E402
 from scripts import seal_schema5_r6_prelaunch_failure as r6_prelaunch_failure  # noqa: E402
 from scripts import seal_schema5_r7_prelaunch_failure as r7_prelaunch_failure  # noqa: E402
+from scripts import seal_schema5_r8_prelaunch_failure as r8_prelaunch_failure  # noqa: E402
 from agents_scaling.experiment.completion import (  # noqa: E402
     trusted_generation_catalog_errors,
 )
@@ -59,20 +60,20 @@ from agents_scaling.serving import protected_capacity  # noqa: E402
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r8"
-CHAIN_NAMESPACE = "schema5-v1.2-r8"
-CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R8.json"
-SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R8.submission.json"
-SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R8_SUBMISSION.json"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r9"
+CHAIN_NAMESPACE = "schema5-v1.2-r9"
+CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R9.json"
+SUBMISSION_JOURNAL_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R9.submission.json"
+SUBMISSION_RECEIPT_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R9_SUBMISSION.json"
 DEPENDENCY_POLICY_CHECKS_ROOT_NAME = "dependency_policy_checks"
 ROOT_RELEASE_INTENT_NAME = "RECOVERY_CHAIN_ROOT_RELEASE_INTENT.json"
 ROOT_RELEASE_COMPLETE_NAME = "RECOVERY_CHAIN_ROOT_RELEASE_COMPLETE.json"
-LAUNCH_COMPLETE_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R8_LAUNCHED.json"
+LAUNCH_COMPLETE_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R9_LAUNCHED.json"
 BOOTSTRAP_WATCHDOG_READY_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_READY.json"
 )
 BOOTSTRAP_WATCHDOG_READY_PROTOCOL = (
-    "schema5-v1.2-r8-bootstrap-watchdog-deployment-ready-v1"
+    "schema5-v1.2-r9-bootstrap-watchdog-deployment-ready-v1"
 )
 BOOTSTRAP_WATCHDOG_ARM_INTENT_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARM_INTENT.json"
@@ -81,19 +82,19 @@ BOOTSTRAP_WATCHDOG_ARMED_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_ARMED.json"
 )
 BOOTSTRAP_WATCHDOG_ARMED_PROTOCOL = (
-    "schema5-v1.2-r8-bootstrap-watchdog-armed-v1"
+    "schema5-v1.2-r9-bootstrap-watchdog-armed-v1"
 )
 BOOTSTRAP_WATCHDOG_HANDOFF_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_HANDOFF_COMPLETE.json"
 )
 BOOTSTRAP_WATCHDOG_HANDOFF_PROTOCOL = (
-    "schema5-v1.2-r8-bootstrap-watchdog-handoff-v1"
+    "schema5-v1.2-r9-bootstrap-watchdog-handoff-v1"
 )
 BOOTSTRAP_HEARTBEAT_MAX_AGE_SECONDS = 600
 BOOTSTRAP_OBSERVATIONS_ROOT_NAME = "bootstrap_watchdog_observations"
 BOOTSTRAP_ISOLATED_DRILL_DIRECTORY = "isolated_cancellation_drill"
 BOOTSTRAP_ISOLATED_RENDER_LOCK_NAME = (
-    ".RECOVERY_CHAIN_SCHEMA5_V1_2_R8.isolated-drill-render.lock"
+    ".RECOVERY_CHAIN_SCHEMA5_V1_2_R9.isolated-drill-render.lock"
 )
 BOOTSTRAP_REPAIR_RESULT_NAME = "BOOTSTRAP_REPAIR_RESULT.json"
 BOOTSTRAP_ISOLATED_SCRIPT_EXIT_CODE = 78
@@ -107,13 +108,13 @@ BOOTSTRAP_DESCENDANT_ARMED_NAME = (
     "RECOVERY_CHAIN_BOOTSTRAP_DESCENDANT_ARMED.json"
 )
 BOOTSTRAP_DESCENDANT_ARMED_PROTOCOL = (
-    "schema5-v1.2-r8-bootstrap-descendant-armed-v1"
+    "schema5-v1.2-r9-bootstrap-descendant-armed-v1"
 )
 SCHEDULER_ACCEPTANCE_COMPLETE_NAME = (
     "RECOVERY_CHAIN_SCHEDULER_ACCEPTANCE_COMPLETE.json"
 )
 SCHEDULER_ACCEPTANCE_PROTOCOL = (
-    "schema5-v1.2-r8-recovery-scheduler-acceptance-v1"
+    "schema5-v1.2-r9-recovery-scheduler-acceptance-v1"
 )
 SCHEDULER_ACCEPTANCE_INTENT_NAME = (
     "RECOVERY_CHAIN_SCHEDULER_ACCEPTANCE_INTENT.json"
@@ -124,8 +125,8 @@ DEPENDENCY_POLICY_CONTRACT = (
     "afterok+per_stage_afterany+aggregate_afterany_sentinel+kill_invalid_depend"
     "+held_root+sealed_dependency_cascade"
 )
-REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_2_r8"
-CAPACITY_TRANSIENT_ROOT_NAME = "fleet_capacity_transients_v1_2_r8"
+REPAIR_ROOT_NAME = "recovery_chain_repairs_v1_2_r9"
+CAPACITY_TRANSIENT_ROOT_NAME = "fleet_capacity_transients_v1_2_r9"
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
 PROTECTED_CAPACITY_MARKER_NAME = "PROTECTED_CAPACITY_COMPLETE.json"
 PROTECTED_CAPACITY_PROTOCOL = protected_capacity.PROTOCOL
@@ -182,13 +183,16 @@ SUPERSEDED_R6_PRELAUNCH_FAILURE_RELATIVE_ROOT = (
 SUPERSEDED_R7_PRELAUNCH_FAILURE_RELATIVE_ROOT = (
     r7_prelaunch_failure.EVIDENCE_RELATIVE_ROOT
 )
+SUPERSEDED_R8_PRELAUNCH_FAILURE_RELATIVE_ROOT = (
+    r8_prelaunch_failure.EVIDENCE_RELATIVE_ROOT
+)
 WATCHDOG_READY_MARKER_NAME = "WATCHDOG_READY.json"
-WATCHDOG_READY_PROTOCOL = "schema5-v1.2-r8-external-watchdog-v1"
+WATCHDOG_READY_PROTOCOL = "schema5-v1.2-r9-external-watchdog-v1"
 EXTERNAL_WATCHDOG_DRILL_MARKER_NAME = (
     "EXTERNAL_WATCHDOG_KILL_DRILL_COMPLETE.json"
 )
 EXTERNAL_WATCHDOG_DRILL_PROTOCOL = (
-    "schema5-v1.2-r8-external-watchdog-drill-v1"
+    "schema5-v1.2-r9-external-watchdog-drill-v1"
 )
 THROUGHPUT_QUALIFICATION_ROOT_NAME = (
     "schema5_throughput_qualification_v1"
@@ -197,41 +201,41 @@ THROUGHPUT_QUALIFICATION_MARKER_NAME = (
     "THROUGHPUT_QUALIFICATION_COMPLETE.json"
 )
 THROUGHPUT_QUALIFICATION_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-v3"
+    "schema5-v1.2-r9-throughput-qualification-v3"
 )
 THROUGHPUT_QUALIFICATION_ACCOUNTING_SCHEMA_VERSION = 3
 THROUGHPUT_QUALIFICATION_PLAN_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-load-plan-v3"
+    "schema5-v1.2-r9-throughput-qualification-load-plan-v3"
 )
 THROUGHPUT_QUALIFICATION_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-evidence-v3"
+    "schema5-v1.2-r9-throughput-qualification-evidence-v3"
 )
 THROUGHPUT_QUALIFICATION_SCHEDULER_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-scheduler-evidence-v3"
+    "schema5-v1.2-r9-throughput-qualification-scheduler-evidence-v3"
 )
 THROUGHPUT_QUALIFICATION_SEMANTIC_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-semantic-evidence-v3"
+    "schema5-v1.2-r9-throughput-qualification-semantic-evidence-v3"
 )
 THROUGHPUT_QUALIFICATION_OBSERVATION_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-observation-v3"
+    "schema5-v1.2-r9-throughput-qualification-observation-v3"
 )
 THROUGHPUT_QUALIFICATION_WINDOW_INTENT_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-load-window-intent-v3"
+    "schema5-v1.2-r9-throughput-qualification-load-window-intent-v3"
 )
 THROUGHPUT_QUALIFICATION_CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-cycle-intent-v3"
+    "schema5-v1.2-r9-throughput-qualification-cycle-intent-v3"
 )
 THROUGHPUT_QUALIFICATION_ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r9-throughput-qualification-attempt-pointer-v1"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_ATTEMPT_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r9-throughput-qualification-current-attempt-v1"
 )
 THROUGHPUT_QUALIFICATION_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-failure-v4"
+    "schema5-v1.2-r9-throughput-qualification-failure-v4"
 )
 THROUGHPUT_QUALIFICATION_LEGACY_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-failure-v1"
+    "schema5-v1.2-r9-throughput-qualification-failure-v1"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_ATTEMPT_NAME = "CURRENT_ATTEMPT.json"
 THROUGHPUT_QUALIFICATION_ATTEMPT_DIRECTORY = "attempts"
@@ -245,10 +249,10 @@ THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_NAME = (
     "CURRENT_CAPACITY_TRANSITION.json"
 )
 THROUGHPUT_QUALIFICATION_TRANSITION_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-capacity-transition-v2"
+    "schema5-v1.2-r9-throughput-qualification-capacity-transition-v2"
 )
 THROUGHPUT_QUALIFICATION_CURRENT_TRANSITION_PROTOCOL = (
-    "schema5-v1.2-r8-throughput-qualification-current-capacity-transition-v1"
+    "schema5-v1.2-r9-throughput-qualification-current-capacity-transition-v1"
 )
 THROUGHPUT_QUALIFICATION_CELLS = 768
 THROUGHPUT_QUALIFICATION_QIDS = 15_360
@@ -260,15 +264,15 @@ THROUGHPUT_QUALIFICATION_MIN_QIDS_PER_DAY = 201_994
 THROUGHPUT_QUALIFICATION_MIN_EXECUTION_EVENTS = 16_833
 QUARANTINE_ROOT_NAME = "quarantine"
 QUARANTINE_EVIDENCE_ROOT_NAME = "materialization_quarantines"
-RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R8.render.lock"
-SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R8.submit.lock"
+RENDER_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R9.render.lock"
+SUBMISSION_LOCK_NAME = ".RECOVERY_CHAIN_SCHEMA5_V1_2_R9.submit.lock"
 SENTINEL_TOOL_FILENAME = "schema5_recovery_sentinel.py"
 SENTINEL_BOOTSTRAP_ROOT_NAME = "sentinel_bootstraps"
 SENTINEL_BOOTSTRAP_MARKER_NAME = "BOOTSTRAP_COMPLETE.json"
 SENTINEL_BOOTSTRAP_INVENTORY_NAME = "BOOTSTRAP_PAYLOAD.sha256"
-SENTINEL_BOOTSTRAP_PROTOCOL = "schema5-v1.2-r8-sentinel-bootstrap"
-SOURCE_CHECKOUT_SEAL_NAME = "SOURCE_CHECKOUT_SCHEMA5_V1_2_R8_COMPLETE.json"
-SOURCE_CHECKOUT_SEAL_PROTOCOL = "schema5-v1.2-r8-source-checkout-seal-v1"
+SENTINEL_BOOTSTRAP_PROTOCOL = "schema5-v1.2-r9-sentinel-bootstrap"
+SOURCE_CHECKOUT_SEAL_NAME = "SOURCE_CHECKOUT_SCHEMA5_V1_2_R9_COMPLETE.json"
+SOURCE_CHECKOUT_SEAL_PROTOCOL = "schema5-v1.2-r9-source-checkout-seal-v1"
 BUNDLED_TOOL_GIT_PATHS = (
     "scripts/schema5_recovery_sentinel.py",
     "scripts/verify_schema5_recovery_evidence.py",
@@ -281,6 +285,7 @@ BUNDLED_TOOL_GIT_PATHS = (
     "scripts/seal_schema5_r5_prelaunch_failure.py",
     "scripts/seal_schema5_r6_prelaunch_failure.py",
     "scripts/seal_schema5_r7_prelaunch_failure.py",
+    "scripts/seal_schema5_r8_prelaunch_failure.py",
 )
 MATERIALIZATION_PILOT_GIT_PATH = "scripts/run_schema5_materialization_pilot.py"
 OWNERSHIP_POLICY_GIT_PATH = "configs/environment_ownership_policy.v1.json"
@@ -306,6 +311,7 @@ PREREQUISITE_CODE_GIT_PATHS = (
     "scripts/seal_schema5_r5_prelaunch_failure.py",
     "scripts/seal_schema5_r6_prelaunch_failure.py",
     "scripts/seal_schema5_r7_prelaunch_failure.py",
+    "scripts/seal_schema5_r8_prelaunch_failure.py",
     OWNERSHIP_POLICY_GIT_PATH,
     INTEGRITY_NORMALIZATION_POLICY_GIT_PATH,
     SLURM_CANARY_GIT_PATH,
@@ -314,7 +320,7 @@ PREREQUISITE_CODE_GIT_PATHS = (
 )
 MATERIALIZATION_PILOT_MARKER = "PILOT_COMPLETE.json"
 SLURM_CANARY_MARKER = "CANARY_COMPLETE.json"
-PREREQUISITE_PROTOCOL = "schema5-v1.2-r8-prerequisite-evidence-v11"
+PREREQUISITE_PROTOCOL = "schema5-v1.2-r9-prerequisite-evidence-v12"
 PRODUCTION_CONDA_RECONCILIATION_INCIDENT_SHA256 = (
     "9f588ce4ffc4aeb5a3ac494a35244604e4eb100a7190b18d9eb3c568468fdb09"
 )
@@ -322,7 +328,7 @@ PRODUCTION_CONDA_RECONCILIATION_INCIDENT_ID = (
     "2abfc4fab5828cd1e965ff822e54e55462b1a6a2b280b7f47eebd90cadcfd872"
 )
 R1_PROTOCOL_VERIFICATION_PROTOCOL = (
-    "schema5-v1.2-r8-native-r1-evidence-verification-v1"
+    "schema5-v1.2-r9-native-r1-evidence-verification-v1"
 )
 R1_CHAIN_PROTOCOL = "schema5-v1.1-r1-recovery-chain"
 R1_EVIDENCE_DISPATCH_PROTOCOL = "schema5-recovery-evidence-protocol-dispatch"
@@ -355,19 +361,19 @@ SMOKE_RUN_IDS = (
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r8-smoke-attempt-pointer-v1"
+    "schema5-v1.2-r9-smoke-attempt-pointer-v1"
 )
 SMOKE_CURRENT_SELECTOR_PROTOCOL = (
-    "schema5-v1.2-r8-smoke-current-selector-v1"
+    "schema5-v1.2-r9-smoke-current-selector-v1"
 )
 SMOKE_ATTEMPT_COMPLETE_PROTOCOL = (
-    "schema5-v1.2-r8-smoke-attempt-complete-v1"
+    "schema5-v1.2-r9-smoke-attempt-complete-v1"
 )
 SMOKE_ATTEMPT_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r8-smoke-attempt-failure-v1"
+    "schema5-v1.2-r9-smoke-attempt-failure-v1"
 )
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r8-smoke-attempt-binding-v1"
+    "schema5-v1.2-r9-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -837,6 +843,13 @@ class RecoveryPaths:
         )
 
     @property
+    def superseded_r8_prelaunch_failure_root(self) -> Path:
+        return (
+            self.recovery_root
+            / SUPERSEDED_R8_PRELAUNCH_FAILURE_RELATIVE_ROOT
+        )
+
+    @property
     def external_watchdog_drill_marker(self) -> Path:
         return self.recovery_root / EXTERNAL_WATCHDOG_DRILL_MARKER_NAME
 
@@ -982,7 +995,7 @@ def _default_runner(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
 def _job_comment(chain_id: str, name: str, generation: int) -> str:
     if generation < 0:
         raise ChainError("recovery-chain submission generation cannot be negative")
-    return f"asys:s5-recovery-v1.2-r8:{chain_id}:g{generation:04d}:{name}"
+    return f"asys:s5-recovery-v1.2-r9:{chain_id}:g{generation:04d}:{name}"
 
 
 def _utc_now() -> str:
@@ -1283,7 +1296,7 @@ def recovery_paths(
         repository=repository,
         results_root=results_root,
         recovery_root=recovery_root,
-        source_checkout=recovery_root / "release_source_checkout_v1_2_r8",
+        source_checkout=recovery_root / "release_source_checkout_v1_2_r9",
         release_root=release,
         worktree=release / "worktree",
         identity=release / "identity",
@@ -1326,7 +1339,7 @@ def recovery_paths(
 
 _BOOTSTRAP_RELATIVE_PATH = re.compile(r"[A-Za-z0-9._+@/-]+\Z")
 _PYTHON_STDLIB_DIRECTORY = re.compile(r"python([0-9]+)\.([0-9]+)\Z")
-_BOOTSTRAP_PROBE_TOKEN = "schema5_v1_2_r8_sentinel_bootstrap_ok"
+_BOOTSTRAP_PROBE_TOKEN = "schema5_v1_2_r9_sentinel_bootstrap_ok"
 
 
 def _bootstrap_stdlib_root(paths: RecoveryPaths) -> Path:
@@ -3973,6 +3986,72 @@ def _verified_superseded_r7_prelaunch_failure(
     return json.loads(json.dumps(binding, sort_keys=True))
 
 
+def _verified_superseded_r8_prelaunch_failure(
+    paths: RecoveryPaths,
+) -> dict[str, Any]:
+    expected_root = (
+        paths.recovery_root / SUPERSEDED_R8_PRELAUNCH_FAILURE_RELATIVE_ROOT
+    )
+    if paths.superseded_r8_prelaunch_failure_root != expected_root:
+        raise ChainError("superseded r8 prelaunch-failure root is not canonical")
+    try:
+        binding = r8_prelaunch_failure.verify_failure_seal(
+            expected_root,
+            recovery_root=paths.recovery_root,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        r8_prelaunch_failure.R8FailureSealError,
+        *r8_prelaunch_failure.MarkerLastEvidenceError,
+    ) as exc:
+        raise ChainError(
+            f"superseded r8 prelaunch-failure seal is invalid: {exc}"
+        ) from exc
+    expected_keys = {
+        "passed",
+        "root",
+        "protocol",
+        "release_tag",
+        "release_git_commit",
+        "chain_namespace",
+        "marker",
+        "marker_sha256",
+        "marker_size",
+        "marker_id",
+        "classification",
+        "retry_in_place",
+        "requires_superseding_release",
+        "pre_scheduler_submission",
+        "known_scheduler_job_ids",
+    }
+    if (
+        not isinstance(binding, dict)
+        or set(binding) != expected_keys
+        or binding.get("passed") is not True
+        or binding.get("root") != str(expected_root)
+        or binding.get("protocol") != r8_prelaunch_failure.PROTOCOL
+        or binding.get("release_tag") != r8_prelaunch_failure.R8_TAG
+        or binding.get("release_git_commit") != r8_prelaunch_failure.R8_COMMIT
+        or binding.get("chain_namespace") != r8_prelaunch_failure.R8_NAMESPACE
+        or binding.get("marker")
+        != str(expected_root / r8_prelaunch_failure.MARKER_NAME)
+        or _SHA256.fullmatch(str(binding.get("marker_sha256", ""))) is None
+        or _SHA256.fullmatch(str(binding.get("marker_id", ""))) is None
+        or not isinstance(binding.get("marker_size"), int)
+        or isinstance(binding.get("marker_size"), bool)
+        or binding["marker_size"] <= 0
+        or binding.get("classification") != r8_prelaunch_failure.CLASSIFICATION
+        or binding.get("retry_in_place") is not False
+        or binding.get("requires_superseding_release") is not True
+        or binding.get("pre_scheduler_submission") is not True
+        or binding.get("known_scheduler_job_ids") != []
+    ):
+        raise ChainError("superseded r8 prelaunch-failure binding drifted")
+    return json.loads(json.dumps(binding, sort_keys=True))
+
+
 def _external_launch_prerequisite_contract(
     paths: RecoveryPaths, *, git_identity: Mapping[str, str]
 ) -> dict[str, dict[str, Any]]:
@@ -3998,6 +4077,7 @@ def _external_launch_prerequisite_contract(
     superseded_r5 = _verified_superseded_r5_prelaunch_failure(paths)
     superseded_r6 = _verified_superseded_r6_prelaunch_failure(paths)
     superseded_r7 = _verified_superseded_r7_prelaunch_failure(paths)
+    superseded_r8 = _verified_superseded_r8_prelaunch_failure(paths)
     return {
         "durable_git_release": {
             **_launch_prerequisite_binding(
@@ -4027,6 +4107,7 @@ def _external_launch_prerequisite_contract(
         "superseded_r5_prelaunch_failure": superseded_r5,
         "superseded_r6_prelaunch_failure": superseded_r6,
         "superseded_r7_prelaunch_failure": superseded_r7,
+        "superseded_r8_prelaunch_failure": superseded_r8,
         "protected_capacity": _launch_prerequisite_binding(
             path=paths.protected_capacity_marker,
             marker=protected,
@@ -4072,6 +4153,7 @@ def _sealed_external_launch_prerequisite_contract(
     superseded_r5 = _verified_superseded_r5_prelaunch_failure(paths)
     superseded_r6 = _verified_superseded_r6_prelaunch_failure(paths)
     superseded_r7 = _verified_superseded_r7_prelaunch_failure(paths)
+    superseded_r8 = _verified_superseded_r8_prelaunch_failure(paths)
     return {
         "durable_git_release": {
             **_launch_prerequisite_binding(
@@ -4101,6 +4183,7 @@ def _sealed_external_launch_prerequisite_contract(
         "superseded_r5_prelaunch_failure": superseded_r5,
         "superseded_r6_prelaunch_failure": superseded_r6,
         "superseded_r7_prelaunch_failure": superseded_r7,
+        "superseded_r8_prelaunch_failure": superseded_r8,
         "protected_capacity": _launch_prerequisite_binding(
             path=paths.protected_capacity_marker,
             marker=protected,
@@ -4513,7 +4596,7 @@ def _prerequisite_evidence_contract(
         description="Slurm fleet canary",
     )
     contract = {
-        "schema_version": 11,
+        "schema_version": 12,
         "protocol": PREREQUISITE_PROTOCOL,
         "release_tag": RELEASE_TAG,
         "release_git_commit": git_identity["git_commit"],
@@ -4653,6 +4736,7 @@ def _validate_prerequisite_evidence_contract(
         "superseded_r5_prelaunch_failure",
         "superseded_r6_prelaunch_failure",
         "superseded_r7_prelaunch_failure",
+        "superseded_r8_prelaunch_failure",
         "protected_capacity",
         "materialization_pilot",
         "slurm_canary",
@@ -4665,7 +4749,7 @@ def _validate_prerequisite_evidence_contract(
     code_records = contract.get("tagged_code")
     expected_paths = list(PREREQUISITE_CODE_GIT_PATHS)
     if (
-        contract.get("schema_version") != 11
+        contract.get("schema_version") != 12
         or contract.get("protocol") != PREREQUISITE_PROTOCOL
         or contract.get("release_tag") != RELEASE_TAG
         or contract.get("release_git_commit") != git_identity["git_commit"]
@@ -5103,7 +5187,7 @@ launch_gate_comment="$(
     sed -n 's/^Comment=//p' |
     head -n 1
 )"
-if [[ ! "$launch_gate_comment" =~ ^asys:s5-recovery-v1\.2-r8:([0-9a-f]{64}):g([0-9]{4}):([A-Za-z0-9._-]+)$ ]]; then
+if [[ ! "$launch_gate_comment" =~ ^asys:s5-recovery-v1\.2-r9:([0-9a-f]{64}):g([0-9]{4}):([A-Za-z0-9._-]+)$ ]]; then
   echo "launch gate scheduler comment is malformed" >&2
   exit 2
 fi
@@ -5309,7 +5393,7 @@ except ValueError:
 if generation < 0 or not job_id.isdigit():
     fail("scheduler generation or job ID is invalid")
 expected_comment = (
-    f"asys:s5-recovery-v1.2-r8:{chain_id}:g{generation:04d}:{stage_name}"
+    f"asys:s5-recovery-v1.2-r9:{chain_id}:g{generation:04d}:{stage_name}"
 )
 if scheduler_comment != expected_comment:
     fail("scheduler comment does not equal the runtime identity")
@@ -5326,7 +5410,7 @@ manifest_identity = dict(manifest)
 manifest_chain_id = manifest_identity.pop("chain_id", None)
 if (
     manifest.get("schema_version") != __CHAIN_SCHEMA_VERSION__
-    or manifest.get("protocol") != "schema5-v1.2-r8-recovery-chain"
+    or manifest.get("protocol") != "schema5-v1.2-r9-recovery-chain"
     or manifest_chain_id != chain_id
     or require_sha256(manifest_chain_id, "manifest chain ID")
     != digest(canonical_json(manifest_identity))
@@ -5548,6 +5632,27 @@ except Exception as error:
     fail(f"superseded r7 prelaunch-failure verification failed: {error}")
 if observed_r7_binding != r7_binding:
     fail("superseded r7 prelaunch-failure seal differs from manifest")
+
+r8_binding = canary_source.get("superseded_r8_prelaunch_failure")
+r8_root = (
+    Path(str(manifest.get("recovery_root", "")))
+    / "prelaunch_failures"
+    / "schema5-v1.2-r8-r3-probe-import"
+)
+_, r8_sealer_path = bundled_record(
+    "scripts/seal_schema5_r8_prelaunch_failure.py"
+)
+try:
+    observed_r8_binding = runpy.run_path(str(r8_sealer_path))[
+        "verify_failure_seal"
+    ](
+        r8_root,
+        recovery_root=Path(str(manifest.get("recovery_root", ""))),
+    )
+except Exception as error:
+    fail(f"superseded r8 prelaunch-failure verification failed: {error}")
+if observed_r8_binding != r8_binding:
+    fail("superseded r8 prelaunch-failure seal differs from manifest")
 
 
 def require_launch_prerequisite(
@@ -6058,7 +6163,7 @@ certificate_batches = (
 expected_certificate_batch_sizes = [24] * 11 + [14]
 if (
     protected_certificate.get("protocol")
-    != "schema5-v1.2-r8-throughput-preflight-capacity-certificate-v1"
+    != "schema5-v1.2-r9-throughput-preflight-capacity-certificate-v1"
     or protected_certificate.get("passed") is not True
     or protected_certificate.get("certificate_id")
     != certificate_binding.get("certificate_id")
@@ -6295,9 +6400,9 @@ repair_fields = initial_fields | {
 }
 expected_receipt_fields = initial_fields if generation == 0 else repair_fields
 expected_receipt_protocol = (
-    "schema5-v1.2-r8-recovery-chain-submission"
+    "schema5-v1.2-r9-recovery-chain-submission"
     if generation == 0
-    else "schema5-v1.2-r8-recovery-chain-repair"
+    else "schema5-v1.2-r9-recovery-chain-repair"
 )
 if (
     set(receipt) != expected_receipt_fields
@@ -6335,7 +6440,7 @@ policy = require_backing_file(
     beneath=evidence_root,
 )
 if (
-    policy.get("protocol") != "schema5-v1.2-r8-live-dependency-policy-v1"
+    policy.get("protocol") != "schema5-v1.2-r9-live-dependency-policy-v1"
     or policy.get("phase") != "pre_submission"
     or policy.get("kill_invalid_depend") is not True
     or "kill_invalid_depend" not in policy.get("dependency_parameters", [])
@@ -6399,7 +6504,7 @@ for manifest_row, record in zip(manifest_jobs, receipt_jobs, strict=True):
         ):
             fail(f"repair receipt generation drifted: {name}")
     expected_record_comment = (
-        f"asys:s5-recovery-v1.2-r8:{chain_id}:"
+        f"asys:s5-recovery-v1.2-r9:{chain_id}:"
         f"g{record_generation:04d}:{name}"
     )
     if record.get("comment") != expected_record_comment:
@@ -6495,7 +6600,7 @@ if (
     set(release) != release_fields
     or release.get("schema_version") != SCHEMA_VERSION
     or release.get("protocol")
-    != "schema5-v1.2-r8-recovery-root-release-v1"
+    != "schema5-v1.2-r9-recovery-root-release-v1"
     or release.get("receipt") != str(receipt_path)
     or release.get("receipt_sha256") != digest(receipt_raw)
     or release.get("receipt_id") != receipt.get("receipt_id")
@@ -6661,7 +6766,7 @@ else:
     )
     if (
         generation_acceptance.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-generation-provenance-v1"
+        != "schema5-v1.2-r9-bootstrap-generation-provenance-v1"
         or generation_acceptance.get("passed") is not True
         or generation_acceptance.get("chain_id") != chain_id
         or generation_acceptance.get("submission_receipt")
@@ -6721,7 +6826,7 @@ release_policy = require_backing_file(
 )
 if (
     release_policy.get("protocol")
-    != "schema5-v1.2-r8-live-dependency-policy-v1"
+    != "schema5-v1.2-r9-live-dependency-policy-v1"
     or release_policy.get("phase") != "root_release"
     or release_policy.get("kill_invalid_depend") is not True
     or "kill_invalid_depend"
@@ -6765,7 +6870,7 @@ for ordinal, attempt_binding in enumerate(
     )
     if (
         attempt_intent.get("protocol")
-        != "schema5-v1.2-r8-root-release-attempt-intent-v1"
+        != "schema5-v1.2-r9-root-release-attempt-intent-v1"
         or attempt_intent.get("attempt") != ordinal
         or attempt_intent.get("root_index") != release_root_index
         or attempt_intent.get("root_name")
@@ -6782,7 +6887,7 @@ for ordinal, attempt_binding in enumerate(
         or attempt_intent.get("dependency_policy_check_sha256")
         != release.get("dependency_policy_check_sha256")
         or attempt_result.get("protocol")
-        != "schema5-v1.2-r8-root-release-attempt-result-v1"
+        != "schema5-v1.2-r9-root-release-attempt-result-v1"
         or attempt_result.get("attempt") != ordinal
         or attempt_result.get("root_index") != release_root_index
         or attempt_result.get("root_name")
@@ -6875,7 +6980,7 @@ if (
     set(launch) != launch_fields
     or launch.get("schema_version") != SCHEMA_VERSION
     or launch.get("protocol")
-    != "schema5-v1.2-r8-recovery-chain-launched-v1"
+    != "schema5-v1.2-r9-recovery-chain-launched-v1"
     or launch.get("receipt") != str(receipt_path)
     or launch.get("receipt_sha256") != digest(receipt_raw)
     or launch.get("receipt_id") != receipt.get("receipt_id")
@@ -7100,10 +7205,10 @@ comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
   echo "source checkout scheduler comment is ambiguous" >&2
   exit 2
 }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r8:([0-9a-f]{{64}}):g[0-9]{{4}}:source_checkout$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r9:([0-9a-f]{{64}}):g[0-9]{{4}}:source_checkout$ ]]; then
   scheduler_chain_id="${{BASH_REMATCH[1]}}"
 else
-  echo "source checkout scheduler identity is outside the immutable r8 chain" >&2
+  echo "source checkout scheduler identity is outside the immutable r9 chain" >&2
   exit 2
 fi
 # Authenticate the sealed interpreter and its complete stdlib/native-library
@@ -8326,7 +8431,7 @@ squeue_comment="$(squeue -h -j "$SLURM_JOB_ID" -o '%k')"
   echo "email readiness scheduler comment sources disagree" >&2
   exit 2
 }}
-email_comment_re="^asys:s5-recovery-v1\\\\.2-r8:${{chain_id}}:g([0-9]{{4}}):email_readiness$"
+email_comment_re="^asys:s5-recovery-v1\\\\.2-r9:${{chain_id}}:g([0-9]{{4}}):email_readiness$"
 [[ "$job_comment" =~ $email_comment_re ]] || {{
   echo "email readiness scheduler comment is not bound to this chain" >&2
   exit 2
@@ -8398,10 +8503,10 @@ echo "fleet did not satisfy readiness within the bounded 10-hour window; checkin
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "fleet readiness scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r8:[0-9a-f]{{64}}:(g[0-9]{{4}}):fleet_readiness$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r9:[0-9a-f]{{64}}:(g[0-9]{{4}}):fleet_readiness$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "fleet readiness scheduler comment is outside the immutable r8 namespace: $comment" >&2
+  echo "fleet readiness scheduler comment is outside the immutable r9 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -8926,6 +9031,29 @@ env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S \
 """
 
 
+def _r8_prelaunch_failure_shell_check(
+    paths: RecoveryPaths,
+    *,
+    verifier_payload: bytes,
+) -> str:
+    verifier = paths.jobs_root / "seal_schema5_r8_prelaunch_failure.py"
+    if not verifier_payload:
+        raise ChainError("bundled r8 prelaunch-failure verifier is missing")
+    return f"""\
+r8_failure_verifier={_q(verifier)}
+{_immutable_tool_shell_check(
+    variable="r8_failure_verifier",
+    expected_sha256=_sha256_bytes(verifier_payload),
+    expected_size=len(verifier_payload),
+    description="bundled r8 prelaunch-failure verifier",
+)}
+env LD_LIBRARY_PATH="$bootstrap_root/lib" "$bootstrap_python" -I -S \
+  "$r8_failure_verifier" verify \
+  --evidence-root {_q(paths.superseded_r8_prelaunch_failure_root)} \
+  --recovery-root {_q(paths.recovery_root)}
+"""
+
+
 def _failure_sentinel_body(
     paths: RecoveryPaths,
     *,
@@ -8936,6 +9064,7 @@ def _failure_sentinel_body(
     r5_failure_verifier_payload: bytes,
     r6_failure_verifier_payload: bytes,
     r7_failure_verifier_payload: bytes,
+    r8_failure_verifier_payload: bytes,
 ) -> str:
     # This tool is copied from the tagged commit into the immutable job namespace.
     # It therefore remains runnable even when the source-checkout stage itself fails.
@@ -8975,13 +9104,16 @@ renderer={_q(renderer)}
 {_r7_prelaunch_failure_shell_check(
     paths, verifier_payload=r7_failure_verifier_payload
 )}
+{_r8_prelaunch_failure_shell_check(
+    paths, verifier_payload=r8_failure_verifier_payload
+)}
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "sentinel scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r8:[0-9a-f]{{64}}:(g[0-9]{{4}}):failure_sentinel$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r9:[0-9a-f]{{64}}:(g[0-9]{{4}}):failure_sentinel$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "sentinel scheduler comment is outside the immutable r8 namespace: $comment" >&2
+  echo "sentinel scheduler comment is outside the immutable r9 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -9048,6 +9180,7 @@ def _stage_failure_sentinel_body(
     r5_failure_verifier_payload: bytes,
     r6_failure_verifier_payload: bytes,
     r7_failure_verifier_payload: bytes,
+    r8_failure_verifier_payload: bytes,
 ) -> str:
     """Render one independent, fail-fast observer for an exact production stage."""
 
@@ -9080,13 +9213,16 @@ sentinel_tool={_q(tool)}
 {_r7_prelaunch_failure_shell_check(
     paths, verifier_payload=r7_failure_verifier_payload
 )}
+{_r8_prelaunch_failure_shell_check(
+    paths, verifier_payload=r8_failure_verifier_payload
+)}
 job_record="$(scontrol show job -o "$SLURM_JOB_ID")"
 comment="$(tr ' ' '\\n' <<<"$job_record" | sed -n 's/^Comment=//p')"
 [[ "$(wc -l <<<"$comment")" -eq 1 ]] || {{ echo "stage sentinel scheduler comment is ambiguous" >&2; exit 2; }}
-if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r8:[0-9a-f]{{64}}:(g[0-9]{{4}}):{re.escape(observer_name)}$ ]]; then
+if [[ "$comment" =~ ^asys:s5-recovery-v1\\.2-r9:[0-9a-f]{{64}}:(g[0-9]{{4}}):{re.escape(observer_name)}$ ]]; then
   generation="${{BASH_REMATCH[1]}}"
 else
-  echo "stage sentinel scheduler comment is outside the immutable r8 namespace: $comment" >&2
+  echo "stage sentinel scheduler comment is outside the immutable r9 namespace: $comment" >&2
   exit 2
 fi
 if [[ "$generation" == g0000 ]]; then
@@ -9310,6 +9446,9 @@ def job_specs(
                     r7_failure_verifier_payload=bundled_tools[
                         "seal_schema5_r7_prelaunch_failure.py"
                     ],
+                    r8_failure_verifier_payload=bundled_tools[
+                        "seal_schema5_r8_prelaunch_failure.py"
+                    ],
                 ),
                 dependency_type="afterany",
             )
@@ -9341,6 +9480,9 @@ def job_specs(
                 r7_failure_verifier_payload=bundled_tools[
                     "seal_schema5_r7_prelaunch_failure.py"
                 ],
+                r8_failure_verifier_payload=bundled_tools[
+                    "seal_schema5_r8_prelaunch_failure.py"
+                ],
             ),
             dependency_type="afterany",
         ),
@@ -9352,7 +9494,7 @@ def _job_name(name: str) -> str:
         stage = name.removeprefix(STAGE_SENTINEL_PREFIX)
         if stage not in PRODUCTION_STAGE_NAMES:
             raise ChainError(f"unknown stage-sentinel job name: {name!r}")
-        return f"asys-s5v12r8-alert-{PRODUCTION_STAGE_NAMES.index(stage):02d}"
+        return f"asys-s5v12r9-alert-{PRODUCTION_STAGE_NAMES.index(stage):02d}"
     shortened = {
         "snapshot_adopt_verify": "snapshot-adopt",
         "environment_capture": "env-capture",
@@ -9377,7 +9519,7 @@ def _job_name(name: str) -> str:
         "legacy_retire": "retire",
         "failure_sentinel": "sentinel",
     }[name]
-    return f"asys-s5v12r8-{shortened}"
+    return f"asys-s5v12r9-{shortened}"
 
 
 def render_sbatch(spec: JobSpec, paths: RecoveryPaths, *, partition: str) -> bytes:
@@ -9473,7 +9615,7 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
         for spec in ordered
     )
     if observed_contract != EXPECTED_JOB_CONTRACT:
-        raise ChainError("recovery DAG differs from the fixed v1.2-r8 job contract")
+        raise ChainError("recovery DAG differs from the fixed v1.2-r9 job contract")
     by_name = {spec.name: spec for spec in ordered}
     for earlier, later in zip(HEAVY_SERIAL_ORDER, HEAVY_SERIAL_ORDER[1:]):
         if earlier not in _ancestors(later, by_name):
@@ -9529,9 +9671,9 @@ def _validate_dag(specs: Sequence[JobSpec]) -> None:
 
 def _preflight_fresh_destinations(paths: RecoveryPaths) -> None:
     for description, path in (
-        ("v1.2-r8 source checkout", paths.source_checkout),
+        ("v1.2-r9 source checkout", paths.source_checkout),
         (
-            "v1.2-r8 source checkout seal",
+            "v1.2-r9 source checkout seal",
             paths.recovery_root / SOURCE_CHECKOUT_SEAL_NAME,
         ),
         ("v1.2 production release root", paths.release_root),
@@ -9634,7 +9776,7 @@ def _manifest_payload(
         )
     identity = {
         "schema_version": CHAIN_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r8-recovery-chain",
+        "protocol": "schema5-v1.2-r9-recovery-chain",
         "namespace": CHAIN_NAMESPACE,
         "release_id": RELEASE_ID,
         "release_tag": git_identity["release_tag"],
@@ -9797,7 +9939,7 @@ def _isolated_bootstrap_manifest_payload(
         {
             "recovery_root": str(isolated_root),
             "source_checkout": str(
-                isolated_root / "release_source_checkout_v1_2_r8"
+                isolated_root / "release_source_checkout_v1_2_r9"
             ),
             "release_root": str(
                 isolated_root / "releases" / RELEASE_ID
@@ -10238,9 +10380,9 @@ def render_chain(
     if not apply:
         _preflight_fresh_destinations(paths)
         for description, path in (
-            ("v1.2-r8 job namespace", paths.jobs_root),
-            ("v1.2-r8 log namespace", paths.logs_root),
-            ("v1.2-r8 chain manifest", paths.chain_manifest),
+            ("v1.2-r9 job namespace", paths.jobs_root),
+            ("v1.2-r9 log namespace", paths.logs_root),
+            ("v1.2-r9 chain manifest", paths.chain_manifest),
         ):
             if path.exists() or path.is_symlink():
                 raise ChainError(f"{description} must be fresh and absent: {path}")
@@ -10362,7 +10504,7 @@ def verify_bound_prerequisites(
     prerequisite = manifest.get("prerequisite_evidence")
     if (
         manifest.get("schema_version") != CHAIN_SCHEMA_VERSION
-        or manifest.get("protocol") != "schema5-v1.2-r8-recovery-chain"
+        or manifest.get("protocol") != "schema5-v1.2-r9-recovery-chain"
         or chain_id != expected_chain_id
         or not isinstance(chain_id, str)
         or _SHA256.fullmatch(chain_id) is None
@@ -10646,7 +10788,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
     chain_id = identity.pop("chain_id")
     if (
         manifest["schema_version"] != CHAIN_SCHEMA_VERSION
-        or manifest["protocol"] != "schema5-v1.2-r8-recovery-chain"
+        or manifest["protocol"] != "schema5-v1.2-r9-recovery-chain"
         or manifest["namespace"] != CHAIN_NAMESPACE
         or manifest["release_id"] != RELEASE_ID
         or manifest["release_tag"] != RELEASE_TAG
@@ -10806,7 +10948,7 @@ def verify_chain(manifest_path: Path) -> dict[str, Any]:
         raise ChainError("recovery-chain prerequisite roots are not canonical")
     expected_paths = {
         "recovery_root": results_root / "recovery" / "schema5-v1",
-        "source_checkout": recovery_root / "release_source_checkout_v1_2_r8",
+        "source_checkout": recovery_root / "release_source_checkout_v1_2_r9",
         "release_root": recovery_root / "releases" / RELEASE_ID,
         "state_root": results_root / ".dispatcher-schema5-v1",
         "server_pool_root": results_root / "server_pools" / "schema5-v1",
@@ -12893,7 +13035,7 @@ def _qualification_tree_inventory(
     }
 
 
-def _verify_r8_throughput_evidence(
+def _verify_r9_throughput_evidence(
     *,
     attempt_root: Path,
     marker: Mapping[str, Any],
@@ -13540,7 +13682,7 @@ def verify_throughput_qualification(
             "throughput-qualification marker does not bind the exact "
             "current attempt"
         )
-    evidence_report = _verify_r8_throughput_evidence(
+    evidence_report = _verify_r9_throughput_evidence(
         attempt_root=attempt_root,
         marker=marker,
     )
@@ -13952,9 +14094,9 @@ def _bootstrap_receipt_lineage(
     current_path = receipt_path
     seen: set[Path] = set()
     protocol = current.get("protocol")
-    if protocol == "schema5-v1.2-r8-recovery-chain-submission":
+    if protocol == "schema5-v1.2-r9-recovery-chain-submission":
         current_generation = 0
-    elif protocol == "schema5-v1.2-r8-recovery-chain-repair":
+    elif protocol == "schema5-v1.2-r9-recovery-chain-repair":
         current_generation = current.get("repair_generation")
         if (
             not isinstance(current_generation, int)
@@ -14141,7 +14283,7 @@ def _validate_bootstrap_scheduler_namespace(
     )
     observed: dict[str, dict[str, str]] = {}
     prefix = (
-        f"asys:s5-recovery-v1.2-r8:{manifest['chain_id']}:g"
+        f"asys:s5-recovery-v1.2-r9:{manifest['chain_id']}:g"
     )
     for argv in commands:
         process = runner(argv)
@@ -14241,7 +14383,7 @@ def _dependency_config_allows_fail_closed(
         raise ChainError("dependency-policy check timestamp must be finite")
     return {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r8-live-dependency-policy-v1",
+        "protocol": "schema5-v1.2-r9-live-dependency-policy-v1",
         "checked_at": timestamp,
         "argv": ["scontrol", "show", "config"],
         "returncode": int(proc.returncode),
@@ -14285,7 +14427,7 @@ def _validate_dependency_policy_check(
         set(payload) != expected
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r8-live-dependency-policy-v1"
+        != "schema5-v1.2-r9-live-dependency-policy-v1"
         or not isinstance(payload.get("phase"), str)
         or not payload["phase"]
         or (
@@ -14430,7 +14572,7 @@ def _validate_submission_journal(
     started_timestamp = journal["started_timestamp"]
     if (
         journal["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or journal["protocol"] != "schema5-v1.2-r8-recovery-chain-submission"
+        or journal["protocol"] != "schema5-v1.2-r9-recovery-chain-submission"
         or journal["chain_id"] != manifest["chain_id"]
         or journal["manifest"] != str(manifest_path)
         or journal["slurm_user"] != manifest["slurm_user"]
@@ -14612,7 +14754,7 @@ def _validate_submission_receipt(
     receipt_id = identity.pop("receipt_id")
     if (
         receipt["schema_version"] != SUBMISSION_SCHEMA_VERSION
-        or receipt["protocol"] != "schema5-v1.2-r8-recovery-chain-submission"
+        or receipt["protocol"] != "schema5-v1.2-r9-recovery-chain-submission"
         or receipt["passed"] is not True
         or receipt["chain_id"] != manifest["chain_id"]
         or receipt["manifest"] != str(manifest_path)
@@ -14886,7 +15028,7 @@ def _capture_scheduler_acceptance(
         str(row["comment"]) for row in receipt_jobs if isinstance(row, Mapping)
     }
     expected_comment_prefix = (
-        "asys:s5-recovery-v1.2-r8:"
+        "asys:s5-recovery-v1.2-r9:"
         f"{manifest['chain_id']}:g0000:"
     )
 
@@ -15419,7 +15561,7 @@ def _validate_scheduler_acceptance(
         }
         or intent.get("schema_version") != 1
         or intent.get("protocol")
-        != "schema5-v1.2-r8-recovery-scheduler-acceptance-intent-v1"
+        != "schema5-v1.2-r9-recovery-scheduler-acceptance-intent-v1"
         or intent.get("chain_id") != manifest.get("chain_id")
         or intent.get("submission_receipt") != str(receipt_path)
         or intent.get("submission_receipt_sha256") != _sha256(receipt_path)
@@ -15819,7 +15961,7 @@ def _ensure_scheduler_acceptance(
     intent = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r8-recovery-scheduler-acceptance-intent-v1"
+            "schema5-v1.2-r9-recovery-scheduler-acceptance-intent-v1"
         ),
         "chain_id": manifest["chain_id"],
         "submission_receipt": str(receipt_path),
@@ -16093,7 +16235,7 @@ def _validate_bootstrap_watchdog_deployment_ready(
         or bundle_id != payload["bundle_id"]
         or bundle_id != _sha256_bytes(_canonical_json(bundle_identity))
         or bundle.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-watchdog-bundle-v1"
+        != "schema5-v1.2-r9-bootstrap-watchdog-bundle-v1"
         or bundle.get("release_git_commit")
         != manifest.get("release_git_commit")
         or bundle.get("release_tag_object")
@@ -16192,7 +16334,7 @@ def _validate_bootstrap_watchdog_deployment_ready(
         or deployment_id
         != _sha256_bytes(_canonical_json(deployment_identity))
         or deployment.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-watchdog-deployment-evidence-v1"
+        != "schema5-v1.2-r9-bootstrap-watchdog-deployment-evidence-v1"
         or deployment.get("passed") is not True
         or deployment.get("bundle_id") != bundle_id
         or deployment.get("deployment_id")
@@ -16247,7 +16389,7 @@ def _validate_bootstrap_watchdog_deployment_ready(
         or drill_id != attestation.get("cancellation_drill_evidence_id")
         or drill_id != _sha256_bytes(_canonical_json(drill_identity))
         or drill.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-watchdog-drill-evidence-v1"
+        != "schema5-v1.2-r9-bootstrap-watchdog-drill-evidence-v1"
         or drill.get("passed") is not True
         or drill.get("bundle_id") != bundle_id
         or drill.get("deployment_id")
@@ -16430,7 +16572,7 @@ def _validate_bootstrap_watchdog_armed(
                 or observation_id
                 != _sha256_bytes(_canonical_json(artifact_identity))
                 or artifact.get("protocol")
-                != "schema5-v1.2-r8-bootstrap-status-v1"
+                != "schema5-v1.2-r9-bootstrap-status-v1"
                 or artifact.get("submission_receipt_id")
                 != receipt.get("receipt_id")
                 or artifact.get("submission_receipt_sha256")
@@ -16660,7 +16802,7 @@ def _validate_bootstrap_watchdog_armed(
         }
         or intent.get("schema_version") != 1
         or intent.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-watchdog-arm-intent-v1"
+        != "schema5-v1.2-r9-bootstrap-watchdog-arm-intent-v1"
         or intent.get("chain_id") != manifest.get("chain_id")
         or intent.get("submission_receipt") != str(receipt_path)
         or intent.get("submission_receipt_sha256") != _sha256(receipt_path)
@@ -17103,7 +17245,7 @@ def _ensure_bootstrap_descendant_armed(
     intent: dict[str, Any] = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r8-bootstrap-descendant-arm-intent-v1"
+            "schema5-v1.2-r9-bootstrap-descendant-arm-intent-v1"
         ),
         "chain_id": manifest["chain_id"],
         "repair_generation": generation,
@@ -17294,7 +17436,7 @@ def _validate_root_release_attempt_result(
         set(payload) != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r8-root-release-attempt-result-v1"
+        != "schema5-v1.2-r9-root-release-attempt-result-v1"
         or payload.get("attempt") != intent.get("attempt")
         or payload.get("root_index") != intent.get("root_index")
         or payload.get("root_name") != intent.get("root_name")
@@ -17374,7 +17516,7 @@ def _validate_root_release_complete(
     }
     initial_submission = (
         receipt.get("protocol")
-        == "schema5-v1.2-r8-recovery-chain-submission"
+        == "schema5-v1.2-r9-recovery-chain-submission"
     )
     if initial_submission:
         required |= {
@@ -17404,7 +17546,7 @@ def _validate_root_release_complete(
         set(payload) != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r8-recovery-root-release-v1"
+        != "schema5-v1.2-r9-recovery-root-release-v1"
         or not isinstance(payload.get("completed_at"), str)
         or payload.get("receipt") != str(receipt_path)
         or payload.get("receipt_sha256") != _sha256(receipt_path)
@@ -17544,7 +17686,7 @@ def _validate_root_release_complete(
             or attempt.get("schema_version")
             != SUBMISSION_SCHEMA_VERSION
             or attempt.get("protocol")
-            != "schema5-v1.2-r8-root-release-attempt-intent-v1"
+            != "schema5-v1.2-r9-root-release-attempt-intent-v1"
             or attempt.get("attempt") != ordinal
             or attempt.get("root_index") != root_index
             or attempt.get("job_id") != root_job_ids[root_index]
@@ -17804,7 +17946,7 @@ def _validate_launch_complete(
             "alert_latency_bound_seconds",
             "launch_id",
         }
-    if receipt.get("protocol") == "schema5-v1.2-r8-recovery-chain-submission":
+    if receipt.get("protocol") == "schema5-v1.2-r9-recovery-chain-submission":
         required |= {
             "bootstrap_watchdog_ready",
             "bootstrap_watchdog_ready_sha256",
@@ -17830,7 +17972,7 @@ def _validate_launch_complete(
         != required
         or payload.get("schema_version") != SUBMISSION_SCHEMA_VERSION
         or payload.get("protocol")
-        != "schema5-v1.2-r8-recovery-chain-launched-v1"
+        != "schema5-v1.2-r9-recovery-chain-launched-v1"
         or payload.get("receipt") != str(receipt_path)
         or payload.get("receipt_sha256") != _sha256(receipt_path)
         or payload.get("receipt_id") != receipt.get("receipt_id")
@@ -17911,7 +18053,7 @@ def _ensure_recovery_root_released(
     launch_path = evidence_root / LAUNCH_COMPLETE_NAME
     initial_submission = (
         receipt.get("protocol")
-        == "schema5-v1.2-r8-recovery-chain-submission"
+        == "schema5-v1.2-r9-recovery-chain-submission"
     )
     bootstrap_binding: dict[str, Any] = {}
     if initial_submission:
@@ -18025,7 +18167,7 @@ def _ensure_recovery_root_released(
     def publish_launch(release: Mapping[str, Any]) -> dict[str, Any]:
         launch = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r8-recovery-chain-launched-v1",
+            "protocol": "schema5-v1.2-r9-recovery-chain-launched-v1",
             "completed_at": _utc_now(),
             "receipt": str(receipt_path),
             "receipt_sha256": _sha256(receipt_path),
@@ -18096,7 +18238,7 @@ def _ensure_recovery_root_released(
     intent_path = evidence_root / ROOT_RELEASE_INTENT_NAME
     release_intent = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r8-recovery-root-release-intent-v1",
+        "protocol": "schema5-v1.2-r9-recovery-root-release-intent-v1",
         "created_at": _utc_now(),
         "receipt": str(receipt_path),
         "receipt_sha256": _sha256(receipt_path),
@@ -18274,7 +18416,7 @@ def _ensure_recovery_root_released(
             adoption_result = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "protocol": (
-                    "schema5-v1.2-r8-root-release-attempt-result-v1"
+                    "schema5-v1.2-r9-root-release-attempt-result-v1"
                 ),
                 "attempt": ambiguous_intent["attempt"],
                 "completed_at": _utc_now(),
@@ -18326,7 +18468,7 @@ def _ensure_recovery_root_released(
             attempt_intent = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "protocol": (
-                    "schema5-v1.2-r8-root-release-attempt-intent-v1"
+                    "schema5-v1.2-r9-root-release-attempt-intent-v1"
                 ),
                 "attempt": attempt_number,
                 "created_at": _utc_now(),
@@ -18348,7 +18490,7 @@ def _ensure_recovery_root_released(
             result = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "protocol": (
-                    "schema5-v1.2-r8-root-release-attempt-result-v1"
+                    "schema5-v1.2-r9-root-release-attempt-result-v1"
                 ),
                 "attempt": attempt_number,
                 "completed_at": _utc_now(),
@@ -18465,7 +18607,7 @@ def _ensure_recovery_root_released(
         )
     release = {
         "schema_version": SUBMISSION_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r8-recovery-root-release-v1",
+        "protocol": "schema5-v1.2-r9-recovery-root-release-v1",
         "completed_at": _utc_now(),
         "receipt": str(receipt_path),
         "receipt_sha256": _sha256(receipt_path),
@@ -18646,7 +18788,7 @@ def submit_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.2-r8-recovery-chain-submission",
+                "protocol": "schema5-v1.2-r9-recovery-chain-submission",
                 "chain_id": manifest["chain_id"],
                 "manifest": str(manifest_path),
                 "started_at": _utc_now(),
@@ -18788,7 +18930,7 @@ def submit_chain(
         _fsync_directory(journal_path.parent)
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r8-recovery-chain-submission",
+            "protocol": "schema5-v1.2-r9-recovery-chain-submission",
             "passed": True,
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
@@ -19518,7 +19660,7 @@ def _validate_repair_receipt(
     if (
         set(receipt) != expected_fields
         or receipt.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or receipt.get("protocol") != "schema5-v1.2-r8-recovery-chain-repair"
+        or receipt.get("protocol") != "schema5-v1.2-r9-recovery-chain-repair"
         or receipt.get("passed") is not True
         or receipt.get("chain_id") != manifest["chain_id"]
         or receipt.get("manifest") != str(manifest_path)
@@ -19686,7 +19828,7 @@ def _validate_repair_journal(
     if (
         set(journal) != expected_fields
         or journal.get("schema_version") != SUBMISSION_SCHEMA_VERSION
-        or journal.get("protocol") != "schema5-v1.2-r8-recovery-chain-repair-journal"
+        or journal.get("protocol") != "schema5-v1.2-r9-recovery-chain-repair-journal"
         or journal.get("chain_id") != manifest["chain_id"]
         or journal.get("repair_generation") != generation
         or journal.get("base_receipt") != str(base_path)
@@ -20071,7 +20213,7 @@ def _validate_capacity_transient_repair_binding(
         dict(binding) != expected_binding
         or marker.get("schema_version") != 1
         or marker.get("protocol")
-        != "schema5-v1.2-r8-fleet-capacity-transient-receipt"
+        != "schema5-v1.2-r9-fleet-capacity-transient-receipt"
         or marker.get("passed") is not True
         or marker.get("capacity_transient_root") is not True
         or marker.get("chain_id") != manifest["chain_id"]
@@ -20086,7 +20228,7 @@ def _validate_capacity_transient_repair_binding(
         or marker_id != _sha256_bytes(_canonical_json(marker_identity))
         or capacity_evidence.get("schema_version") != 1
         or capacity_evidence.get("protocol")
-        != "schema5-v1.2-r8-fleet-capacity-transient-evidence"
+        != "schema5-v1.2-r9-fleet-capacity-transient-evidence"
         or capacity_evidence.get("passed") is not True
         or capacity_evidence.get("chain_id") != manifest["chain_id"]
         or capacity_evidence.get("chain_generation") != generation
@@ -20827,7 +20969,7 @@ def _sentinel_repair_jobs(
     if (
         marker.get("schema_version") != 1
         or marker.get("protocol")
-        != "schema5-v1.2-r8-recovery-sentinel-outcome"
+        != "schema5-v1.2-r9-recovery-sentinel-outcome"
         or marker.get("passed") is not True
         or marker.get("chain_id") != manifest["chain_id"]
         or marker.get("manifest") != str(manifest_path)
@@ -20841,7 +20983,7 @@ def _sentinel_repair_jobs(
         or marker_id != _sha256_bytes(_canonical_json(marker_identity))
         or evidence.get("schema_version") != 1
         or evidence.get("protocol")
-        != "schema5-v1.2-r8-recovery-scheduler-evidence"
+        != "schema5-v1.2-r9-recovery-scheduler-evidence"
         or evidence.get("passed") is not True
         or evidence.get("chain_id") != manifest["chain_id"]
         or evidence.get("manifest") != str(manifest_path)
@@ -21261,7 +21403,7 @@ def _validate_bootstrap_generation_provenance(
         set(payload) != expected_fields
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-generation-provenance-v1"
+        != "schema5-v1.2-r9-bootstrap-generation-provenance-v1"
         or payload.get("passed") is not True
         or payload.get("release_git_commit")
         != manifest["release_git_commit"]
@@ -21769,7 +21911,7 @@ def _ensure_bootstrap_generation_provenance(
                 )
     payload: dict[str, Any] = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r8-bootstrap-generation-provenance-v1",
+        "protocol": "schema5-v1.2-r9-bootstrap-generation-provenance-v1",
         "passed": True,
         "release_git_commit": manifest["release_git_commit"],
         "release_tag_object": manifest["release_tag_object"],
@@ -21923,7 +22065,7 @@ def _validate_bootstrap_status_payload(
         set(payload) != required
         or payload.get("schema_version") != 1
         or payload.get("protocol")
-        != "schema5-v1.2-r8-bootstrap-status-v1"
+        != "schema5-v1.2-r9-bootstrap-status-v1"
         or payload.get("passed") is not True
         or payload.get("release_git_commit")
         != manifest["release_git_commit"]
@@ -22116,7 +22258,7 @@ def _validate_bootstrap_observation_pair(
         )
         or any(
             payload.get("protocol")
-            != "schema5-v1.2-r8-bootstrap-status-v1"
+            != "schema5-v1.2-r9-bootstrap-status-v1"
             or payload.get("passed") is not True
             or payload.get("release_git_commit")
             != manifest["release_git_commit"]
@@ -22450,7 +22592,7 @@ def bootstrap_status(
             )
     observation: dict[str, Any] = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r8-bootstrap-status-v1",
+        "protocol": "schema5-v1.2-r9-bootstrap-status-v1",
         "passed": True,
         "observed_at_timestamp": timestamp,
         "release_git_commit": manifest["release_git_commit"],
@@ -22946,7 +23088,7 @@ def repair_chain(
             )
             journal = {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
-                "protocol": "schema5-v1.2-r8-recovery-chain-repair-journal",
+                "protocol": "schema5-v1.2-r9-recovery-chain-repair-journal",
                 "chain_id": manifest["chain_id"], "repair_generation": generation,
                 "base_receipt": str(base_path), "base_receipt_sha256": _sha256(base_path),
                 "repair_jobs": repair_names, "started_at": _utc_now(),
@@ -23156,7 +23298,7 @@ def repair_chain(
             })
         receipt = {
             "schema_version": SUBMISSION_SCHEMA_VERSION,
-            "protocol": "schema5-v1.2-r8-recovery-chain-repair", "passed": True,
+            "protocol": "schema5-v1.2-r9-recovery-chain-repair", "passed": True,
             "chain_id": manifest["chain_id"], "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
             "submission_journal": str(journal_path),
@@ -23415,7 +23557,7 @@ def quarantine_partial_materialization(
 
         expected_intent = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r8-partial-materialization-quarantine-intent",
+            "protocol": "schema5-v1.2-r9-partial-materialization-quarantine-intent",
             "chain_id": manifest["chain_id"],
             "manifest": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
@@ -23467,7 +23609,7 @@ def quarantine_partial_materialization(
             completion_id = completion_identity.pop("completion_id", None)
             expected_completion = {
                 "schema_version": 1,
-                "protocol": "schema5-v1.2-r8-partial-materialization-quarantine",
+                "protocol": "schema5-v1.2-r9-partial-materialization-quarantine",
                 "passed": True,
                 "release_id": RELEASE_ID,
                 "materialize_job_id": materialize_job_id,
@@ -23592,7 +23734,7 @@ def quarantine_partial_materialization(
             raise ChainError("materialization quarantine rename did not preserve identity")
         completion = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r8-partial-materialization-quarantine",
+            "protocol": "schema5-v1.2-r9-partial-materialization-quarantine",
             "passed": True,
             "release_id": RELEASE_ID,
             "materialize_job_id": materialize_job_id,
@@ -23634,7 +23776,7 @@ def quarantine_partial_materialization(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    render = subparsers.add_parser("render", help="dry-run or publish the v1.2-r8 chain")
+    render = subparsers.add_parser("render", help="dry-run or publish the v1.2-r9 chain")
     render.add_argument("--repository", required=True, type=Path)
     render.add_argument("--results-root", required=True, type=Path)
     render.add_argument("--recovery-root", required=True, type=Path)
@@ -23692,7 +23834,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--chain-manifest",
         required=True,
         type=Path,
-        help="canonical submitted r8 recovery-chain manifest",
+        help="canonical submitted r9 recovery-chain manifest",
     )
     isolated_drill.add_argument("--apply", action="store_true")
     release_root = subparsers.add_parser(
