@@ -41,7 +41,7 @@ def test_recovery_chain_documents_transactional_failfast_stage_observers() -> No
     assert "STAGE_SCHEDULER_EVIDENCE.json" in text
     assert "STAGE_SENTINEL_COMPLETE.json" in text
     assert (
-        "recovery_chain_stage_sentinels/schema5-v1.2-r7/gNNNN/<stage>/"
+        "recovery_chain_stage_sentinels/schema5-v1.2-r8/gNNNN/<stage>/"
         in text
     )
     assert "explicitly has no repair authority" in text
@@ -95,7 +95,7 @@ def test_recovery_chain_documents_prelaunch_bootstrap_resurrection_gate() -> Non
     assert "aggregate `failure_sentinel`" in text
     assert "other 42 jobs" in text
     assert "RECOVERY_CHAIN_BOOTSTRAP_WATCHDOG_HANDOFF_COMPLETE.json" in text
-    assert "schema5-v1.2-r7-bootstrap-watchdog-handoff-v1" in text
+    assert "schema5-v1.2-r8-bootstrap-watchdog-handoff-v1" in text
     assert "shared\nsubmission/repair lock" in text
     assert "Only after that sealed\nmarker exists" in text
 
@@ -220,7 +220,7 @@ def test_materialization_pilot_uses_only_the_exact_tagged_script() -> None:
     assert section.count("--integrity-normalization-policy") == 2
     assert section.count(
         '--durable-git-release-marker "$schema5_recovery/'
-        'DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R7_COMPLETE.json"'
+        'DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R8_COMPLETE.json"'
     ) == 2
     assert "`already_submitted`" in section
     assert "reports `adopted`" in section
@@ -342,7 +342,7 @@ def test_chain_renderer_receives_canonical_python_paths() -> None:
     assert 'sealed_python="$(realpath -e "$sealed_python")"' in render_section
     assert '--dev-python "$dev_python"' in render_section
     assert '--partition mit_normal --slurm-user "$slurm_user"' in render_section
-    assert "RECOVERY_CHAIN_SCHEMA5_V1_2_R7_SUBMISSION.json" in render_section
+    assert "RECOVERY_CHAIN_SCHEMA5_V1_2_R8_SUBMISSION.json" in render_section
     assert "(.jobs | length) == 43" in render_section
     assert '" Requeue=0 "' in render_section
     assert '" Comment=$comment "' in render_section
@@ -437,7 +437,7 @@ def test_protected_capacity_uses_marker_last_effective_fleet_materializer() -> N
 
     assert "materialize_schema5_effective_fleet.py" in section
     assert (
-        "schema5-v1.2-r7-effective-fleet-materialization-v1"
+        "schema5-v1.2-r8-effective-fleet-materialization-v1"
         in section
     )
     assert "EFFECTIVE_FLEET_COMPLETE.json" in section
@@ -500,7 +500,7 @@ def test_protected_capacity_uses_marker_last_effective_fleet_materializer() -> N
 def test_durable_release_and_watchdog_commands_are_exact_and_fail_closed() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     freeze = text[
-        text.index("## Freeze and test the r7 source")
+        text.index("## Freeze and test the r8 source")
         : text.index("## Required two-prefix materialization pilot")
     ]
     watchdog = text[
@@ -524,16 +524,16 @@ def test_durable_release_and_watchdog_commands_are_exact_and_fail_closed() -> No
     assert "Do not manually publish `WATCHDOG_READY.json`" in watchdog
 
 
-def test_r7_uses_fresh_operational_paths_and_binds_sealed_r2_r3_lineage() -> None:
+def test_r8_uses_fresh_operational_paths_and_binds_sealed_r2_r3_lineage() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     release = RELEASE_GUIDE.read_text(encoding="utf-8")
 
-    assert "# Schema-5 v1.2-r7 recovery and production runbook" in text
-    assert "tag=sweep-recovery-schema5-v1.2-r7" in text
-    assert "chain namespace is `schema5-v1.2-r7`" in text
-    assert "durable_commit_ref=refs/heads/schema5-v1.2-r7" in text
+    assert "# Schema-5 v1.2-r8 recovery and production runbook" in text
+    assert "tag=sweep-recovery-schema5-v1.2-r8" in text
+    assert "chain namespace is `schema5-v1.2-r8`" in text
+    assert "durable_commit_ref=refs/heads/schema5-v1.2-r8" in text
     assert (
-        "schema5-v1.2-r7-client-placement-capacity-generation-v1"
+        "schema5-v1.2-r8-client-placement-capacity-generation-v1"
         in text
     )
     assert (
@@ -542,21 +542,21 @@ def test_r7_uses_fresh_operational_paths_and_binds_sealed_r2_r3_lineage() -> Non
     )
     assert (
         'durable_marker="$recovery/'
-        'DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R7_COMPLETE.json"' in text
+        'DURABLE_GIT_RELEASE_SCHEMA5_V1_2_R8_COMPLETE.json"' in text
     )
     for path in (
-        "materialization_pilot_source_checkout_v1_2_r7",
-        "materialization_pilots/schema5-v1.2-r7",
-        "slurm_canaries/schema5-v1.2-r7",
-        "jobs/schema5-v1.2-r7-materialization-pilot.sbatch",
-        "logs/materialization-pilot-r7",
-        "protected_capacity/schema5-v1.2-r7",
-        "recovery_chain_stage_sentinels/schema5-v1.2-r7",
+        "materialization_pilot_source_checkout_v1_2_r8",
+        "materialization_pilots/schema5-v1.2-r8",
+        "slurm_canaries/schema5-v1.2-r8",
+        "jobs/schema5-v1.2-r8-materialization-pilot.sbatch",
+        "logs/materialization-pilot-r8",
+        "protected_capacity/schema5-v1.2-r8",
+        "recovery_chain_stage_sentinels/schema5-v1.2-r8",
     ):
         assert path in text
 
     lineage = text[
-        text.index("## Immutable r2–r6 to r7 lineage")
+        text.index("## Immutable r2–r7 to r8 lineage")
         : text.index("## Before-tag gates")
     ]
     assert "refs/heads/schema5-v1.2-r2" in lineage
@@ -568,8 +568,8 @@ def test_r7_uses_fresh_operational_paths_and_binds_sealed_r2_r3_lineage() -> Non
     assert "`retry_in_place=false`" in lineage
     assert "exact seal path, raw SHA-256, size, and\n`seal_id`" in lineage
     assert "reverify\nthat binding at submission" in lineage
-    assert "Operational artifact basenames are r7-specific" in lineage
-    assert "chain_namespace=schema5-v1.2-r7" in lineage
+    assert "Operational artifact basenames are r8-specific" in lineage
+    assert "chain_namespace=schema5-v1.2-r8" in lineage
     assert "sweep-recovery-schema5-v1.2-r3" in lineage
     assert "acd723ba9a99d88e77f7d752268bc31205c3a808" in lineage
     assert "fa87b283974afc1fa48fcb22b61e6ae7eec4bb36" in lineage
@@ -587,16 +587,28 @@ def test_r7_uses_fresh_operational_paths_and_binds_sealed_r2_r3_lineage() -> Non
         in lineage
     )
     assert "PRELAUNCH_TOOLCHAIN_BINDING_FAILURE_SEALED.json" in lineage
+    assert "acc0beb98cfbb5017d5d5b5e60567aa43229e248" in lineage
+    assert "95f8f3852498c4ab8e3026f29c183ecdd58678f4" in lineage
+    assert (
+        "schema5-v1.2-r7-prelaunch-git-index-refresh-failure-seal-v1"
+        in lineage
+    )
+    assert "PRELAUNCH_GIT_INDEX_REFRESH_FAILURE_SEALED.json" in lineage
 
     assert "## Superseding operational lineage" in release
-    assert "sweep-recovery-schema5-v1.2-r7" in release
+    assert "sweep-recovery-schema5-v1.2-r8" in release
     assert "canary_failures/schema5-v1.2-r2/CANARY_FAILURE_SEALED.json" in release
-    assert "jobs/schema5-v1.2-r7-materialization-pilot.sbatch" in release
-    assert "logs/materialization-pilot-r7" in release
+    assert "jobs/schema5-v1.2-r8-materialization-pilot.sbatch" in release
+    assert "logs/materialization-pilot-r8" in release
     assert "schema5-v1.2-r5-cli/PRELAUNCH_CLI_FAILURE_SEALED.json" in release
     assert (
         "schema5-v1.2-r6-toolchain-binding/"
         "PRELAUNCH_TOOLCHAIN_BINDING_FAILURE_SEALED.json"
+        in release
+    )
+    assert (
+        "schema5-v1.2-r7-git-index-refresh/"
+        "PRELAUNCH_GIT_INDEX_REFRESH_FAILURE_SEALED.json"
         in release
     )
 
@@ -625,7 +637,9 @@ def test_r6_binding_failure_seal_is_dry_apply_idempotent_and_verified() -> None:
         text.index(
             "Seal the deterministic r6 prelaunch toolchain-binding failure"
         )
-        : text.index("Provision and verify the r7-only Conda toolchain")
+        : text.index(
+            "Seal the deterministic r7 prelaunch Git-index-refresh failure"
+        )
     ]
 
     assert 'r6_failure_sealer="$pilot_checkout/scripts/' in section
@@ -634,6 +648,24 @@ def test_r6_binding_failure_seal_is_dry_apply_idempotent_and_verified() -> None:
     assert section.count('"${r6_failure_seal[@]}" --apply') == 2
     assert '"$dev_python" -I "$r6_failure_sealer" verify' in section
     assert '--evidence-root "$r6_prelaunch_failure_root"' in section
+    assert '--recovery-root "$recovery"' in section
+
+
+def test_r7_git_index_failure_seal_is_dry_apply_idempotent_and_verified() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    section = text[
+        text.index(
+            "Seal the deterministic r7 prelaunch Git-index-refresh failure"
+        )
+        : text.index("Provision and verify the r8-only Conda toolchain")
+    ]
+
+    assert 'r7_failure_sealer="$pilot_checkout/scripts/' in section
+    assert "seal_schema5_r7_prelaunch_failure.py" in section
+    assert section.count('"${r7_failure_seal[@]}"') == 3
+    assert section.count('"${r7_failure_seal[@]}" --apply') == 2
+    assert '"$dev_python" -I "$r7_failure_sealer" verify' in section
+    assert '--evidence-root "$r7_prelaunch_failure_root"' in section
     assert '--recovery-root "$recovery"' in section
 
 
@@ -646,21 +678,21 @@ def test_r3_failure_producer_independently_verifies_before_toolchain_use() -> No
 
     assert (
         section.count(
-            '"$dev_python" -I -B "$r7_sealer" record-prelaunch-attempt'
+            '"$dev_python" -I -B "$r8_sealer" record-prelaunch-attempt'
         )
         == 2
     )
-    assert '"$dev_python" -I -B "$r7_sealer" seal-prelaunch-failure' in section
-    assert '"$dev_python" -I -B "$r7_sealer" \\\n' in section
-    assert '"$r7_probe_python" -I -B "$r3_pilot"' in section
-    assert '"$r7_probe_python" -I -B "$r7_sealer"' not in section
-    assert "imports\nthe tagged r7 provisioner in-process" in section
+    assert '"$dev_python" -I -B "$r8_sealer" seal-prelaunch-failure' in section
+    assert '"$dev_python" -I -B "$r8_sealer" \\\n' in section
+    assert '"$r8_probe_python" -I -B "$r3_pilot"' in section
+    assert '"$r8_probe_python" -I -B "$r8_sealer"' not in section
+    assert "imports\nthe tagged r8 provisioner in-process" in section
 
 
 def test_r2_canary_failure_sealing_commands_are_exact_and_idempotent() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     lineage = text[
-        text.index("## Immutable r2–r6 to r7 lineage")
+        text.index("## Immutable r2–r7 to r8 lineage")
         : text.index("## Before-tag gates")
     ]
 
@@ -690,10 +722,10 @@ def test_r2_canary_failure_sealing_commands_are_exact_and_idempotent() -> None:
     assert "`already_sealed`" in lineage
 
 
-def test_r7_docs_use_sealed_toolchain_cache_and_current_schema_contracts() -> None:
+def test_r8_docs_use_sealed_toolchain_cache_and_current_schema_contracts() -> None:
     runbook = RUNBOOK.read_text(encoding="utf-8")
     release = RELEASE_GUIDE.read_text(encoding="utf-8")
-    toolchain = RUNBOOK.with_name("SCHEMA5_R7_CONDA_TOOLCHAIN.md").read_text(
+    toolchain = RUNBOOK.with_name("SCHEMA5_R8_CONDA_TOOLCHAIN.md").read_text(
         encoding="utf-8"
     )
     historical_r3_probe = (
@@ -723,7 +755,7 @@ def test_r7_docs_use_sealed_toolchain_cache_and_current_schema_contracts() -> No
     assert '$repo/scripts/provision_schema5_conda_toolchain.py' not in toolchain
     assert "arbitrary Conda executable" in toolchain
     assert (
-        "materialization_pilot_source_checkout_v1_2_r7" in toolchain
+        "materialization_pilot_source_checkout_v1_2_r8" in toolchain
     )
 
 
@@ -731,7 +763,7 @@ def test_release_gates_follow_executable_tag_order() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     before = text[
         text.index("## Before-tag gates")
-        : text.index("## Freeze and test the r7 source")
+        : text.index("## Freeze and test the r8 source")
     ]
     after = text[
         text.index("## Post-tag and pre-render gates")
@@ -739,9 +771,9 @@ def test_release_gates_follow_executable_tag_order() -> None:
     ]
 
     assert text.index("## Before-tag gates") < text.index(
-        "## Freeze and test the r7 source"
+        "## Freeze and test the r8 source"
     )
-    assert text.index("## Freeze and test the r7 source") < text.index(
+    assert text.index("## Freeze and test the r8 source") < text.index(
         "## Post-tag and pre-render gates"
     )
     assert text.index("## Post-tag and pre-render gates") < text.index(
@@ -765,7 +797,7 @@ def test_retired_r1_record_preserves_historical_r2_successor() -> None:
 
     assert "Immutable historical record" in text
     assert "requires the v1.2-r2\n> superseding release" in text
-    assert "requires the v1.2-r7" not in text
+    assert "requires the v1.2-r8" not in text
 
 
 def test_throughput_runbook_separates_health_soak_from_loaded_saturation() -> None:

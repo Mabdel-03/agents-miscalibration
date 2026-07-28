@@ -933,7 +933,7 @@ def _frozen_environment_render_kwargs(tmp_path, *, generation=1):
                 "sha256": "2" * 64,
             },
             "conda_toolchain": {
-                "protocol": "schema5-v1.2-r7-offline-conda-toolchain-v1",
+                "protocol": "schema5-v1.2-r8-offline-conda-toolchain-v1",
                 "binding_id": "b" * 64,
             },
             "environment_seed": {

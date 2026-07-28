@@ -153,7 +153,7 @@ def _empty_occupancy_preflight() -> dict[str, object]:
 
     identity = {
         "protocol": (
-            "schema5-v1.2-r7-protected-capacity-occupancy-preflight-v3"
+            "schema5-v1.2-r8-protected-capacity-occupancy-preflight-v3"
         ),
         "plan_id": "3" * 64,
         "observation_interval_seconds": 60.0,

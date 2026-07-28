@@ -111,7 +111,7 @@ from scripts import schema5_email_ack
 CONTROL_SCHEMA_VERSION = 1
 CONTROL_PROTOCOL = "schema5-v1"
 PRODUCTION_RELEASE_ID = "sweep-recovery-schema5-v1.2"
-PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r7"
+PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r8"
 PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
 # All production ramp stages are authorized by the sealed protected-capacity
 # contract before control initialization.  A later capacity generation is reserved
@@ -145,22 +145,22 @@ EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS = 1_800.0
 EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS = 3_600.0
 EXTERNAL_WATCHDOG_MIRROR_DIRNAME = "external_watchdog_mirror"
 EXTERNAL_WATCHDOG_STATUS_PROTOCOL = (
-    "schema5-v1.2-r7-external-watchdog-status-observation-v1"
+    "schema5-v1.2-r8-external-watchdog-status-observation-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL = (
-    "schema5-v1.2-r7-external-watchdog-action-intent-v1"
+    "schema5-v1.2-r8-external-watchdog-action-intent-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_PROTOCOL = (
-    "schema5-v1.2-r7-external-watchdog-action-receipt-v1"
+    "schema5-v1.2-r8-external-watchdog-action-receipt-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r7-external-watchdog-cycle-intent-v1"
+    "schema5-v1.2-r8-external-watchdog-cycle-intent-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_PROTOCOL = (
-    "schema5-v1.2-r7-external-watchdog-cycle-receipt-v1"
+    "schema5-v1.2-r8-external-watchdog-cycle-receipt-v1"
 )
 EXTERNAL_WATCHDOG_LATEST_PROTOCOL = (
-    "schema5-v1.2-r7-external-watchdog-latest-pointer-v1"
+    "schema5-v1.2-r8-external-watchdog-latest-pointer-v1"
 )
 EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS = 60.0
 EXTERNAL_WATCHDOG_MIRROR_STALE_SECONDS = 600.0
@@ -234,7 +234,7 @@ PRODUCTION_AUTHORIZATION_GATES = (
     "external_watchdog",
 )
 PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
-PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r7-production-authorization-v1"
+PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r8-production-authorization-v1"
 PRODUCTION_AUTHORIZATION_VERIFIER = (
     "scripts/render_schema5_recovery_chain_v12.py"
 )
@@ -358,13 +358,13 @@ CAPACITY_STATE_SCHEMA_VERSION = 1
 CAPACITY_STATE_PROTOCOL = "schema5-capacity-generation-v1"
 CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION = 1
 CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL = (
-    "schema5-v1.2-r7-client-placement-capacity-generation-v1"
+    "schema5-v1.2-r8-client-placement-capacity-generation-v1"
 )
 CLIENT_CAPACITY_BUILD_PROTOCOL = (
-    "schema5-v1.2-r7-client-capacity-build-v1"
+    "schema5-v1.2-r8-client-capacity-build-v1"
 )
 CLIENT_CAPACITY_SUBMISSION_PROTOCOL = (
-    "schema5-v1.2-r7-client-capacity-canary-submission-v1"
+    "schema5-v1.2-r8-client-capacity-canary-submission-v1"
 )
 CLIENT_CAPACITY_BUILD_INTENT = "CLIENT_CAPACITY_BUILD_INTENT.json"
 CLIENT_CAPACITY_CANARY_SBATCH = "client_capacity_canary.sbatch"
@@ -603,7 +603,7 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r7-smoke-attempt-binding-v1"
+    "schema5-v1.2-r8-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -2440,7 +2440,7 @@ def _new_finalization_state(
         "request_intent": None,
         "consumed_capacity_incidents": [],
         "output_root": str(
-            results_root / "recovery" / "schema5-v1.2-r7" / "final"
+            results_root / "recovery" / "schema5-v1.2-r8" / "final"
         ),
         "attempts": 0,
         "worker_attempts": [],
@@ -2890,7 +2890,7 @@ def _validate_finalization_state(
         str(control["immutable"]["results_root"])
     ).expanduser().resolve()
     expected_output = (
-        results_root / "recovery" / "schema5-v1.2-r7" / "final"
+        results_root / "recovery" / "schema5-v1.2-r8" / "final"
     )
     state = finalization.get("state")
     requested = finalization.get("requested_timestamp")
@@ -3932,7 +3932,7 @@ def _validate_conda_toolchain_binding_static(value: Any) -> dict[str, Any]:
         value.get("schema_version") != conda_toolchain.SCHEMA_VERSION
         or value.get("protocol") != conda_toolchain.PROTOCOL
         or value.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
-        or value.get("chain_namespace") != "schema5-v1.2-r7"
+        or value.get("chain_namespace") != "schema5-v1.2-r8"
         or not root.is_absolute()
         or value.get("base_prefix") != str(root / "base")
         or not isinstance(marker, dict)
@@ -21483,7 +21483,7 @@ def finalize_sweep(
     final_root = (
         output_root.expanduser().resolve()
         if output_root is not None
-        else results_root / "recovery" / "schema5-v1.2-r7" / "final"
+        else results_root / "recovery" / "schema5-v1.2-r8" / "final"
     )
     if (
         publisher_finalizer is not None
@@ -33996,7 +33996,7 @@ def _validate_watchdog_deployment_evidence(
         or value.get("release_git_commit") != control["immutable"]["git_commit"]
         or value.get("release_tag_object")
         != capacity_contract.release_tag_object
-        or value.get("chain_namespace") != "schema5-v1.2-r7"
+        or value.get("chain_namespace") != "schema5-v1.2-r8"
         or value.get("control_sha256") != control["immutable_sha256"]
         or value.get("liveness_email") != control["alert_email"]
         or value.get("forced_command_only") is not True
@@ -36348,7 +36348,7 @@ def complete_external_watchdog_drill(
             "release_tag": PRODUCTION_OPERATIONAL_TAG,
             "release_git_commit": deployment["release_git_commit"],
             "release_tag_object": deployment["release_tag_object"],
-            "chain_namespace": "schema5-v1.2-r7",
+            "chain_namespace": "schema5-v1.2-r8",
             "deployment_id": deployment["deployment_id"],
             "watchdog_code_sha256": deployment["watchdog_code_sha256"],
             "immutable_release_sha256": deployment[

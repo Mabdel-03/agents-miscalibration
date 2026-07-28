@@ -41,7 +41,7 @@ def _toolchain_binding(root: str | Path) -> dict:
         "schema_version": control.conda_toolchain.SCHEMA_VERSION,
         "protocol": control.conda_toolchain.PROTOCOL,
         "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
-        "chain_namespace": "schema5-v1.2-r7",
+        "chain_namespace": "schema5-v1.2-r8",
         "toolchain_root": str(toolchain),
         "base_prefix": str(toolchain / "base"),
         "completion_marker": {
@@ -2051,7 +2051,7 @@ def attest_all_non_scheduler(state_dir: Path) -> None:
                         )
                         smoke_attempt_binding = {
                             "protocol": (
-                                "schema5-v1.2-r7-smoke-attempt-binding-v1"
+                                "schema5-v1.2-r8-smoke-attempt-binding-v1"
                             ),
                             "attempt_id": (
                                 "a000001-g000001-c000001-"
@@ -2508,7 +2508,7 @@ def attest_test_production_authorizations(
     ):
         return
     root = state_dir / "production-authorization-fixture"
-    manifest_path = root / "RECOVERY_CHAIN_SCHEMA5_V1_2_R7.json"
+    manifest_path = root / "RECOVERY_CHAIN_SCHEMA5_V1_2_R8.json"
     chain_id = "1" * 64
     manifest = {
         "schema_version": 1,
@@ -2537,7 +2537,7 @@ def attest_test_production_authorizations(
     qualification_id = "3" * 64
     qualification_marker = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r7-throughput-qualification-v1",
+        "protocol": "schema5-v1.2-r8-throughput-qualification-v1",
         "passed": True,
         "release_id": control.PRODUCTION_RELEASE_ID,
         "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
@@ -2563,7 +2563,7 @@ def attest_test_production_authorizations(
     pointer = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r7-throughput-qualification-attempt-pointer-v1"
+            "schema5-v1.2-r8-throughput-qualification-attempt-pointer-v1"
         ),
         "chain_id": chain_id,
         "attempt_id": attempt_id,
@@ -2575,7 +2575,7 @@ def attest_test_production_authorizations(
     current_attempt = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r7-throughput-qualification-current-attempt-v1"
+            "schema5-v1.2-r8-throughput-qualification-current-attempt-v1"
         ),
         "attempt_id": attempt_id,
         "pointer": str(pointer_path.resolve()),
@@ -2593,13 +2593,13 @@ def attest_test_production_authorizations(
     watchdog_id = "7" * 64
     drill_payload = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r7-external-watchdog-drill-v1",
+        "protocol": "schema5-v1.2-r8-external-watchdog-drill-v1",
         "drill_id": drill_id,
         "control_sha256": current["immutable_sha256"],
     }
     watchdog_payload = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r7-external-watchdog-v1",
+        "protocol": "schema5-v1.2-r8-external-watchdog-v1",
         "marker_id": watchdog_id,
         "control_sha256": current["immutable_sha256"],
     }
@@ -3809,7 +3809,7 @@ def _watchdog_deployment_evidence(state_dir: Path, path: Path) -> Path:
         "release_tag": control.PRODUCTION_OPERATIONAL_TAG,
         "release_git_commit": current["immutable"]["git_commit"],
         "release_tag_object": "b" * 40,
-        "chain_namespace": "schema5-v1.2-r7",
+        "chain_namespace": "schema5-v1.2-r8",
         "deployment_id": "1" * 64,
         "watchdog_code_sha256": "2" * 64,
         "immutable_release_sha256": "3" * 64,
@@ -5083,7 +5083,7 @@ def test_release_bundle_rejects_bound_materialization_stage_drift(tmp_path):
 def test_v12_release_and_environment_schema_downgrades_are_rejected(tmp_path):
     pins = make_pins(tmp_path)
     assert pins["release_id"] == "sweep-recovery-schema5-v1.2"
-    assert control.PRODUCTION_OPERATIONAL_TAG == "sweep-recovery-schema5-v1.2-r7"
+    assert control.PRODUCTION_OPERATIONAL_TAG == "sweep-recovery-schema5-v1.2-r8"
 
     downgraded_pins = copy.deepcopy(pins)
     downgraded_pins["release_id"] = "sweep-recovery-schema5-v1.1"

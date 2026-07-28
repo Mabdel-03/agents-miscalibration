@@ -2,7 +2,7 @@
 """Verify immutable schema-5 recovery evidence with its native protocol.
 
 The v1.1-r1 and v1.2-r2 recovery chains are sealed historical evidence. They retain
-their native protocol semantics; neither is reinterpreted as the active v1.2-r7
+their native protocol semantics; neither is reinterpreted as the active v1.2-r8
 chain. This dispatcher reads only the protocol discriminator and selects either the
 matching renderer or the deliberately read-only historical-r2 validator below.
 """
@@ -31,10 +31,10 @@ if _BUNDLE_DIRECTORY not in sys.path:
 
 R1_PROTOCOL = "schema5-v1.1-r1-recovery-chain"
 R2_PROTOCOL = "schema5-v1.2-r2-recovery-chain"
-R7_PROTOCOL = "schema5-v1.2-r7-recovery-chain"
+R8_PROTOCOL = "schema5-v1.2-r8-recovery-chain"
 _RENDERERS = {
     R1_PROTOCOL: "render_schema5_recovery_chain",
-    R7_PROTOCOL: "render_schema5_recovery_chain_v12",
+    R8_PROTOCOL: "render_schema5_recovery_chain_v12",
 }
 _MAX_DISCRIMINATOR_BYTES = 16 * 1024 * 1024
 # No native r2 chain was admitted into the current recovery root. Historical r2
@@ -189,7 +189,7 @@ def _historical_r2_chain(
     manifest_path: Path,
     receipt_path: Path | None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
-    """Validate immutable r2 bytes without importing the active r7 renderer."""
+    """Validate immutable r2 bytes without importing the active r8 renderer."""
 
     manifest, manifest_raw = _read_discriminator_bytes(
         manifest_path, require_canonical=True
@@ -434,7 +434,7 @@ def verify_recovery_evidence(
                     comments=comments,
                 )
             elif (
-                protocol == R7_PROTOCOL
+                protocol == R8_PROTOCOL
                 and receipt_protocol == f"{protocol}-repair"
             ):
                 generation = receipt_discriminator.get("repair_generation")

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -863,13 +864,13 @@ def _r3_probe_paths(
 ) -> tuple[Path, Path, Path, Path, Path, list[tuple[str, Path]], dict[str, str], list[str]]:
     recovery = root / "schema5-v1"
     r3_checkout = recovery / evidence._R3_RELEASE_CHECKOUT_DIRECTORY
-    r7_checkout = recovery / evidence._R7_RELEASE_CHECKOUT_DIRECTORY
-    toolchain = recovery / evidence._R7_TOOLCHAIN_RELATIVE_ROOT
+    r8_checkout = recovery / evidence._R8_RELEASE_CHECKOUT_DIRECTORY
+    toolchain = recovery / evidence._R8_TOOLCHAIN_RELATIVE_ROOT
     temporary = root / "schema5-r3-prelaunch-probe"
     expected_paths = {
         "tagged-r3-release-checkout": r3_checkout,
-        "tagged-r7-release-checkout": r7_checkout,
-        "sealed-r7-conda-toolchain": toolchain,
+        "tagged-r8-release-checkout": r8_checkout,
+        "sealed-r8-conda-toolchain": toolchain,
     }
     if classification == "unsafe_recorded_broken_internal_symlink":
         expected_paths["recorded-shared-conda-base"] = (
@@ -907,7 +908,7 @@ def _r3_probe_paths(
     return (
         recovery,
         r3_checkout,
-        r7_checkout,
+        r8_checkout,
         toolchain,
         output,
         inputs,
@@ -923,7 +924,7 @@ def _r3_prelaunch_failure_envelope(
     (
         _recovery,
         r3_checkout,
-        _r7_checkout,
+        _r8_checkout,
         _toolchain,
         output,
         inputs,
@@ -1045,14 +1046,14 @@ def _record_probe_fixture(
     (
         _recovery,
         r3_checkout,
-        r7_checkout,
+        r8_checkout,
         toolchain,
         output,
         inputs,
         environment,
         argv,
     ) = _r3_probe_paths(tmp_path, classification)
-    for path in (r3_checkout, r7_checkout, toolchain):
+    for path in (r3_checkout, r8_checkout, toolchain):
         path.mkdir(parents=True, exist_ok=True)
         (path / "fixture").write_text(path.name, encoding="utf-8")
     temporary = output.parent
@@ -1342,7 +1343,7 @@ def test_record_r3_prelaunch_attempt_brackets_immutable_verification_with_invent
         monkeypatch,
         "unsafe_recorded_broken_internal_symlink",
     )
-    toolchain = dict(kwargs["input_roots"])["sealed-r7-conda-toolchain"]
+    toolchain = dict(kwargs["input_roots"])["sealed-r8-conda-toolchain"]
 
     def mutating_verifier(**_kwargs):
         (toolchain / "fixture").write_text("mutated", encoding="utf-8")
@@ -1363,7 +1364,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (
         recovery,
         r3_checkout,
-        r7_checkout,
+        r8_checkout,
         toolchain,
         output,
         inputs,
@@ -1374,18 +1375,18 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     )
     temporary = output.parent
     temporary.mkdir(parents=True)
-    for checkout in (r3_checkout, r7_checkout):
+    for checkout in (r3_checkout, r8_checkout):
         (checkout / "scripts").mkdir(parents=True)
     r3_pilot = r3_checkout / evidence._R3_PILOT_RELATIVE_PATH
     r3_runtime = r3_checkout / evidence._R3_RUNTIME_IDENTITY_RELATIVE_PATH
     r3_pilot.write_text("exact r3 pilot\n", encoding="utf-8")
     r3_runtime.write_text("exact r3 runtime identity\n", encoding="utf-8")
-    r7_sealer = r7_checkout / evidence._R7_SEALER_RELATIVE_PATH
+    r8_sealer = r8_checkout / evidence._R8_SEALER_RELATIVE_PATH
     provisioner = (
-        r7_checkout / evidence._R7_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
+        r8_checkout / evidence._R8_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
     )
-    r7_sealer.write_text("exact r7 sealer\n", encoding="utf-8")
-    provisioner.write_text("exact r7 provisioner\n", encoding="utf-8")
+    r8_sealer.write_text("exact r8 sealer\n", encoding="utf-8")
+    provisioner.write_text("exact r8 provisioner\n", encoding="utf-8")
     (toolchain / "base/bin").mkdir(parents=True)
     (toolchain / "base/bin/python").write_text(
         "#!/bin/sh\n", encoding="utf-8"
@@ -1393,7 +1394,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (toolchain / "base/bin/conda").write_text(
         "#!/bin/sh\n", encoding="utf-8"
     )
-    monkeypatch.setattr(evidence, "__file__", str(r7_sealer))
+    monkeypatch.setattr(evidence, "__file__", str(r8_sealer))
     monkeypatch.setattr(
         evidence, "_R3_PILOT_SHA256", hashlib.sha256(r3_pilot.read_bytes()).hexdigest()
     )
@@ -1431,8 +1432,8 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
         return {
             "schema_version": evidence.conda_toolchain.SCHEMA_VERSION,
             "protocol": evidence.conda_toolchain.PROTOCOL,
-            "release_tag": "sweep-recovery-schema5-v1.2-r7",
-            "chain_namespace": "schema5-v1.2-r7",
+            "release_tag": "sweep-recovery-schema5-v1.2-r8",
+            "chain_namespace": "schema5-v1.2-r8",
             "toolchain_root": str(toolchain),
             "base_prefix": str(toolchain / "base"),
             "portable_shebang": {
@@ -1502,6 +1503,59 @@ def test_r3_probe_input_inventory_preserves_internal_hardlink_topology(
     assert inventory["file_count"] == 2
     assert inventory["entry_count"] == 3
     assert inventory["total_bytes"] == 2 * len(b"same inode\n")
+
+
+def test_git_identity_queries_disable_optional_index_refresh(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    observed = {}
+
+    def fake_run(*args, **kwargs):
+        observed["args"] = args
+        observed["environment"] = kwargs["env"]
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(evidence.subprocess, "run", fake_run)
+    assert evidence._run_git(checkout, "status", "--porcelain=v1") == ""
+    assert observed["environment"]["GIT_OPTIONAL_LOCKS"] == "0"
+    assert observed["args"][0][:3] == (
+        "/usr/bin/git",
+        "-C",
+        str(checkout),
+    )
+
+
+def test_git_identity_query_preserves_fresh_clone_index_inode(tmp_path):
+    origin = tmp_path / "origin"
+    clone = tmp_path / "clone"
+
+    def git(*arguments):
+        return subprocess.run(
+            ["/usr/bin/git", *map(str, arguments)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    git("init", origin)
+    git("-C", origin, "config", "user.name", "Schema Five Test")
+    git("-C", origin, "config", "user.email", "schema5@example.invalid")
+    (origin / "tracked.txt").write_text("immutable\n", encoding="utf-8")
+    git("-C", origin, "add", "tracked.txt")
+    git("-C", origin, "commit", "-m", "fixture")
+    git("clone", "--no-local", "--no-checkout", origin, clone)
+    git("-C", clone, "checkout", "--detach", "HEAD")
+
+    index = clone / ".git/index"
+    before = (index.stat().st_ino, evidence._sha256_file(index))
+    assert evidence._run_git(
+        clone, "status", "--porcelain=v1", "--untracked-files=all"
+    ) == ""
+    after = (index.stat().st_ino, evidence._sha256_file(index))
+    assert after == before
 
 
 def test_recorded_shared_base_inventory_matches_runtime_exclusion_boundary(

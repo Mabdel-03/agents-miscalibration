@@ -105,20 +105,20 @@ _SETUPTOOLS_82_PATH_RE = re.compile(
 )
 _CHUNK_SIZE = 8 * 1024 * 1024
 SBATCH_TIME_LIMIT = "11:30:00"
-SBATCH_JOB_NAME = "asys-s5-materialization-pilot-r7"
+SBATCH_JOB_NAME = "asys-s5-materialization-pilot-r8"
 _SBATCH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.%/+=:-]+\Z")
-PILOT_QUARANTINE_PROTOCOL = "schema5-v1.2-r7-materialization-pilot-quarantine"
+PILOT_QUARANTINE_PROTOCOL = "schema5-v1.2-r8-materialization-pilot-quarantine"
 PILOT_QUARANTINE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r7-materialization-pilot-quarantine-intent"
+    "schema5-v1.2-r8-materialization-pilot-quarantine-intent"
 )
 SCHEDULER_ATTEMPTS_DIRECTORY = "scheduler_attempts"
 SCHEDULER_INTENT_FILENAME = "SCHEDULER_INTENT.json"
 SCHEDULER_SPOOLED_SCRIPT_FILENAME = "SPOOLED_BATCH_SCRIPT.sbatch"
 SCHEDULER_ACTIVE_FILENAME = "SCHEDULER_ACTIVE.json"
 SCHEDULER_ACCEPTANCE_FILENAME = "PILOT_SCHEDULER_ACCEPTED.json"
-SCHEDULER_INTENT_PROTOCOL = "schema5-v1.2-r7-pilot-scheduler-intent"
-SCHEDULER_ACTIVE_PROTOCOL = "schema5-v1.2-r7-pilot-scheduler-active"
-SCHEDULER_ACCEPTANCE_PROTOCOL = "schema5-v1.2-r7-pilot-scheduler-acceptance"
+SCHEDULER_INTENT_PROTOCOL = "schema5-v1.2-r8-pilot-scheduler-intent"
+SCHEDULER_ACTIVE_PROTOCOL = "schema5-v1.2-r8-pilot-scheduler-active"
+SCHEDULER_ACCEPTANCE_PROTOCOL = "schema5-v1.2-r8-pilot-scheduler-acceptance"
 SUBMISSION_INTENT_FILENAME = "PILOT_SUBMISSION_INTENT.json"
 SUBMISSION_ACCEPTED_FILENAME = "PILOT_SUBMISSION_ACCEPTED.json"
 SUBMISSION_DIRECTORY = "scheduler_submission"
@@ -126,11 +126,11 @@ SUBMISSION_ATTEMPTS_DIRECTORY = "attempts"
 SUBMISSION_ATTEMPT_INTENT_FILENAME = "ATTEMPT_INTENT.json"
 SUBMISSION_RESULT_FILENAME = "SBATCH_RESULT.json"
 SUBMISSION_ABSENT_FILENAME = "NO_ACCEPTED_JOB.json"
-SUBMISSION_INTENT_PROTOCOL = "schema5-v1.2-r7-pilot-submission-intent"
-SUBMISSION_ATTEMPT_PROTOCOL = "schema5-v1.2-r7-pilot-submission-attempt"
-SUBMISSION_RESULT_PROTOCOL = "schema5-v1.2-r7-pilot-submission-result"
-SUBMISSION_ABSENT_PROTOCOL = "schema5-v1.2-r7-pilot-submission-absent"
-SUBMISSION_ACCEPTED_PROTOCOL = "schema5-v1.2-r7-pilot-submission-accepted"
+SUBMISSION_INTENT_PROTOCOL = "schema5-v1.2-r8-pilot-submission-intent"
+SUBMISSION_ATTEMPT_PROTOCOL = "schema5-v1.2-r8-pilot-submission-attempt"
+SUBMISSION_RESULT_PROTOCOL = "schema5-v1.2-r8-pilot-submission-result"
+SUBMISSION_ABSENT_PROTOCOL = "schema5-v1.2-r8-pilot-submission-absent"
+SUBMISSION_ACCEPTED_PROTOCOL = "schema5-v1.2-r8-pilot-submission-accepted"
 DEFAULT_SUBMISSION_VISIBILITY_TIMEOUT = 900.0
 DEFAULT_SUBMISSION_POLL_SECONDS = 2.0
 TRUSTED_SYSTEM_PATH = "/usr/bin:/bin"
@@ -1530,7 +1530,7 @@ def render_materialization_pilot_sbatch(
     }
     launch_binding["launch_id"] = _sha256_bytes(_canonical_bytes(launch_binding))
     comment = (
-        "asys-s5-pilot:r7:"
+        "asys-s5-pilot:r8:"
         f"commit={expected_commit[:12]}:"
         f"launch={launch_binding['launch_id'][:16]}"
     )
