@@ -156,9 +156,9 @@ _R3_BROKEN_SYMLINK_TARGET = (
     "../../../../bin/x86_64-conda-linux-gnu-TOOLS=addr2line"
 )
 _R3_RELEASE_CHECKOUT_DIRECTORY = "materialization_pilot_source_checkout_v1_2_r3"
-_R12_RELEASE_CHECKOUT_DIRECTORY = "materialization_pilot_source_checkout_v1_2_r12"
-_R12_TOOLCHAIN_RELATIVE_ROOT = Path(
-    "toolchains/r12/conda"
+_R13_RELEASE_CHECKOUT_DIRECTORY = "materialization_pilot_source_checkout_v1_2_r13"
+_R13_TOOLCHAIN_RELATIVE_ROOT = Path(
+    "toolchains/r13/conda"
 )
 _R3_PILOT_RELATIVE_PATH = Path("scripts/run_schema5_materialization_pilot.py")
 _R3_PILOT_SHA256 = (
@@ -170,8 +170,8 @@ _R3_RUNTIME_IDENTITY_RELATIVE_PATH = Path(
 _R3_RUNTIME_IDENTITY_SHA256 = (
     "b3a66668b09e2aa5ba67c00878a713ced94b94cb272106b217b4ce84d2c2c64d"
 )
-_R12_SEALER_RELATIVE_PATH = Path("scripts/seal_recovery_evidence.py")
-_R12_TOOLCHAIN_PROVISIONER_RELATIVE_PATH = Path(
+_R13_SEALER_RELATIVE_PATH = Path("scripts/seal_recovery_evidence.py")
+_R13_TOOLCHAIN_PROVISIONER_RELATIVE_PATH = Path(
     "scripts/provision_schema5_conda_toolchain.py"
 )
 _R3_SHARED_CONDA_BASE = Path(
@@ -189,14 +189,14 @@ _R3_SHARED_RUNTIME_EXCLUDED_TOP_LEVEL = frozenset(
 _R3_PROBE_INPUT_NAMES = {
     "unsafe_recorded_broken_internal_symlink": (
         "tagged-r3-release-checkout",
-        "tagged-r12-release-checkout",
-        "sealed-r12-conda-toolchain",
+        "tagged-r13-release-checkout",
+        "sealed-r13-conda-toolchain",
         "recorded-shared-conda-base",
     ),
     "offline_clone_unseeded_release_local_cache": (
         "tagged-r3-release-checkout",
-        "tagged-r12-release-checkout",
-        "sealed-r12-conda-toolchain",
+        "tagged-r13-release-checkout",
+        "sealed-r13-conda-toolchain",
     ),
 }
 _R3_PROBE_ENVELOPE_FILENAMES = {
@@ -2517,7 +2517,7 @@ def _validated_r3_probe_contract(
 
     This routine is shared by the producer and the self-contained sealed-envelope
     verifier.  It deliberately validates lexical canonical paths rather than resolving
-    them: after archival, the external r3/r12 checkouts and toolchain need not remain
+    them: after archival, the external r3/r13 checkouts and toolchain need not remain
     available.
     """
 
@@ -2546,11 +2546,11 @@ def _validated_r3_probe_contract(
             "r3 prelaunch probe cwd is not the canonical tagged r3 checkout"
         )
     recovery_root = r3_checkout.parent
-    r12_checkout = recovery_root / _R12_RELEASE_CHECKOUT_DIRECTORY
-    toolchain_root = recovery_root / _R12_TOOLCHAIN_RELATIVE_ROOT
+    r13_checkout = recovery_root / _R13_RELEASE_CHECKOUT_DIRECTORY
+    toolchain_root = recovery_root / _R13_TOOLCHAIN_RELATIVE_ROOT
     toolchain_base = toolchain_root / "base"
-    r12_python = toolchain_base / "bin/python"
-    r12_conda = toolchain_base / "bin/conda"
+    r13_python = toolchain_base / "bin/python"
+    r13_conda = toolchain_base / "bin/conda"
     r3_runtime_identity = (
         r3_checkout / _R3_RUNTIME_IDENTITY_RELATIVE_PATH
     )
@@ -2605,8 +2605,8 @@ def _validated_r3_probe_contract(
         supplied_paths[name] = Path(text)
     expected_paths = {
         "tagged-r3-release-checkout": r3_checkout,
-        "tagged-r12-release-checkout": r12_checkout,
-        "sealed-r12-conda-toolchain": toolchain_root,
+        "tagged-r13-release-checkout": r13_checkout,
+        "sealed-r13-conda-toolchain": toolchain_root,
     }
     if classification == "unsafe_recorded_broken_internal_symlink":
         expected_paths["recorded-shared-conda-base"] = _R3_SHARED_CONDA_BASE
@@ -2626,7 +2626,7 @@ def _validated_r3_probe_contract(
 
     if classification == "unsafe_recorded_broken_internal_symlink":
         expected_argv = [
-            str(r12_python),
+            str(r13_python),
             "-I",
             "-B",
             str(r3_runtime_identity),
@@ -2635,7 +2635,7 @@ def _validated_r3_probe_contract(
         ]
     else:
         expected_argv = [
-            str(r12_conda),
+            str(r13_conda),
             "create",
             "--yes",
             "--offline",
@@ -2665,12 +2665,12 @@ def _validated_r3_probe_contract(
     return {
         "recovery_root": recovery_root,
         "r3_checkout": r3_checkout,
-        "r12_checkout": r12_checkout,
+        "r13_checkout": r13_checkout,
         "r3_runtime_identity": r3_runtime_identity,
         "toolchain_root": toolchain_root,
         "toolchain_base": toolchain_base,
-        "r12_python": r12_python,
-        "r12_conda": r12_conda,
+        "r13_python": r13_python,
+        "r13_conda": r13_conda,
         "temporary_root": temporary_root,
         "offline_cache": temporary_root / "empty-conda-pkgs",
         "offline_destination": temporary_root / "offline-clone-destination",
@@ -2777,7 +2777,7 @@ def _validate_r3_probe_immutable_inputs(
     contract: Mapping[str, Any],
     environment: Mapping[str, str],
 ) -> None:
-    """Reverify the exact r3 tag and sealed r12 producer/toolchain before execution."""
+    """Reverify the exact r3 tag and sealed r13 producer/toolchain before execution."""
 
     recovery_root = Path(contract["recovery_root"])
     r3_checkout = _safe_existing_path(
@@ -2785,9 +2785,9 @@ def _validate_r3_probe_immutable_inputs(
         description="tagged r3 probe checkout",
         kind="directory",
     )
-    r12_checkout = _safe_existing_path(
-        contract["r12_checkout"],
-        description="tagged r12 probe checkout",
+    r13_checkout = _safe_existing_path(
+        contract["r13_checkout"],
+        description="tagged r13 probe checkout",
         kind="directory",
     )
     _validate_r3_durable_release_identity(
@@ -2809,55 +2809,55 @@ def _validate_r3_probe_immutable_inputs(
                 f"tagged r3 probe source identity drifted: {relative}"
             )
 
-    r12_tag_ref = "refs/tags/sweep-recovery-schema5-v1.2-r12"
+    r13_tag_ref = "refs/tags/sweep-recovery-schema5-v1.2-r13"
     if (
-        _run_git(r12_checkout, "cat-file", "-t", r12_tag_ref) != "tag"
-        or _run_git(r12_checkout, "rev-parse", "--verify", "HEAD")
+        _run_git(r13_checkout, "cat-file", "-t", r13_tag_ref) != "tag"
+        or _run_git(r13_checkout, "rev-parse", "--verify", "HEAD")
         != _run_git(
-            r12_checkout,
+            r13_checkout,
             "rev-parse",
             "--verify",
-            f"{r12_tag_ref}^{{commit}}",
+            f"{r13_tag_ref}^{{commit}}",
         )
         or _run_git(
-            r12_checkout,
+            r13_checkout,
             "status",
             "--porcelain=v1",
             "--untracked-files=all",
         )
     ):
-        raise EvidenceError("r12 probe producer checkout is not the exact clean tag")
-    expected_sealer = r12_checkout / _R12_SEALER_RELATIVE_PATH
+        raise EvidenceError("r13 probe producer checkout is not the exact clean tag")
+    expected_sealer = r13_checkout / _R13_SEALER_RELATIVE_PATH
     if Path(__file__).resolve() != expected_sealer:
         raise EvidenceError(
-            "r3 prelaunch probe producer is not the tagged r12 sealer"
+            "r3 prelaunch probe producer is not the tagged r13 sealer"
         )
     provisioner = _safe_existing_path(
-        r12_checkout / _R12_TOOLCHAIN_PROVISIONER_RELATIVE_PATH,
-        description="tagged r12 toolchain verifier",
+        r13_checkout / _R13_TOOLCHAIN_PROVISIONER_RELATIVE_PATH,
+        description="tagged r13 toolchain verifier",
         kind="file",
     )
     if Path(conda_toolchain.__file__).resolve() != provisioner:
         raise EvidenceError(
-            "r3 prelaunch probe did not import the tagged r12 toolchain verifier"
+            "r3 prelaunch probe did not import the tagged r13 toolchain verifier"
         )
     toolchain_root = _safe_existing_path(
         contract["toolchain_root"],
-        description="sealed r12 Conda toolchain",
+        description="sealed r13 Conda toolchain",
         kind="directory",
     )
-    python_lexical = Path(contract["r12_python"])
+    python_lexical = Path(contract["r13_python"])
     try:
         python_resolved = python_lexical.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise EvidenceError(
-            f"sealed r12 Python is missing or unsafe: {python_lexical}: {exc}"
+            f"sealed r13 Python is missing or unsafe: {python_lexical}: {exc}"
         ) from exc
     if (
         not python_resolved.is_file()
         or not python_resolved.is_relative_to(Path(contract["toolchain_base"]))
     ):
-        raise EvidenceError("sealed r12 Python escapes its verified toolchain base")
+        raise EvidenceError("sealed r13 Python escapes its verified toolchain base")
 
     try:
         verified = conda_toolchain.verified_conda_toolchain_binding(
@@ -2869,7 +2869,7 @@ def _validate_r3_probe_immutable_inputs(
         conda_toolchain.CondaToolchainProvisionError,
     ) as exc:
         raise EvidenceError(
-            f"sealed r12 Conda toolchain verification failed: {exc}"
+            f"sealed r13 Conda toolchain verification failed: {exc}"
         ) from exc
     expected_binding_fields = {
         "schema_version",
@@ -2904,8 +2904,8 @@ def _validate_r3_probe_immutable_inputs(
         or set(verified) != expected_binding_fields
         or verified.get("schema_version") != conda_toolchain.SCHEMA_VERSION
         or verified.get("protocol") != conda_toolchain.PROTOCOL
-        or verified.get("release_tag") != "sweep-recovery-schema5-v1.2-r12"
-        or verified.get("chain_namespace") != "schema5-v1.2-r12"
+        or verified.get("release_tag") != "sweep-recovery-schema5-v1.2-r13"
+        or verified.get("chain_namespace") != "schema5-v1.2-r13"
         or verified.get("toolchain_root") != str(toolchain_root)
         or verified.get("base_prefix") != str(contract["toolchain_base"])
         or not isinstance(portable_shebang, dict)
@@ -2918,7 +2918,7 @@ def _validate_r3_probe_immutable_inputs(
         }
         or portable_shebang.get("absolute_base_prefix_interpreter_required")
         is not True
-        or portable_shebang.get("interpreter") != str(contract["r12_python"])
+        or portable_shebang.get("interpreter") != str(contract["r13_python"])
         or portable_shebang.get("maximum_shebang_bytes")
         != conda_toolchain.MAX_PORTABLE_SHEBANG_BYTES
         or not isinstance(portable_shebang.get("shebang_bytes"), int)
@@ -2927,7 +2927,7 @@ def _validate_r3_probe_immutable_inputs(
         or portable_shebang["shebang_bytes"]
         > conda_toolchain.MAX_PORTABLE_SHEBANG_BYTES
         or not isinstance(executable, dict)
-        or executable.get("path") != str(contract["r12_conda"])
+        or executable.get("path") != str(contract["r13_conda"])
         or _SHA256_RE.fullmatch(str(executable.get("sha256", ""))) is None
         or _SHA256_RE.fullmatch(
             str(verified.get("binding_id", ""))
@@ -2935,7 +2935,7 @@ def _validate_r3_probe_immutable_inputs(
         is None
     ):
         raise EvidenceError(
-            "sealed r12 Conda toolchain verification identity drifted"
+            "sealed r13 Conda toolchain verification identity drifted"
         )
 
 

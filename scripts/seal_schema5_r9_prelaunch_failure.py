@@ -1021,11 +1021,9 @@ def _execute_proof(
         "remote_fetch_urls": urls,
         "structural_diagnostic_valid": True,
         "immutable_r9_validator": rejection,
-        "historical_recorder_transcript": _file_ref(
-            transcript_path,
-            description="exact r9 recorder reproduction transcript",
-        )
-        | {"transcript_id": recorder_transcript["transcript_id"]},
+        "historical_recorder_transcript": _recorder_transcript_ref(
+            transcript_path, recorder_transcript["transcript_id"]
+        ),
         "reproduced_probe_state": reproduced_state,
         "original_probe_archive": {
             "path": str(archive),
@@ -1042,6 +1040,15 @@ def _execute_proof(
         "known_scheduler_job_ids": [],
         "result_mutation_count": 0,
     }
+
+
+def _recorder_transcript_ref(
+    transcript_path: Path, transcript_id: str
+) -> dict[str, Any]:
+    return _file_ref(
+        transcript_path,
+        description="exact r9 recorder reproduction transcript",
+    ) | {"transcript_id": transcript_id}
 
 
 def _verify_proof(
@@ -1103,12 +1110,7 @@ def _verify_proof(
         or transcript.get("volatile_root_recreated_from_empty") is not True
         or transcript_id != _identity(transcript, "transcript_id")
         or proof.get("historical_recorder_transcript")
-        != {
-            "path": str(transcript_path),
-            "sha256": hashlib.sha256(transcript_raw).hexdigest(),
-            "size": len(transcript_raw),
-            "transcript_id": transcript_id,
-        }
+        != _recorder_transcript_ref(transcript_path, transcript_id)
         or proof.get("reproduced_probe_state")
         != transcript.get("resulting_probe_state")
     ):

@@ -283,6 +283,22 @@ def test_r9_reproduction_accepts_only_the_exact_prefixed_cli_error(
         seal._reproduce_volatile_probe_tree(recovery)
 
 
+def test_r9_transcript_reference_preserves_complete_file_metadata(
+    tmp_path,
+):
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text('{"transcript_id":"fixture"}\n', encoding="utf-8")
+
+    reference = seal._recorder_transcript_ref(transcript, "fixture")
+
+    assert reference["path"] == str(transcript)
+    assert reference["transcript_id"] == "fixture"
+    assert reference["size"] == transcript.stat().st_size
+    assert reference["mode"] == stat.S_IMODE(transcript.stat().st_mode)
+    assert reference["link_count"] == 1
+    assert len(reference["sha256"]) == 64
+
+
 def test_r9_failure_seal_is_dry_by_default_and_marker_last(
     tmp_path, monkeypatch
 ):

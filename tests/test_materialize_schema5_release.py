@@ -44,9 +44,9 @@ def _toolchain_binding(value: str | Path) -> dict:
     root = executable
     return {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r12-offline-conda-toolchain-v1",
+        "protocol": "schema5-v1.2-r13-offline-conda-toolchain-v1",
         "release_tag": materialize.REQUIRED_TAG,
-        "chain_namespace": "schema5-v1.2-r12",
+        "chain_namespace": "schema5-v1.2-r13",
         "toolchain_root": str(root),
         "base_prefix": str(executable.parent),
         "completion_marker": {
