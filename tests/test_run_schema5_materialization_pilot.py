@@ -45,9 +45,9 @@ def _fake_toolchain_binding(value: str | Path) -> dict:
     executable_bytes = executable.read_bytes()
     binding = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r10-offline-conda-toolchain-v1",
+        "protocol": "schema5-v1.2-r11-offline-conda-toolchain-v1",
         "release_tag": pilot.REQUIRED_TAG,
-        "chain_namespace": "schema5-v1.2-r10",
+        "chain_namespace": "schema5-v1.2-r11",
         "toolchain_root": str(root),
         "base_prefix": str(root),
         "completion_marker": {
@@ -89,7 +89,7 @@ def _mock_sealed_conda_toolchain(monkeypatch):
     )
 
 
-def test_all_fresh_pilot_wire_protocols_identify_r10() -> None:
+def test_all_fresh_pilot_wire_protocols_identify_r11() -> None:
     protocols = {
         pilot.PILOT_QUARANTINE_PROTOCOL,
         pilot.PILOT_QUARANTINE_INTENT_PROTOCOL,
@@ -103,7 +103,7 @@ def test_all_fresh_pilot_wire_protocols_identify_r10() -> None:
         pilot.SUBMISSION_ACCEPTED_PROTOCOL,
     }
 
-    assert all("schema5-v1.2-r10-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r11-" in protocol for protocol in protocols)
     assert all("schema5-v1.2-r3-" not in protocol for protocol in protocols)
 
 
@@ -809,7 +809,7 @@ def test_rendered_sbatch_is_exact_immutable_no_requeue_and_rerunnable(tmp_path):
     assert f"#SBATCH --output={logs}/schema5-materialization-pilot-%j.out\n" in text
     assert f"#SBATCH --error={logs}/schema5-materialization-pilot-%j.err\n" in text
     assert f"#SBATCH --chdir={inputs['release_checkout']}\n" in text
-    assert "#SBATCH --comment=asys-s5-pilot:r10:" in text
+    assert "#SBATCH --comment=asys-s5-pilot:r11:" in text
     assert "export PATH=/usr/bin:/bin\nreadonly PATH\n" in text
     exact_script = (
         Path(inputs["release_checkout"])

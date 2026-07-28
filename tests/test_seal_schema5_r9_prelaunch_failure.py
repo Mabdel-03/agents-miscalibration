@@ -209,6 +209,69 @@ def test_r9_exact_recorder_commands_bind_both_historical_probes(
     ]
 
 
+def test_r9_reproduction_accepts_only_the_exact_prefixed_cli_error(
+    tmp_path, monkeypatch
+):
+    recovery = tmp_path / "results/recovery/schema5-v1"
+    probe = tmp_path / "schema5-r3-prelaunch-reproduction"
+    monkeypatch.setattr(seal, "R9_PROBE_ROOT", probe)
+    monkeypatch.setattr(
+        seal, "_validate_volatile_probe_absence", lambda: {"present": False}
+    )
+    records = [
+        {
+            "returncode": 0,
+            "stdout": "{}\n",
+            "stderr": "",
+        }
+        for _index in range(4)
+    ] + [
+        {
+            "returncode": 2,
+            "stdout": "",
+            "stderr": seal.EXPECTED_R9_CLI_STDERR,
+        }
+    ]
+    monkeypatch.setattr(
+        seal, "_run_r9_recorder", lambda *_args, **_kwargs: records.pop(0)
+    )
+    state = {"inventory": {"entry_count": 2}}
+    monkeypatch.setattr(
+        seal, "_validate_original_probe_tree", lambda _recovery: state
+    )
+
+    reproduced, transcript = seal._reproduce_volatile_probe_tree(recovery)
+
+    assert reproduced == state
+    assert transcript["records"][-1]["stderr"].startswith(
+        "[schema5-evidence] ERROR:"
+    )
+
+    second_probe = tmp_path / "schema5-r3-prelaunch-bare-error"
+    monkeypatch.setattr(seal, "R9_PROBE_ROOT", second_probe)
+    bare_records = [
+        {
+            "returncode": 0,
+            "stdout": "{}\n",
+            "stderr": "",
+        }
+        for _index in range(4)
+    ] + [
+        {
+            "returncode": 2,
+            "stdout": "",
+            "stderr": f"ERROR: {seal.EXPECTED_R9_REJECTION}\n",
+        }
+    ]
+    monkeypatch.setattr(
+        seal, "_run_r9_recorder", lambda *_args, **_kwargs: bare_records.pop(0)
+    )
+    with pytest.raises(
+        seal.R9FailureSealError, match="recorder rejection reproduction drifted"
+    ):
+        seal._reproduce_volatile_probe_tree(recovery)
+
+
 def test_r9_failure_seal_is_dry_by_default_and_marker_last(
     tmp_path, monkeypatch
 ):

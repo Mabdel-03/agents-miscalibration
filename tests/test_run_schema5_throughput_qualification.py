@@ -307,7 +307,7 @@ def _chain_manifest(tmp_path: Path) -> Path:
     release_identity_checksum.chmod(0o444)
     identity = {
         "schema_version": renderer.CHAIN_SCHEMA_VERSION,
-        "protocol": "schema5-v1.2-r10-recovery-chain",
+        "protocol": "schema5-v1.2-r11-recovery-chain",
         "namespace": renderer.CHAIN_NAMESPACE,
         "release_id": renderer.RELEASE_ID,
         "release_tag": renderer.RELEASE_TAG,
@@ -3321,13 +3321,13 @@ def _legacy_failed_attempt_is_preserved_and_exact_additive_generation_can_retry(
         ),
     )
     failed_comment = (
-        f"asys:s5-recovery-v1.2-r10:{base.chain_id}:"
+        f"asys:s5-recovery-v1.2-r11:{base.chain_id}:"
         "g0000:throughput_qualification"
     )
     receipt = qualification._with_identity(
         {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r10-recovery-chain-submission",
+            "protocol": "schema5-v1.2-r11-recovery-chain-submission",
             "passed": True,
             "chain_id": base.chain_id,
             "manifest": str(base.chain_manifest),

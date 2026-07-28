@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal r9's deterministic offline-probe diagnostic-contract failure for r10."""
+"""Seal r9's deterministic offline-probe diagnostic-contract failure for r11."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 SCHEMA_VERSION = 1
 PROTOCOL = (
-    "schema5-v1.2-r9-prelaunch-offline-diagnostic-contract-failure-seal-v1"
+    "schema5-v1.2-r9-prelaunch-offline-diagnostic-contract-failure-seal-v2"
 )
 CLASSIFICATION = (
     "deterministic_prelaunch_offline_diagnostic_cardinality_failure"
@@ -50,9 +50,16 @@ REPRODUCTION_NAME = "equivalent_offline_reproduction"
 STDOUT_NAME = "conda.stdout"
 STDERR_NAME = "conda.stderr"
 RECORDER_TRANSCRIPT_NAME = "r9_recorder_reproduction.json"
+R10_FAILURE_RELATIVE_ROOT = Path(
+    "prelaunch_failures/schema5-v1.2-r10-r9-sealer"
+)
+R10_FAILURE_MARKER_NAME = "PRELAUNCH_R9_SEALER_FAILURE_SEALED.json"
 EXPECTED_R9_REJECTION = (
     "r3 offline-cache probe lacks the canonical Conda OfflineError "
     "remote-fetch context"
+)
+EXPECTED_R9_CLI_STDERR = (
+    f"[schema5-evidence] ERROR: {EXPECTED_R9_REJECTION}\n"
 )
 PRIOR_VOLATILE_AUDIT = {
     "status": "observed_before_external_tmp_cleanup",
@@ -240,6 +247,48 @@ def _load_r9_evidence_module(recovery: Path):
     if Path(module.__file__).resolve() != path:
         raise R9FailureSealError("r9 evidence-validator source drifted")
     return module
+
+
+def _r10_failure_binding(recovery: Path, scheduler_user: str) -> dict[str, Any]:
+    path = Path(__file__).resolve().with_name(
+        "seal_schema5_r10_prelaunch_failure.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_schema5_r10_prelaunch_failure_binding", path
+    )
+    if spec is None or spec.loader is None:
+        raise R9FailureSealError("cannot load r10 failure-seal verifier")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = recovery / R10_FAILURE_RELATIVE_ROOT
+    try:
+        binding = module.verify_failure_seal(
+            root,
+            recovery_root=recovery,
+            scheduler_user=scheduler_user,
+        )
+    except Exception as exc:
+        raise R9FailureSealError(
+            f"r10 wrapper-failure seal is invalid: {exc}"
+        ) from exc
+    if (
+        not isinstance(binding, dict)
+        or binding.get("passed") is not True
+        or binding.get("root") != str(root)
+        or binding.get("protocol") != module.PROTOCOL
+        or binding.get("release_tag") != module.R10_TAG
+        or binding.get("release_git_commit") != module.R10_COMMIT
+        or binding.get("chain_namespace") != module.R10_NAMESPACE
+        or binding.get("marker")
+        != str(root / R10_FAILURE_MARKER_NAME)
+        or binding.get("classification") != module.CLASSIFICATION
+        or binding.get("retry_in_place") is not False
+        or binding.get("requires_superseding_release") is not True
+        or binding.get("pre_scheduler_submission") is not True
+        or binding.get("known_scheduler_job_ids") != []
+    ):
+        raise R9FailureSealError("r10 wrapper-failure binding drifted")
+    return json.loads(json.dumps(binding, sort_keys=True))
 
 
 def _sha256_file(path: Path) -> str:
@@ -440,7 +489,7 @@ def _scientific_state(recovery: Path) -> dict[str, Any]:
             f"r9 failure is not prelaunch zero-result evidence: {present}"
         )
     return {
-        "captured_before_r10_production_outputs": True,
+        "captured_before_r11_production_outputs": True,
         "result_mutation_count": 0,
         "scheduler_job_count": 0,
         "required_absent_paths_at_seal": required_absent,
@@ -693,7 +742,7 @@ def _reproduce_volatile_probe_tree(
     if (
         rejected["returncode"] != 2
         or rejected["stdout"] != ""
-        or rejected["stderr"].strip() != f"ERROR: {EXPECTED_R9_REJECTION}"
+        or rejected["stderr"] != EXPECTED_R9_CLI_STDERR
     ):
         raise R9FailureSealError(
             "exact r9 offline recorder rejection reproduction drifted"
@@ -720,6 +769,7 @@ def _intent_payload(
         "classification": CLASSIFICATION,
         "source_release": _release_binding(recovery),
         "sealed_r9_toolchain": _toolchain_binding(recovery),
+        "sealed_r10_wrapper_failure": _r10_failure_binding(recovery, user),
         "original_probe_state": source,
         "reproduction": _reproduction_contract(recovery, evidence),
         "scientific_state": _scientific_state(recovery),
@@ -743,6 +793,8 @@ def _validate_intent(
         or intent.get("intent_id") != _identity(intent, "intent_id")
         or intent.get("source_release") != _release_binding(recovery)
         or intent.get("sealed_r9_toolchain") != _toolchain_binding(recovery)
+        or intent.get("sealed_r10_wrapper_failure")
+        != _r10_failure_binding(recovery, user)
         or intent.get("reproduction") != _reproduction_contract(recovery, evidence)
         or intent.get("evidence_root") != str(evidence)
         or intent.get("scheduler") != _scheduler_quiescence(user)
@@ -751,7 +803,7 @@ def _validate_intent(
     state = intent.get("scientific_state")
     if (
         not isinstance(state, dict)
-        or state.get("captured_before_r10_production_outputs") is not True
+        or state.get("captured_before_r11_production_outputs") is not True
         or state.get("result_mutation_count") != 0
         or state.get("scheduler_job_count") != 0
     ):

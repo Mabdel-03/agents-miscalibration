@@ -70,7 +70,7 @@ from scripts.audit_context_capacity import AuditFilters, selected_cells  # noqa:
 from scripts import schema5_email_ack  # noqa: E402
 from scripts.verify_schema5_recovery_evidence import (  # noqa: E402
     EvidenceVerificationError,
-    R10_PROTOCOL,
+    R11_PROTOCOL,
     verify_recovery_evidence,
 )
 from slurm import keepalive  # noqa: E402
@@ -85,10 +85,10 @@ EXPECTED_DENSE_REQUESTS = 43_092
 EXPECTED_SEVEN_CELLS = 288
 EXPECTED_SEVEN_REQUESTS = 57_456
 CAPACITY_TRANSIENT_PROTOCOL = (
-    "schema5-v1.2-r10-fleet-capacity-transient-receipt"
+    "schema5-v1.2-r11-fleet-capacity-transient-receipt"
 )
 CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r10-fleet-capacity-transient-evidence"
+    "schema5-v1.2-r11-fleet-capacity-transient-evidence"
 )
 CAPACITY_TRANSIENT_EVIDENCE_NAME = "FLEET_CAPACITY_TRANSIENT_EVIDENCE.json"
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
@@ -104,7 +104,7 @@ CAPACITY_PREIMAGE_ROOT_NAME = "sealed-preimages"
 CAPACITY_PREIMAGE_MANIFEST_NAME = "PREIMAGE_MANIFEST.json"
 CAPACITY_PREIMAGE_INVENTORY_NAME = "PREIMAGE_INVENTORY.sha256"
 CAPACITY_PREIMAGE_COMPLETE_NAME = "PREIMAGE_ARCHIVE_COMPLETE.json"
-CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r10-capacity-preimage-archive"
+CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r11-capacity-preimage-archive"
 
 
 class EvidenceError(RuntimeError):
@@ -3357,9 +3357,9 @@ def _verified_capacity_chain_binding(
         verified = verify_recovery_evidence(chain_manifest, submission_receipt)
     except EvidenceVerificationError as exc:
         raise EvidenceError(f"capacity-transient chain evidence is invalid: {exc}") from exc
-    if verified["chain_protocol"] != R10_PROTOCOL:
+    if verified["chain_protocol"] != R11_PROTOCOL:
         raise EvidenceError(
-            "capacity-transient receipt accepts only the active r10 wire protocol"
+            "capacity-transient receipt accepts only the active r11 wire protocol"
         )
     manifest = verified["manifest"]
     receipt = verified["submission_receipt"]
@@ -3497,7 +3497,7 @@ def _validate_capacity_transient_evidence(
         or payload.get("schema_version") != 1
         or payload.get("protocol") != CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL
         or payload.get("passed") is not True
-        or payload.get("chain_protocol") != R10_PROTOCOL
+        or payload.get("chain_protocol") != R11_PROTOCOL
         or payload.get("chain_id") != verified["manifest"]["chain_id"]
         or payload.get("chain_generation") != binding["chain_generation"]
         or payload.get("manifest") != verified["manifest_path"]
@@ -5125,7 +5125,7 @@ def build_fleet_capacity_transient_receipt(
                 "schema_version": 1,
                 "protocol": CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL,
                 "passed": True,
-                "chain_protocol": R10_PROTOCOL,
+                "chain_protocol": R11_PROTOCOL,
                 "chain_id": verified["manifest"]["chain_id"],
                 "chain_generation": binding["chain_generation"],
                 "manifest": verified["manifest_path"],

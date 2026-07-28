@@ -127,7 +127,7 @@ HISTORICAL_R2_LITERALS = Counter(
 )
 
 
-def test_fresh_schema5_artifact_protocols_identify_r10() -> None:
+def test_fresh_schema5_artifact_protocols_identify_r11() -> None:
     protocols = {
         control.PRODUCTION_AUTHORIZATION_PROTOCOL,
         control.CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL,
@@ -181,16 +181,16 @@ def test_fresh_schema5_artifact_protocols_identify_r10() -> None:
         sentinel.STAGE_MARKER_PROTOCOL,
     }
     assert protocols
-    assert all("schema5-v1.2-r10-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r11-" in protocol for protocol in protocols)
     assert all("schema5-v1.2-r2-" not in protocol for protocol in protocols)
 
 
 def test_active_protocol_producers_and_consumers_are_atomic() -> None:
     assert (
         qualification.RECOVERY_CHAIN_PROTOCOL
-        == readiness.R10_PROTOCOL
-        == recovery_verifier.R10_PROTOCOL
-        == "schema5-v1.2-r10-recovery-chain"
+        == readiness.R11_PROTOCOL
+        == recovery_verifier.R11_PROTOCOL
+        == "schema5-v1.2-r11-recovery-chain"
     )
     assert (
         control.SMOKE_ATTEMPT_BINDING_PROTOCOL
@@ -396,5 +396,26 @@ def test_r9_literals_are_confined_to_immutable_failure_history() -> None:
                     observed_sources.add(relative)
     assert observed_sources == {
         "scripts/render_schema5_recovery_chain_v12.py",
+        "scripts/seal_schema5_r10_prelaunch_failure.py",
+        "scripts/seal_schema5_r9_prelaunch_failure.py",
+    }
+
+
+def test_r10_literals_are_confined_to_immutable_failure_history() -> None:
+    root = Path(__file__).resolve().parents[1]
+    observed_sources: set[str] = set()
+    for directory in ("scripts", "slurm", "src"):
+        for path in sorted((root / directory).rglob("*.py")):
+            relative = str(path.relative_to(root))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            for node in ast.walk(tree):
+                value = node.value if isinstance(node, ast.Constant) else None
+                if isinstance(value, str) and (
+                    "schema5-v1.2-r10" in value
+                    or "sweep-recovery-schema5-v1.2-r10" in value
+                ):
+                    observed_sources.add(relative)
+    assert observed_sources == {
+        "scripts/seal_schema5_r10_prelaunch_failure.py",
         "scripts/seal_schema5_r9_prelaunch_failure.py",
     }

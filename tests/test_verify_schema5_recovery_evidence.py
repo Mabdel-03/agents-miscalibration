@@ -25,7 +25,7 @@ def _canonical(value: object) -> bytes:
     ("protocol", "module_name"),
     [
         (evidence.R1_PROTOCOL, "render_schema5_recovery_chain"),
-        (evidence.R10_PROTOCOL, "render_schema5_recovery_chain_v12"),
+        (evidence.R11_PROTOCOL, "render_schema5_recovery_chain_v12"),
     ],
 )
 def test_dispatches_chain_and_receipt_to_native_renderer(
@@ -96,7 +96,7 @@ def test_dispatches_chain_and_receipt_to_native_renderer(
     assert (manifest.read_bytes(), receipt.read_bytes()) == before
 
 
-def test_r10_repair_receipt_dispatches_to_generation_validator(
+def test_r11_repair_receipt_dispatches_to_generation_validator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = tmp_path / "chain.json"
@@ -104,14 +104,14 @@ def test_r10_repair_receipt_dispatches_to_generation_validator(
     receipt = tmp_path / "g0001" / "receipt.json"
     receipt.parent.mkdir()
     manifest.write_text(
-        json.dumps({"protocol": evidence.R10_PROTOCOL, "chain_id": "chain"}) + "\n",
+        json.dumps({"protocol": evidence.R11_PROTOCOL, "chain_id": "chain"}) + "\n",
         encoding="utf-8",
     )
     parent.write_text("{}\n", encoding="utf-8")
     receipt.write_text(
         json.dumps(
             {
-                "protocol": f"{evidence.R10_PROTOCOL}-repair",
+                "protocol": f"{evidence.R11_PROTOCOL}-repair",
                 "repair_generation": 1,
                 "parent_receipt": str(parent.resolve()),
             }
@@ -257,7 +257,7 @@ def test_rejects_symlink_discriminator(tmp_path: Path) -> None:
 def test_rejects_duplicate_discriminator_key(tmp_path: Path) -> None:
     manifest = tmp_path / "chain.json"
     manifest.write_text(
-        '{"protocol":"schema5-v1.2-r10-recovery-chain",'
+        '{"protocol":"schema5-v1.2-r11-recovery-chain",'
         '"protocol":"schema5-v1.2-r2-recovery-chain"}\n',
         encoding="utf-8",
     )
@@ -273,7 +273,7 @@ def test_rejects_symlinked_ancestor(tmp_path: Path) -> None:
     real.mkdir()
     manifest = real / "chain.json"
     manifest.write_text(
-        json.dumps({"protocol": evidence.R10_PROTOCOL}) + "\n",
+        json.dumps({"protocol": evidence.R11_PROTOCOL}) + "\n",
         encoding="utf-8",
     )
     manifest.chmod(0o444)
@@ -290,7 +290,7 @@ def test_lexical_alias_is_canonicalized_before_native_dispatch(
 ) -> None:
     manifest = tmp_path / "chain.json"
     manifest.write_text(
-        json.dumps({"protocol": evidence.R10_PROTOCOL}) + "\n",
+        json.dumps({"protocol": evidence.R11_PROTOCOL}) + "\n",
         encoding="utf-8",
     )
     manifest.chmod(0o444)
@@ -317,7 +317,7 @@ def test_cli_is_read_only_and_reports_renderer(
 ) -> None:
     manifest = tmp_path / "chain.json"
     manifest.write_text(
-        json.dumps({"protocol": evidence.R10_PROTOCOL, "chain_id": "chain"}) + "\n",
+        json.dumps({"protocol": evidence.R11_PROTOCOL, "chain_id": "chain"}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
