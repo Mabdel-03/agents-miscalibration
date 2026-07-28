@@ -33,23 +33,23 @@ from agents_scaling.serving.profiles import SERVING_PROFILES
 
 
 SCHEMA_VERSION = 4
-PROTOCOL = "schema5-v1.2-r5-protected-capacity-v4"
+PROTOCOL = "schema5-v1.2-r6-protected-capacity-v4"
 STATIC_FEASIBILITY_SCHEMA_VERSION = 3
 STATIC_FEASIBILITY_PROTOCOL = (
-    "schema5-v1.2-r5-throughput-preflight-capacity-certificate-v1"
+    "schema5-v1.2-r6-throughput-preflight-capacity-certificate-v1"
 )
 LIVE_CLIENT_CAPACITY_PROTOCOL = (
-    "schema5-v1.2-r5-live-protected-client-capacity-v3"
+    "schema5-v1.2-r6-live-protected-client-capacity-v3"
 )
 TRUSTED_SCIENTIFIC_PROVENANCE_PROTOCOL = (
-    "schema5-v1.2-r5-trusted-scientific-job-provenance-v1"
+    "schema5-v1.2-r6-trusted-scientific-job-provenance-v1"
 )
 CAPACITY_SOURCE = (
     "sealed_protected_canary+partition_inventory+association"
 )
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r5"
-CHAIN_NAMESPACE = "schema5-v1.2-r5"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r6"
+CHAIN_NAMESPACE = "schema5-v1.2-r6"
 MARKER_FILENAME = "PROTECTED_CAPACITY_COMPLETE.json"
 STATIC_FEASIBILITY_FILENAME = "PREFLIGHT_CAPACITY_CERTIFICATE.json"
 BASE_LOGICAL_REPLICAS = 22

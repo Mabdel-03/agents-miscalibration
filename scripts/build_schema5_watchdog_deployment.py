@@ -54,22 +54,22 @@ WATCHDOG_SCHEMA_VERSION = _RUNTIME.WATCHDOG_SCHEMA_VERSION
 
 
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r5"
-CHAIN_NAMESPACE = "schema5-v1.2-r5"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r6"
+CHAIN_NAMESPACE = "schema5-v1.2-r6"
 DEPLOYMENT_PROTOCOL = "schema5-external-watchdog-deployment-evidence-v1"
 LIVENESS_PROTOCOL = "schema5-external-watchdog-liveness-evidence-v1"
 BUNDLE_PROTOCOL = "schema5-external-watchdog-deployment-bundle-v3"
 BOOTSTRAP_BUNDLE_PROTOCOL = (
-    "schema5-v1.2-r5-bootstrap-watchdog-bundle-v1"
+    "schema5-v1.2-r6-bootstrap-watchdog-bundle-v1"
 )
 BOOTSTRAP_DEPLOYMENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r5-bootstrap-watchdog-deployment-evidence-v1"
+    "schema5-v1.2-r6-bootstrap-watchdog-deployment-evidence-v1"
 )
 BOOTSTRAP_DRILL_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r5-bootstrap-watchdog-drill-evidence-v1"
+    "schema5-v1.2-r6-bootstrap-watchdog-drill-evidence-v1"
 )
 BOOTSTRAP_ATTESTATION_PROTOCOL = (
-    "schema5-v1.2-r5-bootstrap-watchdog-attestation-v1"
+    "schema5-v1.2-r6-bootstrap-watchdog-attestation-v1"
 )
 BOOTSTRAP_SERVICE_NAME = (
     "agents-scaling-schema5-bootstrap-watchdog.service"
@@ -77,19 +77,19 @@ BOOTSTRAP_SERVICE_NAME = (
 BOOTSTRAP_TIMER_NAME = "agents-scaling-schema5-bootstrap-watchdog.timer"
 BOOTSTRAP_HEARTBEAT_MAX_AGE_SECONDS = 600
 BOOTSTRAP_ISOLATED_DRILL_DIRECTORY = "isolated_cancellation_drill"
-BOOTSTRAP_CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R5.json"
+BOOTSTRAP_CHAIN_MANIFEST_NAME = "RECOVERY_CHAIN_SCHEMA5_V1_2_R6.json"
 BOOTSTRAP_SUBMISSION_RECEIPT_NAME = (
-    "RECOVERY_CHAIN_SCHEMA5_V1_2_R5_SUBMISSION.json"
+    "RECOVERY_CHAIN_SCHEMA5_V1_2_R6_SUBMISSION.json"
 )
-BOOTSTRAP_CANONICAL_REPAIR_DIRECTORY = "recovery_chain_repairs_v1_2_r5"
+BOOTSTRAP_CANONICAL_REPAIR_DIRECTORY = "recovery_chain_repairs_v1_2_r6"
 BOOTSTRAP_CANONICAL_ROOT_RELEASE_MARKER = (
     "RECOVERY_CHAIN_ROOT_RELEASE_COMPLETE.json"
 )
 BOOTSTRAP_CANONICAL_LAUNCH_MARKER = (
-    "RECOVERY_CHAIN_SCHEMA5_V1_2_R5_LAUNCHED.json"
+    "RECOVERY_CHAIN_SCHEMA5_V1_2_R6_LAUNCHED.json"
 )
 ACK_PROTOCOL = "schema5-external-watchdog-liveness-ack-v1"
-HEARTBEAT_PROTOCOL = "schema5-v1.2-r5-external-watchdog-v1"
+HEARTBEAT_PROTOCOL = "schema5-v1.2-r6-external-watchdog-v1"
 SERVICE_NAME = "agents-scaling-schema5-watchdog.service"
 TIMER_NAME = "agents-scaling-schema5-watchdog.timer"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -509,7 +509,7 @@ def _bootstrap_pilot_release_binding(
     git_commit: str,
     tag_object: str,
 ) -> dict[str, Any]:
-    """Authenticate the exact r5 pilot layout and sealed source bundle."""
+    """Authenticate the exact r6 pilot layout and sealed source bundle."""
 
     pilot_root = pilot_marker_path.parent
     materialization_root = pilot_root / "materialization"
@@ -652,12 +652,12 @@ def _bootstrap_chain_anchor(
     manifest_jobs = manifest.get("jobs")
     receipt_jobs = receipt.get("jobs")
     if (
-        manifest.get("protocol") != "schema5-v1.2-r5-recovery-chain"
+        manifest.get("protocol") != "schema5-v1.2-r6-recovery-chain"
         or manifest.get("release_git_commit") is None
         or manifest.get("release_tag_object") is None
         or chain_id != hashlib.sha256(_canonical(manifest_identity)).hexdigest()
         or receipt.get("protocol")
-        != "schema5-v1.2-r5-recovery-chain-submission"
+        != "schema5-v1.2-r6-recovery-chain-submission"
         or receipt_id
         != hashlib.sha256(_canonical(receipt_identity)).hexdigest()
         or receipt.get("chain_id") != chain_id
@@ -756,7 +756,7 @@ def _bootstrap_isolated_drill_contract(
         str(row["comment"]) for row in isolated_receipt["jobs"]
     }
     isolated_prefix = (
-        "asys:s5-recovery-v1.2-r5:"
+        "asys:s5-recovery-v1.2-r6:"
         f"{isolated_manifest['chain_id']}:g0000:"
     )
     canonical_repair_root = (
@@ -793,7 +793,7 @@ def _bootstrap_isolated_drill_contract(
     contract: dict[str, Any] = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r5-bootstrap-isolated-cancellation-drill-v1"
+            "schema5-v1.2-r6-bootstrap-isolated-cancellation-drill-v1"
         ),
         "isolated_drill_root": str(isolated_root),
         "chain_manifest": str(isolated_manifest_path),
@@ -807,7 +807,7 @@ def _bootstrap_isolated_drill_contract(
         ).hexdigest(),
         "anchor_submission_receipt_id": isolated_receipt["receipt_id"],
         "scheduler_comment_prefix": (
-            "asys:s5-recovery-v1.2-r5:"
+            "asys:s5-recovery-v1.2-r6:"
             f"{isolated_manifest['chain_id']}:"
         ),
         "canonical_chain_manifest": str(canonical_manifest_path),
@@ -2122,7 +2122,7 @@ def build_bootstrap_bundle(
     ).encode("ascii")
     config = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r5-bootstrap-watchdog-config-v1",
+        "protocol": "schema5-v1.2-r6-bootstrap-watchdog-config-v1",
         "release_git_commit": git_commit,
         "release_tag_object": tag_object,
         "chain_id": manifest["chain_id"],
@@ -2515,7 +2515,7 @@ def capture_bootstrap_attestation(
             )
         if (
             value.get("protocol")
-            != "schema5-v1.2-r5-bootstrap-status-v1"
+            != "schema5-v1.2-r6-bootstrap-status-v1"
             or value.get("passed") is not True
             or value.get("chain_id") != bundle.get("chain_id")
             or value.get("chain_manifest_sha256")
@@ -2589,7 +2589,7 @@ def capture_bootstrap_attestation(
             != _self_hash(provenance, "provenance_id")
             or provenance.get("protocol")
             != (
-                "schema5-v1.2-r5-bootstrap-"
+                "schema5-v1.2-r6-bootstrap-"
                 "generation-provenance-v1"
             )
             or provenance.get("chain_id") != bundle.get("chain_id")
@@ -2876,7 +2876,7 @@ def capture_bootstrap_deployment_evidence(
     if (
         not isinstance(installed_config_value, dict)
         or installed_config_value.get("protocol")
-        != "schema5-v1.2-r5-bootstrap-watchdog-config-v1"
+        != "schema5-v1.2-r6-bootstrap-watchdog-config-v1"
         or installed_config_value.get("release_git_commit")
         != bundle.get("release_git_commit")
         or installed_config_value.get("release_tag_object")
@@ -2923,7 +2923,7 @@ def capture_bootstrap_deployment_evidence(
         set(heartbeat) != heartbeat_required
         or heartbeat.get("schema_version") != 1
         or heartbeat.get("protocol")
-        != "schema5-v1.2-r5-bootstrap-watchdog-heartbeat-v1"
+        != "schema5-v1.2-r6-bootstrap-watchdog-heartbeat-v1"
         or heartbeat.get("passed") is not True
         or heartbeat.get("configuration_sha256")
         != hashlib.sha256(
@@ -3493,7 +3493,7 @@ def _validate_bootstrap_generation_provenance(
         )
         if (
             value.get("protocol")
-            != "schema5-v1.2-r5-bootstrap-generation-provenance-v1"
+            != "schema5-v1.2-r6-bootstrap-generation-provenance-v1"
             or value.get("passed") is not True
             or value.get("provenance_id")
             != _self_hash(value, "provenance_id")
@@ -3662,7 +3662,7 @@ def _validate_bootstrap_observation(
     provenance_rows = provenance.get("jobs")
     timestamp = value.get("observed_at_timestamp")
     if (
-        value.get("protocol") != "schema5-v1.2-r5-bootstrap-status-v1"
+        value.get("protocol") != "schema5-v1.2-r6-bootstrap-status-v1"
         or value.get("passed") is not True
         or value.get("observation_id")
         != _self_hash(value, "observation_id")

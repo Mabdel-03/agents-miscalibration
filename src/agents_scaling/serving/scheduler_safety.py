@@ -31,10 +31,10 @@ from typing import Any
 
 
 SCHEDULER_SAFETY_PROTOCOL = (
-    "schema5-v1.2-r5-serving-partition-scheduler-safety"
+    "schema5-v1.2-r6-serving-partition-scheduler-safety"
 )
 SCHEDULER_SAFETY_SCHEMA_VERSION = 1
-CLIENT_CAPACITY_PROTOCOL = "schema5-v1.2-r5-mit-normal-client-capacity"
+CLIENT_CAPACITY_PROTOCOL = "schema5-v1.2-r6-mit-normal-client-capacity"
 CLIENT_CAPACITY_SCHEMA_VERSION = 1
 CLIENT_PARTITION = "mit_normal"
 CLIENT_CPU_LIMIT = 96
@@ -1099,7 +1099,7 @@ def capture_user_partition_usage(
         raise SchedulerSafetyError("scheduler usage capture time is invalid")
     evidence: dict[str, Any] = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r5-user-partition-tres-usage",
+        "protocol": "schema5-v1.2-r6-user-partition-tres-usage",
         "captured_timestamp": timestamp,
         "user": user,
         "partition": partition,
@@ -1151,7 +1151,7 @@ def validate_user_partition_usage(
         or set(usage) != expected_fields
         or usage.get("schema_version") != 1
         or usage.get("protocol")
-        != "schema5-v1.2-r5-user-partition-tres-usage"
+        != "schema5-v1.2-r6-user-partition-tres-usage"
         or not isinstance(usage.get("captured_timestamp"), (int, float))
         or isinstance(usage.get("captured_timestamp"), bool)
         or not math.isfinite(float(usage["captured_timestamp"]))

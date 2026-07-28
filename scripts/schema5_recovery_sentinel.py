@@ -46,13 +46,13 @@ if _BUNDLE_DIRECTORY not in sys.path:
 try:
     from scripts.verify_schema5_recovery_evidence import (
         EvidenceVerificationError,
-        R5_PROTOCOL,
+        R6_PROTOCOL,
         verify_recovery_evidence,
     )
 except ModuleNotFoundError:  # ``python -I /absolute/path/to/this_script.py``
     from verify_schema5_recovery_evidence import (  # type: ignore[no-redef]
         EvidenceVerificationError,
-        R5_PROTOCOL,
+        R6_PROTOCOL,
         verify_recovery_evidence,
     )
 
@@ -61,15 +61,15 @@ SCHEDULER_EVIDENCE_NAME = "SCHEDULER_EVIDENCE.json"
 MAIL_STATE_NAME = "MAIL_DELIVERY.json"
 COMPLETE_MARKER_NAME = "RECOVERY_SENTINEL_COMPLETE.json"
 LOCK_NAME = ".schema5_recovery_sentinel.lock"
-SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r5-recovery-scheduler-evidence"
-MAIL_PROTOCOL = "schema5-v1.2-r5-recovery-sentinel-mail"
-MARKER_PROTOCOL = "schema5-v1.2-r5-recovery-sentinel-outcome"
+SCHEDULER_EVIDENCE_PROTOCOL = "schema5-v1.2-r6-recovery-scheduler-evidence"
+MAIL_PROTOCOL = "schema5-v1.2-r6-recovery-sentinel-mail"
+MARKER_PROTOCOL = "schema5-v1.2-r6-recovery-sentinel-outcome"
 STAGE_SCHEDULER_EVIDENCE_NAME = "STAGE_SCHEDULER_EVIDENCE.json"
 STAGE_COMPLETE_MARKER_NAME = "STAGE_SENTINEL_COMPLETE.json"
 STAGE_SCHEDULER_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r5-recovery-stage-scheduler-evidence"
+    "schema5-v1.2-r6-recovery-stage-scheduler-evidence"
 )
-STAGE_MARKER_PROTOCOL = "schema5-v1.2-r5-recovery-stage-sentinel-outcome"
+STAGE_MARKER_PROTOCOL = "schema5-v1.2-r6-recovery-stage-sentinel-outcome"
 STAGE_SENTINEL_PREFIX = "stage_failure_sentinel_"
 PRODUCTION_STAGE_NAMES = (
     "source_checkout",
@@ -98,10 +98,10 @@ STAGE_SENTINEL_NAMES = tuple(
     f"{STAGE_SENTINEL_PREFIX}{stage}" for stage in PRODUCTION_STAGE_NAMES
 )
 CAPACITY_TRANSIENT_PROTOCOL = (
-    "schema5-v1.2-r5-fleet-capacity-transient-receipt"
+    "schema5-v1.2-r6-fleet-capacity-transient-receipt"
 )
 CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r5-fleet-capacity-transient-evidence"
+    "schema5-v1.2-r6-fleet-capacity-transient-evidence"
 )
 CAPACITY_TRANSIENT_MARKER_NAME = "CAPACITY_TRANSIENT_COMPLETE.json"
 CAPACITY_TRANSIENT_EVIDENCE_NAME = "FLEET_CAPACITY_TRANSIENT_EVIDENCE.json"
@@ -109,7 +109,7 @@ CAPACITY_PREIMAGE_ROOT_NAME = "sealed-preimages"
 CAPACITY_PREIMAGE_MANIFEST_NAME = "PREIMAGE_MANIFEST.json"
 CAPACITY_PREIMAGE_INVENTORY_NAME = "PREIMAGE_INVENTORY.sha256"
 CAPACITY_PREIMAGE_COMPLETE_NAME = "PREIMAGE_ARCHIVE_COMPLETE.json"
-CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r5-capacity-preimage-archive"
+CAPACITY_PREIMAGE_PROTOCOL = "schema5-v1.2-r6-capacity-preimage-archive"
 CAPACITY_TRANSIENT_REASONS = frozenset({"Priority", "Resources"})
 CAPACITY_TRANSIENT_EXPECTED_REPLICAS = 22
 CAPACITY_TRANSIENT_EXPECTED_GPUS = 24
@@ -125,20 +125,20 @@ QUALIFICATION_FAILURE_DRAIN_NAME = (
     "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
 )
 QUALIFICATION_FAILURE_DRAIN_PROTOCOL = (
-    "schema5-v1.2-r5-throughput-qualification-failure-drain-intent-v3"
+    "schema5-v1.2-r6-throughput-qualification-failure-drain-intent-v3"
 )
 QUALIFICATION_REFILL_ROOT_NAME = "refill-reconciliations"
 QUALIFICATION_POINTER_ROOT_NAME = "attempt-pointers"
 QUALIFICATION_ATTEMPT_ROOT_NAME = "attempts"
 QUALIFICATION_RUN_ROOT_NAME = "throughput-qualification-attempts"
 QUALIFICATION_POINTER_PROTOCOL = (
-    "schema5-v1.2-r5-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r6-throughput-qualification-attempt-pointer-v1"
 )
 QUALIFICATION_CURRENT_PROTOCOL = (
-    "schema5-v1.2-r5-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r6-throughput-qualification-current-attempt-v1"
 )
 QUALIFICATION_FAILURE_PROTOCOL = (
-    "schema5-v1.2-r5-throughput-qualification-failure-v4"
+    "schema5-v1.2-r6-throughput-qualification-failure-v4"
 )
 QUALIFICATION_FAILURE_SCHEMA_VERSION = 3
 QUALIFICATION_POINTER_FIELDS = frozenset(
@@ -220,7 +220,7 @@ QUALIFICATION_ADMISSION_CERTIFICATE_FIELDS = frozenset(
     }
 )
 QUALIFICATION_PREFLIGHT_CERTIFICATE_PROTOCOL = (
-    "schema5-v1.2-r5-throughput-preflight-capacity-certificate-v1"
+    "schema5-v1.2-r6-throughput-preflight-capacity-certificate-v1"
 )
 QUALIFICATION_FAILURE_DRAIN_BINDING_FIELDS = frozenset(
     {
@@ -2866,7 +2866,7 @@ def _validate_capacity_transient_receipt(
         or evidence.get("schema_version") != 1
         or evidence.get("protocol") != CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL
         or evidence.get("passed") is not True
-        or evidence.get("chain_protocol") != R5_PROTOCOL
+        or evidence.get("chain_protocol") != R6_PROTOCOL
         or evidence.get("chain_id") != manifest["chain_id"]
         or evidence.get("chain_generation") != generation
         or evidence.get("manifest") != verified["manifest_path"]
@@ -4079,7 +4079,7 @@ def _validate_stage_scheduler_evidence(
         or evidence.get("schema_version") != 1
         or evidence.get("protocol") != STAGE_SCHEDULER_EVIDENCE_PROTOCOL
         or evidence.get("passed") is not True
-        or evidence.get("chain_protocol") != R5_PROTOCOL
+        or evidence.get("chain_protocol") != R6_PROTOCOL
         or evidence.get("chain_id") != manifest.get("chain_id")
         or evidence.get("manifest") != verified["manifest_path"]
         or evidence.get("manifest_sha256") != verified["manifest_sha256"]
@@ -4158,7 +4158,7 @@ def _validate_scheduler_evidence(
         or evidence["schema_version"] != 1
         or evidence["protocol"] != SCHEDULER_EVIDENCE_PROTOCOL
         or evidence["passed"] is not True
-        or evidence["chain_protocol"] != R5_PROTOCOL
+        or evidence["chain_protocol"] != R6_PROTOCOL
         or evidence["chain_id"] != manifest["chain_id"]
         or evidence["manifest"] != verified["manifest_path"]
         or evidence["manifest_sha256"] != verified["manifest_sha256"]
@@ -4528,7 +4528,7 @@ def _attempt_mail(
             f"{target_stage} {classification}"
         )
         body = (
-            "Schema-5 v1.2-r5 fail-fast stage observation\n\n"
+            "Schema-5 v1.2-r6 fail-fast stage observation\n\n"
             f"Stage: {target_stage}\n"
             f"Classification: {classification}\n"
             f"Target job: {outcome.get('target_job_id')}\n"
@@ -4541,7 +4541,7 @@ def _attempt_mail(
     else:
         subject = f"[agents-scaling:recovery] {classification}"
         body = (
-            "Schema-5 v1.2-r5 recovery-chain outcome\n\n"
+            "Schema-5 v1.2-r6 recovery-chain outcome\n\n"
             f"Classification: {classification}\n"
             f"Chain: {evidence['chain_id']}\n"
             f"Evidence: {path.parent / SCHEDULER_EVIDENCE_NAME}\n"
@@ -4747,7 +4747,7 @@ def _validate_marker(
         or marker["schema_version"] != 1
         or marker["protocol"] != MARKER_PROTOCOL
         or marker["passed"] is not True
-        or marker["chain_protocol"] != R5_PROTOCOL
+        or marker["chain_protocol"] != R6_PROTOCOL
         or marker["chain_id"] != evidence["chain_id"]
         or marker["manifest"] != verified["manifest_path"]
         or marker["manifest_sha256"] != verified["manifest_sha256"]
@@ -4872,7 +4872,7 @@ def _validate_stage_marker(
         or marker.get("schema_version") != 1
         or marker.get("protocol") != STAGE_MARKER_PROTOCOL
         or marker.get("passed") is not True
-        or marker.get("chain_protocol") != R5_PROTOCOL
+        or marker.get("chain_protocol") != R6_PROTOCOL
         or marker.get("chain_id") != evidence["chain_id"]
         or marker.get("manifest") != verified["manifest_path"]
         or marker.get("manifest_sha256") != verified["manifest_sha256"]
@@ -4915,9 +4915,9 @@ def _verified_inputs(
         verified = verify_recovery_evidence(chain_manifest, submission_receipt)
     except EvidenceVerificationError as exc:
         raise SentinelError(str(exc)) from exc
-    if verified["chain_protocol"] != R5_PROTOCOL:
+    if verified["chain_protocol"] != R6_PROTOCOL:
         raise SentinelError(
-            "the afterany recovery sentinel accepts only schema5-v1.2-r5 evidence"
+            "the afterany recovery sentinel accepts only schema5-v1.2-r6 evidence"
         )
     return verified
 
@@ -5090,7 +5090,7 @@ def run_sentinel(
     sleeper: Sleeper | None = None,
     maximum_mail_attempts: int = SYNCHRONOUS_MAIL_ATTEMPT_LIMIT,
 ) -> dict[str, Any]:
-    """Evaluate or durably publish one exact v1.2-r5 recovery-chain outcome."""
+    """Evaluate or durably publish one exact v1.2-r6 recovery-chain outcome."""
 
     if not recipient or any(character in recipient for character in "\r\n"):
         raise SentinelError("mail recipient is empty or unsafe")
@@ -5274,7 +5274,7 @@ def run_sentinel(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate the exact schema-5 v1.2-r5 recovery-chain receipt and publish "
+            "Evaluate the exact schema-5 v1.2-r6 recovery-chain receipt and publish "
             "marker-last immutable outcome evidence."
         )
     )

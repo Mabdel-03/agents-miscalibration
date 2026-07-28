@@ -128,11 +128,11 @@ def _status(
                 "name": name,
                 "job_id": job_id,
                 "comment": (
-                    "asys:s5-recovery-v1.2-r5:"
+                    "asys:s5-recovery-v1.2-r6:"
                     f"{'c' * 64}:g{generation:04d}:{name}:"
                     f"{'1' * 16}"
                 ),
-                "job_name": f"asys-r5-{name}",
+                "job_name": f"asys-r6-{name}",
                 "state": (
                     "CANCELLED"
                     if cancelled

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision and verify the isolated offline Conda toolchain for schema-5 r5.
+"""Provision and verify the isolated offline Conda toolchain for schema-5 r6.
 
 The cached Miniforge installer is treated as an immutable input, never as an
 authorization to repair or query an existing Conda installation.  ``provision`` is
@@ -41,12 +41,12 @@ from scripts import schema5_conda_runtime_identity as runtime_identity  # noqa: 
 
 
 SCHEMA_VERSION = 1
-PROTOCOL = "schema5-v1.2-r5-offline-conda-toolchain-v1"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r5"
-CHAIN_NAMESPACE = "schema5-v1.2-r5"
+PROTOCOL = "schema5-v1.2-r6-offline-conda-toolchain-v1"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r6"
+CHAIN_NAMESPACE = "schema5-v1.2-r6"
 MARKER_NAME = "CONDA_TOOLCHAIN_COMPLETE.json"
 INTENT_NAME = "CONDA_TOOLCHAIN_PROVISION_INTENT.json"
-TOOLCHAIN_NAMESPACE_DIRECTORY = "r5"
+TOOLCHAIN_NAMESPACE_DIRECTORY = "r6"
 TOOLCHAIN_DIRECTORY_NAME = "conda"
 TRANSACTION_DIRECTORY_NAME = f".{TOOLCHAIN_DIRECTORY_NAME}.provisioning"
 PINNED_INSTALLER_FILENAME = "Miniforge3-Linux-x86_64.sh"
