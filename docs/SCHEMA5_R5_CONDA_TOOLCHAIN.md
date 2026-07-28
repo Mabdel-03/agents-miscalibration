@@ -1,12 +1,12 @@
-# Schema-5 r4 offline Conda toolchain
+# Schema-5 r5 offline Conda toolchain
 
-Schema-5 r4 must not execute the shared Miniforge base at
+Schema-5 r5 must not execute the shared Miniforge base at
 `/orcd/data/lhtsai/001/om2/mabdel03/miniforge3`. Its runtime contains a broken
 compiler-tool link, and copying its entrypoint would preserve that defect. The two
 developer prefixes are scientific inputs only and must never be queried or repaired by
 Conda.
 
-The r4 prerequisite instead installs the cached self-contained installer into a fresh
+The r5 prerequisite instead installs the cached self-contained installer into a fresh
 release namespace. The immutable installer contract is:
 
 - file: `/orcd/data/lhtsai/001/om2/mabdel03/Miniforge3-Linux-x86_64.sh`
@@ -24,20 +24,20 @@ Bash process after the trusted `PATH`, Git, Slurm, locale, and fail-fast prelude
 [SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md). In particular,
 do not run them from an ambient Conda shell.
 
-Create the empty r4 namespace through the recovery transaction, then run the immutable
-r4 checkout's provisioner. The first command is a read-only preflight:
+Create the empty r5 namespace through the recovery transaction, then run the immutable
+r5 checkout's provisioner. The first command is a read-only preflight:
 
 ```bash
 repo=/orcd/data/tpoggio/001/mabdel03/agents_scaling
 results=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results
-namespace="$results/recovery/schema5-v1/toolchains/schema5-v1.2-r4"
+namespace="$results/recovery/schema5-v1/toolchains/r5"
 installer=/orcd/data/lhtsai/001/om2/mabdel03/Miniforge3-Linux-x86_64.sh
-pilot_checkout="$results/recovery/schema5-v1/materialization_pilot_source_checkout_v1_2_r4"
+pilot_checkout="$results/recovery/schema5-v1/materialization_pilot_source_checkout_v1_2_r5"
 provisioner="$pilot_checkout/scripts/provision_schema5_conda_toolchain.py"
 dev_python="$(realpath -e /orcd/home/002/mabdel03/conda_envs/asys_env/bin/python)"
 
 test "$(git -C "$pilot_checkout" describe --tags --exact-match)" = \
-  sweep-recovery-schema5-v1.2-r4
+  sweep-recovery-schema5-v1.2-r5
 test -z "$(git -C "$pilot_checkout" status --porcelain=v1 --untracked-files=all)"
 if [[ ! -e "$namespace" ]]; then
   install -d -m 0755 -- "$namespace"
@@ -62,7 +62,7 @@ After reviewing the exact paths and installer identity, apply once:
 Independent replay neither reads the cached installer nor invokes another Conda:
 
 ```bash
-toolchain="$namespace/conda-toolchain-miniforge3-25.11.0-1"
+toolchain="$namespace/conda"
 "$dev_python" -I "$provisioner" verify \
   --toolchain-root "$toolchain"
 ```
@@ -94,8 +94,14 @@ the toolchain and must report `root_writable=false`, `offline=true`, the exact r
 no external configuration. Complete prefix inventories and complete runtime identities
 before and after the probes must match exactly.
 
+The r5 canonical interpreter path is 110 bytes and its complete shebang is 113 bytes.
+The provisioner rejects a namespace before creating an intent or running the installer
+when the absolute interpreter shebang would exceed the 127-byte portable limit. This
+preflight was added after r4's 154-byte interpreter path caused Miniforge to emit
+`#!/usr/bin/env python`, which the absolute base-prefix identity contract rejected.
+
 An interrupted, unmarked `base` is never reused. On replay it is atomically moved under
-the release namespace's `.conda-toolchain-miniforge3-25.11.0-1.provisioning/quarantine`
+the release namespace's `.conda.provisioning/quarantine`
 tree and sealed read-only before a fresh install starts. No partial prefix is deleted.
 
 `CONDA_TOOLCHAIN_COMPLETE.json` is canonical, checksummed, read-only, and published
@@ -110,14 +116,14 @@ last. Verification rechecks:
 - recursive read-only permissions; and
 - two fresh offline command probes bracketed by unchanged inventories.
 
-## r4 launch integration
+## r5 launch integration
 
-The r4 recovery renderer treats the completion marker as a hard prelaunch
+The r5 recovery renderer treats the completion marker as a hard prelaunch
 prerequisite, bundles this provisioner and `schema5_conda_runtime_identity.py` from
-the exact annotated r4 tag, and invokes `verify_conda_toolchain` at render
+the exact annotated r5 tag, and invokes `verify_conda_toolchain` at render
 verification, scheduler acceptance, materialization start, and release freeze. Run
 the provisioner and verifier from the clean detached
-`materialization_pilot_source_checkout_v1_2_r4` checkout, never from the mutable
+`materialization_pilot_source_checkout_v1_2_r5` checkout, never from the mutable
 developer checkout. The pilot and production materializer accept
 `--conda-toolchain-root` and
 `--source-package-cache /orcd/home/002/mabdel03/.conda/pkgs`; they do not accept an
@@ -134,7 +140,7 @@ Any missing marker, writable entry, changed inode/link, unsafe link, failed prob
 identity mismatch keeps the recovery root held. Provisioning is therefore completed
 before the materialization pilot and recovery DAG are allowed to submit.
 
-This toolchain supersedes r3; it does not erase r3. The r4 renderer must also
+This toolchain supersedes r3; it does not erase r3. The r5 renderer must also
 independently verify
 `prelaunch_failures/schema5-v1.2-r3/PRELAUNCH_FAILURE_SEALED.json`, whose two exact
 failure classifications record the unsafe shared runtime and unseeded offline cache,

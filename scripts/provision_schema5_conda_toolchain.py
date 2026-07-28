@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision and verify the isolated offline Conda toolchain for schema-5 r4.
+"""Provision and verify the isolated offline Conda toolchain for schema-5 r5.
 
 The cached Miniforge installer is treated as an immutable input, never as an
 authorization to repair or query an existing Conda installation.  ``provision`` is
@@ -41,12 +41,13 @@ from scripts import schema5_conda_runtime_identity as runtime_identity  # noqa: 
 
 
 SCHEMA_VERSION = 1
-PROTOCOL = "schema5-v1.2-r4-offline-conda-toolchain-v1"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
-CHAIN_NAMESPACE = "schema5-v1.2-r4"
+PROTOCOL = "schema5-v1.2-r5-offline-conda-toolchain-v1"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r5"
+CHAIN_NAMESPACE = "schema5-v1.2-r5"
 MARKER_NAME = "CONDA_TOOLCHAIN_COMPLETE.json"
 INTENT_NAME = "CONDA_TOOLCHAIN_PROVISION_INTENT.json"
-TOOLCHAIN_DIRECTORY_NAME = "conda-toolchain-miniforge3-25.11.0-1"
+TOOLCHAIN_NAMESPACE_DIRECTORY = "r5"
+TOOLCHAIN_DIRECTORY_NAME = "conda"
 TRANSACTION_DIRECTORY_NAME = f".{TOOLCHAIN_DIRECTORY_NAME}.provisioning"
 PINNED_INSTALLER_FILENAME = "Miniforge3-Linux-x86_64.sh"
 PINNED_INSTALLER_RELEASE = "Miniforge3-25.11.0-1"
@@ -62,6 +63,7 @@ DEFAULT_FORBIDDEN_PREFIXES = (
     Path("/orcd/home/002/mabdel03/conda_envs/serve_env"),
     Path("/orcd/data/lhtsai/001/om2/mabdel03/miniforge3"),
 )
+MAX_PORTABLE_SHEBANG_BYTES = 127
 _CHUNK_SIZE = 8 * 1024 * 1024
 
 
@@ -1135,6 +1137,7 @@ def _intent_payload(
     contract: InstallerContract,
     forbidden_prefixes: Sequence[Path],
 ) -> dict[str, Any]:
+    portable_shebang = _portable_shebang_contract(toolchain_root)
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "protocol": f"{PROTOCOL}-intent",
@@ -1143,6 +1146,7 @@ def _intent_payload(
         "namespace_root": str(namespace_root),
         "toolchain_root": str(toolchain_root),
         "base_prefix": str(toolchain_root / "base"),
+        "portable_shebang": portable_shebang,
         "installer_source": str(installer),
         "installer_contract": contract.as_dict(),
         "forbidden_prefixes": [str(path) for path in forbidden_prefixes],
@@ -1155,6 +1159,24 @@ def _intent_payload(
     }
     payload["intent_id"] = _self_hash(payload, "intent_id")
     return payload
+
+
+def _portable_shebang_contract(toolchain_root: Path) -> dict[str, Any]:
+    """Fail before installation if Constructor cannot emit an absolute shebang."""
+
+    interpreter = toolchain_root / "base" / "bin" / "python"
+    shebang = f"#!{interpreter}\n".encode("utf-8")
+    if len(shebang) > MAX_PORTABLE_SHEBANG_BYTES:
+        raise CondaToolchainProvisionError(
+            "isolated Conda interpreter path exceeds the portable shebang limit: "
+            f"{len(shebang)} > {MAX_PORTABLE_SHEBANG_BYTES}: {interpreter}"
+        )
+    return {
+        "interpreter": str(interpreter),
+        "shebang_bytes": len(shebang),
+        "maximum_shebang_bytes": MAX_PORTABLE_SHEBANG_BYTES,
+        "absolute_base_prefix_interpreter_required": True,
+    }
 
 
 def _validate_output_scope(
@@ -1204,6 +1226,7 @@ def _validate_marker_shape(
         "installer",
         "installation",
         "base_prefix",
+        "portable_shebang",
         "conda_executable",
         "runtime_identity",
         "complete_prefix_inventory",
@@ -1227,6 +1250,8 @@ def _validate_marker_shape(
         or marker.get("chain_namespace") != CHAIN_NAMESPACE
         or marker.get("toolchain_root") != str(toolchain_root)
         or marker.get("base_prefix") != str(toolchain_root / "base")
+        or marker.get("portable_shebang")
+        != _portable_shebang_contract(toolchain_root)
         or marker.get("conda_executable") != str(toolchain_root / "base/bin/conda")
         or marker.get("sealed_read_only") is not True
         or not isinstance(installer, dict)
@@ -1548,6 +1573,7 @@ def verified_conda_toolchain_binding(
         "chain_namespace": CHAIN_NAMESPACE,
         "toolchain_root": str(root),
         "base_prefix": str(root / "base"),
+        "portable_shebang": dict(marker["portable_shebang"]),
         "completion_marker": {
             "path": str(marker_path),
             "sha256": _sha256_bytes(marker_raw),
@@ -1670,6 +1696,7 @@ def provision_conda_toolchain(
             "protocol": PROTOCOL,
             "toolchain_root": str(toolchain),
             "base_prefix": str(toolchain / "base"),
+            "portable_shebang": _portable_shebang_contract(toolchain),
             "installer": contract.as_dict(),
             "source_installer": source_identity,
             "would_invoke_existing_conda": False,
@@ -1896,6 +1923,7 @@ def provision_conda_toolchain(
             },
             "installation": installation,
             "base_prefix": str(base),
+            "portable_shebang": _portable_shebang_contract(toolchain),
             "conda_executable": str(base / "bin" / "conda"),
             "runtime_identity": {
                 "validated_twice": True,

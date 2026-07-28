@@ -109,10 +109,10 @@ CURRENT_SELECTOR_NAME = "CURRENT.json"
 ATTEMPT_COMPLETE_NAME = "SMOKE_ATTEMPT_COMPLETE.json"
 ATTEMPT_FAILURE_NAME = "SMOKE_ATTEMPT_FAILURE.json"
 ATTEMPT_EVIDENCE_NAME = "smoke_runs.json"
-ATTEMPT_POINTER_PROTOCOL = "schema5-v1.2-r4-smoke-attempt-pointer-v1"
-CURRENT_SELECTOR_PROTOCOL = "schema5-v1.2-r4-smoke-current-selector-v1"
-ATTEMPT_COMPLETE_PROTOCOL = "schema5-v1.2-r4-smoke-attempt-complete-v1"
-ATTEMPT_FAILURE_PROTOCOL = "schema5-v1.2-r4-smoke-attempt-failure-v1"
+ATTEMPT_POINTER_PROTOCOL = "schema5-v1.2-r5-smoke-attempt-pointer-v1"
+CURRENT_SELECTOR_PROTOCOL = "schema5-v1.2-r5-smoke-current-selector-v1"
+ATTEMPT_COMPLETE_PROTOCOL = "schema5-v1.2-r5-smoke-attempt-complete-v1"
+ATTEMPT_FAILURE_PROTOCOL = "schema5-v1.2-r5-smoke-attempt-failure-v1"
 MAX_AUTOMATIC_ATTEMPTS = 3
 
 _ATTEMPT_POINTER_FIELDS = {

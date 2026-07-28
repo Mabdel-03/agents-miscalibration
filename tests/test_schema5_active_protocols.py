@@ -127,7 +127,7 @@ HISTORICAL_R2_LITERALS = Counter(
 )
 
 
-def test_fresh_schema5_artifact_protocols_identify_r4() -> None:
+def test_fresh_schema5_artifact_protocols_identify_r5() -> None:
     protocols = {
         control.PRODUCTION_AUTHORIZATION_PROTOCOL,
         control.CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL,
@@ -181,16 +181,16 @@ def test_fresh_schema5_artifact_protocols_identify_r4() -> None:
         sentinel.STAGE_MARKER_PROTOCOL,
     }
     assert protocols
-    assert all("schema5-v1.2-r4-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r5-" in protocol for protocol in protocols)
     assert all("schema5-v1.2-r2-" not in protocol for protocol in protocols)
 
 
 def test_active_protocol_producers_and_consumers_are_atomic() -> None:
     assert (
         qualification.RECOVERY_CHAIN_PROTOCOL
-        == readiness.R4_PROTOCOL
-        == recovery_verifier.R4_PROTOCOL
-        == "schema5-v1.2-r4-recovery-chain"
+        == readiness.R5_PROTOCOL
+        == recovery_verifier.R5_PROTOCOL
+        == "schema5-v1.2-r5-recovery-chain"
     )
     assert (
         control.SMOKE_ATTEMPT_BINDING_PROTOCOL

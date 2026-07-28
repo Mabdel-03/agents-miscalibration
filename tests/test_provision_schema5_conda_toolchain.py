@@ -147,6 +147,13 @@ def test_dry_run_binds_installer_without_execution_or_writes(tmp_path):
     assert report["would_invoke_existing_conda"] is False
     assert report["would_query_live_prefixes"] is False
     assert report["would_publish_marker_last"] is True
+    assert report["portable_shebang"][
+        "absolute_base_prefix_interpreter_required"
+    ] is True
+    assert (
+        report["portable_shebang"]["shebang_bytes"]
+        <= provision.MAX_PORTABLE_SHEBANG_BYTES
+    )
     assert not executed.exists()
     assert not _target(tmp_path).exists()
     assert (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) == (
@@ -205,6 +212,7 @@ def test_provision_seals_and_replays_complete_toolchain(tmp_path):
         "chain_namespace",
         "toolchain_root",
         "base_prefix",
+        "portable_shebang",
         "completion_marker",
         "marker_id",
         "installer_contract",
@@ -216,6 +224,7 @@ def test_provision_seals_and_replays_complete_toolchain(tmp_path):
         "binding_id",
     }
     assert binding["toolchain_root"] == str(target)
+    assert binding["portable_shebang"] == report["portable_shebang"]
     assert binding["completion_marker"]["path"] == str(marker)
     assert binding["completion_marker"]["sha256"] == hashlib.sha256(
         marker.read_bytes()
@@ -276,6 +285,27 @@ def test_wrong_installer_digest_fails_before_output_or_execution(tmp_path):
 
     assert not executed.exists()
     assert not _target(tmp_path).exists()
+
+
+def test_overlong_interpreter_path_fails_before_output_or_execution(tmp_path):
+    installer, executed = _fake_installer(tmp_path)
+    namespace = tmp_path / ("long-prefix-" + "x" * 100)
+    namespace.mkdir()
+
+    with pytest.raises(
+        provision.CondaToolchainProvisionError,
+        match="portable shebang limit",
+    ):
+        provision.provision_conda_toolchain(
+            installer=installer,
+            namespace_root=namespace,
+            forbidden_prefixes=(),
+            contract=_contract(installer),
+            apply=True,
+        )
+
+    assert not executed.exists()
+    assert not (namespace / provision.TOOLCHAIN_DIRECTORY_NAME).exists()
 
 
 def test_unsafe_installer_symlink_is_rejected_before_marker(tmp_path):
@@ -502,7 +532,7 @@ def test_runtime_symlink_audit_rejects_external_hop_that_reenters(tmp_path):
     (outside / "link-back").symlink_to(target)
     (prefix / "lib/bounce").symlink_to(outside / "link-back")
 
-    # A final-endpoint-only check sees ``target`` inside the prefix. The r4 audit
+    # A final-endpoint-only check sees ``target`` inside the prefix. The r5 audit
     # must still reject its dependency on the external ``outside/link-back`` hop.
     assert (prefix / "lib/bounce").resolve(strict=True) == target
     with pytest.raises(

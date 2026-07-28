@@ -25,12 +25,12 @@ _REAL_VERIFY_BOUND_MATERIALIZATION_EVIDENCE = (
 
 
 def _toolchain_binding(root: Path) -> dict:
-    toolchain = root / "conda-toolchain-miniforge3-25.11.0-1"
+    toolchain = root / "conda"
     binding = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r4-offline-conda-toolchain-v1",
+        "protocol": "schema5-v1.2-r5-offline-conda-toolchain-v1",
         "release_tag": freeze.REQUIRED_GIT_TAG,
-        "chain_namespace": "schema5-v1.2-r4",
+        "chain_namespace": "schema5-v1.2-r5",
         "toolchain_root": str(toolchain),
         "base_prefix": str(toolchain / "base"),
         "completion_marker": {
@@ -98,7 +98,7 @@ def _package_cache_seed_input(root: Path) -> dict:
 
 def test_operational_retry_tag_is_distinct_from_stable_release_id() -> None:
     assert freeze.RELEASE_ID == "sweep-recovery-schema5-v1.2"
-    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r4"
+    assert freeze.REQUIRED_GIT_TAG == "sweep-recovery-schema5-v1.2-r5"
     assert materialize.RELEASE_ID == freeze.RELEASE_ID
     assert materialize.REQUIRED_TAG == freeze.REQUIRED_GIT_TAG
     assert freeze.REQUIRED_GIT_TAG != freeze.RELEASE_ID

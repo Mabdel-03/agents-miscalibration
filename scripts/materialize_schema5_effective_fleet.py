@@ -60,10 +60,10 @@ from slurm import schema5_control as control  # noqa: E402
 
 
 SCHEMA_VERSION = 1
-PROTOCOL = "schema5-v1.2-r4-effective-fleet-materialization-v1"
+PROTOCOL = "schema5-v1.2-r5-effective-fleet-materialization-v1"
 RELEASE_ID = "sweep-recovery-schema5-v1.2"
-RELEASE_TAG = "sweep-recovery-schema5-v1.2-r4"
-CHAIN_NAMESPACE = "schema5-v1.2-r4"
+RELEASE_TAG = "sweep-recovery-schema5-v1.2-r5"
+CHAIN_NAMESPACE = "schema5-v1.2-r5"
 
 BASE_FILENAME = "schema5_fleet.v1.json"
 MODEL_FILENAME = "model_contracts.v1.json"

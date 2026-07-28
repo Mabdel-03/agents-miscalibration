@@ -10,7 +10,7 @@
 - **[DATA_SCHEMA.md](DATA_SCHEMA.md)**: exact `results.jsonl`, `meta.json`, and tidy
   analysis-table fields.
 - **[SCHEMA5_V12_RECOVERY_RUNBOOK.md](SCHEMA5_V12_RECOVERY_RUNBOOK.md)**: authoritative
-  v1.2-r4 recovery, immutable-release, readiness, relaunch, staged-ramp, and
+  v1.2-r5 recovery, immutable-release, readiness, relaunch, staged-ramp, and
   incident-control procedure.
 - **[SCHEMA5_RECOVERY_RUNBOOK.md](SCHEMA5_RECOVERY_RUNBOOK.md)**: retired v1.1-r1
   recovery record; retained for forensic reproducibility and never to be executed.

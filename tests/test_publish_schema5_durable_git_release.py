@@ -65,7 +65,7 @@ def _repositories(tmp_path: Path) -> tuple[Path, Path]:
         "-a",
         publisher.RELEASE_TAG,
         "-m",
-        "schema-5 v1.2-r4",
+        "schema-5 v1.2-r5",
     )
     _git(repository, "remote", "add", "durable", str(remote))
     _git(
@@ -284,7 +284,7 @@ def test_completed_publication_requires_same_remote_ref_identity(tmp_path):
 
     with pytest.raises(
         publisher.DurableGitReleaseError,
-        match="exact refs/heads/schema5-v1.2-r4",
+        match="exact refs/heads/schema5-v1.2-r5",
     ):
         publisher.publish(
             repository=repository,
