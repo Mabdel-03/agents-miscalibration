@@ -1,0 +1,142 @@
+\section{Experimental design}
+\label{sec:design}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\linewidth,height=0.42\textheight,keepaspectratio]{experimental_design.png}
+\caption{Design schematic. The diagram shows the axis set as originally specified, before
+the 2026-06-10 trim removed two prompt levels and the \code{plus\_intermediate} context
+level; Section~\ref{sec:trim} states the executed grid.}
+\label{fig:schematic-design}
+\end{figure}
+
+\subsection{Unit of observation}
+
+The unit of observation is a \emph{cell}: one complete configuration evaluated on one
+benchmark with one seed. A cell is a frozen record of eight factors together with four
+fixed parameters, and it is identified by a deterministic string of the form
+\code{\{size\}\_\{topology\}[\_n\{k\}]\_\{context\}\_p\{prompt\}\_r\{reasoning\}\_\{benchmark\}\_s\{seed\}},
+plus a twelve-character SHA-256 digest of the canonicalised configuration. A cell is
+complete when it has written a metadata record and a parseable per-question result
+stream for its full question set.
+
+A cell contains roughly 200 graded questions. Within a cell, every question is answered
+by the whole system, and every participating agent's per-round output is recorded
+separately. The analysis therefore has three grains: cell level, item level (one row per
+question) and agent level (one row per agent per round).
+
+A \emph{design cell} is a configuration without its seed. Design cells are the resampling
+unit for the second bootstrap stage and the aggregation unit for every marginal mean
+reported here, so that a configuration that happened to complete three seeds does not
+receive three times the weight of one that completed one.
+
+\subsection{Axes and levels}
+
+Table~\ref{tab:grid} states the executed grid.
+
+\intable{tab_grid}
+
+Each axis was chosen to isolate a lever that is usually confounded in the literature.
+
+\textbf{Capacity} uses six dense Qwen3 checkpoints spanning roughly a factor of fifty in
+parameter count \citep{qwen3}. Holding the family, tokenizer and instruction-tuning
+recipe fixed means the capacity contrast is not also a training-data or alignment
+contrast. Parameter count is a proxy for pretraining compute; the sweep does not observe
+training budgets, so capacity claims are stated as parameter-scaling statements.
+
+\textbf{Reasoning budget} varies test-time compute through the model's native thinking
+mode rather than through prompt-level instructions to think. The five rungs are a
+disabled condition, three finite token budgets spanning a factor of sixteen, and an
+unlimited condition. Because the realized number of thinking tokens is recorded per
+generation, the reasoning axis can be analysed both as an ordinal knob and as a
+continuous dose, and these give different answers when a model does not spend the budget
+it is given.
+
+\textbf{Prompt complexity} contrasts a one-line instruction against a six-stage
+structured protocol that includes an explicit calibration step. This axis is included
+because prompt scaffolding is the cheapest available intervention and because the L3
+template instructs the model to report confidence honestly, which makes it a direct test
+of whether calibration instructions work.
+
+\textbf{Context sharing} varies what an agent sees of its peers: the final answer alone,
+or the answer plus the peer's raw chain of thought. This is the axis that most directly
+tests the correlated-error mechanism, since exposing rationales is the mechanism by which
+one agent's error can propagate to another.
+
+\textbf{Topology} varies the coordination structure across four levels, including a
+single-agent condition that serves as the baseline for every efficiency metric.
+
+\textbf{Benchmark} spans two knowledge-heavy multiple-choice suites of different
+difficulty \citep{rein2024gpqa,wang2024mmlupro}, a free-form mathematical suite
+\citep{hendrycks2021math,lightman2024verify}, and an adversarial truthfulness suite
+\citep{lin2022truthfulqa}. The mathematical suite is included specifically because it has
+no option-logprob confidence path, which isolates which conclusions depend on that signal
+being available.
+
+\textbf{Seed} replicates each configuration three times. The seed also drives the
+deterministic per-question option shuffle, so replication varies both sampling noise and
+answer-position effects.
+
+\subsection{Factorial size, collapsing and the trim}
+\label{sec:trim}
+
+The raw cross-product of the seven axes is $6 \times 4 \times 2 \times 2 \times 5 \times
+4 \times 3 = 5{,}760$ combinations. Two canonicalisation rules reduce this before
+execution.
+
+First, the single-agent topology has no peers, so its context-sharing level, agent count
+and round count are forced to artifact-only, one and one respectively. Second, the
+independent topology has no communication, so its context-sharing level is forced to
+artifact-only. Both rules collapse combinations that would otherwise be distinct labels
+for identical experiments, and deduplication by cell identifier removes the resulting
+repeats. After collapsing, the grid holds 4{,}320 core cells: 720 single-agent, 720
+independent, 1{,}440 decentralized and 1{,}440 centralized.
+
+The generator then injects 360 additional single-agent baseline cells, one per
+combination of capacity, benchmark, seed and reasoning rung, at prompt level 1. These
+exist so that every multi-agent cell has a matched single-agent baseline available for
+the efficiency metrics of Section~\ref{sec:efficiency-defs}. The executed manifest is
+therefore 4{,}680 cells.
+
+This grid is the result of a trim applied on 2026-06-10, after 1{,}406 of the original
+11{,}520 cells had completed. The trim reduced prompt complexity from four levels to two
+by keeping the endpoints L0 and L3, and reduced context sharing from three levels to two
+by keeping the endpoints artifact-only and plus-CoT. The stated rationale was that in the
+partial data both dropped dimensions showed the weakest signal, with an accuracy spread
+of 0.035 across the four prompt levels and 0.046 across the three context levels. Of the
+1{,}406 already-completed cells, 559 fell inside the new slice and 847 became orphaned;
+the orphans were preserved on disk but excluded from the grid. The pre-trim manifest of
+11{,}520 cells is retained alongside the current one.
+
+Three consequences of the trim matter for reading the results.
+
+The \code{plus\_intermediate} context level was never executed post-trim, so the
+context-sharing variable is effectively binary in the analysis population and the ordinal
+context rank takes only the values 0 and 2.
+
+Prompt level 1 is not part of the stated grid but is present in the data through the 360
+injected baselines. The core-grid membership predicate requires the prompt level to be 0
+or 3, so every injected baseline is excluded from the analysis population even though the
+sweep still produces it. This accounts for the single largest block of cells that are
+complete but not analysed.
+
+The trim also defines a calendar boundary. A separate flag records whether a cell started
+before or after the trim commit epoch. This is distinct from factor-level membership: a
+cell can carry post-trim factor levels and a pre-trim timestamp. Both are reported, and
+the calendar version is used only as a sensitivity check for serving-stack drift.
+
+\subsection{What the design does and does not identify}
+
+The design identifies the marginal effect of each axis and, within the limits of cell
+coverage, two-way interactions among them. It identifies the one-against-three system
+contrast. It does not identify an agent-count scaling law, because agent count takes only
+two values and the value three is perfectly confounded with having a multi-agent
+topology.
+
+Two further confounds are structural rather than accidental. The decentralized and
+centralized topologies run two rounds while independent and single-agent run one, so a
+topology contrast against those two is also a compute contrast. And single-agent cells
+run five self-consistency samples while multi-agent cells do not, so the one-against-three
+contrast compares two system designs rather than isolating the number of agents. Both are
+stated again in Section~\ref{sec:limitations} and are the reason the agent-count axis is
+reported as a design-family comparison throughout.

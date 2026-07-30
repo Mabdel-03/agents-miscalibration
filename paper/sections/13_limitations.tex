@@ -1,0 +1,142 @@
+\section{Limitations}
+\label{sec:limitations}
+
+\subsection{Coverage and missingness}
+
+The sweep is 91.9 percent complete against its intended manifest, and the missing 8.1
+percent is not a random subset. The 32B block at the two largest reasoning budgets holds 32
+and 30 design cells against roughly 47 elsewhere, because those cells are the slowest and
+most likely to be preempted. Missingness is therefore correlated with the treatment in
+exactly the corner where the capacity axis terminates, which is the corner that determines
+whether the capacity axis has plateaued.
+
+Missingness was modelled explicitly over the intended grid, and the resulting figure is in
+the atlas. Inverse-probability weighting machinery exists in the analysis library but is not
+applied to the headline estimates reported here.
+
+\subsection{The 32B context cap}
+
+The largest model is served at 16{,}384 tokens of context against 32{,}768 for the other
+five, because 32B weights in bfloat16 leave insufficient key-value cache room on a single
+A100-80GB. The effect is measurable: at b8192 the median 32B cell spends 3{,}472 thinking
+tokens against 3{,}981 for 14B, and at unlimited it spends 3{,}124 against 4{,}731.
+
+One hundred and six cells in the analysis population carry the flag, and every headline
+claim is reported with and without them in Table~\ref{tab:sens-ctxcap}. The consequence that
+cannot be removed by sensitivity analysis is that the apparent 14B to 32B plateau is
+measured under a ceiling. A non-capped 32B pass, either on larger-memory hardware or with
+tensor parallelism across two devices, is the single experiment that would resolve the
+terminal point of the capacity axis.
+
+\subsection{The one-against-three contrast is not an agent-count contrast}
+
+Agent count takes two values, and the value three is perfectly confounded with having a
+multi-agent topology. Three further asymmetries compound this. Single-agent cells run five
+self-consistency samples and multi-agent cells run none. The two communicating topologies
+run two rounds and the other two run one. And a three-agent centralized cell has only two
+answering sub-agents, so its vote statistics are computed over a different support than a
+three-agent voting cell.
+
+The comparison is therefore between system families, not between agent counts, and it is
+reported that way throughout. The sibling runs covering two, four, five, six and seven
+agents exist as frozen cell manifests but have not been ingested, so no agent-count curve
+can be fitted from the present data.
+
+\subsection{Design coverage and confounded manipulations}
+
+Two prompt levels and one context-sharing level were removed by the mid-run trim. The
+context variable is therefore effectively binary, and the intermediate condition that would
+distinguish sharing scratchpad content from sharing full chains of thought was never
+executed post-trim.
+
+The prompt axis confounds length with structure: level 3 is both longer and more structured
+than level 0, and a two-level design cannot separate them. Both length and a deterministic
+quality composite are recorded per cell, which permits post-hoc adjustment but not
+identification.
+
+The reasoning axis confounds thinking depth with sampling temperature, because the
+thinking-enabled and thinking-disabled conditions run at 0.6 and 0.7 respectively with
+different nucleus thresholds. Part of the observed confidence shift with reasoning may
+therefore be a sampling effect.
+
+Prompt level 1 exists in the data through the 360 injected single-agent baselines but is
+excluded from the analysis population by the core-grid predicate. Those baselines are still
+used for the efficiency metrics, where the join prefers a same-prompt-level baseline and
+falls back to any level, so a minority of efficiency values compare across prompt levels.
+
+\subsection{Measurement limitations}
+
+The mathematical benchmark has no option-logprob path, so per-agent and final-producer
+calibration are undefined there and 801 of 3{,}201 cells have missing calibration columns by
+construction. Every calibration conclusion in this report is a multiple-choice conclusion.
+
+Option letters are shuffled independently per question and seed, which is correct for
+avoiding position bias but makes cross-cell wrong-answer collisions unidentifiable. The
+voting-lift decomposition cannot be computed as a result, and its null finding should not be
+read as evidence against error correlation.
+
+The per-cell bootstrap holds bin and atom assignments fixed across replicates. This is a
+standard approximation and is adequate for standard errors, but it understates uncertainty
+in cells where the bin edges are themselves unstable.
+
+The efficiency metrics are missing for 96 cells whose matched single-agent baseline had not
+completed at ingestion time, concentrated at 32B.
+
+\subsection{Generality}
+
+All results come from a single model family, one instruction-tuned dense Qwen3 lineage.
+Holding the family fixed is what makes the capacity axis interpretable, and it is also what
+prevents any claim about models in general. A mixture-of-experts checkpoint exists in the
+model registry but was not swept.
+
+All four benchmarks are static, English, single-turn question answering with no tool use and
+no environment interaction. The coordination structures tested are correspondingly simple.
+The centralized topology in particular may be more valuable in tool-routing settings that
+this sweep does not represent, which is the setting \citet{wong2026teamofthoughts} address,
+so the negative result on centralized orchestration should not be generalised beyond
+question answering.
+
+Three seeds per configuration is enough to estimate a mean and not enough to model seed
+variance as a random effect, which is why seeds are resampled within design cell as a
+bootstrap stage rather than modelled.
+
+\subsection{Provenance}
+
+The cached tables analysed here were built on 2026-07-09 by the ingest pipeline that was
+current at that time. The repository has since adopted a stricter homogeneous-protocol
+contract under which this run is classified as supplementary mixed-protocol evidence rather
+than as the authoritative dataset, and a re-run under that contract has not produced data.
+The results in this report are therefore the best available evidence for this design, and
+they are not the frozen release-grade numbers that the newer contract is intended to
+produce. Appendix~\ref{app:provenance} records the exact inputs, hashes and versions.
+
+\subsection{Follow-up experiments in priority order}
+
+The following are ordered by how much they would change the conclusions relative to their
+cost.
+
+Ingest the existing five- and seven-agent manifests. This tests whether the capacity effect
+on $\dvote$ survives a finer vote support, which is the leading alternative explanation for
+the report's second-most-important finding, and the runs are already specified.
+
+Add a one-round decentralized condition. This separates communication from generation
+compute in every topology contrast, and is a small addition to the existing grid.
+
+Log canonical answer identities alongside positional option letters. This costs nothing at
+run time and makes the voting-lift decomposition computable.
+
+Run a non-capped 32B pass. This resolves the terminal point of the capacity axis and removes
+the confound from the matched-compute comparison.
+
+Fit a held-out confidence combiner over the vote fraction, producer probability, agreement
+level and verbalized signal. This bounds how much of the agreement-calibration failure is
+recoverable by a better aggregation rule.
+
+Vary option-set cardinality within a fixed benchmark. This tests the proposed mechanism for
+the $\dvote$ sign reversal directly.
+
+Compare compressed rationales against raw chains of thought. This separates the information
+transfer from the convergence effect in the context-sharing axis.
+
+Complete the remaining intended cells, prioritising the 32B long-reasoning corner and the
+outstanding single-agent baselines, before any configuration-level ranking claim is made.

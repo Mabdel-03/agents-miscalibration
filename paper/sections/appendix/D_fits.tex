@@ -1,0 +1,32 @@
+\section{Scaling fits and equivalence tables}
+\label{app:fits}
+
+This appendix carries the complete output of the scaling-equivalence analysis described in
+Section~\ref{sec:scaling}. All fits use the specification of Equation~\ref{eq:scaling} with
+controls for topology, context sharing, prompt level and the 32B context-cap indicator, and
+are computed under two scopes: the full post-trim core view with the cap indicator, and a
+subset that drops the 32B cells at b8192 and unlimited entirely.
+
+The per-topology fit groups are reported here in full. The source memo printed only the
+pooled row, so the topology-resolved coefficients appear for the first time in this
+document. The fitted-coefficient table and the plateau contrasts appear in the main
+text as Tables~\ref{tab:scaling-coefficients} and~\ref{tab:plateaus}.
+
+\subsection{Reasoning rungs as parameter multipliers}
+
+\intable{tab_rung_equivalents}
+
+\clearpage
+\subsection{Orchestration contrasts across all metrics}
+
+\intable{tab_orchestration}
+
+\clearpage
+\subsection{Capacity by reasoning grid}
+
+\intable{tab_size_reasoning_grid}
+
+\clearpage
+\subsection{Nearest empirical equivalences}
+
+\intable{tab_nearest_equivalences}

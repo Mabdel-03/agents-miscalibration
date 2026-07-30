@@ -1,0 +1,247 @@
+\section{Interpretation}
+\label{sec:interpretation}
+
+This section identifies which results are novel relative to the literature cited in
+Section~\ref{sec:intro}, why each is of interest, what confound remains, and what would
+establish it. Results are ordered by how far they depart from what the existing literature
+would predict.
+
+\subsection{Agreement calibration reverses sign across task families}
+
+\textbf{Finding.} $\dvote$ is $+0.15$ to $+0.19$ on GPQA and $+0.05$ to $+0.09$ on
+TruthfulQA, but $-0.16$ to $-0.19$ on MMLU-Pro. The same three-atom agreement signal, under
+the same aggregation rule and the same models, is substantially overconfident on one task
+family and substantially underconfident on another.
+
+\textbf{Why this is novel.} Neither side of the existing debate predicts a sign reversal.
+\citet{yang2024collaborative} report that multi-agent deliberation improves confidence
+assessment, which predicts a negative delta. \citet{wynn2025debate} document
+consensus on wrong answers, which predicts a positive delta. Both are correct in this
+sweep, on different benchmarks, with everything else held fixed. The disagreement in the
+literature is therefore not necessarily a disagreement about mechanism; it may be a
+disagreement about the evaluation suite.
+
+\textbf{Why it is interesting.} It means agreement calibration is not a property of a
+coordination protocol at all. It is a property of the interaction between the protocol and
+the answer-space geometry. The most plausible mechanism is option-set cardinality: GPQA
+Diamond has four options, so unanimous agreement among three agents is common and cheap,
+while MMLU-Pro has up to ten, so unanimity is rare and correspondingly more informative.
+Under that account the vote fraction is not a calibrated probability in either case; it is
+a statistic whose relationship to correctness depends on how many ways there are to be
+wrong.
+
+\textbf{What would establish it.} The cardinality account is testable and the sweep does not
+test it. Holding the benchmark fixed and varying the number of presented distractors would
+separate option cardinality from the many other differences between GPQA and MMLU-Pro,
+including domain, difficulty and question construction. A second, cheaper test is to fit a
+per-benchmark recalibration map for the vote atoms and check whether the fitted maps differ
+in the way cardinality predicts.
+
+\subsection{The coordination calibration penalty shrinks with capacity}
+
+\textbf{Finding.} Vote calibration error falls faster with parameter count than per-agent
+calibration error does. The exponent contrasts are $+0.077$ $[0.031, 0.127]$, $+0.495$
+$[0.424, 0.567]$ and $+0.087$ $[0.008, 0.153]$ on the three multiple-choice benchmarks,
+all excluding zero. At the two largest capacities $\dvote$ turns negative in several
+strata.
+
+\textbf{Why this is novel.} The sweep was designed to test the opposite hypothesis, that
+coordination penalties compound with capability. \citet{kim2025scaling} frame agent-system
+scaling in terms of error amplification and redundancy, quantities that do not obviously
+improve with component quality. The direction found here is that better components make
+coordination a calibration benefit rather than a cost, and that the crossover happens
+within the range of models a practitioner would actually deploy.
+
+\textbf{Why it is interesting.} If it holds, the design advice inverts with scale. At small
+capacity, exposing agreement as confidence is harmful and should be suppressed. At large
+capacity it becomes a useful signal that the individual models do not provide. That is a
+qualitatively different recommendation from a monotone one, and it means results obtained
+on small open models do not extrapolate.
+
+\textbf{What confound remains.} Vote-atom coarseness is the leading alternative
+explanation. With three agents the signal has three atoms, and a change in how probability
+mass distributes over three atoms can move the exact-atom calibration error without any
+change in the honesty of agreement. The final-producer signal, which has continuous support
+and does not suffer from this, shows no comparable capacity effect, which is what the
+coarseness explanation predicts.
+
+\textbf{What would establish it.} Repeating the measurement at five and seven agents, which
+gives six and eight atoms, would separate the two accounts directly: a genuine calibration
+improvement should persist as the support refines, whereas a coarseness artefact should
+attenuate. The frozen manifests for those runs already exist.
+
+\subsection{Agreement calibration and producer calibration are different quantities}
+
+\textbf{Finding.} $\dvote$ spans a range of roughly 0.35 across benchmarks and topologies.
+$\dfp$ spans $+0.004$ to $+0.020$ across every combination where it is defined.
+
+\textbf{Why this is novel.} The multi-agent calibration literature reports a single
+system-level calibration number. Separating the honesty of the agreement statistic from the
+calibration of the decisive model is, as far as the cited work goes, not done, and the
+two answers differ by an order of magnitude on the same data.
+
+\textbf{Why it is interesting.} It localises the problem. Coordination is not corrupting the
+underlying models: the model that produces the answer remains almost as well calibrated as
+it was alone. What is miscalibrated is the conversion of agreement into a number. That is a
+much more tractable failure, because it is a property of the aggregation rule rather than of
+the models, and aggregation rules are cheap to change.
+
+The practical form of the claim is direct. A system that displays how many agents agreed
+can be wrong in either direction by 0.15 or more depending on the task. A system that
+displays the decisive model's own probability incurs a penalty small enough to be removed by
+post-hoc scaling. The second is strictly preferable and costs nothing extra to compute.
+
+\textbf{What would establish it further.} Fitting a held-out confidence combiner over the
+vote fraction, the producer probability, the agreement level and the verbalized signal would
+test whether the aggregation rule is recoverable, and would give an upper bound on how much
+calibration a well-chosen rule can recover.
+
+\subsection{Reasoning improves accuracy and moves confidence past calibration}
+
+\textbf{Finding.} Realized reasoning tokens raise accuracy, with dose slopes of $+0.0106$ to
+$+0.0175$, and reduce signed overconfidence, with slopes of $-0.0058$ to $-0.0140$, while
+simultaneously raising per-agent calibration error, with slopes of $+0.0034$ to $+0.0126$.
+
+\textbf{Why this is novel.} \citet{zhu2025testtime} establish that test-time compute
+improves agent performance, and \citet{li2026agentbench} benchmark that scaling. Neither
+reports a calibration cost. The result here is that the accuracy gain is real and the
+overconfidence reduction is real, but they are not the same thing as improved calibration,
+and on this sweep the raw probability signal gets worse as the model thinks longer.
+
+\textbf{Why it is interesting.} The natural reading is that extended reasoning shifts the
+confidence distribution downward past the calibration point rather than sharpening it onto
+that point, converting overconfidence into underconfidence. If that is what is happening,
+the fix is a monotone recalibration rather than any change to the reasoning mechanism, and
+post-hoc temperature scaling should recover most of the loss.
+
+\textbf{What would establish it.} The reliability diagrams and the Cox slopes already
+computed per cell bear on this directly: an underconfidence account predicts Cox slopes
+moving in a specific direction with dose. Comparing the raw and temperature-scaled
+calibration errors as a function of dose would settle whether the loss is a monotone
+distortion. A confound to remove first is that the thinking-enabled and thinking-disabled
+conditions use different sampling temperatures, 0.6 and 0.7, so part of the observed
+confidence shift may be a sampling effect rather than a reasoning effect.
+
+\subsection{Confident-wrong consensus attenuates with capacity}
+
+\textbf{Finding.} Debate raises unanimous incorrect consensus relative to independent voting
+by $+0.0347$ at 0.6B and 1.7B, $+0.0172$ at 4B and 8B, and $+0.0164$ at 14B and 32B.
+
+\textbf{Why this refines the literature.} \citet{wynn2025debate} identify the failure mode.
+This sweep confirms it at every capacity and adds that its magnitude more than halves across
+a fifty-fold range of parameters. The failure is therefore real but is a small-model failure
+in the main, which changes how seriously it should be weighted when choosing a protocol for
+a large model.
+
+\textbf{Why it is interesting.} It coexists with debate having the best average accuracy and
+the lowest error amplification of the three multi-agent topologies. Debate reduces the total
+error rate while increasing the rate of a specific high-cost failure in which the system is
+wrong and maximally confident. That trade is acceptable when only the answer is exposed and
+unacceptable when agreement is exposed as confidence.
+
+\textbf{What confound remains.} Decentralized runs two rounds and independent runs one, so
+the contrast includes an extra round of generation. A one-round decentralized ablation
+separates communication from compute and is the single cheapest experiment that would
+sharpen this result.
+
+\subsection{The obvious system confidence signal is the worst one}
+
+\textbf{Finding.} Mean agreeing option-logprob confidence wins 0 of 18 strata in the signal
+tournament. Mean per-agent confidence over all agents wins 13, and mean agreeing verbalized
+confidence wins 5.
+
+\textbf{Why it is interesting.} Averaging the probabilities of the agents that agreed is the
+construction a practitioner would reach for first, and it is beaten in every stratum by not
+conditioning on agreement at all. Conditioning selects agents that were confident in the
+winning answer, which raises the mean without adding information, and the selection is
+strongest exactly when the team is unanimous.
+
+That verbalized confidence beats the logprob signal in five strata is also worth noting,
+given that verbalized confidence is usually treated as the weaker signal and is far cheaper
+to obtain since it requires no logprob access.
+
+\textbf{What would establish it.} The tournament is a comparison of fixed signals. A learned
+combiner would establish whether the ordering reflects the information content of the
+signals or only the particular functional forms tested.
+
+\subsection{Matched-compute multi-agent systems lose on knowledge tasks and win on mathematics}
+
+\textbf{Finding.} Three 8B agents against one 32B agent: better in 3 of 12 contrasts, worse
+in 7. Mean differences are $-0.121$ on GPQA, $-0.117$ on TruthfulQA, $-0.034$ on MMLU-Pro
+and $+0.059$ on MATH.
+
+\textbf{Why this matters.} \citet{smit2024debate} argue that debate is not reliably superior
+at matched cost. This result agrees and adds the task-family split: the exception is
+mathematics, and it is a large exception.
+
+\textbf{Why it is interesting.} The split has a plausible mechanism that the rest of the
+sweep supports. Aggregation helps when solutions are long, independently derivable and
+checkable against each other, which describes mathematical derivation. It does not help when
+the task is recall of a specific fact, where three smaller models are three draws from the
+same insufficient knowledge rather than three independent attempts. Every other topology
+result in the sweep points the same way: independent voting gains $+0.076$ on mathematics,
+its largest effect anywhere, and centralized orchestration loses $0.071$ on the same
+benchmark, its largest loss anywhere.
+
+\textbf{What confound remains.} Some 32B long-reasoning baselines are context-capped, which
+depresses the single-agent side of the comparison in precisely the configurations where it
+should be strongest, so the advantage of the larger model is likely understated. A three-4B
+against one-14B comparison, where neither side is capped, would be cleaner.
+
+\subsection{Peer rationales help only in a specific regime, but cost calibration everywhere}
+
+\textbf{Finding.} The controlled plus-CoT accuracy effect is $+0.045$ with 16 of 16 strata
+positive in the mid-capacity low-reasoning band, and $+0.006$ with 11 positive against 12
+negative in the large-capacity high-reasoning band. The calibration cost does not vary in
+this way: vote calibration error rises in 94 of 119 strata regardless.
+
+\textbf{Why it is interesting.} The accuracy benefit and the calibration cost have different
+regime dependence, which means they are not the same mechanism. The benefit behaves like an
+information transfer that saturates once the receiving model can generate equivalent content
+itself. The cost behaves like a convergence effect that operates whenever agents see each
+other's reasoning, whether or not that reasoning was useful.
+
+The item-level evidence supports this reading: exposing chain of thought tightens the spread
+of confidence across agents in five of six strata without improving individual calibration.
+Agents converge; the convergence is not evidence.
+
+\textbf{What would establish it.} Comparing compressed rationales against raw chains of
+thought would separate the useful information from the social-proof effect. If compressed
+rationales retain the accuracy benefit and lose the calibration cost, the two mechanisms are
+confirmed as separable and the design recommendation is straightforward.
+
+\subsection{A negative result worth recording}
+
+The voting-lift decomposition finds no established error-correlation penalty: the within-cell
+penalty interval is below zero in 0 of 24 strata. This is a measurement limitation rather
+than evidence of absence. Option letters are shuffled independently per question and seed,
+so two agents selecting the same wrong content in different cells appear as different
+letters, and cross-seed wrong-answer collision rates are not identifiable.
+
+This is worth recording because the item-level confident-wrong analysis does find a
+correlation effect using a different construction. The two results are not in conflict; the
+decomposition simply cannot be computed from what was logged. Recording canonical answer
+identities alongside the positional letters would make it computable and costs nothing at
+run time.
+
+\subsection{Summary of the design implications}
+
+The results support four statements that are stronger than the individual effects because
+several independent lines converge on each.
+
+Capacity is the dominant lever, worth roughly four times any other axis in the sweep, and
+prompt scaffolding is the most cost-effective, being the only intervention that improves
+both accuracy and agreement calibration on every benchmark at negligible cost.
+
+Reasoning budget should be set at b2048 or b8192 and not higher. The unlimited rung is zero
+or negative against b8192 on every benchmark, and the b512 rung is worse than no thinking at
+all on mathematics.
+
+Orchestration should not be the default. Centralized orchestration does not beat debate on
+accuracy or voting on confidence while costing as much as debate, and no multi-agent topology
+recovers its turn cost under coordination efficiency.
+
+If a system exposes confidence, it should expose a recalibrated producer probability rather
+than an agreement fraction. This is the clearest and best-supported design conclusion in the
+report, and it follows from the order-of-magnitude difference between the two deltas rather
+than from any single effect estimate.

@@ -1,0 +1,194 @@
+\section{Measurement and inference}
+\label{sec:measurement}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.32\textheight,keepaspectratio]{analysis_pipeline.png}
+\caption{Analysis pipeline from raw per-question result streams to the cached tables used
+throughout this report.}
+\label{fig:schematic-pipeline}
+\end{figure}
+
+\subsection{Confidence signals}
+
+Table~\ref{tab:signals} lists the confidence signals measured.
+
+\intable{tab_signals}
+
+Three elicitation mechanisms produce them.
+
+\textbf{Option logprobs.} A separate completion-style request scores the option letters at
+temperature zero with a single generated token and a twenty-logprob cap. Token matching
+strips leading whitespace so that both spaced and unspaced letter tokens map to the same
+option. Letters absent from the returned top-$k$ receive negative infinity, and the
+resulting probabilities are renormalised over the option set. If no option appears in the
+top-$k$ at all, the distribution is uniform, which is detectable downstream as equal mass.
+This mechanism does not exist for free-form answers, so the mathematical benchmark has no
+option-logprob confidence.
+
+\textbf{Verbalized confidence.} A case-insensitive pattern extracts a percentage from the
+response, taking the last match, dividing by one hundred and clipping to the unit
+interval. This is elicited by the answer-format instruction appended to every question.
+
+\textbf{Self-consistency.} Single-agent cells draw five samples and derive both a modal
+answer share, in the manner of \citet{wang2023selfconsistency}, and a semantic-entropy
+confidence based on clustering semantically equivalent answers \citep{kuhn2023semantic}. Multi-agent cells do not run self-consistency,
+which is one of the structural asymmetries in the one-against-three contrast.
+
+The system-level aggregate exposes up to seven derived quantities per question, of which
+the report uses three: the vote fraction, the final producer's own option-logprob
+confidence, and the mean option-logprob confidence over the agreeing side. The definition
+of ``producer'' differs by topology: for voting topologies it is the winning-side agent
+with the highest probability on the final answer; for centralized cells the orchestrator
+is substituted.
+
+One degeneracy is handled explicitly. On the mathematical benchmark the final-producer
+logprob is recorded as identically zero because there is no option-logprob path for
+free-form answers. Treating that as a confidence signal would make its calibration error
+numerically equal to the accuracy, which is meaningless. The pipeline therefore sets the
+signal to missing whenever its maximum is non-positive, both when computing the point
+estimate and when bootstrapping it.
+
+\subsection{Calibration estimators}
+
+Table~\ref{tab:estimators} defines every estimator computed.
+
+\intable{tab_estimators}
+
+The choice of estimator per signal is fixed in advance by the signal's support rather than
+selected after inspecting results. Continuous signals use an equal-mass ten-bin
+$\ell_1$ estimator, whose bin edges are sample quantiles with infinite endpoints and
+deduplication. The vote fraction is discrete: with three agents its support is
+$\{1/3, 2/3, 1\}$ and with two answering sub-agents it is $\{1/2, 1\}$, so binning it is
+not meaningful and it is scored by exact atom, grouping on distinct rounded values.
+
+Three robustness estimators accompany the primary one. The debiased $\ell_2$ estimator of
+\citet{kumar2019verified} subtracts the within-bin sampling variance and is reported for
+continuous signals only, being undefined for a discrete support. The Brier decomposition
+\citep{murphy1973} separates reliability from resolution and base-rate uncertainty. The
+fifteen-bin equal-width plug-in estimator is computed and reported once, purely for
+comparability with the calibration literature that uses it \citep{guo2017calibration};
+it is not the primary estimator because it is biased upward at small sample sizes, an
+effect the sweep exhibits directly and which Section~\ref{sec:health-estimators}
+quantifies.
+
+Two diagnostics that are not calibration errors are also computed. The Cox recalibration
+fit \citep{cox1958} regresses correctness on the logit of confidence and reports an
+intercept and a slope, which separate systematic bias from insufficient or excessive
+sharpness. The area under the receiver operating characteristic separates discrimination
+from calibration, distinguishing a signal that ranks correct answers well but is
+miscalibrated from one that does neither.
+
+\subsection{The headline estimand}
+
+Two parallel families of columns are produced. One uses the fifteen-bin plug-in estimator
+for all three signals, which preserves parity with the package-native implementation and
+provides the comparability numbers. The other uses the pre-registered estimator per
+signal, and is primary.
+
+In the primary family the two deltas are
+
+\begin{align}
+\dvote &= \mathrm{ECE}_{\mathrm{atom}}\bigl(c_{\mathrm{vote}}\bigr) - \mathrm{ECE}_{10}\bigl(c_{\mathrm{agent}}\bigr), \\
+\dfp &= \mathrm{ECE}_{10}\bigl(c_{\mathrm{fp}}\bigr) - \mathrm{ECE}_{10}\bigl(c_{\mathrm{agent}}\bigr).
+\end{align}
+
+The estimators are deliberately mixed within $\dvote$, each signal being scored by the
+estimator appropriate to its support. This is a considered choice rather than an
+oversight: forcing the discrete vote fraction through a ten-bin quantile estimator would
+produce bins that are either empty or identical to the atoms, and forcing the continuous
+per-agent signal through an atom estimator would give one group per distinct floating-point
+value. The plug-in family is reported alongside precisely so that a reader who prefers a
+single estimator throughout can see what difference it makes; Section~\ref{sec:health-estimators}
+shows the two families agree to machine precision on the parity columns.
+
+The per-agent baseline pools every agent-round in the cell, taking as confidence the
+option-logprob probability of the answer that agent chose and as outcome whether that
+agent was individually correct. This is the mean calibration error of the parts, and it is
+what a coordinated system must beat to be said to improve calibration.
+
+\subsection{Efficiency metrics}
+\label{sec:efficiency-defs}
+
+Three coordination metrics follow the framework of \citet{kim2025scaling}, computed
+against a matched single-agent baseline:
+
+\begin{align}
+E_c &= \frac{\mathrm{success\ rate}}{\mathrm{turns}\,/\,\mathrm{turns}_{\mathrm{SAS}}},
+&A_e &= \frac{\mathrm{error\ rate}}{\mathrm{error\ rate}_{\mathrm{SAS}}},
+&O\% &= 100 \times \frac{\mathrm{turns} - \mathrm{turns}_{\mathrm{SAS}}}{\mathrm{turns}_{\mathrm{SAS}}}.
+\end{align}
+
+Coordination efficiency $E_c$ penalises accuracy by the relative number of generation
+turns. Error amplification $A_e$ exceeds one when the system makes more errors than a
+single agent of the same capacity. Turn overhead $O\%$ is the additional generation cost
+as a percentage. Message density and cross-agent output similarity are also computed but
+are not central to the results reported here.
+
+The baseline join is keyed on capacity, benchmark, seed and reasoning rung. Where a
+single-agent cell exists at the same prompt level it is preferred; otherwise any prompt
+level is accepted. This differs from the package-native implementation, which keys only on
+the four factors and therefore silently mixes prompt levels for the many keys that have
+single-agent cells at several prompt levels. All three metrics are set to missing when
+either the multi-agent cell or its baseline contains any censored question.
+
+A separate cost proxy, the product of parameter count and mean total generated tokens, is
+used for the compute-frontier analysis. Because total tokens are summed over agents and
+rounds, a multi-agent cell automatically carries three to six times the cost of a
+single-agent cell at the same capacity, which is the intended behaviour for a
+matched-compute comparison.
+
+\subsection{Uncertainty}
+
+Two bootstrap schemes operate at different levels.
+
+\textbf{Per-cell standard errors.} Within a cell, 500 replicates resample the cell's
+questions by multinomial weights. Bin and atom assignments are computed once on the
+observed sample and held fixed across replicates, which reduces the calculation to a
+reweighting and makes it feasible across several thousand cells; treating bin edges as
+fixed is a standard approximation and is adequate for standard errors. One question
+resample is shared across all three signals within a replicate, so the delta standard
+errors are properly paired and are smaller than the sum of the component errors. Per-agent
+rows inherit the weight of their parent question. A cell with fewer than ten usable
+calibration points, or any censored question, receives missing standard errors rather than
+an unstable estimate.
+
+\textbf{Across-cell intervals.} Every marginal mean and matched contrast in this report
+uses a two-stage hierarchical bootstrap. The first stage resamples question identifiers
+once per replicate and applies that single resample jointly to every configuration, which
+is necessary because all configurations within a benchmark answer the same question set
+and are therefore correlated through question difficulty. The second stage resamples seeds
+with replacement within each design cell, grouping cells by their observed seed
+multiplicity. Pooling methods that assume independence across configurations are not valid
+here and are not used.
+
+Matched contrasts are computed on pairs of cells that agree on every factor other than the
+contrasted one and on seed, averaged at the matched-design level, and then bootstrapped.
+This makes them within-design differences rather than marginal comparisons, which matters
+because coverage is not uniform across the grid.
+
+The stratified contrasts recompute the same quantity separately inside each combination of
+benchmark, capacity and reasoning rung. These are the appropriate read whenever a factor
+could plausibly interact with capacity or context pressure. Many stratified cells rest on
+few matched pairs, and the minimum pair count is reported alongside every stratified
+estimate so that thin strata are visible.
+
+Item-level models use a logistic specification with question fixed effects absorbed and
+standard errors clustered by design cell, dropping questions answered correctly or
+incorrectly by every configuration since they carry no within-question information.
+Cell-level calibration outcomes, which are bounded in the unit interval, use a fractional
+logit. Where multiple hypotheses are tested across strata, the Benjamini-Hochberg
+procedure controls the false discovery rate.
+
+\subsection{Ingestion and the analysis population}
+
+Raw per-question streams are deduplicated by question identifier within a cell, keeping
+the first occurrence. Malformed lines are counted and skipped. A cell enters the canonical
+cell table only if it is semantically complete; partial progress is never promoted to a
+complete-cell estimate.
+
+The analysis population for this report is the post-trim core view: complete cells whose
+prompt level is 0 or 3 and whose context level is artifact-only or plus-CoT. This
+predicate is factor-level membership, not a calendar filter. Context-capped 32B cells are
+retained and flagged rather than dropped, so that every claim involving them can be
+reported with and without.

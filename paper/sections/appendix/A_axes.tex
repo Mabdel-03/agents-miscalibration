@@ -1,0 +1,113 @@
+\section{Axis catalogue and column glossary}
+\label{app:axes}
+
+\subsection{Prompt templates}
+
+The two executed prompt levels are reproduced verbatim below. Level 1 is also reproduced
+because the 360 injected single-agent baseline cells use it; level 2 was removed by the
+trim and never ran post-trim.
+
+\subsubsection*{Level 0}
+
+\begin{promptquote}
+You are a helpful assistant. Answer the question.
+\end{promptquote}
+
+\subsubsection*{Level 1 (single-agent baseline cells only)}
+
+\begin{promptquote}
+You are an expert problem solver with broad knowledge across science, mathematics, and
+general reasoning. Read the question carefully and provide the most accurate answer you
+can. If the question is multiple choice, choose the single best option.
+\end{promptquote}
+
+\subsubsection*{Level 3}
+
+\begin{promptquote}
+You are a world-class expert problem solver with doctoral-level mastery of the natural
+sciences, mathematics, logic, and general reasoning. Your goal is to produce the most
+accurate possible answer while reasoning transparently and calibrating your confidence.
+\medskip
+
+Follow this strategy on every question:
+\medskip
+
+1. COMPREHEND. Restate the question in your own words. Identify the domain, the precise
+quantity or fact being asked for, and any traps or ambiguities in the phrasing.
+\smallskip
+
+2. RETRIEVE. Surface the relevant principles, theorems, definitions, or empirical facts.
+Note any that are commonly misremembered.
+\smallskip
+
+3. REASON. Work through the problem step by step. Make each inferential step explicit and
+verify it before moving on. For quantitative problems, carry units and sanity-check
+magnitudes.
+\smallskip
+
+4. CONSIDER ALTERNATIVES. For multiple-choice questions, evaluate every option. Explain
+why each distractor is wrong. Watch for options that are true statements but do not
+answer the question asked.
+\smallskip
+
+5. CHECK. Look for arithmetic slips, sign errors, unit mismatches, and logical gaps. Ask
+whether your answer would survive a knowledgeable critic.
+\smallskip
+
+6. CALIBRATE. Judge how confident you genuinely are given the strength of your reasoning,
+and report that confidence honestly rather than defaulting to high certainty.
+\medskip
+
+FORMAT. Show your reasoning, then give your final answer on its own line. For
+multiple-choice questions, the final line must name exactly one option letter. Then state
+your confidence as a percentage on a separate line.
+\medskip
+
+Worked example (format only):\\
+Question: Which gas is most abundant in Earth's atmosphere? A. Oxygen B. Nitrogen
+C. Carbon dioxide D. Argon\\
+Reasoning: Dry air is \textasciitilde78\% N2 by volume, \textasciitilde21\% O2, <1\% Ar,
+\textasciitilde0.04\% CO2. The most abundant is nitrogen.\\
+Final answer: B\\
+Confidence: 99\%
+\end{promptquote}
+
+\subsection{Question rendering}
+
+Multiple-choice questions are rendered as the stem, a blank line, the lettered options one
+per line, a blank line, and the instruction \code{Respond with the letter of the best
+option.} Free-form questions are rendered as the stem followed by \code{Give your final
+answer inside \textbackslash boxed\{\}.} Both then append:
+
+\begin{promptquote}
+After your answer, on a new line write 'Confidence: X\%' where X is your confidence
+(0-100) that your answer is correct.
+\end{promptquote}
+
+When thinking is disabled, the user message is additionally prefixed with \code{Think step
+by step. Show your reasoning, then give your final answer.} When thinking is enabled this
+hint is omitted, because the native thinking mode serves the same purpose.
+
+The deterministic option probe uses a separate completion-style rendering that ends in
+\code{Answer: } and is scored at temperature zero with a single generated token.
+
+\subsection{Peer-context rendering}
+
+A rendered peer block is introduced by:
+
+\begin{promptquote}
+Here is what other agents concluded. Consider their views, then give your own answer.
+\end{promptquote}
+
+Each block then contains \code{Agent \{id\} answered: \{choice\}}, optionally followed by
+\code{(stated confidence \{X\}\%)}, and at the plus-CoT level a \code{Reasoning:} field
+carrying up to 4{,}000 characters of the peer's chain of thought. Blocks are separated by a
+blank line, and the whole rendered context is capped at 4{,}000 exact tokens under the
+serving-profile tokenizer. Truncation appends a marker recording the original token count
+and a digest of the untruncated text.
+
+\subsection{Column glossary}
+
+Table~\ref{tab:glossary} defines every column of the analysis population.
+
+\intable{tab_glossary}

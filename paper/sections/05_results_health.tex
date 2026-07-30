@@ -1,0 +1,200 @@
+\section{Data health and the analysis population}
+\label{sec:health}
+
+\subsection{Attrition}
+
+Table~\ref{tab:attrition} traces the funnel from raw output directories to the analysis
+population, and Table~\ref{tab:attrition-breakdown} decomposes the loss by factor level.
+
+\intable{tab_attrition}
+
+Of 4{,}680 intended cells, 4{,}301 are semantically complete, a completion rate of 91.9
+percent. The 5{,}191 directories present on disk exceed the intended count because the
+directory set includes partial work, pre-trim configurations orphaned by the grid change,
+and directories touched but not finished; the directory count is therefore not a
+denominator for completion.
+
+\intable{tab_attrition_breakdown}
+
+The 1{,}100 cells that are complete but excluded from the analysis population are not a
+random subset. Prompt level 1 contributes 573 of them and prompt level 2 contributes 347,
+which together account for 84 percent of the loss. These are the levels the trim removed,
+plus the injected single-agent baseline cells that the sweep still generates at prompt
+level 1 and that the core-grid predicate excludes. A further 376 exclusions carry the
+\code{plus\_intermediate} context level, which the trim also removed. The exclusion is
+therefore almost entirely a consequence of the design change described in
+Section~\ref{sec:trim} rather than of execution failure.
+
+The analysis population is 3{,}201 cells over 1{,}393 distinct design cells, comprising
+638{,}629 graded questions. The full item table holds 858{,}089 rows and the agent-round
+table holds 3{,}952{,}802 rows, both counted before the core-grid filter.
+
+\subsection{Duplicate rows and malformed output}
+
+The resumable dispatcher can append a question's result more than once when a task is
+preempted after writing but before recording progress. This occurred: 41{,}918 duplicate
+question rows were dropped across 399 cells during ingestion, keeping the first occurrence
+of each question identifier. Before deduplication the affected cells reported inflated
+question counts, in the worst case more than twice the intended 200.
+
+The correction is not cosmetic. Across affected cells, deduplication shifts the reported
+accuracy by a mean absolute 0.0114 and a maximum of 0.0677. The larger figure is
+comparable to several of the treatment effects reported in this document, so any analysis
+built on the raw streams rather than the deduplicated table would be materially wrong for
+those cells. After deduplication, no cell has an unexpected question count.
+
+A further 506 malformed output lines were skipped, and two cells were unrecoverable. Both
+counts are consistent with tasks being killed mid-write on a preemptable partition.
+
+\subsection{Coverage}
+
+Table~\ref{tab:coverage} gives cell, design and seed counts for every combination of
+capacity, reasoning rung and topology, and Table~\ref{tab:coverage-benchmark} gives the
+same by benchmark, topology, context level and prompt level.
+Figure~\ref{fig:coverage-matrix} shows the coverage surface.
+
+\intable{tab_coverage}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.62\textheight,keepaspectratio]{fig_coverage_matrix.pdf}
+\caption{Seed-level cell count at each capacity and reasoning rung, faceted by benchmark
+and topology. The design is close to balanced except in the 32B rows at the two largest
+reasoning budgets.}
+\label{fig:coverage-matrix}
+\end{figure}
+
+\intable{tab_coverage_benchmark}
+
+Coverage is close to balanced except in one corner. Every capacity and reasoning block
+except 32B holds roughly 47 to 48 design cells per benchmark. The 32B block holds 47, 43
+and 46 design cells at reasoning off, b512 and b2048 respectively, but only 32 at b8192
+and 30 at unlimited. This is the region where cells are slowest and most likely to be
+preempted, and it is also the region affected by the context cap. Missingness is therefore
+correlated with the treatment in exactly the corner where the capacity axis terminates.
+
+Benchmark-level counts are near-uniform: 820 cells for TruthfulQA, 802 for MMLU-Pro, 801
+for MATH and 778 for GPQA. Seed counts are 1{,}053, 1{,}076 and 1{,}072 for seeds 0, 1 and
+2.
+
+\subsection{Seed replication}
+
+Table~\ref{tab:seed-replication} reports the across-seed dispersion of accuracy within
+design cells, and Figure~\ref{fig:seed-funnel} plots it against the binomial expectation
+implied by question sampling alone.
+
+\intable{tab_seed_replication}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\linewidth]{fig_seed_funnel.pdf}
+\caption{Across-seed accuracy standard deviation against design-cell mean accuracy, with
+the binomial curve for a 200-question sample overlaid. Points above the curve indicate
+variance beyond question sampling.}
+\label{fig:seed-funnel}
+\end{figure}
+
+Seed dispersion is of the same order as the binomial expectation, which means replication
+noise is dominated by which questions were asked rather than by sampling temperature or
+option-position effects. This supports the decision to resample questions jointly across
+configurations in the first bootstrap stage: the shared question set is the dominant
+correlation channel between cells.
+
+\subsection{Estimator agreement}
+\label{sec:health-estimators}
+
+The pipeline computes two families of calibration columns, one matching the package-native
+fifteen-bin plug-in estimator and one using the pre-registered estimator per signal. On
+the parity columns the two agree to $2.2 \times 10^{-16}$, that is to floating-point
+precision, confirming that the recomputation is faithful and that any difference between
+the families is attributable to the estimator choice rather than to an implementation
+discrepancy.
+
+Table~\ref{tab:estimator-comparison} reports every calibration estimator, averaged over
+multiple-choice cells, for each of the three signals.
+
+\intable{tab_estimator_comparison}
+
+Two properties of the estimators are visible directly in the sweep and justify the
+pre-registration. The plug-in estimator inflates at small sample sizes while the debiased
+estimator stays flat, so a comparison between conditions with unequal usable sample sizes
+would be biased if it used the plug-in estimator. And the vote-fraction signal has support
+on three atoms only, so a ten-bin quantile estimator applied to it would produce bins that
+either duplicate the atoms or are empty. The atom estimator is the only well-defined
+choice for that signal.
+
+Table~\ref{tab:bootstrap-ses} reports the distribution of per-cell bootstrap standard
+errors.
+
+\intable{tab_bootstrap_ses}
+
+The paired construction matters: because one question resample is shared across all three
+signals within a replicate, the delta standard errors are substantially smaller than the
+sum of the component standard errors would suggest.
+
+\subsection{Missing calibration by construction}
+
+Calibration columns are missing for 801 of the 3{,}201 cells. This is not attrition. The
+mathematical benchmark has no option-logprob path, so per-agent and final-producer
+calibration are undefined there by construction, and the final-producer signal is
+additionally guarded against its degenerate all-zero form. The vote-fraction column has no
+missing values, because agreement is measurable regardless of answer format, which is why
+the mathematical benchmark still contributes to the agreement-calibration results.
+
+The three efficiency metrics are missing for 96 cells. Every one of these is a multi-agent
+cell whose matched single-agent baseline had not completed at the time of ingestion, and
+the missing baselines are concentrated at 32B. No join defect was found.
+
+\subsection{The 32B context cap}
+\label{sec:health-cap}
+
+The 32B model is served at half the context length of the other five. The consequence is
+observable in the realized token counts rather than in a served error: at b8192 the median
+realized reasoning token count is 3{,}472 for 32B against 3{,}981 for 14B, and at
+unlimited it is 3{,}124 against 4{,}731. The larger model spends fewer thinking tokens than
+the smaller one at the same nominal budget, which is the signature of a ceiling rather than
+of a modelling choice.
+
+One hundred and six cells in the analysis population carry the context-cap flag.
+Table~\ref{tab:sens-ctxcap} repeats the headline outcome means with and without them.
+
+\intable{tab_sens_ctxcap}
+
+Every claim in this report that involves the 32B endpoint at b8192 or unlimited should be
+read as capacity-limited. In particular, the apparent plateau between 14B and 32B reported
+in Section~\ref{sec:scaling} cannot be separated from the cap with the present data.
+
+\subsection{Execution-era sensitivity}
+
+Because the grid was trimmed mid-run, 542 of the 3{,}201 analysed cells started before the
+trim commit epoch and 2{,}659 after. Table~\ref{tab:sens-era} compares outcomes across the
+two eras.
+
+\intable{tab_sens_era}
+
+The comparison is a check for serving-stack drift rather than a treatment contrast: the
+two eras differ in when cells ran, not in what they ran, since factor-level membership is
+enforced separately. No systematic era effect large enough to reinterpret any result
+appears.
+
+\subsection{Column inventory}
+
+Appendix~\ref{app:axes} reproduces the complete column glossary for the analysis
+population, giving the definition, type and non-null count of each of the 77 columns.
+Figure~\ref{fig:metric-correlation} shows the rank correlation structure among the outcome
+columns, which identifies where the many reported metrics are redundant.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\linewidth,height=0.55\textheight,keepaspectratio]{fig_metric_correlation.pdf}
+\caption{Spearman correlation among cell-level outcome columns. The calibration
+estimator variants within a signal are near-collinear, whereas the three signals are
+substantially independent of one another.}
+\label{fig:metric-correlation}
+\end{figure}
+
+The structure is informative for reading the rest of the report. Within a signal, the
+alternative estimators are close to collinear, which is why the robustness columns rarely
+change a conclusion. Across signals, the per-agent, vote and final-producer families are
+substantially independent, which is why separating them in Equation~\ref{eq:estimand} is
+necessary rather than pedantic.

@@ -43,3 +43,9 @@ analysis/context_capacity_audit_2026-07-18.md
 analysis/full_sweep_v1_axis_relationships.md
 analysis/full_sweep_v1_eda_report.md
 analysis/scaling_equivalence_report.md
+
+# Generated products of the paper build (regenerate with paper/build.sh).
+paper/tables/
+paper/figures/
+paper/_build/
+paper/.stamp-*

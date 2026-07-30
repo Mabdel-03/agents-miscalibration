@@ -1,0 +1,172 @@
+\section{Marginal axis effects}
+\label{sec:marginals}
+
+This section reports the pooled outcome means for every level of every axis. Marginal
+means average completed seeds within a design cell and then average design cells within an
+axis level, so that better-replicated configurations do not receive extra weight.
+Section~\ref{sec:contrasts} repeats the same axes as matched within-design contrasts, which
+is the stronger read; the marginals are reported first because they establish the scale of
+every quantity.
+
+Table~\ref{tab:headline-axes} gives the pooled means over all four benchmarks.
+Appendix~\ref{app:marginals} gives the benchmark-resolved version with bootstrap intervals
+for all thirteen metrics.
+
+\intable{tab_headline_axes}
+
+\subsection{Capacity}
+
+Accuracy rises monotonically with parameter count: 0.356 at 0.6B, 0.497 at 1.7B, 0.651 at
+4B, 0.672 at 8B, 0.723 at 14B and 0.727 at 32B. The gain from 0.6B to 14B is 0.367
+accuracy points, larger than the effect of any other axis in the sweep by a factor of
+roughly four. The gain from 14B to 32B is 0.004, which is within noise and is the plateau
+discussed in Section~\ref{sec:scaling}.
+
+The capacity effect on calibration is signal-dependent and this is the first place the
+three-signal decomposition earns its keep. Vote-fraction calibration error improves
+sharply with scale on every benchmark. Comparing 32B against 0.6B in matched contrasts,
+vote calibration error falls by 0.233 on GPQA, 0.321 on MMLU-Pro, 0.387 on TruthfulQA and
+0.068 on MATH. Per-agent calibration error does not follow: over the same contrast it is
+essentially unchanged on GPQA at $+0.004$, worsens substantially on MMLU-Pro at $+0.234$,
+and improves on TruthfulQA at $-0.148$.
+
+The larger model therefore makes agreement a more honest signal much more reliably than it
+makes an individual model's own probability more honest. Section~\ref{sec:calibration}
+takes this further and shows that the two move at different rates with scale, which
+reverses the direction the sweep was designed to test.
+
+\subsection{Reasoning budget}
+
+Accuracy rises with the reasoning rung: 0.522 with thinking disabled, 0.569 at b512, 0.620
+at b2048, 0.633 at b8192 and 0.634 at unlimited. The pattern is a large first step, a
+second substantial step, then saturation. The final rung adds nothing measurable over
+b8192 in the pooled mean, and Section~\ref{sec:scaling} shows it is zero or negative on
+every benchmark in matched contrasts.
+
+The calibration pattern splits by signal in the opposite direction to capacity. Moving
+from disabled to unlimited thinking, vote calibration error improves on all three
+multiple-choice benchmarks, by 0.058 on GPQA, 0.102 on MMLU-Pro and 0.049 on TruthfulQA,
+and the vote delta falls by 0.098, 0.211 and 0.074 respectively. Per-agent calibration
+error moves the other way on all three: $+0.041$ on GPQA, $+0.110$ on MMLU-Pro and
+$+0.025$ on TruthfulQA.
+
+Reasoning also reduces signed overconfidence. The dose-response slopes per unit of
+$\log(1 + \text{realized reasoning tokens})$ are $-0.0082$ on GPQA, $-0.0140$ on MMLU-Pro
+and $-0.0058$ on TruthfulQA for the signed confidence gap, against accuracy slopes of
+$+0.0106$, $+0.0175$, $+0.0153$ and $+0.0106$ on the four benchmarks. Per-agent
+calibration error slopes are simultaneously positive at $+0.0045$, $+0.0126$ and
+$+0.0034$.
+
+The combination is coherent and is one of the more interesting results in the sweep: extra
+thinking makes models more accurate and less overconfident on average, while making their
+raw option-logprob distribution a worse-calibrated probability. The natural reading is that
+reasoning shifts the confidence distribution past the calibration point rather than onto
+it, replacing overconfidence with underconfidence. Section~\ref{sec:calibration} examines
+the reliability diagrams and the Cox recalibration slopes that bear on this.
+
+Figure~\ref{fig:token-dose} shows the dose relationship directly.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{fig_token_dose.pdf}
+\caption{Accuracy against realized reasoning tokens, by capacity and benchmark. The
+horizontal axis is the number of thinking tokens the model actually spent, not the budget
+it was given.}
+\label{fig:token-dose}
+\end{figure}
+
+The distinction between the nominal rung and the realized dose matters at 32B, where the
+context cap prevents the model from spending its allowance. At b8192 the median 32B cell
+spends 3{,}472 thinking tokens against 3{,}981 for 14B; at unlimited it spends 3{,}124
+against 4{,}731. The largest model is the one least able to use the largest budget.
+
+\subsection{Prompt complexity}
+
+Accuracy is 0.573 at prompt level 0 and 0.617 at level 3, a pooled gain of 0.044. The
+matched contrast is positive on every benchmark: $+0.015$ on GPQA, $+0.060$ on MMLU-Pro,
+$+0.070$ on TruthfulQA and $+0.018$ on MATH.
+
+Prompt scaffolding also improves agreement calibration everywhere: vote calibration error
+falls by 0.032, 0.050, 0.059 and 0.008 on the four benchmarks, and the vote delta falls by
+0.021, 0.083 and 0.077 on the three where it is defined. Per-agent calibration error is
+mixed, improving by 0.011 on GPQA but worsening by 0.033 on MMLU-Pro and 0.018 on
+TruthfulQA.
+
+This is the most uniformly favourable axis in the sweep on the two headline outcomes, and
+it is also the cheapest, since the L3 template adds a few hundred prompt tokens and no
+additional generation. The caveat is the same one that appears on the reasoning axis: the
+intervention that makes the system better at answering makes the individual model's raw
+confidence less calibrated, even though the L3 template explicitly instructs the model to
+calibrate.
+
+\subsection{Context sharing}
+
+Pooled accuracy is 0.585 for artifact-only and 0.614 for plus-CoT. The axis is identified
+only within the two communicating topologies, since the other two have no peer context. In
+matched contrasts the accuracy gain is $+0.016$ on GPQA, $+0.016$ on MMLU-Pro, $+0.009$ on
+TruthfulQA and $+0.052$ on MATH.
+
+The calibration cost is consistent in sign across all four: vote calibration error rises by
+0.037, 0.030, 0.018 and 0.005, and the vote delta rises by 0.036, 0.023 and 0.016 on the
+three benchmarks where it is defined. Per-agent calibration error barely moves at
+$+0.000$, $+0.007$ and $+0.003$.
+
+Exposing peer rationales therefore helps the system answer and harms the trustworthiness
+of its agreement, without measurably changing how well calibrated the individual agents
+are. This is precisely the signature of induced error correlation: the agents are
+individually no worse calibrated, but they agree more often for reasons that are not
+evidence.
+
+Section~\ref{sec:contrasts} shows that the accuracy benefit, unlike the calibration cost,
+is regime-dependent and largely disappears in the large-capacity high-reasoning corner.
+
+\subsection{Topology}
+
+Table~\ref{tab:topology-means} gives the complete outcome profile of the four topologies.
+
+\intable{tab_topology_means}
+
+Pooled accuracy is 0.564 for single agent, 0.598 for independent, 0.615 for decentralized
+and 0.587 for centralized. Decentralized debate has the highest average accuracy and the
+lowest error amplification at $A_e = 0.886$; centralized orchestration is the weakest of
+the three multi-agent conditions on average accuracy despite consuming the same six
+generation turns as decentralized.
+
+Coordination efficiency ranks in the opposite order to accuracy, because it is accuracy
+divided by relative turn count: 0.564 for single agent by construction, 0.198 for
+independent, 0.102 for decentralized and 0.097 for centralized. Turn overhead is 200
+percent for independent and 500 percent for both two-round topologies. Message counts are
+zero for the two non-communicating conditions and six for both communicating conditions.
+The cost proxy runs from 15{,}339 for single agent to 56{,}177 for independent, 102{,}771
+for centralized and 120{,}897 for decentralized.
+
+Every multi-agent condition has $A_e < 1$, meaning all three make fewer errors than a
+matched single agent. The ordering, 0.886 for decentralized, 0.928 for centralized and
+0.934 for independent, says debate suppresses the largest share of single-agent errors.
+Section~\ref{sec:items} shows this coexists with debate producing more unanimous incorrect
+consensus, which is not a contradiction: the two statistics count different events.
+
+\subsection{Agent count}
+
+The one-against-three contrast averages the available multi-agent topologies against the
+matched single-agent baseline at artifact-only context. Accuracy gains are $+0.014$ on
+GPQA, $+0.031$ on MMLU-Pro, $+0.019$ on TruthfulQA and $+0.056$ on MATH, all with
+intervals excluding zero. The cost proxy rises by 84{,}758, 58{,}360, 35{,}356 and 62{,}219
+respectively, and error amplification falls by 0.025, 0.093, 0.066 and 0.137.
+
+The accuracy gains are real and consistently signed, but they are small relative to the
+cost multiplier of three to six, and they are three to four times larger on the
+mathematical benchmark than on the two knowledge benchmarks. As stated in
+Section~\ref{sec:design}, this contrast compares system families rather than agent counts:
+the three-agent conditions differ from the single-agent condition in agent count,
+coordination structure, round count and the presence of self-consistency sampling
+simultaneously.
+
+\subsection{Complete marginal tables}
+
+Appendix~\ref{app:marginals} contains the benchmark-resolved marginal means with
+hierarchical bootstrap intervals for accuracy, per-agent calibration error, vote
+calibration error, final-producer calibration error, both deltas, both signed gaps, the
+cost proxy, mean total tokens, mean reasoning tokens, coordination efficiency and error
+amplification. That is thirteen tables covering 987 estimates, which together constitute
+the complete marginal description of the sweep.

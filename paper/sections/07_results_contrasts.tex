@@ -1,0 +1,153 @@
+\section{Matched and stratified contrasts}
+\label{sec:contrasts}
+
+The marginal means of Section~\ref{sec:marginals} average over an unbalanced grid. This
+section reports the same axes as matched within-design contrasts, formed only from cell
+pairs that agree on every other factor and on seed, and then as fully stratified contrasts
+recomputed inside every combination of benchmark, capacity and reasoning rung.
+
+\subsection{Matched adjacent contrasts}
+
+Table~\ref{tab:contrasts-accuracy} gives all 92 matched accuracy contrasts, and
+Figure~\ref{fig:contrast-forest} displays them on one page.
+Appendix~\ref{app:marginals} carries the same contrasts for the ten other metrics.
+
+\intable{tab_contrasts_accuracy}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.66\textheight,keepaspectratio]{fig_contrast_forest.pdf}
+\caption{All matched adjacent-level accuracy contrasts, grouped by axis and faceted by
+benchmark. Bars are hierarchical bootstrap percentile intervals.}
+\label{fig:contrast-forest}
+\end{figure}
+
+The capacity ladder dominates. Adjacent steps are $+0.043$, $+0.153$ and $+0.181$ from
+0.6B to 1.7B on GPQA, MMLU-Pro and TruthfulQA respectively, and the endpoint contrast from
+0.6B to 14B is $+0.274$ $[0.253, 0.294]$, $+0.428$ $[0.418, 0.439]$, $+0.437$ $[0.421,
+0.452]$ and $+0.322$ $[0.299, 0.345]$ across the four benchmarks. The 32B against 14B
+contrast is $+0.002$ $[-0.011, 0.015]$, $+0.011$ $[0.006, 0.018]$, $+0.006$ $[-0.001,
+0.012]$ and $-0.016$ $[-0.031, -0.002]$: two of four intervals contain zero and the
+mathematical one is negative.
+
+The reasoning ladder shows the same saturation. Against thinking disabled, b2048 gives
+$+0.087$ $[0.070, 0.103]$, $+0.135$ $[0.120, 0.149]$, $+0.092$ $[0.071, 0.115]$ and
+$+0.053$ $[0.037, 0.071]$; b8192 gives $+0.098$, $+0.148$, $+0.087$ and $+0.097$; and
+unlimited gives $+0.093$, $+0.150$, $+0.090$ and $+0.092$. The unlimited rung is
+indistinguishable from b8192 on three benchmarks and slightly worse on two.
+
+Topology contrasts are an order of magnitude smaller than capacity contrasts.
+Independent against single agent gives $+0.010$ $[0.004, 0.018]$, $+0.024$ $[0.018,
+0.030]$, $+0.011$ $[0.006, 0.016]$ and $+0.076$ $[0.062, 0.091]$. Decentralized against
+independent gives $+0.007$ $[0.000, 0.013]$, $+0.016$ $[0.011, 0.021]$, $+0.010$ $[0.006,
+0.015]$ and $+0.009$ $[-0.000, 0.017]$. Centralized against independent gives $+0.002$
+$[-0.005, 0.009]$, $+0.008$ $[0.001, 0.016]$, $+0.003$ $[-0.004, 0.009]$ and $-0.071$
+$[-0.090, -0.054]$. Centralized against decentralized gives $-0.004$, $-0.011$ $[-0.018,
+-0.005]$, $-0.003$ and $-0.086$ $[-0.105, -0.067]$.
+
+The mathematical benchmark is where the topologies separate most sharply. Independent
+voting gains $+0.076$ there, the largest topology effect anywhere in the sweep, while
+centralized orchestration loses $0.071$ against the same baseline. A single orchestrator
+synthesising two sub-agent solutions is substantially worse on free-form mathematics than
+simply taking the majority of three independent attempts.
+
+Table~\ref{tab:orchestration} in Appendix~\ref{app:fits} repeats the topology contrasts
+across all six metrics for which they are computed, including coordination efficiency,
+error amplification and the cost proxy.
+
+Moving from independent to decentralized costs 0.067, 0.104, 0.104 and 0.112 of
+coordination efficiency on the four benchmarks while buying between 0.007 and 0.016 of
+accuracy. Debate raises vote calibration error against independent voting by 0.023, 0.007,
+0.019 and 0.016.
+
+\subsection{Stratified contrasts}
+
+A pooled contrast can conceal a sign reversal by regime. Every non-capacity, non-reasoning
+contrast was therefore recomputed inside each benchmark, capacity and reasoning stratum.
+Table~\ref{tab:stratum-digest} summarises the result, and
+Figure~\ref{fig:stratum-caterpillar} shows every individual stratum estimate.
+
+\intable{tab_stratum_digest}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.48\textheight,keepaspectratio]{fig_stratum_caterpillar.pdf}
+\caption{Every stratified accuracy contrast, sorted within contrast, coloured by
+benchmark, with the pooled matched estimate as a horizontal line. The width of each cloud
+around the pooled line is the extent to which the pooled number is a regime average rather
+than a general effect.}
+\label{fig:stratum-caterpillar}
+\end{figure}
+
+The digest reads as follows. The three-agent against one-agent accuracy contrast is the
+most robust: 81 percent of its 117 strata have intervals excluding zero and 93 percent
+share the pooled sign. Prompt complexity is next at 64 and 69 percent over 119 strata.
+Context sharing is the least stable of the four, with 48 percent of strata excluding zero
+and 73 percent sharing the pooled sign, and an interquartile range spanning zero.
+
+Two structural cautions apply to the stratified tables. The minimum matched-pair count in
+several strata is one, so individual cells of the stratified tables are localisation
+devices rather than inferential statements. And the topology contrasts in particular become
+thin after splitting by capacity and reasoning, since topology, capacity and reasoning are
+crossed but not deeply replicated.
+
+\subsection{Context sharing by regime}
+
+Context sharing is the axis for which the stratified view most changes the conclusion.
+Averaged within benchmark, the controlled plus-CoT accuracy effect is $+0.018$ on GPQA
+with 24 of 29 strata positive, $+0.016$ on MMLU-Pro with 20 of 30 positive, $+0.008$ on
+TruthfulQA with 15 of 30 positive, and $+0.050$ on MATH with 28 of 30 positive.
+
+The banded view identifies where the effect lives:
+
+\begin{center}
+\small
+\begin{tabular}{llrl}
+\toprule
+Capacity band & Reasoning band & Mean effect & Positive strata \\
+\midrule
+0.6B, 1.7B & off, b512 & $+0.031$ & 12 of 16 \\
+0.6B, 1.7B & b2048 and above & $+0.024$ & 17 of 24 \\
+4B, 8B & off, b512 & $+0.045$ & 16 of 16 \\
+4B, 8B & b2048 and above & $+0.011$ & 18 of 24 \\
+14B, 32B & off, b512 & $+0.032$ & 13 of 16 \\
+14B, 32B & b2048 and above & $+0.006$ & 11 of 23 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The mid-capacity low-reasoning band is unanimous: all 16 strata positive with a mean effect
+of $+0.045$. The large-capacity high-reasoning band is the reverse, with 11 positive and 12
+negative strata and a mean of $+0.006$. Peer rationales help when the receiving model has
+capacity to use them but has not been given enough thinking budget to generate equivalent
+content itself. Once the model has both capacity and budget, the peer's reasoning adds
+nothing and the effect becomes noise around zero.
+
+The calibration cost does not share this regime dependence. Controlled vote calibration
+error rises with plus-CoT in 94 of 119 strata with a mean of $+0.022$, and the vote delta
+rises in 71 of 89 strata with a mean of $+0.024$. Exposing rationales makes agreement a
+worse confidence signal almost everywhere, including in the strata where it does not
+improve accuracy.
+
+Appendix~\ref{app:stratified} contains the complete stratified tables for accuracy, vote
+calibration error and the cost proxy on all four stratified axes, 2{,}094 estimates in
+total.
+
+\subsection{Other controlled axes}
+
+Prompt complexity remains positive overall under stratification but is less uniform than
+the marginal picture suggests, with GPQA and MATH weakest after fixing capacity and
+reasoning, and the large-capacity high-reasoning band shrinking to $+0.011$ with more
+negative than positive strata.
+
+Decentralized against independent is usually positive and small. Almost every topology
+stratum rests on fewer than three matched design pairs after the capacity and reasoning
+split, so these should be read as localisation only.
+
+Centralized against decentralized remains negative and is worst on the mathematical
+benchmark, where the controlled mean is $-0.087$ with 27 negative and zero positive
+strata. This is the most one-sided stratified result in the sweep.
+
+The three-agent family contrast is positive in 109 of 117 controlled strata, which is a
+useful consistency check on the pooled estimate but does not substitute for varying agent
+count directly.

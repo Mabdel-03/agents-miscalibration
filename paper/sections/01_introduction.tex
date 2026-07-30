@@ -1,0 +1,103 @@
+\section{Introduction}
+\label{sec:intro}
+
+\subsection{Motivation}
+
+Multi-agent language-model systems are now a common deployment pattern. A single model
+is instantiated several times, the instances answer or debate, and their outputs are
+combined by voting or by an orchestrator. The empirical case for this pattern rests on
+accuracy. \citet{du2023debate} showed that multi-agent debate improves factuality and
+arithmetic reasoning relative to a single pass, and a large body of subsequent work
+adopted debate and orchestration as general-purpose accuracy levers.
+\citet{kim2025scaling} argue for a quantitative science of agent-system scaling and
+propose coordination efficiency, communication overhead, error amplification and
+redundancy as the relevant system-level quantities.
+
+The optimistic reading is contested. \citet{smit2024debate} find that debate protocols
+are highly sensitive to cost and hyperparameter choices and are not reliably superior to
+self-consistency at matched compute. \citet{wynn2025debate} document failure modes in
+which communication moves agents toward agreement on incorrect answers. Both critiques
+are about accuracy. Neither addresses the question that matters once such a system is
+deployed behind an interface that reports how confident it is.
+
+That question is calibration. A deployed multi-agent system almost always exposes some
+confidence signal: the fraction of agents that agreed, the orchestrator's own
+probability, or a verbalized percentage. Calibration of single models is well studied.
+\citet{guo2017calibration} established that modern neural networks are systematically
+overconfident and that expected calibration error is the standard measurement. What is
+not established is what coordination does to calibration. Aggregating several agents
+changes both the answer and the confidence signal attached to it, and there is no reason
+in principle for the aggregate signal to inherit the calibration of its parts.
+
+The two existing positions disagree. \citet{yang2024collaborative} report that
+deliberation among agents improves confidence assessment, which implies coordination is
+a calibration benefit. \citet{wang2024calibrating} show that self-consistency, a
+degenerate form of aggregation over samples rather than agents, improves calibration on
+mathematical reasoning. Against this, if debate induces correlated errors as
+\citet{wynn2025debate} describe, then agreement becomes a less honest signal precisely
+when the team is wrong, and coordination is a calibration cost.
+
+A third consideration cuts across both. Test-time reasoning budgets are now a first-class
+scaling axis. \citet{zhu2025testtime} show that additional inference compute improves
+agent performance, and \citet{li2026agentbench} benchmark test-time scaling for general
+agents and note that sequential scaling eventually meets context ceilings. Whether
+reasoning tokens substitute for parameters, and whether they help or harm calibration,
+is not settled. \citet{wong2026teamofthoughts} propose orchestrated tool calling as an
+efficient test-time scaling mechanism, which presupposes that orchestration is worth its
+overhead.
+
+\subsection{What this sweep measures}
+
+This report documents a factorial sweep designed to separate these effects. The design
+crosses four continuous or ordinal levers against four coordination structures, four
+task families and three replication seeds, holding the model family, the serving stack,
+the question set and the grading procedure fixed. The primary outcome is not accuracy
+alone but the pair (accuracy, calibration), and the primary estimand is
+
+\begin{equation}
+\dece \;=\; \mathrm{ECE}\bigl(c_{\mathrm{system}}\bigr) \;-\; \overline{\mathrm{ECE}\bigl(c_{\mathrm{agent}}\bigr)},
+\label{eq:estimand}
+\end{equation}
+
+the difference between the calibration error of the confidence signal a system exposes
+and the mean calibration error of the individual agents inside it. A positive value means
+coordination degraded calibration relative to the parts it was built from; a negative
+value means coordination corrected it.
+
+Two system signals are measured separately, and the report keeps them separate
+throughout, because they answer different design questions. The vote-fraction signal,
+$\dvote$, asks whether the team's level of agreement is an honest probability. The
+final-producer signal, $\dfp$, asks whether the agent whose output actually determines
+the answer remains well calibrated after coordination. A product that displays ``three
+of three agents agree'' is exposing the first; a product that displays a calibrated model
+probability is exposing the second.
+
+The models are open weights, which is what makes the estimand measurable at all. Option
+logprobs, realized thinking-token counts, per-round per-agent outputs and the exact
+prompt token identities are all recorded, so the per-agent baseline in
+Equation~\ref{eq:estimand} is observed rather than inferred.
+
+\subsection{Scope and structure}
+
+The sweep reported here contrasts one-agent and three-agent systems. Agent count is not
+varied continuously: every multi-agent cell uses three agents, so the one-against-three
+comparison is a comparison of system families rather than a point on an agent-count
+scaling curve. Sibling runs with two, four, five, six and seven agents exist as frozen
+cell manifests but have not been ingested, and are discussed only as future work in
+Section~\ref{sec:limitations}.
+
+Section~\ref{sec:design} states the design: the axes, their levels, the factorial size,
+the trim that reduced it, and the collapsing rules that make certain factor combinations
+degenerate. Section~\ref{sec:system} documents the implementation: coordination
+protocols, context-sharing rendering, prompt templates, the reasoning-budget mechanism,
+the serving stack and the benchmark contracts. Section~\ref{sec:measurement} documents
+measurement and inference: confidence elicitation, the calibration estimators, the
+efficiency metrics and the two bootstrap schemes.
+
+Sections~\ref{sec:health} through~\ref{sec:items} report results. They are deliberately
+exhaustive: every quantity the analysis pipeline computed appears in the text, in a
+table, or in a figure, and in most cases in all three. Section~\ref{sec:interpretation}
+assesses which findings are novel relative to the literature cited above and what would
+be required to establish them. Section~\ref{sec:limitations} states the threats to
+validity. Appendices~\ref{app:axes} through~\ref{app:provenance} carry the complete
+tables, the full figure atlas and the provenance record.

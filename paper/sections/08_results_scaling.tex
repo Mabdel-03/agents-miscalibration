@@ -1,0 +1,175 @@
+\section{Scaling equivalence between parameters and reasoning tokens}
+\label{sec:scaling}
+
+This section reports the fitted trade-off between model capacity and test-time reasoning.
+The model is
+
+\begin{equation}
+\operatorname{logit}\bigl(\mathrm{accuracy}\bigr) = \beta_P \log_2\bigl(\mathrm{params}_B\bigr)
++ \beta_R \log_2\bigl(1 + \mathrm{reasoning\ tokens}\bigr) + \mathrm{controls},
+\label{eq:scaling}
+\end{equation}
+
+with controls for topology, context sharing, prompt level and a 32B context-cap indicator.
+A categorical companion replaces the continuous reasoning term with rung dummies. Both are
+fitted per benchmark, and both are fitted twice: once on the full core view with the cap
+indicator, and once on a subset that drops the 32B cells at b8192 and unlimited entirely.
+These are descriptive fits over a partially complete sweep, not asymptotic scaling laws.
+
+\subsection{Fitted coefficients}
+
+Table~\ref{tab:scaling-coefficients} gives all 40 fits, and
+Figure~\ref{fig:scaling-coefficients} displays the pooled and per-topology coefficients.
+
+\intable{tab_scaling_coefficients}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.34\textheight,keepaspectratio]{fig_scaling_coefficients.pdf}
+\caption{Capacity and reasoning coefficients by fit group and benchmark, with 95 percent
+intervals. The per-topology fits are reported here for the first time; the source memo
+printed only the pooled row.}
+\label{fig:scaling-coefficients}
+\end{figure}
+
+On the pooled fit, $\beta_P$ is 0.230 on GPQA, 0.384 on MMLU-Pro, 0.399 on TruthfulQA and
+0.275 on MATH, and $\beta_R$ is 0.032, 0.057, 0.042 and 0.032. Deviance $R^2$ is 0.769,
+0.866, 0.906 and 0.665. The mathematical benchmark is the least well explained by this
+specification, which is consistent with its accuracy surface being non-monotone in capacity.
+
+The ratio $\beta_P/\beta_R$ is the number of reasoning-token doublings that substitute for
+one parameter doubling: 7.22 on GPQA, 6.72 on MMLU-Pro, 9.50 on TruthfulQA and 8.67 on
+MATH. Read as a local marginal rate, one doubling of realized reasoning tokens buys only
+about 0.10 to 0.15 of a parameter doubling. Since a model cannot realistically spend seven
+to nine doublings of thinking tokens, the continuous form understates what the reasoning
+axis actually delivers, because most of its value is in the discrete step from disabled to
+enabled thinking rather than in the marginal token.
+
+The per-topology fits, which the source analysis computed but did not report, show that
+$\beta_P$ increases with coordination. On GPQA it is 0.203 for single agent, 0.216 for
+independent and 0.245 for decentralized. Larger models extract more from being placed in a
+debate than smaller models do, which is a capacity-by-topology interaction that the pooled
+fit averages away.
+
+\subsection{Reasoning rungs as parameter multipliers}
+
+Table~\ref{tab:rung-equivalents} in Appendix~\ref{app:fits} converts each rung's logit
+gain into an equivalent parameter multiplier by dividing by $\beta_P$ from the same fit.
+
+For the pooled fit the multipliers against thinking disabled are:
+
+\begin{center}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Benchmark & b512 & b2048 & b8192 & unlimited \\
+\midrule
+GPQA & 1.89 & 3.04 & 4.01 & 3.92 \\
+MMLU-Pro & 1.99 & 3.23 & 3.85 & 3.90 \\
+TruthfulQA & 1.93 & 2.14 & 2.27 & 2.34 \\
+MATH & 0.71 & 2.11 & 3.97 & 3.50 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Enabling thinking at b2048 is worth roughly two to three times the parameters, and b8192 is
+worth roughly 2.3 to 4.0 times, depending on the task. The unlimited rung does not
+materially exceed b8192 on any benchmark and is lower on two.
+
+The mathematical benchmark has the one anomaly: b512 is worth 0.71 times the parameters,
+that is worse than disabling thinking. A short thinking budget on a task requiring extended
+derivation appears to be actively harmful, presumably because the model begins a derivation
+it cannot finish within the budget and then answers from an incomplete state. This is the
+only place in the sweep where a reasoning rung is worse than no reasoning at all.
+
+Figure~\ref{fig:size-reasoning-heatmap} shows the underlying accuracy surface with the
+context-capped cells marked.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{fig_size_reasoning_heatmap.pdf}
+\caption{Accuracy over the capacity and reasoning grid. Red hatching marks cells carrying
+the 32B context-cap flag, which is where the terminal capacity contrast is least
+trustworthy.}
+\label{fig:size-reasoning-heatmap}
+\end{figure}
+
+The surface is not a uniform vertical shift. GPQA at 0.6B stays near 0.26 to 0.28
+regardless of reasoning budget, while 14B and 32B with a large budget reach roughly 0.60 to
+0.63. MMLU-Pro has the smoothest surface, reaching 0.84 to 0.86 at the top. TruthfulQA
+saturates near 0.81 to 0.82 for large models with reasoning. MATH is the least monotone,
+with several small and mid-capacity models dipping at b512 and the best region at 8B or 14B
+with b8192 rather than at 32B.
+
+Reasoning is therefore most valuable once the base model has enough capacity to exploit it.
+For the weakest models on the hardest benchmark, additional thinking alone does very little.
+Table~\ref{tab:size-reasoning-grid} in Appendix~\ref{app:fits} gives the complete grid of
+accuracy, realized token counts and cost proxy for the pooled fit and for each topology
+separately, 598 rows.
+
+\subsection{Plateaus}
+
+Table~\ref{tab:plateaus} gives the adjacent-rung contrasts on both scaling axes with a
+plateau flag.
+
+\intable{tab_plateaus}
+
+The reasoning axis plateaus unambiguously. The unlimited against b8192 contrast is $-0.005$
+$[-0.011, 0.001]$ on GPQA, $+0.001$ $[-0.003, 0.005]$ on MMLU-Pro, $-0.000$ $[-0.004,
+0.003]$ on TruthfulQA and $-0.008$ $[-0.013, -0.003]$ on MATH. Three intervals contain zero
+and the fourth is negative. Removing the token budget entirely does not beat an 8{,}192-token
+budget.
+
+The b8192 against b2048 contrast is still positive on three benchmarks, at $+0.020$
+$[0.014, 0.027]$, $+0.016$ $[0.011, 0.022]$ and $+0.039$ $[0.031, 0.047]$, and zero on
+TruthfulQA at $+0.000$ $[-0.004, 0.004]$. The reasoning axis therefore saturates between
+b8192 and unlimited, not before.
+
+The capacity axis appears to plateau between 14B and 32B, but this conclusion is weaker.
+The 32B block at b8192 and unlimited holds only 32 and 30 design cells against roughly 47
+elsewhere, and those cells are context-capped. The plateau is measured exactly where the
+data are thinnest and most confounded. It cannot be separated from the cap with the present
+sweep, and Section~\ref{sec:limitations} states this as an outstanding item.
+
+\subsection{Nearest empirical equivalences}
+
+Table~\ref{tab:nearest-equivalences} in Appendix~\ref{app:fits} lists, for each
+low-reasoning target configuration,
+the smaller model with a larger reasoning budget whose accuracy is closest, together with
+the ratio of their cost proxies. Figure~\ref{fig:equivalence-arrows} draws the same
+substitutions on the cost-accuracy surface.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.52\textheight,keepaspectratio]{fig_equivalence_arrows.pdf}
+\caption{Cost-accuracy surface by benchmark, with an arrow from each low-reasoning target
+configuration to its nearest cheaper equivalent. Arrows pointing left and level identify
+substitutions that preserve accuracy at lower inference cost.}
+\label{fig:equivalence-arrows}
+\end{figure}
+
+The numbers quoted below are from the pooled \emph{all systems} scope, matching the fits
+above. The table also carries the four per-topology scopes, and the substitutions they
+identify differ: the single-agent scope, for example, puts 32B with thinking disabled at
+0.372 on GPQA rather than 0.415, because it excludes the accuracy that coordination adds.
+Any equivalence claim is therefore scope-specific and should be read with its scope stated.
+
+Substituting reasoning for parameters is strongly favourable at the top of the capacity
+ladder. Against 32B with thinking disabled, 4B at b512 reaches 0.426 on GPQA against 0.415,
+at 0.12 times the inference cost; 8B at b512 reaches 0.701 on MMLU-Pro against 0.703, at
+0.30 times the cost; 4B at b2048 reaches 0.758 on MATH against 0.741, at 0.24 times the
+cost. On TruthfulQA the nearest candidate falls short, with 4B at b2048 reaching 0.680
+against 0.721, though at 0.19 times the cost.
+
+The substitutions are unfavourable at the bottom of the ladder, which bounds the claim.
+Against 4B with thinking disabled, 1.7B at b8192 reaches 0.325 on GPQA against 0.397 at
+1.53 times the cost, 0.558 on MMLU-Pro against 0.598 at 1.25 times the cost, and 0.674 on
+MATH against 0.711 at 1.06 times the cost. In all three the smaller model is both less
+accurate and more expensive.
+
+Thinking does not rescue a model that is too small for the task, and it can cost more than
+the parameters it was meant to replace, because the cost proxy multiplies parameters by
+tokens and a long thinking trace on a small model exceeds a short answer from a large one.
+The pattern across the whole table is that substituting reasoning for parameters is
+favourable when the smaller model is within roughly one capacity step of the target and
+unfavourable at two steps or more.

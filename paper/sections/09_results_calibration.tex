@@ -1,0 +1,179 @@
+\section{Calibration}
+\label{sec:calibration}
+
+This section reports the headline estimand. It is organised around the two system signals,
+because the sweep's central finding is that they behave differently and that conflating
+them produces contradictory conclusions.
+
+\subsection{The two deltas}
+
+Figure~\ref{fig:delta-bench-topo} shows both deltas by benchmark and topology, and
+Appendix~\ref{app:marginals} gives the full marginal tables.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.32\textheight,keepaspectratio]{fig_delta_by_bench_topo.pdf}
+\caption{Coordination calibration penalty by benchmark and topology. Left: the
+vote-fraction signal. Right: the final-producer signal. Note the difference in vertical
+scale between the two panels.}
+\label{fig:delta-bench-topo}
+\end{figure}
+
+The vote-fraction delta is large and its sign depends on the task family. On GPQA it runs
+from $+0.1508$ for independent to $+0.1897$ for centralized. On TruthfulQA it runs from
+$+0.0474$ to $+0.0906$. On MMLU-Pro it is negative throughout, from $-0.1554$ for
+centralized to $-0.1860$ for decentralized.
+
+The underlying calibration errors explain the reversal. On GPQA the per-agent error is
+0.234 to 0.240 while the vote error is 0.385 to 0.430: agreement is far more confident than
+it should be on a benchmark where three agents frequently agree on a wrong answer. On
+MMLU-Pro the per-agent error is 0.393 to 0.408 while the vote error is 0.216 to 0.253:
+agreement is conservative, because with up to ten options unanimous agreement is rarer and
+therefore more informative. The same three-atom signal is overconfident on one task family
+and underconfident on another, and neither the signal nor the aggregation rule changed
+between them.
+
+The final-producer delta is an order of magnitude smaller and consistently positive. It
+runs from $+0.0037$ to $+0.0204$ across all nine benchmark-topology combinations where it
+is defined, with the largest value on MMLU-Pro under decentralized debate. Coordination
+therefore barely degrades the calibration of the model whose output determines the answer,
+even where it badly degrades the honesty of the agreement statistic.
+
+This separation is the report's principal calibration result and it has a direct
+implication. A system that displays agreement as confidence can be badly miscalibrated in
+either direction depending on the task. A system that displays the decisive model's own
+probability incurs a penalty of roughly 0.4 to 2.0 calibration points, which is small
+enough to be corrected post hoc. Most of the headline $\dece$ is a statement about how
+agreement is converted into a number, not about coordination corrupting the underlying
+models.
+
+The single-agent rows in the same table illustrate why the vote signal must not be read
+across the agent-count boundary. With one agent the vote fraction is identically one, so
+its calibration error is one minus the accuracy by construction: 0.5997 on GPQA, 0.3877 on
+MMLU-Pro, 0.3751 on TruthfulQA. These are not model-calibration measurements and the
+one-agent vote delta should not be interpreted.
+
+\subsection{Capacity reverses the expected direction}
+
+The sweep was designed to test whether the coordination calibration penalty grows with
+capacity. It does not. Fitting power laws to calibration error against parameter count and
+contrasting the exponents gives $b_{\mathrm{pa}} - b_{\mathrm{vote}}$ of $+0.077$ $[0.031,
+0.127]$ on GPQA, $+0.495$ $[0.424, 0.567]$ on MMLU-Pro and $+0.087$ $[0.008, 0.153]$ on
+TruthfulQA. All three intervals exclude zero and all three are positive, meaning vote
+calibration error falls faster with scale than per-agent calibration error does.
+
+The consequence is that $\dvote$ shrinks with capacity rather than growing. On the two
+largest models the vote delta turns negative on several benchmark and topology
+combinations, meaning coordination begins to correct miscalibration rather than amplify it.
+
+Figure~\ref{fig:ece-vs-accuracy} shows the joint distribution of accuracy and calibration
+error by capacity for all three signals.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{fig_ece_vs_accuracy.pdf}
+\caption{Calibration error against cell accuracy by capacity, for the per-agent, vote and
+final-producer signals. The vote panel shows the strongest capacity ordering.}
+\label{fig:ece-vs-accuracy}
+\end{figure}
+
+Two caveats bound this result. The vote signal has only three atoms with three agents, so
+part of the capacity effect could be a change in how mass distributes over a coarse support
+rather than a change in the honesty of agreement. Distinguishing these requires the same
+measurement at five and seven agents, which the sibling runs are designed to provide. And
+the final-producer contrast, which does not suffer from atom coarseness, shows no
+comparable capacity effect, which is consistent with the coarseness explanation.
+
+\subsection{Reasoning shifts the confidence distribution rather than sharpening it}
+
+Section~\ref{sec:marginals} reported that reasoning improves accuracy, reduces signed
+overconfidence, and simultaneously increases per-agent calibration error. The three
+together are only consistent if reasoning moves confidence past the calibration point.
+
+The signed-gap slopes are negative, at $-0.0082$, $-0.0140$ and $-0.0058$ per unit
+log-dose on the three multiple-choice benchmarks, so the average confidence falls relative
+to accuracy. The per-agent calibration slopes are positive, at $+0.0045$, $+0.0126$ and
+$+0.0034$. A model that started overconfident and whose mean confidence is being pushed
+down would first improve and then worsen as it passes through calibration into
+underconfidence, and the observed combination of a falling gap and a rising error is the
+second half of that trajectory.
+
+The design implication is stated in Section~\ref{sec:interpretation}: a system that uses
+extended reasoning should not expose raw option logprobs as probabilities without
+recalibration, because the direction of the miscalibration has changed even though its
+magnitude at the mean has not obviously worsened.
+
+\subsection{The confidence-signal tournament}
+
+Six candidate confidence signals were compared by calibration error within each stratum of
+topology, capacity band and reasoning anchor, giving eighteen strata.
+
+The winner is the mean per-agent confidence, which takes 13 of 18 strata. Mean agreeing
+verbalized confidence takes the remaining 5. The mean agreeing option-logprob confidence
+wins zero of 18.
+
+That last result is the one worth attention, because mean agreeing logprob is the signal a
+system would most naturally construct: take the agents that agreed and average their
+probabilities. It is beaten in every stratum by simply averaging over all agents without
+conditioning on agreement. Conditioning on the winning side selects for the agents that
+were confident in that answer, which inflates the average without adding information.
+
+The tournament result carries one important qualification. The winning signal, mean
+per-agent confidence, is itself an ensembled quantity and is not the per-agent baseline
+used in Equation~\ref{eq:estimand}. It is a system-level signal built from per-agent
+inputs. The tournament therefore says the best available system confidence is a simple
+average over all agents, not that no aggregation is worthwhile.
+
+Within centralized cells specifically, the orchestrator's own logprob confidence beats the
+vote fraction in 4 of 6 strata, which is a weak advantage and not a reliable one.
+
+\subsection{Voting-lift decomposition and error correlation}
+
+If agents made independent errors, the accuracy of a majority vote would be a computable
+function of individual accuracy. The gap between the observed vote accuracy and that
+independence bound is the correlation penalty.
+
+The decomposition finds no established penalty. The within-cell plug-in penalty has an
+interval below zero in 0 of 24 strata, and the observed team vote falls below the
+cross-seed independence bound in 1 of 24. On this evidence the sweep cannot demonstrate
+that error correlation reduces voting lift.
+
+This is a negative result with a known cause rather than a clean absence of effect. Option
+letters are shuffled independently per question and per seed, so the same wrong answer
+receives different letters in different cells. Cross-seed wrong-answer collision rates are
+therefore not identifiable from the recorded data: two agents choosing the same incorrect
+content in different cells appear as different letters. Establishing or refuting the
+correlation penalty requires logging canonical answer identities rather than positional
+letters, which is recorded as a follow-up in Section~\ref{sec:limitations}.
+
+The item-level evidence in Section~\ref{sec:items} bears on the same mechanism from a
+different direction and does find an effect, which is why the two results are not in
+conflict.
+
+\subsection{Reliability structure}
+
+The atlas figures in Appendix~\ref{app:atlas} include reliability diagrams for per-agent
+and system confidence, faceted by capacity band and reasoning rung, and the Cox
+recalibration intercepts and slopes are reported per cell in the marginal tables.
+
+The Cox slope is the relevant summary for the reasoning result: a slope below one indicates
+confidence that is too sharp for its discriminative content, and a slope above one
+indicates the reverse. Together with the signed gap it distinguishes a signal that is
+biased from one that is insufficiently sharp, which the calibration error alone does not.
+
+Post-hoc temperature scaling is also fitted per cell, and provides the ceiling on what
+recalibration could recover. The gap between the raw calibration error and the
+temperature-scaled error is the portion of miscalibration that is a simple monotone
+distortion rather than a failure of ranking.
+
+\subsection{The mathematical benchmark}
+
+The mathematical benchmark has no option-logprob path, so per-agent and final-producer
+calibration are undefined and only agreement-based and sampling-based signals survive. The
+vote-fraction calibration error is still measurable and is reported throughout.
+
+This makes the benchmark a useful control on the whole calibration analysis. Every result
+that depends on option logprobs disappears there, and every result that survives is one
+that a deployed free-form system could actually reproduce. The self-consistency and
+semantic-entropy signals computed for single-agent cells are the only confidence families
+available in that setting, and their behaviour is reported in the atlas.

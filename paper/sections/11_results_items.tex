@@ -1,0 +1,133 @@
+\section{Item-level and round-level mechanisms}
+\label{sec:items}
+
+The preceding sections operate at cell level. This section reports the item-level and
+agent-round-level evidence that bears on why the cell-level effects occur.
+
+\subsection{Item-difficulty structure}
+
+Table~\ref{tab:item-difficulty} characterises the difficulty spectrum of each benchmark
+over the 858{,}089 item rows.
+
+\intable{tab_item_difficulty}
+
+Items that no configuration solves and items that every configuration solves carry no
+within-question information and are dropped by the item-level fixed-effect models. The
+share of each is a measure of how much of the benchmark is actually discriminating between
+the systems under test, and it differs substantially by suite.
+
+\subsection{Confident and wrong: the debate failure mode}
+
+The mechanism proposed by \citet{wynn2025debate} is that communication moves agents toward
+agreement on incorrect answers. The direct test is the probability that a team is unanimous
+and wrong, contrasted between decentralized debate and independent voting on matched cells.
+
+The pooled gap is $+0.0347$ $[0.0259, 0.0432]$ in the 0.6B and 1.7B band, $+0.0172$
+$[0.0108, 0.0235]$ in the 4B and 8B band, and $+0.0164$ $[0.0112, 0.0212]$ in the 14B and
+32B band. All three intervals exclude zero and all three are positive: debate produces more
+unanimous incorrect consensus than independent voting at every capacity.
+
+The effect more than halves from the smallest band to the largest. Debate-induced
+consensus on wrong answers is worst where the models are least able to evaluate a peer's
+argument, and diminishes but does not disappear as capacity grows.
+
+This coexists with decentralized having the best average accuracy and the lowest error
+amplification of the three multi-agent topologies. The two statistics count different
+events: error amplification measures the total error rate, and unanimous-and-wrong measures
+a specific mode of failure in which the system is both wrong and maximally confident. Debate
+reduces the first while increasing the second, which is the worst possible combination for a
+system that exposes agreement as confidence, and it is exactly what the vote-delta results
+of Section~\ref{sec:calibration} report at cell level.
+
+The contrast has a structural confound: decentralized runs two rounds and independent runs
+one, so the comparison includes an additional round of generation compute. A one-round
+decentralized condition would separate communication from compute, and is recorded as a
+follow-up.
+
+\subsection{Round dynamics}
+
+Table~\ref{tab:round-accuracy} gives per-agent accuracy by topology and round pooled over
+the sweep, and Table~\ref{tab:round-accuracy-size} resolves the two communicating
+topologies by capacity. Figure~\ref{fig:round-dynamics-size} plots the same.
+
+\intable{tab_round_accuracy}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\linewidth,height=0.28\textheight,keepaspectratio]{fig_round_dynamics_size.pdf}
+\caption{Per-agent accuracy in round 0 and round 1 for the two communicating topologies,
+resolved by capacity.}
+\label{fig:round-dynamics-size}
+\end{figure}
+
+Individual agents improve between rounds. Decentralized agents go from 0.5514 to 0.5741, a
+gain of 0.0228, and centralized sub-agents go from 0.5538 to 0.5721, a gain of 0.0184, both
+over roughly 835{,}000 to 868{,}000 agent-round observations. Single-agent and independent
+cells run one round and provide the reference points at 0.5455 and 0.5553.
+
+Round-zero accuracy is essentially identical across all four topologies, between 0.5455 and
+0.5553, which is the expected result since round zero has no peer context and the agents
+differ only in their sampling seeds. The between-round gain is therefore attributable to the
+peer information rather than to a difference in the agents themselves.
+
+\intable{tab_round_accuracy_size}
+
+The capacity-resolved version identifies where the gain comes from and is not available in
+the existing figure set. It is the natural companion to the confident-wrong result: the same
+communication that raises individual round-one accuracy also raises the rate of unanimous
+incorrect consensus, and both effects are strongest at small capacity.
+
+\subsection{Centralized anatomy}
+
+Within centralized cells the orchestrator and the sub-agents can be compared directly. The
+orchestrator's own logprob confidence beats the vote fraction over its sub-agents in 4 of 6
+strata, a weak and unreliable advantage. This is the cell-level basis for the conclusion in
+Section~\ref{sec:contrasts} that centralized orchestration is not a default improvement: it
+neither delivers better accuracy than debate nor a reliably better confidence signal than
+voting, while costing the same six generation turns as debate.
+
+\subsection{Context sharing at item level}
+
+The item-level test of context sharing confirms the cell-level split. The accuracy component
+is regime-dependent, with the size interaction taking the opposite sign to the one
+hypothesised, at $-0.0100$. The convergence component is supported: exposing chain of
+thought tightens the spread of confidence across agents in five of six topology and
+capacity-band strata.
+
+Tightening confidence spread without improving individual calibration is the item-level
+signature of the cell-level result that plus-CoT raises vote calibration error in 94 of 119
+controlled strata. Agents converge on a common view; that convergence is not accompanied by
+a corresponding gain in the reliability of the view.
+
+\subsection{A corrected estimate}
+
+The item-level final-producer delta reported here differs from an earlier internal draft by
+roughly a factor of eight. The earlier version used the mean per-agent confidence as the
+baseline in Equation~\ref{eq:estimand} instead of the per-agent calibration error, which
+inflated the estimate; the GPQA centralized value moved from $+0.059$ to $+0.004$ once
+corrected. The corrected values are the ones reported throughout this document, and they are
+consistent with the cell-level range of $+0.004$ to $+0.020$.
+
+The direction of the correction matters for the conclusion. The uncorrected numbers would
+have supported a claim that coordination substantially degrades the decisive model's
+calibration. The corrected numbers do not.
+
+\subsection{Interactions and configuration ranking}
+
+Two-way interaction models, gradient-boosted importance estimates with grouped
+cross-validation, and Friedman interaction statistics were fitted over the pooled core grid;
+the resulting figures are in Appendix~\ref{app:atlas}. Capacity and reasoning dominate the
+importance rankings, consistent with the marginal effect sizes.
+
+Configuration-level ranking was also attempted. Cross-benchmark rank correlation of
+configuration lift is 0.554 among the knowledge multiple-choice pairs and 0.454 between
+those and the mathematical benchmark, and five configurations reach the top decile on at
+least three benchmarks.
+
+These rankings are not reliable at present coverage and are reported for completeness only.
+The top-ten candidate pool has full three-seed coverage for only 20 percent of its entries
+and one-seed coverage for 33 percent, and split-half analysis shows the expected shrinkage
+of a top-$k$ selection made under that much replication noise. On GPQA specifically, no
+multi-agent configuration shows a positive lift over the best same-capacity single-agent
+configuration that survives false-discovery-rate control. No configuration-level
+recommendation should be drawn from this sweep until the remaining cells complete.

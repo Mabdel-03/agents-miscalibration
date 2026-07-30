@@ -1,0 +1,78 @@
+\section{Provenance and reproduction}
+\label{app:provenance}
+
+\subsection{Inputs}
+
+Table~\ref{tab:provenance} lists every file this document consumes, with a truncated
+content hash and modification date. The build is read-only over these files. It does not
+refresh the analysis caches, re-execute the notebooks, or run any model inference.
+
+\intable{tab_provenance}
+
+The cached tables were produced by the ingest pipeline on 2026-07-09 from the
+\code{full\_sweep\_v1} run directory. The nine tidy statistics files were produced by
+\code{analysis/scripts/axis\_relationships.py} and
+\code{analysis/scripts/scaling\_equivalence.py} from those caches. The 59 atlas figures
+were produced by the four analysis notebooks and the same two scripts.
+
+\subsection{What this build generates}
+
+\begin{itemize}
+\item \code{paper/tools/build\_tables.py} writes every table in this document to
+\code{paper/tables/}, together with a JSON manifest recording each table's row count,
+caption, label and source file. Tables prefixed with a metric name derive from the tidy
+statistics files; the attrition, coverage, seed-replication, sensitivity, glossary, item
+difficulty and round-dynamics tables are computed directly from the cached parquets and
+have no precomputed source.
+\item \code{paper/tools/build\_figures.py} writes the vector figure panels to
+\code{paper/figures/panels/}. These are new to this document and are generated from the
+caches; the creation timestamp is suppressed so that regenerated files are byte-identical.
+\item \code{paper/tools/convert\_schematics.py} rasterises the six exported Mermaid
+schematics from \code{docs/figures/exported/} at three times their nominal size using
+headless Firefox. The system \code{rsvg-convert} is not usable for these files: it cannot
+parse the Mermaid stylesheet and produces flat dark rectangles, so the converter asserts
+that its output is non-trivial and non-uniform before accepting it.
+\item \code{paper/tools/stage\_atlas.py} copies the 59 analysis figures verbatim and
+generates Appendix~\ref{app:atlas}. The figures are not resampled: they are already
+between 250 and 415 effective dots per inch at the width used here, and resampling
+increases file size without improving them.
+\item \code{paper/tools/verify\_refs.py} fetches every candidate reference from the arXiv
+API, checks the returned title against the expected title, and writes \code{refs.bib} from
+the fetched metadata. Entries that fail to resolve or whose titles do not match are
+reported and omitted rather than guessed. Two works with no arXiv record carry hand-entered
+metadata and are marked as such in the script.
+\end{itemize}
+
+\subsection{Reproduction}
+
+\begin{promptquote}
+cd paper \&\& ./build.sh
+\end{promptquote}
+
+The build script prepends the working TeX Live installation to the path, because the
+distribution that appears first on the default path has no format file and fails
+immediately. The \code{check} target asserts the TeX version, the presence of every
+required package and the presence of every cache file before any work begins, and stops
+rather than attempting to create anything that is missing.
+
+Individual stages can be run alone with \code{make tables}, \code{make figures},
+\code{make schematics}, \code{make atlas} and \code{make pdf}. Stamp files gate each stage
+on its real inputs, so a second build over an unchanged tree performs no work.
+\code{make draft} skips Appendix~\ref{app:stratified} and Appendix~\ref{app:atlas} for fast
+iteration.
+
+\subsection{Software versions}
+
+Analysis and figure generation run under Python 3.11.15 with pandas 3.0.3, NumPy 2.4.6,
+matplotlib 3.11.0, SciPy 1.17.1, statsmodels 0.14.6 and scikit-learn. Typesetting uses
+pdfTeX 3.141592653-2.6-1.40.29 from TeX Live 2026. The sweep itself ran against vLLM
+0.21.0 with the Qwen3 reasoning parser enabled, asserted inside each serving job.
+
+\subsection{Status of this dataset}
+
+The repository has since adopted a stricter homogeneous-protocol contract under which
+\code{full\_sweep\_v1} is classified as supplementary mixed-protocol evidence rather than
+as the authoritative dataset. A re-run under that contract has not produced data at the
+time of writing, and the refresh script correctly refuses to build a primary cache without
+its control authority. The numbers in this document are therefore the best available
+evidence for this design and are not release-grade frozen results.

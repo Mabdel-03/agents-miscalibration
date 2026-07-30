@@ -1,0 +1,101 @@
+\section{Cost and coordination efficiency}
+\label{sec:cost}
+
+\subsection{Efficiency metrics against capacity}
+
+Figure~\ref{fig:efficiency} shows the three coordination metrics against capacity for the
+three multi-agent topologies.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{fig_efficiency.pdf}
+\caption{Coordination efficiency, error amplification and turn overhead against model size,
+by topology. The dashed lines mark the single-agent reference at $A_e = 1$ and
+$O\% = 0$.}
+\label{fig:efficiency}
+\end{figure}
+
+Coordination efficiency is 0.198 for independent, 0.102 for decentralized and 0.097 for
+centralized, against 0.564 for the single-agent reference. The ordering follows the turn
+count directly, since $E_c$ divides accuracy by relative turns: independent spends three
+turns, both communicating topologies spend six. No multi-agent topology recovers its turn
+cost in accuracy under this metric, which is the expected result given that accuracy gains
+are between 0.01 and 0.08 while turn counts triple or sextuple.
+
+Error amplification is below one for all three multi-agent topologies: 0.886 for
+decentralized, 0.928 for centralized and 0.934 for independent. Every coordination
+structure suppresses some fraction of the errors a single agent of the same capacity would
+make, and debate suppresses the most. Against the single-agent baseline, the reduction in
+error amplification from adding agents is 0.025, 0.093, 0.066 and 0.137 on GPQA, MMLU-Pro,
+TruthfulQA and MATH.
+
+Turn overhead is exactly 200 percent for independent and 500 percent for both communicating
+topologies, since the counts are structural rather than data-dependent.
+
+Moving from independent to decentralized reduces coordination efficiency by 0.067, 0.104,
+0.104 and 0.112 across the four benchmarks. Moving from independent to centralized reduces
+it by a similar amount while also reducing accuracy on the mathematical benchmark.
+
+\subsection{The compute frontier}
+
+The cost proxy is the product of parameter count and mean total generated tokens, summed
+over agents and rounds. Under this proxy the four topologies cost 15{,}339, 56{,}177,
+102{,}771 and 120{,}897 on average, in the order single agent, independent, centralized,
+decentralized.
+
+The cost-accuracy relationship is broadly positive but with a large dominated region: many
+multi-agent cells spend substantially more compute than nearby single-agent or
+independent-vote cells without reaching the empirical frontier. The atlas contains the
+frontier plot and the iso-accuracy surface with multi-agent cells overlaid; the
+substitution structure is in Figure~\ref{fig:equivalence-arrows} of
+Section~\ref{sec:scaling}.
+
+The mathematical benchmark is the most favourable to multi-agent systems on this frontier.
+GPQA and TruthfulQA more often reward capacity and reasoning over orchestration.
+
+\subsection{Matched-compute comparison}
+
+The direct test is to compare three 8B agents against one 32B agent, whose parameter counts
+are 24.6 billion and 32.8 billion respectively and whose costs are therefore roughly
+comparable.
+
+Across twelve contrasts spanning benchmarks and configurations, the multi-agent system is
+better in 3 and worse in 7. The mean accuracy differences are $-0.121$ on GPQA, $-0.117$ on
+TruthfulQA, $-0.034$ on MMLU-Pro and $+0.059$ on MATH.
+
+On the two benchmarks where the sweep has the largest accuracy range, spending the compute
+on one larger model rather than three smaller ones is better by more than ten accuracy
+points. The mathematical benchmark reverses this, which is consistent with every other
+result in the sweep pointing the same way: aggregation helps most where solutions are long,
+verifiable and independently derivable, and least where the task is recall of a specific
+fact that a larger model either knows or does not.
+
+The comparison carries one caveat. Some of the 32B long-reasoning baselines are
+context-capped, which depresses the single-agent side of the contrast in exactly the
+configurations where it should be strongest. The true advantage of the larger model is
+therefore likely understated. A cleaner matched-compute pair would be three 4B agents
+against one 14B agent, neither of which is capped; this is recorded as a follow-up.
+
+\subsection{Cost of the individual axes}
+
+The matched cost contrasts quantify what each axis buys and what it costs.
+
+Adding agents raises the cost proxy by 84{,}758, 58{,}360, 35{,}356 and 62{,}219 on the four
+benchmarks while raising accuracy by 0.014, 0.031, 0.019 and 0.056.
+
+Moving from independent to decentralized approximately doubles the cost, since it doubles
+the round count, and buys between 0.007 and 0.016 accuracy.
+
+The reasoning axis buys 0.087 to 0.135 accuracy at b2048 against disabled thinking. Since
+thinking tokens dominate total tokens at the larger rungs, the cost multiplier is
+substantial, but the axis is still favourable relative to orchestration on three of four
+benchmarks: b2048 gives roughly five to nine times the accuracy gain of moving from
+independent to decentralized.
+
+The prompt axis buys 0.015 to 0.070 accuracy for a few hundred additional prompt tokens and
+no additional generation turns. On a cost-normalised basis it is the most favourable
+intervention in the sweep by a wide margin, and it is the only axis that improves accuracy
+and agreement calibration simultaneously on every benchmark.
+
+Appendix~\ref{app:marginals} contains the matched cost contrasts for every axis and the
+marginal cost, total-token and reasoning-token means for every level.

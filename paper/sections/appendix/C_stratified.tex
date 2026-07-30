@@ -1,0 +1,54 @@
+\section{Complete stratified contrasts}
+\label{app:stratified}
+
+Each contrast below is recomputed independently inside every combination of benchmark,
+model size and reasoning budget. These tables are the full evidence behind the
+stratum-consistency digest of Table~\ref{tab:stratum-digest} and the caterpillar plot of
+Figure~\ref{fig:stratum-caterpillar}.
+
+Individual rows should be read as localisation rather than as inference. The
+matched-pair count is reported for every row, and in many strata it is small; a stratum
+resting on one or two matched pairs identifies where an effect lives but does not
+establish it there.
+
+Three metrics are tabulated for each of the four stratified axes: accuracy, vote-fraction
+calibration error and the cost proxy. The remaining six metrics carried in the source table
+(per-agent calibration error, final-producer calibration error, both deltas, coordination
+efficiency and error amplification) are available in
+\code{analysis/tables/axis\_relationships/axis\_stratified\_contrasts.csv} and are not
+reproduced here.
+
+\subsection{Topology}
+
+\intable{tab_strat_topology_accuracy}
+\clearpage
+\intable{tab_strat_topology_vote_ece_prim}
+\clearpage
+\intable{tab_strat_topology_cost}
+
+\clearpage
+\subsection{Context sharing}
+
+\intable{tab_strat_context_share_level_accuracy}
+\clearpage
+\intable{tab_strat_context_share_level_vote_ece_prim}
+\clearpage
+\intable{tab_strat_context_share_level_cost}
+
+\clearpage
+\subsection{Prompt complexity}
+
+\intable{tab_strat_prompt_complexity_level_accuracy}
+\clearpage
+\intable{tab_strat_prompt_complexity_level_vote_ece_prim}
+\clearpage
+\intable{tab_strat_prompt_complexity_level_cost}
+
+\clearpage
+\subsection{Agent count}
+
+\intable{tab_strat_n_agents_accuracy}
+\clearpage
+\intable{tab_strat_n_agents_vote_ece_prim}
+\clearpage
+\intable{tab_strat_n_agents_cost}

@@ -1,0 +1,242 @@
+\section{System implementation}
+\label{sec:system}
+
+\subsection{Coordination protocols}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\linewidth,height=0.80\textheight,keepaspectratio]{topologies.png}
+\caption{The four coordination topologies.}
+\label{fig:schematic-topologies}
+\end{figure}
+
+Table~\ref{tab:topology-protocol} summarises the four protocols at the sweep's fixed
+setting of three agents and two rounds.
+
+\intable{tab_topology_protocol}
+
+\textbf{Single agent.} One agent answers once with an empty peer context. The result
+defines the baseline used by every efficiency metric: one turn, zero messages, one round.
+
+\textbf{Independent.} Three agents answer in parallel with empty peer context and
+distinct seeds, and the system answer is the majority vote over their outputs. Ties are
+broken by the summed option-logprob probability mass assigned to each tied answer, and if
+that is also tied, by position. There is no communication, so this condition isolates the
+ensemble effect of aggregation from the effect of information exchange.
+
+\textbf{Decentralized.} Three agents debate all-to-all for two rounds. In round zero the
+peer context is empty. In round one each agent receives the rendered outputs of both
+other agents from round zero. The system answer is the majority vote over the final
+round, not over all rounds. Message accounting begins at round one, so a three-agent
+two-round cell records six inter-agent messages, which is $n(n-1)$ for one communicating
+round.
+
+\textbf{Centralized.} One agent acts as orchestrator and the remaining two act as
+sub-agents. In each round the sub-agents answer in parallel and the orchestrator then
+produces a synthesis conditioned on all sub-agent outputs at the cell's context-sharing
+level. From round one onward the sub-agents see only the orchestrator's previous
+synthesis, not each other. The system answer is the final synthesis, not a vote.
+
+Two features of the centralized protocol deserve emphasis because they are easy to
+misread. A three-agent centralized cell has only two answering sub-agents, so its vote
+statistics are computed over two outputs rather than three. And its final answer is
+produced by a single designated agent, which means the final-producer confidence signal
+for centralized cells is the orchestrator's own probability, whereas for the two voting
+topologies it is the probability of the decisive agent on the winning side.
+
+Agent seeding is deterministic and structured so that no two agents in a cell share a
+sampling stream. Independent agents use the cell seed offset by agent index. Debating
+agents use the cell seed offset by round times one hundred plus agent index. The
+orchestrator uses a reserved offset. Every generation call therefore has a reproducible
+seed derived from the cell identifier.
+
+\subsection{Context sharing}
+
+Peer context is rendered by a single component with a frozen protocol hash, so that a
+change to the rendering rules is detectable in the data rather than silent.
+
+At the artifact-only level a peer block contains the peer's identifier, its chosen answer
+and, when present, its stated confidence percentage. At the plus-CoT level the block
+additionally contains the peer's chain of thought, truncated to 4{,}000 characters. An
+intermediate level exists in the code, adding post-answer scratchpad content, but was
+removed from the grid by the trim and does not occur in the analysis population.
+
+The chain of thought is the model's native thinking trace when the serving stack returns
+one, and otherwise the portion of the response preceding the final-answer marker. The
+whole rendered peer block is additionally capped at 4{,}000 exact tokens under the serving
+profile's tokenizer. When truncation occurs, the block carries an explicit marker
+recording the original token count and a digest of the untruncated text, and each
+consuming generation records the peer-context token count, its digest, the per-block token
+counts and the number of truncation markers it saw.
+
+The levels are nested by eligibility rather than by literal text inclusion: because the
+token cap binds after the eligibility rules are applied, a plus-CoT block is not
+guaranteed to be a textual superset of the artifact-only block it would otherwise have
+been. A coordinated topology fails closed if the exact serving-profile tokenizer is
+unavailable, so a cell never silently falls back to an approximate cap.
+
+\subsection{Prompt templates}
+
+The two executed prompt levels are reproduced verbatim in Appendix~\ref{app:axes}. Level 0
+is a single sentence. Level 3 is a six-stage protocol whose stages are comprehension,
+retrieval, reasoning, alternative consideration, checking and calibration, followed by an
+explicit output-format block and a worked format example. The calibration stage instructs
+the model to judge its confidence from the strength of its reasoning rather than defaulting
+to high certainty.
+
+Because prompt length and prompt quality are confounded by construction, both are measured
+and stored per cell. Length is the exact token count under the model's tokenizer. Quality
+is a deterministic composite of five binary presence features (role, strategy, format,
+examples, constraints), the count of explicit numbered steps, a readability score and word
+count, combined with fixed weights. An optional model-judged rubric score is also
+supported. Recording both means a prompt effect can be attributed to structure rather than
+merely to a longer context, though the two-level design cannot fully separate them.
+
+Production workers read prompts from an immutable release worktree rather than from the
+source checkout, so an edit to a template cannot retroactively change what a running cell
+sends.
+
+\subsection{Reasoning budget mechanism}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.62\linewidth,height=0.52\textheight,keepaspectratio]{reasoning_ece_protocol.png}
+\caption{Reasoning and confidence-measurement protocol. The deterministic option probe
+runs before any stochastic generation, so reasoning depth cannot influence the
+confidence measurement path.}
+\label{fig:schematic-reasoning}
+\end{figure}
+
+Thinking budgets are enforced by the serving engine at the token level within a single
+chat request \citep{kwon2023vllm}. They are not implemented by decoding, truncating and
+re-encoding a continuation, which would change the model's own context. The protocol is
+frozen under a version number and a specification hash covering the endpoint, the budget
+field name, the reasoning parser, the required engine version, the sampling parameters,
+the number of generation phases and the token allowances.
+
+Table~\ref{tab:reasoning-protocol} states the rung mapping and the resulting output
+floors.
+
+\intable{tab_reasoning_protocol}
+
+A request must be able to obtain its floor: 4{,}096 tokens reserved for the answer, plus
+the thinking allowance for the rung. The actual token limit sent is the whole remaining
+envelope, that is the served context length minus the exact local prompt token count minus
+a 128-token reserve, and the request is required to reach the served context boundary
+exactly. A cell whose rendered prompt cannot leave its floor within the standard serving
+profile is routed deterministically to a long profile with a 40{,}960-token context, and
+the two profiles expose the same served model name so that runtime layout never leaks into
+the capacity treatment.
+
+Compliance is verified after the fact rather than assumed. Each completion is checked
+against the delimiter contract: a thinking completion must open its trace at position zero
+and close it later; the closing position must not exceed the requested budget; and the
+terminal token must be the expected end-of-message token. Violations are recorded as
+typed codes from a frozen set, and a violating response is retained as censored data
+rather than resampled, so that protocol failures cannot bias the sample by selective
+regeneration. Cells containing any censored question have their calibration statistics set
+to missing rather than computed on a filtered subset. The engine's reported prompt token
+identities are also required to equal the locally rendered chat template exactly.
+
+\subsection{Models and serving}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.34\textheight,keepaspectratio]{execution_architecture.png}
+\caption{Execution architecture: scheduler fleet, serving endpoints and the resumable
+cell dispatcher.}
+\label{fig:schematic-exec}
+\end{figure}
+
+Table~\ref{tab:models} lists the served models.
+
+\intable{tab_models}
+
+All six are dense Qwen3 checkpoints \citep{qwen3} pinned to explicit forty-character
+commit revisions, with tokenizer identifier and revision pinned identically and a
+checksum sidecar over the contract file. Weights are loaded in bfloat16 at 0.90 GPU memory
+utilisation with a twenty-logprob cap and the reasoning parser enabled, on A100-80GB
+hardware, with the engine version asserted inside each serving job. Dataset, model and
+tokenizer downloads are disabled at run time, so a job either finds its pinned artefacts
+in the local cache or fails.
+
+The 32B model is served at 16{,}384 tokens of context rather than 32{,}768. This is a
+memory constraint: 32B weights in bfloat16 occupy roughly 61 GiB, which leaves
+insufficient key-value cache room for the full context on a single A100. The consequence
+is a genuine confound in one corner of the design, and it is flagged per cell and analysed
+explicitly in Section~\ref{sec:health-cap}.
+
+Table~\ref{tab:sampling} states the sampling configuration.
+
+\intable{tab_sampling}
+
+Two details matter for interpreting the calibration results. First, the sampling
+temperature differs between the thinking-enabled and thinking-disabled conditions, at 0.6
+and 0.7 respectively, with correspondingly different nucleus thresholds. The reasoning
+axis is therefore not a pure single-variable manipulation. Second, the confidence probe is
+a separate deterministic request at temperature zero with a single generated token, issued
+before any stochastic generation for that agent and cached, so that a later probe failure
+cannot cause a chat response that has already been observed to be reissued.
+
+\subsection{Benchmarks, question contracts and grading}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{per_question_flow.png}
+\caption{Per-question execution flow, from question rendering through the deterministic
+option probe and the topology run to grading and record assembly.}
+\label{fig:schematic-flow}
+\end{figure}
+
+Table~\ref{tab:benchmarks} lists the evaluation suites.
+
+\intable{tab_benchmarks}
+
+Each suite is pinned to a forty-character dataset commit revision rather than a mutable
+branch, and is loaded cache-only with the revision verified against the on-disk path of
+the Arrow file that was actually read. The per-cell question count is the minimum of the
+requested 200 and the split size, which is why GPQA Diamond contributes 198 questions and
+the other three contribute 200. Two narrow direct-Arrow fallbacks exist for metadata
+incompatibilities in two of the suites; both run the same normalisation and record a
+checksum of the file they read.
+
+All suites are normalised to a common question record. Multiple-choice options are
+shuffled deterministically per question using a seed derived from the cell seed and the
+question index, so the correct answer is not systematically in the first position and the
+shuffle is reproducible. Option letters are assigned by position after shuffling.
+
+Before a run begins, the exact question list for each combination of benchmark, question
+count and seed is frozen into a contract file recording an ordered list of question
+identifiers, a per-question digest, a digest over the whole question contract and a digest
+of the source identity. The contract is bound to the cell manifest by its own hash. At run
+time, questions are served through a verified catalogue that fails closed on any mismatch,
+so a silent dataset change cannot alter what a resumed cell evaluates.
+
+Questions are rendered to a fixed format. Multiple-choice questions present the stem, the
+lettered options and an instruction to respond with a letter. Free-form questions instruct
+the model to place its final answer in a boxed expression. Every question, in both
+families, appends an instruction to state a confidence percentage on a new line after the
+answer. When thinking is disabled, a short chain-of-thought hint is prepended to the user
+message; when thinking is enabled it is not, because the native thinking mode supplies the
+same function.
+
+Grading extracts a letter using four ordered regular expressions with a bare-letter
+fallback, or extracts the last brace-balanced boxed expression and normalises it by
+stripping formatting commands, whitespace, currency and percent symbols and trailing
+punctuation. If chat parsing fails on a multiple-choice question, the answer falls back to
+the argument maximum of the option probe, so a formatting failure does not silently become
+an incorrect answer.
+
+\subsection{Execution}
+
+Cells are dispatched as independent array tasks against a fleet of serving endpoints under
+a shared scheduler. The dispatcher is resumable at question granularity: a cell that is
+preempted resumes by question identifier and re-runs only what is missing. Serving
+endpoints are maintained by a keepalive process against a declared fleet specification and
+are re-registered rather than duplicated when a job survives a controller restart.
+
+This execution model has one direct consequence for the data. Because cells append to their
+result streams and can be resumed after partial writes, duplicate question rows are
+possible, and malformed trailing lines are possible when a task is killed mid-write. Both
+occur in this run and both are handled at ingestion time, quantified in
+Section~\ref{sec:health}.

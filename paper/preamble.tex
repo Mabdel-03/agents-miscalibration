@@ -1,0 +1,57 @@
+% Package set is constrained by the TinyTeX tree on this machine.
+% threeparttable, placeins, makecell and newtxtext are NOT installed; do not add them.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathptmx}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{adjustbox}
+\usepackage{rotating}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage[round,authoryear]{natbib}
+\usepackage[hidelinks,breaklinks]{hyperref}
+
+\graphicspath{{figures/panels/}{figures/atlas/}{figures/atlas/axis_relationships/}%
+{figures/atlas/scaling_equivalence/}{figures/schematics/}}
+
+% Line-separated paragraphs with no indentation.
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7\baselineskip}
+
+\captionsetup{font=small,labelfont=bf,skip=6pt}
+\captionsetup[table]{skip=4pt}
+
+% longtable inherits parskip and produces ragged inter-row spacing otherwise.
+\setlength{\LTpre}{0.6\baselineskip}
+\setlength{\LTpost}{0.6\baselineskip}
+\renewcommand{\arraystretch}{1.05}
+
+\setlist{nosep,leftmargin=1.4em}
+
+\newcommand{\dece}{\ensuremath{\Delta\mathrm{ECE}}}
+\newcommand{\dvote}{\ensuremath{\Delta\mathrm{ECE}_{\mathrm{vote}}}}
+\newcommand{\dfp}{\ensuremath{\Delta\mathrm{ECE}_{\mathrm{fp}}}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+% \draftbuild is set by "make draft" to skip the largest appendices.
+\newif\ifexhaustive
+\ifdefined\draftbuild \exhaustivefalse \else \exhaustivetrue \fi
+
+% Verbatim-style prompt blocks: monospace, ragged right, generous hyphenation so a
+% long template line cannot run into the margin.
+\newenvironment{promptquote}%
+  {\begin{quote}\small\ttfamily\raggedright\sloppy\setlength{\parskip}{0.35\baselineskip}}%
+  {\end{quote}}
+
+\newcommand{\intable}[1]{\input{tables/#1.tex}}

@@ -1,0 +1,82 @@
+\documentclass[11pt]{article}
+\input{preamble}
+
+\title{\textbf{Capacity, Reasoning, Prompting and Coordination in Small\\
+Multi-Agent Language Model Systems:\\
+A Factorial Sweep of Accuracy and Calibration}}
+\author{\code{full\_sweep\_v1}, the \code{agents\_scaling} project}
+\date{Compiled \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This report documents a factorial sweep contrasting one-agent and three-agent
+language-model systems across four design axes: model capacity (six Qwen3 sizes from
+0.6B to 32B parameters), test-time reasoning budget (five rungs from disabled to
+unlimited), system-prompt complexity (two levels), and inter-agent context sharing (two
+levels), crossed with four coordination topologies, four question-answering benchmarks
+and three replication seeds. The design targets a specific estimand that the existing
+multi-agent literature does not measure directly: $\dece$, the difference between the
+calibration error of a coordinated system's confidence signal and the mean calibration
+error of its constituent agents. The analysis population comprises 3{,}201 completed
+cells over 1{,}393 distinct configurations, 638{,}629 graded questions in the core view,
+858{,}089 item rows and 3{,}952{,}802 agent-round rows in total. Every result the
+analysis pipeline produced is reported here in prose, in tables and in figures, together
+with an assessment of which findings are novel relative to the cited literature and what
+would be required to establish them more firmly.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\input{sections/01_introduction}
+\clearpage
+\input{sections/02_methods_design}
+\clearpage
+\input{sections/03_methods_system}
+\clearpage
+\input{sections/04_methods_measurement}
+\clearpage
+\input{sections/05_results_health}
+\clearpage
+\input{sections/06_results_marginals}
+\clearpage
+\input{sections/07_results_contrasts}
+\clearpage
+\input{sections/08_results_scaling}
+\clearpage
+\input{sections/09_results_calibration}
+\clearpage
+\input{sections/10_results_cost}
+\clearpage
+\input{sections/11_results_items}
+\clearpage
+\input{sections/12_interpretation}
+\clearpage
+\input{sections/13_limitations}
+
+\clearpage
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\clearpage
+\appendix
+\input{sections/appendix/A_axes}
+\clearpage
+\input{sections/appendix/B_marginals}
+\clearpage
+\ifexhaustive
+  \input{sections/appendix/C_stratified}
+  \clearpage
+\fi
+\input{sections/appendix/D_fits}
+\clearpage
+\ifexhaustive
+  \input{sections/appendix/E_atlas}
+  \clearpage
+\fi
+\input{sections/appendix/F_provenance}
+
+\end{document}
