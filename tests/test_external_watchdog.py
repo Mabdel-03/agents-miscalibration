@@ -20,10 +20,10 @@ TAG_OBJECT = "c" * 40
 FINALIZER_INTENT = "d" * 64
 
 
-def test_external_watchdog_fresh_protocol_is_r13_end_to_end():
+def test_external_watchdog_fresh_protocol_is_r14_end_to_end():
     assert (
         watchdog.WATCHDOG_PROTOCOL
-        == "schema5-v1.2-r13-external-watchdog-v1"
+        == "schema5-v1.2-r14-external-watchdog-v1"
     )
     assert runner.WATCHDOG_PROTOCOL == watchdog.WATCHDOG_PROTOCOL
 

@@ -1,0 +1,52 @@
+#!/bin/bash
+# Independent controller-liveness probe.  Never edit a rendered copy.
+#
+# This job exists because the dispatcher runs its own health monitor: a dispatcher that
+# is scheduled and alive but wedged stops heartbeating and stops monitoring at the same
+# instant, and Slurm sees a healthy job.  This probe runs in a separate allocation, reads
+# control read-only, and exits non-zero on staleness so --mail-type=FAIL delivers the
+# alarm.  It is not a substitute for the forced-command external watchdog, which also
+# survives the cluster becoming unavailable.
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=1G
+#SBATCH --time={TIME_LIMIT}
+#SBATCH --no-requeue
+#SBATCH --export=NONE
+#SBATCH --output={LOG_PATH}
+#SBATCH --mail-user={ALERT_EMAIL}
+#SBATCH --mail-type=FAIL
+
+set -euo pipefail
+umask 027
+unset BASH_ENV CDPATH ENV LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD
+unset SLURM_CLUSTERS SLURM_CONF SLURM_EXIT_ERROR SLURM_TIME_FORMAT
+while IFS= read -r ambient_name; do
+  case "$ambient_name" in
+    ASYS_*|BASH_FUNC_*|PIP_*|PYTHON*|CONDA_*|HF_*|TRANSFORMERS_*|VLLM_*|SACCT_*|SBATCH_*|SCONTROL_*|SQUEUE_*)
+      builtin unset -v "$ambient_name" 2>/dev/null || true
+      ;;
+  esac
+done < <(compgen -e)
+export PATH=/usr/bin:/bin
+readonly PATH
+while read -r _ _ ambient_function; do
+  builtin unset -f "$ambient_function"
+done < <(builtin declare -F)
+export LANG=C LC_ALL=C
+unset PYTHONHOME PYTHONPATH VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV
+
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export PYTHONSAFEPATH=1
+
+# One observation per cadence for the life of the allocation.  Any stale role exits
+# non-zero immediately, which both fails the job and sends the alert mail.
+deadline=$(( $(date +%s) + {DURATION_SECONDS} ))
+while (( $(date +%s) < deadline )); do
+  "{PYTHON}" -u "{WATCHDOG_SCRIPT}" \
+    --state-dir "{STATE_DIR}" \
+    --stale-after-seconds {STALE_AFTER_SECONDS}
+  sleep {INTERVAL_SECONDS}
+done

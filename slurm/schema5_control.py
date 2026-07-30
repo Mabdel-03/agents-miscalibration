@@ -111,7 +111,7 @@ from scripts import schema5_email_ack
 CONTROL_SCHEMA_VERSION = 1
 CONTROL_PROTOCOL = "schema5-v1"
 PRODUCTION_RELEASE_ID = "sweep-recovery-schema5-v1.2"
-PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r13"
+PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r14"
 PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
 # All production ramp stages are authorized by the sealed protected-capacity
 # contract before control initialization.  A later capacity generation is reserved
@@ -145,22 +145,22 @@ EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS = 1_800.0
 EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS = 3_600.0
 EXTERNAL_WATCHDOG_MIRROR_DIRNAME = "external_watchdog_mirror"
 EXTERNAL_WATCHDOG_STATUS_PROTOCOL = (
-    "schema5-v1.2-r13-external-watchdog-status-observation-v1"
+    "schema5-v1.2-r14-external-watchdog-status-observation-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL = (
-    "schema5-v1.2-r13-external-watchdog-action-intent-v1"
+    "schema5-v1.2-r14-external-watchdog-action-intent-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_PROTOCOL = (
-    "schema5-v1.2-r13-external-watchdog-action-receipt-v1"
+    "schema5-v1.2-r14-external-watchdog-action-receipt-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r13-external-watchdog-cycle-intent-v1"
+    "schema5-v1.2-r14-external-watchdog-cycle-intent-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_PROTOCOL = (
-    "schema5-v1.2-r13-external-watchdog-cycle-receipt-v1"
+    "schema5-v1.2-r14-external-watchdog-cycle-receipt-v1"
 )
 EXTERNAL_WATCHDOG_LATEST_PROTOCOL = (
-    "schema5-v1.2-r13-external-watchdog-latest-pointer-v1"
+    "schema5-v1.2-r14-external-watchdog-latest-pointer-v1"
 )
 EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS = 60.0
 EXTERNAL_WATCHDOG_MIRROR_STALE_SECONDS = 600.0
@@ -233,8 +233,22 @@ PRODUCTION_AUTHORIZATION_GATES = (
     "throughput_qualification",
     "external_watchdog",
 )
+# Two gates depend on operator infrastructure outside the cluster rather than on the
+# scientific run: `email_test` needs a challenge/acknowledgement round trip, and
+# `external_watchdog` needs a forced-command watchdog on a separate host.  A chain may
+# be initialized without them, but only through this explicit policy, which is stored in
+# control and therefore covered by the same journal and identity checks as every other
+# launch decision.  Both default to required, so an existing chain is unaffected.
+OPTIONAL_GATE_POLICY_KEYS = {
+    "email_test": "email_test_required",
+    "external_watchdog": "external_watchdog_required",
+}
+LAUNCH_POLICY_DEFAULTS = {
+    "email_test_required": True,
+    "external_watchdog_required": True,
+}
 PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
-PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r13-production-authorization-v1"
+PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r14-production-authorization-v1"
 PRODUCTION_AUTHORIZATION_VERIFIER = (
     "scripts/render_schema5_recovery_chain_v12.py"
 )
@@ -358,13 +372,13 @@ CAPACITY_STATE_SCHEMA_VERSION = 1
 CAPACITY_STATE_PROTOCOL = "schema5-capacity-generation-v1"
 CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION = 1
 CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL = (
-    "schema5-v1.2-r13-client-placement-capacity-generation-v1"
+    "schema5-v1.2-r14-client-placement-capacity-generation-v1"
 )
 CLIENT_CAPACITY_BUILD_PROTOCOL = (
-    "schema5-v1.2-r13-client-capacity-build-v1"
+    "schema5-v1.2-r14-client-capacity-build-v1"
 )
 CLIENT_CAPACITY_SUBMISSION_PROTOCOL = (
-    "schema5-v1.2-r13-client-capacity-canary-submission-v1"
+    "schema5-v1.2-r14-client-capacity-canary-submission-v1"
 )
 CLIENT_CAPACITY_BUILD_INTENT = "CLIENT_CAPACITY_BUILD_INTENT.json"
 CLIENT_CAPACITY_CANARY_SBATCH = "client_capacity_canary.sbatch"
@@ -603,7 +617,7 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r13-smoke-attempt-binding-v1"
+    "schema5-v1.2-r14-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -742,6 +756,49 @@ class FinalizerRetryLimitError(FinalizerInvariantError):
 
 class ControllerFenced(ControlError):
     """A controller job does not own the exact durable role generation."""
+
+
+def launch_policy(control: Mapping[str, Any]) -> dict[str, bool]:
+    """The chain's effective optional-gate policy.
+
+    A control written before this policy existed, or one carrying a malformed value,
+    resolves to the fully required defaults.  The policy can only relax a gate by
+    stating so explicitly with a boolean.
+    """
+
+    policy = dict(LAUNCH_POLICY_DEFAULTS)
+    stored = control.get("launch_policy")
+    if isinstance(stored, Mapping):
+        for key in LAUNCH_POLICY_DEFAULTS:
+            value = stored.get(key)
+            if isinstance(value, bool):
+                policy[key] = value
+    return policy
+
+
+def _gate_is_required(gate: str, policy: Mapping[str, bool]) -> bool:
+    key = OPTIONAL_GATE_POLICY_KEYS.get(gate)
+    return True if key is None else bool(policy[key])
+
+
+def effective_required_gates(control: Mapping[str, Any]) -> tuple[str, ...]:
+    """`REQUIRED_GATES` minus any the chain was initialized without."""
+
+    policy = launch_policy(control)
+    return tuple(gate for gate in REQUIRED_GATES if _gate_is_required(gate, policy))
+
+
+def effective_production_authorization_gates(
+    control: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """`PRODUCTION_AUTHORIZATION_GATES` minus any the chain was initialized without."""
+
+    policy = launch_policy(control)
+    return tuple(
+        gate
+        for gate in PRODUCTION_AUTHORIZATION_GATES
+        if _gate_is_required(gate, policy)
+    )
 
 
 @dataclass(frozen=True)
@@ -2440,7 +2497,7 @@ def _new_finalization_state(
         "request_intent": None,
         "consumed_capacity_incidents": [],
         "output_root": str(
-            results_root / "recovery" / "schema5-v1.2-r13" / "final"
+            results_root / "recovery" / "schema5-v1.2-r14" / "final"
         ),
         "attempts": 0,
         "worker_attempts": [],
@@ -2890,7 +2947,7 @@ def _validate_finalization_state(
         str(control["immutable"]["results_root"])
     ).expanduser().resolve()
     expected_output = (
-        results_root / "recovery" / "schema5-v1.2-r13" / "final"
+        results_root / "recovery" / "schema5-v1.2-r14" / "final"
     )
     state = finalization.get("state")
     requested = finalization.get("requested_timestamp")
@@ -3932,7 +3989,7 @@ def _validate_conda_toolchain_binding_static(value: Any) -> dict[str, Any]:
         value.get("schema_version") != conda_toolchain.SCHEMA_VERSION
         or value.get("protocol") != conda_toolchain.PROTOCOL
         or value.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
-        or value.get("chain_namespace") != "schema5-v1.2-r13"
+        or value.get("chain_namespace") != "schema5-v1.2-r14"
         or not root.is_absolute()
         or value.get("base_prefix") != str(root / "base")
         or not isinstance(marker, dict)
@@ -5142,11 +5199,21 @@ def initialize_control(
     *,
     pins: Mapping[str, Any],
     alert_email: str = "mabdel03@mit.edu",
+    launch_policy_overrides: Mapping[str, bool] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Create the paused control atomically, or prove an existing init is identical."""
     state_dir = state_dir.expanduser().resolve()
     timestamp = time.time() if now is None else float(now)
+    # Resolve the policy before the filesystem-heavy pin verification so a malformed
+    # waiver is reported as such rather than behind an unrelated pin error.
+    policy = dict(LAUNCH_POLICY_DEFAULTS)
+    for key, value in dict(launch_policy_overrides or {}).items():
+        if key not in LAUNCH_POLICY_DEFAULTS:
+            raise ControlError(f"unknown launch policy key {key!r}")
+        if not isinstance(value, bool):
+            raise ControlError(f"launch policy {key!r} must be a boolean")
+        policy[key] = value
     validate_immutable_pins(pins, verify_files=True)
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "logs").mkdir(parents=True, exist_ok=True)
@@ -5158,6 +5225,10 @@ def initialize_control(
             if existing["immutable_sha256"] != sha256_value(pins):
                 raise ImmutablePinError(
                     "init is idempotent only for exactly the existing immutable pins"
+                )
+            if launch_policy(existing) != policy:
+                raise ControlError(
+                    "init is idempotent only for exactly the existing launch policy"
                 )
             _ensure_bootstrap_dispatcher_ledger(
                 state_dir,
@@ -5253,11 +5324,13 @@ def initialize_control(
             "finalization": _new_finalization_state(pins, now=timestamp),
             "alerts": [],
             "alert_email": alert_email,
+            "launch_policy": dict(policy),
             "last_reconciliation": None,
         }
         init_details = {
             "immutable_sha256": control["immutable_sha256"],
             "alert_email": alert_email,
+            "launch_policy": dict(policy),
         }
         if durable_history:
             expected_record = _history_record(
@@ -9332,7 +9405,7 @@ def _validate_production_authorization_state(
     if not isinstance(readiness, Mapping):
         raise ControlError("schema-5 readiness state is missing")
     failures: list[str] = []
-    for gate in PRODUCTION_AUTHORIZATION_GATES:
+    for gate in effective_production_authorization_gates(control):
         record = readiness.get(gate)
         if not isinstance(record, Mapping):
             failures.append(f"{gate}: record missing")
@@ -9367,7 +9440,7 @@ def _production_authorization_resume_binding(
     control: Mapping[str, Any],
 ) -> dict[str, dict[str, str]]:
     binding: dict[str, dict[str, str]] = {}
-    for gate in PRODUCTION_AUTHORIZATION_GATES:
+    for gate in effective_production_authorization_gates(control):
         record = control.get("readiness", {}).get(gate)
         if not isinstance(record, Mapping) or record.get("passed") is not True:
             raise ReadinessError(
@@ -9839,7 +9912,7 @@ def validate_readiness(
     else:
         snapshot_context = _SnapshotValidationContext(full=True)
     failures: list[str] = []
-    for gate in REQUIRED_GATES:
+    for gate in effective_required_gates(control):
         record = control["readiness"].get(gate, {})
         if record.get("passed") is not True:
             failures.append(f"{gate}: not passed")
@@ -10393,9 +10466,10 @@ def resume_control(
                 allow_active_controllers=True,
                 allow_crash_window_intents=True,
             )
-        require_fresh_external_watchdog_mirror(
-            state_dir, control=control, now=timestamp
-        )
+        if launch_policy(control)["external_watchdog_required"]:
+            require_fresh_external_watchdog_mirror(
+                state_dir, control=control, now=timestamp
+            )
         if control["desired_state"] == "running":
             intent = control.get("resume_intent")
             if not isinstance(intent, dict) or intent.get("state") != "complete":
@@ -21483,7 +21557,7 @@ def finalize_sweep(
     final_root = (
         output_root.expanduser().resolve()
         if output_root is not None
-        else results_root / "recovery" / "schema5-v1.2-r13" / "final"
+        else results_root / "recovery" / "schema5-v1.2-r14" / "final"
     )
     if (
         publisher_finalizer is not None
@@ -33996,7 +34070,7 @@ def _validate_watchdog_deployment_evidence(
         or value.get("release_git_commit") != control["immutable"]["git_commit"]
         or value.get("release_tag_object")
         != capacity_contract.release_tag_object
-        or value.get("chain_namespace") != "schema5-v1.2-r13"
+        or value.get("chain_namespace") != "schema5-v1.2-r14"
         or value.get("control_sha256") != control["immutable_sha256"]
         or value.get("liveness_email") != control["alert_email"]
         or value.get("forced_command_only") is not True
@@ -36348,7 +36422,7 @@ def complete_external_watchdog_drill(
             "release_tag": PRODUCTION_OPERATIONAL_TAG,
             "release_git_commit": deployment["release_git_commit"],
             "release_tag_object": deployment["release_tag_object"],
-            "chain_namespace": "schema5-v1.2-r13",
+            "chain_namespace": "schema5-v1.2-r14",
             "deployment_id": deployment["deployment_id"],
             "watchdog_code_sha256": deployment["watchdog_code_sha256"],
             "immutable_release_sha256": deployment[
@@ -42376,6 +42450,18 @@ def _build_parser() -> argparse.ArgumentParser:
     init = subparsers.add_parser("init", help="initialize an immutable paused control")
     init.add_argument("--pins-json", type=Path, required=True)
     init.add_argument("--alert-email", default="mabdel03@mit.edu")
+    # Both gates depend on operator infrastructure outside the cluster.  Waiving one is
+    # recorded in control, so `status` and the transition journal always show it.
+    init.add_argument(
+        "--without-email-test-gate",
+        action="store_true",
+        help="initialize without the email challenge/acknowledgement gate",
+    )
+    init.add_argument(
+        "--without-external-watchdog-gate",
+        action="store_true",
+        help="initialize without the forced-command external watchdog gate",
+    )
 
     reconcile = subparsers.add_parser(
         "reconcile",
@@ -42578,7 +42664,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.pins_json.expanduser().resolve(), description="pins"
             )
             control = initialize_control(
-                state_dir, pins=pins, alert_email=args.alert_email
+                state_dir,
+                pins=pins,
+                alert_email=args.alert_email,
+                launch_policy_overrides={
+                    "email_test_required": not args.without_email_test_gate,
+                    "external_watchdog_required": (
+                        not args.without_external_watchdog_gate
+                    ),
+                },
             )
             print(
                 json.dumps(

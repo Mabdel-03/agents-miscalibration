@@ -48,7 +48,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
             jobs.append(
                 {
                     "name": name,
-                    "job_name": f"asys-r13-{index:02d}",
+                    "job_name": f"asys-r14-{index:02d}",
                     "script": str(
                         job_root / "jobs" / f"{index:02d}.sbatch"
                     ),
@@ -61,7 +61,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
             )
         value = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r13-recovery-chain",
+            "protocol": "schema5-v1.2-r14-recovery-chain",
             "release_git_commit": COMMIT,
             "release_tag_object": TAG_OBJECT,
             "recovery_root": str(job_root),
@@ -92,7 +92,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
                     for item in row["dependencies"]
                 ],
                 "comment": (
-                    "asys:s5-recovery-v1.2-r13:"
+                    "asys:s5-recovery-v1.2-r14:"
                     f"{canonical_manifest['chain_id']}:g0000:"
                     f"{row['name']}:fixture"
                 ),
@@ -107,7 +107,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
     )
     canonical_anchor = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r13-recovery-chain-submission",
+        "protocol": "schema5-v1.2-r14-recovery-chain-submission",
         "chain_id": canonical_manifest["chain_id"],
         "manifest": str(canonical_manifest_path),
         "manifest_sha256": canonical_manifest_sha,
@@ -151,7 +151,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
                 str(parent["comment"])
                 if parent is not None
                 else (
-                    "asys:s5-recovery-v1.2-r13:"
+                    "asys:s5-recovery-v1.2-r14:"
                     f"{manifest['chain_id']}:g{generation:04d}:"
                     f"{row['name']}:fixture"
                 )
@@ -185,7 +185,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
     anchor_path = root / deployment.BOOTSTRAP_SUBMISSION_RECEIPT_NAME
     anchor = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r13-recovery-chain-submission",
+        "protocol": "schema5-v1.2-r14-recovery-chain-submission",
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
         "manifest_sha256": manifest_sha,
@@ -242,7 +242,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
         value = {
             "schema_version": 1,
             "protocol": (
-                "schema5-v1.2-r13-bootstrap-generation-provenance-v1"
+                "schema5-v1.2-r14-bootstrap-generation-provenance-v1"
             ),
             "passed": True,
             "release_git_commit": COMMIT,
@@ -368,7 +368,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
             )
         value = {
             "schema_version": 1,
-            "protocol": "schema5-v1.2-r13-bootstrap-status-v1",
+            "protocol": "schema5-v1.2-r14-bootstrap-status-v1",
             "passed": True,
             "observed_at_timestamp": timestamp,
             "release_git_commit": COMMIT,
@@ -467,7 +467,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
     journal_path = repair_root / "SUBMISSION_JOURNAL.json"
     journal = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r13-recovery-chain-repair-journal",
+        "protocol": "schema5-v1.2-r14-recovery-chain-repair-journal",
         "chain_id": manifest["chain_id"],
         "repair_generation": 1,
         "base_receipt": str(anchor_path),
@@ -490,7 +490,7 @@ def _bootstrap_drill_fixture(tmp_path: Path) -> dict[str, object]:
     )
     repair_receipt = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r13-recovery-chain-repair",
+        "protocol": "schema5-v1.2-r14-recovery-chain-repair",
         "passed": True,
         "chain_id": manifest["chain_id"],
         "manifest": str(manifest_path),
@@ -1028,7 +1028,7 @@ def test_bootstrap_bundle_is_control_independent_and_uses_distinct_key(
     heartbeat = {
         "schema_version": 1,
         "protocol": (
-            "schema5-v1.2-r13-bootstrap-watchdog-heartbeat-v1"
+            "schema5-v1.2-r14-bootstrap-watchdog-heartbeat-v1"
         ),
         "passed": True,
         "observed_at_timestamp": 100.0,

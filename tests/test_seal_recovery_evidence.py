@@ -864,13 +864,13 @@ def _r3_probe_paths(
 ) -> tuple[Path, Path, Path, Path, Path, list[tuple[str, Path]], dict[str, str], list[str]]:
     recovery = root / "schema5-v1"
     r3_checkout = recovery / evidence._R3_RELEASE_CHECKOUT_DIRECTORY
-    r13_checkout = recovery / evidence._R13_RELEASE_CHECKOUT_DIRECTORY
-    toolchain = recovery / evidence._R13_TOOLCHAIN_RELATIVE_ROOT
+    r14_checkout = recovery / evidence._R14_RELEASE_CHECKOUT_DIRECTORY
+    toolchain = recovery / evidence._R14_TOOLCHAIN_RELATIVE_ROOT
     temporary = root / "schema5-r3-prelaunch-probe"
     expected_paths = {
         "tagged-r3-release-checkout": r3_checkout,
-        "tagged-r13-release-checkout": r13_checkout,
-        "sealed-r13-conda-toolchain": toolchain,
+        "tagged-r14-release-checkout": r14_checkout,
+        "sealed-r14-conda-toolchain": toolchain,
     }
     if classification == "unsafe_recorded_broken_internal_symlink":
         expected_paths["recorded-shared-conda-base"] = (
@@ -910,7 +910,7 @@ def _r3_probe_paths(
     return (
         recovery,
         r3_checkout,
-        r13_checkout,
+        r14_checkout,
         toolchain,
         output,
         inputs,
@@ -926,7 +926,7 @@ def _r3_prelaunch_failure_envelope(
     (
         _recovery,
         r3_checkout,
-        _r13_checkout,
+        _r14_checkout,
         _toolchain,
         output,
         inputs,
@@ -1056,14 +1056,14 @@ def _record_probe_fixture(
     (
         _recovery,
         r3_checkout,
-        r13_checkout,
+        r14_checkout,
         toolchain,
         output,
         inputs,
         environment,
         argv,
     ) = _r3_probe_paths(tmp_path, classification)
-    for path in (r3_checkout, r13_checkout, toolchain):
+    for path in (r3_checkout, r14_checkout, toolchain):
         path.mkdir(parents=True, exist_ok=True)
         (path / "fixture").write_text(path.name, encoding="utf-8")
     temporary = output.parent
@@ -1170,6 +1170,58 @@ def test_record_r3_prelaunch_attempt_captures_only_canonical_failure_and_replays
     assert replay["status"] == "already_recorded"
     assert replay["failure_id"] == recorded["failure_id"]
     assert len(calls) == 1
+
+
+def test_r14_offline_probe_accepts_one_bounded_trailing_blank_delimiter(
+    tmp_path,
+    monkeypatch,
+):
+    kwargs, output, calls = _record_probe_fixture(
+        tmp_path,
+        monkeypatch,
+        "offline_clone_unseeded_release_local_cache",
+    )
+    base_runner = kwargs["runner"]
+
+    def delimited_runner(command, **options):
+        process = base_runner(command, **options)
+        process.stderr = b"\n" + process.stderr + b"\n"
+        return process
+
+    kwargs["runner"] = delimited_runner
+    recorded = evidence.record_prelaunch_attempt(**kwargs, apply=True)
+
+    assert recorded["status"] == "recorded"
+    assert recorded["command"]["stderr"].startswith("\nOfflineError:")
+    assert recorded["command"]["stderr"].endswith("\n\n")
+    assert not recorded["command"]["stderr"].endswith("\n\n\n")
+    evidence._validate_r3_prelaunch_failure_envelope(output)
+    assert len(calls) == 1
+
+
+def test_r14_offline_probe_rejects_two_trailing_blank_delimiters(
+    tmp_path,
+    monkeypatch,
+):
+    kwargs, output, calls = _record_probe_fixture(
+        tmp_path,
+        monkeypatch,
+        "offline_clone_unseeded_release_local_cache",
+    )
+    base_runner = kwargs["runner"]
+
+    def over_delimited_runner(command, **options):
+        process = base_runner(command, **options)
+        process.stderr = b"\n" + process.stderr + b"\n\n"
+        return process
+
+    kwargs["runner"] = over_delimited_runner
+    with pytest.raises(
+        evidence.EvidenceError, match="remote-fetch/progress context"
+    ):
+        evidence.record_prelaunch_attempt(**kwargs, apply=True)
+    assert len(calls) == 1
+    assert not output.exists()
 
 
 def test_record_r3_prelaunch_attempt_rejects_arbitrary_command_before_execution(
@@ -1373,7 +1425,7 @@ def test_record_r3_prelaunch_attempt_brackets_immutable_verification_with_invent
         monkeypatch,
         "unsafe_recorded_broken_internal_symlink",
     )
-    toolchain = dict(kwargs["input_roots"])["sealed-r13-conda-toolchain"]
+    toolchain = dict(kwargs["input_roots"])["sealed-r14-conda-toolchain"]
 
     def mutating_verifier(**_kwargs):
         (toolchain / "fixture").write_text("mutated", encoding="utf-8")
@@ -1394,7 +1446,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (
         recovery,
         r3_checkout,
-        r13_checkout,
+        r14_checkout,
         toolchain,
         output,
         inputs,
@@ -1405,18 +1457,18 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     )
     temporary = output.parent
     temporary.mkdir(parents=True)
-    for checkout in (r3_checkout, r13_checkout):
+    for checkout in (r3_checkout, r14_checkout):
         (checkout / "scripts").mkdir(parents=True)
     r3_pilot = r3_checkout / evidence._R3_PILOT_RELATIVE_PATH
     r3_runtime = r3_checkout / evidence._R3_RUNTIME_IDENTITY_RELATIVE_PATH
     r3_pilot.write_text("exact r3 pilot\n", encoding="utf-8")
     r3_runtime.write_text("exact r3 runtime identity\n", encoding="utf-8")
-    r13_sealer = r13_checkout / evidence._R13_SEALER_RELATIVE_PATH
+    r14_sealer = r14_checkout / evidence._R14_SEALER_RELATIVE_PATH
     provisioner = (
-        r13_checkout / evidence._R13_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
+        r14_checkout / evidence._R14_TOOLCHAIN_PROVISIONER_RELATIVE_PATH
     )
-    r13_sealer.write_text("exact r13 sealer\n", encoding="utf-8")
-    provisioner.write_text("exact r13 provisioner\n", encoding="utf-8")
+    r14_sealer.write_text("exact r14 sealer\n", encoding="utf-8")
+    provisioner.write_text("exact r14 provisioner\n", encoding="utf-8")
     (toolchain / "base/bin").mkdir(parents=True)
     (toolchain / "base/bin/python").write_text(
         "#!/bin/sh\n", encoding="utf-8"
@@ -1424,7 +1476,7 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
     (toolchain / "base/bin/conda").write_text(
         "#!/bin/sh\n", encoding="utf-8"
     )
-    monkeypatch.setattr(evidence, "__file__", str(r13_sealer))
+    monkeypatch.setattr(evidence, "__file__", str(r14_sealer))
     monkeypatch.setattr(
         evidence, "_R3_PILOT_SHA256", hashlib.sha256(r3_pilot.read_bytes()).hexdigest()
     )
@@ -1462,8 +1514,8 @@ def test_r3_probe_immutable_input_gate_binds_tags_sources_and_toolchain(
         return {
             "schema_version": evidence.conda_toolchain.SCHEMA_VERSION,
             "protocol": evidence.conda_toolchain.PROTOCOL,
-            "release_tag": "sweep-recovery-schema5-v1.2-r13",
-            "chain_namespace": "schema5-v1.2-r13",
+            "release_tag": "sweep-recovery-schema5-v1.2-r14",
+            "chain_namespace": "schema5-v1.2-r14",
             "toolchain_root": str(toolchain),
             "base_prefix": str(toolchain / "base"),
             "portable_shebang": {
@@ -1998,7 +2050,7 @@ def test_verify_r3_prelaunch_failure_seal_rejects_release_substitution(
     intent = json.loads(artifacts["intent"].read_text(encoding="utf-8"))
     marker = json.loads(artifacts["marker"].read_text(encoding="utf-8"))
 
-    intent["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r13"
+    intent["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r14"
     intent.pop("intent_id")
     intent["intent_id"] = evidence._sha256_bytes(
         evidence._canonical_json(intent)
@@ -2008,7 +2060,7 @@ def test_verify_r3_prelaunch_failure_seal_rejects_release_substitution(
     artifacts["intent"].write_bytes(intent_raw)
     artifacts["intent"].chmod(0o444)
 
-    marker["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r13"
+    marker["release"]["release_tag"] = "sweep-recovery-schema5-v1.2-r14"
     marker["intent"]["sha256"] = hashlib.sha256(intent_raw).hexdigest()
     marker["intent"]["intent_id"] = intent["intent_id"]
     marker.pop("seal_id")

@@ -62,7 +62,7 @@ SMOKE_SUITES = (
 LINEAGE_FILENAME = "smoke_lineage.schema5-v1.json"
 LINEAGE_CHECKSUM_FILENAME = "smoke_lineage.schema5-v1.sha256"
 MARKER_FILENAME = "SCHEMA5_SMOKE_INITIALIZED.json"
-ATTEMPT_BINDING_PROTOCOL = "schema5-v1.2-r13-smoke-attempt-binding-v1"
+ATTEMPT_BINDING_PROTOCOL = "schema5-v1.2-r14-smoke-attempt-binding-v1"
 _ATTEMPT_BINDING_FIELDS = {
     "protocol",
     "attempt_id",
