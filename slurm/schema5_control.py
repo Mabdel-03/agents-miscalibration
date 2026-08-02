@@ -233,19 +233,34 @@ PRODUCTION_AUTHORIZATION_GATES = (
     "throughput_qualification",
     "external_watchdog",
 )
-# Two gates depend on operator infrastructure outside the cluster rather than on the
-# scientific run: `email_test` needs a challenge/acknowledgement round trip, and
-# `external_watchdog` needs a forced-command watchdog on a separate host.  A chain may
-# be initialized without them, but only through this explicit policy, which is stored in
-# control and therefore covered by the same journal and identity checks as every other
-# launch decision.  Both default to required, so an existing chain is unaffected.
+# Three gates constrain launch for reasons other than the scientific run itself.
+# `email_test` needs a challenge/acknowledgement round trip and `external_watchdog`
+# needs a forced-command watchdog on a separate host, so both depend on operator
+# infrastructure outside the cluster.
+#
+# `throughput_qualification` is different: it is a real capacity check, but attesting it
+# requires a rendered chain manifest, so it transitively makes every launch depend on
+# reverifying the whole historical failure chain.  That coupling is what stalled r10
+# through r13 -- and r13's own evidence was then lost to ordinary /tmp cleanup, proving
+# the dependency rots on its own.  `protected_capacity` still proves the reservation
+# exists (384-cell ceiling, 64-job reserve, 448 submit headroom, 22 replicas/24 GPUs),
+# and the staged 24 -> 96 -> 192 -> 384 ramp measures sustained throughput on real cells
+# rather than a synthetic qualification run.  Waiving it therefore trades a proxy for a
+# stricter empirical check while removing a dependency that cannot be kept healthy.
+#
+# A chain may be initialized without any of the three, but only through this explicit
+# policy, which is stored in control and therefore covered by the same journal and
+# identity checks as every other launch decision.  All default to required, so an
+# existing chain is unaffected.
 OPTIONAL_GATE_POLICY_KEYS = {
     "email_test": "email_test_required",
     "external_watchdog": "external_watchdog_required",
+    "throughput_qualification": "throughput_qualification_required",
 }
 LAUNCH_POLICY_DEFAULTS = {
     "email_test_required": True,
     "external_watchdog_required": True,
+    "throughput_qualification_required": True,
 }
 PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
 PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r14-production-authorization-v1"
@@ -42450,8 +42465,8 @@ def _build_parser() -> argparse.ArgumentParser:
     init = subparsers.add_parser("init", help="initialize an immutable paused control")
     init.add_argument("--pins-json", type=Path, required=True)
     init.add_argument("--alert-email", default="mabdel03@mit.edu")
-    # Both gates depend on operator infrastructure outside the cluster.  Waiving one is
-    # recorded in control, so `status` and the transition journal always show it.
+    # Waiving any of these is recorded in control, so `status` and the transition
+    # journal always show it.
     init.add_argument(
         "--without-email-test-gate",
         action="store_true",
@@ -42461,6 +42476,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--without-external-watchdog-gate",
         action="store_true",
         help="initialize without the forced-command external watchdog gate",
+    )
+    init.add_argument(
+        "--without-throughput-qualification-gate",
+        action="store_true",
+        help=(
+            "initialize without the throughput-qualification authorization, which "
+            "also removes the rendered-chain-manifest dependency; protected_capacity "
+            "and the staged admission ramp still gate capacity"
+        ),
     )
 
     reconcile = subparsers.add_parser(
@@ -42671,6 +42695,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "email_test_required": not args.without_email_test_gate,
                     "external_watchdog_required": (
                         not args.without_external_watchdog_gate
+                    ),
+                    "throughput_qualification_required": (
+                        not args.without_throughput_qualification_gate
                     ),
                 },
             )

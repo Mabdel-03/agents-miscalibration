@@ -464,6 +464,39 @@ to reject two trailing blank delimiters. It publishes
 `$r13_prelaunch_failure_marker` last under protocol
 `schema5-v1.2-r13-r3-offline-delimiter-failure-v1`.
 
+### The r13 seal was never published, and is not required
+
+That sealer cannot run. It requires the observed probe tree at
+`/tmp/schema5-r3-prelaunch-mabdel03-r13`, and r13 wrote nothing durable before it
+failed, so ordinary cluster `/tmp` cleanup destroyed the only copy roughly two days
+later. Unlike r11 — which had `observed_incomplete_r9_seal` and
+`observed_volatile_probe` on the results filesystem and could therefore bind a real
+preimage — r13 left only its tag, bundle, checkout, and toolchain. There is nothing to
+bind and nothing is invented: **the r13 failure is recorded here in prose and is
+deliberately unsealed.**
+
+Adapting the sealer would not help. The renderer verifies a seal by calling
+`verify_failure_seal` from the hash-bound copy inside the release bundle, so a marker
+written by a corrected sealer would be rejected by r14's own tagged verifier — the r12
+failure mode one layer up. Correcting it would require yet another release.
+
+Instead, `throughput_qualification` is waived through the launch policy. It is the only
+remaining production authorization once `external_watchdog` is waived, and attesting any
+authorization requires `--chain-manifest`; with none required, launch no longer depends
+on a rendered chain, and therefore no longer depends on reverifying twelve historical
+seals whose external evidence demonstrably rots. `protected_capacity` still proves the
+reservation, and the staged `24 -> 96 -> 192 -> 384` ramp measures sustained throughput
+on real scientific cells rather than a synthetic qualification run.
+
+This is the intended terminal state of the recovery chain: r13 is the last release whose
+failure was sealed by a successor, and the r10-r13 defect classes are now caught by
+`tests/test_seal_roundtrip.py` and `tests/test_offline_diagnostic_grammar.py` before a
+tag is ever cut.
+
+If the full DAG is ever rendered again, the r13 seal becomes a hard prerequisite once
+more and would have to be reconstructed from a fresh reproduction, explicitly labelled
+as reproduced rather than observed.
+
 The r14 renderer and every sentinel bind and reverify all twelve historical failure
 seals, including the r10 and r11 bindings embedded in the r9 seal and the independent
 r12 verifier-failure and r13 offline-delimiter seals.

@@ -18,9 +18,11 @@ def _stub_conda_toolchain_verification(monkeypatch):
     )
 
 
-# `email_test` and `external_watchdog` are the only gates that depend on operator
-# infrastructure outside the cluster.  A chain may be initialized without them, but the
-# waiver has to be explicit and recorded, and everything else must keep failing closed.
+# `email_test` and `external_watchdog` depend on operator infrastructure outside the
+# cluster; `throughput_qualification` transitively requires a rendered chain manifest and
+# therefore the whole historical failure chain.  A chain may be initialized without any
+# of them, but the waiver has to be explicit and recorded, and everything else must keep
+# failing closed.
 
 
 def _init(tmp_path: Path, **overrides: bool) -> tuple[Path, dict, dict]:
@@ -36,11 +38,47 @@ def _init(tmp_path: Path, **overrides: bool) -> tuple[Path, dict, dict]:
     return state_dir, control_state, pins
 
 
-def test_default_policy_requires_both_optional_gates() -> None:
+def test_default_policy_requires_every_optional_gate() -> None:
     assert control.LAUNCH_POLICY_DEFAULTS == {
         "email_test_required": True,
         "external_watchdog_required": True,
+        "throughput_qualification_required": True,
     }
+
+
+def _policy(**overrides: bool) -> dict:
+    return {"launch_policy": {**control.LAUNCH_POLICY_DEFAULTS, **overrides}}
+
+
+def test_waiving_throughput_qualification_alone_keeps_the_watchdog_authorization() -> None:
+    waived = _policy(throughput_qualification_required=False)
+    assert control.effective_production_authorization_gates(waived) == (
+        "external_watchdog",
+    )
+
+
+def test_waiving_both_authorizations_removes_the_chain_manifest_dependency() -> None:
+    # Attesting any authorization gate requires --chain-manifest, so an empty
+    # authorization set is what removes the rendered-chain dependency from launch.
+    waived = _policy(
+        throughput_qualification_required=False,
+        external_watchdog_required=False,
+    )
+    assert control.effective_production_authorization_gates(waived) == ()
+
+
+def test_waiving_authorizations_leaves_ordinary_readiness_intact() -> None:
+    # Capacity is still proven before admission; only the synthetic throughput proxy
+    # and the off-cluster watchdog are waived.
+    waived = _policy(
+        throughput_qualification_required=False,
+        external_watchdog_required=False,
+    )
+    required = control.effective_required_gates(waived)
+    assert required == control.REQUIRED_GATES
+    assert "protected_capacity" in required
+    assert "smoke_runs" in required
+    assert "fleet" in required
 
 
 def test_control_without_a_policy_field_stays_fully_required() -> None:
@@ -87,6 +125,7 @@ def test_init_records_the_policy_in_control_and_the_journal(tmp_path: Path) -> N
     assert initialized["launch_policy"] == {
         "email_test_required": True,
         "external_watchdog_required": False,
+        "throughput_qualification_required": True,
     }
     # The waiver must be visible in the durable transition history, not only in state.
     history = initialized["transition_history"]
