@@ -48,6 +48,11 @@ from scripts import provision_schema5_conda_toolchain as conda_toolchain  # noqa
 SCHEMA_VERSION = 5
 RELEASE_ID = freeze.RELEASE_ID
 REQUIRED_TAG = freeze.REQUIRED_GIT_TAG
+# The subset of `freeze.verify_clean_exact_tag`'s identity that the worktree stage
+# records and that the post-install check re-compares.  Stated once so the writing and
+# checking sides cannot drift apart; `verify_clean_exact_tag` additionally returns
+# `git_tag_object`, which the stage does not carry.
+RELEASE_SOURCE_IDENTITY_FIELDS = ("git_commit", "git_tag", "source_tree_sha256")
 COMPLETE_MARKER = "MATERIALIZATION_COMPLETE.json"
 BUILD_EVIDENCE_COMPLETE_MARKER = "HARNESS_BUILD_EVIDENCE_COMPLETE.json"
 PACKAGE_CACHE_SEED_DIRECTORY = "conda-package-cache-seed"
@@ -2140,7 +2145,22 @@ def _materialize_harness_package(
         raise MaterializationError(
             f"package build dirtied the exact release worktree: {exc}"
         ) from exc
-    if dict(verified_source) != dict(git_identity):
+    # Project both sides onto the bound fields rather than comparing whole dicts.
+    # `verify_clean_exact_tag` also returns `git_tag_object`, which the worktree stage
+    # never records, so a whole-dict comparison was unsatisfiable and this check failed
+    # for every release that reached it.  Callers also disagree on which shape they
+    # pass, so normalising both sides is what actually makes the comparison meaningful.
+    def _bound_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
+        missing = [
+            key for key in RELEASE_SOURCE_IDENTITY_FIELDS if key not in identity
+        ]
+        if missing:
+            raise MaterializationError(
+                "release source identity lacks bound fields: " + ", ".join(missing)
+            )
+        return {key: identity[key] for key in RELEASE_SOURCE_IDENTITY_FIELDS}
+
+    if _bound_identity(verified_source) != _bound_identity(git_identity):
         raise MaterializationError("release source identity changed during package install")
     try:
         post_install_identity, binding = _post_install_identity(
@@ -2843,8 +2863,7 @@ def materialize_release(
         package_cache_seed=package_cache_seed,
     )
     git_identity = {
-        key: worktree_stage[key]
-        for key in ("git_commit", "git_tag", "source_tree_sha256")
+        key: worktree_stage[key] for key in RELEASE_SOURCE_IDENTITY_FIELDS
     }
     harness_package = _materialize_harness_package(
         harness_prefix=paths["harness_prefix"],
