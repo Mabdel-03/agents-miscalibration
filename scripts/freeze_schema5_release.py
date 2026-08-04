@@ -850,8 +850,9 @@ def _validate_conda_owned_direct_requirement(
             or _SHA256_RE.fullmatch(str(expected)) is None
         ):
             continue
-        candidate = _safe_prefix_entry(prefix, relative, description="Conda-owned file")
-        lexical_candidate = prefix / relative
+        linked = _noarch_python_relative(prefix, record, relative)
+        candidate = _safe_prefix_entry(prefix, linked, description="Conda-owned file")
+        lexical_candidate = prefix / linked
         if lexical_candidate.is_symlink():
             # Conda softlinks do not carry stable file-content hashes in the records
             # observed here.  If one ever does, resolving it must still remain inside
@@ -863,7 +864,11 @@ def _validate_conda_owned_direct_requirement(
         if _sha256_file(candidate) != expected:
             raise ReleaseFreezeError(f"Conda-owned file drifted from package record: {candidate}")
         validated += 1
-        validated_paths.add(relative)
+        # Record the linked path, not the recorded one: `required_evidence` below is
+        # built from paths relative to the prefix, so a noarch record's
+        # `site-packages/...` form would never match and the subset check would fail
+        # even though the file was validated.
+        validated_paths.add(linked)
     required_evidence = {
         metadata_path.relative_to(prefix).as_posix(),
         direct_path.relative_to(prefix).as_posix(),
