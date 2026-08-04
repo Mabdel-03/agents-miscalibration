@@ -687,6 +687,39 @@ def _normalized_project_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
+def _noarch_python_relative(
+    prefix: Path, record: Mapping[str, Any], relative: str
+) -> str:
+    """Map a Conda record path to where the package was actually linked.
+
+    ``noarch: python`` records store paths relative to a notional ``site-packages/``
+    root, and Conda rewrites them to the interpreter's real
+    ``lib/pythonM.N/site-packages`` at link time.  Joining the recorded path straight
+    onto the prefix therefore points at a directory that never exists.
+    """
+
+    if record.get("noarch") != "python" or not relative.startswith("site-packages/"):
+        return relative
+    # Conda ships an abbreviated `lib/python3.1 -> python3.11` alias, so glob matches
+    # are deduplicated by resolved target: aliases of one directory are not ambiguity,
+    # but two genuinely distinct interpreters would be.
+    resolved: dict[Path, Path] = {}
+    for candidate in sorted(prefix.glob("lib/python*/site-packages")):
+        if not candidate.is_dir():
+            continue
+        resolved.setdefault(candidate.resolve(), candidate)
+    if len(resolved) != 1:
+        raise ReleaseFreezeError(
+            "noarch record requires exactly one lib/pythonM.N/site-packages in "
+            f"{prefix}, found {len(resolved)}"
+        )
+    target = next(iter(resolved))
+    return str(
+        target.relative_to(prefix.resolve())
+        / Path(relative).relative_to("site-packages")
+    )
+
+
 def _safe_prefix_entry(prefix: Path, relative: str, *, description: str) -> Path:
     candidate = Path(relative)
     if candidate.is_absolute():
@@ -773,7 +806,9 @@ def _validate_conda_owned_direct_requirement(
         if not relative.endswith(".dist-info/direct_url.json"):
             continue
         direct_path = _safe_prefix_entry(
-            prefix, relative, description="Conda-owned direct_url.json"
+            prefix,
+            _noarch_python_relative(prefix, record, relative),
+            description="Conda-owned direct_url.json",
         )
         metadata_path = direct_path.with_name("METADATA")
         name, version = _metadata_identity(metadata_path)
