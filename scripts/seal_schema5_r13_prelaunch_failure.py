@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal r13's deterministic r3 offline-diagnostic delimiter defect for r14."""
+"""Seal r13's deterministic r3 offline-diagnostic delimiter defect for r15."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ R13_TOOLCHAIN_RELATIVE = Path("toolchains/r13/conda")
 R3_CHECKOUT = "materialization_pilot_source_checkout_v1_2_r3"
 R13_PROBE_ROOT = Path("/tmp/schema5-r3-prelaunch-mabdel03-r13")
 REPRODUCTION_ROOT = Path(
-    "/tmp/schema5-r13-r3-offline-reproduction-mabdel03-r14"
+    "/tmp/schema5-r13-r3-offline-reproduction-mabdel03-r15"
 )
 EVIDENCE_RELATIVE_ROOT = Path(
     "prelaunch_failures/schema5-v1.2-r13-r3-offline-delimiter"
@@ -122,7 +122,7 @@ def _r13_evidence_module(recovery: Path):
 def _corrected_evidence_module():
     return _load_module(
         Path(__file__).resolve().with_name("seal_recovery_evidence.py"),
-        "_schema5_corrected_r14_recovery_evidence",
+        "_schema5_corrected_r15_recovery_evidence",
     )
 
 
@@ -263,7 +263,7 @@ def _scientific_state(recovery: Path) -> dict[str, Any]:
             f"r13 failure is not zero-result evidence: {present}"
         )
     return {
-        "captured_before_r14_production_outputs": True,
+        "captured_before_r15_production_outputs": True,
         "result_mutation_count": 0,
         "scheduler_job_count": 0,
         "required_absent_paths_at_seal": [str(path) for path in paths],
@@ -433,7 +433,7 @@ def _grammar_proof(
         "trailing_blank_delimiter_count": 1,
         "immutable_r13_rejected_raw": True,
         "immutable_r13_accepted_after_one_final_newline_removed": True,
-        "corrected_r14_accepted_raw": True,
+        "corrected_r15_accepted_raw": True,
     }
 
 
@@ -574,7 +574,7 @@ def _validate_intent(
     scheduler = intent.get("scheduler")
     if (
         not isinstance(state, dict)
-        or state.get("captured_before_r14_production_outputs") is not True
+        or state.get("captured_before_r15_production_outputs") is not True
         or state.get("result_mutation_count") != 0
         or state.get("scheduler_job_count") != 0
         or not isinstance(scheduler, dict)
@@ -625,7 +625,7 @@ def _verify_proof(
             "immutable_r13_accepted_after_one_final_newline_removed"
         )
         is not True
-        or proof["grammar"].get("corrected_r14_accepted_raw") is not True
+        or proof["grammar"].get("corrected_r15_accepted_raw") is not True
         or proof.get("offline_envelope_absent") is not True
         or proof.get("known_scheduler_job_ids") != []
         or proof.get("result_mutation_count") != 0

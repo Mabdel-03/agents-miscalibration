@@ -60,7 +60,7 @@ def _verified(tmp_path: Path) -> dict[str, Any]:
             }
         )
     manifest = {
-        "protocol": sentinel.R14_PROTOCOL,
+        "protocol": sentinel.R15_PROTOCOL,
         "chain_id": "a" * 64,
         "slurm_user": "tester",
         "jobs": jobs,
@@ -72,7 +72,7 @@ def _verified(tmp_path: Path) -> dict[str, Any]:
     receipt_path.chmod(0o444)
     return {
         "schema_version": 1,
-        "chain_protocol": sentinel.R14_PROTOCOL,
+        "chain_protocol": sentinel.R15_PROTOCOL,
         "renderer": "render_schema5_recovery_chain_v12",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sentinel._sha256(manifest_path),
@@ -130,7 +130,7 @@ def _failfast_verified(tmp_path: Path) -> dict[str, Any]:
         for index, row in enumerate(jobs)
     ]
     manifest = {
-        "protocol": sentinel.R14_PROTOCOL,
+        "protocol": sentinel.R15_PROTOCOL,
         "chain_id": "c" * 64,
         "slurm_user": "tester",
         "jobs": jobs,
@@ -142,7 +142,7 @@ def _failfast_verified(tmp_path: Path) -> dict[str, Any]:
     receipt_path.chmod(0o444)
     return {
         "schema_version": 1,
-        "chain_protocol": sentinel.R14_PROTOCOL,
+        "chain_protocol": sentinel.R15_PROTOCOL,
         "renderer": "render_schema5_recovery_chain_v12",
         "manifest_path": str(manifest_path),
         "manifest_sha256": sentinel._sha256(manifest_path),
@@ -910,7 +910,7 @@ def _capacity_receipt(
         "schema_version": 1,
         "protocol": sentinel.CAPACITY_TRANSIENT_EVIDENCE_PROTOCOL,
         "passed": True,
-        "chain_protocol": sentinel.R14_PROTOCOL,
+        "chain_protocol": sentinel.R15_PROTOCOL,
         "chain_id": verified["manifest"]["chain_id"],
         "chain_generation": 0,
         "manifest": verified["manifest_path"],

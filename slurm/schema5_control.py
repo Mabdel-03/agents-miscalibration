@@ -111,7 +111,7 @@ from scripts import schema5_email_ack
 CONTROL_SCHEMA_VERSION = 1
 CONTROL_PROTOCOL = "schema5-v1"
 PRODUCTION_RELEASE_ID = "sweep-recovery-schema5-v1.2"
-PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r14"
+PRODUCTION_OPERATIONAL_TAG = "sweep-recovery-schema5-v1.2-r15"
 PRODUCTION_CELL_PARTITION = "ou_bcs_normal"
 # All production ramp stages are authorized by the sealed protected-capacity
 # contract before control initialization.  A later capacity generation is reserved
@@ -145,22 +145,22 @@ EXTERNAL_WATCHDOG_DRILL_DEFAULT_EXPIRY_SECONDS = 1_800.0
 EXTERNAL_WATCHDOG_DRILL_MAX_EXPIRY_SECONDS = 3_600.0
 EXTERNAL_WATCHDOG_MIRROR_DIRNAME = "external_watchdog_mirror"
 EXTERNAL_WATCHDOG_STATUS_PROTOCOL = (
-    "schema5-v1.2-r14-external-watchdog-status-observation-v1"
+    "schema5-v1.2-r15-external-watchdog-status-observation-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_INTENT_PROTOCOL = (
-    "schema5-v1.2-r14-external-watchdog-action-intent-v1"
+    "schema5-v1.2-r15-external-watchdog-action-intent-v1"
 )
 EXTERNAL_WATCHDOG_ACTION_PROTOCOL = (
-    "schema5-v1.2-r14-external-watchdog-action-receipt-v1"
+    "schema5-v1.2-r15-external-watchdog-action-receipt-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r14-external-watchdog-cycle-intent-v1"
+    "schema5-v1.2-r15-external-watchdog-cycle-intent-v1"
 )
 EXTERNAL_WATCHDOG_CYCLE_PROTOCOL = (
-    "schema5-v1.2-r14-external-watchdog-cycle-receipt-v1"
+    "schema5-v1.2-r15-external-watchdog-cycle-receipt-v1"
 )
 EXTERNAL_WATCHDOG_LATEST_PROTOCOL = (
-    "schema5-v1.2-r14-external-watchdog-latest-pointer-v1"
+    "schema5-v1.2-r15-external-watchdog-latest-pointer-v1"
 )
 EXTERNAL_WATCHDOG_OBSERVATION_GAP_SECONDS = 60.0
 EXTERNAL_WATCHDOG_MIRROR_STALE_SECONDS = 600.0
@@ -252,18 +252,33 @@ PRODUCTION_AUTHORIZATION_GATES = (
 # policy, which is stored in control and therefore covered by the same journal and
 # identity checks as every other launch decision.  All default to required, so an
 # existing chain is unaffected.
+# `snapshot`, `migrations`, and `semantic_audit` all attest that the *legacy* runs were
+# consolidated, snapshotted, and retired.  Under a restart-clean release that work
+# guards data the new run cannot reach: `clone_schema5_manifests` builds
+# `full_sweep_schema5_v1` and its siblings as empty roots and refuses to import cell
+# artifacts, and the dispatcher only ever writes inside those roots.  The legacy roots
+# are therefore untouched rather than formally retired, with the pre-repair snapshot
+# standing as the durable backstop.  Waiving the three costs ~35 hours of allocation
+# and removes no protection the schema-5 run actually depends on; a release that
+# *does* reuse legacy rows must keep them.
 OPTIONAL_GATE_POLICY_KEYS = {
     "email_test": "email_test_required",
     "external_watchdog": "external_watchdog_required",
     "throughput_qualification": "throughput_qualification_required",
+    "snapshot": "legacy_snapshot_required",
+    "migrations": "legacy_migrations_required",
+    "semantic_audit": "legacy_semantic_audit_required",
 }
 LAUNCH_POLICY_DEFAULTS = {
     "email_test_required": True,
     "external_watchdog_required": True,
     "throughput_qualification_required": True,
+    "legacy_snapshot_required": True,
+    "legacy_migrations_required": True,
+    "legacy_semantic_audit_required": True,
 }
 PRODUCTION_AUTHORIZATION_SCHEMA_VERSION = 1
-PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r14-production-authorization-v1"
+PRODUCTION_AUTHORIZATION_PROTOCOL = "schema5-v1.2-r15-production-authorization-v1"
 PRODUCTION_AUTHORIZATION_VERIFIER = (
     "scripts/render_schema5_recovery_chain_v12.py"
 )
@@ -387,13 +402,13 @@ CAPACITY_STATE_SCHEMA_VERSION = 1
 CAPACITY_STATE_PROTOCOL = "schema5-capacity-generation-v1"
 CLIENT_CAPACITY_AUTHORIZATION_SCHEMA_VERSION = 1
 CLIENT_CAPACITY_AUTHORIZATION_PROTOCOL = (
-    "schema5-v1.2-r14-client-placement-capacity-generation-v1"
+    "schema5-v1.2-r15-client-placement-capacity-generation-v1"
 )
 CLIENT_CAPACITY_BUILD_PROTOCOL = (
-    "schema5-v1.2-r14-client-capacity-build-v1"
+    "schema5-v1.2-r15-client-capacity-build-v1"
 )
 CLIENT_CAPACITY_SUBMISSION_PROTOCOL = (
-    "schema5-v1.2-r14-client-capacity-canary-submission-v1"
+    "schema5-v1.2-r15-client-capacity-canary-submission-v1"
 )
 CLIENT_CAPACITY_BUILD_INTENT = "CLIENT_CAPACITY_BUILD_INTENT.json"
 CLIENT_CAPACITY_CANARY_SBATCH = "client_capacity_canary.sbatch"
@@ -632,7 +647,7 @@ READINESS_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
 SMOKE_ATTEMPT_BASE_NAME = "schema5-smoke-readiness-v1"
 SMOKE_ATTEMPT_RUNS_NAME = "schema5-smoke-attempt-runs-v1"
 SMOKE_ATTEMPT_BINDING_PROTOCOL = (
-    "schema5-v1.2-r14-smoke-attempt-binding-v1"
+    "schema5-v1.2-r15-smoke-attempt-binding-v1"
 )
 SMOKE_ATTEMPT_BINDING_FIELDS = frozenset(
     {
@@ -2512,7 +2527,7 @@ def _new_finalization_state(
         "request_intent": None,
         "consumed_capacity_incidents": [],
         "output_root": str(
-            results_root / "recovery" / "schema5-v1.2-r14" / "final"
+            results_root / "recovery" / "schema5-v1.2-r15" / "final"
         ),
         "attempts": 0,
         "worker_attempts": [],
@@ -2962,7 +2977,7 @@ def _validate_finalization_state(
         str(control["immutable"]["results_root"])
     ).expanduser().resolve()
     expected_output = (
-        results_root / "recovery" / "schema5-v1.2-r14" / "final"
+        results_root / "recovery" / "schema5-v1.2-r15" / "final"
     )
     state = finalization.get("state")
     requested = finalization.get("requested_timestamp")
@@ -4004,7 +4019,7 @@ def _validate_conda_toolchain_binding_static(value: Any) -> dict[str, Any]:
         value.get("schema_version") != conda_toolchain.SCHEMA_VERSION
         or value.get("protocol") != conda_toolchain.PROTOCOL
         or value.get("release_tag") != PRODUCTION_OPERATIONAL_TAG
-        or value.get("chain_namespace") != "schema5-v1.2-r14"
+        or value.get("chain_namespace") != "schema5-v1.2-r15"
         or not root.is_absolute()
         or value.get("base_prefix") != str(root / "base")
         or not isinstance(marker, dict)
@@ -21572,7 +21587,7 @@ def finalize_sweep(
     final_root = (
         output_root.expanduser().resolve()
         if output_root is not None
-        else results_root / "recovery" / "schema5-v1.2-r14" / "final"
+        else results_root / "recovery" / "schema5-v1.2-r15" / "final"
     )
     if (
         publisher_finalizer is not None
@@ -34085,7 +34100,7 @@ def _validate_watchdog_deployment_evidence(
         or value.get("release_git_commit") != control["immutable"]["git_commit"]
         or value.get("release_tag_object")
         != capacity_contract.release_tag_object
-        or value.get("chain_namespace") != "schema5-v1.2-r14"
+        or value.get("chain_namespace") != "schema5-v1.2-r15"
         or value.get("control_sha256") != control["immutable_sha256"]
         or value.get("liveness_email") != control["alert_email"]
         or value.get("forced_command_only") is not True
@@ -36437,7 +36452,7 @@ def complete_external_watchdog_drill(
             "release_tag": PRODUCTION_OPERATIONAL_TAG,
             "release_git_commit": deployment["release_git_commit"],
             "release_tag_object": deployment["release_tag_object"],
-            "chain_namespace": "schema5-v1.2-r14",
+            "chain_namespace": "schema5-v1.2-r15",
             "deployment_id": deployment["deployment_id"],
             "watchdog_code_sha256": deployment["watchdog_code_sha256"],
             "immutable_release_sha256": deployment[
@@ -42486,6 +42501,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "and the staged admission ramp still gate capacity"
         ),
     )
+    init.add_argument(
+        "--without-legacy-gates",
+        action="store_true",
+        help=(
+            "initialize without the snapshot, migrations, and semantic_audit gates. "
+            "Only valid for a restart-clean release, where the schema-5 run roots are "
+            "created empty and the legacy roots are never written to"
+        ),
+    )
 
     reconcile = subparsers.add_parser(
         "reconcile",
@@ -42698,6 +42722,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                     "throughput_qualification_required": (
                         not args.without_throughput_qualification_gate
+                    ),
+                    "legacy_snapshot_required": not args.without_legacy_gates,
+                    "legacy_migrations_required": not args.without_legacy_gates,
+                    "legacy_semantic_audit_required": (
+                        not args.without_legacy_gates
                     ),
                 },
             )

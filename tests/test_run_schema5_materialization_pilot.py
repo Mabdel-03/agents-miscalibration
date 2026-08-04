@@ -45,9 +45,9 @@ def _fake_toolchain_binding(value: str | Path) -> dict:
     executable_bytes = executable.read_bytes()
     binding = {
         "schema_version": 1,
-        "protocol": "schema5-v1.2-r14-offline-conda-toolchain-v1",
+        "protocol": "schema5-v1.2-r15-offline-conda-toolchain-v1",
         "release_tag": pilot.REQUIRED_TAG,
-        "chain_namespace": "schema5-v1.2-r14",
+        "chain_namespace": "schema5-v1.2-r15",
         "toolchain_root": str(root),
         "base_prefix": str(root),
         "completion_marker": {
@@ -89,7 +89,7 @@ def _mock_sealed_conda_toolchain(monkeypatch):
     )
 
 
-def test_all_fresh_pilot_wire_protocols_identify_r14() -> None:
+def test_all_fresh_pilot_wire_protocols_identify_r15() -> None:
     protocols = {
         pilot.PILOT_QUARANTINE_PROTOCOL,
         pilot.PILOT_QUARANTINE_INTENT_PROTOCOL,
@@ -103,7 +103,7 @@ def test_all_fresh_pilot_wire_protocols_identify_r14() -> None:
         pilot.SUBMISSION_ACCEPTED_PROTOCOL,
     }
 
-    assert all("schema5-v1.2-r14-" in protocol for protocol in protocols)
+    assert all("schema5-v1.2-r15-" in protocol for protocol in protocols)
     assert all("schema5-v1.2-r3-" not in protocol for protocol in protocols)
 
 
@@ -785,7 +785,7 @@ def test_rendered_sbatch_is_exact_immutable_no_requeue_and_rerunnable(tmp_path):
 
     dry = pilot.render_materialization_pilot_sbatch(**render_inputs)
     assert dry["status"] == "dry_run"
-    assert dry["time_limit"] == "11:30:00"
+    assert dry["time_limit"] == pilot.SBATCH_TIME_LIMIT
     assert dry["no_requeue"] is True
     assert not sbatch.exists()
     assert not logs.exists()
@@ -804,12 +804,12 @@ def test_rendered_sbatch_is_exact_immutable_no_requeue_and_rerunnable(tmp_path):
     assert "#SBATCH --no-requeue\n" in text
     assert "#SBATCH --export=NONE\n" in text
     assert "#SBATCH --export=ALL\n" not in text
-    assert "#SBATCH --time=11:30:00\n" in text
+    assert f"#SBATCH --time={pilot.SBATCH_TIME_LIMIT}\n" in text
     assert "#SBATCH --partition=sched_test\n" in text
     assert f"#SBATCH --output={logs}/schema5-materialization-pilot-%j.out\n" in text
     assert f"#SBATCH --error={logs}/schema5-materialization-pilot-%j.err\n" in text
     assert f"#SBATCH --chdir={inputs['release_checkout']}\n" in text
-    assert "#SBATCH --comment=asys-s5-pilot:r14:" in text
+    assert "#SBATCH --comment=asys-s5-pilot:r15:" in text
     assert "export PATH=/usr/bin:/bin\nreadonly PATH\n" in text
     exact_script = (
         Path(inputs["release_checkout"])
@@ -835,7 +835,7 @@ def test_rendered_sbatch_is_exact_immutable_no_requeue_and_rerunnable(tmp_path):
     assert receipt["expected_commit"] == inputs["expected_commit"]
     assert receipt["git_identity"]["tag_object_type"] == "tag"
     assert receipt["slurm"]["no_requeue"] is True
-    assert receipt["slurm"]["time_limit"] == "11:30:00"
+    assert receipt["slurm"]["time_limit"] == pilot.SBATCH_TIME_LIMIT
     assert created["submit_command"] == ["sbatch", str(sbatch.resolve())]
     assert logs.is_dir()
     assert not inputs["pilot_root"].exists()
@@ -2406,13 +2406,15 @@ def _completed_scheduled_pilot(
         if argv[:2] == ["squeue", "-h"]:
             row = (
                 f"{job_id}|{pilot.SBATCH_JOB_NAME}|RUNNING|"
-                f"{receipt['slurm']['comment']}|sched_test|11:30:00|1|8G\n"
+                f"{receipt['slurm']['comment']}|sched_test|"
+                f"{pilot.SBATCH_TIME_LIMIT}|1|8G\n"
             )
             return subprocess.CompletedProcess(argv, 0, row, "")
         if argv[:4] == ["scontrol", "show", "job", "-o"]:
             row = (
                 f"JobId={job_id} JobName={pilot.SBATCH_JOB_NAME} "
-                "JobState=RUNNING Partition=sched_test TimeLimit=11:30:00 "
+                f"JobState=RUNNING Partition=sched_test "
+                f"TimeLimit={pilot.SBATCH_TIME_LIMIT} "
                 f"Requeue={active_requeue} Comment={receipt['slurm']['comment']} "
                 f"Command={sbatch.resolve()}\n"
             )

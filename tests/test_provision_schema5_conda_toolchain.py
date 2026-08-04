@@ -532,7 +532,7 @@ def test_runtime_symlink_audit_rejects_external_hop_that_reenters(tmp_path):
     (outside / "link-back").symlink_to(target)
     (prefix / "lib/bounce").symlink_to(outside / "link-back")
 
-    # A final-endpoint-only check sees ``target`` inside the prefix. The r14 audit
+    # A final-endpoint-only check sees ``target`` inside the prefix. The r15 audit
     # must still reject its dependency on the external ``outside/link-back`` hop.
     assert (prefix / "lib/bounce").resolve(strict=True) == target
     with pytest.raises(

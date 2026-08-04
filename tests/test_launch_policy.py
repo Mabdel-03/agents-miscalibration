@@ -43,7 +43,34 @@ def test_default_policy_requires_every_optional_gate() -> None:
         "email_test_required": True,
         "external_watchdog_required": True,
         "throughput_qualification_required": True,
+        "legacy_snapshot_required": True,
+        "legacy_migrations_required": True,
+        "legacy_semantic_audit_required": True,
     }
+
+
+def test_waiving_legacy_gates_leaves_the_scientific_gates_required() -> None:
+    # snapshot/migrations/semantic_audit attest legacy-run handling.  A restart-clean
+    # release never writes to those roots, but everything proving the *new* run can
+    # actually execute must stay required.
+    waived = _policy(
+        legacy_snapshot_required=False,
+        legacy_migrations_required=False,
+        legacy_semantic_audit_required=False,
+    )
+    required = control.effective_required_gates(waived)
+    assert "snapshot" not in required
+    assert "migrations" not in required
+    assert "semantic_audit" not in required
+    for gate in (
+        "static_feasibility_certificate",
+        "protected_capacity",
+        "fleet",
+        "context_audit",
+        "smoke_runs",
+        "scheduler_reconciliation",
+    ):
+        assert gate in required
 
 
 def _policy(**overrides: bool) -> dict:
@@ -126,6 +153,9 @@ def test_init_records_the_policy_in_control_and_the_journal(tmp_path: Path) -> N
         "email_test_required": True,
         "external_watchdog_required": False,
         "throughput_qualification_required": True,
+        "legacy_snapshot_required": True,
+        "legacy_migrations_required": True,
+        "legacy_semantic_audit_required": True,
     }
     # The waiver must be visible in the durable transition history, not only in state.
     history = initialized["transition_history"]

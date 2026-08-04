@@ -118,42 +118,42 @@ from slurm import schema5_control as control  # noqa: E402
 from scripts import render_schema5_recovery_chain_v12 as renderer  # noqa: E402
 
 
-# Qualification artifacts are created by the active r14 chain.  Their schema version
+# Qualification artifacts are created by the active r15 chain.  Their schema version
 # remains v1 where appropriate, but their protocol identity must never claim r2.
 SCHEMA_VERSION = 1
-RECOVERY_CHAIN_PROTOCOL = "schema5-v1.2-r14-recovery-chain"
+RECOVERY_CHAIN_PROTOCOL = "schema5-v1.2-r15-recovery-chain"
 LOAD_ACCOUNTING_SCHEMA_VERSION = 3
 QUALIFICATION_RUN_ID = "schema5_throughput_qualification_v1"
 QUALIFICATION_ROOT_NAME = QUALIFICATION_RUN_ID
 MARKER_NAME = "THROUGHPUT_QUALIFICATION_COMPLETE.json"
-PROTOCOL = "schema5-v1.2-r14-throughput-qualification-v3"
-PLAN_PROTOCOL = "schema5-v1.2-r14-throughput-qualification-load-plan-v3"
-INTENT_PROTOCOL = "schema5-v1.2-r14-throughput-qualification-intent-v3"
+PROTOCOL = "schema5-v1.2-r15-throughput-qualification-v3"
+PLAN_PROTOCOL = "schema5-v1.2-r15-throughput-qualification-load-plan-v3"
+INTENT_PROTOCOL = "schema5-v1.2-r15-throughput-qualification-intent-v3"
 SCHEDULER_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-scheduler-evidence-v3"
+    "schema5-v1.2-r15-throughput-qualification-scheduler-evidence-v3"
 )
 SEMANTIC_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-semantic-evidence-v3"
+    "schema5-v1.2-r15-throughput-qualification-semantic-evidence-v3"
 )
 OBSERVATION_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-observation-v3"
+    "schema5-v1.2-r15-throughput-qualification-observation-v3"
 )
 OBSERVATION_TRANSACTION_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-observation-transaction-v3"
+    "schema5-v1.2-r15-throughput-qualification-observation-transaction-v3"
 )
 EVIDENCE_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-evidence-v3"
+    "schema5-v1.2-r15-throughput-qualification-evidence-v3"
 )
-LINEAGE_PROTOCOL = "schema5-v1.2-r14-throughput-qualification-lineage-v3"
+LINEAGE_PROTOCOL = "schema5-v1.2-r15-throughput-qualification-lineage-v3"
 EXECUTION_AUTHORITY_SCHEMA_VERSION = 2
 EXECUTION_AUTHORITY_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-execution-authority-v2"
+    "schema5-v1.2-r15-throughput-qualification-execution-authority-v2"
 )
 ATTEMPT_POINTER_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-attempt-pointer-v1"
+    "schema5-v1.2-r15-throughput-qualification-attempt-pointer-v1"
 )
 CURRENT_ATTEMPT_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-current-attempt-v1"
+    "schema5-v1.2-r15-throughput-qualification-current-attempt-v1"
 )
 
 CELL_COUNT = 768
@@ -182,18 +182,18 @@ EXECUTION_AUTHORITY_NAME = "QUALIFICATION_EXECUTION_AUTHORITY.json"
 FAILURE_NAME = "QUALIFICATION_FAILURE.json"
 FAILURE_DRAIN_INTENT_NAME = "QUALIFICATION_FAILURE_DRAIN_INTENT.json"
 FAILURE_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-failure-v4"
+    "schema5-v1.2-r15-throughput-qualification-failure-v4"
 )
 FAILURE_DRAIN_INTENT_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-failure-drain-intent-v3"
+    "schema5-v1.2-r15-throughput-qualification-failure-drain-intent-v3"
 )
 CAPACITY_TRANSITION_DIRECTORY = "capacity-transitions"
 CURRENT_CAPACITY_TRANSITION_NAME = "CURRENT_CAPACITY_TRANSITION.json"
 CAPACITY_TRANSITION_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-capacity-transition-v2"
+    "schema5-v1.2-r15-throughput-qualification-capacity-transition-v2"
 )
 CURRENT_CAPACITY_TRANSITION_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-current-capacity-transition-v1"
+    "schema5-v1.2-r15-throughput-qualification-current-capacity-transition-v1"
 )
 LOCK_NAME = ".throughput-qualification.lock"
 CURRENT_ATTEMPT_NAME = "CURRENT_ATTEMPT.json"
@@ -220,10 +220,10 @@ PREFLIGHT_CAPACITY_CERTIFICATE_NAME = (
 )
 PREFLIGHT_CAPACITY_SHORTFALL_NAME = "PREFLIGHT_CAPACITY_SHORTFALL.json"
 PREFLIGHT_CAPACITY_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-preflight-capacity-certificate-v1"
+    "schema5-v1.2-r15-throughput-preflight-capacity-certificate-v1"
 )
 PREFLIGHT_CAPACITY_SHORTFALL_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-preflight-capacity-shortfall-v1"
+    "schema5-v1.2-r15-throughput-preflight-capacity-shortfall-v1"
 )
 PREFLIGHT_CAPACITY_ALGORITHM = (
     "dispatch_sweeps.plan_admission-sequential-wdrr-v1"
@@ -231,28 +231,28 @@ PREFLIGHT_CAPACITY_ALGORITHM = (
 FANOUT_SLOTS_PER_REPLICA = 24
 MIN_RETAINED_WARM_TURNOVER_GPUS = 4
 CYCLE_INTENT_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-cycle-intent-v3"
+    "schema5-v1.2-r15-throughput-qualification-cycle-intent-v3"
 )
 CYCLE_INITIALIZED_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-cycle-initialized-v3"
+    "schema5-v1.2-r15-throughput-qualification-cycle-initialized-v3"
 )
 LOAD_EVENT_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-trusted-event-v3"
+    "schema5-v1.2-r15-throughput-qualification-trusted-event-v3"
 )
 LOAD_WINDOW_INTENT_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-load-window-intent-v3"
+    "schema5-v1.2-r15-throughput-qualification-load-window-intent-v3"
 )
 LOAD_WINDOW_END_INTENT_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-load-window-end-intent-v3"
+    "schema5-v1.2-r15-throughput-qualification-load-window-end-intent-v3"
 )
 CYCLE_DRAIN_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-cycle-drain-v3"
+    "schema5-v1.2-r15-throughput-qualification-cycle-drain-v3"
 )
 LOAD_WINDOW_DRAIN_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-load-window-drain-v3"
+    "schema5-v1.2-r15-throughput-qualification-load-window-drain-v3"
 )
 REFILL_RECONCILIATION_PROTOCOL = (
-    "schema5-v1.2-r14-throughput-qualification-refill-reconciliation-v3"
+    "schema5-v1.2-r15-throughput-qualification-refill-reconciliation-v3"
 )
 
 _FAILURE_FIELDS = {
@@ -8468,7 +8468,7 @@ def evaluate_observations(
 def load_window_ready(
     observations: Sequence[Mapping[str, Any]],
 ) -> bool:
-    """Return whether the immutable window has already met the r14 load gate.
+    """Return whether the immutable window has already met the r15 load gate.
 
     A started window that loses its capacity-target cut, backlog, cadence, or
     integrity raises

@@ -15,7 +15,7 @@ from scripts import seal_schema5_r9_prelaunch_failure as r9
 # copy.  These tests drive both copies with the same corpus and require the same
 # verdict, so the two can no longer drift apart.
 
-BASE = "/results/recovery/schema5-v1/toolchains/r14/conda/base"
+BASE = "/results/recovery/schema5-v1/toolchains/r15/conda/base"
 DESTINATION = "/tmp/schema5-r3-prelaunch-tester/offline-clone-destination"
 
 # The progress body between "...working..." and " done" must be non-empty and drawn
