@@ -3199,11 +3199,14 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         != str(paths["release_worktree"])
         or worktree_stage.get("materialization_method")
         != "git_clone_no_hardlinks_detached_tag"
+        # `git_identity` here is the full `verify_clean_exact_tag` result, which also
+        # carries `git_tag_object`.  Project both sides onto the bound field set rather
+        # than comparing a hand-written subset against the whole dict, which can never
+        # be equal.  Same defect as the post-install identity check above.
         or {
-            key: worktree_stage.get(key)
-            for key in ("git_commit", "git_tag", "source_tree_sha256")
+            key: worktree_stage.get(key) for key in RELEASE_SOURCE_IDENTITY_FIELDS
         }
-        != git_identity
+        != {key: git_identity[key] for key in RELEASE_SOURCE_IDENTITY_FIELDS}
     ):
         raise MaterializationError(
             "materialized worktree stage provenance drifted"
