@@ -3130,15 +3130,19 @@ def verify_materialization(output_root: str | Path) -> dict[str, Any]:
         "unresolvable_symlink_count",
     }
     expected_stage_fields = {
+        # `_materialize_worktree` splats the whole `freeze.verify_clean_exact_tag`
+        # result into the stage payload, so the recorded git fields are exactly that
+        # function's contract -- `git_tag_object` included.  Listing a hand-written
+        # subset here made the inventory unsatisfiable for every release that got far
+        # enough to check it.  Derived from the same constant the writer honours.
         "worktree": common_stage_fields
         | {
             "source_repository",
             "release_worktree",
             "materialization_method",
-            "git_commit",
-            "git_tag",
-            "source_tree_sha256",
-        },
+        }
+        | set(RELEASE_SOURCE_IDENTITY_FIELDS)
+        | {"git_tag_object"},
         "harness_clone": clone_stage_fields,
         "serving_clone": clone_stage_fields,
         "package_cache": common_stage_fields
