@@ -1092,7 +1092,7 @@ def _pip_lock_material(
 ) -> tuple[list[str], dict[str, Any] | None]:
     python = prefix / "bin" / "python"
     output = _run(
-        (str(python), "-I", "-m", "pip", "freeze", "--all", "--local"),
+        (str(python), "-I", "-B", "-m", "pip", "freeze", "--all", "--local"),
         env=_python_probe_environment(),
     )
     raw_lines = [line.strip() for line in output.splitlines() if line.strip()]

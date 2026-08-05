@@ -1574,7 +1574,7 @@ def test_local_or_editable_pip_requirement_fails_closed(tmp_path, monkeypatch):
     original_run = freeze._run
 
     def fake_run(argv, *, env=None):
-        if tuple(argv[1:6]) == ("-I", "-m", "pip", "freeze", "--all"):
+        if "pip" in argv and "freeze" in argv:
             return "package @ file:///tmp/build\n"
         return original_run(argv, env=env)
 
@@ -1633,7 +1633,7 @@ def test_conda_owned_builder_direct_url_is_normalized_to_exact_version(
     original_run = freeze._run
 
     def fake_run(argv, *, env=None):
-        if tuple(argv[1:6]) == ("-I", "-m", "pip", "freeze", "--all"):
+        if "pip" in argv and "freeze" in argv:
             return f"packaging @ {direct_url}\npip==25.1\n"
         return original_run(argv, env=env)
 

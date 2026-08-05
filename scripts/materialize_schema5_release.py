@@ -1544,6 +1544,7 @@ def _raw_pip_freeze(prefix: Path) -> list[str]:
         (
             str(prefix / "bin" / "python"),
             "-I",
+            "-B",
             "-m",
             "pip",
             "freeze",
@@ -1988,7 +1989,7 @@ def _materialize_clone(
 
 def _verify_pip_check(prefix: Path) -> dict[str, Any]:
     output = _run(
-        (str(prefix / "bin" / "python"), "-I", "-m", "pip", "check"),
+        (str(prefix / "bin" / "python"), "-I", "-B", "-m", "pip", "check"),
         env=_command_environment(),
         cwd=Path("/"),
     ).strip()
