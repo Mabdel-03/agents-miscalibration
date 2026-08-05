@@ -641,8 +641,13 @@ def _collect_runtime(prefix: Path, *, role: str) -> dict[str, Any]:
         raise ReleaseFreezeError(f"broken environment Python symlink: {python}")
     if not python.is_file():
         raise ReleaseFreezeError(f"environment Python is missing: {python}")
+    # `-B` for the same reason as the release-package probe: `-I` implies `-E`, so the
+    # PYTHONDONTWRITEBYTECODE set by `_python_probe_environment` is discarded.  This
+    # probe imports only stdlib, which a conda prefix ships pre-compiled, so it is the
+    # lower-risk of the two -- but a probe that inspects a prefix should not be able to
+    # write to it at all.
     raw = _run(
-        (str(python), "-I", "-c", _RUNTIME_PROBE),
+        (str(python), "-I", "-B", "-c", _RUNTIME_PROBE),
         env=_python_probe_environment(),
     )
     try:
@@ -893,8 +898,12 @@ def _release_package_import_binding(
     prefix: Path, *, release_worktree: Path
 ) -> dict[str, str]:
     python = prefix / "bin" / "python"
+    # `-B` is required even though `_python_probe_environment` sets
+    # PYTHONDONTWRITEBYTECODE: `-I` implies `-E`, so the interpreter ignores every
+    # PYTHON* variable and the suppression never takes effect.  Without it this probe
+    # writes __pycache__ into the prefix whose inventory the freeze then compares.
     raw = _run(
-        (str(python), "-I", "-c", _RELEASE_PACKAGE_IMPORT_PROBE),
+        (str(python), "-I", "-B", "-c", _RELEASE_PACKAGE_IMPORT_PROBE),
         env=_python_probe_environment(),
     )
     try:

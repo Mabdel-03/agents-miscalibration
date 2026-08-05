@@ -329,12 +329,19 @@ def _fake_environment(
     script = "\n".join(
         (
             "#!/bin/sh",
-            'if [ "$1" = "-I" ] && [ "$2" = "-c" ]; then',
-            '  case "$3" in',
+            "# Skip leading interpreter flags rather than matching them positionally:",
+            "# the probes carry -I plus -B (needed because -I implies -E and discards",
+            "# PYTHONDONTWRITEBYTECODE), and a fixture pinned to $1/$2 silently stops",
+            "# matching whenever a flag is added.",
+            'while [ "$1" = "-I" ] || [ "$1" = "-B" ] || [ "$1" = "-E" ] || [ "$1" = "-s" ]; do',
+            "  shift",
+            "done",
+            'if [ "$1" = "-c" ]; then',
+            '  case "$2" in',
             f"    *SCHEMA5_RELEASE_IMPORT_PROBE*) printf '%s\\n' '{import_json}' ;;",
             f"    *) printf '%s\\n' '{json.dumps(runtime, sort_keys=True)}' ;;",
             "  esac",
-            'elif [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then',
+            'elif [ "$1" = "-m" ] && [ "$2" = "pip" ]; then',
             f"  printf '%s\\n' {pip_printf}",
             "else",
             "  exit 9",
@@ -979,7 +986,7 @@ def test_runtime_probe_is_isolated_and_cannot_write_bytecode(tmp_path, monkeypat
     monkeypatch.setattr(freeze, "_run", fake_run)
 
     assert freeze._collect_runtime(prefix, role="harness") == runtime
-    assert observed["argv"][1:3] == ("-I", "-c")
+    assert observed["argv"][1:4] == ("-I", "-B", "-c")
     assert observed["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert observed["env"]["PYTHONNOUSERSITE"] == "1"
 
@@ -1702,7 +1709,7 @@ def test_release_package_import_cannot_escape_harness_prefix(tmp_path, monkeypat
     original_run = freeze._run
 
     def fake_run(argv, *, env=None):
-        if tuple(argv[1:3]) == ("-I", "-c"):
+        if "-c" in argv and "SCHEMA5_RELEASE_IMPORT_PROBE" in argv[-1]:
             return json.dumps(
                 {
                     "prefix": str(prefix),

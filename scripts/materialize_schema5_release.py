@@ -1718,10 +1718,18 @@ print(json.dumps({
 
 
 def verify_harness_import(harness_prefix: Path, release_worktree: Path) -> dict[str, Any]:
+    # `-B` keeps the probe read-only.  Without it the import writes __pycache__ into the
+    # prefix being inspected, and because apply records `post_install_identity` *before*
+    # probing while verification probes *before* recomputing it, the two content
+    # inventories could never agree: job 19662657 failed with "installed harness package
+    # drifted" on +17 entries / +14 files that were purely the probe's own bytecode.
+    # The stage also declares `install_contract.bytecode_compiled: False`, which the
+    # probe was quietly violating.
     raw = _run(
         (
             str(harness_prefix / "bin" / "python"),
             "-I",
+            "-B",
             "-c",
             _IMPORT_PROBE,
             str(release_worktree),
