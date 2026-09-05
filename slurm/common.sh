@@ -7,8 +7,8 @@ module load cuda/12.9.1 2>/dev/null || true
 
 # Conda env prefixes (created under /home/mabdel03/conda_envs, which is NOT in the default
 # envs_dirs, so activate by full prefix rather than by name).
-export ASYS_SERVE_ENV="${ASYS_SERVE_ENV:-/home/mabdel03/conda_envs/serve_env}"
-export ASYS_HARNESS_ENV="${ASYS_HARNESS_ENV:-/home/mabdel03/conda_envs/asys_env}"
+export ASYS_SERVE_ENV="${ASYS_SERVE_ENV:-/orcd/home/002/mabdel03/conda_envs/serve_env}"
+export ASYS_HARNESS_ENV="${ASYS_HARNESS_ENV:-/orcd/home/002/mabdel03/conda_envs/asys_env}"
 
 # The system libstdc++ (GLIBCXX up to 3.4.25) is too old for flashinfer's compiled
 # kernels (need GLIBCXX_3.4.26+). Prepend the serve_env's newer libstdc++ so vLLM/

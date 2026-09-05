@@ -154,14 +154,17 @@ if production == "1":
     Path(agents_scaling.__file__).resolve().relative_to(resolved_prefix)
 PY
 
-test "$(head -n 1 "{VLLM_EXECUTABLE}")" = "#!{SERVING_PYTHON}"
+# study-v4: /home/<user> is an autofs symlink to /orcd/home/... on some nodes and a direct mount on
+# others, so no path-string comparison is portable. The vllm entry point is executed through the
+# pinned serving interpreter below (its installed shebang is never consulted); just check it exists.
+test -s "{VLLM_EXECUTABLE}"
 
 PORT={PORT}
 echo "[serve] profile={PROFILE_NAME} model={HF_ID} tp={TP_SIZE} context={MAX_MODEL_LEN} port=$PORT node=$(hostname) job=$SLURM_JOB_ID"
 
 # Start vLLM in the background, then register + healthcheck, then wait on it.
 LD_LIBRARY_PATH="{SERVING_PREFIX}/lib" \
-"{VLLM_EXECUTABLE}" serve "{HF_ID}" \
+"{SERVING_PYTHON}" "{VLLM_EXECUTABLE}" serve "{HF_ID}" \
   --revision "{MODEL_REVISION}" \
   --tokenizer "{TOKENIZER_ID}" \
   --tokenizer-revision "{TOKENIZER_REVISION}" \

@@ -146,9 +146,15 @@ def _environment_runtime_pins(
 
 
 def _legacy_runtime_pins(role: str, prefix: str) -> _EnvironmentRuntimePins:
-    """Render an explicit legacy prefix without claiming frozen package versions."""
+    """Render an explicit legacy prefix without claiming frozen package versions.
 
-    resolved_prefix = Path(prefix).expanduser().resolve()
+    The prefix is kept as given (only ``~`` expanded), NOT resolved: on some compute
+    nodes ``/home/<user>`` resolves to ``/orcd/home/...`` while the conda entry-point
+    shebangs were written with the literal ``/home/<user>`` path, and the serve
+    template's shebang check compares the rendered interpreter path against them.
+    """
+
+    resolved_prefix = Path(prefix).expanduser()
     return _EnvironmentRuntimePins(
         prefix=resolved_prefix,
         python=resolved_prefix / "bin" / "python",
@@ -447,7 +453,7 @@ def render_sbatch(
             "serving",
             serving_environment_prefix
             or os.environ.get("ASYS_SERVE_ENV")
-            or "/home/mabdel03/conda_envs/serve_env",
+            or "/orcd/home/002/mabdel03/conda_envs/serve_env",
         )
     for label, value in {
         "harness environment prefix": str(harness_runtime.prefix),
