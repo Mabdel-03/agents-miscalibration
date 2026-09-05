@@ -1,0 +1,44 @@
+schema_version: 4
+phase: plan
+execution_implemented: false
+required_execute_inputs:
+  scheduler: null
+  account: null
+  partition: null
+  gpu_model: null
+  gpu_memory_gib: null
+  gpus_per_node: null
+  nodes: null
+  interconnect: null
+  cpus_per_task: null
+  ram_gib_per_task: null
+  job_wall_time: null
+  container_runtime: null
+  container_digest: null
+  durable_path: null
+  scratch_path: null
+  model_cache_path: null
+  storage_quota_gib: null
+  max_gpu_hours: null
+  allocation_window: null
+  model_lock_manifest: null
+  scientific_freeze_manifest: null
+  public_export_manifest: null
+  evaluator_isolation_manifest: null
+  cost_oracle_hash: null
+  B0_flops: null
+  throughput_profile: null
+  memory_profile: null
+  runtime_acceptance_report: null
+policies:
+  primary_precision: bfloat16
+  speculative_decoding: false
+  model_network_after_staging: disabled
+  maximum_exogenous_retries: 2
+  model_failure_retries: 0
+  prefix_cache_for_edits: disabled_until_proven_valid
+  partial_generation_splicing: forbidden_without_exact_runtime_resume
+  paired_runtime_fix_rule: blinded_consistent_replacement_new_runtime_identity
+  blinded_dashboard: infrastructure_only
+  budget_account: one_atomic_account_per_complete_episode
+  count_research_forecasts_as_free_deployment: false

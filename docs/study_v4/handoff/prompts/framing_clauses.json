@@ -1,0 +1,8 @@
+{
+  "TEAM_0": "",
+  "TEAM_1": "You are an independent member of a team of solvers working on the same task. Produce your own solution without communicating with other members.",
+  "VOTE_0": "",
+  "VOTE_1": "Multiple independently generated solutions, including yours, will be combined by the fixed answer-selection procedure described below to choose the final answer.",
+  "HLE_CHOICE_SELECTOR": "The most frequent normalized final answer is selected. Ties use a fixed rule independent of correctness.",
+  "CODE_SELECTOR": "Complete programs are grouped by their behavior on a frozen public task-derived probe suite where defined, with syntax or exact-source identity fallback. The largest group wins; ties use a fixed rule independent of correctness. Hidden tests are unavailable to this selection procedure."
+}

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Declarative template only. The site renderer must fill and validate every field.
+#SBATCH --job-name=agent-design-v4
+#SBATCH --account={{ACCOUNT}}
+#SBATCH --partition={{PARTITION}}
+#SBATCH --nodes={{NODES}}
+#SBATCH --gpus-per-node={{GPUS_PER_NODE}}
+#SBATCH --cpus-per-task={{CPUS_PER_TASK}}
+#SBATCH --mem={{MEMORY}}
+#SBATCH --time={{WALL_TIME}}
+#SBATCH --array={{SHARD_ARRAY}}
+#SBATCH --signal=B:USR1@120
+set -euo pipefail
+: "${STUDY_CONFIG:?resolved config path required}"
+: "${STUDY_STAGE:?registered stage required}"
+: "${SLURM_ARRAY_TASK_ID:?scheduler shard ID required}"
+: "${STUDY_SITE_LAUNCHER:?validated site launcher path required}"
+"${STUDY_SITE_LAUNCHER}" study config validate --phase execute --config "${STUDY_CONFIG}"
+# The launcher must propagate preemption/checkpoint signals through the chosen
+# scheduler/container layers; verify that behavior before enabling this template.
+exec "${STUDY_SITE_LAUNCHER}" study run --config "${STUDY_CONFIG}"   --stage "${STUDY_STAGE}" --shard "${SLURM_ARRAY_TASK_ID}" --resume

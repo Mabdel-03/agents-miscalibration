@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "amendment": "P3",
+  "spec_clause": "§3.1",
+  "datasets_used_by_prior_runs": [
+    "gpqa",
+    "mmlu_pro",
+    "math (MATH-500/hendrycks)",
+    "truthfulqa"
+  ],
+  "prior_run_roots": [
+    "full_sweep_agent_count_7_v1",
+    "full_sweep_agent_counts_v1",
+    "full_sweep_v1",
+    "long_context_protocol_smoke_v1",
+    "long_context_protocol_smoke_v4",
+    "long_context_protocol_smoke_v5",
+    "long_context_protocol_smoke_v6",
+    "long_context_protocol_smoke_v7",
+    "reasoning_pilot",
+    "recovery",
+    "selective_long_profiles_smoke_v1",
+    "smoke1"
+  ],
+  "hle_verified_first_downloaded": "2026-09-05",
+  "bigcodebench_first_downloaded": "2026-09-05",
+  "viewed_beyond_field_inspection": false,
+  "notes": "Inventory taken 2026-09-05 from $HF_HOME/hub (/orcd/data/tpoggio/001/mabdel03/.cache/huggingface/hub) and from the run roots under /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/. The old harness (agents_scaling.experiment) only implements GPQA / MMLU-Pro / MATH / TruthfulQA multiple-choice logprob probes; it has no HLE or BigCodeBench loader, so neither dataset entered any prior generation. HLE-Verified (revision 0bc83643) shards and BigCodeBench v0.1.4 were first downloaded on 2026-09-05 for this study (datasets--bigcode--bigcodebench, snapshot b74c0d0b, cached 2026-09-05 17:29 for this study) and were inspected only for column names, row counts, answer_type / Verified_Classes distributions and text lengths, never for item content beyond that field inspection.",
+  "hf_cache_entries_of_prior_runs": [
+    "datasets--Idavidrein--gpqa",
+    "datasets--TIGER-Lab--MMLU-Pro",
+    "datasets--HuggingFaceH4--MATH-500",
+    "datasets--EleutherAI--hendrycks_math",
+    "datasets--truthful_qa",
+    "datasets--truthfulqa--truthful_qa"
+  ],
+  "bigcodebench_snapshot": "b74c0d0bf70d2c0bc459be537895cca163007f1a",
+  "hle_verified_revision": "0bc83643",
+  "evidence": "HF cache mtimes on 2026-09-05: datasets--Idavidrein--gpqa 2026-05-27, datasets--TIGER-Lab--MMLU-Pro 2026-05-26 (prior-run era); datasets--bigcode--bigcodebench 2026-09-05 17:29 (this study's export). HLE-Verified shards were fetched to the login-node scratchpad on 2026-09-05 and are not in the HF cache."
+}

@@ -1,0 +1,11 @@
+Estimate probabilities for the explicitly named targets using only the supplied
+observable state. Do not solve again, request tools, or assume peer or child errors
+are independent. For PERSONAL_FINAL, assess only the supplied full-task answer.
+For CHILD_CONTRACT, assess only the named local contract. For TEAM_SELECTED,
+assess the declared selector and currently available candidate pool. For the one
+specified feasible extra-budget operation, estimate the probability the selected
+result will be correct if the current selected result is wrong, and if it is right.
+Return JSON only using the supplied schema. Use null for an inapplicable target.
+
+{{TRUSTED_SCOPE_MASK_INFORMATION_SET_AND_FORECAST_SCHEMA}}
+{{BOUNDED_FINAL_HANDOFF_OR_REGISTERED_OPERATION_STATE}}

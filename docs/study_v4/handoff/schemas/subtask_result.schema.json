@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subtask_id",
+    "contract",
+    "status",
+    "result",
+    "assumptions",
+    "evidence_handles",
+    "confidence"
+  ],
+  "properties": {
+    "subtask_id": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "contract": {
+      "type": "string",
+      "maxLength": 8192
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ]
+    },
+    "result": {
+      "type": "string",
+      "maxLength": 32768
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "maxLength": 8192
+      }
+    },
+    "evidence_handles": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "maxLength": 8192
+      }
+    },
+    "confidence": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "$comment": "confidence targets the assigned contract; never count this object toward original-task pass@K"
+}

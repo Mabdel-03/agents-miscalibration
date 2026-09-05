@@ -1,0 +1,54 @@
+schema_version: 4
+status: inspected_snapshot_targets_eligibility_unresolved
+main:
+  hle:
+    repository: skylenage-ai/HLE-Verified
+    revision: 0bc83643672d4f68a5f89998617a639d85e7318b
+    configuration: default
+    split: train
+    eligibility: text_only_Gold_or_Revision_final_authoritative_fields
+    exclude_uncertain: true
+    prior_exposure_manifest: null
+    exact_eligible_count: null
+    minimum_before_reserve_default: 700
+    minimum_before_reserve_expanded: 950
+    fallback_requires_prospective_adapter_freeze: cais/hle
+  code:
+    repository: bigcode/bigcodebench
+    revision: b74c0d0bf70d2c0bc459be537895cca163007f1a
+    configuration: default
+    split: v0.1.4
+    prompt_field: instruct_prompt
+    total_snapshot_rows: 1140
+    evaluator_commit: null
+    evaluator_container_digest: null
+    public_test_admission: task_only_two_reviewers_and_adjudication
+    reference_solution_or_hidden_test_admission: forbidden
+long_context:
+  oolong:
+    repository: oolongbench/oolong-synth
+    revision: f0d59eaf0febf130664cfceb710436c8e3216b2b
+    configuration: default
+    development_split: validation
+    published_anchor_split: test
+    public_context_field: context_window_text
+    protected_fields: [context_window_text_with_labels, answer]
+    statistical_unit: context_construction_block
+    study_derived_fresh_contexts_default: 200
+    study_derived_development_contexts_minimum: 60
+    generator_commit: null
+  longbench_v2:
+    repository: zai-org/LongBench-v2
+    revision: 2b48e494f2c7a2f0af81aae178e05c7e1dde0fe9
+    configuration: default
+    split: train
+    total_snapshot_rows: 503
+    study_split: disjoint_source_group_hash
+    exact_common_window_eligible_groups: null
+interactive:
+  repository: princeton-nlp/SWE-bench_Verified
+  revision: null
+  exact_source_group_manifest: null
+  confirmation_tasks: 100
+  development_tasks_minimum: 30
+  evaluator_container_manifest: null

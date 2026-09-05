@@ -1,0 +1,1550 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-design-v4:rlm-events",
+  "title": "RLM immutable event contract, revision 4",
+  "description": "Research implementation contract, not a runtime. Validate each JSONL record. A separate semantic validator must enforce ordered state transitions, exact integer budget conservation, caps, reservation ownership, visibility, request identity and fork parity. No authoritative correctness belongs in this pre-evaluation event stream.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "4.0"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "episode_started",
+        "context_created",
+        "context_closed",
+        "reservation_created",
+        "reservation_settled",
+        "request_admitted",
+        "request_started",
+        "request_completed",
+        "request_denied",
+        "batch_released",
+        "code_executed",
+        "artifact_written",
+        "checkpoint_created",
+        "fork_ineligible",
+        "branch_started",
+        "finalization_entered",
+        "episode_completed"
+      ]
+    },
+    "study_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "system_episode_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "previous_event_sha256": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "ledger_after": {
+      "$ref": "#/$defs/ledger"
+    },
+    "counters_after": {
+      "$ref": "#/$defs/counters"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "study_id",
+    "source_id",
+    "system_episode_id",
+    "branch_id",
+    "sequence",
+    "timestamp_utc",
+    "previous_event_sha256",
+    "event_sha256",
+    "ledger_after",
+    "counters_after",
+    "payload"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "event_type": {
+          "const": "episode_started"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_episode_started"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "context_created"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_context_created"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "context_closed"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_context_closed"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "reservation_created"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_reservation_created"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "reservation_settled"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_reservation_settled"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "request_admitted"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_request_admitted"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "request_started"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_request_started"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "request_completed"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_request_completed"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "request_denied"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_request_denied"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "batch_released"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_batch_released"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "code_executed"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_code_executed"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "artifact_written"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_artifact_written"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "checkpoint_created"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_checkpoint_created"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "fork_ineligible"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_fork_ineligible"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "branch_started"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_branch_started"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "finalization_entered"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_finalization_entered"
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": {
+          "const": "episode_completed"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_episode_completed"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "artifact_ref": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "model_visible",
+            "research_only",
+            "public_input"
+          ]
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256",
+        "version",
+        "visibility",
+        "byte_length"
+      ],
+      "additionalProperties": false
+    },
+    "ledger": {
+      "type": "object",
+      "properties": {
+        "allowance_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "spent_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "reserved_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "available_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "open_reservation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "cpu_seconds_spent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cpu_seconds_reserved": {
+          "type": "number",
+          "minimum": 0
+        },
+        "heap_bytes_current": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "allowance_flops",
+        "spent_flops",
+        "reserved_flops",
+        "available_flops",
+        "open_reservation_ids",
+        "cpu_seconds_spent",
+        "cpu_seconds_reserved",
+        "heap_bytes_current"
+      ],
+      "additionalProperties": false
+    },
+    "counters": {
+      "type": "object",
+      "properties": {
+        "contexts_created": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_contexts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_context_peak": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "achieved_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "solver_invocations_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selector_forecast_invocations_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_requests_in_flight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "code_cells_executed_episode": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "full_task_candidates_completed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "contexts_created",
+        "active_contexts",
+        "active_context_peak",
+        "achieved_depth",
+        "solver_invocations_started",
+        "selector_forecast_invocations_started",
+        "model_requests_in_flight",
+        "code_cells_executed_episode",
+        "full_task_candidates_completed"
+      ],
+      "additionalProperties": false
+    },
+    "reservation": {
+      "type": "object",
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "next_solver_call",
+            "ancestor_return",
+            "root_finalization",
+            "child_finalization",
+            "selection",
+            "forecast"
+          ]
+        },
+        "upper_bound_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "prompt_token_upper_bound": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decode_token_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "solver_call_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selector_forecast_call_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "code_cell_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "reservation_id",
+        "owner_context_node_id",
+        "purpose",
+        "upper_bound_flops",
+        "prompt_token_upper_bound",
+        "decode_token_cap",
+        "solver_call_slots",
+        "selector_forecast_call_slots",
+        "code_cell_slots",
+        "cpu_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "subtask_result": {
+      "type": "object",
+      "properties": {
+        "subtask": {
+          "type": "string",
+          "maxLength": 16384
+        },
+        "assumptions": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 8192
+          }
+        },
+        "result": {
+          "type": "string",
+          "maxLength": 131072
+        },
+        "artifact_references": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 8192
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 8192
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "subtask",
+        "assumptions",
+        "result",
+        "artifact_references",
+        "evidence",
+        "confidence"
+      ],
+      "additionalProperties": false
+    },
+    "payload_episode_started": {
+      "type": "object",
+      "properties": {
+        "condition": {
+          "type": "string",
+          "enum": [
+            "RLM_D0",
+            "RLM_D1",
+            "RLM_D2",
+            "RLM_D3",
+            "CENTRAL_STATIC_REPL",
+            "REPL_PROGRAM_SEARCH",
+            "RLM_TRANSPORT_D2"
+          ]
+        },
+        "max_created_contexts": {
+          "type": "integer",
+          "enum": [
+            1,
+            4,
+            5,
+            9,
+            17,
+            32
+          ]
+        },
+        "max_depth_edges": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "budget_label": {
+          "type": "string",
+          "enum": [
+            "B1",
+            "B2",
+            "B4",
+            "B8"
+          ]
+        },
+        "config_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tokenizer_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "engine_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "public_input_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "cost_oracle_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "root_prompt_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "child_prompt_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "condition",
+        "max_created_contexts",
+        "max_depth_edges",
+        "budget_label",
+        "config_sha256",
+        "model_revision",
+        "tokenizer_revision",
+        "engine_digest",
+        "public_input_sha256",
+        "cost_oracle_sha256",
+        "root_prompt_sha256",
+        "child_prompt_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "payload_context_created": {
+      "type": "object",
+      "properties": {
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_context_node_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "context_kind": {
+          "type": "string",
+          "enum": [
+            "root_repl",
+            "child_repl",
+            "plain_leaf",
+            "restarted_root"
+          ]
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "depth_edges": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "creation_ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "initial_prompt_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "passed_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          }
+        },
+        "remaining_context_capacity": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "context_node_id",
+        "parent_context_node_id",
+        "context_kind",
+        "actor_id",
+        "context_epoch",
+        "depth_edges",
+        "creation_ordinal",
+        "initial_prompt_sha256",
+        "passed_artifacts",
+        "remaining_context_capacity"
+      ],
+      "additionalProperties": false
+    },
+    "payload_context_closed": {
+      "type": "object",
+      "properties": {
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "terminal_status": {
+          "type": "string",
+          "enum": [
+            "valid_return",
+            "invalid_return",
+            "budget_denied",
+            "depth_denied",
+            "call_cap",
+            "context_cap",
+            "code_limit",
+            "timeout",
+            "runtime_error",
+            "cancelled_after_terminal_ancestor"
+          ]
+        },
+        "return_kind": {
+          "type": "string",
+          "enum": [
+            "full_task_candidate",
+            "subtask_result",
+            "no_result",
+            "hub_packet"
+          ]
+        },
+        "return_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifact_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cumulative_context_slot_released": {
+          "const": false
+        }
+      },
+      "required": [
+        "context_node_id",
+        "terminal_status",
+        "return_kind",
+        "return_artifact",
+        "cumulative_context_slot_released"
+      ],
+      "additionalProperties": false
+    },
+    "payload_reservation_created": {
+      "type": "object",
+      "properties": {
+        "reservation": {
+          "$ref": "#/$defs/reservation"
+        }
+      },
+      "required": [
+        "reservation"
+      ],
+      "additionalProperties": false
+    },
+    "payload_reservation_settled": {
+      "type": "object",
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "result_available",
+            "explicit_terminal_status",
+            "valid_early_finish"
+          ]
+        },
+        "charged_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "released_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "released_solver_call_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "released_selector_forecast_call_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "released_code_cell_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "released_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "reservation_id",
+        "owner_context_node_id",
+        "reason",
+        "charged_flops",
+        "released_flops",
+        "released_solver_call_slots",
+        "released_selector_forecast_call_slots",
+        "released_code_cell_slots",
+        "released_cpu_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "payload_request_admitted": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "call_class": {
+          "type": "string",
+          "enum": [
+            "solver",
+            "coordinator",
+            "selector",
+            "forecast"
+          ]
+        },
+        "call_purpose": {
+          "type": "string",
+          "enum": [
+            "program_step",
+            "plain_subtask",
+            "root_finalization",
+            "child_finalization",
+            "ranking",
+            "confidence_forecast",
+            "public_verification"
+          ]
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rendered_prompt_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decode_token_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "semantic_seed_hex": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ancestor_return_reservation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "request_id",
+        "context_node_id",
+        "call_class",
+        "call_purpose",
+        "reservation_id",
+        "rendered_prompt_sha256",
+        "prompt_tokens",
+        "decode_token_cap",
+        "semantic_seed_hex",
+        "batch_id",
+        "request_order",
+        "ancestor_return_reservation_ids"
+      ],
+      "additionalProperties": false
+    },
+    "payload_request_started": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "request_id",
+        "context_node_id",
+        "batch_id",
+        "request_order",
+        "queue_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "payload_request_completed": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "eos",
+            "token_cap",
+            "provider_error",
+            "infrastructure_error",
+            "cancelled"
+          ]
+        },
+        "output_kind": {
+          "type": "string",
+          "enum": [
+            "code_cell",
+            "subtask_result",
+            "full_task_candidate",
+            "selection",
+            "forecast",
+            "unparsed",
+            "hub_packet"
+          ]
+        },
+        "raw_output_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "prompt_tokens_actual": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generated_reasoning_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generated_final_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "charged_flops": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "Exact integer FLOPs as a decimal string; no floating-point serialization."
+        },
+        "execution_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "native_channel_metadata_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "result_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifact_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request_id",
+        "context_node_id",
+        "status",
+        "output_kind",
+        "raw_output_sha256",
+        "prompt_tokens_actual",
+        "generated_reasoning_tokens",
+        "generated_final_tokens",
+        "charged_flops",
+        "execution_seconds",
+        "native_channel_metadata_sha256",
+        "result_artifact"
+      ],
+      "additionalProperties": false
+    },
+    "payload_request_denied": {
+      "type": "object",
+      "properties": {
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempted_operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "capability_unavailable",
+            "depth_limit",
+            "context_limit",
+            "solver_call_limit",
+            "selector_forecast_call_limit",
+            "budget_reserve_insufficient",
+            "prompt_too_long",
+            "finalizing",
+            "input_access_forbidden",
+            "network_or_shell_forbidden",
+            "invalid_arguments"
+          ]
+        },
+        "typed_status_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "model_inference_performed": {
+          "const": false
+        }
+      },
+      "required": [
+        "context_node_id",
+        "attempted_operation",
+        "reason",
+        "typed_status_sha256",
+        "model_inference_performed"
+      ],
+      "additionalProperties": false
+    },
+    "payload_batch_released": {
+      "type": "object",
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ordered_request_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "all_members_accounted": {
+          "const": true
+        },
+        "returned_order_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "batch_id",
+        "ordered_request_ids",
+        "all_members_accounted",
+        "returned_order_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "payload_code_executed": {
+      "type": "object",
+      "properties": {
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cell_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_cell_ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "is_finalization_cell": {
+          "type": "boolean"
+        },
+        "code_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "success",
+            "syntax_error",
+            "runtime_error",
+            "cpu_limit",
+            "heap_limit",
+            "forbidden_operation"
+          ]
+        },
+        "stdout_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "stderr_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "returned_preview_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "returned_preview_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2048
+        },
+        "cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "wall_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "written_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact_ref"
+          }
+        }
+      },
+      "required": [
+        "context_node_id",
+        "cell_id",
+        "node_cell_ordinal",
+        "is_finalization_cell",
+        "code_sha256",
+        "status",
+        "stdout_sha256",
+        "stderr_sha256",
+        "returned_preview_sha256",
+        "returned_preview_tokens",
+        "cpu_seconds",
+        "wall_seconds",
+        "written_artifacts"
+      ],
+      "additionalProperties": false
+    },
+    "payload_artifact_written": {
+      "type": "object",
+      "properties": {
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact_ref"
+        },
+        "informational_parent_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "store_policy": {
+          "type": "string",
+          "enum": [
+            "immutable",
+            "versioned"
+          ]
+        },
+        "model_visible_origin": {
+          "type": "string",
+          "enum": [
+            "input",
+            "local_code",
+            "model_output",
+            "public_tool",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "context_node_id",
+        "artifact",
+        "informational_parent_ids",
+        "store_policy",
+        "model_visible_origin"
+      ],
+      "additionalProperties": false
+    },
+    "payload_checkpoint_created": {
+      "type": "object",
+      "properties": {
+        "checkpoint_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root_context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpoint_rule_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "adapter_kind": {
+          "type": "string",
+          "enum": [
+            "validated_process_snapshot",
+            "restricted_supported_heap_snapshot"
+          ]
+        },
+        "snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "root_history_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "heap_alias_graph_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "files_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rng_state_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "graph_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "resource_ledger_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "completed_root_cell_boundary": {
+          "const": true
+        },
+        "pending_requests": {
+          "const": 0
+        },
+        "executing_code_cells": {
+          "const": 0
+        },
+        "noop_parity_fixture_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "root_context_node_id",
+        "checkpoint_rule_sha256",
+        "adapter_kind",
+        "snapshot_sha256",
+        "root_history_sha256",
+        "heap_alias_graph_sha256",
+        "files_manifest_sha256",
+        "rng_state_sha256",
+        "graph_sha256",
+        "resource_ledger_sha256",
+        "completed_root_cell_boundary",
+        "pending_requests",
+        "executing_code_cells",
+        "noop_parity_fixture_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "payload_fork_ineligible": {
+      "type": "object",
+      "properties": {
+        "checkpoint_rule_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "root_context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "unsupported_object",
+            "unpreserved_alias_or_callable",
+            "snapshot_failed",
+            "noop_parity_failed",
+            "no_eligible_quiescent_checkpoint"
+          ]
+        },
+        "retained_in_architecture_population": {
+          "const": true
+        }
+      },
+      "required": [
+        "checkpoint_rule_sha256",
+        "root_context_node_id",
+        "reason",
+        "retained_in_architecture_population"
+      ],
+      "additionalProperties": false
+    },
+    "payload_branch_started": {
+      "type": "object",
+      "properties": {
+        "branch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpoint_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "noop",
+            "continue",
+            "restore_visible_archived_unit",
+            "recompute_subproblem",
+            "restart_root",
+            "activation_edit",
+            "frozen_graph_replay"
+          ]
+        },
+        "policy_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "target_selection_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "artifact_policy": {
+          "type": "string",
+          "enum": [
+            "preserve",
+            "reset",
+            "declared_partial"
+          ]
+        },
+        "continuation_graph_policy": {
+          "type": "string",
+          "enum": [
+            "regenerate_adaptive_descendants",
+            "frozen_graph_diagnostic"
+          ]
+        },
+        "resource_origin": {
+          "type": "string",
+          "enum": [
+            "declared_remaining_allowance"
+          ]
+        },
+        "privileged_donor_used": {
+          "type": "boolean"
+        },
+        "deployable_policy": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "branch_id",
+        "checkpoint_id",
+        "action",
+        "policy_sha256",
+        "target_selection_sha256",
+        "artifact_policy",
+        "continuation_graph_policy",
+        "resource_origin",
+        "privileged_donor_used",
+        "deployable_policy"
+      ],
+      "additionalProperties": false
+    },
+    "payload_finalization_entered": {
+      "type": "object",
+      "properties": {
+        "context_node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "root_full_task",
+            "child_subtask"
+          ]
+        },
+        "instruction_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "budget",
+            "context_cap",
+            "call_cap",
+            "code_cap",
+            "ordinary_completion"
+          ]
+        },
+        "further_subcalls_allowed": {
+          "const": false
+        },
+        "reuses_existing_context": {
+          "const": true
+        }
+      },
+      "required": [
+        "context_node_id",
+        "kind",
+        "instruction_sha256",
+        "reservation_id",
+        "reason",
+        "further_subcalls_allowed",
+        "reuses_existing_context"
+      ],
+      "additionalProperties": false
+    },
+    "payload_episode_completed": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "valid_candidate",
+            "invalid_candidate",
+            "budget_finalization_failed",
+            "runtime_limit",
+            "infrastructure_failure",
+            "input_unsupported"
+          ]
+        },
+        "final_candidate_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "final_candidate_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate_validation_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "stop_reason": {
+          "type": "string",
+          "enum": [
+            "ordinary_completion",
+            "budget",
+            "context_cap",
+            "call_cap",
+            "code_cap",
+            "cpu_limit",
+            "heap_limit",
+            "watchdog",
+            "provider_failure",
+            "input_unsupported"
+          ]
+        },
+        "all_pending_work_accounted": {
+          "const": true
+        },
+        "authoritative_correctness_joined": {
+          "const": false
+        },
+        "wall_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "status",
+        "final_candidate_id",
+        "final_candidate_sha256",
+        "candidate_validation_sha256",
+        "stop_reason",
+        "all_pending_work_accounted",
+        "authoritative_correctness_joined",
+        "wall_seconds"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

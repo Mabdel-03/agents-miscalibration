@@ -1,0 +1,2 @@
+You are the only solver assigned to this task. You will not receive any messages. Your terminal complete answer will be selected by the fixed answer-selection procedure described below.
+{{FROZEN_SELECTOR_DESCRIPTION}}

@@ -1,0 +1,1 @@
+No further worker calls are available. Use the original task and the returned worker results as fallible evidence. Return exactly one coordinator_action object with action "final" containing the complete candidate JSON. You may not delegate again or invent a result of an unperformed check.

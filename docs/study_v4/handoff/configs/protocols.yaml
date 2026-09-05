@@ -1,0 +1,52 @@
+schema_version: 4
+status: declarative_plan
+authority: specification_sections_3_4_6_7_8
+source_task_max_tokens_static: 4096
+rendered_prompt_max_tokens: 32768
+reasoning_plus_final_max_tokens: 8192
+own_full_candidate_max_recipient_tokens: 8192
+peer_packet_max_recipient_tokens: 2048
+peer_final_answer_excerpt_max_recipient_tokens: 1024
+full_candidate_truncation: forbidden
+peer_packets: deterministic_exact_excerpts_with_span_maps_and_partial_flags
+default_private_thinking_retention: false
+stateless_seed_key:
+  actor_slot: 0
+  step_slot: canonical_draw_ordinal
+  wrapper_membership_changes_seed: false
+policies:
+  S_FRESH: {slots: 1, memory: none, root_frame: '00', selection: VOTE_archive}
+  S_HISTORY: {slots: 1, memory: previous_candidate_only, root_frame: '00', selection: VOTE_archive}
+  IND_VOTE: {optional_work: blind_round_robin_fresh_epochs, primary_N5_frame: '11', selection: VOTE_archive}
+  DEC: {exchange: synchronous_all_to_all_previous_round, max_revision_rounds: 8, partial_round: forbidden, selection: VOTE_latest_slots}
+  CEN_FLAT: {hub_in_total_N: true, max_delegation_cycles: 8, communication: through_hub_only, selection: native_root_synthesis}
+  CEN_RLM: {runtime_config: rlm_runtime.yaml, selection: native_root_finish}
+global_model_calls: 64
+additional_selector_calls: 64
+selector_contract:
+  VOTE: plurality_preserving_multiplicity
+  JUDGE_BEST: pointwise_candidate_ranking_no_synthesis
+  same_bank_judge: diagnostic_additional_cost_beyond_native_budget
+  same_budget_judge: separate_policy_reserving_judge_cost_before_generation
+  invalid_candidate: ineligible_but_planned_opportunity_retained
+  all_invalid: NO_VALID_CANDIDATE
+  signatures_min_admissible_probes: 2
+  unresolved_execution: no_shared_error_class
+  code_fallback: semantics_preserving_AST_identity_then_exact_source
+controlled_transport:
+  producer_roots: 5
+  producer_frame: '00'
+  focal_slot: 0
+  peer_packet_count: 4
+  interfaces: [PRIVATE, DIRECT, HUB, RLM_RECURSIVE]
+  raw_peer_archive_access: false
+  focal_full_root_access: true
+  PRIVATE_interface_calls: 1
+  DIRECT_interface_calls: 1
+  HUB_interface_calls: 2
+  RLM_RECURSIVE_mediator_call_cap: 4
+  RLM_RECURSIVE_mediator_context_cap: 4
+  RLM_RECURSIVE_mediator_depth_cap: 2
+  RLM_RECURSIVE_focal_revision_calls: 1
+  fixed_consumer_attempts_per_state: 4
+  fixed_consumer_inherits_native_heap_or_private_thinking: false

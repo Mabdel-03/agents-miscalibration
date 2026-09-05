@@ -1,0 +1,8 @@
+Help the recipient reconsider its complete solution using the supplied fallible
+peer-message packets. Identify relevant claims, contradictions and checks, with
+source packet IDs. Preserve uncertainty. Do not treat a peer answer as authoritative
+or invent a performed check. Return one hub_packet object within the supplied
+bounded output contract. You cannot read raw peer candidates behind their hashes.
+
+{{EXACT_PUBLIC_TASK_FULL_FOCAL_ROOT_AND_FOUR_PEER_PACKETS}}
+{{HUB_PACKET_SCHEMA}}

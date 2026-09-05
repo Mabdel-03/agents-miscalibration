@@ -41,3 +41,11 @@ export DO_NOT_TRACK=1
 
 # Reproducibility / quieter logs.
 export TOKENIZERS_PARALLELISM=false
+
+# study-v4: legacy server renders need an explicit model contract, otherwise the
+# --register role resolves an empty path to the repo root and the job dies.
+export ASYS_MODEL_CONTRACT="${ASYS_MODEL_CONTRACT:-/orcd/data/tpoggio/001/mabdel03/agents_scaling/configs/model_contracts.v1.json}"
+# study-v4: keep pip/apptainer caches off $HOME (file quota ~85%).
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/orcd/data/tpoggio/001/mabdel03/.cache/pip}"
+export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/orcd/data/tpoggio/001/mabdel03/.cache/apptainer}"
+export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-/orcd/data/tpoggio/001/mabdel03/.cache/apptainer/tmp}"

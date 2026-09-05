@@ -1,0 +1,12 @@
+# WP0 contract notes (read before coding against study/types.py, identity.py, config.py)
+
+- `study_seed_hex` / `split_salt_hex` are literal in `configs/study_v4.yaml` — never regenerate. `RequestSpec` carries `study_id` and `study_seed_hex` so `request_id` / `semantic_seed` / `engine_seed` are pure properties.
+- `input_hash = SHA256(JCS({"messages": ..., "chat_template_kwargs": {...}}))` (NOT rendered bytes); the rendered `chat_template_hash` is a separate `RequestRecord` field. `local_caps = {"max_input": 32768, "max_tokens": <decoding.max_tokens>}`. Do not change without re-freezing.
+- `Decoding` has `guided_json: bool = False` (enters `decoding_hash`) and there is a `FORECAST_DECODING` (256 tokens, thinking off, temp 0) besides `SOLVER_DECODING` / `JUDGE_DECODING`. guided_json is NOT enforced by the server (see 05_vllm_response_shape.md) — leave it False everywhere.
+- `jcs()` sorts keys by UTF-16 code units (RFC 8785) and raises on floats; `identity.content_sha256` (record integrity) uses ordinary sorted-key JSON.
+- `config.freeze()` refuses to overwrite an existing `FROZEN.yaml` (one freeze per run root); `config.frozen(run_root)` returns a `FrozenStudy` whose `.b0_flops` may be None (F banks do not need B0) — generate-cell code must check it.
+- Round-trips: list-typed dataclass fields come back as tuples; free-form dict fields keep JSON-native lists.
+- Stub tokenizer (`tests/study/conftest.py`) mirrors transformers 5.9: `apply_chat_template(tokenize=True)` returns a dict `{"input_ids","attention_mask"}` unless `return_dict=False`. The real Qwen3 tokenizer appends `<think>\n\n</think>\n\n` when `enable_thinking=False`. Handle both.
+- `prompts/templates/hle_judge.txt` is the exact 1,290-byte cais/hle JUDGE_PROMPT with single-brace `{question}/{response}/{correct_answer}` placeholders → use `str.format`, not the `{{...}}` template substitution used by the other templates. `dec_root_truthful.txt` starts with the same solving paragraph as `independent_root.txt` and has a `{{FROZEN_SELECTOR_DESCRIPTION}}` slot; `dec_revision_contract_n1.txt` never mentions peers.
+- `PROMPT_HASHES.json` covers `templates/*.txt` + `framing_clauses.v4_orcd.json` only; `prompts/__init__.py` exposes `load_template(name)`, `load_framing_clauses()`, `prompt_hashes()`.
+- `freeze/amendments.json` has 36 entries (audit F1…X1 + E3', N9B1, N1-SRS, E4b, M1b, C1b); `freeze/prior_exposure_manifest.json` records that BigCodeBench/HLE-Verified were first downloaded 2026-09-05.

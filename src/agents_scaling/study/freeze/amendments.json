@@ -1,0 +1,326 @@
+[
+  {
+    "id": "F1",
+    "deviation": "Flagship := `Qwen/Qwen3-32B` (dense) instead of `Qwen/Qwen3.8-27B`",
+    "spec_clause": "§6.4, §7.3, §10.1",
+    "unsupported_claim": "Any statement about the hybrid flagship, its effort knob, or \"flagship shown separately from the dense sweep\" (32B is now both)",
+    "manifest_wording": "\"AMEND F1: flagship=Qwen/Qwen3-32B snapshot `<hash from HF_HOME/hub/models--Qwen--Qwen3-32B/snapshots/>`; reason: Qwen3.8-27B architecture unsupported by vLLM 0.21.0 (verified). The flagship is the top point of the dense panel; no separate flagship row. Effort control: none exists; §10.1 dense recipe applies.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "F2",
+    "deviation": "Sampling recipe: temp 0.6, top_p 0.95, top_k 20, min_p 0, presence 0, repetition 1.0, thinking on, `max_tokens=8192`, for **all** solver/hub/worker/revision/consumer calls on every checkpoint",
+    "spec_clause": "§10.1 (\"dense Qwen3 ... .6/.95/20/0\"), §6.4",
+    "unsupported_claim": "The flagship recipe row (temp 1.0, medium effort, preserve_thinking)",
+    "manifest_wording": "\"AMEND F2: one frozen Qwen3 thinking recipe for all solver roles on 4B/8B/14B/32B; selector/judge/forecast roles use enable_thinking=false via chat_template_kwargs; temperature 0 for HLE judge and forecast; JUDGE_BEST temperature 0.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "S1",
+    "deviation": "Primary code VOTE = Python AST canonicalization (strip positions/comments/docstrings? no: strip positions and comments only; preserve identifiers, literals, order) then exact-source identity; no public probe suite",
+    "spec_clause": "§3.2, §4.4, §5.3",
+    "unsupported_claim": "\"behavioral signature\" grouping; signature-coverage statistics; any claim that the code vote groups by behavior",
+    "manifest_wording": "\"AMEND S1: code grouping_mode ∈ {AST_CANONICAL, EXACT_SOURCE, UNPARSEABLE_SINGLETON}; no public behavioral suite exists; every selection record names grouping_mode; expected all-singleton rate reported (§5.3).\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "S1b",
+    "deviation": "The literal `CODE_SELECTOR` clause in `prompts/framing_clauses.json` describes a probe suite that does not exist; §5.5 requires the aware clause to be truthful",
+    "spec_clause": "§5.5 (\"accurately describes the frozen ... grouping, fallback and tie procedure\")",
+    "unsupported_claim": "The A-family (awareness) result on BCB if the description were untruthful",
+    "manifest_wording": "\"AMEND S1b: CODE_SELECTOR := 'Complete programs are grouped by syntactic identity after Python AST canonicalization, with exact-source identity if the program does not parse. The largest group wins; ties use a fixed rule independent of correctness. Hidden tests are unavailable to this selection procedure.' Frozen before any F-bank request; hash recorded.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "N1",
+    "deviation": "N_main=400 (200 HLE, 200 BCB); dev=60 (30/30)",
+    "spec_clause": "§3.1, §6.2, §9.4 (allowed N_main ∈ {1100,1600}; dev=300)",
+    "unsupported_claim": "Powered A/O claims at the 0.06/0.08 targets; the 10% reserve",
+    "manifest_wording": "\"AMEND N1: N_main=400 by salted-hash SRS within superdomain; A and O are estimation-oriented (approximate power ≈0.5-0.65 for Δ=0.06 at α=.05/6). Development=60 used only for normalization rule, envelope profiling, recalibrator fit, pilot; no reserve pool (§3.3): defective items are excluded from all arms, never backfilled.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "N1b",
+    "deviation": "HLE 200 = 100 Gold + 100 Revision (brief) rather than SRS across text-only Gold+Revision",
+    "spec_clause": "§3.1 (\"simple random sampling by a frozen salted hash within each superdomain\")",
+    "unsupported_claim": "Population-representativeness of the HLE stratum",
+    "manifest_wording": "Either drop the balancing (recommended, spec-literal) or record: \"AMEND N1b: HLE population is an equal Gold/Revision mixture; strata reported separately; bootstrap resamples within superdomain, not within Gold/Revision.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "R1",
+    "deviation": "Families R (RLM L32 frontier + budgets, D0/D1/D2 controls, long-context OOLONG/LongBench), G (activation readouts), M (content units, annotators, edits) are not executed; p=1 for each in the six-entry Holm list",
+    "spec_clause": "§1.4, §6.2, §7.2, §8, §9.2",
+    "unsupported_claim": "Every recursion, geometry and content-use claim; the \"broad RLM assessment\" (§1.5)",
+    "manifest_wording": "\"AMEND R1: families R, G, M unexecuted (p=1 each, retained in the Holm denominator). Modules R, R-context, R-frontier, long_context, neural_content, native_temporal_diagnostic, cross_consumer, interactive: removed. Reason: 42 h allocation window; no hook-capable engine; no annotators.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "A1",
+    "deviation": "CEN_RLM D2/L5 absent from A, N, M, C unless the `rlms` adapter passes the §7.10 fixtures by Sun 12:00",
+    "spec_clause": "§4.2, §6.2, §7.2",
+    "unsupported_claim": "O omnibus over six methods (now five, 10 pairs); C averaged over four architectures (now three)",
+    "manifest_wording": "\"AMEND A1: O methods = {S_FRESH,S_HISTORY,IND_VOTE,DEC,CEN_FLAT}, 10 pairwise contrasts; C weights = 1/3 each over IND_VOTE/DEC/CEN_FLAT. If CEN_RLM validates before tier-1 seals it is added as a sixth method with its own cells; otherwise excluded.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "A2",
+    "deviation": "Main-tier DEC roots carry the native truthful clause (`root_framing: native_truthful` in experiment_matrix.yaml; §4.1) and therefore do **not** alias F banks; CEN_FLAT never aliases",
+    "spec_clause": "§4.1, §4.2, §6.2 (\"Alias ... only when prompts ... match exactly\")",
+    "unsupported_claim": "The brief's \"A ... with exact aliases of F banks\"",
+    "manifest_wording": "\"AMEND A2: alias table — IND_VOTE-11 draws 0..9 ← F11; S_FRESH-00 draws 0..9 ← F00; S_HISTORY root ← F00 draw 0; N-panel IND (all N, 00) ← F00; N-panel DEC-00 N=5 roots, IND_PRIVATE_REVISION, DEC_ONE_ROUND roots ← F00 draws 0..4; degree roots ← F00 draws 0..8. Main DEC (truthful clause) and CEN_FLAT: no aliases.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "A3",
+    "deviation": "The DEC truthful root/revision clause is not in the handoff; must be authored",
+    "spec_clause": "§4.1 (\"truthfully told that their terminal complete answers enter the stated vote and that they can exchange messages\")",
+    "unsupported_claim": "DEC main result if roots were silently run as 00 or 11",
+    "manifest_wording": "\"AMEND A3: DEC_ROOT_TRUTHFUL := 'You are one of several solvers working independently on the same task. In later rounds you may receive bounded messages from the other solvers and revise. Your final complete answer, and theirs, will be combined by the fixed answer-selection procedure described below.' + frozen selector description. DEC revision prompt = `prompts/focal_revision.txt`. Hashes recorded before pilot.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "B1",
+    "deviation": "B0 is resolved analytically from frozen per-role maximum rendered envelopes and full 8,192 decode reservations (§6.5), not from pilot-observed token counts; whether B4 or the 64-call cap binds is a per-episode logged fact",
+    "spec_clause": "§6.5 (\"Resolve its cost from maximum permitted rendered lengths and full decode reservations\"), §6.7",
+    "unsupported_claim": "\"B4 binds at the 64-call cap\"; \"B8 aliases B4\" as a blanket rule",
+    "manifest_wording": "\"AMEND B1: B0 = max over {IND5, DEC5, CEN_FLAT5, S_FRESH, S_HISTORY} of the minimal-path full-cap reservation computed by `study/resources/oracle.py` from config.json dimensions and the frozen envelopes in Table E (below). B8 aliases a B4 episode only when that episode's `stop_reason ∈ {CALL_CAP, ROUND_CAP, VOLUNTARY_FINISH}` and no prompt contains remaining budget; otherwise B8 is a separate episode.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "B2",
+    "deviation": "Frozen prompt envelopes for hub/worker/subtask-result rendering (not in handoff) so that 32,768 input is enforceable and B0 computable",
+    "spec_clause": "§4.3 (\"Wrappers, schema and role instructions must also fit\"), §6.4",
+    "unsupported_claim": "Any CEN_FLAT result if overflow were handled ad hoc",
+    "manifest_wording": "\"AMEND B2 (Table E): root prompt ≤ 4,096 task + wrapper; own_saved_candidate ≤ 8,192; each peer packet ≤ 2,048 (final-answer excerpt ≤ 1,024); each rendered subtask_result ≤ 4,096 recipient tokens (exact-excerpt clipping with partial flag, same compiler as packets); hub's previous plan ≤ 8,192; worker forwarded results ≤ 8,192 total. Any request exceeding 32,768 rendered tokens = CONTEXT_FAILURE for that opportunity (§4.3).\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "E1",
+    "deviation": "Evaluator: HLE exact-answer correctness judged by Qwen3-32B (thinking off, temp 0) with the official centerforaisafety/hle judge prompt; MC by exact letter; no human audit",
+    "spec_clause": "§3.3 (\"frozen isolated judge ... plus a blinded human audit\")",
+    "unsupported_claim": "Human-audited label quality; independence of judge from solver weights",
+    "manifest_wording": "\"AMEND E1: judge=Qwen3-32B same snapshot as solver (self-judging risk recorded); audit substitute = judge run on every MC item (dev+main, 371 available in the 1,600 pool) compared to exact letter scoring → judge FP/FN rates; plus a frozen 100-item stratified exact-answer sample (by condition × correct/incorrect) exported for later human audit. Differential-error bound (§3.3 2-pp rule) computed from the MC error rates under worst-case allocation.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "E2",
+    "deviation": "Guided JSON decoding (vLLM `guided_json`) used for HLE judge and shadow forecast; optional for JUDGE_BEST; never for solver/hub/worker/revision/consumer calls",
+    "spec_clause": "§3.5 (\"No repair model\"), §4.4 (\"Invalid scores use a frozen low score\")",
+    "unsupported_claim": "None if recorded; would corrupt the invalid-rate outcome if applied to solvers",
+    "manifest_wording": "\"AMEND E2: guided_json enabled for roles {HLE_JUDGE, FORECAST[, JUDGE_BEST]} and recorded in decoding_hash; disabled for all generator roles.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "E3",
+    "deviation": "BCB evaluation via apptainer `docker://bigcodebench/bigcodebench-evaluate:v0.2.4`, per-candidate fresh process, official `sanitize()` applied identically before both public grouping and protected testing",
+    "spec_clause": "§3.2, §3.3",
+    "unsupported_claim": "None if the digest and sanitize rule are recorded",
+    "manifest_wording": "\"AMEND E3: evaluator_container_digest=`<sha256 of pulled .sif>`; program := sanitize(final_answer, entry_point) with the official bigcodebench sanitizer; timeouts 60 s/test-suite; unresolved (timeout/crash of harness) → INFRA_INCOMPLETE with ≤2 retries; test failure → incorrect.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "J1",
+    "deviation": "JUDGE_BEST judge = Qwen3-32B thinking off, 1,024-token cap, `prompts/judge_best.txt`, guided JSON optional; run on F banks (10), IND/S_FRESH admitted pools (≤64), S_HISTORY archive, DEC latest-N; not on CEN_FLAT",
+    "spec_clause": "§4.4, §5.3",
+    "unsupported_claim": "Nothing; companion replay is extra research work by design",
+    "manifest_wording": "\"AMEND J1: judge model fixed across the dense panel; companion cost recorded outside B.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "C1",
+    "deviation": "C on IND_VOTE/DEC/CEN_FLAT only; report reader = Qwen3-32B thinking off, temp 0, 256 cap; scope mask: q_personal and q_team_now required, q_child_contract/q_recover/q_preserve null; operation_id=NONE; panel = first 200 items of the main hash order (100/100), extendable to 400",
+    "spec_clause": "§8.7, §9.2",
+    "unsupported_claim": "TEAM_AFTER_EXTRA calibration; four-architecture C",
+    "manifest_wording": "\"AMEND C1: C = 1/3-weighted over three static architectures at N=5/B4; TEAM_AFTER_EXTRA inapplicable; recalibrator rule per §8.7 with the 10/10 dev minimum evaluated on the 60 dev items; if not met, common fit and threshold failure reported.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "C2",
+    "deviation": "Dev recalibration requires native episodes + forecasts on all 60 dev items for the three architectures (240 episodes, 180 forecasts), beyond the 20-item pilot",
+    "spec_clause": "§8.7, §9.2 (\"development-calibrated\")",
+    "unsupported_claim": "C entirely, if the recalibrator were fitted on confirmation labels",
+    "manifest_wording": "\"AMEND C2: dev C run scheduled in tier 2 before any main C label join; recalibrator hashes recorded.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "D1",
+    "deviation": "Degree module on 100 items; 9 roots alias F00; no unit panel/annotation/decoder; outcomes = focal revised correctness and the 4-child continuation pool (mean, any-correct)",
+    "spec_clause": "§4.6, §6.3, §8.10",
+    "unsupported_claim": "Unit-use/retention claims; the \"mechanism\" purpose of D",
+    "manifest_wording": "\"AMEND D1: D reports correctness/continuation only (S2 secondary); no content units.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "N2",
+    "deviation": "N panel on 100 items; IND at every N is derived from the F00 bank with the N-specific admission schedule (0 new generation); DEC-00 and CEN_FLAT at N ∈ {1,2,3,5,9}",
+    "spec_clause": "§4.6, §6.2, §6.3",
+    "unsupported_claim": "Powered S2 claims",
+    "manifest_wording": "\"AMEND N2: membership panel=100 items (50/50); IND_N cells are computed views of the S_FRESH-00 request sequence with N-slot initialization granularity.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "E4",
+    "deviation": "E panel: 30 items × 6 episodes × {S_FRESH, IND_VOTE, DEC, CEN_FLAT}; episode 0 aliases the main cell; K ∈ {1,2,3,5} from n=6; K=10 not estimable",
+    "spec_clause": "§5.6, §6.2, §9.3 (30-cluster minimum)",
+    "unsupported_claim": "System pass@10; inferential S4 claims (below 30 clusters per superdomain → estimation-only)",
+    "manifest_wording": "\"AMEND E4: repeated-episode panel is estimation-only; 15 items per superdomain; unbiased estimator with n=6.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "M1",
+    "deviation": "Dense panel 4B/8B/14B on 150 items, N=5, B4 (same numerical FLOP allowance as 32B), IND/DEC/CEN_FLAT; 32B row aliases main A; no CEN_RLM",
+    "spec_clause": "§6.2, §6.4, §6.5",
+    "unsupported_claim": "Checkpoint × recursive-policy interaction; M-recursion cell",
+    "manifest_wording": "\"AMEND M1: checkpoint panel=150 items, three static policies; identical numerical B4 in FLOPs so the 64-call cap is expected to bind for 4B/8B (recorded per episode).\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "M2",
+    "deviation": "M-cross (8B, 32B; N ∈ {3,9}; B1, B4) on 100 items, stretch",
+    "spec_clause": "§6.2",
+    "unsupported_claim": "Focused moderation claim if not executed",
+    "manifest_wording": "\"AMEND M2: executed only if tier 3 reached; otherwise removed.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "AB1",
+    "deviation": "A-budget: B1, B2 on 100 items for the five methods; B8 by the per-episode alias rule (B1), otherwise not run",
+    "spec_clause": "§6.2, §6.5 (validate every mandatory cell at its lowest budget)",
+    "unsupported_claim": "Four-point cost curves; N=9 at B1 feasibility check for the focused panel",
+    "manifest_wording": "\"AMEND AB1: B1/B2 on 100 items; B8 only where aliased; feasibility at B1 verified for all five methods at N=5 in preflight.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "P1",
+    "deviation": "Sampled-token logprobs are not stored (throughput); token IDs, rendered bytes, reasoning/final channels, usage, finish_reason are",
+    "spec_clause": "§10.3 (\"where supported\")",
+    "unsupported_claim": "None material",
+    "manifest_wording": "\"AMEND P1: logprobs=None on all requests.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "P2",
+    "deviation": "Public export strips the HLE `json` column (contains the answer and rationale), `answer`, and BCB `test`/`canonical_solution`; only the evaluator identity mounts them",
+    "spec_clause": "§3.2, §10.6",
+    "unsupported_claim": "Gold firewall",
+    "manifest_wording": "\"AMEND P2: public export fields = {source_id, superdomain, task_text, answer_format ∈ {MC, EXACT, CODE}, entry_point (BCB), category}; protected export separate directory mode 0700.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "P3",
+    "deviation": "`prior_exposure_manifest.json` must inventory the old harness's datasets; if HLE/BCB never entered prior runs, say so",
+    "spec_clause": "§3.1",
+    "unsupported_claim": "Blindness of the confirmation set",
+    "manifest_wording": "\"prior_exposure_manifest: old harness runs `<list from agents_scaling_results/*>` used `<datasets>`; HLE-Verified and BigCodeBench were first downloaded 2026-09-05 (shards in scratchpad) and were not viewed beyond field inspection.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "P4",
+    "deviation": "Model/tokenizer revisions: `models.py` carries no revision; freeze the HF snapshot hashes for 4B/8B/14B/32B, vLLM 0.21.0, chat template hash",
+    "spec_clause": "§6.4, §10.1",
+    "unsupported_claim": "Reproducibility",
+    "manifest_wording": "\"model_lock: {size: snapshot_hash} read from `$HF_HOME/hub/models--Qwen--Qwen3-<size>/snapshots/`; chat_template sha256; engine_digest='vllm==0.21.0;profile=<name>;tp=<n>;max_model_len=40960'.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "L1",
+    "deviation": "Output cap 8,192 total (thinking + final): truncated thinking yields no JSON → invalid candidate (a real outcome, §3.5). The cap is not changed after any main outcome is seen",
+    "spec_clause": "§3.5, §6.4, §6.6",
+    "unsupported_claim": "None; but HLE invalid rates may be high",
+    "manifest_wording": "\"L1: cap fixed at 8,192; per-cell `finish_reason=length` and invalid rates reported as outcomes.\"",
+    "unnoticed_by_brief": true,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "X1",
+    "deviation": "Package layout `src/agents_scaling/study/` mirrors §11.2 subpackage names; only a subset of the §11.2 CLI verbs is implemented (`cells build`, `run_one`, `seal`, `evaluate`, `analyze`)",
+    "spec_clause": "§11.2",
+    "unsupported_claim": "None",
+    "manifest_wording": "\"X1: CLI subset recorded.\"",
+    "unnoticed_by_brief": false,
+    "source": "02_spec_fidelity_audit.md §1"
+  },
+  {
+    "id": "E3'",
+    "deviation": "Code string rule for BCB is one frozen rule used identically for public grouping and protected testing: program := strip_one_enclosing_fence(final_answer) (the §3.5 salvage rule), not the official bigcodebench.sanitize() (not importable in asys_env; only inside the evaluator container).",
+    "spec_clause": "§3.2, §3.3, §3.5",
+    "unsupported_claim": "Any claim that the tested program equals the official sanitize() output; none material if recorded.",
+    "manifest_wording": "AMEND E3': program = strip_one_enclosing_fence(final_answer) applied identically in selection/normalize.py::code_key and evaluation/bcb.py; supersedes the sanitize() clause of E3. Evaluator container digest still recorded per E3.",
+    "unnoticed_by_brief": true,
+    "source": "04_critic_corrections.md P1-5"
+  },
+  {
+    "id": "N9B1",
+    "deviation": "N=9 at B1 is infeasible under the analytic B0 (9 full-cap roots ≈ 10.2 PFLOP > B1 ≈ 5.66 PFLOP). N=9 appears only at B4; M-cross is 8B/32B at N∈{3,9}×B4, with B1 only for N=3.",
+    "spec_clause": "§6.2, §6.5 (raise B0 pre-freeze or consistently change an envelope; validate every mandatory cell at its lowest budget)",
+    "unsupported_claim": "The N=9 B1 feasibility check for the focused panel; N=9 rows of any B1 cost curve.",
+    "manifest_wording": "AMEND N9B1: N=9 cells exist only at B4. M-cross = {8B, 32B} × N∈{3,9} × B4 plus N=3 × B1. B0 is not raised after outcomes.",
+    "unnoticed_by_brief": true,
+    "source": "04_critic_corrections.md P1-2"
+  },
+  {
+    "id": "N1-SRS",
+    "deviation": "HLE sampling is plain salted-hash SRS within superdomain over the 1,600 eligible text-only Gold+Revision ids (spec-literal); Gold/Revision are reported as strata, not balanced. dev = first 30 HLE + first 30 BCB in rank order; main = next 200 + 200; reserve = rest. N_main target 400 with a declared 300-prefix fallback decided at the Sun 08:00 / 12:00 gates.",
+    "spec_clause": "§3.1, §3.3, §6.2",
+    "unsupported_claim": "Equal Gold/Revision representation; powered claims (N1 applies).",
+    "manifest_wording": "AMEND N1-SRS: one salted-hash rank order per superdomain (split_salt_hex in FROZEN.yaml); dev=first 30+30, main=next 200+200, reserve=remainder; strata Gold/Revision are covariates; if the Sun 08:00/12:00 gate declares the 300-prefix fallback, main = the first 150+150 of the main rank order and the amendment is re-recorded with the gate time.",
+    "unnoticed_by_brief": true,
+    "source": "04_critic_corrections.md P1-8"
+  },
+  {
+    "id": "E4b",
+    "deviation": "Repeated-episode panel = 30 items × 6 episodes × {S_FRESH, IND_VOTE, DEC, CEN_FLAT}; S_HISTORY excluded because of its 64-call sequential depth; estimation-only.",
+    "spec_clause": "§5.6, §6.2, §9.3",
+    "unsupported_claim": "System pass@K for S_HISTORY; inferential S4 claims (below the 30-cluster minimum per superdomain).",
+    "manifest_wording": "AMEND E4b: E panel methods = {S_FRESH, IND_VOTE, DEC, CEN_FLAT}; episode 0 aliases the main cell; K∈{1,2,3,5} from n=6; S_HISTORY omitted (sequential 64-call depth exceeds the window); estimation-only.",
+    "unnoticed_by_brief": true,
+    "source": "04_critic_corrections.md P0-4, §5"
+  },
+  {
+    "id": "M1b",
+    "deviation": "Dense checkpoint panel committed at 100 items with 150 as a nested hash-prefix extension.",
+    "spec_clause": "§6.2, §6.4",
+    "unsupported_claim": "Checkpoint-panel precision at 150 items unless the extension completes.",
+    "manifest_wording": "AMEND M1b: M panel = first 100 items of the main rank order (50/50); items 101–150 are a nested extension run only if tier-2 capacity allows; both prefixes are declared before any M outcome is seen.",
+    "unnoticed_by_brief": true,
+    "source": "04_critic_corrections.md §5 item 5"
+  },
+  {
+    "id": "C1b",
+    "deviation": "Family C is tier 2b, text-only shadow forecasts, and may be unexecuted → p=1 in the Holm list.",
+    "spec_clause": "§8.7, §9.2",
+    "unsupported_claim": "Any C-family calibration/forecast claim if C is not executed.",
+    "manifest_wording": "AMEND C1b: C (report compiler, 256-token thinking-off temperature-0 forecasts, dev recalibrators on all 60 dev items) is tier 2b and first in the cut order; if unexecuted, family C enters Holm with p=1 and remains in the denominator.",
+    "unnoticed_by_brief": true,
+    "source": "04_critic_corrections.md §4 item 10, §5 item 2"
+  }
+]

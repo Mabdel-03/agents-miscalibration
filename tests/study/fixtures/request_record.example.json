@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "request_id": "d7b9d89c26c0083c745ca4d68b33ae82d99a751151556f7e3fe27ba8a7307eaf",
+  "identity": {
+    "study_id": "agent_design_v4_orcd",
+    "model_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+    "tokenizer_revision": "9216db5781bf21249d130ec9da846c4624c16137",
+    "engine_digest": "vllm==0.21.0;dtype=bf16;tp=2;reasoning_parser=qwen3;profile=32B-long",
+    "input_hash": "1654b0fbfbc668403ebf6fa25871a2634a72da3bf4b0966c9697e26b6029e601",
+    "decoding_hash": "e43c3cce5565e6cfbeb23b6ca43897981f7bcbd63aa62ac4324b76e72dd0d0c8",
+    "semantic_seed_hex": "ac04ba97db243010bf94d04ee26a101f",
+    "local_caps": {
+      "max_input": 32768,
+      "max_tokens": 8192
+    },
+    "hook_hash": "none"
+  },
+  "seed_key": {
+    "source_id": "hle:abc123",
+    "split": "main",
+    "model_cell": "Qwen3-32B@9216db57",
+    "episode_rep": 0,
+    "actor_slot": 0,
+    "purpose": "root",
+    "step_slot": 3,
+    "namespace": "stateless_bank"
+  },
+  "engine_seed": 3171865198955081744,
+  "model": {
+    "hf_id": "Qwen/Qwen3-32B",
+    "served_model_name": "32B",
+    "profile": "32B-long",
+    "tp_size": 2
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Task: 2+2?"
+    }
+  ],
+  "chat_template_kwargs": {
+    "enable_thinking": true
+  },
+  "chat_template_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "sampling": {
+    "temperature": "0.6",
+    "top_p": "0.95",
+    "top_k": 20,
+    "min_p": "0.0",
+    "presence_penalty": "0.0",
+    "repetition_penalty": "1.0",
+    "max_tokens": 8192,
+    "enable_thinking": true,
+    "guided_json": false
+  },
+  "prompt_token_ids": [
+    151644,
+    872,
+    198
+  ],
+  "prompt_tokens": 3,
+  "response": {
+    "content": "{\"approach\":\"add\",\"evidence\":[],\"alternatives_considered\":[],\"failure_checks\":[],\"final_answer\":\"4\",\"confidence\":0.9}",
+    "reasoning": "2+2=4",
+    "reasoning_field_name": "reasoning",
+    "token_ids": [
+      19,
+      20
+    ],
+    "completion_tokens": 2,
+    "reasoning_tokens": 1,
+    "finish_reason": "stop"
+  },
+  "flops": {
+    "prefill": 1000000000.0,
+    "decode": 2000000000.0,
+    "total": 3000000000.0
+  },
+  "timing": {
+    "submitted_at": 1757100000.0,
+    "completed_at": 1757100001.5,
+    "latency_s": 1.5
+  },
+  "endpoint": {
+    "host": "node0000",
+    "port": 8001,
+    "slurm_job_id": null
+  },
+  "attempts": 1,
+  "producer": {
+    "cell_id": "F.BANK.32B.N1.B0.F00.e0.s003",
+    "run_id": "study_v4",
+    "slurm_job_id": null
+  },
+  "content_sha256": "40361a34feec327b400c975be5c609caff67774dcf5346e31321f69e482f3eb8"
+}

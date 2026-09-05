@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "cell": {
+    "cell_id": "F.BANK.32B.N1.B0.F00.e0.s003",
+    "kind": "GENERATE",
+    "module": "F",
+    "method": "BANK",
+    "checkpoint": "32B",
+    "N": 1,
+    "B": 0,
+    "framing": "00",
+    "episode_rep": 0,
+    "split": "main",
+    "items": [
+      "hle:abc123"
+    ],
+    "depends_on": [],
+    "max_inflight": 10,
+    "parallel_items": 2,
+    "lane": "32B",
+    "degree": null
+  },
+  "source_id": "hle:abc123",
+  "domain": "hle",
+  "split": "main",
+  "status": "complete",
+  "episode": null,
+  "bank": [
+    {
+      "candidate_id": "7668d993efc3362ee4f08c26d53265813345d8856effaf61fd193118396b97c6",
+      "request_id": "d7b9d89c26c0083c745ca4d68b33ae82d99a751151556f7e3fe27ba8a7307eaf",
+      "slot": 0,
+      "stage": "root",
+      "valid": true,
+      "failure_code": null,
+      "candidate": {
+        "approach": "add",
+        "evidence": [
+          {
+            "claim": "2+2=4",
+            "support": "arithmetic",
+            "uncertainty": "low"
+          }
+        ],
+        "alternatives_considered": [],
+        "failure_checks": [
+          "checked parity"
+        ],
+        "final_answer": "4",
+        "confidence": 0.9
+      },
+      "candidate_sha256": "22c6abddee968dc82850fe974e3c93bd97c6a7efe568b47b68d85e14b7edc440",
+      "raw_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "vote_key": "4",
+      "grouping_mode": "exact_norm"
+    }
+  ],
+  "timing": {
+    "started_at": 1757100000.0,
+    "finished_at": 1757100100.0,
+    "wall_s": 100.0
+  },
+  "worker": {
+    "slurm_job_id": null,
+    "host": "node0000"
+  },
+  "code_version": "deadbeef"
+}

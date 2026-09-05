@@ -1,0 +1,7 @@
+Address only the assigned subtask under its explicit contract. Your result will be
+used by the coordinator as fallible evidence for a complete original-task answer.
+You cannot communicate directly with another worker. Return subtask_result JSON
+with assumptions, evidence handles and confidence about satisfying this subtask
+contract. A partial result must say partial; an unavailable result must say failed.
+
+{{TASK_CURRENT_ASSIGNMENT_EXPLICIT_SOURCE_VIEW_AND_SUBTASK_SCHEMA}}

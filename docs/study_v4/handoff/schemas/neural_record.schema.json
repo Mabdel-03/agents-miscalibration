@@ -1,0 +1,1404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-design-v4:neural-record:1",
+  "title": "Agent design v4 linked neural, confidence and content record",
+  "description": "Typed storage records for Section 8. Schema validity is necessary, not evidence of a frozen runnable experiment. Cross-record source-item/role/exposure/nonce/hash/rank/eligibility/credential checks remain mandatory. No ground-truth outcome fields are admitted to observation/forecast records.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/StateSnapshot"
+    },
+    {
+      "$ref": "#/$defs/ActivationRow"
+    },
+    {
+      "$ref": "#/$defs/ConfidenceRow"
+    },
+    {
+      "$ref": "#/$defs/UnitPanelRow"
+    },
+    {
+      "$ref": "#/$defs/InterventionRow"
+    }
+  ],
+  "$defs": {
+    "cost": {
+      "type": "object",
+      "properties": {
+        "logical_forward_work": {
+          "type": "number",
+          "minimum": 0
+        },
+        "gpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoning_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measurement_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "logical_forward_work",
+        "gpu_seconds",
+        "cpu_seconds",
+        "measurement_only"
+      ],
+      "additionalProperties": false
+    },
+    "StateSnapshot": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "agent-design-v4/neural-record/1"
+        },
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_type": {
+          "const": "StateSnapshot"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split": {
+          "enum": [
+            "development",
+            "confirmation",
+            "technical_fixture"
+          ]
+        },
+        "episode_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "membership_N": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "role": {
+          "enum": [
+            "INDEPENDENT_SOLVER",
+            "DECENTRALIZED_MEMBER",
+            "CENTRAL_HUB",
+            "CENTRAL_WORKER",
+            "RLM_CONTROLLER",
+            "RLM_CHILD",
+            "COMMON_CONSUMER",
+            "CONTROLLED_PRODUCER",
+            "CONTROLLED_INTERFACE",
+            "COMMON_REPORT_READER"
+          ]
+        },
+        "agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_call_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpoint_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_bank_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_contract_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exposed_artifact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "portable_state_bytes_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_environment_reference": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "export_status": {
+          "enum": [
+            "PORTABLE",
+            "PARTIAL_EXPORT",
+            "NOT_PORTABLE",
+            "PROTOCOL_FAILURE_SENTINEL"
+          ]
+        },
+        "known_budget": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_to_date": {
+          "$ref": "#/$defs/cost"
+        },
+        "experiment_kind": {
+          "enum": [
+            "NATIVE",
+            "CONTROLLED_TRANSPORT",
+            "TECHNICAL_FIXTURE",
+            "NATIVE_REPORT_READOUT"
+          ]
+        },
+        "interface": {
+          "anyOf": [
+            {
+              "enum": [
+                "PRIVATE",
+                "DIRECT",
+                "HUB",
+                "RLM_RECURSIVE"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_manifest_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_seal_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "selected_candidate_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truth_opened_at_capture": {
+          "const": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "record_id",
+        "record_type",
+        "item_id",
+        "split",
+        "episode_id",
+        "config_id",
+        "membership_N",
+        "role",
+        "agent_id",
+        "parent_call_id",
+        "model_revision",
+        "checkpoint_id",
+        "source_bank_id",
+        "task_contract_id",
+        "exposed_artifact_ids",
+        "portable_state_bytes_hash",
+        "native_environment_reference",
+        "export_status",
+        "known_budget",
+        "cost_to_date",
+        "experiment_kind",
+        "interface"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "experiment_kind": {
+                "const": "NATIVE_REPORT_READOUT"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "report_manifest_id",
+              "decision_seal_hash",
+              "selected_candidate_id",
+              "truth_opened_at_capture"
+            ],
+            "properties": {
+              "role": {
+                "const": "COMMON_REPORT_READER"
+              },
+              "checkpoint_id": {
+                "const": "FINAL_HANDOFF_REPORT"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ActivationRow": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "agent-design-v4/neural-record/1"
+        },
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_type": {
+          "const": "ActivationRow"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split": {
+          "enum": [
+            "development",
+            "confirmation",
+            "technical_fixture"
+          ]
+        },
+        "StateSnapshot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consumer_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "child_slot": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "nonce_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "block": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "anchor_kind": {
+          "enum": [
+            "TASK_ONLY_PREFILL",
+            "FINAL_STATE_PREFILL",
+            "NATIVE_FINAL_PREFILL",
+            "GENERATED_TOKEN_32",
+            "GENERATED_TOKEN_128",
+            "GENERATED_TOKEN_512",
+            "FINAL_OBJECT_CLOSE"
+          ]
+        },
+        "structural_span": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "record_index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scope": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "byte_start": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "byte_end": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "record_index",
+                "name",
+                "scope",
+                "byte_start",
+                "byte_end"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "token_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "channel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generated_token_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "missingness": {
+          "enum": [
+            "NONE",
+            "NOT_REACHED",
+            "CHANNEL_UNAVAILABLE",
+            "JSON_CLOSE_MISSING",
+            "FINAL_OBJECT_NOT_APPLICABLE",
+            "NOT_PORTABLE"
+          ]
+        },
+        "tensor_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "measurement_cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "operationally_available_at_checkpoint": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schema_version",
+        "record_id",
+        "record_type",
+        "item_id",
+        "split",
+        "StateSnapshot_id",
+        "consumer_revision",
+        "condition",
+        "child_slot",
+        "nonce_hash",
+        "block",
+        "anchor_kind",
+        "structural_span",
+        "token_offset",
+        "channel",
+        "generated_token_count",
+        "missingness",
+        "tensor_hash",
+        "measurement_cost",
+        "operationally_available_at_checkpoint"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "missingness": {
+                "const": "NONE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tensor_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "token_offset": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "missingness": {
+                "not": {
+                  "const": "NONE"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tensor_hash": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "anchor_kind": {
+                "enum": [
+                  "GENERATED_TOKEN_32",
+                  "GENERATED_TOKEN_128",
+                  "GENERATED_TOKEN_512",
+                  "FINAL_OBJECT_CLOSE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "operationally_available_at_checkpoint": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "child_slot": {
+                "type": "integer",
+                "minimum": 2
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "operationally_available_at_checkpoint": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "condition": {
+                "enum": [
+                  "RESTORE_UNIT",
+                  "REMINDER",
+                  "RESP_VALID",
+                  "RESP_INVALID",
+                  "RESP_NEUTRAL",
+                  "U_PLUS_DIRECT",
+                  "U_PLUS_PRIVATE",
+                  "U_MINUS_PRIVATE",
+                  "SEMANTIC_DIRECT",
+                  "ANSWER_DIRECT",
+                  "POSITION_DIRECT",
+                  "RANDOM_DIRECT",
+                  "RAW_PLUS_DIRECT",
+                  "RAW_PLUS_PRIVATE",
+                  "RAW_MINUS_PRIVATE",
+                  "SHAM_DIRECT",
+                  "SHAM_PRIVATE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "operationally_available_at_checkpoint": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ConfidenceRow": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "agent-design-v4/neural-record/1"
+        },
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_type": {
+          "const": "ConfidenceRow"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split": {
+          "enum": [
+            "development",
+            "confirmation",
+            "technical_fixture"
+          ]
+        },
+        "StateSnapshot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "PERSONAL_FINAL",
+              "CHILD_CONTRACT",
+              "TEAM_SELECTED",
+              "TEAM_AFTER_EXTRA"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "observer_role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "information_set": {
+          "enum": [
+            "SELF_ONLY",
+            "PEER_EXPOSED",
+            "HUB_STATE",
+            "RLM_CONTEXT"
+          ]
+        },
+        "selected_pool_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remaining_allowance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "probability_fields": {
+          "type": "object",
+          "properties": {
+            "q_personal": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "q_child_contract": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "q_team_now": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "q_recover": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "q_preserve": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "q_personal",
+            "q_child_contract",
+            "q_team_now",
+            "q_recover",
+            "q_preserve"
+          ],
+          "additionalProperties": false
+        },
+        "forecast_prompt_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "future_label_ids_sealed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "parsing_status": {
+          "enum": [
+            "VALID",
+            "INVALID_FALLBACK",
+            "INAPPLICABLE_ONLY"
+          ]
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "inclusion_probability": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "record_id",
+        "record_type",
+        "item_id",
+        "split",
+        "StateSnapshot_id",
+        "scope",
+        "observer_role",
+        "information_set",
+        "selected_pool_id",
+        "operation_id",
+        "remaining_allowance",
+        "probability_fields",
+        "forecast_prompt_hash",
+        "future_label_ids_sealed",
+        "parsing_status",
+        "cost",
+        "inclusion_probability"
+      ],
+      "additionalProperties": false
+    },
+    "UnitPanelRow": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "agent-design-v4/neural-record/1"
+        },
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_type": {
+          "const": "UnitPanelRow"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split": {
+          "enum": [
+            "development",
+            "confirmation",
+            "technical_fixture"
+          ]
+        },
+        "source_bank_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "focal_root_id": {
+          "const": 0
+        },
+        "sealed_selection_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "target_semantic_peer_ids": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "semantic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "peer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "target",
+            "semantic",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        "accepted_quote_spans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "unit_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "root_id": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4
+              },
+              "artifact_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "byte_start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "byte_end": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "delivered_packet_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "actually_exposed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "unit_id",
+              "root_id",
+              "artifact_id",
+              "byte_start",
+              "byte_end",
+              "delivered_packet_id",
+              "actually_exposed"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "root_novel": {
+          "type": "boolean"
+        },
+        "rank_features": {
+          "type": "object",
+          "properties": {
+            "content_priority": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "focal_exclusive": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "token_length": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "tie_hash": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "task_redundant": {
+              "enum": [
+                "YES",
+                "NO",
+                "UNCLEAR",
+                "NONE"
+              ]
+            }
+          },
+          "required": [
+            "content_priority",
+            "focal_exclusive",
+            "token_length",
+            "tie_hash",
+            "task_redundant"
+          ],
+          "additionalProperties": false
+        },
+        "validity_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rubric_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "foil_question_hashes": {
+          "type": "object",
+          "properties": {
+            "target_foil": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target_question": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "semantic_foil": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "semantic_question": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "target_foil",
+            "target_question",
+            "semantic_foil",
+            "semantic_question"
+          ],
+          "additionalProperties": false
+        },
+        "eligibility": {
+          "type": "object",
+          "properties": {
+            "target_valid": {
+              "type": "boolean"
+            },
+            "target_root_novel_measurement": {
+              "type": "boolean"
+            },
+            "semantic_control": {
+              "type": "boolean"
+            },
+            "peer_benefit_delivered_packet": {
+              "type": "boolean"
+            },
+            "reason_codes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "target_valid",
+            "target_root_novel_measurement",
+            "semantic_control",
+            "peer_benefit_delivered_packet",
+            "reason_codes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "record_id",
+        "record_type",
+        "item_id",
+        "split",
+        "source_bank_id",
+        "focal_root_id",
+        "sealed_selection_time",
+        "target_semantic_peer_ids",
+        "accepted_quote_spans",
+        "root_novel",
+        "rank_features",
+        "validity_version",
+        "rubric_version",
+        "foil_question_hashes",
+        "eligibility"
+      ],
+      "additionalProperties": false
+    },
+    "InterventionRow": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "agent-design-v4/neural-record/1"
+        },
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_type": {
+          "const": "InterventionRow"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "split": {
+          "enum": [
+            "development",
+            "confirmation",
+            "technical_fixture"
+          ]
+        },
+        "interface": {
+          "enum": [
+            "DIRECT",
+            "PRIVATE"
+          ]
+        },
+        "cell_id": {
+          "enum": [
+            "U_PLUS_DIRECT",
+            "U_PLUS_PRIVATE",
+            "U_MINUS_PRIVATE",
+            "SEMANTIC_DIRECT",
+            "ANSWER_DIRECT",
+            "POSITION_DIRECT",
+            "RANDOM_DIRECT",
+            "RAW_PLUS_DIRECT",
+            "RAW_PLUS_PRIVATE",
+            "RAW_MINUS_PRIVATE",
+            "SHAM_DIRECT",
+            "SHAM_PRIVATE"
+          ]
+        },
+        "child_slot": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "exact_request_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "donor_request_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "Q_U_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "block": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dose": {
+          "enum": [
+            0.25,
+            0.5,
+            1.0
+          ]
+        },
+        "nominal_vector_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "actual_displacement_hash_and_norm": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "norm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "base_norm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "post_norm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "nominal_norm": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "hash",
+            "norm",
+            "base_norm",
+            "post_norm",
+            "nominal_norm"
+          ],
+          "additionalProperties": false
+        },
+        "control_eligibility": {
+          "type": "object",
+          "properties": {
+            "eligible": {
+              "type": "boolean"
+            },
+            "reason_codes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "target_control_abs_cosine": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "eligible",
+            "reason_codes",
+            "target_control_abs_cosine"
+          ],
+          "additionalProperties": false
+        },
+        "output_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "normalization": {
+          "enum": [
+            "NORM_PRESERVING",
+            "RAW_ADD",
+            "ZERO_SHAM"
+          ]
+        },
+        "donor_operationally_available": {
+          "const": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "record_id",
+        "record_type",
+        "item_id",
+        "split",
+        "interface",
+        "cell_id",
+        "child_slot",
+        "exact_request_hash",
+        "donor_request_ids",
+        "Q_U_hash",
+        "block",
+        "dose",
+        "nominal_vector_hash",
+        "actual_displacement_hash_and_norm",
+        "control_eligibility",
+        "output_ids",
+        "cost",
+        "normalization",
+        "donor_operationally_available"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "U_PLUS_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "U_PLUS_PRIVATE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "PRIVATE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "U_MINUS_PRIVATE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "PRIVATE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "SEMANTIC_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "ANSWER_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "POSITION_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "RANDOM_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "RAW_PLUS_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "RAW_PLUS_PRIVATE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "PRIVATE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "RAW_MINUS_PRIVATE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "PRIVATE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "SHAM_DIRECT"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "DIRECT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cell_id": {
+                "const": "SHAM_PRIVATE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "interface": {
+                "const": "PRIVATE"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

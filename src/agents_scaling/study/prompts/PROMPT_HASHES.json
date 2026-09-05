@@ -1,0 +1,18 @@
+{
+  "framing_clauses.v4_orcd.json": "e29cea3dac1d119babf43e918af050c746844d98fc53363ccc69048d0619e969",
+  "templates/cen_final_instruction.txt": "9173213697742ef89c71efdda9b8d310fe8d814ba2b86d35ec411fa8e94d1c80",
+  "templates/central_hub.txt": "1a3104c06aff292e230f314146beec1ea06aed9f25a2c87f0077332827d182db",
+  "templates/central_worker.txt": "77671f69e840cf53db0cf2fa705d60a48a61cb1b1e0c2349f6b245eccaf7cbcb",
+  "templates/common_consumer.txt": "0ef947886a4ccc980d26948419184a4e3fad72a2ad420944a4f3a50d0f551493",
+  "templates/dec_revision_contract.txt": "23792f6c2d69b79b69520172244b060c476fc6d3f024e41875e4286f173d6733",
+  "templates/dec_revision_contract_n1.txt": "18fd8af5415bb212e4a18d2fc8a1754ab426c1254893e402078103f000dbb10b",
+  "templates/dec_root_truthful.txt": "00105c78aa41b8ec6d33ed43505122c0f5ca535f2cd6e3cbed9f6265a64cf7f2",
+  "templates/focal_revision.txt": "ef867e0e1248e177063f7e7fb5926fc745a23ed530d377e5ff17907a0bc0107b",
+  "templates/forecast.txt": "76358e45aa6e75fc2e69718029c69b646f1ddf1bbb6740859dc515f41f3098ff",
+  "templates/hle_judge.txt": "0f0023ee579b8c134f1834ed8952778b9e01460e31d47c242ee3629da9d44835",
+  "templates/independent_root.txt": "8d4af06513e5c3d3dd5d2f4dde8bc43676fc829004a52cc8e700a30d1100b82b",
+  "templates/judge_best.txt": "03e3f744fb48a3553d473f03e0e5b1b82419f9bde866a9a7a8b6d79d31930d26",
+  "templates/rlm_child.txt": "1cd6d376246c49efc72f7961b341af093f0598069e3f36ed4aa4f61e266cb20d",
+  "templates/rlm_root.txt": "9b39d16b69f28e28bbf3bac30eb1aa35834f586fa210dd2e472d71c8137de57e",
+  "templates/transport_mediator.txt": "03e2613a2fb8b13cc026dd7cf3c7b67d60b6da18b793790948a2b59945a52238"
+}

@@ -1,0 +1,272 @@
+schema_version: 4
+study_id: agent_design_v4
+artifact_role: declarative_hypothesis_and_analysis_contract
+status: unresolved_freeze_template
+analysis_implemented: false
+authority: specification_section_9
+resolved_manifest_hash: null
+notice:
+  - These are preregistration targets and formulas, not results or achieved-power claims.
+  - Every exact contrast, panel, seed, fitting rule and exceptional-case procedure must seal before confirmation.
+  - Changes to scientific alternatives or margins require an explicit prospective amendment.
+
+primary_multiplicity:
+  families_in_fixed_order: [A, O, R, C, G, M]
+  number_of_families: 6
+  correction: Holm_step_down
+  familywise_alpha: 0.05
+  unexecuted_or_estimation_only_family_p: 1.0
+  remove_unexecuted_families_from_correction: false
+  intersected_component_composition: maximum_component_p
+  separate_component_Bonferroni_inside_IUT_required: false
+  family_adjusted_interval_implementation:
+    scalar_components: conservative_0.05_divided_by_6_divided_by_required_component_count_tail_budget
+    required_component_counts: {A: 1, R: 2, C: 1, G: 1, M: 6}
+    O_primary_pairwise: within_O_max_T_simultaneous_intervals_at_1_minus_0.05_divided_by_6
+    O_secondary_pairwise: within_O_max_T_simultaneous_95_percent_intervals
+    conservative_display_bounds_are_the_Holm_decision_rule: false
+    Holm_rejection_can_coexist_with_conservative_display_bound_crossing_zero: true
+  ordinary_estimation_interval_coverage: 0.95
+  label_interval_coverage_targets: true
+
+sampling_and_weighting:
+  static_unit: canonical_source_item
+  long_context_unit: source_context_or_context_construction_block
+  preserve_within_item_vector: true
+  superdomain_weights: {HLE: 0.5, BigCodeBench: 0.5}
+  source_weights_within_superdomain: equal
+  C_G_architecture_weights:
+    IND_VOTE: 0.25
+    DEC: 0.25
+    CEN_FLAT: 0.25
+    CEN_RLM_D2_L5: 0.25
+  failures: intention_to_run_with_frozen_failure_rule
+  condition_on_realized_recursion_validity_agreement_or_success: false
+  model_members_calls_layers_or_seeds_increase_independent_N: false
+
+families:
+  A:
+    name: vote_awareness
+    panel: N_main_four_cell_independent_banks
+    outcome: VOTE_at_5_binary_correctness
+    contrast: 0.5*((Y_01-Y_00)+(Y_11-Y_10))
+    hypothesis: mean_contrast_not_equal_to_zero
+    tail: two_sided
+    family_p: scalar_contrast_p
+    TEAM_frame_averaged_equally: true
+    claim: literal_aggregation_instruction_changes_vote_accuracy
+    claim_does_not_identify: latent_social_awareness
+  O:
+    name: native_orchestration
+    panel: N_main
+    budget: B4
+    methods: [S_FRESH, S_HISTORY, IND_VOTE, DEC, CEN_FLAT, CEN_RLM_D2_L5]
+    outcome: native_final_binary_correctness
+    null: all_six_native_policy_means_equal
+    tail: two_sided
+    family_p: maximum_absolute_studentized_15_pair_contrast_global_p
+    simultaneous_pairwise_contrasts: all_15_pairs
+    primary_pairwise_interval_family_tail_budget: 0.008333333333333333
+    secondary_within_O_pairwise_interval_family_tail_budget: 0.05
+    within_O_95_percent_pairwise_interval_alone_supports_primary_pair_claim: false
+    IND_VOTE_root_framing: '11'
+    S_FRESH_root_framing: '00'
+    prompt_differences_are_part_of_native_policy_contrast: true
+    identical_prompt_sampling_alias_is_separate_control: true
+  R:
+    name: recursive_budget_scaling
+    panel: N_resource
+    allowed_panel_sizes: [300, 600, N_main]
+    matched_conditions: [RLM_D1_L32, RLM_D2_L32]
+    mandatory_budgets: [B1, B2, B4, B8]
+    outcome: native_final_binary_correctness
+    tail: one_sided
+    components:
+      - id: greater_endpoint_budget_response
+        contrast: (Y_D2_B8-Y_D2_B1)-(Y_D1_B8-Y_D1_B1)
+        alternative: positive
+      - id: better_high_budget_accuracy
+        contrast: Y_D2_B8-Y_D1_B8
+        alternative: positive
+    family_p: max_of_two_component_p_values
+    lower_B1_baseline_alone_sufficient: false
+    truncate_B8_trace_to_simulate_B1: false
+  C:
+    name: selected_system_confidence
+    panel: N_calibration_geometry
+    allowed_panel_sizes: [300, 600, N_main]
+    methods: [IND_VOTE, DEC, CEN_FLAT, CEN_RLM_D2_L5]
+    budget: B4
+    checkpoint: FINAL_HANDOFF_REPORT
+    target: actual_native_final_selected_answer_correctness
+    baseline: development_recalibrated_selected_PERSONAL_FINAL_confidence_plus_missingness
+    treatment: development_recalibrated_explicit_TEAM_SELECTED_forecast
+    contrast: mean(Brier_baseline-Brier_explicit)
+    tail: one_sided
+    alternative: positive
+    architecture_conditioned_calibrator_primary_when_frozen_minimum_met: true
+    architecture_conditioned_calibrator_minimum: {successes_per_architecture: 10, failures_per_architecture: 10}
+    equal_recalibration_scope_for_both_predictors: true
+    test_labels_used_to_fit_recalibration: false
+    family_p: scalar_contrast_p
+    primary_claim: improved_probability_forecast_quality
+    calibration_repair_requires_separate_diagnostics: true
+  G:
+    name: incremental_internal_information
+    panel: N_calibration_geometry
+    allowed_panel_sizes: [300, 600, N_main]
+    methods: [IND_VOTE, DEC, CEN_FLAT, CEN_RLM_D2_L5]
+    budget: B4
+    checkpoint: FINAL_HANDOFF_REPORT
+    target: actual_native_final_selected_answer_correctness
+    baseline: full_text_and_observables
+    treatment: identical_full_text_and_observables_plus_frozen_internal_features
+    contrast: mean(Brier_baseline-Brier_internal_augmented)
+    tail: one_sided
+    alternative: positive
+    same_development_folds_and_tuning_budget: true
+    development_source_grouped_outer_folds: 5
+    development_source_grouped_inner_tuning_folds: 5
+    preprocessing_feature_selection_and_tuning_within_training_data_only: true
+    resolved_inner_tuning_manifest: null
+    final_fit: all_permitted_development_data_before_confirmation
+    fit_or_tune_on_confirmation_labels: false
+    primary_bootstrap: paired_test_losses_conditional_on_frozen_development_predictors
+    primary_bootstrap_refits_predictors: false
+    optional_learning_procedure_secondary:
+      required: false
+      source_grouped_confirmation_OOF: prospective_registration_only
+      bootstrap_refits_entire_OOF_pipeline: true
+      duplicate_resampled_source_copies_share_fold: true
+      fixed_OOF_loss_bootstrap_substitutes_for_learning_procedure_refits: false
+    family_p: scalar_contrast_p
+    primary_claim: incremental_out_of_sample_predictive_information
+    mechanism_or_deployed_utility_follows_automatically: false
+  M:
+    name: bounded_content_specific_use
+    panel: N_edit_with_registered_pretreatment_eligible_frames
+    allowed_N_edit: [200, 400, N_content]
+    interfaces: [DIRECT, PRIVATE]
+    outcome_U: mean_appropriate_unit_use_across_four_fixed_successors
+    core_eligibility: pretreatment_grounded_valid_root_novel_target
+    posttreatment_selection_for_deficit_or_rescue: false
+    tail: one_sided
+    components:
+      - {id: deficit, contrast: U_PRIVATE_BASE-U_DIRECT_BASE, alternative: positive, frame: core_eligibility}
+      - {id: rescue, contrast: U_DIRECT_PLUS-U_DIRECT_BASE, alternative: positive, frame: core_eligibility}
+      - {id: semantic_specificity, contrast: U_DIRECT_PLUS-U_DIRECT_SEMANTIC, alternative: positive, frame: matched_semantic_control_eligible}
+      - {id: answer_specificity, contrast: U_DIRECT_PLUS-U_DIRECT_ANSWER, alternative: positive, frame: matched_answer_control_eligible}
+      - {id: random_specificity, contrast: U_DIRECT_PLUS-U_DIRECT_RANDOM, alternative: positive, frame: matched_random_control_eligible}
+      - {id: reverse_suppression, contrast: U_PRIVATE_BASE-U_PRIVATE_MINUS, alternative: positive, frame: core_eligibility}
+    family_p: max_of_six_component_p_values
+    zero_or_invalid_control_vector_can_establish_specificity: false
+    all_item_noop_policy_contrasts_reported_separately: true
+    claim: bounded_content_specific_influence_at_tested_successor_boundary
+    natural_full_circuit_or_irreversible_erasure_claim: false
+
+resampling:
+  replications: 20000
+  seed_manifest: null
+  design: source_cluster_resampling_independently_within_superdomain
+  scalar_test: null_centered_studentized_cluster_bootstrap
+  O_test: maximum_absolute_studentized_statistic_over_15_pairs_per_centered_resample
+  observed_and_resampled_weights_identical: true
+  Monte_Carlo_p_correction: add_one_to_tail_count_and_resample_count
+  preserve_all_K_budget_model_episode_columns: true
+  G_primary_keeps_development_predictors_fixed: true
+  intervals_across_budget_default: pointwise_unless_registered_simultaneous_band
+  exceptional_cases:
+    zero_variance_or_rare_outcome_zero_width_interval_allowed: false
+    primary_component_minimum_independent_eligible_clusters: 30
+    below_minimum: estimation_only_unless_prospectively_validated_exact_procedure
+    allowed_alternatives:
+      - exact_bounded_or_binomial_procedure_where_assumptions_apply
+      - conservative_bounded_mean_inequality_on_independent_source_cluster_means
+    resolved_exceptional_case_algorithm: null
+    unqualified_sign_flip_or_permutation_allowed: false
+
+power:
+  planning_family_alpha: 0.008333333333333333
+  planning_alpha_rule: 0.05_divided_by_6
+  minimum_simulations_per_scenario: 2000
+  target_complete_rejection_probability: 0.8
+  report_Monte_Carlo_uncertainty: true
+  chosen_size: smallest_feasible_allowed_size_meeting_registered_target
+  targets_are_publication_materiality_cutoffs: false
+  allowed_sizes:
+    N_main: [1100, 1600]
+    N_resource: [300, 600, N_main]
+    N_calibration_geometry: [300, 600, N_main]
+    N_content: [400, 600, 800]
+    N_edit: [200, 400, N_content]
+    N_response: {default: 200, larger_subset: prospective_freeze_only}
+    repeated_system_source_items: {default: 100, change: prospective_amendment_only}
+    checkpoint_source_items: {default: 300, change: prospective_amendment_only}
+    long_context_blocks: [100, 200, 400]
+    long_context_development_blocks_minimum: 60
+  starting_alternatives:
+    A_O_accuracy_difference: [0.06, 0.08]
+    R_budget_interaction: [0.08, 0.12]
+    R_high_budget_advantage: [0.06]
+    C_G_Brier_improvement: [0.01, 0.02]
+    M_each_required_unit_use_difference: [0.08, 0.12]
+  preserve_paired_correlations_and_eligibility: true
+  C_G_predictors_in_power_simulation: development_frozen
+  planning_critical_values: separately_validated_null_critical_value_approximation
+  approximation_frozen_before_sample_selection: true
+  approximation_null_size_validation: synthetic_and_development_scenarios
+  full_20000_bootstrap_nested_inside_every_power_replication: false
+  validated_planning_approximation_manifest: null
+  M_power_is_joint_six_component_power: true
+  O_reports_omnibus_and_important_pair_power: true
+  simulate_conservative_rare_event_and_eligibility_scenarios: true
+  registered_target_scenario: null
+  complete_planning_report: null
+  test_trend_driven_expansion_or_optional_stopping: false
+  insufficient_power: prospective_estimation_only_or_explicit_scope_amendment
+
+secondary_families:
+  S1: framing_interaction_and_direct_answer_supply
+  S2: membership_degree_round_information
+  S3: checkpoints_and_consumer_substitution
+  S4: pass_at_K_and_selection_gaps
+  S5: scoped_calibration_and_extra_compute_response
+  S6: RLM_and_long_context_components
+  S7: geometry_accessibility_and_mechanism_extensions
+  S8: interactive_transfer
+  confirmatory_within_family_correction: Holm
+  optional_discovery_screen: {procedure: Benjamini_Hochberg, q: 0.05, preregistered: true}
+  primary_family_error_budget_reallocated_to_secondary: false
+
+separately_earned_claims:
+  calibration:
+    development_fixed_reliability_bins: 5
+    report: [signed_bias, calibration_intercept, calibration_slope, Brier, log_loss, discrimination, missingness]
+    awareness_inflation:
+      required: [positive_aware_minus_unaware_signed_PERSONAL_FINAL_bias, worse_PERSONAL_FINAL_Brier]
+      same_target_and_same_bank_required: true
+  accessibility_equivalence:
+    default_candidate_margin: 0.05
+    metric: bounded_decoder_accuracy_or_probability
+    finalized_margin: null
+    nonsignificant_difference_establishes_equivalence: false
+  low_harm_repair:
+    separately_registered_one_sided_noninferiority_required: true
+    default_selected_correctness_loss_margin: 0.02
+    default_invalid_probability_increase_margin: 0.01
+    default_exposed_peer_unit_use_loss_margin: 0.05
+    margins_require_development_justification: true
+    M_default_prerequisite: false
+    dependent_four_successors_count_as_four_independent_harm_trials: false
+
+freeze_requirements:
+  source_and_panel_hashes: null
+  exact_prompt_model_protocol_hashes: null
+  exact_outcome_and_eligibility_versions: null
+  named_O_pairwise_priority_contrasts: null
+  retained_primary_claim_statuses: null
+  C_calibration_fallback_and_minimum_rule: null
+  G_development_nested_fitting_and_final_frozen_predictor_hashes: null
+  annotation_audit_correction_or_bounds: null
+  inference_exception_and_interval_algorithms: null
+  planning_scenario_and_power_outputs: null

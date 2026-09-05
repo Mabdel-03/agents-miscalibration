@@ -1,0 +1,372 @@
+{
+  "scope": "specification_package_only",
+  "experiments_executed": false,
+  "runtime_validated": false,
+  "checks": [
+    {
+      "name": "twelve_top_level_sections",
+      "passed": true,
+      "detail": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12"
+      ]
+    },
+    {
+      "name": "code_fences_balanced",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "no_internal_web_citation_markers",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "standalone_spec_substantial",
+      "passed": true,
+      "detail": 32770
+    },
+    {
+      "name": "no_runtime_or_result_claim",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "all_primary_family_names",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "RLM_depth_control_and_complete_attempt_definition",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_datasets.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_experiment_matrix.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_hpc_profile.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_hypotheses.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_neural_readouts.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_protocols.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "parse_yaml_rlm_runtime.yaml",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_candidate.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_coordinator_action.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_forecast.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_hub_packet.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_neural_record.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_rlm_events.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_schema_subtask_result.schema.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "candidate_valid_fixture",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "reject_candidate_outside_probability",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "reject_candidate_unexpected_field",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "six_family_Holm",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "N_grid_includes_hub_and_N1",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "required_neutral_count_grid",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "informed_primary_independent",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "RLM_full_depth_comparison_frontier",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "G_freezes_before_confirmation",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "HPC_values_explicit_unresolved",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "neural_config_matches_current_section",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "controlled_consumer_count",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "template_cannot_claim_ready_runtime",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "valid_prompt_json_framing_clauses.json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "reference_metric_tests",
+      "passed": true,
+      "detail": {
+        "tests_run": 17,
+        "log": ".................\n----------------------------------------------------------------------\nRan 17 tests in 0.003s\n\nOK\n"
+      }
+    }
+  ],
+  "unresolved_execute_inputs": [
+    "datasets.yaml:.main.hle.prior_exposure_manifest",
+    "datasets.yaml:.main.hle.exact_eligible_count",
+    "datasets.yaml:.main.code.evaluator_commit",
+    "datasets.yaml:.main.code.evaluator_container_digest",
+    "datasets.yaml:.long_context.oolong.generator_commit",
+    "datasets.yaml:.long_context.longbench_v2.exact_common_window_eligible_groups",
+    "datasets.yaml:.interactive.revision",
+    "datasets.yaml:.interactive.exact_source_group_manifest",
+    "datasets.yaml:.interactive.evaluator_container_manifest",
+    "experiment_matrix.yaml:.sampling.study_seed",
+    "experiment_matrix.yaml:.sampling.split_hash_salt",
+    "experiment_matrix.yaml:.sampling.manifest_paths.source_items",
+    "experiment_matrix.yaml:.sampling.manifest_paths.prior_exposure",
+    "experiment_matrix.yaml:.sampling.manifest_paths.source_groups",
+    "experiment_matrix.yaml:.sampling.manifest_paths.protected_evaluation",
+    "experiment_matrix.yaml:.checkpoints.flagship.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.flagship.config_hash",
+    "experiment_matrix.yaml:.checkpoints.flagship.tokenizer_revision",
+    "experiment_matrix.yaml:.checkpoints.flagship.chat_template_hash",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.0.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.0.tokenizer_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.0.config_hash",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.1.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.1.tokenizer_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.1.config_hash",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.2.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.2.tokenizer_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.2.config_hash",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.3.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.3.tokenizer_revision",
+    "experiment_matrix.yaml:.checkpoints.dense_panel.3.config_hash",
+    "experiment_matrix.yaml:.checkpoints.selector.repository",
+    "experiment_matrix.yaml:.checkpoints.selector.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.selector.tokenizer_revision",
+    "experiment_matrix.yaml:.checkpoints.selector.prompt_hash",
+    "experiment_matrix.yaml:.checkpoints.isolated_correctness_judge.repository",
+    "experiment_matrix.yaml:.checkpoints.isolated_correctness_judge.weight_revision",
+    "experiment_matrix.yaml:.checkpoints.isolated_correctness_judge.prompt_hash",
+    "experiment_matrix.yaml:.checkpoints.generation_settings_manifest",
+    "experiment_matrix.yaml:.resource_contract.model_forward_oracle_hash",
+    "experiment_matrix.yaml:.resource_contract.budget_unit_B0_flops",
+    "experiment_matrix.yaml:.selectors.public_suite_manifest",
+    "experiment_matrix.yaml:.selectors.vote_normalization_manifest",
+    "experiment_matrix.yaml:.selectors.judge_best_manifest",
+    "experiment_matrix.yaml:.framing.literal_clauses_and_prompt_hashes",
+    "experiment_matrix.yaml:.modules.foundation.optional_bank_extension.items",
+    "experiment_matrix.yaml:.modules.rlm_controls.additional_program_search.frozen_variant",
+    "experiment_matrix.yaml:.modules.neural_content.resolved_manifest",
+    "experiment_matrix.yaml:.modules.long_context.exact_eligible_item_and_group_manifest",
+    "experiment_matrix.yaml:.modules.interactive.pinned_dataset_revision",
+    "experiment_matrix.yaml:.modules.interactive.resolved_protocol_manifest",
+    "experiment_matrix.yaml:.runtime_and_hardware.runner_implementation_commit",
+    "experiment_matrix.yaml:.runtime_and_hardware.cost_oracle_implementation_commit",
+    "experiment_matrix.yaml:.runtime_and_hardware.inference_engine_digest",
+    "experiment_matrix.yaml:.runtime_and_hardware.rlm_adapter_commit",
+    "experiment_matrix.yaml:.runtime_and_hardware.evaluator_container_digest",
+    "experiment_matrix.yaml:.runtime_and_hardware.scheduler",
+    "experiment_matrix.yaml:.runtime_and_hardware.scheduler_account",
+    "experiment_matrix.yaml:.runtime_and_hardware.partition",
+    "experiment_matrix.yaml:.runtime_and_hardware.gpu_model",
+    "experiment_matrix.yaml:.runtime_and_hardware.gpu_memory_gib",
+    "experiment_matrix.yaml:.runtime_and_hardware.gpus_per_node",
+    "experiment_matrix.yaml:.runtime_and_hardware.nodes",
+    "experiment_matrix.yaml:.runtime_and_hardware.gpu_hour_ceiling",
+    "experiment_matrix.yaml:.runtime_and_hardware.storage_ceiling_gib",
+    "experiment_matrix.yaml:.runtime_and_hardware.durable_artifact_path",
+    "experiment_matrix.yaml:.runtime_and_hardware.scratch_path",
+    "experiment_matrix.yaml:.runtime_and_hardware.model_cache_path",
+    "experiment_matrix.yaml:.runtime_and_hardware.gold_isolation_manifest",
+    "hpc_profile.yaml:.required_execute_inputs.scheduler",
+    "hpc_profile.yaml:.required_execute_inputs.account",
+    "hpc_profile.yaml:.required_execute_inputs.partition",
+    "hpc_profile.yaml:.required_execute_inputs.gpu_model",
+    "hpc_profile.yaml:.required_execute_inputs.gpu_memory_gib",
+    "hpc_profile.yaml:.required_execute_inputs.gpus_per_node",
+    "hpc_profile.yaml:.required_execute_inputs.nodes",
+    "hpc_profile.yaml:.required_execute_inputs.interconnect",
+    "hpc_profile.yaml:.required_execute_inputs.cpus_per_task",
+    "hpc_profile.yaml:.required_execute_inputs.ram_gib_per_task",
+    "hpc_profile.yaml:.required_execute_inputs.job_wall_time",
+    "hpc_profile.yaml:.required_execute_inputs.container_runtime",
+    "hpc_profile.yaml:.required_execute_inputs.container_digest",
+    "hpc_profile.yaml:.required_execute_inputs.durable_path",
+    "hpc_profile.yaml:.required_execute_inputs.scratch_path",
+    "hpc_profile.yaml:.required_execute_inputs.model_cache_path",
+    "hpc_profile.yaml:.required_execute_inputs.storage_quota_gib",
+    "hpc_profile.yaml:.required_execute_inputs.max_gpu_hours",
+    "hpc_profile.yaml:.required_execute_inputs.allocation_window",
+    "hpc_profile.yaml:.required_execute_inputs.model_lock_manifest",
+    "hpc_profile.yaml:.required_execute_inputs.scientific_freeze_manifest",
+    "hpc_profile.yaml:.required_execute_inputs.public_export_manifest",
+    "hpc_profile.yaml:.required_execute_inputs.evaluator_isolation_manifest",
+    "hpc_profile.yaml:.required_execute_inputs.cost_oracle_hash",
+    "hpc_profile.yaml:.required_execute_inputs.B0_flops",
+    "hpc_profile.yaml:.required_execute_inputs.throughput_profile",
+    "hpc_profile.yaml:.required_execute_inputs.memory_profile",
+    "hpc_profile.yaml:.required_execute_inputs.runtime_acceptance_report",
+    "hypotheses.yaml:.resolved_manifest_hash",
+    "hypotheses.yaml:.families.G.resolved_inner_tuning_manifest",
+    "hypotheses.yaml:.resampling.seed_manifest",
+    "hypotheses.yaml:.resampling.exceptional_cases.resolved_exceptional_case_algorithm",
+    "hypotheses.yaml:.power.validated_planning_approximation_manifest",
+    "hypotheses.yaml:.power.registered_target_scenario",
+    "hypotheses.yaml:.power.complete_planning_report",
+    "hypotheses.yaml:.separately_earned_claims.accessibility_equivalence.finalized_margin",
+    "hypotheses.yaml:.freeze_requirements.source_and_panel_hashes",
+    "hypotheses.yaml:.freeze_requirements.exact_prompt_model_protocol_hashes",
+    "hypotheses.yaml:.freeze_requirements.exact_outcome_and_eligibility_versions",
+    "hypotheses.yaml:.freeze_requirements.named_O_pairwise_priority_contrasts",
+    "hypotheses.yaml:.freeze_requirements.retained_primary_claim_statuses",
+    "hypotheses.yaml:.freeze_requirements.C_calibration_fallback_and_minimum_rule",
+    "hypotheses.yaml:.freeze_requirements.G_development_nested_fitting_and_final_frozen_predictor_hashes",
+    "hypotheses.yaml:.freeze_requirements.annotation_audit_correction_or_bounds",
+    "hypotheses.yaml:.freeze_requirements.inference_exception_and_interval_algorithms",
+    "hypotheses.yaml:.freeze_requirements.planning_scenario_and_power_outputs",
+    "neural_readouts.yaml:.panels.main_confirmation.resolved",
+    "neural_readouts.yaml:.panels.content_confirmation.resolved",
+    "neural_readouts.yaml:.panels.response_confirmation.resolved",
+    "neural_readouts.yaml:.panels.edit_confirmation.resolved",
+    "neural_readouts.yaml:.panels.C_G_confirmation.resolved",
+    "neural_readouts.yaml:.sites.primary_C_G_node.child_slot",
+    "neural_readouts.yaml:.calibration.shadow_forecast.native_reasoning_mode_and_cost_resolved",
+    "neural_readouts.yaml:.freeze.dataset_snapshot_and_split_hash",
+    "neural_readouts.yaml:.freeze.blindness_audit",
+    "neural_readouts.yaml:.freeze.source_weights_and_coarse_strata",
+    "neural_readouts.yaml:.freeze.all_panel_item_hashes",
+    "neural_readouts.yaml:.freeze.study_episode_slot_seeds",
+    "neural_readouts.yaml:.freeze.model_tokenizer_engine_revisions",
+    "neural_readouts.yaml:.freeze.model_specific_predictive_sites",
+    "neural_readouts.yaml:.freeze.intervention_site_rank_dose",
+    "neural_readouts.yaml:.freeze.unit_subspace_and_nuisance_hashes",
+    "neural_readouts.yaml:.freeze.native_channel_and_structural_anchor_fixtures",
+    "neural_readouts.yaml:.freeze.resolved_common_consumer_request_hashes",
+    "neural_readouts.yaml:.freeze.raw_bank_and_delivered_packet_exposure_hashes",
+    "neural_readouts.yaml:.freeze.peer_packet_filter_and_panel_rubrics",
+    "neural_readouts.yaml:.freeze.unit_validity_use_and_foil_versions",
+    "neural_readouts.yaml:.freeze.predictive_models_PCA_penalties_calibrators",
+    "neural_readouts.yaml:.freeze.decoder_control_and_fold_mappings",
+    "neural_readouts.yaml:.freeze.answer_transition_and_prefix_token_ids",
+    "neural_readouts.yaml:.freeze.cost_oracle_reservations_and_storage",
+    "neural_readouts.yaml:.freeze.retained_claims_and_Section9_hypothesis_manifest",
+    "neural_readouts.yaml:.freeze.Section9_planning_report",
+    "neural_readouts.yaml:.report_compiler.full_resolved_compiler_hash",
+    "rlm_runtime.yaml:.runtime.selected_commit",
+    "rlm_runtime.yaml:.runtime.adapter_digest",
+    "rlm_runtime.yaml:.runtime.container_digest",
+    "rlm_runtime.yaml:.runtime.dependency_lock_digest",
+    "rlm_runtime.yaml:.runtime.model_revision",
+    "rlm_runtime.yaml:.runtime.tokenizer_revision",
+    "rlm_runtime.yaml:.runtime.chat_template_digest",
+    "rlm_runtime.yaml:.runtime.engine_digest",
+    "rlm_runtime.yaml:.runtime.decoding_manifest_digest",
+    "rlm_runtime.yaml:.conditions.RLM_TRANSPORT_D2.mediator_prompt_manifest",
+    "rlm_runtime.yaml:.conditions.REPL_PROGRAM_SEARCH.trajectory_variant",
+    "rlm_runtime.yaml:.conditions.REPL_PROGRAM_SEARCH.complete_trajectory_count",
+    "rlm_runtime.yaml:.conditions.REPL_PROGRAM_SEARCH.selector_manifest_digest",
+    "rlm_runtime.yaml:.visibility.mechanical_context_history_policy_manifest",
+    "rlm_runtime.yaml:.visibility.prompt_renderer_manifest",
+    "rlm_runtime.yaml:.visibility.supported_full_prompt_token_envelope",
+    "rlm_runtime.yaml:.broker.upstream_name_mapping_manifest",
+    "rlm_runtime.yaml:.broker.package_allowlist_manifest",
+    "rlm_runtime.yaml:.resources.cost_oracle_manifest_digest",
+    "rlm_runtime.yaml:.resources.numerical_B0_flops",
+    "rlm_runtime.yaml:.long_context.generator_commit_and_validated_source_hashes"
+  ],
+  "passed": true,
+  "check_count": 36,
+  "unresolved_count": 164
+}

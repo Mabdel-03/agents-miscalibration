@@ -60,6 +60,20 @@ export ASYS_RUNTIME_INTEGRITY_LEASE="{RUNTIME_INTEGRITY_LEASE}"
 export ASYS_IMMUTABLE_PINS_SHA256="{IMMUTABLE_PINS_SHA256}"
 export ASYS_ROLLOUT_GENERATION="{ROLLOUT_GENERATION}"
 export HF_HOME="{HF_HOME}"
+# study-v4 patch C: compile/kernel caches on NODE-LOCAL /tmp (never $HOME: file quota ~85%;
+# never NFS: TP>1 ranks racing on one inductor autotune dir gave "Stale file handle").
+ASYS_LOCAL_CACHE="/tmp/asys_srv_${SLURM_JOB_ID}"
+mkdir -p "$ASYS_LOCAL_CACHE"/{vllm,torchinductor,triton,xdg}
+trap 'rm -rf "$ASYS_LOCAL_CACHE"' EXIT
+export XDG_CACHE_HOME="$ASYS_LOCAL_CACHE/xdg"
+export VLLM_CACHE_ROOT="$ASYS_LOCAL_CACHE/vllm"
+export TORCHINDUCTOR_CACHE_DIR="$ASYS_LOCAL_CACHE/torchinductor"
+export TRITON_CACHE_DIR="$ASYS_LOCAL_CACHE/triton"
+# The env scrub above removed any CUDA toolchain; FlashInfer's JIT sampler needs nvcc.
+# Use the native PyTorch top-k/top-p sampler instead (no JIT), and expose a matching
+# CUDA 13 toolkit in case another JIT path needs it.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export CUDA_HOME="/orcd/software/core/001/pkg/cuda/13.0.1"
 export VLLM_NO_USAGE_STATS=1
 export DO_NOT_TRACK=1
 export TOKENIZERS_PARALLELISM=false
@@ -157,6 +171,7 @@ LD_LIBRARY_PATH="{SERVING_PREFIX}/lib" \
   --max-model-len {MAX_MODEL_LEN} \
   --max-logprobs 20 \
   --reasoning-parser qwen3 \
+  --max-num-seqs 64 \
   --port "$PORT" &
 VLLM_PID=$!
 # Note: vLLM>=0.21 logs requests OFF by default (use --enable-log-requests to turn on);

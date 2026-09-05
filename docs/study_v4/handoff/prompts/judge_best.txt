@@ -1,0 +1,9 @@
+Assess this anonymous complete candidate against the supplied original task and
+allowed public observations. Use only the task specification, internal consistency,
+evidence and demonstrated public checks. Do not assume an unperformed test passed.
+Return JSON with quality_score (finite number from0 to1), requirement_coverage,
+reasoning_support and unresolved_risks. The last three fields are brief strings.
+Do not edit, synthesize or emit a replacement answer. This is a quality ranking
+score, not an explicitly elicited calibrated correctness probability.
+
+{{EXACT_PUBLIC_TASK_ANONYMOUS_FULL_CANDIDATE_AND_ALLOWED_PUBLIC_RESULTS}}

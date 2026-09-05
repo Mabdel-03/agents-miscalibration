@@ -1,0 +1,379 @@
+schema_version: 4
+study_id: agent_design_v4
+artifact_role: declarative_experiment_matrix
+execution_implemented: false
+phase: plan
+notes:
+  - This matrix declares experimental cells; it does not implement a runner or authorize unprofiled execution.
+  - Scientific and technical freeze validation must resolve every required null before physical execution.
+  - Physical requests are a union of exact canonical identities; logical module counts are not additive.
+
+sampling:
+  independent_unit: source_task
+  source_grouped_long_context_unit: context_construction_block
+  study_seed: null
+  split_hash_salt: null
+  main_items_default: 1100
+  main_items_allowed: [1100, 1600]
+  main_stratum_weights: {hle: 0.5, code: 0.5}
+  main_default_per_stratum: {hle: 550, code: 550}
+  development_items: 300
+  development_per_stratum: {hle: 150, code: 150}
+  nested_panels:
+    resource: {default_items: 300, allowed_items: [300, 600, N_main], balanced: true}
+    membership: {default_items: 300, balanced: true}
+    checkpoint: {default_items: 300, balanced: true}
+    independent_system_episodes: {default_items: 100, balanced: true}
+    calibration_geometry: {default_items: 300, allowed_items: [300, 600, N_main], balanced: true}
+    neural_content: {default_items: 400, allowed_items: [400, 600, 800], balanced: true}
+    cross_consumer: {default_items: 300, balanced: true, nested_in: neural_content}
+    interactive: {default_items: 100, separate_population: true}
+  expansion_rule: preregistered_complete_corrected_power_before_confirmation
+  manifest_paths:
+    source_items: null
+    prior_exposure: null
+    source_groups: null
+    protected_evaluation: null
+
+checkpoints:
+  flagship:
+    repository: Qwen/Qwen3.8-27B
+    weight_revision: null
+    config_hash: null
+    tokenizer_revision: null
+    chat_template_hash: null
+  dense_panel:
+    - {repository: Qwen/Qwen3-4B, weight_revision: null, tokenizer_revision: null, config_hash: null}
+    - {repository: Qwen/Qwen3-8B, weight_revision: null, tokenizer_revision: null, config_hash: null}
+    - {repository: Qwen/Qwen3-14B, weight_revision: null, tokenizer_revision: null, config_hash: null}
+    - {repository: Qwen/Qwen3-32B, weight_revision: null, tokenizer_revision: null, config_hash: null}
+  selector: {repository: null, weight_revision: null, tokenizer_revision: null, prompt_hash: null}
+  isolated_correctness_judge: {repository: null, weight_revision: null, prompt_hash: null}
+  primary_precision: bfloat16
+  speculative_or_mtp_decoding: false
+  flagship_reasoning_effort: medium
+  dense_panel_thinking: true
+  generation_settings_manifest: null
+
+resource_contract:
+  primary_scope: complete_episode_from_task_receipt
+  charged_components:
+    - roots_and_fresh_attempts
+    - coordinator_planning_decomposition_and_synthesis
+    - workers_and_recursive_subcalls
+    - all_prompt_prefills_including_peers_and_retained_history
+    - required_extraction_public_test_construction_and_model_reviews
+    - operational_feature_measurement_and_forecasts
+    - candidate_scoring_and_final_selection
+  model_forward_oracle_hash: null
+  flop_convention: multiply_add_counts_as_two
+  budget_unit_B0_flops: null
+  budget_unit_rule: maximum_declared_full_cap_feasibility_bound_over_all_required_lowest_budget_cells
+  budget_multipliers: [1, 2, 4, 8]
+  primary_budget_multiplier: 4
+  mandatory_feasibility_checks:
+    - every_required_N5_initialization_and_final_selection_path
+    - focused_8B_32B_N9_B1_cells
+    - every_other_required_cell_at_its_lowest_assigned_budget
+  solver_output_cap_total_tokens: 8192
+  selector_output_cap_total_tokens: 1024
+  total_solver_coordinator_calls_max: 64
+  additional_selector_forecast_calls_max: 64
+  all_additional_calls_charged_to_same_budget: true
+  complete_call_reservation_required: true
+  reserved_finalization_required: true
+  future_output_lengths_available_to_scheduler: false
+  hidden_correctness_available_to_scheduler: false
+  partial_terminal_call_to_fill_slack: false
+  dummy_work_to_spend_slack: false
+  report_unused_allowance: true
+  deployment_accounting: logical_uncached_work
+  physical_cache_savings_reported_separately: true
+
+selectors:
+  primary: VOTE
+  mandatory_companion: JUDGE_BEST
+  hle_vote: normalized_answer_plurality
+  code_vote: frozen_public_behavior_signature_plurality
+  code_fallback: frozen_syntax_AST_identity_then_hash_tie
+  preserve_duplicate_answer_votes: true
+  reject_duplicate_candidate_ids: true
+  tie_rule: frozen_source_and_candidate_id_hash_independent_of_correctness
+  class_and_representative_tie_namespaces_separate: true
+  all_invalid_selection: no_answer
+  invalid_planned_attempts_remain_in_denominator: true
+  protected_correctness_visible_to_selectors: false
+  public_suite_manifest: null
+  vote_normalization_manifest: null
+  judge_best_manifest: null
+  companion_selection_replay:
+    same_candidate_bank: true
+    native_central_root_answer_reported_separately: true
+    external_central_vote_unit: complete_independently_reset_episode_final
+    worker_subtasks_eligible_as_whole_task_candidates: false
+    same_bank_JUDGE_BEST_cost: source_policy_B_plus_additional_judging_work
+    same_bank_JUDGE_BEST_is_same_B_deployment: false
+    actual_same_B_judged_policy: separate_reservation_scheduler_may_admit_shorter_candidate_prefix
+
+framing:
+  foundation_factors:
+    TEAM_FRAME: [0, 1]
+    VOTE_AWARE: [0, 1]
+  literal_clauses_and_prompt_hashes: null
+  numeric_team_size_or_sample_index_in_foundation_prompt: false
+  foundation_unaware_semantics: neutral_about_downstream_use
+  false_sole_deployment_promise: false
+  main_N5_IND_VOTE_cell: '11'
+  native_communication_roles: truthful_actual_graph_and_subtask_responsibilities
+  native_membership_panel:
+    required_root_framing_cell_at_every_N: '00'
+    required_N_grid: [1, 2, 3, 5, 9]
+    native_graph_instructions_remain_truthful: true
+    N5_neutral_aliases_primary_N5_informed: false
+    optional_informed_grid_N: [2, 3, 5, 9]
+    optional_informed_grid_required: false
+  single_slot_caveat:
+    claim_multiple_team_members: false
+    aggregation_awareness_permitted_only_for_committed_multiple_attempts: true
+    changed_prompt_alias_allowed: false
+    foundation_prefix_one_is_native_single_member_deployment: false
+
+modules:
+  foundation:
+    required: true
+    item_panel: main
+    checkpoint: flagship
+    framing_cells: ['00', '01', '10', '11']
+    independent_complete_answers_per_cell: 10
+    output_cap_total_tokens: 8192
+    candidate_pass_K: [1, 2, 3, 5, 10]
+    offline_candidate_count_prefixes: [1, 2, 3, 5, 9]
+    optional_bank_extension: {required: false, answers_per_cell: 20, items: null}
+    exact_five_agent_vs_five_reset: alias_same_bank_and_selector
+    required_selectors: [VOTE, JUDGE_BEST]
+    generation_count_formula: 40_times_N_main_before_exact_aliases
+  architecture_main:
+    required: true
+    item_panel: main
+    budget_multipliers: [4]
+    methods:
+      - {id: IND_VOTE, N_roles: 5, root_framing: '11'}
+      - {id: DEC, N_roles: 5, root_framing: native_truthful}
+      - {id: CEN_FLAT, N_roles: 5, hub_count: 1, worker_count: 4, root_framing: native_truthful}
+      - {id: CEN_RLM, protocol: RLM_D2, L_created_max: 5, recursion_depth_max: 2}
+      - {id: S_FRESH, N_roles: 1, memory_policy: reset_per_attempt}
+      - {id: S_HISTORY, N_roles: 1, memory_policy: declared_history}
+    resource_IND_complete_candidate_limit: 64
+    foundation_bank_is_resource_candidate_ceiling: false
+  architecture_budget:
+    required: true
+    item_panel: resource
+    methods_from: architecture_main
+    budget_multipliers: [1, 2, 4, 8]
+    primary_B4_alias: exact_request_identity_only
+  repeated_system_episodes:
+    required: true
+    item_panel: independent_system_episodes
+    methods_from: architecture_main
+    budget_multipliers: [4]
+    complete_fresh_episodes_per_method: 10
+    principal_system_pass_K: [1, 2, 3, 5]
+    diagnostic_system_pass_K: [10]
+    first_episode_alias: exact_main_episode_only
+    pass_K_total_allowance_formula: K_times_per_episode_B
+    denominator_unit: source_task
+  static_membership:
+    required: true
+    item_panel: membership
+    methods: [IND_VOTE, DEC, CEN_FLAT]
+    N_roles: [1, 2, 3, 5, 9]
+    root_framing_cell: '00'
+    budget_multipliers: [4]
+    hub_included_in_N: true
+    role_resets_reported_separately: true
+    root_framing_contrast_with_main_N5: explicit_distinct_cell
+  focal_peer_degree:
+    required: true
+    item_panel: membership
+    independent_root_bank_size: 9
+    focal_recipient: source_hash_selected_before_outcomes
+    peer_degree: [0, 1, 2, 4, 8]
+    subset_policy: nested_blind_peer_order
+    communication_rounds: 1
+    private_children_per_focal_state: 4
+    peer_answers_added_to_focal_selected_pool: false
+    regime: fixed_opportunities_with_cost_reported
+  one_round_private_revision_control:
+    required: true
+    item_panel: membership
+    methods: [IND_PRIVATE_REVISION, DEC_ONE_ROUND]
+    N_roles: 5
+    initialization: identical_DEC_root_bank
+    revision_rounds: 1
+    selected_pool: terminal_five_slot_outputs_including_failed_opportunities
+    regime: fixed_opportunities_with_complete_cost_reported
+  rlm_controls:
+    required: true
+    item_panel: resource
+    conditions: [CENTRAL_STATIC_REPL, RLM_D0, RLM_D1, RLM_D2]
+    budget_multipliers: [4]
+    L_created_max_where_applicable: 5
+    additional_program_search:
+      condition: REPL_PROGRAM_SEARCH
+      required_for_practical_RLM_policy_claim: true
+      frozen_variant: null
+    long_context_required: true
+  rlm_frontier:
+    required: true
+    item_panel: resource
+    conditions: [RLM_D1, RLM_D2]
+    L_created_max: 32
+    budget_multipliers: [1, 2, 4, 8]
+    required_primary_scaling_contrast: D2_minus_D1_budget_interaction
+    long_context_required: true
+  rlm_context_capacity:
+    required: true
+    item_panel: resource
+    conditions: [RLM_D1, RLM_D2]
+    L_created_max: [1, 5, 9, 17]
+    budget_multipliers: [4]
+    alias_degenerate_conditions_only_if_exact: true
+  checkpoint_panel:
+    required: true
+    item_panel: checkpoint
+    checkpoints: [Qwen/Qwen3-4B, Qwen/Qwen3-8B, Qwen/Qwen3-14B, Qwen/Qwen3-32B]
+    methods: [IND_VOTE, DEC, CEN_FLAT, CEN_RLM]
+    static_N_roles: [5]
+    recursive_condition: {protocol: RLM_D2, L_created_max: 5, recursion_depth_max: 2}
+    budget_multipliers: [4]
+    primary_moderator_type: categorical_checkpoint
+    flagship_is_fifth_dense_scaling_point: false
+    all_solver_coordinator_and_recursive_roles_use_same_cell_checkpoint: true
+    per_checkpoint_RLM_interface_and_finalization_preflight_required: true
+  focused_checkpoint_membership_budget:
+    required: true
+    item_panel: checkpoint
+    checkpoints: [Qwen/Qwen3-8B, Qwen/Qwen3-32B]
+    methods: [IND_VOTE, DEC, CEN_FLAT]
+    N_roles: [3, 9]
+    root_framing_cell: '00'
+    budget_multipliers: [1, 4]
+  focused_checkpoint_recursion:
+    required: true
+    item_panel: checkpoint
+    checkpoints: [Qwen/Qwen3-8B, Qwen/Qwen3-32B]
+    new_conditions: [RLM_D1]
+    reused_conditions: [RLM_D2]
+    reused_from: checkpoint_panel
+    reuse_requires_exact_complete_episode_identity: true
+    L_created_max: 5
+    budget_multipliers: [4]
+    same_external_context_public_runtime_and_inference_controls_within_checkpoint: true
+    changed_runtime_capability: recursive_children_D2_versus_plain_subcalls_D1
+    contrast: (Y_D2_32B-Y_D1_32B)-(Y_D2_8B-Y_D1_8B)
+    inferential_family: S3_checkpoint_moderation
+    adds_primary_family: false
+    required_new_D2_checkpoint_cells_in_M: 4
+    required_new_D1_checkpoint_control_cells: 2
+    all_models_L32_frontier_required: false
+  fixed_producer_cross_consumer:
+    required: true
+    item_panel: cross_consumer
+    producer: Qwen/Qwen3.8-27B
+    new_consumers: [Qwen/Qwen3-8B, Qwen/Qwen3-32B]
+    producer_state_bytes_fixed: true
+    consumer_specific_tokenization: true
+    state_types: [PRIVATE, DIRECT, HUB, RLM_RECURSIVE]
+    state_type_manifest: section_4_controlled_focal_stages
+    private_children_per_state: 4
+  neural_content:
+    required: true
+    item_panel: neural_content
+    protocol_authority: section_8
+    resolved_manifest: null
+  native_calibration_geometry:
+    required: true
+    item_panel: calibration_geometry
+    methods:
+      - {id: IND_VOTE, N_roles: 5, root_framing: '11'}
+      - {id: DEC, N_roles: 5}
+      - {id: CEN_FLAT, N_roles: 5}
+      - {id: CEN_RLM, protocol: RLM_D2, L_created_max: 5}
+    budget_multipliers: [4]
+    primary_C_G_checkpoint: FINAL_HANDOFF_REPORT
+    primary_reader_checkpoint: flagship
+    primary_readout_location: common_report_reader_prefill_state_anchor_before_forecast_tokens
+    native_episodes_per_item_method: 1
+    architecture_weights: equal_four_methods
+    hypothesis_authority: hypotheses.yaml
+    finite_role_forecast_grid_authority: neural_readouts.yaml
+    primary_report_forecast_requests_per_item: 4
+    primary_prefill_readout_records_per_item: 4
+    readout_and_forecast_share_same_report_request_when_exact: true
+    forecast_request_count_formula: 4_times_N_calibration_geometry
+    forecast_request_count_default: 1200
+    development_report_forecast_request_count: 1200
+    additional_early_role_shadow_forecasts_default: 0
+    native_scoped_self_confidence_logged: true
+    shadow_forecasts_feed_back_to_solving: false
+    shadow_measurement_cost: separately_recorded_research_cost_and_charged_in_any_deployed_use
+    G_primary_training: development_only_nested_CV_then_full_development_fit_and_freeze
+    G_primary_bootstrap: paired_test_losses_with_predictors_fixed
+  native_temporal_diagnostic:
+    required: true
+    default_items: 300
+    item_selection: balanced_hashed_geometry_panel
+    methods: [IND_VOTE, DEC, CEN_FLAT, CEN_RLM_D2_L5]
+    checkpoint: flagship
+    N_roles_or_RLM_context_cap: 5
+    budget_multipliers: [4]
+    episodes_per_item_method: 1
+    role_counts_by_method: {IND_VOTE: 1, DEC: 1, CEN_FLAT: 2, CEN_RLM_D2_L5: 2}
+    phases: [ROOT, COORDINATION, TERMINAL]
+    selected_calls_per_applicable_role_phase: 1
+    call_selection: outcome_blind_hash
+    maximum_selected_call_records_per_item: 18
+    time_anchors: [NATIVE_PREFILL, GENERATED_32, GENERATED_128, GENERATED_512, FINAL_OBJECT_CLOSE]
+    frozen_blocks: 1
+    maximum_vectors_per_item: 90
+    maximum_vectors_default_panel: 27000
+    missing_or_inapplicable_anchors_create_zero_vectors: false
+    excludes_primary_report_and_controlled_consumer_prefills: true
+    broader_model_membership_or_repeat_panels_automatically_inherit_capture: false
+    extra_terminal_token_replay_cost: separately_recorded_and_charged_when_required
+  long_context:
+    required: true
+    source_artifacts: [oolongbench/oolong-synth, zai-org/LongBench-v2]
+    independent_unit: context_construction_block_or_shared_source_group
+    fresh_context_blocks_default: 200
+    fresh_context_blocks_allowed: [100, 200, 400]
+    development_context_blocks_minimum: 60
+    exact_eligible_item_and_group_manifest: null
+    protocol_authority: section_7
+    headline_static_score_pooled_with_long_context: false
+  interactive:
+    required_for_repository_agent_claim: true
+    item_panel: interactive
+    dataset: SWE-bench_Verified
+    pinned_dataset_revision: null
+    resolved_protocol_manifest: null
+
+runtime_and_hardware:
+  runner_implementation_commit: null
+  cost_oracle_implementation_commit: null
+  inference_engine_digest: null
+  rlm_adapter_commit: null
+  evaluator_container_digest: null
+  scheduler: null
+  scheduler_account: null
+  partition: null
+  gpu_model: null
+  gpu_memory_gib: null
+  gpus_per_node: null
+  nodes: null
+  gpu_hour_ceiling: null
+  storage_ceiling_gib: null
+  durable_artifact_path: null
+  scratch_path: null
+  model_cache_path: null
+  gold_isolation_manifest: null

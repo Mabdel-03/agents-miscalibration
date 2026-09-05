@@ -1,0 +1,294 @@
+contract_version: "4.0"
+status: research_implementation_contract
+implementation_status: not_an_implemented_or_validated_runtime
+confirmation_requires_resolved_fields_and_acceptance: true
+source_section: "7"
+
+runtime:
+  upstream_repository: https://github.com/alexzhang13/rlm
+  inspected_commit: 854e688fbba9d8f8989e3da9989812e4b6dfe270
+  selected_commit: null
+  adapter_digest: null
+  container_digest: null
+  dependency_lock_digest: null
+  model_revision: null
+  tokenizer_revision: null
+  chat_template_digest: null
+  engine_digest: null
+  decoding_manifest_digest: null
+  weight_policy: identical_frozen_backbone_for_root_and_every_child
+  trained_rlm_checkpoint: separate_optional_weight_and_harness_condition
+
+scientific_generation:
+  applies_to: flagship_root_and_child_solver_calls
+  model_id: Qwen/Qwen3.8-27B
+  precision: bfloat16
+  do_sample: true
+  enable_thinking: true
+  reasoning_effort: medium
+  temperature: 1.0
+  top_p: 0.95
+  top_k: 20
+  min_p: 0.0
+  presence_penalty: 0.0
+  repetition_penalty: 1.0
+  preserve_thinking: false
+  prior_private_reasoning_retained_in_prompt: false
+  visible_code_objects_and_declared_results_retained: true
+  speculative_or_mtp_decoding: false
+  unsupported_parameter: validation_error_not_silent_omission
+  checkpoint_panel: use_its_own_frozen_supported_family_settings
+  model_card_verified_on: "2026-09-05"
+  model_card_source: https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/README.md
+  official_effort_default: xhigh
+  official_preserve_thinking_default: true
+  study_choices_distinct_from_official_defaults: [reasoning_effort, preserve_thinking]
+
+conditions:
+  RLM_D0:
+    max_depth_edges: 0
+    max_created_contexts: 1
+    root_kind: repl
+    plain_subcalls: false
+    recursive_subcalls: false
+  RLM_D1:
+    max_depth_edges: 1
+    root_kind: repl
+    plain_subcalls: true
+    recursive_subcalls: false
+    children_kind: plain_model_leaf
+    context_capacity_regimes: [5, 32]
+  RLM_D2:
+    max_depth_edges: 2
+    root_kind: repl
+    plain_subcalls: true
+    recursive_subcalls: true
+    boundary_child_kind: plain_model_leaf
+    context_capacity_regimes: [5, 32]
+  RLM_D3:
+    enabled_by_default: false
+    max_depth_edges: 3
+    root_kind: repl
+    plain_subcalls: true
+    recursive_subcalls: true
+    boundary_child_kind: plain_model_leaf
+    context_capacity_regimes: [5, 32]
+  RLM_TRANSPORT_D2:
+    scope: controlled_information_interface_only_not_native_complete_episode
+    max_depth_edges: 2
+    max_created_mediator_contexts: 4
+    mediator_solver_invocations_total: 4
+    focal_revision_invocations_outside_mediator: 1
+    mediator_input: task_focal_root_and_exact_four_compiled_peer_packets_only
+    raw_peer_archive_access: false
+    mediator_output_schema: hub_packet
+    mediator_output_recipient_token_cap: 2048
+    mediator_prompt_manifest: null
+    reuse_native_full_task_final_candidate_prompt_without_adapter: false
+  CENTRAL_STATIC_REPL:
+    graph_policy: immutable_hub_worker_graph
+    same_external_store_tools_and_observation_envelope: true
+    model_created_nodes_or_edges: false
+  REPL_PROGRAM_SEARCH:
+    trajectory_variant: null
+    complete_trajectory_count: null
+    selector_manifest_digest: null
+    count_all_trajectories_under_one_policy_budget: true
+    full_episode_pass_at_k_requires_separate_complete_episodes: true
+
+identity_and_counting:
+  depth: number_of_parent_child_edges_from_root_at_zero
+  cumulative_L_includes: [initial_root, plain_leaf, recursive_child, restarted_root]
+  existing_context_next_invocation_increments_L: false
+  root_finalization_increments_L: false
+  node_may_have_multiple_model_invocations: true
+  child_result_is_full_task_candidate: false
+  retired_nodes_do_not_release_cumulative_L: true
+  report_separately: [assigned_roles, contexts_created, fresh_context_epochs, model_invocations, active_context_peak, achieved_depth, full_task_candidates, complete_episodes]
+
+required_panels:
+  matched_capacity:
+    variant: RLM_D2
+    max_created_contexts: 5
+    budget: B4
+    main_source_items: 1100
+    prefreeze_main_expansion: 1600
+  native_frontier:
+    variant: RLM_D2
+    max_created_contexts: 32
+    mandatory: true
+    shared_source_items: 300
+    budgets: [B1, B2, B4, B8]
+    required_long_context_suite: true
+  component_controls:
+    variants: [CENTRAL_STATIC_REPL, RLM_D0, RLM_D1]
+    RLM_D1_max_created_contexts: 5
+    shared_source_items: 300
+    budgets: [B4]
+    required_long_context_suite: true
+    recursive_vs_flat_compare_equal_capacity_and_allowance: true
+  recursive_scaling_primary:
+    variants: [RLM_D1, RLM_D2]
+    max_created_contexts: 32
+    shared_source_items: 300
+    budgets: [B1, B2, B4, B8]
+
+caps:
+  solver_coordinator_invocations_total: 64
+  selector_and_forecast_invocations_total: 64
+  generated_native_reasoning_plus_final_tokens_per_invocation: 8192
+  executed_code_cells_per_repl_node: 16
+  concurrent_model_requests_global: 4
+  code_cpu_seconds_per_cell: 30
+  code_cpu_seconds_per_episode: 300
+  mutable_heap_bytes_per_node: 2147483648
+  mutable_heap_bytes_aggregate: 8589934592
+  read_only_input_store_bytes: 17179869184
+  wall_clock_watchdog_seconds: 1800
+  previews_tokens_per_code_cell: 2048
+  automatically_included_preview_tokens_per_prompt: 4096
+
+visibility:
+  root_input_object_name: P
+  full_original_task_and_corpus_retained: true
+  children_access: explicitly_passed_prompt_bytes_and_read_handles_only
+  plain_leaf_handle_policy: materialize_exact_selected_spans_into_charged_prompt_before_admission_or_reject_if_oversized
+  implicit_parent_or_sibling_heap_access: false
+  final_candidate_schema_source: section_3_5
+  child_output_schema: named_subtask_assumptions_result_artifact_references_and_subtask_confidence
+  child_schema_source: schemas/rlm_events.schema.json#/$defs/subtask_result
+  protected_inputs_forbidden: [reference_answers, hidden_tests, labeled_oolong_context, gold_document_membership, evaluator_correctness, counterfactual_outcomes]
+  original_corpus_access_matched_across_repl_controls: true
+  exact_full_outputs_stored_in_research_ledger: true
+  returned_observations: frozen_bounded_metadata_preview_and_handles
+  automatic_model_summarization: false
+  mechanical_context_history_policy_manifest: null
+  prompt_renderer_manifest: null
+  supported_full_prompt_token_envelope: null
+  bounded_query_preview_token_cap: 1024
+  bounded_subtask_preview_token_cap: 1024
+  bounded_input_metadata_token_cap: 512
+  bounded_capability_manifest_token_cap: 512
+  bounded_resource_status_token_cap: 256
+  bounded_child_output_mode_token_cap: 128
+  fixed_wrapper_and_capabilities_token_cap: 4096
+  oversized_question_policy: retain_complete_in_P_and_expose_bounded_preview_with_handle
+  never_truncate_protected_task_or_final_answer_to_rescue_arm: true
+
+broker:
+  model_callable_interfaces: [lm_query, rlm_query, lm_query_batch, rlm_query_batch]
+  local_interfaces: [read, store, finish]
+  upstream_name_mapping_manifest: null
+  enforce_capabilities_in_broker_not_only_prompt: true
+  automatic_depth_boundary: documented_plain_leaf
+  forbidden_or_denied_call: typed_status_without_inference
+  arbitrary_network_access: false
+  shell_or_package_install_from_model_code: false
+  unmetered_provider_clients_or_credentials_in_sandbox: false
+  package_allowlist_manifest: null
+  local_files: sandbox_and_explicit_read_only_mounts_only
+  artifact_storage: versioned_or_immutable
+  public_tools: study_allowlist_only_with_metered_execution
+
+resources:
+  account_scope: one_complete_episode_including_all_descendants_and_selection
+  primary_unit: exact_integer_model_forward_flops
+  integer_flops_serialization: decimal_string
+  cost_oracle_manifest_digest: null
+  numerical_B0_flops: null
+  budget_multipliers: {B1: 1, B2: 2, B4: 4, B8: 8}
+  known_request_reservation: full_rendered_prompt_prefill_plus_full_decode_cap
+  protect_before_optional_work:
+    - root_finalization_full_prompt_envelope_and_decode_cap
+    - one_return_call_for_each_live_recursive_ancestor
+    - all_mandatory_candidate_scoring_and_selection
+    - corresponding_invocation_slots_code_cells_and_bounded_cpu_time
+  ancestor_reservations_shared_by_siblings: false
+  child_budget_is_new_budget: false
+  release_when: corresponding_result_or_explicit_terminal_status_recorded
+  debit_when: actual_output_or_failure_work_available
+  unseen_cached_output_length_in_admission: forbidden
+  lower_decode_cap_to_fill_slack: false
+  physical_cache_reuse_is_free_deployment_work: false
+  fail_preflight_if_minimum_legal_finalization_path_does_not_fit: true
+  budget_overshoot: harness_defect_suspend_affected_cell
+  cpu_tool_memory_latency_reported_separately: true
+
+scheduler:
+  mode: deterministic_request_order_barrier_batches
+  max_batch_size: 4
+  return_order: declared_request_order
+  scheduling_by_hidden_result_or_service_completion_time: false
+  new_work_before_entire_current_batch_accounted: false
+  asynchronous_arrival_order: separately_named_optional_sensitivity
+
+finalization:
+  invocation_count_class: solver_coordinator
+  reuse_existing_root_context: true
+  final_code_cell_normal_caps_apply: true
+  early_valid_finish_releases_unused_reserve: true
+  forbidden_subcalls_during_finalization: true
+  final_instruction: |-
+    No further language-model calls are available. Use the original task and the
+    existing REPL objects as fallible evidence. Write one final Python cell that sets
+    Final to the best-supported answer in the required final-candidate schema. You may
+    inspect and combine existing objects with local code, but may not call another
+    model, fetch new external information, or invent a result of an unperformed check.
+  child_final_instruction: |-
+    No further language-model calls are available. Use the assigned subtask and
+    explicitly available objects as fallible evidence. Write one final Python
+    cell that sets Final to the best-supported result in the required subtask
+    schema. You may inspect and combine existing objects with local code, but
+    may not call another model, fetch new external information, or invent a
+    result of an unperformed check.
+
+forks:
+  checkpoint: completed_root_code_cell_with_no_pending_requests_or_running_code
+  preserve: [root_history, reachable_heap, aliases, code_definitions, closures, files, rng_state, input_handles, node_graph, resource_ledger]
+  adapter_kind: validated_process_snapshot_or_restricted_supported_serializable_heap
+  arbitrary_pickle_loading: false
+  summary_is_exact_fork: false
+  unsupported_state: exclude_fork_diagnostic_only_retain_episode_outcome
+  require_noop_continuation_parity: true
+  changed_parent_content: regenerate_all_dependent_adaptive_decisions
+  frozen_graph_replay: separate_graph_conditioned_diagnostic
+  deployable_policy_access_to_counterfactual_heap_or_hidden_local_answers: false
+
+long_context:
+  powered_set_status: study_created_oolong_derivative
+  untouched_context_blocks_default: 200
+  prefreeze_power_choices: [100, 200, 400]
+  development_context_blocks_minimum: 60
+  predetermined_questions_per_block_maximum: 2
+  keep_nested_lengths_and_derivatives_in_one_cluster_and_split: true
+  independent_unit: context_construction_block
+  generator_commit_and_validated_source_hashes: null
+  published_anchors_inference: grouped_or_estimation_only_if_insufficient_independent_contexts
+  common_window: exact_rendered_input_and_full_output_reserve_fit_every_comparator
+  required_variants: [RLM_D0, RLM_D1, RLM_D2, CENTRAL_STATIC_REPL]
+  RLM_D1_and_D2_max_created_contexts: 32
+  budgets: [B1, B4, B8]
+  shared_window_nominal_input_bands: [8192, 16384]
+  extended_nominal_input_bands: [65536, 262144]
+  optional_nominal_input_bands: [32768, 131072, 1048576]
+  unsupported_direct_call_label: INPUT_UNSUPPORTED
+  unsupported_direct_call_is_reasoning_failure: false
+
+acceptance:
+  json_schema_checks_structure_only: true
+  separate_semantic_validator_required: true
+  event_hash_rule: SHA256_of_RFC8785_canonical_record_omitting_event_sha256
+  event_chain_rule: previous_event_sha256_is_prior_record_hash_within_episode_branch_or_null_for_first
+  strict_json_rejects: [duplicate_keys, nonfinite_numbers, trailing_text]
+  required_semantic_checks:
+    - all_required_null_fields_resolved_and_frozen
+    - capability_depth_context_and_call_cap_enforcement
+    - cumulative_L_and_parent_depth_consistency
+    - exact_integer_budget_conservation_and_reservation_ownership
+    - legal_finalization_survives_every_other_ceiling
+    - selector_forecast_work_charged_and_capped
+    - sandbox_allowlist_and_no_unmetered_model_endpoint
+    - deterministic_batch_and_replayed_scheduler_agreement
+    - noop_heap_alias_file_rng_and_ledger_fork_parity
+    - original_task_candidates_separated_from_subtask_results
+    - protected_input_isolation_and_context_group_split_integrity

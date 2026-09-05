@@ -1,0 +1,717 @@
+version: agent-design-v4/neural-readouts/1
+status: UNRESOLVED_FREEZE_TEMPLATE
+runnable: false
+authority:
+  readouts_and_cells: Section 8
+  transport_exposure_and_call_allowances: Section 4, frozen compiler and request DAG
+  statistics: Section 9, six-family A/O/R/C/G/M manifest
+  native_configurations: main membership/model/budget/awareness/orchestration manifest
+source_section8_sha256: 98c8be93b56f69b0dd717fe1c1c197086e1235d8428d96aefded1a3ef2173f21
+notice: Defaults are design choices, not resolved launch parameters or a power guarantee. Every null and technical
+  validation must be resolved before execution. This configuration does not authorize an additional global factorial.
+panels:
+  development:
+    source_items: 300
+    HLE: 150
+    BigCodeBench: 150
+  main_confirmation:
+    candidates:
+    - 1100
+    - 1600
+    resolved: null
+  geometry_resource_count:
+    source_items: 300
+    nested_main: true
+  native_episodes_per_item_config: 1
+  system_repeat:
+    source_items: 100
+    episodes_per_item_config: 10
+    budget: B4
+    balanced_domains: true
+    fresh_complete_episode_seed_and_root_bank: true
+  single_agent_five_attempt_baseline: separate main-protocol experiment; never equate five RLM child calls with
+    five whole attempts
+  controlled_development:
+    source_items: 200
+    HLE: 100
+    BigCodeBench: 100
+    subset_of_development: true
+  content_confirmation:
+    default: 400
+    candidates:
+    - 400
+    - 600
+    - 800
+    resolved: null
+    nested_main: true
+  response_confirmation:
+    rule: min(200,N_content)
+    default: 200
+    balanced_hash_subset: true
+    resolved: null
+    larger_subset: only through Section 9 pre-freeze amendment, within N_content
+  edit_confirmation:
+    default: 200
+    allowed_rule: 200, 400, or N_content as permitted by Section 9 and resources
+    resolved: null
+    balanced_nested_hash_subset: true
+  independent_inference_unit: source_item
+  slots_members_subsamples_and_calls_do_not_increase_N: true
+  split_rule: all source-item derivatives in the same split; reuse old confirmation IDs only with v4 blindness certification
+  C_G_confirmation:
+    default: 300
+    candidates:
+    - 300
+    - 600
+    - N_main
+    resolved: null
+    balanced_nested_source_items: true
+    extra_work: common report/forecast/readouts only; no automatic expansion of all count/model conditions
+native_roles:
+- INDEPENDENT_SOLVER
+- DECENTRALIZED_MEMBER
+- CENTRAL_HUB
+- CENTRAL_WORKER
+- RLM_CONTROLLER
+- RLM_CHILD
+representation_comparisons:
+  matched_native_prefill: within checkpoint/role/declared phase/anchor; retain actual exposures
+  common_consumer: same consumer operation and serializer; source semantic content/length still differ
+  within_call: fixed generated-token times, stopping/missingness explicit
+  between_boundary: linked saved states at named protocol events; fresh calls re-encode text
+  cross_model_coordinate_comparison_allowed: false
+  portable_RLM_text_export_is_full_runtime: false
+sites:
+  flagship_alias: Qwen3.8 flagship from models.lock; immutable revision unresolved
+  precision_and_sampling: inherit exact hook-capable native/transport request contract
+  development_layer_fractions:
+  - 0.25
+  - 0.5
+  - 0.75
+  block_formula: unique floor(f*(L_model_blocks-1)), zero-indexed
+  tensor: residual stream output after block
+  frozen_predictive_blocks: 1
+  frozen_intervention_blocks: 1
+  anchor_resolution: structural record/name/scope/value spans then tokenizer offsets; no sentinel string search
+  prefill_anchors:
+  - TASK_ONLY_PREFILL
+  - FINAL_STATE_PREFILL
+  native_final_prefill_recorded_separately: true
+  temporal_generated_counts:
+  - 32
+  - 128
+  - 512
+  temporal_final_object: capture parsed closing token only where native contract requires/produces a structured
+    object
+  capture_after_token_processed: true
+  terminal_token_replay: measurement-only exact-prefix teacher forcing, charged
+  temporal_call_selection: one eligible call per frozen role/phase/episode using outcome-blind hash, or named deterministic
+    hub/controller event
+  confirmation_temporal_block: frozen predictive block only
+  missingness:
+  - NONE
+  - NOT_REACHED
+  - CHANNEL_UNAVAILABLE
+  - JSON_CLOSE_MISSING
+  - FINAL_OBJECT_NOT_APPLICABLE
+  - NOT_PORTABLE
+  future_length_quantiles_allowed: false
+  missing_vectors_zero_imputed: false
+  operational_prefill_slot: 1
+  offline_consumer_slots:
+  - 1
+  - 2
+  - 3
+  - 4
+  generated_token_or_four_slot_mean_features_operational: false
+  primary_C_G_node:
+    checkpoint: FINAL_HANDOFF_REPORT
+    policies:
+    - IND_VOTE
+    - DEC
+    - CEN_FLAT
+    - CEN_RLM_D2_L5
+    membership_N: 5
+    budget: B4
+    model: flagship
+    native_task_outputs_and_decision_sealed: true
+    protected_correctness_unopened: true
+    source: complete task + selected complete candidate/personal confidence + deterministic bounded observable evidence
+    reader: common pinned report reader
+    capture: state anchor before shadow forecast tokens
+    child_slot: null
+    predicts: correctness of already produced/selected answer, not pre-generation future answer
+  native_temporal_phase_grid:
+  - ROOT
+  - COORDINATION
+  - TERMINAL
+  native_temporal_scope:
+    panel_items: 300
+    policies:
+    - IND_VOTE
+    - DEC
+    - CEN_FLAT
+    - CEN_RLM_D2_L5
+    model: flagship
+    membership_N: 5
+    budget: B4
+    episodes_per_item_config: 1
+    role_counts_by_policy:
+    - 1
+    - 1
+    - 2
+    - 2
+    phases:
+    - ROOT
+    - COORDINATION
+    - TERMINAL
+    max_call_records_per_item: 18
+    native_anchors_per_call: 5
+    max_temporal_vectors_per_item_at_frozen_block: 90
+    missing_phases_create_vectors: false
+    additional_report_or_controlled_prefills_in_this_bound: false
+    repeat_and_broader_grid_inherited: false
+geometry:
+  primary_question: held-out functional prediction beyond matched observable/full-text baselines
+  raw_metrics:
+  - residual norm
+  - pairwise distance
+  normalized_metrics:
+  - mean pairwise cosine distance
+  - covariance eigenvalues
+  - participation ratio
+  - entropy effective rank
+  participation_ratio: (sum(lambda))^2/sum(lambda^2)
+  effective_rank: exp(-sum(p*log(p))), p=lambda/sum(lambda)
+  rank_ceiling: min(d_eff,s-1)
+  N1_dimension: undefined, not zero diversity evidence
+  default_diagnostic_PCA_dimension: 64
+  inferential_spectrum_sampling: same s without replacement per registered comparison, role rule, checkpoint and
+    dimension; s is minimum count guaranteed by contract
+  dimension_test_min_s: 3
+  matched_subsamples_per_episode: 100
+  subsamples_increase_N: false
+  full_N_spectra: descriptive
+  posttreatment_length_coverage_regressions: predictive/explanatory only, not adjusted causal effects
+  functional_outcomes:
+  - scoped full-answer agreement
+  - frozen public-check signatures
+  - preselected annotated unit coverage/use
+  - oracle availability
+  - sealed selected utility
+  - blinded-selector leave-one-artifact-out sensitivity
+  child_local_answers_treated_as_full_answer_disagreement: false
+dependence:
+  panel: system_repeat
+  condition_on_source_item: true
+  primary_descriptive_estimator: within-item episode sample covariance of matched full-answer member outcomes, then
+    fixed item/pair weighted average
+  zero_variance_correlation: undefined with flag
+  pooled_across_task_covariance_reported_separately: true
+  mixed_effects_sensitivity: item difficulty and item-episode effects; latent logistic ICC not Pearson correlation
+  adaptive_children: align declared stable contract/role or use local-contract/common-consumer outcomes; never incidental
+    call index
+  team_success_from_independent_child_probability_product: false
+calibration:
+  scopes:
+  - PERSONAL_FINAL
+  - CHILD_CONTRACT
+  - TEAM_SELECTED
+  - TEAM_AFTER_EXTRA
+  forecast_fields:
+  - q_personal
+  - q_child_contract
+  - q_team_now
+  - q_recover
+  - q_preserve
+  shadow_forecast:
+    panel: geometry/calibration panel
+    one_per_selected_observer_checkpoint: true
+    role_checkpoint_grid:
+    - role: COMMON_REPORT_READER
+      checkpoint: FINAL_HANDOFF_REPORT
+      policies:
+      - IND_VOTE
+      - DEC
+      - CEN_FLAT
+      - CEN_RLM_D2_L5
+      membership_N: 5
+      budget: B4
+      per_item_requests: 4
+    selection: all four frozen primary policy reports; no hindsight-selected native final-call activation
+    temperature: 0
+    tools_enabled: false
+    final_output_cap: 256
+    native_reasoning_mode_and_cost_resolved: null
+    feedback_to_generators_or_selectors: false
+    secondary_role_checkpoint_grid: []
+    primary_request_count: 4*N_CG (1200 default)
+    exact_primary_requests_per_item: 4
+    cost_scope: additional research work after native B4; not a free deployed B4 feature
+  information_sets:
+  - SELF_ONLY
+  - PEER_EXPOSED
+  - HUB_STATE
+  - RLM_CONTEXT
+  joint_category_order:
+  - '00'
+  - '01'
+  - '10'
+  - '11'
+  joint_probabilities:
+  - (1-q_team_now)*(1-q_recover)
+  - (1-q_team_now)*q_recover
+  - q_team_now*(1-q_preserve)
+  - q_team_now*q_preserve
+  invalid_forecast: development-fitted scope-specific marginal prior plus missingness flag
+  inapplicable_null: not a failed forecast or zero probability
+  binary_Brier: (q-y)^2
+  multiclass_Brier: sum_c((p_c-indicator(y=c))^2)
+  score_log_clip_epsilon: 1.0e-06
+  weights: Section 9 source-item/domain weights, not recursive call/member frequency
+  inflation: same-target increase in E[q-y] plus worse proper loss/registered calibration contrast, not higher q
+    alone
+  exact_primary_C_contrast: source-item mean Brier(development-calibrated selected PERSONAL_FINAL confidence) -
+    Brier(development-calibrated explicit TEAM_SELECTED forecast), equally averaged across four fixed flagship N5
+    B4 policy reports; positive one-sided, Section 9
+  extra_budget_labels: actual saved-state continuation or valid causal replay; unrelated B4 episode is not a B2
+    state continuation
+  recalibration:
+    both_predictors_same_development_only_procedure: true
+    common_model: intercept + clipped probability logit + missingness flag
+    architecture_conditioned_model: common model + architecture intercepts
+    architecture_fit_min_successes_each: 10
+    architecture_fit_min_failures_each: 10
+    primary_rule: architecture-conditioned when every architecture meets minimum, otherwise common
+    raw_scores_reported_also: true
+    claims: forecast quality; calibration-specific claim additionally needs reliability/bias diagnostics
+prediction:
+  source_item_grouped_folds: 5
+  fold_stratification: superdomain
+  all_transforms_train_fold_only: true
+  binary_model: regularized logistic
+  joint_model: multinomial logistic
+  fractional_unit_use_model: ridge
+  penalties:
+  - 0.1
+  - 1
+  - 10
+  - 100
+  - 1000
+  PCA_rank_candidates:
+  - 16
+  - 32
+  - 64
+  - 128
+  selection: one standard error, stronger regularization preferred
+  comparators:
+  - observables
+  - observables + full available text
+  - same text/observable features + frozen neural features
+  same_tuning_budget_and_text_capacity_sensitivity: true
+  forbidden_preboundary_features:
+  - correctness/validity labels
+  - retention labels
+  - unlaunched outcomes/lengths
+  - privileged donor vectors
+  - post-boundary activations
+  exact_primary_G_contrast: source-item Brier(full report text/observables) - Brier(same baseline + frozen common-report
+    prefill/internal geometry), equally averaged across four fixed flagship N5 B4 policies at pre-truth finalized
+    handoff; positive one-sided, Section 9
+  optional_allocation_actions:
+  - STOP
+  - NEW_WHOLE_ATTEMPT
+  - CONTINUE
+  optional_allocation_requires: same paid allowance including observations and reserved generation plus scoring;
+    held-out utility beyond fixed/text comparators
+  optional_allocation_required_for_C_G_M_execution: false
+  primary_target: correctness of already sealed native selected answer
+  primary_node: FINAL_HANDOFF_REPORT
+  shadow_forecast_generated_fields_as_G_inputs: false
+  outer_folds: 5
+  inner_folds: 5
+  evaluation: 'primary: 5-outer/5-inner grouped CV on development only, final selection/refit on full allowed development,
+    artifacts frozen before confirmation; no confirmation fitting'
+  bootstrap:
+    replicates: 20000
+    unit: source cluster within superdomain
+    primary: paired confirmation-loss bootstrap conditional on development-frozen predictors
+    refit_primary_predictors: false
+    preserve: complete source-item four-policy/feature-variant vector
+    optional_pooled_OOF_learning_procedure: separately preregistered secondary only; full nested-pipeline bootstrap
+      refits and same-fold duplicate copies required
+  development_frozen_predictor: primary tested predictor; immutable maps/model hashes before confirmation
+  confirmation_labels_may_fit_or_recalibrate_primary: false
+  primary_internal_features: single common-report h projections/norm statistics; no other-policy counterfactual
+    vectors, cross-policy distances, or unexported native tensors
+transport:
+  interfaces: &id001
+  - PRIVATE
+  - DIRECT
+  - HUB
+  - RLM_RECURSIVE
+  primary_contrast:
+  - DIRECT
+  - PRIVATE
+  secondary_interfaces:
+  - HUB
+  - RLM_RECURSIVE
+  source_roots: 5
+  focal_root_id: 0
+  same_immutable_producer_bank: true
+  RLM_recursive_call_cap: 5
+  RLM_recursive_depth_cap: 2
+  native_RLM_task_first_decomposition_is_same_assay: false
+  consumer_prompt_file: prompts/common_consumer.txt
+  consumer_prompt_sha256: 0ef947886a4ccc980d26948419184a4e3fad72a2ad420944a4f3a50d0f551493
+  consumer_prompt_role: trusted instruction fragment; full resolved compiler, schema, native template and envelope
+    authoritative
+  consumer_source: exact revised focal stage; no hidden source reasoning/KV/unreported environment
+  successor_slots:
+  - 1
+  - 2
+  - 3
+  - 4
+  slot_nonces_and_seeds: shared frozen transport derivation
+  original_roots_reintroduced_in_BASE: false
+  executed_exposure_compiler: 'Section 4.3/4.5: own full root, exact deterministic peer packets, no privately retrievable
+    raw originals; hashes/token fixtures still require freeze'
+  packet_integration_requirement:
+    peer_packet_token_cap: 2048
+    own_full_focal_root_preserved: true
+    focal_unit_precommunication_presence_verified: true
+    later_revised_stage_target_presence_not_required: true
+    same_executed_peer_packet_bytes_for:
+    - DIRECT
+    - HUB
+    - RLM_RECURSIVE
+    raw_original_retrieval_allowed: false
+    peer_benefit_panel: keep preselected unit; if clipped from incoming packets mark ineligible, never search replacement
+    status: normative Section 4.3/4.5, exact compiler/hash fixtures unresolved
+  RLM_mediator_call_cap: 4
+  RLM_mediator_context_cap: 4
+  focal_revision_calls: 1
+  RLM_complete_interface_call_cap: 5
+  RLM_complete_interface_context_cap: 5
+  RLM_recursive_call_cap_scope: complete controlled interface = at most four mediator calls plus one focal revision;
+    not native L5 RLM
+  mediator_packet_cap: 2048
+  failed_mediator: unavailable packet; scheduled paid focal revision still executes
+  mediator_compute_equalized: false
+units:
+  extractor_calls_per_item: 1
+  temperature: 0
+  tools_enabled: false
+  final_output_cap: 2048
+  registry_max_units: 12
+  unit_max_tokens_excluding_provenance: 96
+  target_filter: accepted supporting quote in focal root 0, selected before interface/validity
+  rank:
+  - root-origin check/intermediate claim not direct task restatement
+  - checkable alternative
+  - other supported root content
+  - root-0 task-restatement fallback
+  - focal-exclusive provenance
+  - shorter text
+  - outcome-blind HMAC tie
+  root_novel: sealed provenance/redundancy, not truth
+  deduplication_cosine_candidate_threshold: 0.95
+  panel_slots:
+  - target
+  - semantic
+  - peer
+  panel_max_units: 3
+  no_search_for_valid_replacement: true
+  validity:
+  - VALID
+  - INVALID
+  - UNRESOLVED
+  initial_annotators: 2
+  disagreement_adjudicator: 3
+  initial_annotation_bound: 6*(200+N_content)
+  foil: one checkably invalid matched foil for valid target and semantic unit
+  use_is_quote: false
+  use_scoring: public deterministic check else two frozen blinded judges, unresolved zero + flag
+  development_use_audit: 200
+  confirmation_use_audit: 200
+  development_false_positive_one_sided_95pct_upper_bound_max: 0.05
+  retention:
+  - PRESENT
+  - CONTRADICTED
+  - ABSENT
+  - AMBIGUOUS
+  posttreatment_retention_or_same_answer_strata: descriptive only
+  RESTORE_UNIT_invalid_or_unresolved_target: still append exact selected unit, include harm
+  NONE: alias BASE, retain extraction cost
+  validity_specific_noops: symmetric, changes zero in all-item effect; separately report eligible-frame effects
+accessibility:
+  method: fixed Patchscopes-style question/options/structural STATE_SLOT decoder
+  answers:
+  - A
+  - B
+  score: normalized exact answer-sequence likelihoods
+  controls:
+  - unpatched target
+  - task-only source
+  - same-domain/unit-type deranged source
+  - valid-invalid controlled content change
+  copy_source_text_or_KV: false
+  donor_crosses_source_item_fold_boundary: false
+  incremental_claim_frame: pre-treatment root_novel + VALID + measurement controls
+  failed_decoder_means_erased_knowledge: false
+text_cells:
+- cell_id: BASE
+  interfaces: *id001
+  panel: N_content
+  children: 4
+  input: natural revised focal state
+- cell_id: RESTORE_UNIT
+  interfaces: *id001
+  panel: N_content
+  children: 4
+  input: exact selected unit as untrusted archived note
+- cell_id: REMINDER
+  interfaces: *id001
+  panel: N_content
+  children: 4
+  input: trusted system append of LF + literal reminder, natural user envelope unchanged
+- cell_id: RESP_VALID
+  interfaces: *id001
+  panel: N_response
+  children: 4
+  input: valid unit + audited short supporting check
+- cell_id: RESP_INVALID
+  interfaces: *id001
+  panel: N_response
+  children: 4
+  input: matched invalid foil + equal-format proposed check
+- cell_id: RESP_NEUTRAL
+  interfaces: *id001
+  panel: N_response
+  children: 4
+  input: 'Archive status: no additional task-specific claim or test result is supplied.'
+text_response:
+  valid_invalid_token_bin: 16
+  response_notes_untrusted: true
+  notes_before_final_anchor: true
+  not_natural_suffix_replacement: true
+  RESTORE_RESP_alias_only_if_complete_request_identical: true
+  reminder_exact_addition: '
+
+    Reassess the existing task evidence and independently test the current answer.'
+neural_edits:
+  interfaces:
+  - DIRECT
+  - PRIVATE
+  panel: N_edit
+  children_per_cell: 4
+  development_items: 200
+  causal_pilot_items: 100
+  causal_pilot_balanced_domains: true
+  subspace_ranks:
+  - 1
+  - 4
+  - 16
+  doses:
+  - 0.25
+  - 0.5
+  - 1.0
+  max_shortlisted_sites_ranks: 3
+  nuisance_features:
+  - log state length
+  - log note length
+  - visible-answer log likelihood
+  - declared confidence
+  - 8 visible-answer embedding PCs
+  nuisance_controls:
+  - intercept
+  - domain
+  fit: PCA of private valid-invalid contrasts after nuisance projection
+  min_retained_aggregate_decoder_contrast: 0.8
+  must_beat_same_rank_random: true
+  rank1_collinearity: include semantic control eligibility, no forced orthogonalization
+  selection_order:
+  - screen 200 dev items
+  - complete primary pilot on same 100 items for <=3 site/rank pairs and 3 doses
+  - apply Section 9 eligibility/scenario planning gate
+  - select smallest eligible rank within one SE then shallower block and qualifying dose
+  dose_objective: lower 90% source-item bound on DIRECT unit-use gain; smaller dose within one SE
+  development_harm_limits:
+    correctness_loss: 0.02
+    invalid_increase: 0.01
+    peer_use_loss: 0.05
+  donor: Q_U Q_U^T (h[PRIVATE,RESP_VALID]-h[PRIVATE,RESP_INVALID])
+  donor_is_privileged_not_operational: true
+  slot_matched_same_nominal_g_both_interfaces: true
+  donor_prefills_on_all_edit_items: required even outside N_response; no extra generated response required
+  transform: norm(h)*(h+v)/norm(h+v), v=0 exact no-op
+  actual_displacements_logged_by_interface: true
+  answer_gradient: future teacher-forced escaped visible answer after unchanged prefill and frozen native-final
+    prefix; first <=64 tokens; no earlier input loss
+  answer_prefix: '{"approach":"","evidence":[],"alternatives_considered":[],"failure_checks":[],"final_answer":"'
+  control_max_abs_cosine: 0.9
+  ineligible_controls: no-op plus denominator; compare matched BASE/U_PLUS/control eligible frame
+  random:
+    rng: PCG64DXSM
+    seed_namespace: UNIT_RANDOM
+    max_redraws: 32
+    minimum_projected_norm: 1.0e-12
+  primary_cells:
+  - cell_id: U_PLUS_DIRECT
+    interface: DIRECT
+    vector: +alpha*g
+    anchor: FINAL_STATE_PREFILL
+  - cell_id: U_PLUS_PRIVATE
+    interface: PRIVATE
+    vector: +alpha*g
+    anchor: FINAL_STATE_PREFILL
+  - cell_id: U_MINUS_PRIVATE
+    interface: PRIVATE
+    vector: -alpha*g
+    anchor: FINAL_STATE_PREFILL
+  - cell_id: SEMANTIC_DIRECT
+    interface: DIRECT
+    vector: norm-matched preselected semantic-unit vector
+    anchor: FINAL_STATE_PREFILL
+    eligibility: valid audited semantic foil, finite nonzero vector, abs cosine(g,control)<=0.90
+  - cell_id: ANSWER_DIRECT
+    interface: DIRECT
+    vector: norm-matched future visible-answer emission gradient
+    anchor: FINAL_STATE_PREFILL
+    eligibility: supported frozen output transition, finite nonzero gradient, abs cosine(g,control)<=0.90
+  - cell_id: POSITION_DIRECT
+    interface: DIRECT
+    vector: +alpha*g
+    anchor: TASK_ONLY_PREFILL
+  - cell_id: RANDOM_DIRECT
+    interface: DIRECT
+    vector: norm-matched random orthogonal to unit/nuisance spans
+    anchor: FINAL_STATE_PREFILL
+    eligibility: valid target/donor and successful random construction
+  raw_subset_fraction: 0.25
+  raw_cells:
+  - cell_id: RAW_PLUS_DIRECT
+    interface: DIRECT
+    vector: +alpha*g
+  - cell_id: RAW_PLUS_PRIVATE
+    interface: PRIVATE
+    vector: +alpha*g
+  - cell_id: RAW_MINUS_PRIVATE
+    interface: PRIVATE
+    vector: -alpha*g
+  sham_subset_fraction: 0.1
+  sham_cells:
+  - cell_id: SHAM_DIRECT
+    interface: DIRECT
+    vector: '0'
+  - cell_id: SHAM_PRIVATE
+    interface: PRIVATE
+    vector: '0'
+  path_and_deletion_factorial_in_default: false
+gates:
+  execute_after: technical/development feasibility, before confirmation labels open
+  confirmatory_outcome_execution_gates: []
+  not_execution_gates:
+  - rank reversal
+  - current accuracy gap
+  - confidence effect
+  - geometric collapse
+  - test-set rescue
+  primary_families:
+  - A
+  - O
+  - R
+  - C
+  - G
+  - M
+  correction: Section 9 Holm across six composite family p-values
+  M_core_components:
+  - DIRECT-PRIVATE appropriate-unit-use deficit
+  - positive DIRECT forward rescue
+  - positive rescue advantage over semantic control on matched eligible frame
+  - positive rescue advantage over answer control on matched eligible frame
+  - positive rescue advantage over random control on matched eligible frame
+  - reverse suppression in PRIVATE
+  M_composite: max requisite one-sided component p, Section 9 authoritative
+  separately_earned_claims:
+  - accessibility equivalence/use distinction
+  - DIRECT-PRIVATE rescue interaction
+  - positive correctness/selected utility
+  - powered correctness/invalid/peer-use noninferiority
+  - native-orchestration generalization
+  M_does_not_establish: natural erasure of exact edited vector or a complete circuit
+  power_infeasible: prospective estimation-only for affected claim; retain separately registered non-edit modules
+accounting:
+  fixed_consumer_generations:
+    BASE_RESTORE_REMINDER: 48*N_content
+    response_notes: 48*N_response
+    primary_edits: 28*N_edit
+    raw_edits: 3*N_edit
+    shams: 0.8*N_edit
+  default_counts:
+    N_content: 400
+    N_response: 200
+    N_edit: 200
+    total_consumer_generator_calls: 35160
+  development_core_edit_child_call_bound: 25200
+  excluded_and_separately_charged:
+  - producer roots
+  - interface orchestration/recursion
+  - native repeats
+  - common-consumer prefills
+  - decoder/donor/gradient forwards
+  - forecasts
+  - scoring
+  - public tools
+  - annotation
+  - development sham/raw and shared text prerequisites
+  BASE_reuse: only identical complete fixed-consumer requests already present
+  request_DAG_union_authoritative: true
+  count_bound_is_not_throughput_or_budget_permission: true
+  primary_C_G_forecast_requests: 4*N_CG (1200 at default); report-prefill/feature/fit work separately charged where
+    not physically shared
+  native_B4_includes_C_G_posthandoff_measurements: false
+  deployed_assessment_requirement: reserve and charge report/forecast/feature costs before native work under separately
+    tested common-budget scheduler
+freeze:
+  dataset_snapshot_and_split_hash: null
+  blindness_audit: null
+  source_weights_and_coarse_strata: null
+  all_panel_item_hashes: null
+  study_episode_slot_seeds: null
+  model_tokenizer_engine_revisions: null
+  model_specific_predictive_sites: null
+  intervention_site_rank_dose: null
+  unit_subspace_and_nuisance_hashes: null
+  native_role_checkpoint_selection_grid: 'PRIMARY: four-policy FINAL_HANDOFF_REPORT at flagship N5/B4; secondary
+    shadow grid empty by default; native temporal roles x ROOT/COORDINATION/TERMINAL hashed selection'
+  native_channel_and_structural_anchor_fixtures: null
+  resolved_common_consumer_request_hashes: null
+  raw_bank_and_delivered_packet_exposure_hashes: null
+  peer_packet_filter_and_panel_rubrics: null
+  unit_validity_use_and_foil_versions: null
+  predictive_models_PCA_penalties_calibrators: null
+  decoder_control_and_fold_mappings: null
+  answer_transition_and_prefix_token_ids: null
+  cost_oracle_reservations_and_storage: null
+  retained_claims_and_Section9_hypothesis_manifest: null
+  Section9_planning_report: null
+launch_validation: Reject template status and unresolved freeze values. Validate schema, no future/oracle features,
+  source/slot exposure, all costs, valid independent episode identities, required cells, matched geometry sample
+  counts, and Section 9 agreement.
+report_compiler:
+  selected_candidate: complete unchanged object or protocol failure sentinel
+  task: complete admitted task-public view
+  policy_evidence_cap_tokens: 8192
+  evidence_order:
+  - decision rule and observed vote/selection metadata
+  - known budget/call/role counts
+  - up to four nonselected evidence artifacts in study-hashed order
+  nonselected_artifact_packet_cap: 2048
+  evidence_must_be_in_declared_native_observable_archive: true
+  private_reasoning_and_unreported_heap_excluded: true
+  strong_text_comparator_receives_same_full_report: true
+  scope: deterministically bounded observation, not complete native history
+  full_resolved_compiler_hash: null
+  enforce_total_cap: metadata/wrappers first; admit ordered packets within remaining allowance; deterministic last-packet
+    clipping; validate complete serialized recipient tokens
