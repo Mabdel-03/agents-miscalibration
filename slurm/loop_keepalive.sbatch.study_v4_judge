@@ -27,5 +27,5 @@ cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
 exec python -u slurm/keepalive.py \
   --allow-legacy-fleet \
   --run-id "study_v4_judge" \
-  --spec "32B-long:2:ou_bcs_low:1-00:00:00" \
+  --spec "32B-long:2:ou_bcs_low:1-00:00:00,32B-long:1:ou_bcs_normal:1-00:00:00:h100" \
   --interval 600
