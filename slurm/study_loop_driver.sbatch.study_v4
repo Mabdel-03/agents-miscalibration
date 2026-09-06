@@ -25,19 +25,14 @@ if [ -z "${NO_RESUBMIT:-}" ]; then
 fi
 
 cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
-# One driver per lane, in parallel; each keeps its own array name/throttle (P0-7).
-# Drivers exit once every chunk of their manifest is dispatched or complete, so the loop
-# re-runs them every 15 min (idempotent: complete / in-flight chunks are skipped) instead of
-# handing the baton to a successor job every minute.  The 32B lane runs tier 1 to
-# dispatch completion before tier 2 (cells_2_32B.json, throttle 30) and then tier 3
-# (8B M-cross cells_3_8B.json, then cells_3_32B.json throttle 15; Mon 06:00 hard stop cancels
-# what remains).  Tier 2/3 use 50-cell chunks so they trickle in as QOS room frees.
-for _iter in $(seq 1 40); do
-  echo "[loop] iteration $_iter $(date)"
-  ( python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_1_32B.json" --lane 32B --chunk-size 100 --throttle 40 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ; python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_32B.json" --lane 32B --chunk-size 50 --throttle 20 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ; python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_3_8B.json" --lane 8B --chunk-size 60 --throttle 24 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ; python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_3_32B.json" --lane 32B --chunk-size 50 --throttle 15 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ) &
-  python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_14B.json" --lane 14B --chunk-size 100 --throttle 18 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 &
-  ( python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_8B.json" --lane 8B --chunk-size 100 --throttle 24 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ) &
-  python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_4B.json" --lane 4B --chunk-size 100 --throttle 12 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 &
-  wait || true
-  sleep 900
-done
+# One independent loop per lane (P0-7): each lane re-runs its idempotent driver(s) every
+# 15 min: complete / in-flight chunks are skipped, chunks whose array left the queue with
+# cells lacking meta.json are resubmitted.  Lanes never wait on each other (the 32B chain
+# dispatches tier 1 -> tier 2 -> 8B M-cross -> tier 3 and can gate for hours on QOS room).
+# Sparse re-runs of a few unfinished cells: slurm/study_resume_chunk.py.
+lane_loop() { local name="$1"; shift; local n=0; while [ $n -lt 40 ]; do n=$((n+1)); echo "[loop:$name] iteration $n $(date)"; bash -c "$1" || true; sleep 900; done; }
+lane_loop 32B 'python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_1_32B.json" --lane 32B --chunk-size 100 --throttle 40 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ; python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_32B.json" --lane 32B --chunk-size 50 --throttle 20 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ; python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_3_8B.json" --lane 8B --chunk-size 60 --throttle 24 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 ; python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_3_32B.json" --lane 32B --chunk-size 50 --throttle 15 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0' &
+lane_loop 14B 'python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_14B.json" --lane 14B --chunk-size 100 --throttle 18 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0' &
+lane_loop 4B 'python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_4B.json" --lane 4B --chunk-size 100 --throttle 12 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0' &
+lane_loop 8B 'python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_8B.json" --lane 8B --chunk-size 100 --throttle 24 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0' &
+wait || true
