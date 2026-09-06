@@ -355,7 +355,7 @@ def report_work_list(run_root: Path) -> list[ReportWorkItem]:
     if not directory.is_dir():
         return []
     out = []
-    for path in sorted(directory.glob("*.json")):
+    for path in sorted(directory.rglob("*.json")):  # BCB ids contain "/" → nested one level
         try:
             head = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:

@@ -299,8 +299,10 @@ def load_renders(run_root: str | os.PathLike, *, seal: str | None = None) -> lis
     directory = forecast_dir(run_root) / REPORTS_DIR
     if not directory.is_dir():
         return out
-    for path in sorted(directory.glob("*.json")):
+    for path in sorted(directory.rglob("*.json")):  # BCB ids contain "/" → nested one level
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            continue
         if seal is not None and str(data.get("seal")) != str(seal):
             continue
         out.append(data)
@@ -314,8 +316,10 @@ def load_forecasts(run_root: str | os.PathLike, *, seal: str | None = None) -> d
     directory = forecast_dir(run_root)
     if not directory.is_dir():
         return out
-    for path in sorted(directory.glob("*.json")):
+    for path in sorted(directory.rglob("*.json")):  # BCB ids contain "/" → nested one level
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            continue
         if data.get("kind") != "SHADOW_FORECAST":
             continue
         if seal is not None and str(data.get("seal")) != str(seal):
