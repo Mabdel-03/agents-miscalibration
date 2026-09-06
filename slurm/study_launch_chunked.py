@@ -247,7 +247,14 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
                 continue
             job_id = proc.stdout.strip().split(";")[0]
             break
-        submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id, "lane": lane, "cells_file": str(getattr(_drive, "cells_file", ""))})
+        entry = {"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id, "lane": lane, "cells_file": str(getattr(_drive, "cells_file", ""))}
+        # merge with the on-disk log (another driver of this lane, or a hand repair, may have
+        # written since we loaded it) instead of overwriting it with our in-memory copy
+        try:
+            on_disk = json.loads(log_path.read_text()) if log_path.exists() else []
+        except (OSError, ValueError):
+            on_disk = list(submitted_log)
+        submitted_log[:] = on_disk + [entry]
         log_path.write_text(json.dumps(submitted_log, indent=2))
         print(f"[drive:{lane}] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (lane tasks now: {_my_submitted_count(run_id, lane)})")
         time.sleep(10)
