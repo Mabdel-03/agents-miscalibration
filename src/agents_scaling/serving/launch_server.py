@@ -525,7 +525,7 @@ def render_sbatch(
         # study-v4 (Sun 2026-09-06): 60 G per TP rank (min 80 G) instead of 120 G per rank —
         # vLLM's host RSS is ~15 G per rank plus reclaimable page cache; the 240 G request
         # was the binding constraint on ou_bcs_low nodes with free GPUs but <240 G free RAM.
-        mem = f"{max(80, profile.tp_size * 60)}G"
+        mem = f"{max(48, profile.tp_size * 60)}G"
     port = _port_for(profile.name, replica)
     text = template_path.read_text(encoding="utf-8")
     repl = {
