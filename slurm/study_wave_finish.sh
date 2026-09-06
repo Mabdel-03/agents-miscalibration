@@ -29,7 +29,7 @@ for LANE in 32B eval; do
       --chunk-size "$N" --throttle "$ET" --submit-cap 380 --qos-limit 460 --cell-partition mit_preemptable --cell-time 1-00:00:00 --cell-mem 8G --cpus 2 --poll-s 60 | tail -2
   else
     "$PY" -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "$RUN" --server-run-id "$JUDGE_RUN" --cells-file "$OUT" --lane 32B \
-      --chunk-size "$N" --throttle "$JT" --submit-cap 380 --qos-limit 460 --cell-partition mit_preemptable --cell-time 1-00:00:00 --cell-mem 4G --cpus 1 --poll-s 60 | tail -2
+      --chunk-size "$N" --throttle "$JT" --submit-cap 440 --qos-limit 460 --cell-partition mit_preemptable --cell-time 1-00:00:00 --cell-mem 4G --cpus 1 --poll-s 60 | tail -2
   fi
   echo "[wave $WAVE] lane $LANE dispatched: $N cells"
 done
