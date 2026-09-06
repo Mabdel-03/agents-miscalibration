@@ -27,5 +27,5 @@ cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
 exec python -u slurm/keepalive.py \
   --allow-legacy-fleet \
   --run-id "study_v4" \
-  --spec "32B-long:2:pi_manoli:7-00:00:00,8B-long:1:pi_manoli:7-00:00:00,32B-long:3:pi_tpoggio:7-00:00:00,32B-long:2:ou_bcs_normal:1-00:00:00,14B-long:1:ou_bcs_normal:1-00:00:00,8B-long:1:ou_bcs_normal:1-00:00:00,4B-long:1:ou_bcs_normal:1-00:00:00,32B-long:6:ou_bcs_low:1-00:00:00,14B-long:1:ou_bcs_low:1-00:00:00,8B-long:3:ou_bcs_low:1-00:00:00,4B-long:1:ou_bcs_low:1-00:00:00" \
+  --spec "32B-long:2:pi_manoli:7-00:00:00,8B-long:1:pi_manoli:7-00:00:00,32B-long:3:pi_tpoggio:7-00:00:00,32B-long:2:ou_bcs_normal:1-00:00:00,14B-long:1:ou_bcs_normal:1-00:00:00,8B-long:1:ou_bcs_normal:1-00:00:00,32B-long:6:ou_bcs_low:1-00:00:00,14B-long:1:ou_bcs_low:1-00:00:00,8B-long:3:ou_bcs_low:1-00:00:00" \
   --interval 600
