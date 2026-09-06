@@ -79,6 +79,7 @@ def main(argv=None) -> int:
     ap.add_argument("--partition", required=True)
     ap.add_argument("--time", default=None, help="override the template walltime (e.g. 8:00:00)")
     ap.add_argument("--mem", default=None, help="override the template memory request (e.g. 80G)")
+    ap.add_argument("--gpus", type=int, default=None, help="override the GPU count (default 2 for 32B, else 1)")
     ap.add_argument("--cpus", type=int, default=None, help="override the template CPU request")
     ap.add_argument("--extra", default="", help="extra capture CLI args (quoted)")
     ap.add_argument("--results-root", default=os.environ.get("ASYS_RESULTS_ROOT", DEFAULT_RESULTS_ROOT))
@@ -105,7 +106,7 @@ def main(argv=None) -> int:
         template = re.sub(r"^#SBATCH --mem=.*$", f"#SBATCH --mem={args.mem}", template, flags=re.M)
     if args.cpus:
         template = re.sub(r"^#SBATCH --cpus-per-task=.*$", f"#SBATCH --cpus-per-task={args.cpus}", template, flags=re.M)
-    gpus = "2" if args.checkpoint == "32B" else "1"
+    gpus = str(args.gpus) if args.gpus else ("2" if args.checkpoint == "32B" else "1")
     shards = [int(s) for s in args.shards.split(",")] if args.shards else list(range(args.num_shards))
     for shard in shards:
         if not 0 <= shard < args.num_shards:
