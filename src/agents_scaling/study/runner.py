@@ -425,7 +425,13 @@ class CellRunner:
             self._selections = seals.load_selections(self.run_root, self._seal())
             self._tests = bcb_eval.load_tests(self.run_root)
             if self._bcb_evaluator is None:
-                self._bcb_evaluator = bcb_eval.BcbEvaluator(work_root=self.run_root / "eval" / "bcb" / "work")
+                # study-v4: compute nodes have no /usr/bin/apptainer; the site module binary is
+                # /orcd/software/core/001/pkg/apptainer/1.5.2/bin/apptainer (exported as
+                # ASYS_APPTAINER_BIN by slurm/common.sh; verified on mit_preemptable node2403).
+                self._bcb_evaluator = bcb_eval.BcbEvaluator(
+                    work_root=self.run_root / "eval" / "bcb" / "work",
+                    apptainer_bin=os.environ.get("ASYS_APPTAINER_BIN", "apptainer"),
+                )
             self._prior_verdicts = bcb_eval.load_bcb_eval(self.run_root)
             return self._eval_bcb_item
         raise ProtocolError(f"cell kind {kind.value} has no runner (FORECAST is cut: 04_critic_corrections §5)")

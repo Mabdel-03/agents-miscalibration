@@ -49,3 +49,6 @@ export ASYS_MODEL_CONTRACT="${ASYS_MODEL_CONTRACT:-/orcd/data/tpoggio/001/mabdel
 export PIP_CACHE_DIR="${PIP_CACHE_DIR:-/orcd/data/tpoggio/001/mabdel03/.cache/pip}"
 export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-/orcd/data/tpoggio/001/mabdel03/.cache/apptainer}"
 export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-/orcd/data/tpoggio/001/mabdel03/.cache/apptainer/tmp}"
+
+# study-v4: compute nodes lack /usr/bin/apptainer; use the site module binary (works without `module load`).
+export ASYS_APPTAINER_BIN="${ASYS_APPTAINER_BIN:-/orcd/software/core/001/pkg/apptainer/1.5.2/bin/apptainer}"
