@@ -557,6 +557,11 @@ def assert_engine_seed_uniqueness(cells: Iterable[CellSpec], tasks: Mapping[str,
 
 def assert_tier_nesting(cells: Sequence[CellSpec], tasks: Mapping[str, PublicTask]) -> None:
     """Every module's item set is a balanced rank prefix per domain (§6.2 nested panels)."""
+    # study-v4: select/eval tiers derive their item set from a SEAL (the complete pools at
+    # sealing time), which is not necessarily a rank prefix while generation is still
+    # running; the nesting rule (§6.2 balanced hash prefixes) applies to generate tiers.
+    if any(getattr(c.kind, "value", c.kind) in ("JUDGE_BEST", "JUDGE_HLE", "EVAL_BCB", "FORECAST") for c in cells):
+        return
     by_module: dict[str, set[str]] = {}
     for cell in cells:
         by_module.setdefault(cell.module, set()).update(cell.items)
