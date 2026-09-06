@@ -69,6 +69,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({"index": args.index, "run_root": str(run_root), "server_run_root": str(server_run_root), "cell": cell.to_dict()}, indent=2))
         return 0
+    # study-v4: one runner per cell at a time.  Overlapping chunk arrays (driver re-submission,
+    # manual one-shots) would otherwise generate the same content-addressed requests twice;
+    # the second runner exits 0 without meta.json and the driver re-queues nothing while
+    # the first is still listed.
+    import fcntl
+    cell_dir = run_root / "cells" / cell.cell_id
+    cell_dir.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(cell_dir / ".lock", "a+")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.stderr.write(f"[run_one] cell {cell.cell_id} is already being run by another task; exiting 0\n")
+        return 0
     stop_event = threading.Event()
     install_stop_handler(stop_event)
     code = run_cell(

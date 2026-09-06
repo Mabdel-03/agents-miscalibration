@@ -184,6 +184,20 @@ def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
     return complete
 
 
+
+def _chunk_job_in_flight(submitted_log: list, lo: int, hi: int) -> str | None:
+    """Job id of an earlier submission of exactly this [lo,hi] chunk that Slurm still lists
+    (PD/R/CG in any state), else None.  Uses ``squeue -h -j <id>``; a job absent from squeue
+    is terminal and the chunk may be re-submitted (the runner skips finished cells)."""
+    for entry in submitted_log:
+        if entry.get("lo") == lo and entry.get("hi") == hi and entry.get("job_id"):
+            jid = str(entry["job_id"])
+            out = subprocess.run(["squeue", "-h", "-j", jid, "-o", "%i"], capture_output=True, text=True).stdout
+            if out.strip():
+                return jid
+    return None
+
+
 def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int = 40,
            qos_limit: int = 460, chunk_size: int = 100, run_id: str = "", lane: str = "", cells: list | None = None) -> None:
     """Submit chunks to keep this lane's cell-task queue TOPPED UP near ``submit_cap``.
@@ -194,10 +208,21 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
     fits under the absolute ``qos_limit`` alongside every other job I have.
     """
     cells = cells if cells is not None else load_cells(run_root / "cells.json")
-    submitted_log: list[dict] = []
+    log_path = run_root / f"chunk_jobs_{lane}.json"
+    try:
+        submitted_log: list[dict] = json.loads(log_path.read_text()) if log_path.exists() else []
+    except Exception:  # noqa: BLE001 — a corrupt log must not block dispatch
+        submitted_log = []
     for ci, lo, hi, path in chunk_paths:
         if _chunk_complete(run_root, lo, hi, cells):
             print(f"[drive:{lane}] chunk {ci} ({lo}-{hi}) already complete; skipping")
+            continue
+        live_job = _chunk_job_in_flight(submitted_log, lo, hi)
+        if live_job is not None:
+            # study-v4: a previous invocation (or a one-shot dispatch) already submitted this
+            # exact chunk and its array is still queued/running — never double-submit it
+            # (run_one also holds a per-cell lock, but a duplicate array wastes GPU work).
+            print(f"[drive:{lane}] chunk {ci} ({lo}-{hi}) in flight as job {live_job}; skipping")
             continue
         while True:
             cur = _my_submitted_count(run_id, lane)
@@ -220,7 +245,7 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
             job_id = proc.stdout.strip().split(";")[0]
             break
         submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id, "lane": lane})
-        (run_root / f"chunk_jobs_{lane}.json").write_text(json.dumps(submitted_log, indent=2))
+        log_path.write_text(json.dumps(submitted_log, indent=2))
         print(f"[drive:{lane}] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (lane tasks now: {_my_submitted_count(run_id, lane)})")
         time.sleep(10)
     print(f"[drive:{lane}] all {len(chunk_paths)} chunks dispatched; results under {run_root}/cells/")
