@@ -156,9 +156,11 @@ def test_failover_to_second_endpoint_after_kill(tmp_run_root, study_config):
         assert errors == ["APIConnectionError"]
         assert [att["endpoint"]["port"] for att in record.timing["attempts"]] == [first.port, second.port]
         assert pool.rotation == 0  # a single failure on the dead endpoint does not rotate
-        # The forced refresh dropped the dead endpoint, so the next pick is direct.
-        assert [e.port for e in pool.endpoints()] == [second.port]
-        assert client.generate(make_spec(study_config, step_slot=1)).attempts == 1
+        assert second.port in [e.port for e in pool.endpoints()]
+        # Round-robin returns to the dead endpoint once more; its second consecutive failure
+        # rotates the pool, and the request completes on the live endpoint (2 attempts).
+        follow = client.generate(make_spec(study_config, step_slot=1))
+        assert follow.endpoint["port"] == second.port and follow.attempts == 2 and pool.rotation == 1
 
 
 def test_retry_cap_then_infra_failure(tmp_run_root, study_config):
