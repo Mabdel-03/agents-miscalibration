@@ -20,6 +20,14 @@ superdomain (§9.1); null-centred studentised cluster bootstrap for scalar contr
 cluster SE inside each resample); Monte-Carlo p with the +1/+1 adjustment.  The analysis panel of
 each family is the smallest common completed rank prefix (§9.1; blocks of 25 per domain, as in
 ``aggregate.common_prefix``); the all-complete-items panel is reported as a sensitivity.
+Panel rule: the primary panel is the smallest common completed rank prefix (§9.1) when it holds
+at least one block per domain; otherwise — infrastructure-incomplete items leave holes that would
+collapse the prefix to zero and silently turn a family into 'no rejection' — the primary panel is the
+MATCHED complete-case panel (items complete in every config of that family), reported with
+``panel_used`` and a note.  Completion here is infrastructure-driven (preemption), not outcome-driven:
+budget/format/truncation failures DO complete and are scored incorrect.  Both panels are always
+reported side by side.
+
 Secondary tables (S1–S5) are estimates with ordinary percentile intervals, never Holm-adjusted.
 """
 
@@ -244,6 +252,24 @@ def mean_ci(values_by_domain: Mapping[str, np.ndarray], rs: Resampler, *, weight
     return {"mean": est, "by_domain": est_d, "n": {d: int(vals[d].shape[0]) for d in ds}, "ci95_percentile": [lo, hi]}
 
 
+def choose_panel(result: dict, *, min_prefix: int = BLOCK_PER_DOMAIN) -> dict:
+    """Pick the family's primary panel and stamp ``panel_used``/``panel_note`` on ``result``.
+
+    ``prefix`` when the smallest common completed rank prefix holds ``min_prefix`` items per domain,
+    else the matched complete-case panel (§9.1 holes are infrastructure, not outcomes)."""
+    n_prefix = int(result.get("n_prefix") or 0)
+    use_prefix = n_prefix >= min_prefix and result.get("prefix", {}).get("estimate" if "estimate" in result.get("prefix", {}) else "p_global") is not None
+    key = "prefix" if use_prefix else "complete"
+    result["panel_used"] = key
+    result["panel_note"] = (
+        f"smallest common completed rank prefix, {n_prefix} items per domain (§9.1)"
+        if use_prefix else
+        f"matched complete-case panel: the completed rank prefix held {n_prefix} < {min_prefix} items per domain "
+        f"(infrastructure holes), so the panel is the items complete in every config of this family"
+    )
+    return result[key]
+
+
 # --------------------------------------------------------------------------- Holm
 
 
@@ -397,11 +423,12 @@ def family_A(sel: Sequence[Mapping[str, Any]], seed: int, n_resamples: int, *, c
             "cell_means": {f: mean_ci({d: Y[d][:, i] for d in diffs}, rs) for i, f in enumerate(FRAMINGS)},
         }
         out[key] = res
-    out["p"] = out["prefix"]["p"] if out["prefix"].get("estimate") is not None else 1.0
-    out["estimate"] = out["prefix"].get("estimate")
-    out["ci95"] = out["prefix"].get("ci95_studentized")
-    out["n"] = out["prefix"].get("n", {})
-    out["executed"] = out["prefix"].get("estimate") is not None
+    panel = choose_panel(out)
+    out["p"] = panel["p"] if panel.get("estimate") is not None else 1.0
+    out["estimate"] = panel.get("estimate")
+    out["ci95"] = panel.get("ci95_studentized")
+    out["n"] = panel.get("n", {})
+    out["executed"] = panel.get("estimate") is not None
     return out
 
 
@@ -421,9 +448,10 @@ def family_O(eps: Sequence[Mapping[str, Any]], seed: int, n_resamples: int, *, c
         Y = {d: panel[key]["Y"][d] for d in DOMAINS if panel[key]["Y"][d].shape[0] > 0}
         rs = Resampler({d: v.shape[0] for d, v in Y.items()}, n_resamples, analysis_seed(str(seed), f"O.{key}"))
         out[key] = max_t_family(Y, present, rs)
-    out["p"] = out["prefix"]["p_global"] if out["prefix"].get("pairs") else 1.0
-    out["executed"] = bool(out["prefix"].get("pairs"))
-    out["n"] = out["prefix"].get("n", {})
+    panel = choose_panel(out)
+    out["p"] = panel["p_global"] if panel.get("pairs") else 1.0
+    out["executed"] = bool(panel.get("pairs"))
+    out["n"] = panel.get("n", {})
     return out
 
 
@@ -574,10 +602,13 @@ def render_markdown(res: Mapping[str, Any]) -> str:
         d = res["families"][f]
         n = d.get("n") or {}
         ci = d.get("ci95") if f != "O" else None
-        lines.append(f"| {f} | {'yes' if d.get('executed') else 'no'} | {_fmt(d.get('estimate'))} | {_fmt(ci)} | {n.get('hle', '—')}/{n.get('bcb', '—')} | {_fmt(d['holm']['p'], 4)} | {_fmt(d['holm']['p_holm'], 4)} | {'**yes**' if d['holm']['reject'] else 'no'} | {d.get('note', d.get('definition', ''))} |")
+        note = d.get("note", d.get("definition", ""))
+        if d.get("panel_used"):
+            note = f"panel: {d['panel_used']} ({d.get('panel_note', '')}). {note}"
+        lines.append(f"| {f} | {'yes' if d.get('executed') else 'no'} | {_fmt(d.get('estimate'))} | {_fmt(ci)} | {n.get('hle', '—')}/{n.get('bcb', '—')} | {_fmt(d['holm']['p'], 4)} | {_fmt(d['holm']['p_holm'], 4)} | {'**yes**' if d['holm']['reject'] else 'no'} | {note} |")
     A = res["families"]["A"]
     if A.get("executed"):
-        lines += ["", f"### A — awareness (prefix n = {A['n_prefix']} per domain; complete-case n = {A['complete'].get('n')})", "", "| panel | estimate | by domain | SE | t | p (two-sided) | 95% CI (studentized) |", "|---|---|---|---|---|---|---|"]
+        lines += ["", f"### A — awareness (primary panel: {A.get('panel_used')} — {A.get('panel_note')}; prefix n = {A['n_prefix']} per domain; complete-case n = {A['complete'].get('n')})", "", "| panel | estimate | by domain | SE | t | p (two-sided) | 95% CI (studentized) |", "|---|---|---|---|---|---|---|"]
         for key in ("prefix", "complete"):
             r = A[key]
             lines.append(f"| {key} | {_fmt(r.get('estimate'))} | {_fmt(r.get('by_domain'))} | {_fmt(r.get('se'))} | {_fmt(r.get('t'))} | {_fmt(r.get('p'), 4)} | {_fmt(r.get('ci95_studentized'))} |")
@@ -586,11 +617,11 @@ def render_markdown(res: Mapping[str, Any]) -> str:
             lines += ["", "S1 (secondary, prefix panel): TEAM_FRAME effect " + _fmt(s1["team_frame_effect"].get("estimate")) + " " + _fmt(s1["team_frame_effect"].get("ci95_studentized")) + "; interaction " + _fmt(s1["interaction_(11-10)-(01-00)"].get("estimate")) + " " + _fmt(s1["interaction_(11-10)-(01-00)"].get("ci95_studentized")) + "; cell means " + ", ".join(f"{f}={_fmt(v.get('mean'))}" for f, v in s1["cell_means"].items())]
     O = res["families"]["O"]
     if O.get("executed"):
-        lines += ["", f"### O — orchestration (prefix n = {O['n_prefix']} per domain; global max-T p = {_fmt(O['prefix']['p_global'], 4)}; complete-case p = {_fmt(O['complete'].get('p_global'), 4)})", "", "| method | mean | by domain | 95% CI |", "|---|---|---|---|"]
-        for r in O["prefix"]["methods"]:
+        lines += ["", f"### O — orchestration (primary panel: {O.get('panel_used')} — {O.get('panel_note')}; prefix n = {O['n_prefix']} per domain; prefix max-T p = {_fmt(O['prefix'].get('p_global'), 4)}; complete-case p = {_fmt(O['complete'].get('p_global'), 4)})", "", "| method | mean | by domain | 95% CI |", "|---|---|---|---|"]
+        for r in O[O.get("panel_used", "prefix")]["methods"]:
             lines.append(f"| {r['method']} | {_fmt(r['mean'])} | {_fmt(r['by_domain'])} | {_fmt(r['ci95_percentile'])} |")
         lines += ["", "| contrast | estimate | SE | t | max-T adjusted p | simultaneous 95% CI |", "|---|---|---|---|---|---|"]
-        for r in O["prefix"]["pairs"]:
+        for r in O[O.get("panel_used", "prefix")]["pairs"]:
             lines.append(f"| {r['contrast']} | {_fmt(r['estimate'])} | {_fmt(r['se'])} | {_fmt(r['t'])} | {_fmt(r['p_maxT_adjusted'], 4)} | {_fmt(r['ci95_simultaneous'])} |")
     sec = res.get("secondary")
     if sec:

@@ -88,3 +88,52 @@ def test_family_A_and_O_on_synthetic_tables():
     assert "CEN_FLAT" in O["unexecuted_methods"]
     assert S.family_A([], 1, 100)["p"] == 1.0 and not S.family_A([], 1, 100)["executed"]
     assert S.family_O([], 1, 100)["p"] == 1.0
+
+
+def test_choose_panel_prefers_prefix_when_it_holds_a_block_and_falls_back_otherwise():
+    r = {"n_prefix": 50, "prefix": {"estimate": 0.1, "p": 0.01}, "complete": {"estimate": 0.2, "p": 0.02}}
+    got = S.choose_panel(r)
+    assert r["panel_used"] == "prefix" and got["estimate"] == 0.1 and "smallest common completed" in r["panel_note"]
+    r2 = {"n_prefix": 0, "prefix": {"estimate": None, "p": 1.0}, "complete": {"estimate": 0.2, "p": 0.02}}
+    got2 = S.choose_panel(r2)
+    assert r2["panel_used"] == "complete" and got2["estimate"] == 0.2 and "matched complete-case" in r2["panel_note"]
+    r3 = {"n_prefix": 24, "prefix": {"estimate": 0.1, "p": 0.01}, "complete": {"estimate": 0.2, "p": 0.02}}
+    assert S.choose_panel(r3)["estimate"] == 0.2 and r3["panel_used"] == "complete"
+
+
+def test_family_A_falls_back_to_complete_case_when_holes_collapse_the_prefix():
+    rng = np.random.default_rng(5)
+    sel = []
+    for d in ("hle", "bcb"):
+        for rank in range(60):
+            if d == "bcb" and rank == 3:
+                continue  # one infrastructure hole near the start collapses the prefix to 0
+            for f in S.FRAMINGS:
+                p = 0.3 + (0.25 if f[1] == "1" else 0.0)
+                sel.append({"module": "F", "pool_kind": "bank_prefix", "prefix_k": 5, "selector_id": "VOTE", "checkpoint": "32B",
+                            "split": "main", "framing": f, "domain": d, "rank": rank, "source_id": f"{d}:{rank}",
+                            "selected_correct": bool(rng.random() < p)})
+    A = S.family_A(sel, 7, 1000)
+    assert A["n_prefix"] == 0 and A["panel_used"] == "complete"
+    assert A["executed"] and A["p"] < 0.05 and A["estimate"] is not None
+    assert A["n"] == {"hle": 60, "bcb": 59}
+
+
+def test_family_O_reports_the_panel_it_used():
+    rng = np.random.default_rng(9)
+    eps = []
+    for d in ("hle", "bcb"):
+        for rank in range(60):
+            if d == "hle" and rank == 2:
+                continue
+            for m in ("S_FRESH", "DEC"):
+                eps.append({"module": "A", "checkpoint": "32B", "B": 4, "episode_rep": 0, "split": "main", "method": m,
+                            "domain": d, "rank": rank, "source_id": f"{d}:{rank}",
+                            "native_final_correct": bool(rng.random() < (0.65 if m == "DEC" else 0.3))})
+    O = S.family_O(eps, 7, 1000)
+    assert O["n_prefix"] == 0 and O["panel_used"] == "complete" and O["executed"] and O["p"] < 0.01
+    md = S.render_markdown({"manifest": {"analysis_seed": 1, "n_resamples_primary": 1000, "code_version": "x", "tables": {}},
+                            "families": {**{f: {"p": 1.0, "executed": False, "note": "n/a", "holm": {"p": 1.0, "p_holm": 1.0, "reject": False}} for f in S.FAMILIES},
+                                         "O": {**O, "holm": {"p": O["p"], "p_holm": O["p"] * 6, "reject": False}}},
+                            "holm": {f: {"p": 1.0, "p_holm": 1.0, "reject": False} for f in S.FAMILIES}})
+    assert "panel: complete" in md and "matched complete-case" in md
