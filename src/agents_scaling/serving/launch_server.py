@@ -601,7 +601,11 @@ def render_sbatch(
     if offset and int(offset):
         # the server job runs with --export=NONE: carry the fleet's port offset into the job so
         # the in-job registration recomputes the same port (study-v4 judge fleet)
-        text = text.replace("set -euo pipefail\n", f"set -euo pipefail\nexport ASYS_PORT_OFFSET={int(offset)}\n", 1)
+        # after the template's ambient-environment scrub (which unsets every ASYS_* name)
+        anchor = "readonly PATH\n"
+        if anchor not in text:
+            raise RuntimeError("serve template changed: cannot place ASYS_PORT_OFFSET after the environment scrub")
+        text = text.replace(anchor, anchor + f"export ASYS_PORT_OFFSET={int(offset)}\n", 1)
     return text
 
 
