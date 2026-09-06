@@ -436,7 +436,32 @@ def run_native(args: argparse.Namespace, engine: Any, tokenizer: Any, run_root: 
                 if model_rev != revision and not args.allow_model_mismatch:
                     raise RuntimeError(f"{w.request_id[:12]}: record model_revision {model_rev[:8]} != engine {revision[:8]} (pass --allow-model-mismatch to override)")
                 check_prompt_identity(record, tokenizer, strict=True)
-                anchors = A.resolve_native_anchors(record, tokenizer, final_object=A.final_object_for_role(w.native_role), ks=args.generated_ks)
+                try:
+                    anchors = A.resolve_native_anchors(record, tokenizer, final_object=A.final_object_for_role(w.native_role), ks=args.generated_ks)
+                except A.AnchorError as exc:
+                    # brief R2: a sequence whose anchors cannot be derived (e.g. a non-prefix-monotone
+                    # tokenizer decode) is recorded as MISSING rows, never dropped and never fatal
+                    stats["anchor_errors"] = stats.get("anchor_errors", 0) + 1
+                    log(f"anchor error on {w.request_id[:12]}: {exc} (recorded as missing)")
+                    nonce = str(record.identity.get("input_hash") or identity.input_hash(record.messages, record.chat_template_kwargs))
+                    kinds = [A.ANCHOR_NATIVE_PREFILL, *[A.generated_anchor_kind(k) for k in args.generated_ks], A.ANCHOR_FINAL_OBJECT_CLOSE]
+                    extra = {"native_role": w.native_role, "actor_slot": w.actor_slot, "step": w.step, "owner": w.owner, "group_size": w.group_size,
+                             "group_context_failures": w.group_context_failures, "selection_key": w.selection_key, "group_rank": w.group_rank,
+                             "anchor_error": str(exc)[:300], "record_model_revision": model_rev, "engine_seed": record.engine_seed}
+                    for kind in kinds:
+                        anchor = A.Anchor(kind=kind, token_offset=None, missingness=A.MISSING_ANCHOR_UNRESOLVED, channel="unavailable",
+                                          structural_span="", generated_token_count=0, detail={"error": str(exc)[:300]})
+                        stats["anchors_missing"][A.MISSING_ANCHOR_UNRESOLVED] = stats["anchors_missing"].get(A.MISSING_ANCHOR_UNRESOLVED, 0) + 1
+                        for b in blocks:
+                            if (w.request_id, int(b), kind) in done:
+                                continue
+                            row, vec = _row(stage="native", snapshot_id=w.request_id, revision=revision, condition=f"native:{w.method}",
+                                            nonce_hash=nonce, block=b, anchor=anchor, result=None, hidden_size=engine.hidden_size,
+                                            checkpoint=checkpoint.size, extra=extra, source_id=w.source_id, method=w.method,
+                                            role=w.declared_role, phase=w.phase, cell_id=w.cell_id, episode_id=w.episode_id)
+                            writer.add(row, vec)
+                            stats["rows"] += 1
+                    continue
                 k_max = A.k_max_needed(anchors)
                 seq = teacher_forced_sequence(record, k_max)
                 positions = tuple(sorted({a.token_offset for a in anchors if a.present}))
