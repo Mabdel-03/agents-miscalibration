@@ -175,7 +175,10 @@ def _port_for(profile_name: str, replica: int = 0) -> int:
     registry keys by ``host_port`` so distinct ports give distinct registry entries even
     co-located. (Replicas of different sizes already differ via crc32.)
     """
-    return 8000 + (zlib.crc32(profile_name.encode()) % 1000) + replica
+    # study-v4: ASYS_PORT_OFFSET lets a second fleet (the judge run root) share nodes with
+    # the generation fleet without binding the same port (both fleets number replicas from 0;
+    # with SO_REUSEPORT two servers on one node:port silently split each other's requests).
+    return 8000 + (zlib.crc32(profile_name.encode()) % 1000) + replica + int(os.environ.get("ASYS_PORT_OFFSET", "0") or 0)
 
 
 def _resolve_profile(model_size: str, profile_name: str | None) -> ServingProfile:

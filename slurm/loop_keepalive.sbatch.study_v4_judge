@@ -24,6 +24,7 @@ if [ -z "${NO_RESUBMIT:-}" ]; then
 fi
 
 cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
+export ASYS_PORT_OFFSET=100  # judge fleet ports never collide with the generation fleet's
 exec python -u slurm/keepalive.py \
   --allow-legacy-fleet \
   --run-id "study_v4_judge" \
