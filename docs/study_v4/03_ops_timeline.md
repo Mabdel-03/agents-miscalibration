@@ -310,3 +310,28 @@ Inodes ≈ 1,300 cell dirs × 4 + 12k item files + 1.5k logs + 700 eval shards +
 - BigCodeBench evaluator image pull fails or is slow on the login node (9.27 GB), or the image's Python path differs from expectation. → Start the pull at T0 in the background with cache/tmp on data; verify with apptainer exec on both login and compute nodes during the pilot; fallback is a py3.10 conda env with the 73 pins from bcb_req_eval.txt (slower to build, ~30 min).
 - Manual relaunch of loops or a second driver duplicates the self-resubmit chain or double-launches servers (observed 1->3->7 loop duplication). → Only launch_study_loops.py launches loops; before any relaunch scancel both loop names and confirm squeue is empty; never pass --requeue; keepalive counts PD jobs so duplicates are not launched.
 - Association MaxSubmit=500 rejects array chunks once servers (~25) + loops + eval arrays accumulate. → chunk-size 100, --qos-limit 460, driver's absolute gate waits for real headroom; eval arrays limited to 96 tasks.
+## Rolling evaluation waves (added Sat 23:45 EDT)
+
+Seals are keyed by the generate manifest's sha256 and are append-only, so a manifest has ONE
+seal and re-sealing adds newly completed items.  Eval-kind cell ids carried only `x<seal8>`
+so rolling waves under one seal would have collided on the cell directory; `cells.py` now
+accepts `--wave <tag>` (cell id `…x<seal8>.w<tag>.s000`) and `--items-file` (restricts the
+select/eval tiers to listed sealed items).  `agents_scaling.study.waves` plans a wave = items
+whose EVERY generate cell of the manifest is complete and sealed, minus items of earlier waves
+(`<run_root>/waves/<seal8>_w<tag>.json`).  Judging an item exactly once, after all its pools
+exist, keeps aggregate's seal-order guard satisfied for every selection record of the item.
+
+Per wave (scripts under `slurm/`):
+1. `slurm/study_wave_start.sh cells_1_32B.json 1 <wave> [min_items] [judge_throttle]` —
+   seal pools → plan wave → `cells --tier 1-select … --wave` → dispatch JUDGE_BEST on the
+   judge fleet (`--server-run-id study_v4_judge`, whole-manifest chunk).
+2. when every JUDGE_BEST cell of the wave has `meta.json`:
+   `slurm/study_wave_finish.sh cells_1_32B.json 1 <wave>` — seal selections (VOTE for all
+   pools; JUDGE_BEST where scored) → `cells --tier 1-eval --lane 32B|eval … --wave` →
+   dispatch JUDGE_HLE (judge fleet) and EVAL_BCB (eval lane, 2 CPU / 8 G).
+3. `aggregate` any time (lenient mode counts `join_refused`; it must be 0 for waved items).
+
+The loop driver (`slurm/study_loop_driver.sbatch.study_v4`) now iterates its per-lane drivers
+every 15 min inside one job (the drivers exit as soon as every chunk is dispatched, which made
+the afterany chain spin) and chains tier 2 (`cells_2_32B.json`, throttle 30) behind tier 1 on
+the 32B lane so the fleet never idles.

@@ -178,3 +178,22 @@ def test_cli_dry_run(tmp_path: Path, study_config, tasks, monkeypatch):
     assert C.main(["--run-id", "study_v4", "--results-root", str(tmp_path), "--tier", "1", "--lane", "32B", "--out", "cells_1_32B.json"]) == 0
     with pytest.raises(ProtocolError):
         C.main(["--run-id", "study_v4", "--results-root", str(tmp_path), "--tier", "pilot", "--lane", "32B", "--out", "cells_1_32B.json"])
+
+
+def test_wave_tag_and_item_restriction(study_config, tasks):
+    seal = "cd" * 32
+    main = [t.source_id for t in tasks if t.split == "main"]
+    sealed = main[:30] + main[200:230]
+    plain = C.build_cells(study_config, tasks, "1-select", "32B", seal=seal, sealed_items=sealed)
+    w1 = C.build_cells(study_config, tasks, "1-select", "32B", seal=seal, sealed_items=sealed, wave="1", items=sealed[:10] + sealed[30:40])
+    assert sum(len(c.items) for c in w1) == 20 and all(".w1.s" in c.cell_id and "x" + seal[:8] in c.cell_id for c in w1)
+    assert not {c.cell_id for c in w1} & {c.cell_id for c in plain}
+    w2 = C.build_cells(study_config, tasks, "1-select", "32B", seal=seal, sealed_items=sealed, wave="2", items=sealed[10:20])
+    assert not {c.cell_id for c in w1} & {c.cell_id for c in w2}
+    assert {sid for c in w2 for sid in c.items} == set(sealed[10:20])
+    with pytest.raises(C.ManifestError):  # an item outside the seal never enters a wave
+        C.build_cells(study_config, tasks, "1-select", "32B", seal=seal, sealed_items=sealed, wave="3", items=[main[100]])
+    with pytest.raises(C.ManifestError):  # tag charset
+        C.build_cells(study_config, tasks, "1-select", "32B", seal=seal, sealed_items=sealed, wave="a.b", items=sealed[:2])
+    ev = C.build_cells(study_config, tasks, "1-eval", "eval", seal=seal, sealed_items=sealed, wave="1", items=sealed[:10] + sealed[30:40])
+    assert ev and all(c.kind is T.CellKind.EVAL_BCB and ".w1.s" in c.cell_id for c in ev) and sum(len(c.items) for c in ev) == 10

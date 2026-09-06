@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -199,6 +200,14 @@ def shards_of(items: Sequence[PublicTask], per_cell: int) -> list[list[str]]:
 # --------------------------------------------------------------------------- cell construction
 
 
+_WAVE_RE = re.compile(r"^[A-Za-z0-9]{1,16}$")
+
+
+def _resolve_under(run_root: Path, value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else run_root / path
+
+
 def cell_id_for(
     module: str,
     method: Method,
@@ -212,13 +221,17 @@ def cell_id_for(
     degree: int | None = None,
     kind: CellKind = CellKind.GENERATE,
     seal: str | None = None,
+    wave: str | None = None,
 ) -> str:
     if kind is CellKind.GENERATE:
         deg = f".d{degree}" if degree is not None else ""
         return f"{module}.{method.value}.{checkpoint}.N{N}.B{B}.F{framing.value}.e{episode_rep}{deg}.s{shard:03d}"
     if not seal:
         raise ManifestError(f"{kind.value} cells need the seal they consume")
-    return f"{module}.{kind.value}.{checkpoint}.N0.B0.F{Framing.NATIVE.value}.e0.x{seal[:8]}.s{shard:03d}"
+    if wave is not None and not _WAVE_RE.match(wave):
+        raise ManifestError(f"wave tag {wave!r} must match {_WAVE_RE.pattern}")
+    w = f".w{wave}" if wave is not None else ""
+    return f"{module}.{kind.value}.{checkpoint}.N0.B0.F{Framing.NATIVE.value}.e0.x{seal[:8]}{w}.s{shard:03d}"
 
 
 class _Builder:
@@ -301,14 +314,15 @@ class _Builder:
         max_inflight: int,
         lane: str,
         depends_on: Sequence[str] = (),
+        wave: str | None = None,
     ) -> list[CellSpec]:
         made: list[CellSpec] = []
-        key = ("eval", kind.value, checkpoint, seal)
+        key = ("eval", kind.value, checkpoint, seal, wave)
         for i in range(0, len(items), per_cell):
             shard_items = list(items[i : i + per_cell])
             shard = self._next_shard(key)
             cell = CellSpec(
-                cell_id=cell_id_for("eval", EVAL_METHOD_PLACEHOLDER, checkpoint, 0, 0, Framing.NATIVE, 0, shard, kind=kind, seal=seal),
+                cell_id=cell_id_for("eval", EVAL_METHOD_PLACEHOLDER, checkpoint, 0, 0, Framing.NATIVE, 0, shard, kind=kind, seal=seal, wave=wave),
                 kind=kind,
                 module="eval",
                 method=EVAL_METHOD_PLACEHOLDER,
@@ -376,13 +390,18 @@ def build_cells(
     seal: str | None = None,
     sealed_items: Sequence[str] | None = None,
     eval_bcb_items_per_cell: int = EVAL_BCB_ITEMS_PER_CELL,
+    wave: str | None = None,
+    items: Sequence[str] | None = None,
 ) -> list[CellSpec]:
     """The deterministic cell list of ``tier`` restricted to ``lane`` (see module docstring).
 
     ``seal``/``sealed_items`` are required for the ``*-select`` and ``*-eval`` tiers: the
     seal directory name (manifest sha256 of the sealed generate manifest) and the item ids
-    it covers (``seal.sealed_item_ids``).  Raises :class:`ManifestError` for a tier the
-    plan does not run (``2b``: C forecasts, cut per 04_critic_corrections §5).
+    it covers (``seal.sealed_item_ids``).  ``items`` restricts those tiers to a subset of the
+    sealed items (a rolling wave, see :mod:`agents_scaling.study.waves`) and ``wave`` tags
+    the cell ids (``…x<seal8>.w<wave>.s000``) so waves under the same seal never share a
+    cell directory.  Raises :class:`ManifestError` for a tier the plan does not run
+    (``2b``: C forecasts, cut per 04_critic_corrections §5).
     """
     if tier not in TIERS:
         raise ManifestError(f"unknown tier {tier!r}; expected one of {TIERS}")
@@ -399,6 +418,12 @@ def build_cells(
         missing = [sid for sid in sealed_items if sid not in by_id]
         if missing:
             raise ManifestError(f"sealed items absent from the public export: {missing[:5]}")
+        if items is not None:
+            unsealed = sorted(set(items) - set(sealed_items))
+            if unsealed:
+                raise ManifestError(f"wave items not sealed under {seal[:12]}: {unsealed[:5]}")
+            wanted = set(items)
+            sealed_items = [sid for sid in sealed_items if sid in wanted]
         ordered = interleave_domains([by_id[sid] for sid in sealed_items])
         split = "dev" if tier.startswith("pilot") else "main"
         if any(t.split != split for t in ordered):
@@ -406,16 +431,16 @@ def build_cells(
         judge_ckpt = cfg.judge_checkpoint
         if tier.endswith("-select"):
             b.evaluation(kind=CellKind.JUDGE_BEST, checkpoint=judge_ckpt, items=[t.source_id for t in ordered], split=split,
-                         seal=seal, per_cell=JUDGE_ITEMS_PER_CELL, max_inflight=JUDGE_MAX_INFLIGHT, lane=judge_ckpt)
+                         seal=seal, per_cell=JUDGE_ITEMS_PER_CELL, max_inflight=JUDGE_MAX_INFLIGHT, lane=judge_ckpt, wave=wave)
         else:
             hle = [t.source_id for t in ordered if Domain(t.domain) is Domain.HLE]
             bcb = [t.source_id for t in ordered if Domain(t.domain) is Domain.BCB]
             b.evaluation(kind=CellKind.JUDGE_HLE, checkpoint=judge_ckpt, items=hle, split=split, seal=seal,
-                         per_cell=JUDGE_ITEMS_PER_CELL, max_inflight=JUDGE_MAX_INFLIGHT, lane=judge_ckpt)
+                         per_cell=JUDGE_ITEMS_PER_CELL, max_inflight=JUDGE_MAX_INFLIGHT, lane=judge_ckpt, wave=wave)
             if eval_bcb_items_per_cell <= 0:
                 raise ManifestError("eval_bcb_items_per_cell must be positive")
             b.evaluation(kind=CellKind.EVAL_BCB, checkpoint=judge_ckpt, items=bcb, split=split, seal=seal,
-                         per_cell=eval_bcb_items_per_cell, max_inflight=1, lane="eval")
+                         per_cell=eval_bcb_items_per_cell, max_inflight=1, lane="eval", wave=wave)
         return b.cells
 
     if tier == "2b":
@@ -647,6 +672,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seal", default=None, help="select/eval tiers: the sealed generate manifest sha (seal dir name)")
     p.add_argument("--eval-bcb-items-per-cell", type=int, default=EVAL_BCB_ITEMS_PER_CELL,
                    help="EVAL_BCB items per (sequential, 1-CPU) cell; 10 ≈ 5 s x ~265 candidates x 10 items ≈ 3.7 h per cell (review P1-2)")
+    p.add_argument("--wave", default=None, help="select/eval tiers: wave tag appended to the cell ids (…x<seal8>.w<wave>.s000)")
+    p.add_argument("--items-file", default=None,
+                   help="select/eval tiers: JSON file ({'items': [...]} or a list) restricting the cells to those sealed items")
     p.add_argument("--dry-run", action="store_true")
     return p
 
@@ -661,7 +689,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         from agents_scaling.study.selection.seal import load_pools, sealed_item_ids
 
         sealed = sorted(sealed_item_ids(load_pools(run_root, args.seal)))
-    cells = build_cells(cfg, tasks, args.tier, args.lane, seal=args.seal, sealed_items=sealed, eval_bcb_items_per_cell=args.eval_bcb_items_per_cell)
+    wave_items: list[str] | None = None
+    if args.items_file:
+        loaded = json.loads(Path(_resolve_under(run_root, args.items_file)).read_text())
+        wave_items = list(loaded["items"] if isinstance(loaded, dict) else loaded)
+    cells = build_cells(cfg, tasks, args.tier, args.lane, seal=args.seal, sealed_items=sealed, eval_bcb_items_per_cell=args.eval_bcb_items_per_cell,
+                        wave=args.wave, items=wave_items)
     index = {t.source_id: t for t in tasks}
     checked = assert_engine_seed_uniqueness(cells, index, cfg)
     assert_tier_nesting(cells, index)
@@ -673,6 +706,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "config_sha256": cfg.config_sha256,
         "study_id": cfg.study_id,
         "seal": args.seal,
+        "wave": args.wave,
+        "items_file": args.items_file,
         "n_cells": len(cells),
         "n_items": len({sid for c in cells for sid in c.items}),
         "seed_keys_checked": checked,
