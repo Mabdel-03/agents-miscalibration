@@ -67,6 +67,14 @@ class Caps:
     selector_calls: int
     dec_max_rounds: int
     cen_max_cycles: int
+    #: Amendment B2b (Table E; review P0-A): total recipient tokens of the returned-results
+    #: block of one CEN_FLAT hub prompt.  A k-assignment cycle clips every returned result to
+    #: ``min(subtask_result_tokens, hub_returned_results_tokens // k)``, so no hub prompt can
+    #: exceed ``prompt_tokens`` at any N ≤ 9 (critic P1-1).  Defaulted for backward compatibility.
+    hub_returned_results_tokens: int = 16384
+    #: Amendment B2b (audit A-6): allowance for the rendered ``last_action_error`` object the
+    #: hub is re-prompted with after a typed action error (the policy bounds its tokens).
+    hub_action_error_tokens: int = 512
 
 
 @dataclass(frozen=True)
@@ -237,6 +245,11 @@ def load_config(path: str | os.PathLike | None = None) -> StudyConfig:
             raise ValueError(f"{name}={value!r} is not a declared checkpoint")
 
     caps = Caps(**{k: int(v) for k, v in raw["caps"].items()})
+    if caps.hub_returned_results_tokens < caps.subtask_result_tokens or caps.hub_action_error_tokens < 1:
+        raise ValueError(
+            "caps.hub_returned_results_tokens must be >= caps.subtask_result_tokens and "
+            "caps.hub_action_error_tokens >= 1 (amendment B2b)"
+        )
     items_raw = raw["items"]
     items = Items(
         dev=ItemCounts(**{k: int(v) for k, v in items_raw["dev"].items()}),

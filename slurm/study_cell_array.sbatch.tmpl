@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --job-name=asys-study-{RUN_ID}-{LANE}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --array=0-{LAST_INDEX}%{THROTTLE}
+#SBATCH --output={LOG_DIR}/study_{LANE}_%A_%a.out
+#SBATCH --signal=B:USR1@1200
+#SBATCH --no-requeue
+
+# study_v4 cell worker (WP5): one array task = one cell of {CELLS_FILE}.  Fork of
+# run_cell_array.sbatch.tmpl with {MEM}/{TIME}/{CPUS} placeholders and the study runner.
+# SIGUSR1 20 min before the walltime makes run_one finish in-flight items and exit 0
+# WITHOUT meta.json so study_launch_chunked.py re-queues the cell (architecture §3 step 8).
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+# Cell jobs are HTTP clients to the vLLM servers (no GPU here); EVAL_BCB cells run apptainer.
+exec python -m agents_scaling.study.run_one \
+  --run-id "{RUN_ID}" \
+  --server-run-id "{SERVER_RUN_ID}" \
+  --cells-file "{CELLS_FILE}" \
+  --index "$SLURM_ARRAY_TASK_ID"

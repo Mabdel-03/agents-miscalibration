@@ -322,5 +322,14 @@
     "manifest_wording": "AMEND C1b: C (report compiler, 256-token thinking-off temperature-0 forecasts, dev recalibrators on all 60 dev items) is tier 2b and first in the cut order; if unexecuted, family C enters Holm with p=1 and remains in the denominator.",
     "unnoticed_by_brief": true,
     "source": "04_critic_corrections.md §4 item 10, §5 item 2"
+  },
+  {
+    "id": "B2b",
+    "deviation": "Table E is extended: a CEN_FLAT hub prompt's returned-results block is bounded at 16,384 recipient tokens in total (each returned result is clipped to min(4,096, 16,384 // k) for a k-assignment cycle) and a 512-token allowance is reserved for the typed last_action_error object the hub is re-prompted with after an invalid action; every summed envelope must fit 32,768 rendered tokens or the profile refuses to freeze.",
+    "spec_clause": "§4.2, §4.3, §6.5",
+    "unsupported_claim": "That a CEN_FLAT coordinator at N=9 saw every worker's full 4,096-token result: with eight assignments in one cycle each returned result is clipped to 2,048 recipient tokens (four or fewer assignments keep the full 4,096).",
+    "manifest_wording": "AMEND B2b: caps.hub_returned_results_tokens=16384 and caps.hub_action_error_tokens=512 join Table E; CEN_FLAT clips the returned results of a k-assignment cycle to min(subtask_result_tokens, hub_returned_results_tokens // k) recipient tokens each; TableE raises EnvelopeError instead of clipping an infeasible envelope; the hub is re-prompted with the typed error object of its last invalid action (audit A-6) as the last_action_error field.",
+    "unnoticed_by_brief": true,
+    "source": "spec-must review P0-A / P1-B (2026-09-05); 04_critic_corrections.md P1-1; 02_spec_fidelity_audit.md A-6"
   }
 ]

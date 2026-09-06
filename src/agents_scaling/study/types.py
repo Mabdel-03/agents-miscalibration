@@ -177,6 +177,29 @@ CANDIDATE_LIMITS: Mapping[str, int] = {
 UNCERTAINTY_LEVELS: tuple[str, ...] = ("low", "medium", "high", "unknown")
 SUBTASK_STATUSES: tuple[str, ...] = ("complete", "partial", "failed")
 
+#: §4.3 / amendment B2 (Table E) recipient-token caps of the packet compiler (WP3 addition;
+#: ``configs/study_v4.yaml`` ``caps`` block carries the same numbers).
+PACKET_TOKENS_CAP = 2048
+PACKET_FINAL_TOKENS_CAP = 1024
+SUBTASK_RESULT_TOKENS_CAP = 4096
+
+#: §4.3 typed unavailable packet (exact bytes) for an empty, invalid or missing source.
+PACKET_UNAVAILABLE_JSON = '{"status":"unavailable"}'
+
+#: Selector ids carried by every result table (§5.3).
+SELECTOR_VOTE = "VOTE"
+SELECTOR_JUDGE_BEST = "JUDGE_BEST"
+
+#: HMAC namespaces of the blind tie seeds (§4.4, §5.3; derived from ``study_seed``).
+VOTE_TIE_NAMESPACE = b"VOTE_TIE"
+JUDGE_BEST_TIE_NAMESPACE = b"JUDGE_BEST_TIE"
+
+#: Frozen low score for an invalid JUDGE_BEST record (§4.4 "Invalid scores use a frozen low score").
+JUDGE_BEST_FROZEN_LOW_SCORE = 0.0
+
+#: Public grouping modes named in every selection record (§4.4, §5.3, amendment S1).
+GROUPING_MODES: tuple[str, ...] = ("mc_letter", "exact_norm", "ast", "exact_source", "empty")
+
 
 # --------------------------------------------------------------------------- exceptions
 
@@ -537,6 +560,41 @@ class Packet(_Record):
     recipient_tokens: int
     serialized: str
     unavailable: bool
+
+    @property
+    def bytes_sha256(self) -> str:
+        """SHA-256 of the exact UTF-8 bytes sent (architecture §2.2 ``packets[].bytes_sha256``)."""
+        return identity.sha256_hex(self.serialized)
+
+
+@dataclass(frozen=True)
+class SelectionRecord(_Record):
+    """One sealed selection over a declared candidate pool (§4.4, §5.3; architecture §2.2).
+
+    Written by WP3's ``selection.vote`` / ``selection.judge_best`` and consumed by the seal
+    and aggregate steps.  Correctness never enters: every field is derivable from public
+    candidate fields and the study seed.  ``vote_keys`` maps every pool candidate id to its
+    public key (``None`` for invalid or unkeyed candidates); ``grouping_mode_counts`` counts
+    the modes over the valid candidates; ``scores``/``score_failures`` are JUDGE_BEST only.
+    """
+
+    selector_id: str  # SELECTOR_VOTE | SELECTOR_JUDGE_BEST
+    pool_kind: str  # "latest_slots" | "archive" | "native" | "bank_prefix" | ...
+    pool_candidate_ids: tuple[str, ...]
+    selected_candidate_id: str | None
+    planned_count: int
+    valid_count: int
+    no_valid_candidate: bool
+    answer_format: str
+    grouping_mode: str | None  # dominant mode among valid candidates (None when none valid)
+    grouping_mode_counts: dict[str, int]
+    winning_count: int | None
+    tied_classes: int | None
+    all_singleton: bool
+    vote_keys: dict[str, Any]
+    scores: dict[str, float] | None = None
+    score_failures: dict[str, bool] | None = None
+    prefix_k: int | None = None
 
 
 @dataclass(frozen=True)

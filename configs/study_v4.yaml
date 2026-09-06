@@ -95,6 +95,8 @@ caps:
   subtask_result_tokens: 4096
   hub_prior_plan_tokens: 8192
   forwarded_results_tokens: 8192
+  hub_returned_results_tokens: 16384   # amendment B2b: hub returned-results block (review P0-A)
+  hub_action_error_tokens: 512         # amendment B2b: rendered last_action_error allowance (A-6)
   solver_calls: 64
   selector_calls: 64
   dec_max_rounds: 8

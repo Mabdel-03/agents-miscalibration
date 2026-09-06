@@ -1,0 +1,30 @@
+#!/bin/bash
+#SBATCH --job-name=asys-study-loop-driver
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/study_loop_driver_%j.out
+
+# study_v4 chunk-driver loop (WP5): runs study_launch_chunked.py for every lane of this
+# run as a SLURM job (never a login-node nohup), self-resubmitting with afterany so a
+# walltime expiry is a baton pass.  NEVER add --requeue (chain duplication; see
+# launch_loops.py).  The per-lane drivers are resumable: run_one skips cells with meta.json.
+set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] study loop driver requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{REPO}/slurm/study_loop_driver.sbatch.{RUN_ID}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "{REPO}"
+# One driver per lane, in parallel; each keeps its own array name/throttle (P0-7).
+{LANE_COMMANDS}
+wait

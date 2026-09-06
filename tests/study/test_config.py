@@ -111,7 +111,7 @@ def test_amendment_register_complete():
     ids = [a["id"] for a in amendments]
     audit_rows = ["F1", "F2", "S1", "S1b", "N1", "N1b", "R1", "A1", "A2", "A3", "B1", "B2", "E1", "E2", "E3",
                   "J1", "C1", "C2", "D1", "N2", "E4", "M1", "M2", "AB1", "P1", "P2", "P3", "P4", "L1", "X1"]
-    additions = ["E3'", "N9B1", "N1-SRS", "E4b", "M1b", "C1b"]
+    additions = ["E3'", "N9B1", "N1-SRS", "E4b", "M1b", "C1b", "B2b"]
     assert ids == audit_rows + additions
     for entry in amendments:
         assert {"id", "deviation", "spec_clause", "unsupported_claim", "manifest_wording"} <= set(entry)
