@@ -100,6 +100,81 @@ def test_request_validation_and_engine_guards(engine):
     assert engine.describe()["padding"] == "right"
 
 
+def _mask_labels(results):
+    return {r.seq_id: r.extra["attention_mask"] for r in results}
+
+
+def test_mask_policy_causal_matches_explicit_mask(engine, model):
+    """Default policy passes no attention_mask: unpadded and padded batches must equal the
+    explicit-mask computation on the captured (real-token) positions."""
+    rng = np.random.default_rng(3)
+    seqs = [_ids(rng, n) for n in (9, 16, 5, 16)]
+    reqs = [E.CaptureRequest(f"m{i}", s, positions=(0, len(s) // 2, len(s) - 1), logit_positions=(len(s) - 1,)) for i, s in enumerate(seqs)]
+    assert engine.mask_policy == "causal" == E.DEFAULT_MASK_POLICY
+    causal_eng = E.CaptureEngine(None, blocks=(0, 1), device_map="cpu", dtype=torch.float32, max_batch_tokens=32, model=model)
+    explicit = E.CaptureEngine(None, blocks=(0, 1), device_map="cpu", dtype=torch.float32, max_batch_tokens=32, model=model, mask_policy="explicit")
+    try:
+        causal = causal_eng.forward(reqs)
+        masked = explicit.forward(reqs)
+    finally:
+        causal_eng.close()
+        explicit.close()
+    assert causal_eng.batches_run == 2 == explicit.batches_run  # [16,16] unpadded, then [9,5] padded
+    assert set(_mask_labels(causal).values()) == {"none"}
+    assert _mask_labels(masked) == {"m0": "padded", "m1": "all_ones", "m2": "padded", "m3": "all_ones"}
+    for c, m in zip(causal, masked):
+        assert c.seq_id == m.seq_id and c.extra["padded"] == m.extra["padded"]
+        for block in (0, 1):
+            np.testing.assert_allclose(c.residuals[block].astype(np.float32), m.residuals[block].astype(np.float32), rtol=1e-2, atol=1e-2)
+        np.testing.assert_allclose(c.logits, m.logits, rtol=1e-3, atol=1e-3)
+    # unpadded single rows: mask=None is bit-for-bit the model's own causal path
+    single = engine.forward([reqs[0]])[0]
+    with torch.inference_mode():
+        ref = model(input_ids=torch.as_tensor([reqs[0].token_ids]), use_cache=False, output_hidden_states=True)
+    np.testing.assert_allclose(single.residuals[0].astype(np.float32), ref.hidden_states[1][0, list(reqs[0].positions)].to(torch.float16).float().numpy(), rtol=2e-2, atol=2e-2)
+    assert single.extra["attention_mask"] == "none" and single.extra["padded"] is False
+    assert single.measurement_cost["attention_mask"] == "none" and single.measurement_cost["padded"] is False
+    assert masked[0].measurement_cost["attention_mask"] == "padded" and masked[0].measurement_cost["padded"] is True
+
+
+def test_mask_policy_padded_keeps_mask_only_with_padding(model):
+    rng = np.random.default_rng(4)
+    seqs = [_ids(rng, n) for n in (16, 16, 10, 3)]
+    reqs = [E.CaptureRequest(f"p{i}", s, positions=(len(s) - 1,)) for i, s in enumerate(seqs)]
+    eng = E.CaptureEngine(None, blocks=(0, 1), device_map="cpu", dtype=torch.float32, max_batch_tokens=32, model=model, mask_policy="padded")
+    try:
+        res = eng.forward(reqs)
+        labels = _mask_labels(res)
+        assert labels["p0"] == "none" and labels["p1"] == "none"  # 2x16 unpadded -> mask dropped
+        assert labels["p2"] == "padded" and labels["p3"] == "padded"  # 10+3 padded -> explicit mask kept
+        for req, r in zip(reqs, res):
+            single = eng.forward([req])[0]
+            assert single.extra["attention_mask"] == "none"
+            np.testing.assert_allclose(r.residuals[1].astype(np.float32), single.residuals[1].astype(np.float32), rtol=2e-2, atol=2e-2)
+    finally:
+        eng.close()
+    assert eng.describe()["mask_policy"] == "padded"
+    with pytest.raises(E.EngineError):
+        E.CaptureEngine(None, blocks=(0,), device_map="cpu", dtype=torch.float32, model=model, mask_policy="flash")
+
+
+def test_max_batch_rows_forces_single_row_batches(model):
+    assert E.plan_batches([10, 30, 5, 30, 12, 1], 64, max_batch_rows=1) == [[1], [3], [4], [0], [2], [5]]
+    assert E.plan_batches([10, 30, 5, 30, 12, 1], 64, max_batch_rows=2)[0] == [1, 3]
+    assert all(len(b) <= 2 for b in E.plan_batches([4] * 9, 64, max_batch_rows=2))
+    with pytest.raises(ValueError):
+        E.plan_batches([1], 64, max_batch_rows=0)
+    rng = np.random.default_rng(5)
+    reqs = [E.CaptureRequest(f"r{i}", _ids(rng, n), positions=(0,)) for i, n in enumerate((6, 8, 4))]
+    eng = E.CaptureEngine(None, blocks=(0,), device_map="cpu", dtype=torch.float32, max_batch_tokens=64, model=model, max_batch_rows=1)
+    try:
+        res = eng.forward(reqs)
+    finally:
+        eng.close()
+    assert eng.batches_run == 3 and all(r.batch_rows == 1 and r.extra["padded"] is False for r in res)
+    assert eng.describe()["max_batch_rows"] == 1
+
+
 def test_fidelity_on_greedy_tiny_completion(engine, model):
     rng = np.random.default_rng(3)
     prompt = list(_ids(rng, 6))

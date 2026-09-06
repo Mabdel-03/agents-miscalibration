@@ -22,9 +22,20 @@ report renders, and writes only under `<run_root>/neural/`.
   max |Δ| = 0.0 at blocks (8, 17, 26).
 * Sites: `blocks_for(L) = floor(f·(L−1))`, f ∈ {0.25, 0.5, 0.75}: 32B (L=64) → 15, 31, 47;
   14B (L=40) → 9, 19, 29; 8B (L=36) → 8, 17, 26.
-* Positions/masking: **right padding** with an explicit `attention_mask`, `use_cache=False`,
-  `position_ids` = 0..n−1 for the real tokens (padding is causal-inert; batched vs single
-  capture agrees to bf16 noise).  Batches are packed by descending length so that
+* Positions/masking: **right padding**, `use_cache=False`, `position_ids` = 0..n−1 for the
+  real tokens (implicit `arange`).  Padding is causal-inert — a real token only attends to
+  positions ≤ its own, all real — so by default (`--mask-policy causal`) **no**
+  `attention_mask` is passed at all and every batch takes SDPA's `is_causal` (flash) path;
+  batched vs single capture agrees to bf16 noise.  Rationale: with a 2-D padding mask,
+  transformers 5.x materialises a `[B,1,T,T]` mask, repeats the kv heads and runs the
+  mem-efficient kernel with an additive bias; that path raised `CUDA illegal memory access`
+  on Qwen3-32B/2×A100 at the first padded batch (2 rows, T=6,317; jobs 22082674/22082675)
+  while every unpadded forward in the same processes passed.  `--mask-policy padded`
+  (mask only when a batch has padding) and `explicit` (always; pre-fix behaviour) remain
+  for A/B checks, and `--max-batch-rows 1` forces every sequence to run alone.  Each row's
+  `measurement_cost.attention_mask` (`none`/`padded`/`all_ones`) and the shard report's
+  `engine.mask_policy` record the choice.  Batches are packed
+  by descending length so that
   `rows · max_len ≤ max_batch_tokens` (default 16,384); a sequence longer than 40,960 is
   refused.  Residuals are sliced at the requested positions inside the hook and moved to
   CPU as fp16; nothing else is kept.  Logits are computed only at requested positions by

@@ -19,8 +19,33 @@ identically the tensor that enters block b+1.  Rationale:
   element was the hidden state.  Both shapes are handled.
 
 Positions are absolute indices into the *unpadded* sequence.  Sequences are **right
-padded** (``attention_mask`` zero on the pad tail) so real tokens keep positions
-``0..n-1`` and the causal mask makes them independent of the padding; ``use_cache=False``.
+padded** so real tokens keep positions ``0..n-1`` (``position_ids`` implicit = ``arange``)
+and the causal mask makes them independent of the padding; ``use_cache=False``.
+
+Mask policy (``mask_policy``)
+-----------------------------
+Under causal attention a real token at position ``i`` only reads positions ``<= i``, all of
+which are real, so a right-padded row needs **no** padding mask: the pad tail only pollutes
+pad positions, which are never captured.  Passing an explicit 2-D mask is therefore
+numerically redundant, but not free: transformers 5.x drops an all-ones mask (SDPA runs
+``is_causal=True`` with GQA, i.e. the flash kernel) while a mask with any zero materialises a
+``[B, 1, T, T]`` boolean mask, repeats the kv heads and routes SDPA through the
+mem-efficient kernel with an additive bias — the path on which Qwen3-32B on 2×A100
+(torch 2.11) raised ``CUDA illegal memory access`` on its first padded batch (study_v4 jobs
+22082674/22082675; every unpadded forward in the same processes passed).
+
+* ``"causal"`` (default): never pass an ``attention_mask``; every batch, padded or not,
+  takes the ``is_causal`` path.  Real-token residuals/logits are identical to the masked
+  computation (exactly, up to kernel choice).
+* ``"padded"``: pass the 2-D mask only when the batch contains padding (unpadded batches
+  pass ``None``).
+* ``"explicit"``: always pass the 2-D mask (the pre-fix behaviour, kept for A/B checks).
+
+Every ``CaptureResult.extra["attention_mask"]`` (also stored per row in
+``measurement_cost``) records the choice made for its batch (``"none"`` / ``"padded"`` /
+``"all_ones"``).  ``max_batch_rows`` optionally caps the rows
+per batch (``1`` = every sequence runs alone and unpadded).
+
 Batches are formed by descending length so that ``rows * max_len <= max_batch_tokens``.
 Residuals are moved to CPU as fp16 inside the hook (nothing else is retained), logits are
 computed only at the requested positions by applying ``lm_head`` to the post-norm hidden
@@ -45,8 +70,11 @@ DEFAULT_MAX_BATCH_TOKENS = 16384
 DEFAULT_MAX_SEQ_TOKENS = 40960
 HOOK_CONVENTION = (
     "forward hook on model.model.layers[b]: block OUTPUT = residual stream after block b "
-    "(input to block b+1); pre-final-norm; right padding; use_cache=False"
+    "(input to block b+1); pre-final-norm; right padding (causal-inert, position_ids=arange); "
+    "use_cache=False"
 )
+MASK_POLICIES: tuple[str, ...] = ("causal", "padded", "explicit")
+DEFAULT_MASK_POLICY = "causal"
 
 
 class EngineError(RuntimeError):
@@ -66,12 +94,15 @@ def blocks_for(num_layers: int, fracs: Sequence[float] = DEFAULT_FRACS) -> tuple
     return tuple(out)
 
 
-def plan_batches(lengths: Sequence[int], max_batch_tokens: int) -> list[list[int]]:
+def plan_batches(lengths: Sequence[int], max_batch_tokens: int, max_batch_rows: int | None = None) -> list[list[int]]:
     """Greedy length batching: indices sorted by descending length, packed so that
     ``len(batch) * max(len)`` never exceeds ``max_batch_tokens`` (a single sequence longer
-    than the budget still forms its own batch — the caller bounds sequence length)."""
+    than the budget still forms its own batch — the caller bounds sequence length) and,
+    when ``max_batch_rows`` is given, no batch holds more rows than that."""
     if max_batch_tokens < 1:
         raise ValueError("max_batch_tokens must be >= 1")
+    if max_batch_rows is not None and max_batch_rows < 1:
+        raise ValueError("max_batch_rows must be >= 1 (or None)")
     order = sorted(range(len(lengths)), key=lambda i: (-int(lengths[i]), i))
     batches: list[list[int]] = []
     current: list[int] = []
@@ -81,7 +112,8 @@ def plan_batches(lengths: Sequence[int], max_batch_tokens: int) -> list[list[int
         if not current:
             current, current_max = [idx], n
             continue
-        if (len(current) + 1) * current_max <= max_batch_tokens:
+        fits_rows = max_batch_rows is None or len(current) < max_batch_rows
+        if fits_rows and (len(current) + 1) * current_max <= max_batch_tokens:
             current.append(idx)
         else:
             batches.append(current)
@@ -148,6 +180,8 @@ class CaptureResult:
             "batch_tokens": int(self.batch_tokens),
             "batch_seconds": float(self.batch_seconds),
             "share_seconds": float(share),
+            "attention_mask": str(self.extra.get("attention_mask", "unknown")),
+            "padded": bool(self.extra.get("padded", self.batch_rows > 1)),
         }
 
 
@@ -158,7 +192,8 @@ class CaptureEngine:
     pass a preloaded ``model`` (tests use a two-layer random Qwen3 on CPU).  ``device_map``
     is ``"auto"`` (accelerate sharding across the visible GPUs — the 32B path on 2×A100),
     an explicit map, or a single device string (``"cpu"``, ``"cuda:0"``).  ``dtype`` defaults
-    to bf16; captured residuals are stored as fp16 (brief: "bf16→fp16").
+    to bf16; captured residuals are stored as fp16 (brief: "bf16→fp16").  ``mask_policy``
+    and ``max_batch_rows`` are documented in the module docstring.
     """
 
     def __init__(
@@ -173,12 +208,22 @@ class CaptureEngine:
         attn_implementation: str | None = None,
         max_seq_tokens: int = DEFAULT_MAX_SEQ_TOKENS,
         pad_token_id: int = 0,
+        mask_policy: str = DEFAULT_MASK_POLICY,
+        max_batch_rows: int | None = None,
     ) -> None:
         import torch
+
+        self.log_batches = True  # one line per batch (rows, max_len, padded) so an async CUDA fault is attributable
 
         self.torch = torch
         self.dtype = dtype if dtype is not None else torch.bfloat16
         self.max_batch_tokens = int(max_batch_tokens)
+        if mask_policy not in MASK_POLICIES:
+            raise EngineError(f"mask_policy {mask_policy!r} not in {MASK_POLICIES}")
+        self.mask_policy = str(mask_policy)
+        if max_batch_rows is not None and int(max_batch_rows) < 1:
+            raise EngineError("max_batch_rows must be >= 1 (or None)")
+        self.max_batch_rows = None if max_batch_rows is None else int(max_batch_rows)
         self.max_seq_tokens = int(max_seq_tokens)
         self.pad_token_id = int(pad_token_id)
         self.snapshot_path = None if snapshot_path is None else str(snapshot_path)
@@ -265,6 +310,8 @@ class CaptureEngine:
             "device_map": self.device_map if isinstance(self.device_map, str) else dict(self.device_map),
             "attn_implementation": getattr(self.model.config, "_attn_implementation", None),
             "max_batch_tokens": self.max_batch_tokens,
+            "max_batch_rows": self.max_batch_rows,
+            "mask_policy": self.mask_policy,
             "hook_convention": HOOK_CONVENTION,
             "padding": "right",
             "use_cache": False,
@@ -280,7 +327,7 @@ class CaptureEngine:
                 raise EngineError(f"{req.seq_id}: {len(req.token_ids)} tokens > max_seq_tokens {self.max_seq_tokens}")
         results: list[CaptureResult | None] = [None] * len(requests)
         lengths = [len(r.token_ids) for r in requests]
-        for batch in plan_batches(lengths, self.max_batch_tokens):
+        for batch in plan_batches(lengths, self.max_batch_tokens, self.max_batch_rows):
             self._run_batch([requests[i] for i in batch], batch, results)
         return [r for r in results if r is not None]
 
@@ -289,21 +336,22 @@ class CaptureEngine:
         rows = len(reqs)
         max_len = max(len(r.token_ids) for r in reqs)
         input_ids = torch.full((rows, max_len), self.pad_token_id, dtype=torch.long)
-        attention = torch.zeros((rows, max_len), dtype=torch.long)
         for row, req in enumerate(reqs):
-            n = len(req.token_ids)
-            input_ids[row, :n] = torch.as_tensor(req.token_ids, dtype=torch.long)
-            attention[row, :n] = 1
+            input_ids[row, : len(req.token_ids)] = torch.as_tensor(req.token_ids, dtype=torch.long)
         input_ids = input_ids.to(self.input_device)
-        attention = attention.to(self.input_device)
+        padded = any(len(r.token_ids) < max_len for r in reqs)
+        attention, mask_kind = self._attention_mask(reqs, max_len, padded)
         self._plan = [tuple(r.positions) for r in reqs]
         self._captured = {}
+        if self.log_batches:
+            lens = sorted((len(r.token_ids) for r in reqs), reverse=True)
+            print(f"[engine] batch rows={rows} max_len={max_len} tokens={sum(lens)} padded={lens[0] != lens[-1]} lens={lens[:6]}", flush=True)
         cuda = torch.cuda.is_available() and self.input_device.type == "cuda"
         if cuda:
             torch.cuda.synchronize()
         started = time.perf_counter()
         with torch.inference_mode():
-            out = self.base(input_ids=input_ids, attention_mask=attention, use_cache=False)
+            out = self.base(input_ids=input_ids, attention_mask=attention, use_cache=False)  # None under "causal"
             hidden = out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
             logits_rows: list[np.ndarray | None] = []
             head = self.model.lm_head
@@ -340,6 +388,7 @@ class CaptureEngine:
                 batch_rows=rows,
                 batch_tokens=batch_tokens,
                 batch_seconds=seconds,
+                extra={"attention_mask": mask_kind, "padded": padded, "batch_max_len": max_len},
             )
         self.batches_run += 1
         self.tokens_run += batch_tokens
@@ -349,6 +398,17 @@ class CaptureEngine:
         del out, hidden, input_ids, attention
         if cuda:
             torch.cuda.empty_cache()
+
+    def _attention_mask(self, reqs: list[CaptureRequest], max_len: int, padded: bool) -> tuple[Any, str]:
+        """The ``attention_mask`` for one batch under ``mask_policy`` (see the module docstring)
+        and a label for ``CaptureResult.extra["attention_mask"]``."""
+        torch = self.torch
+        if self.mask_policy == "causal" or (self.mask_policy == "padded" and not padded):
+            return None, "none"
+        attention = torch.zeros((len(reqs), max_len), dtype=torch.long)
+        for row, req in enumerate(reqs):
+            attention[row, : len(req.token_ids)] = 1
+        return attention.to(self.input_device), ("padded" if padded else "all_ones")
 
     @property
     def tokens_per_second(self) -> float:
@@ -362,9 +422,11 @@ def snapshot_dir(hf_home: str | os.PathLike, hf_id: str, revision: str) -> Path:
 
 __all__ = [
     "DEFAULT_FRACS",
+    "DEFAULT_MASK_POLICY",
     "DEFAULT_MAX_BATCH_TOKENS",
     "DEFAULT_MAX_SEQ_TOKENS",
     "HOOK_CONVENTION",
+    "MASK_POLICIES",
     "CaptureEngine",
     "CaptureRequest",
     "CaptureResult",

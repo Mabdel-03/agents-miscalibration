@@ -56,9 +56,11 @@ from agents_scaling.study import identity  # noqa: E402
 from agents_scaling.study.neural import anchors as A  # noqa: E402
 from agents_scaling.study.neural import storage as S  # noqa: E402
 from agents_scaling.study.neural.engine import (  # noqa: E402
+    DEFAULT_MASK_POLICY,
     DEFAULT_MAX_BATCH_TOKENS,
     DEFAULT_MAX_SEQ_TOKENS,
     HOOK_CONVENTION,
+    MASK_POLICIES,
     CaptureRequest,
     blocks_for,
     snapshot_dir,
@@ -457,6 +459,10 @@ def run_native(args: argparse.Namespace, engine: Any, tokenizer: Any, run_root: 
                     if not anchor.present:
                         stats["anchors_missing"][anchor.missingness] = stats["anchors_missing"].get(anchor.missingness, 0) + 1
                     for b in blocks:
+                        if (w.request_id, int(b), anchor.kind) in done:
+                            # committed by an earlier (preempted) run of this item: never write a duplicate key
+                            stats["rows_skipped_committed"] = stats.get("rows_skipped_committed", 0) + 1
+                            continue
                         row, vec = _row(stage="native", snapshot_id=w.request_id, revision=revision, condition=f"native:{w.method}",
                                         nonce_hash=nonce, block=b, anchor=anchor, result=result, hidden_size=engine.hidden_size,
                                         checkpoint=checkpoint.size, extra=extra, source_id=w.source_id, method=w.method,
@@ -544,6 +550,9 @@ def run_report(args: argparse.Namespace, engine: Any, tokenizer: Any, run_root: 
                     if not anchor.present:
                         stats["anchors_missing"][anchor.missingness] = stats["anchors_missing"].get(anchor.missingness, 0) + 1
                     for b in blocks:
+                        if (w.report_id, int(b), anchor.kind) in done:
+                            stats["rows_skipped_committed"] = stats.get("rows_skipped_committed", 0) + 1
+                            continue
                         row, vec = _row(stage="report", snapshot_id=w.report_id, revision=revision, condition=f"report:{method}",
                                         nonce_hash=nonce, block=b, anchor=anchor, result=result, hidden_size=engine.hidden_size,
                                         checkpoint=checkpoint.size, extra=extra, source_id=report.get("source_id") or w.source_id,
@@ -571,6 +580,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--items-file", default=None, help="explicit work list (JSON/JSONL) instead of the panel selection / reports dir")
     ap.add_argument("--max-batch-tokens", type=int, default=DEFAULT_MAX_BATCH_TOKENS)
+    ap.add_argument("--max-batch-rows", type=int, default=None, help="cap rows per engine batch (1 = every sequence alone, unpadded)")
+    ap.add_argument("--mask-policy", choices=MASK_POLICIES, default=DEFAULT_MASK_POLICY,
+                    help="attention_mask policy: causal = never pass a padding mask (right padding is causal-inert; is_causal SDPA path), "
+                         "padded = mask only when a batch has padding, explicit = always (pre-fix behaviour)")
     ap.add_argument("--max-seq-tokens", type=int, default=DEFAULT_MAX_SEQ_TOKENS)
     ap.add_argument("--fidelity", type=int, default=20, help="records of this shard to run the §10.5 fidelity replay on (0 = off)")
     ap.add_argument("--fidelity-tokens", type=int, default=64)
@@ -671,6 +684,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.dtype]
     engine = CaptureEngine(str(snapshot), blocks, device_map=args.device_map, dtype=dtype, max_batch_tokens=args.max_batch_tokens,
                            attn_implementation=args.attn_implementation, max_seq_tokens=args.max_seq_tokens,
+                           mask_policy=args.mask_policy, max_batch_rows=args.max_batch_rows,
                            pad_token_id=int(getattr(tokenizer, "pad_token_id", 0) or 0))
     log(f"engine ready in {engine.load_seconds:.0f}s: {engine.describe()}")
     try:
