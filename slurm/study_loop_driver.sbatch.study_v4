@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH --job-name=asys-study-loop-driver
+#SBATCH --partition=mit_normal,mit_preemptable
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time=12:00:00
+#SBATCH --output=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4/logs/study_loop_driver_%j.out
+
+# study_v4 chunk-driver loop (WP5): runs study_launch_chunked.py for every lane of this
+# run as a SLURM job (never a login-node nohup), self-resubmitting with afterany so a
+# walltime expiry is a baton pass.  NEVER add --requeue (chain duplication; see
+# launch_loops.py).  The per-lane drivers are resumable: run_one skips cells with meta.json.
+set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] study loop driver requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
+source "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/study_loop_driver.sbatch.study_v4" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
+# One driver per lane, in parallel; each keeps its own array name/throttle (P0-7).
+python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_1_32B.json" --lane 32B --chunk-size 100 --throttle 60 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 &
+python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_14B.json" --lane 14B --chunk-size 100 --throttle 18 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 &
+python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_8B.json" --lane 8B --chunk-size 100 --throttle 12 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 &
+python -u slurm/study_launch_chunked.py --allow-legacy-admission --run-id "study_v4" --server-run-id "study_v4" --cells-file "cells_2_4B.json" --lane 4B --chunk-size 100 --throttle 12 --submit-cap 380 --qos-limit 460 --cell-partition "mit_preemptable" --cell-time "1-00:00:00" --cell-mem "4G" --cpus 1 --poll-s 120.0 &
+wait

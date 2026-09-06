@@ -3520,6 +3520,29 @@ def tick_fleet(
         raise FleetContractError(str(exc)) from exc
 
 
+
+def _retire_stale_render(run_root: str, profile_name: str, rid: int) -> None:
+    """Move a previous ``serve_<profile>[_r<rid>].sbatch`` render aside before relaunching.
+
+    ``launch_server.submit`` refuses to overwrite an existing render ("serving intent").
+    Keepalive only relaunches a replica id that is neither live nor in flight, so any
+    render left behind by a preempted/failed job is stale by construction (study-v4).
+    """
+    import shutil as _shutil
+    import time as _time
+
+    servers = Path(run_root) / "servers"
+    name = f"serve_{profile_name}.sbatch" if rid == 0 else f"serve_{profile_name}_r{rid}.sbatch"
+    path = servers / name
+    if not path.exists():
+        return
+    stale = servers / ".stale"
+    stale.mkdir(exist_ok=True)
+    target = stale / f"{int(_time.time())}_{name}"
+    _shutil.move(str(path), str(target))
+    print(f"[keepalive] retired stale render {name} -> {target.name}")
+
+
 def tick(run_root: str, targets: list[Target]) -> None:
     """One keepalive pass.
 
@@ -3561,6 +3584,7 @@ def tick(run_root: str, targets: list[Target]) -> None:
             used.add(rid)
             assigned_rids.setdefault(t.size, set()).add(rid)
             try:
+                _retire_stale_render(run_root, t.size, rid)
                 job = submit_server(t.size, run_root, t.partition, t.gpu_type, t.time_limit, replica=rid)
                 print(f"[keepalive] RELAUNCH {t.size} r{rid} on {t.partition} ({t.gpu_type}) -> job {job} "
                       f"(have {have}/{t.count} on {t.partition})")
