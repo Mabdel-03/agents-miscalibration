@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name=asys-loop-keepalive-judge
+#SBATCH --partition=mit_normal,mit_preemptable
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=2G
+#SBATCH --time=12:00:00
+#SBATCH --output=/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4_judge/logs/loop_keepalive_%j.out
+
+# Keepalive runs as a SLURM job so it survives login-node session changes/cleanup that
+# kill nohup processes. CPU-only, minimal resources; just probes + sbatch as needed.
+set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] legacy keepalive requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
+source "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+# SELF-RESUBMIT before running so walltime expiry is just a baton pass; see loop_driver.
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "/orcd/data/tpoggio/001/mabdel03/agents_scaling/slurm/loop_keepalive.sbatch.study_v4_judge" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "/orcd/data/tpoggio/001/mabdel03/agents_scaling"
+exec python -u slurm/keepalive.py \
+  --allow-legacy-fleet \
+  --run-id "study_v4_judge" \
+  --spec "32B-long:2:ou_bcs_low:1-00:00:00" \
+  --interval 600

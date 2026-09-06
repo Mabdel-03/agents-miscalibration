@@ -1,0 +1,57 @@
+#!/bin/bash
+#SBATCH --job-name=asys-neural-{RUN_ID}-{STAGE}-s{SHARD}
+#SBATCH --partition={PARTITION}
+#SBATCH --gres=gpu:a100:{GPUS}
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=120G
+#SBATCH --time=12:00:00
+#SBATCH --output={LOG_DIR}/neural_{STAGE}_s{SHARD}_%j.out
+#SBATCH --no-requeue
+#SBATCH --export=NONE
+
+# study_v4 neural readouts (N1): one shard of the HF-transformers capture engine
+# (docs/study_v4/09_neural_readouts_brief.md; docs/study_v4/09_neural_capture_engine.md).
+# {GPUS}=2 for Qwen3-32B (device_map=auto across both A100-80GB), 1 for 8B/14B.
+# Reads <run_root>/requests and the sealed selections / compiled reports; writes only
+# <run_root>/neural/<stage>/.  Resumable: re-submitting the same shard skips committed keys.
+set -euo pipefail
+umask 027
+
+export PATH=/usr/bin:/bin
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
+# The neural env has no agents_scaling install: the CLI adds {REPO}/src itself; PYTHONPATH
+# is set too so `python -m agents_scaling...` resolves before the sys.path shim runs.
+export PYTHONPATH="{REPO}/src"
+
+# HF cache on the data filesystem, strictly offline (pinned snapshots only).
+export HF_HOME="{HF_HOME}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export TOKENIZERS_PARALLELISM=false
+export DO_NOT_TRACK=1
+
+# Compile / kernel caches on NODE-LOCAL /tmp (never $HOME, never NFS); removed on exit.
+ASYS_LOCAL_CACHE="/tmp/asys_neural_${SLURM_JOB_ID}"
+mkdir -p "$ASYS_LOCAL_CACHE"/{xdg,triton,torchinductor,tmp}
+trap 'rm -rf "$ASYS_LOCAL_CACHE"' EXIT
+export XDG_CACHE_HOME="$ASYS_LOCAL_CACHE/xdg"
+export TRITON_CACHE_DIR="$ASYS_LOCAL_CACHE/triton"
+export TORCHINDUCTOR_CACHE_DIR="$ASYS_LOCAL_CACHE/torchinductor"
+export TMPDIR="$ASYS_LOCAL_CACHE/tmp"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+echo "[neural] job=$SLURM_JOB_ID host=$(hostname) gpus={GPUS} stage={STAGE} shard={SHARD}/{NUM_SHARDS} python={PYTHON}"
+nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader || true
+
+cd "{REPO}"
+exec "{PYTHON}" -m agents_scaling.study.neural.capture \
+  --run-id "{RUN_ID}" \
+  --stage "{STAGE}" \
+  --checkpoint "{CHECKPOINT}" \
+  --shard "{SHARD}" \
+  --num-shards "{NUM_SHARDS}" \
+  {ARGS}

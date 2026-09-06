@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --job-name=asys-neural-analysis-{RUN_ID}-{STAGE}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=04:00:00
+#SBATCH --output={LOG_DIR}/neural_analysis_{STAGE}_%j.out
+#SBATCH --no-requeue
+#SBATCH --export=NONE
+
+# study_v4 neural readouts (N3): geometry tables, the family-G predictor (nested CV → freeze
+# → confirmation contrast) and the family-C recalibrators (docs/study_v4/09_neural_readouts_brief.md
+# R1 step 3 / R3; spec §8.5, §8.7, §8.8, §9.2-9.3).  CPU only, harness python (asys_env).
+# {STAGE} is one of geometry | G-dev | G-confirm | C.  Order: geometry (any time after the
+# native capture), G-dev (after aggregate wrote <run_root>/tables/selections.parquet on the
+# dev split), G-confirm (after aggregate covers the confirmation panel; reads only the frozen
+# G artifacts), C (after aggregate; freezes on dev, scores confirmation when present).
+# Reads <run_root>/{forecast,neural,tables,data/public}; writes only <run_root>/neural/.
+set -euo pipefail
+umask 027
+
+export PATH=/usr/bin:/bin
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="{REPO}/src"
+export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4
+
+# Offline HF cache (only consulted for the pinned sentence-transformers text model; the
+# TF-IDF + SVD fallback is recorded when it is absent).  Compile/temp caches on node-local /tmp.
+export HF_HOME="{HF_HOME}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export TOKENIZERS_PARALLELISM=false
+ASYS_LOCAL_CACHE="/tmp/asys_neural_analysis_${SLURM_JOB_ID}"
+mkdir -p "$ASYS_LOCAL_CACHE"/{xdg,tmp}
+trap 'rm -rf "$ASYS_LOCAL_CACHE"' EXIT
+export XDG_CACHE_HOME="$ASYS_LOCAL_CACHE/xdg"
+export TMPDIR="$ASYS_LOCAL_CACHE/tmp"
+
+echo "[neural.analysis] job=$SLURM_JOB_ID host=$(hostname) stage={STAGE} run={RUN_ID} seal={SEAL} python={PYTHON}"
+cd "{REPO}"
+exec "{PYTHON}" -m agents_scaling.study.neural.analysis \
+  --run-id "{RUN_ID}" \
+  --stage "{STAGE}" \
+  --seal "{SEAL}" \
+  --results-root "{RESULTS_ROOT}" \
+  --checkpoint "{CHECKPOINT}" \
+  --blocks "{BLOCKS}" \
+  {ARGS}

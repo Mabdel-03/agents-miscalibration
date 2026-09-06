@@ -594,19 +594,53 @@ def content_byte_to_prompt_token(
 
 
 REPORT_REQUIRED_FIELDS: tuple[str, ...] = ("report_id", "messages", "prompt_token_ids")
+REPORT_ANCHOR_NAMES: tuple[str, str] = ("task_only_anchor", "state_anchor")
+
+
+def report_anchor_fields(report: Mapping[str, Any], name: str) -> tuple[int | None, int | None]:
+    """``(token_index, byte_offset)`` of one report anchor, accepting both interface shapes.
+
+    N2 (``forecast.manifest.report_render``) writes ``byte_anchors[name]`` and
+    ``anchor_tokens[name]["index"]`` (and, since the P0-1 fix, the flat ``<name>_byte`` /
+    ``<name>_token`` mirrors); older hand-written reports carry only the flat keys.  A flat
+    key wins when both are present.  Returns ``None`` for an absent form.
+    """
+    if name not in REPORT_ANCHOR_NAMES:
+        raise AnchorError(f"unknown report anchor {name!r}")
+    tok = report.get(f"{name}_token")
+    if tok is None:
+        nested = report.get("anchor_tokens") or {}
+        entry = nested.get(name) if isinstance(nested, Mapping) else None
+        if isinstance(entry, Mapping):
+            tok = entry.get("index")
+        elif entry is not None:
+            tok = entry
+    byte = report.get(f"{name}_byte")
+    if byte is None:
+        nested = report.get("byte_anchors") or {}
+        byte = nested.get(name) if isinstance(nested, Mapping) else None
+    return (None if tok is None else int(tok)), (None if byte is None else int(byte))
 
 
 def resolve_report_anchors(report: Mapping[str, Any], tokenizer: Any) -> list[Anchor]:
     """``TASK_ONLY_ANCHOR``, ``STATE_ANCHOR`` and ``LAST_PREFILL`` of one compiled report.
 
-    ``report`` is the N2 interface object (``<run_root>/forecast/reports/<item>.<method>.json``):
-    ``report_id``, ``messages`` (one user message), ``prompt_token_ids``, optional
-    ``chat_template_kwargs`` (default thinking off, as FORECAST_DECODING), and the anchors as
-    exclusive-end UTF-8 byte offsets into the user content ``task_only_anchor_byte`` /
-    ``state_anchor_byte`` and/or as absolute token indices ``task_only_anchor_token`` /
-    ``state_anchor_token``.  When both forms are present they must agree.  A missing state
-    anchor defaults to the last prefill token (brief R1: "state anchor = last prefill token
-    before generation"); a missing task-only anchor is ``ANCHOR_UNRESOLVED``.
+    ``report`` is the N2 interface object (``<run_root>/forecast/reports/<item>.<method>.json``,
+    ``forecast.manifest.report_render``): ``report_id``, ``messages`` (one user message),
+    ``prompt_token_ids``, optional ``chat_template_kwargs`` (default thinking off, as
+    FORECAST_DECODING), and the anchors in either (or both) of two equivalent shapes:
+
+    * nested, as N2 writes them: ``byte_anchors: {task_only_anchor, state_anchor}`` (exclusive-end
+      UTF-8 byte offsets into the user content) and ``anchor_tokens: {task_only_anchor: {index,
+      ...}, state_anchor: {index, ...}}`` (absolute prompt-token indices);
+    * flat: ``task_only_anchor_byte`` / ``state_anchor_byte`` and/or ``task_only_anchor_token`` /
+      ``state_anchor_token``.
+
+    The flat key wins when both are present for the same anchor; when a byte and a token form
+    are both present they must agree (byte → "token containing the span's last byte").  A
+    missing state anchor defaults to the last prefill token (``source=last_prefill_default``);
+    a missing task-only anchor is ``ANCHOR_UNRESOLVED``.  The capture stage refuses both
+    defaults (``capture.check_report_anchors``): the interface is required, not optional.
     """
     missing = [k for k in REPORT_REQUIRED_FIELDS if k not in report]
     if missing:
@@ -622,8 +656,7 @@ def resolve_report_anchors(report: Mapping[str, Any], tokenizer: Any) -> list[An
 
     def resolve(name: str) -> tuple[int | None, str]:
         nonlocal spans
-        tok = report.get(f"{name}_token")
-        byte = report.get(f"{name}_byte")
+        tok, byte = report_anchor_fields(report, name)
         from_byte: int | None = None
         if byte is not None:
             if spans is None:
@@ -647,13 +680,13 @@ def resolve_report_anchors(report: Mapping[str, Any], tokenizer: Any) -> list[An
         anchors.append(Anchor(ANCHOR_TASK_ONLY, None, MISSING_ANCHOR_UNRESOLVED, CHANNEL_NONE, "task", 0, {"source": task_src}))
     else:
         anchors.append(Anchor(ANCHOR_TASK_ONLY, task_tok, None, CHANNEL_PROMPT, f"task[..{task_tok}]", 0,
-                              {"source": task_src, "task_only_anchor_byte": report.get("task_only_anchor_byte")}))
+                              {"source": task_src, "task_only_anchor_byte": report_anchor_fields(report, "task_only_anchor")[1]}))
     if state_tok is None:
         state_tok, state_src = n - 1, "last_prefill_default"
     if task_tok is not None and task_tok > state_tok:
         raise AnchorError("task-only anchor lies after the state anchor")
     anchors.append(Anchor(ANCHOR_STATE, state_tok, None, CHANNEL_PROMPT, f"report[..{state_tok}]", 0,
-                          {"source": state_src, "state_anchor_byte": report.get("state_anchor_byte")}))
+                          {"source": state_src, "state_anchor_byte": report_anchor_fields(report, "state_anchor")[1]}))
     anchors.append(Anchor(ANCHOR_LAST_PREFILL, n - 1, None, CHANNEL_PROMPT, f"prompt[0:{n})", 0,
                           {"equals_state_anchor": state_tok == n - 1}))
     return anchors
@@ -694,6 +727,7 @@ __all__ = [
     "MISSING_JSON_CLOSE",
     "MISSING_NOT_APPLICABLE",
     "MISSING_NOT_REACHED",
+    "REPORT_ANCHOR_NAMES",
     "REPORT_REQUIRED_FIELDS",
     "Anchor",
     "AnchorError",
@@ -711,6 +745,7 @@ __all__ = [
     "last_token_of_span",
     "locate_content_channel",
     "render_chat_text",
+    "report_anchor_fields",
     "resolve_native_anchors",
     "resolve_report_anchors",
     "think_end_id",

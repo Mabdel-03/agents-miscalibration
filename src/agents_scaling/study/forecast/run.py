@@ -3,7 +3,8 @@
 ::
 
     python -m agents_scaling.study.forecast.run --run-id study_v4 --seal <sha> \\
-        --methods IND_VOTE,DEC,CEN_FLAT --items-file <panel items> --shard K --num-shards N [--report-only]
+        --methods IND_VOTE,DEC,CEN_FLAT (--items-file <panel items> | --panel-per-domain 150) \\
+        --shard K --num-shards N [--report-only]
 
 For every (item, method) of the shard it compiles the FINAL_HANDOFF_REPORT from the sealed
 artifacts (``report.compile_report``), renders the forecast request (``manifest``), writes
@@ -240,11 +241,20 @@ class ForecastRunner:
         return f"{CELL_PREFIX}.{method.value}.{self.checkpoint.size}.x{self.seal[:8]}"
 
     def jobs(self) -> list[ForecastJob]:
+        """Resolve every (item, method) to its sealed cell; an unresolvable pair is recorded
+        as a protocol error for that job (``forecast/errors/``) and the others still run."""
         out: list[ForecastJob] = []
         for sid in self.items:
             for method in self.methods:
-                cell = resolve_cell_id(self.selections, sid, method, checkpoint=self.checkpoint.size, N=self.N, B=self.B,
-                                       module=self.module, episode_rep=self.episode_rep)
+                try:
+                    cell = resolve_cell_id(self.selections, sid, method, checkpoint=self.checkpoint.size, N=self.N, B=self.B,
+                                           module=self.module, episode_rep=self.episode_rep)
+                except ProtocolError as exc:
+                    self._record_error(ForecastJob(sid, method, ""), "ProtocolError", exc, None)
+                    sys.stderr.write(f"[forecast] {exc}\n")
+                    with self.lock:
+                        self.stats["protocol_errors"] += 1
+                    continue
                 out.append(ForecastJob(sid, method, cell))
         return out
 
@@ -326,7 +336,7 @@ class ForecastRunner:
             {"source_id": job.source_id, "method": job.method.value, "cell_id": job.cell_id, "kind": kind, "error": str(exc)[:4000],
              "detail": detail, "at": self.clock(), "host": socket.gethostname(), "slurm_job_id": os.environ.get("SLURM_JOB_ID")},
         )
-        self.event("job_failed", job=job.label, kind=kind, error=str(exc)[:2000])
+        self.event("job_failed", job=job.label, failure=kind, error=str(exc)[:2000])
 
     # ---- main ------------------------------------------------------------------------
     def run(self) -> int:
@@ -371,7 +381,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id", required=True)
     p.add_argument("--seal", required=True, help="sha256 of the sealed generate manifest (seals/<sha>/SELECTIONS.json)")
     p.add_argument("--methods", default="IND_VOTE,DEC,CEN_FLAT")
-    p.add_argument("--items-file", required=True, help="panel item ids (json list / jsonl / one per line)")
+    panel = p.add_mutually_exclusive_group(required=True)
+    panel.add_argument("--items-file", default=None, help="explicit item ids (json list / jsonl / one per line)")
+    panel.add_argument("--panel-per-domain", type=int, default=None,
+                       help="derive the items from the public export: PublicTask.rank < N per superdomain on 'main' (neural.panel; the N1/N3 rule)")
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--report-only", action="store_true", help="write the report renders only (no forecast request)")
@@ -395,7 +408,13 @@ def main(argv: Sequence[str] | None = None, **injected: Any) -> int:
     server_run_root = results_root / (args.server_run_id or args.run_id)
     try:
         methods = parse_methods(args.methods)
-        items = shard_items(read_items_file(args.items_file), args.shard, args.num_shards)
+        if args.items_file is not None:
+            all_items = read_items_file(args.items_file)
+        else:
+            from agents_scaling.study.neural.panel import flatten_panel, panel_source_ids
+
+            all_items = flatten_panel(panel_source_ids(run_root, int(args.panel_per_domain)))
+        items = shard_items(all_items, args.shard, args.num_shards)
     except (ProtocolError, ValueError, OSError) as exc:
         sys.stderr.write(f"[forecast] {exc}\n")
         return EXIT_SUSPENDED

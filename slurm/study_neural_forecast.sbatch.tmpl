@@ -1,0 +1,34 @@
+#!/bin/bash
+#SBATCH --job-name=asys-forecast-{RUN_ID}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH --time={TIME}
+#SBATCH --array=0-{LAST_INDEX}%{THROTTLE}
+#SBATCH --output={LOG_DIR}/forecast_%A_%a.out
+#SBATCH --no-requeue
+
+# study_v4 tier-2b shadow-forecast cell (N2; spec §8.7, brief 09_neural_readouts_brief.md R1).
+# CPU only: each array task is one shard of the panel items and talks to the live 32B vLLM
+# fleet through the study client/store (content-addressed requests; a re-run aliases).
+# Runs AFTER `seal --kind selections` of the sealed generate manifest {SEAL} and BEFORE any
+# correctness join.  Pass REPORT_ONLY=--report-only to write only the report renders
+# (`<run_root>/forecast/reports/<item>.<method>.json`, the capture stage's input).
+# Resumable: existing outputs are skipped; exit 2 = no live endpoint (re-queue), 3 = infra
+# failures left (re-queue), 4 = a protocol error was recorded under forecast/errors/.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+export HF_HOME="${HF_HOME:-/orcd/data/tpoggio/001/mabdel03/.cache/huggingface}"
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+
+exec python -m agents_scaling.study.forecast.run \
+  --run-id "{RUN_ID}" \
+  --server-run-id "{SERVER_RUN_ID}" \
+  --seal "{SEAL}" \
+  --methods "{METHODS}" \
+  --items-file "{ITEMS_FILE}" \
+  --shard "$SLURM_ARRAY_TASK_ID" \
+  --num-shards "{NUM_SHARDS}" \
+  --parallel "{PARALLEL}" \
+  {REPORT_ONLY}
