@@ -351,10 +351,22 @@ def load_tables(run_root: Path) -> dict[str, list[dict[str, Any]]]:
     return {"selections": sel, "banks": banks, "episodes": eps}
 
 
-def _external_family(path: Path, family: str) -> dict[str, Any]:
-    if path.exists():
-        d = json.loads(path.read_text())
-        return {"p": float(d.get("p", 1.0)), "estimate": d.get("estimate"), "ci95": d.get("ci95"), "n": d.get("n"), "note": d.get("note", f"family {family} from {path.name}"), "source": str(path), "executed": True}
+def _external_family(run_root: Path, family: str) -> dict[str, Any]:
+    """Family C/G results from the N3 analysis stage (``neural/C_summary.json`` /
+    ``neural/G_confirm_summary.json``: ``primary.bootstrap.{estimate,p_one_sided,ci_low,ci_high}``),
+    or the generic ``{"p", "estimate", "ci95", "n", "note"}`` file; p = 1 when neither exists."""
+    generic = run_root / ("forecast" if family == "C" else "neural") / "tables" / f"family_{family}.json"
+    summary = run_root / "neural" / ("C_summary.json" if family == "C" else "G_confirm_summary.json")
+    if summary.exists():
+        d = json.loads(summary.read_text())
+        prim = (d.get("primary") or {}).get("bootstrap") or {}
+        if prim.get("p_one_sided") is not None:
+            return {"p": float(prim["p_one_sided"]), "estimate": prim.get("estimate"), "ci95": [prim.get("ci_low"), prim.get("ci_high")], "n": d.get("n") or (d.get("primary") or {}).get("n"),
+                    "note": f"family {family}: one-sided (improvement > 0) from {summary.name}; " + str(d.get("note") or (d.get("primary") or {}).get("note") or ""), "source": str(summary), "executed": True}
+        return {"p": 1.0, "estimate": None, "note": f"family {family}: {summary.name} present but no primary bootstrap (estimation-only): " + str(d.get("note") or d.get("status") or ""), "source": str(summary), "executed": False}
+    if generic.exists():
+        d = json.loads(generic.read_text())
+        return {"p": float(d.get("p", 1.0)), "estimate": d.get("estimate"), "ci95": d.get("ci95"), "n": d.get("n"), "note": d.get("note", f"family {family} from {generic.name}"), "source": str(generic), "executed": True}
     return {"p": 1.0, "estimate": None, "note": f"family {family} not executed in this run (p = 1 by §9.2)", "executed": False}
 
 
@@ -520,8 +532,8 @@ def run_stats(run_root: Path, *, n_resamples: int = N_RESAMPLES, n_resamples_sec
     fam["A"] = family_A(tables["selections"], base_seed, n_resamples)
     fam["O"] = family_O(tables["episodes"], base_seed, n_resamples)
     fam["R"] = {"p": 1.0, "executed": False, "note": "family R (recursive scaling, L32 D2 vs D1) not executed: amendment register (no RLM frontier)"}
-    fam["C"] = _external_family(run_root / "forecast" / "tables" / "family_C.json", "C")
-    fam["G"] = _external_family(run_root / "neural" / "tables" / "family_G.json", "G")
+    fam["C"] = _external_family(run_root, "C")
+    fam["G"] = _external_family(run_root, "G")
     fam["M"] = {"p": 1.0, "executed": False, "note": "family M (content use / activation edits) not executed: amendment register"}
     decisions = holm({f: float(fam[f]["p"]) for f in FAMILIES})
     for f in FAMILIES:
