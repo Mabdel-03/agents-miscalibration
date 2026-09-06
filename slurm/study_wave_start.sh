@@ -15,7 +15,7 @@ WFILE="waves/${SEAL:0:8}_w${WAVE}.json"
 if [ ! -s "$ROOT/$WFILE" ]; then
   "$PY" -m agents_scaling.study.waves --run-id "$RUN" --cells-file "$MANIFEST" --seal "$SEAL" --wave "$WAVE" --min-items "$MIN" || { echo "[wave $WAVE] fewer than $MIN new complete items; nothing dispatched"; exit 3; }
 fi
-OUT="cells_${TIER}-select_32B.w${WAVE}.json"
+OUT="cells_${TIER}-select_32B.${SEAL:0:8}.w${WAVE}.json"
 if [ ! -s "$ROOT/$OUT" ]; then
   "$PY" -m agents_scaling.study.cells --run-id "$RUN" --tier "${TIER}-select" --lane 32B --seal "$SEAL" --items-file "$WFILE" --wave "$WAVE" --out "$OUT" | grep -E '"n_cells"|"n_items"|sha256'
 fi
