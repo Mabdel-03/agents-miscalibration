@@ -291,7 +291,14 @@ def _merge(register: dict[str, Any], key: str, entries: Mapping[str, dict[str, A
             continue
         stripped = {k: v for k, v in existing.items() if k not in ("sealed_at", "sealed_at_iso")}
         if stripped != entry:
-            raise ProtocolError(f"{what} {eid[:12]} already sealed with different content; seals are immutable")
+            # The sealed DECISION is immutable.  A later re-derivation of the same selection by
+            # another JUDGE_BEST cell (a later wave over items already sealed) reaches the same
+            # scores/winner through content-addressed judge requests and differs only in its
+            # provenance ``score_cell_id``; the original sealed entry (and its sealed_at) is kept.
+            decision_old = {k: v for k, v in stripped.items() if k != "score_cell_id"}
+            decision_new = {k: v for k, v in entry.items() if k != "score_cell_id"}
+            if decision_old != decision_new:
+                raise ProtocolError(f"{what} {eid[:12]} already sealed with different content; seals are immutable")
         kept += 1
     return added, kept
 
