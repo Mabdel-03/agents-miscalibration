@@ -119,6 +119,7 @@ class EndpointPool:
         self._entries: list[ServerEntry] | None = None
         self._refreshed_at: float | None = None
         self._rotation = 0
+        self._calls = 0
         self._consecutive: dict[tuple[str, int], int] = {}
         self.refresh_count = 0
 
@@ -154,7 +155,12 @@ class EndpointPool:
                 raise InfraFailure(
                     f"no live {self.profile!r} endpoint registered under {self.server_run_root / 'servers'}"
                 )
-            return entries[(self.shard + self._rotation) % len(entries)]
+            # study-v4: round-robin per request (not one static endpoint per cell) so cells with
+            # many in-flight streams do not pile onto one server while others idle; the shard
+            # only sets the starting offset.  Failure rotation still applies on top.
+            idx = (self.shard + self._rotation + self._calls) % len(entries)
+            self._calls += 1
+            return entries[idx]
 
     # ---- health feedback ----------------------------------------------------------
     def report_success(self, entry: ServerEntry) -> None:
