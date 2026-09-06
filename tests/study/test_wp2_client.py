@@ -157,10 +157,30 @@ def test_failover_to_second_endpoint_after_kill(tmp_run_root, study_config):
         assert [att["endpoint"]["port"] for att in record.timing["attempts"]] == [first.port, second.port]
         assert pool.rotation == 0  # a single failure on the dead endpoint does not rotate
         assert second.port in [e.port for e in pool.endpoints()]
-        # Round-robin returns to the dead endpoint once more; its second consecutive failure
-        # rotates the pool, and the request completes on the live endpoint (2 attempts).
+        # The dead endpoint is under the failure cooldown (ban_s), so the next request skips it
+        # and completes on the live endpoint in one attempt without rotating.
         follow = client.generate(make_spec(study_config, step_slot=1))
-        assert follow.endpoint["port"] == second.port and follow.attempts == 2 and pool.rotation == 1
+        assert follow.endpoint["port"] == second.port and follow.attempts == 1 and pool.rotation == 0
+
+
+def test_pool_failure_cooldown_skips_dead_endpoint_until_expiry(tmp_run_root):
+    now = [1000.0]
+    with fake_server(tmp_run_root) as a, fake_server(tmp_run_root) as b:
+        ports = sorted((a.port, b.port))
+        pool = C.EndpointPool(tmp_run_root, "32B-long", shard=0, refresh_min_interval_s=0.0, probe_timeout=2.0, clock=lambda: now[0])
+        dead = [e for e in pool.endpoints() if e.port == ports[0]][0]
+        assert pool.report_failure(dead) is False
+        # every pick avoids the banned endpoint while another one exists
+        assert {pool.pick().port for _ in range(4)} == {ports[1]}
+        now[0] += pool.ban_s + 1  # cooldown expired: round-robin includes it again
+        assert {pool.pick().port for _ in range(4)} == set(ports)
+        # a success clears the ban immediately; with every endpoint banned the pool falls back to all
+        pool.report_failure(dead)
+        pool.report_success(dead)
+        assert {pool.pick().port for _ in range(4)} == set(ports)
+        for e in pool.endpoints():
+            pool.report_failure(e)
+        assert {pool.pick().port for _ in range(4)} == set(ports)
 
 
 def test_retry_cap_then_infra_failure(tmp_run_root, study_config):

@@ -120,6 +120,8 @@ class EndpointPool:
         self._refreshed_at: float | None = None
         self._rotation = 0
         self._calls = 0
+        self._banned: dict[tuple[str, int], float] = {}  # (host, port) -> banned-until (study-v4 cooldown)
+        self.ban_s = 120.0
         self._consecutive: dict[tuple[str, int], int] = {}
         self.refresh_count = 0
 
@@ -158,14 +160,21 @@ class EndpointPool:
             # study-v4: round-robin per request (not one static endpoint per cell) so cells with
             # many in-flight streams do not pile onto one server while others idle; the shard
             # only sets the starting offset.  Failure rotation still applies on top.
-            idx = (self.shard + self._rotation + self._calls) % len(entries)
+            # Endpoints that just failed exogenously are skipped for ``ban_s`` while any other
+            # endpoint exists (a preempted server stays in the cached list for up to refresh_s;
+            # without the cooldown all retries of an item could land on dead endpoints).
+            now = self._clock()
+            self._banned = {k: t for k, t in self._banned.items() if t > now}
+            usable = [e for e in entries if (e.host, e.port) not in self._banned] or entries
+            idx = (self.shard + self._rotation + self._calls) % len(usable)
             self._calls += 1
-            return entries[idx]
+            return usable[idx]
 
     # ---- health feedback ----------------------------------------------------------
     def report_success(self, entry: ServerEntry) -> None:
         with self._lock:
             self._consecutive.pop((entry.host, entry.port), None)
+            self._banned.pop((entry.host, entry.port), None)
 
     def report_failure(self, entry: ServerEntry) -> bool:
         """Count one exogenous failure on ``entry``; returns True when the pool rotated."""
@@ -173,6 +182,7 @@ class EndpointPool:
             key = (entry.host, entry.port)
             count = self._consecutive.get(key, 0) + 1
             self._consecutive[key] = count
+            self._banned[key] = self._clock() + self.ban_s
             if count < self.failure_threshold:
                 return False
             self._consecutive.pop(key, None)
