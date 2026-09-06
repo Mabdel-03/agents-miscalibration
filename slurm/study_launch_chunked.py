@@ -138,6 +138,7 @@ def main() -> None:
     if args.dry_run or args.no_drive:
         return
 
+    _drive.cells_file = Path(args.cells_file).name  # manifest identity for the in-flight check (study-v4)
     _drive(run_root, chunk_paths, args.submit_cap, args.poll_s, qos_limit=args.qos_limit,
            chunk_size=args.chunk_size, run_id=args.run_id, lane=args.lane, cells=cells)
 
@@ -185,11 +186,13 @@ def _chunk_complete(run_root, lo: int, hi: int, cells: list) -> bool:
 
 
 
-def _chunk_job_in_flight(submitted_log: list, lo: int, hi: int) -> str | None:
+def _chunk_job_in_flight(submitted_log: list, lo: int, hi: int, cells_file: str = "") -> str | None:
     """Job id of an earlier submission of exactly this [lo,hi] chunk that Slurm still lists
     (PD/R/CG in any state), else None.  Uses ``squeue -h -j <id>``; a job absent from squeue
     is terminal and the chunk may be re-submitted (the runner skips finished cells)."""
     for entry in submitted_log:
+        if cells_file and entry.get("cells_file") and entry.get("cells_file") != cells_file:
+            continue  # a different manifest's chunk with the same indices (study-v4)
         if entry.get("lo") == lo and entry.get("hi") == hi and entry.get("job_id"):
             jid = str(entry["job_id"])
             out = subprocess.run(["squeue", "-h", "-j", jid, "-o", "%i"], capture_output=True, text=True).stdout
@@ -217,7 +220,7 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
         if _chunk_complete(run_root, lo, hi, cells):
             print(f"[drive:{lane}] chunk {ci} ({lo}-{hi}) already complete; skipping")
             continue
-        live_job = _chunk_job_in_flight(submitted_log, lo, hi)
+        live_job = _chunk_job_in_flight(submitted_log, lo, hi, cells_file=str(getattr(_drive, "cells_file", "")))
         if live_job is not None:
             # study-v4: a previous invocation (or a one-shot dispatch) already submitted this
             # exact chunk and its array is still queued/running — never double-submit it
@@ -244,7 +247,7 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
                 continue
             job_id = proc.stdout.strip().split(";")[0]
             break
-        submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id, "lane": lane})
+        submitted_log.append({"chunk": ci, "lo": lo, "hi": hi, "job_id": job_id, "lane": lane, "cells_file": str(getattr(_drive, "cells_file", ""))})
         log_path.write_text(json.dumps(submitted_log, indent=2))
         print(f"[drive:{lane}] chunk {ci:3d}: indices {lo:5d}-{hi:5d} -> job {job_id}  (lane tasks now: {_my_submitted_count(run_id, lane)})")
         time.sleep(10)
