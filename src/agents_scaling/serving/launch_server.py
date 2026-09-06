@@ -597,6 +597,11 @@ def render_sbatch(
     }
     for k, v in repl.items():
         text = text.replace("{" + k + "}", v)
+    offset = os.environ.get("ASYS_PORT_OFFSET")
+    if offset and int(offset):
+        # the server job runs with --export=NONE: carry the fleet's port offset into the job so
+        # the in-job registration recomputes the same port (study-v4 judge fleet)
+        text = text.replace("set -euo pipefail\n", f"set -euo pipefail\nexport ASYS_PORT_OFFSET={int(offset)}\n", 1)
     return text
 
 
