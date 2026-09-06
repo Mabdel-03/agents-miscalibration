@@ -143,16 +143,19 @@ def test_failover_to_second_endpoint_after_kill(tmp_run_root, study_config):
     with fake_server(tmp_run_root) as a, fake_server(tmp_run_root) as b:
         pool = _pool(tmp_run_root)
         first, second = sorted((a, b), key=lambda s: s.port)  # registry order: (host, port)
-        assert pool.pick().port == first.port
+        assert pool.endpoints()[0].port == first.port  # shard 0 starts at the first endpoint
         first.kill()
         client = C.VllmChatClient(pool, a.tokenizer)
         record = client.generate(spec)
         assert record.endpoint["port"] == second.port
-        assert record.attempts == 3  # two consecutive failures rotate the pool (§3 step 9)
+        # study-v4: picks are round-robin per request, so the dead endpoint is tried once and
+        # the retry lands on the live one (2 attempts); the 2-consecutive-failure rotation
+        # rule (§3 step 9) still applies on top for repeated failures on one endpoint.
+        assert record.attempts == 2
         errors = [att["error"]["type"] for att in record.timing["attempts"] if att["error"]]
-        assert errors == ["APIConnectionError", "APIConnectionError"]
-        assert [att["endpoint"]["port"] for att in record.timing["attempts"]] == [first.port, first.port, second.port]
-        assert pool.rotation == 1
+        assert errors == ["APIConnectionError"]
+        assert [att["endpoint"]["port"] for att in record.timing["attempts"]] == [first.port, second.port]
+        assert pool.rotation == 0  # a single failure on the dead endpoint does not rotate
         # The forced refresh dropped the dead endpoint, so the next pick is direct.
         assert [e.port for e in pool.endpoints()] == [second.port]
         assert client.generate(make_spec(study_config, step_slot=1)).attempts == 1
@@ -240,14 +243,14 @@ def test_pool_shard_round_robin_and_rotation(tmp_run_root):
         ports = sorted((a.port, b.port))
         p0, p1 = _pool(tmp_run_root), C.EndpointPool(tmp_run_root, "32B-long", shard=1, refresh_min_interval_s=0.0, probe_timeout=2.0)
         assert [e.port for e in p0.endpoints()] == ports
-        assert p0.pick().port == ports[0] and p1.pick().port == ports[1]
+        # study-v4: round-robin per request, shard = starting offset
+        assert [p0.pick().port for _ in range(3)] == [ports[0], ports[1], ports[0]]
+        assert p1.pick().port == ports[1]
         entry = p0.pick()
         assert p0.report_failure(entry) is False  # one failure: no rotation yet
-        assert p0.pick().port == ports[0]
         p0.report_success(entry)  # success resets the consecutive counter
         assert p0.report_failure(entry) is False
         assert p0.report_failure(entry) is True and p0.rotation == 1
-        assert p0.pick().port == ports[1]
         assert p0.refresh_count == 2
 
 
