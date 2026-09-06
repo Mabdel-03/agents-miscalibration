@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -227,20 +228,36 @@ def _drive(run_root, chunk_paths, submit_cap: int, poll_s: float, topup_min: int
             # (run_one also holds a per-cell lock, but a duplicate array wastes GPU work).
             print(f"[drive:{lane}] chunk {ci} ({lo}-{hi}) in flight as job {live_job}; skipping")
             continue
+        # study-v4: a re-submission (array gone, some cells still lacking meta.json) only needs
+        # the unfinished cells — render a sparse array so the QOS gate asks for that many
+        # slots instead of the whole chunk (pending array elements count against the
+        # per-user submit limit, and a full chunk rarely fits once the queue is topped up).
+        todo = [i for i in range(lo, hi + 1) if not (run_root / "cells" / cells[i]["cell_id"] / "meta.json").exists()]
+        need = hi - lo + 1
+        submit_path = path
+        if todo and len(todo) < need:
+            text = Path(path).read_text()
+            m = re.search(r"^#SBATCH --array=.*?%(\d+)$", text, flags=re.M)
+            thr = m.group(1) if m else "40"
+            sparse = re.sub(r"^#SBATCH --array=.*$", f"#SBATCH --array={','.join(map(str, todo))}%{thr}", text, flags=re.M)
+            submit_path = Path(str(path).replace(".sbatch", ".resume.sbatch"))
+            submit_path.write_text(sparse)
+            need = len(todo)
+            print(f"[drive:{lane}] chunk {ci} ({lo}-{hi}): {need} unfinished cells -> sparse resume array")
         while True:
             cur = _my_submitted_count(run_id, lane)
             total = _my_total_count()
             headroom = submit_cap - cur
             abs_room = qos_limit - total
-            if headroom < topup_min:
-                print(f"[drive:{lane}] topped up: {cur} cell-tasks queued, headroom {headroom} < {topup_min}; sleep {poll_s:.0f}s")
+            if headroom < min(topup_min, need):
+                print(f"[drive:{lane}] topped up: {cur} cell-tasks queued, headroom {headroom} < {min(topup_min, need)}; sleep {poll_s:.0f}s")
                 time.sleep(poll_s)
                 continue
-            if abs_room < chunk_size:
-                print(f"[drive:{lane}] abs cap: {total}/{qos_limit} jobs, room {abs_room} < chunk {chunk_size}; sleep {poll_s:.0f}s")
+            if abs_room < need:
+                print(f"[drive:{lane}] abs cap: {total}/{qos_limit} jobs, room {abs_room} < needed {need}; sleep {poll_s:.0f}s")
                 time.sleep(poll_s)
                 continue
-            proc = subprocess.run(["sbatch", "--parsable", str(path)], capture_output=True, text=True)
+            proc = subprocess.run(["sbatch", "--parsable", str(submit_path)], capture_output=True, text=True)
             if proc.returncode != 0:
                 print(f"[drive:{lane}] sbatch rejected chunk {ci} (rc={proc.returncode}): {proc.stderr.strip()[:200]}; sleep {poll_s:.0f}s and retry")
                 time.sleep(poll_s)
