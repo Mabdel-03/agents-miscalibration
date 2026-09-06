@@ -96,8 +96,12 @@ def paired_contrast(
     *,
     weights: Mapping[str, float] = WEIGHTS,
     alternative: str = "two-sided",
+    components: int = 1,
 ) -> dict[str, Any]:
-    """Null-centred studentised cluster bootstrap for a pooled mean of per-item contrasts."""
+    """Null-centred studentised cluster bootstrap for a pooled mean of per-item contrasts.
+
+    ``components`` is the family's number of required components (§9.3): the conservative
+    primary interval uses alpha .05/(6*components)."""
     ds = [d for d in DOMAINS if d in diff_by_domain and len(diff_by_domain[d]) >= 2]
     if not ds:
         return {"estimate": None, "p": 1.0, "n": {}, "note": "no domain with >= 2 items"}
@@ -131,6 +135,10 @@ def paired_contrast(
         raise ValueError(f"unknown alternative {alternative!r}")
     q_lo, q_hi = (float(x) for x in np.quantile(t_b, [ALPHA / 2, 1 - ALPHA / 2]))
     p_lo, p_hi = (float(x) for x in np.quantile(theta, [ALPHA / 2, 1 - ALPHA / 2]))
+    # §9.3 conservative simultaneous PRIMARY bound: a scalar family with ``components`` required
+    # components uses per-component alpha .05/(6*c) (Bonferroni across the six primary families).
+    a_pri = ALPHA / (len(FAMILIES) * max(1, int(components)))
+    b_lo, b_hi = (float(x) for x in np.quantile(t_b, [a_pri / 2, 1 - a_pri / 2]))
     return {
         "estimate": est,
         "by_domain": est_d,
@@ -142,6 +150,9 @@ def paired_contrast(
         "alternative": alternative,
         "ci95_studentized": [est - q_hi * se, est - q_lo * se],
         "ci95_percentile": [p_lo, p_hi],
+        "ci_primary_bonferroni": [est - b_hi * se, est - b_lo * se],
+        "primary_alpha": a_pri,
+        "components": int(components),
         "n_resamples": B,
     }
 
@@ -201,6 +212,10 @@ def max_t_family(
     obs_max = float(np.abs(t).max())
     p_global = (1 + int((maxabs >= obs_max).sum())) / (B + 1)
     q95 = float(np.quantile(maxabs, 1 - ALPHA))
+    # §9.3: the ordinary all-pair max-T interval controls only WITHIN this family (secondary);
+    # a primary pairwise claim uses the same max-T distribution at family alpha .05/6.
+    a_pri = ALPHA / len(FAMILIES)
+    q_pri = float(np.quantile(maxabs, 1 - a_pri))
     pair_rows = []
     for p_idx, (i, j) in enumerate(pairs):
         pair_rows.append(
@@ -210,7 +225,8 @@ def max_t_family(
                 "se": float(se[p_idx]),
                 "t": float(t[p_idx]),
                 "p_maxT_adjusted": (1 + int((maxabs >= abs(t[p_idx])).sum())) / (B + 1) if se[p_idx] > 0 else 1.0,
-                "ci95_simultaneous": [float(est[p_idx] - q95 * se[p_idx]), float(est[p_idx] + q95 * se[p_idx])],
+                "ci95_simultaneous_within_O": [float(est[p_idx] - q95 * se[p_idx]), float(est[p_idx] + q95 * se[p_idx])],
+                "ci_primary_bonferroni": [float(est[p_idx] - q_pri * se[p_idx]), float(est[p_idx] + q_pri * se[p_idx])],
             }
         )
     method_rows = []
@@ -228,6 +244,9 @@ def max_t_family(
         "p_global": float(p_global),
         "max_abs_t_observed": obs_max,
         "max_abs_t_q95": q95,
+        "max_abs_t_q_primary": q_pri,
+        "primary_alpha": a_pri,
+        "interval_note": "ci95_simultaneous_within_O controls only within family O and is SECONDARY (§9.3); ci_primary_bonferroni is the conservative primary bound at family alpha .05/6",
         "n": n_d,
         "weights": w,
         "n_resamples": B,
@@ -496,7 +515,13 @@ def secondary_tables(tables: Mapping[str, list[dict[str, Any]]], seed: int, n_re
         "oracle_coverage": group_table(a_sel, ["checkpoint", "method", "N", "B", "pool_kind", "selector_id"], lambda r: yes(r, "oracle_coverage"), seed, n_resamples, label="S4.A.oc"),
         "selection_gap": group_table(a_sel, ["checkpoint", "method", "N", "B", "pool_kind", "selector_id"], lambda r: (float(r["selection_gap"]) if r.get("selection_gap") is not None else None), seed, n_resamples, label="S4.A.gap"),
     }
-    out["S5_budget_response_native_final"] = group_table([r for r in main_eps if r.get("module") == "A"], ["checkpoint", "method", "N", "B"], lambda r: yes(r, "native_final_correct"), seed, n_resamples, label="S5.budget")
+    # S5 budget response spans every module that executed a budget point (A at B4, B at B1/B2, MX at B1/B4).
+    budget_eps = [r for r in main_eps if r.get("module") in ("A", "B", "MX")]
+    out["S5_budget_response_native_final"] = group_table(budget_eps, ["module", "checkpoint", "method", "N", "B"], lambda r: yes(r, "native_final_correct"), seed, n_resamples, label="S5.budget")
+    out["S5_budget_response_selected"] = group_table([r for r in main_sel if r.get("module") in ("A", "B", "MX")], ["module", "checkpoint", "method", "N", "B", "pool_kind", "selector_id"], lambda r: yes(r, "selected_correct"), seed, n_resamples, label="S5.budget.sel")
+    # S2/S3 M-cross: membership x checkpoint at the dense checkpoints (module MX).
+    out["S3_m_cross_native_final"] = group_table([r for r in main_eps if r.get("module") == "MX"], ["checkpoint", "method", "N", "B"], lambda r: yes(r, "native_final_correct"), seed, n_resamples, label="S3.MX")
+    out["S3_m_cross_selected"] = group_table([r for r in main_sel if r.get("module") == "MX"], ["checkpoint", "method", "N", "B", "pool_kind", "selector_id"], lambda r: yes(r, "selected_correct"), seed, n_resamples, label="S3.MXsel")
     out["S3_checkpoint_panel_native_final"] = group_table([r for r in main_eps if r.get("module") == "M"], ["checkpoint", "method", "N", "B"], lambda r: yes(r, "native_final_correct"), seed, n_resamples, label="S3.M")
     out["S3_checkpoint_panel_selected"] = group_table([r for r in main_sel if r.get("module") == "M"], ["checkpoint", "method", "N", "B", "pool_kind", "selector_id"], lambda r: yes(r, "selected_correct"), seed, n_resamples, label="S3.Msel")
     out["S2_membership_panel_native_final"] = group_table([r for r in main_eps if r.get("module") == "N"], ["checkpoint", "method", "N", "B"], lambda r: yes(r, "native_final_correct"), seed, n_resamples, label="S2.N")
@@ -608,21 +633,23 @@ def render_markdown(res: Mapping[str, Any]) -> str:
         lines.append(f"| {f} | {'yes' if d.get('executed') else 'no'} | {_fmt(d.get('estimate'))} | {_fmt(ci)} | {n.get('hle', '—')}/{n.get('bcb', '—')} | {_fmt(d['holm']['p'], 4)} | {_fmt(d['holm']['p_holm'], 4)} | {'**yes**' if d['holm']['reject'] else 'no'} | {note} |")
     A = res["families"]["A"]
     if A.get("executed"):
-        lines += ["", f"### A — awareness (primary panel: {A.get('panel_used')} — {A.get('panel_note')}; prefix n = {A['n_prefix']} per domain; complete-case n = {A['complete'].get('n')})", "", "| panel | estimate | by domain | SE | t | p (two-sided) | 95% CI (studentized) |", "|---|---|---|---|---|---|---|"]
+        lines += ["", f"### A — awareness (primary panel: {A.get('panel_used')} — {A.get('panel_note')}; prefix n = {A['n_prefix']} per domain; complete-case n = {A['complete'].get('n')})", "", "| panel | estimate | by domain | SE | t | p (two-sided) | 95% CI (studentized) | conservative primary CI (alpha .05/6) |", "|---|---|---|---|---|---|---|---|"]
         for key in ("prefix", "complete"):
             r = A[key]
-            lines.append(f"| {key} | {_fmt(r.get('estimate'))} | {_fmt(r.get('by_domain'))} | {_fmt(r.get('se'))} | {_fmt(r.get('t'))} | {_fmt(r.get('p'), 4)} | {_fmt(r.get('ci95_studentized'))} |")
-        s1 = A["prefix"].get("secondary_S1", {})
-        if s1:
-            lines += ["", "S1 (secondary, prefix panel): TEAM_FRAME effect " + _fmt(s1["team_frame_effect"].get("estimate")) + " " + _fmt(s1["team_frame_effect"].get("ci95_studentized")) + "; interaction " + _fmt(s1["interaction_(11-10)-(01-00)"].get("estimate")) + " " + _fmt(s1["interaction_(11-10)-(01-00)"].get("ci95_studentized")) + "; cell means " + ", ".join(f"{f}={_fmt(v.get('mean'))}" for f, v in s1["cell_means"].items())]
+            lines.append(f"| {key} | {_fmt(r.get('estimate'))} | {_fmt(r.get('by_domain'))} | {_fmt(r.get('se'))} | {_fmt(r.get('t'))} | {_fmt(r.get('p'), 4)} | {_fmt(r.get('ci95_studentized'))} | {_fmt(r.get('ci_primary_bonferroni'))} |")
+        pk_a = A.get("panel_used", "prefix")
+        s1 = A.get(pk_a, {}).get("secondary_S1", {})
+        if s1 and s1.get("team_frame_effect", {}).get("estimate") is not None:
+            lines += ["", f"S1 (secondary, {pk_a} panel): TEAM_FRAME effect " + _fmt(s1["team_frame_effect"].get("estimate")) + " " + _fmt(s1["team_frame_effect"].get("ci95_studentized")) + "; interaction " + _fmt(s1["interaction_(11-10)-(01-00)"].get("estimate")) + " " + _fmt(s1["interaction_(11-10)-(01-00)"].get("ci95_studentized")) + "; cell means " + ", ".join(f"{f}={_fmt(v.get('mean'))}" for f, v in s1["cell_means"].items())]
     O = res["families"]["O"]
     if O.get("executed"):
         lines += ["", f"### O — orchestration (primary panel: {O.get('panel_used')} — {O.get('panel_note')}; prefix n = {O['n_prefix']} per domain; prefix max-T p = {_fmt(O['prefix'].get('p_global'), 4)}; complete-case p = {_fmt(O['complete'].get('p_global'), 4)})", "", "| method | mean | by domain | 95% CI |", "|---|---|---|---|"]
         for r in O[O.get("panel_used", "prefix")]["methods"]:
             lines.append(f"| {r['method']} | {_fmt(r['mean'])} | {_fmt(r['by_domain'])} | {_fmt(r['ci95_percentile'])} |")
-        lines += ["", "| contrast | estimate | SE | t | max-T adjusted p | simultaneous 95% CI |", "|---|---|---|---|---|---|"]
+        lines += ["", "| contrast | estimate | SE | t | max-T adjusted p | within-O simultaneous 95% CI (secondary) | conservative primary CI (alpha .05/6) |", "|---|---|---|---|---|---|---|"]
         for r in O[O.get("panel_used", "prefix")]["pairs"]:
-            lines.append(f"| {r['contrast']} | {_fmt(r['estimate'])} | {_fmt(r['se'])} | {_fmt(r['t'])} | {_fmt(r['p_maxT_adjusted'], 4)} | {_fmt(r['ci95_simultaneous'])} |")
+            lines.append(f"| {r['contrast']} | {_fmt(r['estimate'])} | {_fmt(r['se'])} | {_fmt(r['t'])} | {_fmt(r['p_maxT_adjusted'], 4)} | {_fmt(r.get('ci95_simultaneous_within_O'))} | {_fmt(r.get('ci_primary_bonferroni'))} |")
+        lines += ["", "The within-O interval controls only inside family O and is labelled secondary (spec §9.3); the conservative primary interval uses the same all-pair max-T distribution at family alpha .05/6."]
     sec = res.get("secondary")
     if sec:
         lines += ["", "## Secondary tables (estimates with percentile intervals; not Holm-adjusted)"]

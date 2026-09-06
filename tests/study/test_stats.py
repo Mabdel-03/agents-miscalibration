@@ -16,6 +16,12 @@ def test_paired_contrast_detects_effect_and_null_is_centred():
     eff = {"hle": rng.normal(0.15, 0.3, 200), "bcb": rng.normal(0.15, 0.3, 200)}
     r = S.paired_contrast(eff, _rs({"hle": 200, "bcb": 200}))
     assert r["p"] < 0.001 and r["ci95_studentized"][0] > 0 and abs(r["estimate"] - 0.15) < 0.06
+    # §9.3 conservative primary bound: alpha .05/(6*components), strictly wider than the ordinary 95%
+    assert r["primary_alpha"] == S.ALPHA / len(S.FAMILIES) and r["components"] == 1
+    assert r["ci_primary_bonferroni"][0] <= r["ci95_studentized"][0] and r["ci_primary_bonferroni"][1] >= r["ci95_studentized"][1]
+    r2 = S.paired_contrast(eff, _rs({"hle": 200, "bcb": 200}), components=6)
+    assert r2["primary_alpha"] == S.ALPHA / (len(S.FAMILIES) * 6)
+    assert r2["ci_primary_bonferroni"][0] <= r["ci_primary_bonferroni"][0]
     assert set(r["n"]) == {"hle", "bcb"} and abs(r["weights"]["hle"] - 0.5) < 1e-12
     null = {"hle": rng.normal(0.0, 0.3, 200), "bcb": rng.normal(0.0, 0.3, 200)}
     r0 = S.paired_contrast(null, _rs({"hle": 200, "bcb": 200}))
@@ -39,10 +45,14 @@ def test_max_t_global_p_is_at_most_min_adjusted_pair_p_and_cis_cover_estimates()
     assert r["p_global"] < 0.01
     assert r["p_global"] <= min(p["p_maxT_adjusted"] for p in r["pairs"]) + 1e-12
     for p in r["pairs"]:
-        lo, hi = p["ci95_simultaneous"]
+        lo, hi = p["ci95_simultaneous_within_O"]
         assert lo <= p["estimate"] <= hi
+        plo, phi = p["ci_primary_bonferroni"]
+        # the conservative primary bound (alpha .05/6) is strictly wider than the within-family one
+        assert plo <= lo and phi >= hi
+    assert r["max_abs_t_q_primary"] >= r["max_abs_t_q95"] and r["primary_alpha"] == S.ALPHA / len(S.FAMILIES)
     c_minus_a = next(p for p in r["pairs"] if p["contrast"] == "a - c")
-    assert c_minus_a["ci95_simultaneous"][1] < 0
+    assert c_minus_a["ci95_simultaneous_within_O"][1] < 0
     assert len(r["methods"]) == k and all(m["ci95_percentile"][0] <= m["mean"] <= m["ci95_percentile"][1] for m in r["methods"])
 
 
