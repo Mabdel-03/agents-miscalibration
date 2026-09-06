@@ -430,5 +430,10 @@ def test_candidate_schema_line_is_spec_literal():
         '"final_answer":"answer or complete code","confidence":0.5}'
     )
     assert list(json.loads(R.CANDIDATE_SCHEMA_LINE)) == ["approach", "evidence", "alternatives_considered", "failure_checks", "final_answer", "confidence"]
-    assert list(json.loads(R.FORECAST_SCHEMA_LINE)) == ["q_personal", "q_child_contract", "q_team_now", "q_recover", "q_preserve"]
+    # Amendment C3: the forecast output contract is prose around the flat five-key shape (keys in schema order,
+    # each value "<number or null>"); the shape itself must still be recoverable from the line.
+    keys = ["q_personal", "q_child_contract", "q_team_now", "q_recover", "q_preserve"]
+    positions = [R.FORECAST_SCHEMA_LINE.index(f'"{k}":<number or null>') for k in keys]
+    assert positions == sorted(positions) and "exactly these five keys" in R.FORECAST_SCHEMA_LINE
+    assert "never an object" in R.FORECAST_SCHEMA_LINE and R.FORECAST_SCHEMA_LINE.count("<number or null>") == 5
     assert list(json.loads(R.SUBTASK_SCHEMA_LINE)) == ["subtask_id", "contract", "status", "result", "assumptions", "evidence_handles", "confidence"]

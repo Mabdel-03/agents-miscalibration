@@ -73,7 +73,19 @@ JUDGE_BEST_SCHEMA_LINE = (
     '{"quality_score":0.5,"requirement_coverage":"brief","reasoning_support":"brief","unresolved_risks":"brief"}'
 )
 #: §8.7 forecast object (handoff ``forecast.schema.json``).
-FORECAST_SCHEMA_LINE = '{"q_personal":null,"q_child_contract":null,"q_team_now":null,"q_recover":null,"q_preserve":null}'
+#: Amendment C3 (Sun 2026-09-06 11:20 EDT, before any confirmation forecast): the dev pilot showed 21/22
+#: forecasts schema-invalid under the bare all-null template (the reader nested per-scope objects), so the
+#: harness-authored output contract now states the flat five-key shape explicitly.  The handoff template
+#: ``templates/forecast.txt`` is unchanged; only this harness line differs (new forecast request ids).
+FORECAST_SCHEMA_LINE = (
+    'return exactly one JSON object with exactly these five keys and no others: '
+    '{"q_personal":<number or null>,"q_child_contract":<number or null>,"q_team_now":<number or null>,'
+    '"q_recover":<number or null>,"q_preserve":<number or null>}. Every value must be a single JSON number '
+    'between 0 and 1 (a probability, for example 0.25) or null — never an object, list, string or fraction. '
+    'q_personal = probability that PERSONAL_FINAL (the selected full-task answer shown) is correct; '
+    'q_team_now = probability that TEAM_SELECTED (the declared selector\'s currently selected answer) is '
+    'correct; every target the manifest mask marks null must be null.'
+)
 #: Amendment A3 clause (the middle paragraph of ``dec_root_truthful.txt``).
 DEC_ROOT_TRUTHFUL_CLAUSE = (
     "You are one of several solvers working independently on the same task. In later rounds you may receive "
