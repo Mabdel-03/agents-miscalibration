@@ -156,6 +156,24 @@ def test_report_only_then_forecast_resumable(world):
     assert not list((rr / "forecast" / "errors").glob("*.json")) if (rr / "forecast" / "errors").exists() else True
 
 
+def test_panel_per_domain_derives_the_items_from_the_public_rank_rule(world):
+    """P1-4: N2 can take the panel from the same ``rank < N`` rule N1/N3 use instead of an ops-written items file."""
+    rr: Path = world["run_root"]
+    argv = ["--run-id", RUN_ID, "--results-root", str(world["results_root"]), "--seal", world["seal"], "--wait-s", "5", "--report-only"]
+    run = lambda *extra: RUN.main([*argv, *extra], tokenizer=world["server"].tokenizer, client_factory=world["harness"].client_factory())  # noqa: E731
+    assert run("--panel-per-domain", "1") == T.EXIT_DONE
+    for t in world["tasks"]:
+        for method in ("IND_VOTE", "DEC", "CEN_FLAT"):
+            payload = json.loads(S.report_path(rr, t.source_id, method).read_text())
+            assert payload["task_only_anchor_token"] == payload["anchor_tokens"]["task_only_anchor"]["index"]
+            assert payload["state_anchor_byte"] == payload["byte_anchors"]["state_anchor"] and payload["report_sha256"] == payload["report"]["text_sha256"]
+    assert run("--panel-per-domain", "0") == T.EXIT_SUSPENDED  # per_domain < 1 is a ValueError, recorded as suspended
+    with pytest.raises(SystemExit):
+        RUN.build_parser().parse_args([*argv, "--panel-per-domain", "1", "--items-file", "x"])
+    with pytest.raises(SystemExit):
+        RUN.build_parser().parse_args(argv)
+
+
 def test_unsealed_item_and_bad_forecast_are_recorded(world):
     rr: Path = world["run_root"]
     srv = world["server"]

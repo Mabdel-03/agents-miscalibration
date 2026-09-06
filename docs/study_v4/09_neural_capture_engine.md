@@ -64,17 +64,30 @@ token, never the closing fence.  `channel` records whether a GENERATED_k token s
 the thinking or content channel; `generated_token_count` is the number of generated
 tokens processed at the anchor.
 
-Report anchors: the N2 compiler supplies exclusive-end UTF-8 byte offsets into the single
-user message (`task_only_anchor_byte`, `state_anchor_byte`); the content's byte offset
-inside the chat-template render is found structurally (two probe renders differing in
-their first character) — never by sentinel search — and the anchor token is the one
-containing the span's last byte.  Optional `*_token` fields must agree with the byte form.
+Report anchors: the N2 render (`forecast.manifest.report_render`) supplies exclusive-end
+UTF-8 byte offsets into the single user message as `byte_anchors.{task_only_anchor,
+state_anchor}` and their token indices as `anchor_tokens.<name>.index`, mirrored flat as
+`task_only_anchor_byte` / `state_anchor_byte` / `task_only_anchor_token` /
+`state_anchor_token` (`anchors.report_anchor_fields` reads both shapes; a flat key wins).
+The content's byte offset inside the chat-template render is found structurally (two probe
+renders differing in their first character) — never by sentinel search — and the anchor
+token is the one containing the span's last byte; a token index present alongside the byte
+form must agree (this is the N1↔N2 agreement check, and it runs on every real render since
+N2 writes both).  `capture.check_report_anchors` refuses a render whose task-only anchor is
+unresolved or whose state anchor would fall back to the last prefill token (P0-1), and the
+render's `checkpoint.model_revision` must equal the engine snapshot unless
+`--allow-model-mismatch` (P1-3).
 
 ## Selection rule for R2 (`capture.select_native_calls`)
 
 Per (episode, declared role, phase), among calls with a committed request record (no
-context failure), choose `argmin HMAC-SHA256(study_seed, JCS(["NEURAL_R2", episode_id,
-declared_role, phase, request_id]))`.  Phases from the episode's call ledger only:
+context failure), order by `HMAC-SHA256(study_seed, JCS(["NEURAL_R2", episode_id,
+declared_role, phase, request_id]))` and keep the argmin (`group_rank` 0) — except the
+**geometry groups** `GEOMETRY_GROUPS` = {INDEPENDENT_SOLVER/ROOT, DECENTRALIZED_MEMBER/TERMINAL,
+CENTRAL_HUB/ROOT, CENTRAL_WORKER/ROOT}, where every eligible call is captured with its HMAC
+`group_rank`, so R3 has its s = 5 comparable IND roots / DEC terminal members (brief R3;
+P1-1: ≤4 extra sequences per IND/DEC item, inclusion still outcome-blind).  Phases from the
+episode's call ledger only:
 IND_VOTE `root`→ROOT; DEC `root`→ROOT, `revise` step<max→COORDINATION, step==max→TERMINAL;
 CEN_FLAT `hub` step 0→ROOT, the last hub call (if not step 0)→TERMINAL, other hub
 calls→COORDINATION, `worker` step 0→ROOT, later workers→COORDINATION.  Declared roles:
@@ -83,7 +96,11 @@ Independent of call length, validity, correctness and activations; every group's
 count and context-failure count (→ inclusion probability) is written to
 `<run_root>/neural/native/selection.<shard>.json` together with the rule text.
 Panel: the flagship N=5/B=4, split `main`, episode_rep 0 generate cells of modules A then
-N (dedupe per (method, item)), first 150 items per superdomain in cell/rank order.
+N (dedupe per (method, item)), restricted to the panel of `neural/panel.py`:
+`PublicTask.rank < 150` per superdomain on `main` (the same rule N2 `--panel-per-domain`
+and N3 `--panel` apply; P1-4).  The resolved item list and the rule are written to
+`selection.<shard>.json` (`panel_rule`, `panel`, `panel_resolved`); the cell-order fallback
+is used only when `data/public/tasks.jsonl` is absent and is recorded as such.
 
 ## Storage (`neural/storage.py`) and the ActivationRow ledger
 
@@ -105,13 +122,18 @@ stage, blocks=…, anchor_kinds=…)` → `(fp16 matrix, pandas frame)` with led
 
 ## N2 → N1 report interface (`<run_root>/forecast/reports/<item>.<method>.json`)
 
-Required: `report_id`, `messages` (exactly one user message = the shadow-forecast prompt
-bytes), `prompt_token_ids` (thinking off, exact render; asserted).  Anchors:
-`task_only_anchor_byte`, `state_anchor_byte` (exclusive-end UTF-8 offsets into the
-content, i.e. `Rendered.anchors["task_only_anchor"]` / `["state_anchor"]` of the report
-render) and/or `task_only_anchor_token`, `state_anchor_token`.  Optional and copied into
-the ledger: `source_id`, `method`, `chat_template_kwargs` (default `{"enable_thinking":
-false}`), `report_sha256`, `manifest`, `selection_id`, `cell_id`, `episode_id`.
+Written by `forecast.manifest.report_render`.  Required: `report_id`, `messages` (exactly
+one user message = the shadow-forecast prompt bytes), `prompt_token_ids` (thinking off,
+exact render; asserted), `checkpoint.model_revision` (must equal the engine snapshot), and
+the anchors — `byte_anchors: {task_only_anchor, state_anchor}` (exclusive-end UTF-8
+offsets into the content) + `anchor_tokens: {task_only_anchor: {index, …}, state_anchor:
+{index, …}}`, mirrored flat as `task_only_anchor_byte`, `state_anchor_byte`,
+`task_only_anchor_token`, `state_anchor_token` (either shape suffices; both must agree).
+Copied into the ledger `extra`: `report_sha256` (= `report.text_sha256`),
+`rendered_text_sha256`, `request_id` (→ `forecast_request_id`), `seal`, `pool_id`,
+`manifest`, `selection_id`, `render_model_revision`; join keys `source_id`, `method`,
+`cell_id`, `episode_id` (from `report.item` when not top-level).  Verified end to end by
+`tests/study_neural/test_n1n2_interface.py` (real N2 render → N1 resolver, pinned tokenizer).
 
 ## CLI and Slurm
 

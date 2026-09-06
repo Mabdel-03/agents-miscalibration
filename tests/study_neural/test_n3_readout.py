@@ -152,6 +152,27 @@ def test_item_weights_and_per_item_averaging():
     items = R.per_item_losses(losses, ["brier_baseline", "brier_augmented"])
     first = losses.loc[losses["source_id"] == "hle:dev0000", "brier_baseline"].to_numpy()
     assert len(items) == 4 and items.set_index("source_id").loc["hle:dev0000", "brier_baseline"] == pytest.approx(first.mean())
+    cov = R.method_coverage(losses)
+    assert cov["methods"] == ["CEN_FLAT", "DEC", "IND_VOTE"] and cov["n_items_total"] == cov["n_items_complete"] == 4 and cov["n_items_dropped"] == 0
+
+
+def test_per_item_losses_drop_items_missing_a_method_instead_of_reweighting():
+    """P1-6 regression: an item lacking one method must not enter the paired contrast with
+    fewer methods than the others (unequal weights); it is dropped and counted."""
+    frames = synthetic_frames(3, seed=4)
+    losses = frames.rows[["source_id", "method", "superdomain", "cluster"]].copy()
+    losses["brier_baseline"] = np.where(losses["method"] == "DEC", 1.0, 0.0)
+    losses["brier_augmented"] = 0.0
+    partial = losses[~((losses["source_id"] == "hle:dev0000") & (losses["method"] == "DEC"))].reset_index(drop=True)
+    cov = R.method_coverage(partial)
+    assert cov["n_items_total"] == 6 and cov["n_items_complete"] == 5 and cov["dropped_items"] == ["hle:dev0000"]
+    items = R.per_item_losses(partial, ["brier_baseline", "brier_augmented"])
+    assert len(items) == 5 and "hle:dev0000" not in set(items["source_id"]) and np.allclose(items["brier_baseline"].to_numpy(), 1 / 3)
+    lax = R.per_item_losses(partial, ["brier_baseline", "brier_augmented"], require_complete=False)
+    assert len(lax) == 6 and lax.set_index("source_id").loc["hle:dev0000", "brier_baseline"] == 0.0  # the unequal weighting the default forbids
+    out = R.confirmation_contrast(partial, seed=1, n_resamples=50)
+    assert out["n_items"] == 5 and out["n_items_dropped"] == 1 and out["dropped_items"] == ["hle:dev0000"] and out["n_items_complete"] == 5
+    assert out["losses"]["method_coverage"]["n_items_dropped"] == 1 and out["bootstrap"]["estimate"] == pytest.approx(1 / 3)
 
 
 def test_row_from_report_reads_missing_confidence_and_invalid_forecast():

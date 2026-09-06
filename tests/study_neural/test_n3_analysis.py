@@ -121,3 +121,60 @@ def test_end_to_end_geometry_G_and_C(tmp_path):
     scored = pd.read_parquet(run_root / "neural" / "tables" / "C_losses.parquet")
     assert len(scored) == 120 and {"brier_baseline", "brier_explicit", "q_raw_explicit"} <= set(scored.columns)
     assert c["primary"]["diagnostics"]["explicit"]["recalibrated"]["n"] == 120
+    assert c["frozen_source"] == "fitted" and c["dev"]["stage"] == "C-dev" and (run_root / "neural" / "C_dev_summary.json").is_file()
+    assert c["primary"]["n_items_complete"] == 40 and c["primary"]["n_items_dropped"] == 0 and c["primary"]["methods"] == ["CEN_FLAT", "DEC", "IND_VOTE"]
+    # --- P1-2 regression: the C recalibrators are frozen once; C / C-confirm never refit ---
+    frozen_c = json.loads((run_root / "neural" / "C_frozen.json").read_text())
+    assert frozen_c["kind"] == "C_FROZEN" and frozen_c["sha256"]
+    assert A.main([*args, "--stage", "C", *COMMON]) == 0
+    assert json.loads((run_root / "neural" / "C_frozen.json").read_text())["sha256"] == frozen_c["sha256"]
+    assert json.loads((run_root / "neural" / "C_summary.json").read_text())["frozen_source"] == "loaded"
+    assert A.main([*args, "--stage", "C-confirm", *COMMON]) == 0
+    conf_c = json.loads((run_root / "neural" / "C_summary.json").read_text())
+    assert conf_c["stage"] == "C-confirm" and conf_c["frozen_sha256"] == frozen_c["sha256"] and conf_c["primary"]["bootstrap"]["n_clusters"] == {"hle": 20, "bcb": 20}
+    assert json.loads((run_root / "neural" / "C_frozen.json").read_text())["sha256"] == frozen_c["sha256"]
+    # C-dev refuses to overwrite the frozen artifact unless --refreeze is explicit
+    assert A.main([*args, "--stage", "C-dev", *COMMON]) == 4
+    assert json.loads((run_root / "neural" / "C_frozen.json").read_text())["sha256"] == frozen_c["sha256"]
+    assert A.main([*args, "--stage", "C-dev", *COMMON, "--refreeze"]) == 0
+    assert json.loads((run_root / "neural" / "C_dev_summary.json").read_text())["refrozen"] is True
+    # a tampered / missing frozen artifact is refused by C-confirm and by C (which never silently refits)
+    (run_root / "neural" / "C_frozen.json").write_text(json.dumps({**frozen_c, "meta": {"tampered": True}}))
+    assert A.main([*args, "--stage", "C-confirm", *COMMON]) == 4
+    assert A.main([*args, "--stage", "C", *COMMON]) == 4
+    (run_root / "neural" / "C_frozen.json").unlink()
+    assert A.main([*args, "--stage", "C-confirm", *COMMON]) == 4
+    # frozen G records the registered report anchor (STATE_ANCHOR, not the last prefill token)
+    assert frozen["meta"]["report_anchor"] == R.STATE_ANCHOR
+
+
+def test_outcome_table_uses_the_primary_budget_and_never_mislabels_tied_classes(tmp_path):
+    """P1-5 regression: ``duplicate_frequency`` comes from the sealed pool's distinct answer
+    classes (seal register ``vote_keys``), not from ``tied_classes``; the budget filter is
+    ``cfg.budget.primary``."""
+    run_root = tmp_path / "study_o"
+    world = write_world(run_root, n_dev=2, n_main=2, seed=5, native=False)
+    table = pd.read_parquet(run_root / "tables" / "selections.parquet")
+    row = table.iloc[0]
+    out = A.outcome_table(run_root)
+    assert out is not None and len(out) == len(table)
+    rec = out[(str(row["source_id"]), str(row["method"]))]
+    assert rec["duplicate_frequency"] is None and rec["tied_winning_classes"] == float(row["tied_classes"]) and rec["all_singleton"] == 0.0
+    assert rec["agreement"] == pytest.approx(float(row["winning_count"]) / float(row["valid_count"]))
+    assert A.outcome_table(run_root, B=int(row["B"]) + 1) == {}
+    # a seal register with vote_keys supplies the distinct classes: 5 valid, 3 classes → 0.4
+    from agents_scaling.study.selection import seal as seals
+
+    seal = "ab" * 32
+    sel_dir = seals.seals_dir(run_root, seal)
+    sel_dir.mkdir(parents=True, exist_ok=True)
+    keys = {f"c{i}": k for i, k in enumerate(["B", "B", "A", "C", "B"])}
+    register = {"schema_version": 1, "selections": {str(row["selection_id"]): {"selection_id": str(row["selection_id"]), "source_id": str(row["source_id"]),
+                                                                                "record": {"vote_keys": {**keys, "c5": None}}}}}
+    (sel_dir / seals.SELECTIONS_FILE).write_text(json.dumps(register))
+    assert A.sealed_distinct_classes(run_root, seal) == {str(row["selection_id"]): 3}
+    out = A.outcome_table(run_root, seal=seal)
+    assert out[(str(row["source_id"]), str(row["method"]))]["duplicate_frequency"] == pytest.approx(1.0 - 3.0 / float(row["valid_count"]))
+    assert all(v["duplicate_frequency"] is None for k, v in out.items() if k != (str(row["source_id"]), str(row["method"])))
+    assert A.sealed_distinct_classes(run_root, "cd" * 32) == {} and A.sealed_distinct_classes(run_root, "nope") == {}
+    del world

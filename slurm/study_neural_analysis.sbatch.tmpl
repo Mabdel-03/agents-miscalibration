@@ -11,10 +11,12 @@
 # study_v4 neural readouts (N3): geometry tables, the family-G predictor (nested CV → freeze
 # → confirmation contrast) and the family-C recalibrators (docs/study_v4/09_neural_readouts_brief.md
 # R1 step 3 / R3; spec §8.5, §8.7, §8.8, §9.2-9.3).  CPU only, harness python (asys_env).
-# {STAGE} is one of geometry | G-dev | G-confirm | C.  Order: geometry (any time after the
-# native capture), G-dev (after aggregate wrote <run_root>/tables/selections.parquet on the
-# dev split), G-confirm (after aggregate covers the confirmation panel; reads only the frozen
-# G artifacts), C (after aggregate; freezes on dev, scores confirmation when present).
+# {STAGE} is one of geometry | G-dev | G-confirm | C-dev | C-confirm | C.  Order: geometry (any
+# time after the native capture), G-dev (after aggregate wrote <run_root>/tables/selections.parquet
+# on the dev split), G-confirm (after aggregate covers the confirmation panel; reads only the
+# frozen G artifacts), C-dev (freezes C_frozen.json on dev; refuses to overwrite without
+# --refreeze in ARGS), C-confirm (scores confirmation with the sha-verified frozen artifact;
+# never fits).  C = C-dev only if no frozen artifact exists, then C-confirm.
 # Reads <run_root>/{forecast,neural,tables,data/public}; writes only <run_root>/neural/.
 set -euo pipefail
 umask 027

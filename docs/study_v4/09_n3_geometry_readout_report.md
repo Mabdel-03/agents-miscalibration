@@ -24,11 +24,13 @@ Package `src/agents_scaling/study/neural/{geometry,readout,calibration,analysis}
 
 ## analysis.py CLI
 ```
-python -m agents_scaling.study.neural.analysis --run-id study_v4 --stage geometry|G-dev|G-confirm|C [--seal <sha>]
+python -m agents_scaling.study.neural.analysis --run-id study_v4 --stage geometry|G-dev|G-confirm|C-dev|C-confirm|C [--seal <sha>] [--refreeze]
     [--results-root …] [--checkpoint 32B] [--blocks 15,31,47] [--anchors …] [--ranks 16,32,64,128]
     [--penalties 0.1,1,10,100,1000] [--text auto|tfidf|sentence-transformers] [--panel 150]
     [--bootstrap 20000] [--bootstrap-seed N] [--subsamples 100] [--pca-rank 64]
 ```
+Family C is split like G: `C-dev` fits both recalibrators on development and writes `C_frozen.json` (+ `C_dev_summary.json`, `C_dev_losses.parquet`), refusing to overwrite an existing artifact unless `--refreeze`; `C-confirm` loads the sha-verified artifact and only scores the confirmation panel (`C_losses.parquet`, `C_summary.json` with `frozen_sha256`); `C` runs `C-dev` only when no frozen artifact exists, then `C-confirm`, and records `frozen_source` (loaded | fitted | refitted) — re-running after more dev labels arrive can no longer silently change the recalibrators that score confirmation (§8.7). `G_frozen.meta.report_anchor` registers the anchor G is trained on: `STATE_ANCHOR` = the token closing `=== END REPORT ===` (N2 `state_anchor`); the last chat-template token is stored separately as `LAST_PREFILL` and is not used. Paired contrasts (G and C) enter only items that carry every method exactly once (`readout.method_coverage`); incomplete items are dropped and reported as `n_items_dropped` / `dropped_items`, never averaged with fewer methods. Geometry outcomes: `agreement` = winning/valid, `duplicate_frequency` = 1 − distinct answer classes/valid from the seal register's `vote_keys` (needs `--seal`; null otherwise), `all_singleton`, `tied_winning_classes` (the former mislabelled "duplicate_frequency"), at N=5 and `cfg.budget.primary`. R3's s = 5 IND roots / DEC terminal members come from the capture's geometry groups (`capture.GEOMETRY_GROUPS`).
+
 Exit 0 done, 2 no run root, 4 refused (no join table, missing frozen artifact, hash mismatch, no rows). Outputs: `neural/tables/{geometry,G_dev_losses,G_confirm_losses,C_dev_losses,C_losses}.parquet`, `neural/{geometry_summary,G_dev_summary,G_confirm_summary,C_summary}.json`, `neural/G_frozen.{json,npz}`, `neural/C_frozen.json`, `neural/display/display_pca.<ckpt>.b<block>.<anchor>.{json,npz}`. Bootstrap seeds derive from the study seed (`HMAC(study_seed, ["G_BOOTSTRAP", stage, seal])`) unless `--bootstrap-seed` is given; every summary records the seed used. NaN (degenerate/insufficient) is written as `null`.
 
 ## Decisions recorded (not in the brief)
