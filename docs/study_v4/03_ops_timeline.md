@@ -310,7 +310,7 @@ Inodes ≈ 1,300 cell dirs × 4 + 12k item files + 1.5k logs + 700 eval shards +
 - BigCodeBench evaluator image pull fails or is slow on the login node (9.27 GB), or the image's Python path differs from expectation. → Start the pull at T0 in the background with cache/tmp on data; verify with apptainer exec on both login and compute nodes during the pilot; fallback is a py3.10 conda env with the 73 pins from bcb_req_eval.txt (slower to build, ~30 min).
 - Manual relaunch of loops or a second driver duplicates the self-resubmit chain or double-launches servers (observed 1->3->7 loop duplication). → Only launch_study_loops.py launches loops; before any relaunch scancel both loop names and confirm squeue is empty; never pass --requeue; keepalive counts PD jobs so duplicates are not launched.
 - Association MaxSubmit=500 rejects array chunks once servers (~25) + loops + eval arrays accumulate. → chunk-size 100, --qos-limit 460, driver's absolute gate waits for real headroom; eval arrays limited to 96 tasks.
-## Rolling evaluation waves (added Sat 23:45 EDT)
+## Rolling evaluation waves (added Sat 23:15 EDT)
 
 Seals are keyed by the generate manifest's sha256 and are append-only, so a manifest has ONE
 seal and re-sealing adds newly completed items.  Eval-kind cell ids carried only `x<seal8>`

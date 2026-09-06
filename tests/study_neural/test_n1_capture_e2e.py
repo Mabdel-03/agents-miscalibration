@@ -131,12 +131,19 @@ def test_report_stage_end_to_end(tmp_path: Path, snapshot: Path, tok):
     content = task + body + "Output contract: {}"
     messages = [{"role": "user", "content": content}]
     ids = tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False, return_dict=False)
-    for i, method in enumerate(("IND_VOTE", "DEC")):
-        (reports / f"hle_1.{method}.json").write_text(json.dumps({
-            "report_id": f"rep-{method}", "source_id": "hle:1", "method": method, "messages": messages, "prompt_token_ids": list(ids),
-            "chat_template_kwargs": {"enable_thinking": False}, "task_only_anchor_byte": len(task.encode()),
-            "state_anchor_byte": len((task + body).encode()), "report_sha256": "x" * 64,
-        }))
+    task_end, state_end = len(task.encode()), len((task + body).encode())
+    rev32 = "9216db5781bf21249d130ec9da846c4624c16137"
+    base = {"messages": messages, "prompt_token_ids": list(ids), "chat_template_kwargs": {"enable_thinking": False}, "checkpoint": {"size": "32B", "model_revision": rev32}}
+    # DEC in the flat shape, IND_VOTE in the nested shape N2 actually writes (P0-1)
+    (reports / "hle_1.DEC.json").write_text(json.dumps({
+        **base, "report_id": "rep-DEC", "source_id": "hle:1", "method": "DEC",
+        "task_only_anchor_byte": task_end, "state_anchor_byte": state_end, "report_sha256": "x" * 64,
+    }))
+    (reports / "hle_1.IND_VOTE.json").write_text(json.dumps({
+        **base, "report_id": "rep-IND_VOTE", "source_id": "hle:1", "method": "IND_VOTE", "request_id": "f" * 64,
+        "byte_anchors": {"task_only_anchor": task_end, "state_anchor": state_end}, "rendered_text_sha256": "r" * 64,
+        "report": {"text_sha256": "y" * 64, "item": {"episode_id": "ep-n2"}},
+    }))
     args = ["--run-id", "study_v4", "--stage", "report", "--checkpoint", "32B", "--results-root", str(results), "--snapshot-path", str(snapshot),
             "--device-map", "cpu", "--dtype", "fp32", "--blocks", "1", "--max-batch-tokens", "256", "--fidelity", "0"]
     assert C.main(args) == 0
@@ -146,14 +153,41 @@ def test_report_stage_end_to_end(tmp_path: Path, snapshot: Path, tok):
     by = frame[frame.StateSnapshot_id == "rep-DEC"].set_index("anchor_kind")
     assert by.loc["TASK_ONLY_ANCHOR", "token_offset"] < by.loc["STATE_ANCHOR", "token_offset"] < by.loc["LAST_PREFILL", "token_offset"] == len(ids) - 1
     assert by.loc["STATE_ANCHOR", "role"] == "REPORT_READER" and by.loc["STATE_ANCHOR", "phase"] == "FINAL_HANDOFF_REPORT"
-    assert by.loc["STATE_ANCHOR", "extra"]["report_sha256"] == "x" * 64
+    assert by.loc["STATE_ANCHOR", "extra"]["report_sha256"] == "x" * 64 and by.loc["STATE_ANCHOR", "extra"]["render_model_revision"] == rev32
+    nested = frame[frame.StateSnapshot_id == "rep-IND_VOTE"].set_index("anchor_kind")
+    assert nested.loc["TASK_ONLY_ANCHOR", "token_offset"] == by.loc["TASK_ONLY_ANCHOR", "token_offset"]
+    assert nested.loc["STATE_ANCHOR", "token_offset"] == by.loc["STATE_ANCHOR", "token_offset"]
+    assert nested.loc["STATE_ANCHOR", "extra"]["anchor_detail"]["source"] == "byte" and nested.loc["STATE_ANCHOR", "extra"]["report_sha256"] == "y" * 64
+    assert nested.loc["STATE_ANCHOR", "extra"]["forecast_request_id"] == "f" * 64 and nested.loc["STATE_ANCHOR", "episode_id"] == "ep-n2"
     # the two reports share the prompt, so the vectors at equal positions are identical
     a = frame[(frame.StateSnapshot_id == "rep-DEC") & (frame.anchor_kind == "STATE_ANCHOR")].vector_index.iloc[0]
     b = frame[(frame.StateSnapshot_id == "rep-IND_VOTE") & (frame.anchor_kind == "STATE_ANCHOR")].vector_index.iloc[0]
     assert np.array_equal(matrix[a], matrix[b])
     # a report whose ids are not the render is refused before any forward pass
+    extra = reports / "hle_1.CEN_FLAT.json"
     bad = json.loads((reports / "hle_1.DEC.json").read_text())
     bad.update({"report_id": "rep-bad", "prompt_token_ids": list(ids)[:-1]})
-    (reports / "hle_1.CEN_FLAT.json").write_text(json.dumps(bad))
+    extra.write_text(json.dumps(bad))
     with pytest.raises(Exception, match="identity"):
         C.main(args)
+    # P0-1 regression: the anchor interface is required — no task-only anchor / no state anchor → refused, never LAST_PREFILL by default
+    good = json.loads((reports / "hle_1.DEC.json").read_text())
+    no_task = {k: v for k, v in good.items() if k != "task_only_anchor_byte"}
+    extra.write_text(json.dumps({**no_task, "report_id": "rep-no-task"}))
+    with pytest.raises(RuntimeError, match="TASK_ONLY_ANCHOR unresolved"):
+        C.main(args)
+    no_state = {k: v for k, v in good.items() if k != "state_anchor_byte"}
+    extra.write_text(json.dumps({**no_state, "report_id": "rep-no-state"}))
+    with pytest.raises(RuntimeError, match="STATE_ANCHOR absent"):
+        C.main(args)
+    assert (frame.StateSnapshot_id != "rep-no-task").all() and not any(k[0] in ("rep-no-task", "rep-no-state") for k in S.existing_keys(run_root, "report"))
+    # P1-3 regression: a render from another checkpoint (or without one) is refused unless explicitly allowed
+    other = {**good, "report_id": "rep-8b", "checkpoint": {"size": "8B", "model_revision": "b968826d9c46dd6066d109eabc6255188de91218"}}
+    extra.write_text(json.dumps(other))
+    with pytest.raises(RuntimeError, match="model_revision"):
+        C.main(args)
+    extra.write_text(json.dumps({k: v for k, v in good.items() if k != "checkpoint"} | {"report_id": "rep-norev"}))
+    with pytest.raises(RuntimeError, match="<absent>"):
+        C.main(args)
+    assert C.main(args + ["--allow-model-mismatch"]) == 0
+    assert ("rep-norev", 1, "STATE_ANCHOR") in S.existing_keys(run_root, "report")

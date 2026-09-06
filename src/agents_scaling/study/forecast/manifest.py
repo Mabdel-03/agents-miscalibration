@@ -256,9 +256,13 @@ def report_render(report: Report, tokenizer: Any, cfg: StudyConfig, checkpoint: 
     """Everything the neural capture stage (N1) needs for one report, as a JSON-safe dict.
 
     Carries the exact messages, manifest, ``prompt_token_ids`` (pinned reader tokenizer,
-    thinking off), the two anchor token indices, the forecast ``request_id`` (so the capture
-    can join the shadow forecast record) and the compiled report itself.  Raises
-    ``ProtocolError`` when the rendered prompt exceeds the 32,768-token envelope.
+    thinking off), the two anchors in both shapes N1 accepts (nested ``byte_anchors`` /
+    ``anchor_tokens`` and the flat ``task_only_anchor_byte`` / ``state_anchor_byte`` /
+    ``task_only_anchor_token`` / ``state_anchor_token``), ``checkpoint.model_revision`` (the
+    capture refuses a render from another snapshot), the forecast ``request_id`` (so the
+    capture can join the shadow forecast record), ``report_sha256`` (= ``report.text_sha256``)
+    and the compiled report itself.  Raises ``ProtocolError`` when the rendered prompt exceeds
+    the 32,768-token envelope.
     """
     manifest = forecast_manifest(report)
     rendered = render_forecast_request(report, manifest)
@@ -300,6 +304,13 @@ def report_render(report: Report, tokenizer: Any, cfg: StudyConfig, checkpoint: 
         "rendered_text_sha256": tokens["rendered_text_sha256"],
         "anchor_tokens": tokens["anchors"],
         "last_prompt_token": tokens["last_prompt_token"],
+        # Flat mirrors of byte_anchors / anchor_tokens: the N1 capture interface names
+        # (neural.anchors.resolve_report_anchors reads both shapes and asserts they agree).
+        "task_only_anchor_byte": int(rendered.anchors["task_only_anchor"]),
+        "state_anchor_byte": int(rendered.anchors["state_anchor"]),
+        "task_only_anchor_token": int(tokens["anchors"]["task_only_anchor"]["index"]),
+        "state_anchor_token": int(tokens["anchors"]["state_anchor"]["index"]),
+        "report_sha256": report.text_sha256,
         "evidence_tokens": report.evidence_tokens,
         "evidence_tokens_cap": EVIDENCE_TOKENS_CAP,
         "report": report.to_dict(),
