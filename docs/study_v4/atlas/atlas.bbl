@@ -1,4 +1,4 @@
-\begin{thebibliography}{81}
+\begin{thebibliography}{83}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -49,16 +49,22 @@ Mert Cemri, Melissa~Z. Pan, Shuyi Yang, Lakshya~A. Agrawal, Bhavya Chopra, Risha
 \newblock \emph{arXiv preprint arXiv:2503.13657}, 2025.
 \newblock URL \url{https://arxiv.org/abs/2503.13657}.
 
-\bibitem[Chen et~al.(2024{\natexlab{a}})Chen, Davis, Hanin, Bailis, Stoica, Zaharia, and Zou]{chen2024calls}
+\bibitem[Chen et~al.(2024{\natexlab{a}})Chen, Liu, Chen, Gu, Wu, Tao, Fu, and Ye]{chen2024inside}
+Chao Chen, Kai Liu, Ze~Chen, Yi~Gu, Yue Wu, Mingyuan Tao, Zhihang Fu, and Jieping Ye.
+\newblock {INSIDE}: {LLMs}' internal states retain the power of hallucination detection.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2024{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2402.03744}.
+
+\bibitem[Chen et~al.(2024{\natexlab{b}})Chen, Davis, Hanin, Bailis, Stoica, Zaharia, and Zou]{chen2024calls}
 Lingjiao Chen, Jared~Quincy Davis, Boris Hanin, Peter Bailis, Ion Stoica, Matei Zaharia, and James Zou.
 \newblock Are more {LLM} calls all you need? towards scaling laws of compound inference systems.
-\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2024{\natexlab{a}}.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2024{\natexlab{b}}.
 \newblock \doi{10.48550/arXiv.2403.02419}.
 \newblock URL \url{https://arxiv.org/abs/2403.02419}.
 
-\bibitem[Chen et~al.(2024{\natexlab{b}})Chen, Davis, Hanin, Bailis, Stoica, Zaharia, and Zou]{chen2024more}
+\bibitem[Chen et~al.(2024{\natexlab{c}})Chen, Davis, Hanin, Bailis, Stoica, Zaharia, and Zou]{chen2024more}
 Lingjiao Chen, Jared~Quincy Davis, Boris Hanin, Peter Bailis, Ion Stoica, Matei Zaharia, and James Zou.
-\newblock Are more {LLM} calls all you need? towards scaling laws of compound inference systems, 2024{\natexlab{b}}.
+\newblock Are more {LLM} calls all you need? towards scaling laws of compound inference systems, 2024{\natexlab{c}}.
 \newblock URL \url{https://arxiv.org/abs/2403.02419}.
 
 \bibitem[Chen et~al.(2026)Chen, Tong, Yang, He, Zhang, Zou, Wang, and He]{chen2026diversity}
@@ -371,6 +377,12 @@ Amir Taubenfeld, Tom Sheffer, Eran Ofek, Amir Feder, Ariel Goldstein, Zorik Gekh
 Dat Tran and Douwe Kiela.
 \newblock Single-agent {LLM}s outperform multi-agent systems on multi-hop reasoning under equal thinking token budgets, 2026.
 \newblock URL \url{https://arxiv.org/abs/2604.02460}.
+
+\bibitem[Turpin et~al.(2023)Turpin, Michael, Perez, and Bowman]{turpin2023unfaithful}
+Miles Turpin, Julian Michael, Ethan Perez, and Samuel~R. Bowman.
+\newblock Language models don't always say what they think: Unfaithful explanations in chain-of-thought prompting.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2305.04388}.
 
 \bibitem[Wan et~al.(2026)Wan, Wu, Luo, Li, Wang, Chen, and Kan]{wan2026deliberative}
 Herun Wan, Jiaying Wu, Minnan Luo, Fanxiao Li, Ningnan Wang, Nancy~F. Chen, and Min-Yen Kan.

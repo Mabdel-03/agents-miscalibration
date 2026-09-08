@@ -7,8 +7,6 @@ Axis & Claim & Verdict & Closest prior work \\
 Axis & Claim & Verdict & Closest prior work \\
 \midrule
 \endhead
-\mx{M5} & The effect is anchor-specific: absent mid-generation, present only at the committed answer. & \vnov & \citep{wang2026truth,liang2026divergence,sun2026toolcall} \\
-\mx{M2} & Unanimous episodes have \emph{more} dispersed member states arranged along fewer directions. & \vnov & \citep{ontalvilla2026agreement,li2025dispersion,zhang2026decomposing} \\
 \ax{C1} & Private revision without peers is a no-op; peer content is the active ingredient. & \vcon & \citep{bertalanic2026consensus,hao2026flips,huang2024selfcorrect} \\
 \ax{C7} & Confidence-aware selectors land within 1.5 points of plain plurality. & \vcon & \citep{taubenfeld2025confidence,fu2025deepconf,kang2025selfcertainty} \\
 \ax{C1} & The orchestrator rarely delegates; multi-call episodes are output-cap retry loops. & \vext & \citep{cemri2025mast,gao2026decisionbench,choi2025debate} \\
@@ -21,8 +19,11 @@ Axis & Claim & Verdict & Closest prior work \\
 \ax{C5} & Small checkpoints emit a literal 0.50 that functions as abstention, not a default. & \vext & \citep{dai2026rescaling,shen2026provable,ferdous2026small} \\
 \mx{M1} & Peer-exposed agents commit from a lower-rank answer state (PR 2.36$\to$1.84). & \vext & \citep{patel2026collapse,chen2026diversity,wan2026deliberative} \\
 \mx{M2} & That drop is anisotropy: mean separation unchanged, variance share on $\lambda_1$ 0.61$\to$0.74. & \vext & \citep{zhang2026simulated,steck2024cosine,rudman2022isoscore} \\
+\mx{M5} & The effect is anchor-specific: absent mid-generation, present only at the committed answer. & \vext & \citep{wang2026truth,liang2026divergence,sun2026toolcall} \\
+\mx{M2} & Unanimous episodes have \emph{more} dispersed member states arranged along fewer directions. & \vext & \citep{ontalvilla2026agreement,li2025dispersion,zhang2026decomposing} \\
 \mx{M3} & On code the consensus signal is in the norm ($\rho=+0.389$), invisible to the scale-free metric. & \vext & \citep{parupudi2026anisotropy,ontalvilla2026agreement,steck2024cosine} \\
 \mx{M7} & A reader's state identifies the harness at 0.989 and answer correctness at 0.694 (0.649 from task alone). & \vext & \citep{sun2026toolcall,leong2026recognition,liu2026reader} \\
+\mx{M7} & Within an item, majority membership is more decodable than correctness. & \vext & \citep{wang2026decodability,ashuach2026masked,zhang2025reasoning} \\
 \ax{C10} & Bimodal item difficulty gates every axis; pooled averages understate conditional effects $\sim4\times$. & \vext & \citep{chen2024more,yang2025revisiting,haupt2026welfare} \\
 \ax{C1} & Independent+vote beats the centralised hub at matched compute; peer revision beats neither. & \vrep & \citep{choi2025debate,smit2023mad,li2024agents} \\
 \ax{C3} & Peer revision raises agreement and confidence monotonically while pool coverage falls. & \vrep & \citep{bertalanic2026consensus,zhu2026demystifying,hao2026flips} \\
@@ -39,7 +40,6 @@ Axis & Claim & Verdict & Closest prior work \\
 \bx{B5} & Post-hoc recalibration cuts Brier 0.491$\to$0.216, dwarfing every other calibration effect. & \vrep & \citep{spiess2025calibration,shen2024thermometer,campos2025multicalibration} \\
 \ax{C5} & The 4B deficit is substantially a format-compliance failure (0.67 valid). & \vrep & \citep{barzelay2026varex,neveditsin2025structured,tam2024format} \\
 \mx{M7} & Item difficulty is decodable from the prompt state before any token is generated. & \vrep & \citep{lugoloobi2026encode,dicicco2026code,zhu2025already} \\
-\mx{M7} & Within an item, majority membership is more decodable than correctness. & \vrep & \citep{wang2026decodability,ashuach2026masked,zhang2025reasoning} \\
 \mx{M7} & The stated confidence value is not represented mid-generation ($R^2$ 0.10) but is at the answer token (0.63). & \vrep & \citep{kumaran2026verbal,podolak2025read,miao2026confidence} \\
 \bottomrule
 \end{longtable}
