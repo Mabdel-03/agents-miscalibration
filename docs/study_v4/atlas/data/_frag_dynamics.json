@@ -1,0 +1,477 @@
+{
+ "dec.by_round": {
+  "note": "round 0 = independent roots, before any peer content",
+  "script": "s3_dynamics.py",
+  "value": {
+   "0": {
+    "agreement": 0.2705,
+    "cand_correct": 0.3136,
+    "conf": 0.8532,
+    "items": 400,
+    "label_cov": 0.9125,
+    "oracle": 0.4384,
+    "unanimous": 0.0548,
+    "valid": 0.8055
+   },
+   "1": {
+    "agreement": 0.238,
+    "cand_correct": 0.3172,
+    "conf": 0.8906,
+    "items": 400,
+    "label_cov": 0.9125,
+    "oracle": 0.3918,
+    "unanimous": 0.0137,
+    "valid": 0.8745
+   },
+   "2": {
+    "agreement": 0.2483,
+    "cand_correct": 0.3217,
+    "conf": 0.9084,
+    "items": 400,
+    "label_cov": 0.92,
+    "oracle": 0.356,
+    "unanimous": 0.0136,
+    "valid": 0.8945
+   },
+   "3": {
+    "agreement": 0.275,
+    "cand_correct": 0.3217,
+    "conf": 0.9179,
+    "items": 400,
+    "label_cov": 0.92,
+    "oracle": 0.3505,
+    "unanimous": 0.0353,
+    "valid": 0.901
+   },
+   "4": {
+    "agreement": 0.3095,
+    "cand_correct": 0.3158,
+    "conf": 0.9221,
+    "items": 400,
+    "label_cov": 0.9225,
+    "oracle": 0.3388,
+    "unanimous": 0.0244,
+    "valid": 0.9065
+   },
+   "5": {
+    "agreement": 0.3595,
+    "cand_correct": 0.3124,
+    "conf": 0.9253,
+    "items": 400,
+    "label_cov": 0.93,
+    "oracle": 0.336,
+    "unanimous": 0.0457,
+    "valid": 0.9065
+   },
+   "6": {
+    "agreement": 0.3977,
+    "cand_correct": 0.3153,
+    "conf": 0.9271,
+    "items": 400,
+    "label_cov": 0.9325,
+    "oracle": 0.3298,
+    "unanimous": 0.0617,
+    "valid": 0.9145
+   },
+   "7": {
+    "agreement": 0.4414,
+    "cand_correct": 0.32,
+    "conf": 0.9288,
+    "items": 400,
+    "label_cov": 0.925,
+    "oracle": 0.3324,
+    "unanimous": 0.0784,
+    "valid": 0.911
+   },
+   "8": {
+    "agreement": 0.4769,
+    "cand_correct": 0.3263,
+    "conf": 0.9304,
+    "items": 400,
+    "label_cov": 0.93,
+    "oracle": 0.3414,
+    "unanimous": 0.0941,
+    "valid": 0.9085
+   }
+  }
+ },
+ "dec.by_round_domain": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "bcb": {
+    "0": {
+     "agreement": 0.2248,
+     "cand_correct": 0.4302,
+     "conf": 0.8838,
+     "oracle": 0.555
+    },
+    "1": {
+     "agreement": 0.2123,
+     "cand_correct": 0.446,
+     "conf": 0.9196,
+     "oracle": 0.525
+    },
+    "2": {
+     "agreement": 0.223,
+     "cand_correct": 0.448,
+     "conf": 0.9354,
+     "oracle": 0.5
+    },
+    "3": {
+     "agreement": 0.2498,
+     "cand_correct": 0.444,
+     "conf": 0.9429,
+     "oracle": 0.48
+    },
+    "4": {
+     "agreement": 0.2799,
+     "cand_correct": 0.438,
+     "conf": 0.9481,
+     "oracle": 0.465
+    },
+    "5": {
+     "agreement": 0.3195,
+     "cand_correct": 0.433,
+     "conf": 0.9507,
+     "oracle": 0.465
+    },
+    "6": {
+     "agreement": 0.3525,
+     "cand_correct": 0.441,
+     "conf": 0.953,
+     "oracle": 0.46
+    },
+    "7": {
+     "agreement": 0.39,
+     "cand_correct": 0.444,
+     "conf": 0.9547,
+     "oracle": 0.46
+    },
+    "8": {
+     "agreement": 0.4152,
+     "cand_correct": 0.447,
+     "conf": 0.9556,
+     "oracle": 0.46
+    }
+   },
+   "hle": {
+    "0": {
+     "agreement": 0.326,
+     "cand_correct": 0.1721,
+     "conf": 0.8161,
+     "oracle": 0.297
+    },
+    "1": {
+     "agreement": 0.2691,
+     "cand_correct": 0.1611,
+     "conf": 0.8556,
+     "oracle": 0.2303
+    },
+    "2": {
+     "agreement": 0.2784,
+     "cand_correct": 0.1714,
+     "conf": 0.8763,
+     "oracle": 0.1845
+    },
+    "3": {
+     "agreement": 0.3051,
+     "cand_correct": 0.1761,
+     "conf": 0.8882,
+     "oracle": 0.1964
+    },
+    "4": {
+     "agreement": 0.3445,
+     "cand_correct": 0.1712,
+     "conf": 0.8914,
+     "oracle": 0.1893
+    },
+    "5": {
+     "agreement": 0.4059,
+     "cand_correct": 0.1721,
+     "conf": 0.8956,
+     "oracle": 0.186
+    },
+    "6": {
+     "agreement": 0.45,
+     "cand_correct": 0.1699,
+     "conf": 0.8973,
+     "oracle": 0.1792
+    },
+    "7": {
+     "agreement": 0.5018,
+     "cand_correct": 0.1741,
+     "conf": 0.8984,
+     "oracle": 0.1824
+    },
+    "8": {
+     "agreement": 0.5485,
+     "cand_correct": 0.186,
+     "conf": 0.901,
+     "oracle": 0.2035
+    }
+   }
+  }
+ },
+ "dec.confidence_after_switch": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "stayers_after": 0.925408,
+   "stayers_before": 0.925408,
+   "switchers_after": 0.915854,
+   "switchers_before": 0.897769
+  }
+ },
+ "dec.episodes": {
+  "n": 3600,
+  "script": "s3_dynamics.py",
+  "source": "A.DEC main item files",
+  "value": 400
+ },
+ "dec.final_agreement_votekey": {
+  "note": "final round only, official vote_key grouping (AST-canonical on code)",
+  "script": "s3_dynamics.py",
+  "value": {
+   "agreement": 0.813978,
+   "n": 372,
+   "unanimous": 0.577957
+  }
+ },
+ "dec.flip_accounting": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "correct_kept": 4424,
+   "correct_to_wrong": 106,
+   "labelled_transitions": 14039,
+   "wrong_kept": 9388,
+   "wrong_to_correct": 121
+  }
+ },
+ "dec.lone_correct": {
+  "note": "episodes with exactly one correct member at the root round",
+  "script": "s3_dynamics.py",
+  "value": {
+   "episodes": 32,
+   "lost_by_final_round": 0.75,
+   "mean_final_share_correct": 0.1875
+  }
+ },
+ "dec.switching": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "majority_switch_rate": 0.040952,
+   "minority_switch_rate": 0.626453,
+   "switch_rate": 0.507301,
+   "to_majority_given_switch": 0.272957,
+   "transitions": 14039
+  }
+ },
+ "hub.action_error_codes": {
+  "n": 396,
+  "note": "typed coordinator_action errors; each consumes a hub call and a cycle",
+  "script": "s3_dynamics.py",
+  "value": {
+   "HIDDEN_HANDLE": 5,
+   "INVALID": 68,
+   "TRUNCATED": 323
+  }
+ },
+ "hub.by_call_bucket": {
+  "note": "item difficulty (p1) is shown beside accuracy because long episodes sit on much harder items",
+  "script": "s3_dynamics.py",
+  "value": {
+   "1": {
+    "acc": 0.3427,
+    "errors": 0.0,
+    "n": 286,
+    "p1": 0.3336,
+    "trunc": 0.0
+   },
+   "2": {
+    "acc": 0.2826,
+    "errors": 0.9783,
+    "n": 46,
+    "p1": 0.2239,
+    "trunc": 0.1413
+   },
+   "3-4": {
+    "acc": 0.125,
+    "errors": 2.0,
+    "n": 24,
+    "p1": 0.0625,
+    "trunc": 0.3382
+   },
+   ">=5": {
+    "acc": 0.0227,
+    "errors": 6.8864,
+    "n": 44,
+    "p1": 0.0114,
+    "trunc": 0.7623
+   }
+  }
+ },
+ "hub.by_domain": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "bcb": {
+    "calls": 1.09,
+    "delegated": 0.0,
+    "errors": 0.09,
+    "n": 200,
+    "trunc": 0.0058
+   },
+   "hle": {
+    "calls": 3.01,
+    "delegated": 0.09,
+    "errors": 1.89,
+    "n": 200,
+    "trunc": 0.235
+   }
+  }
+ },
+ "hub.call_bucket_band_mix": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "contested": {
+    "1": 37,
+    "2": 6,
+    "3-4": 1,
+    ">=5": 1
+   },
+   "easy": {
+    "1": 71,
+    "2": 6,
+    "3-4": 0,
+    ">=5": 0
+   },
+   "hard": {
+    "1": 44,
+    "2": 8,
+    "3-4": 4,
+    ">=5": 1
+   },
+   "never": {
+    "1": 134,
+    "2": 26,
+    "3-4": 19,
+    ">=5": 42
+   }
+  }
+ },
+ "hub.call_distribution": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "1": 286,
+   "2": 46,
+   "3": 17,
+   "4": 7,
+   "5": 4,
+   "6": 1,
+   "7": 6,
+   "8": 2,
+   "9": 31
+  }
+ },
+ "hub.delegation_rate": {
+  "n": 400,
+  "note": "episodes with at least one delegation cycle (counters.delegation_cycles > 0)",
+  "script": "s3_dynamics.py",
+  "value": 0.045
+ },
+ "hub.episodes": {
+  "script": "s3_dynamics.py",
+  "source": "A.CEN_FLAT main item files",
+  "value": 400
+ },
+ "hub.finish_reason_transitions": {
+  "note": "consecutive hub calls; length->length is the re-prompt loop",
+  "script": "s3_dynamics.py",
+  "value": {
+   "length->length": 242,
+   "length->stop": 78,
+   "stop->length": 37,
+   "stop->stop": 148
+  }
+ },
+ "hub.single_call_vs_single_draw": {
+  "note": "hub episodes that never delegated vs the neutral 10-draw bank pass@1 on the same items",
+  "script": "s3_dynamics.py",
+  "value": {
+   "diff": 0.009091,
+   "hi": 0.044406,
+   "lo": -0.025175,
+   "n": 286
+  }
+ },
+ "hub.tokens_by_call_index": {
+  "note": "index 5 pools calls 6+; 'uncapped' excludes calls that hit the 8192 output cap, which is the honest version of 'reasons longer each retry'",
+  "script": "s3_dynamics.py",
+  "value": {
+   "0": {
+    "mean_tokens": 3670.2925,
+    "mean_tokens_uncapped": 2809.014881,
+    "n": 400,
+    "share_at_cap": 0.16
+   },
+   "1": {
+    "mean_tokens": 5500.842105,
+    "mean_tokens_uncapped": 3745.73913,
+    "n": 114,
+    "share_at_cap": 0.394737
+   },
+   "2": {
+    "mean_tokens": 6336.884058,
+    "mean_tokens_uncapped": 3925.233333,
+    "n": 69,
+    "share_at_cap": 0.565217
+   },
+   "3": {
+    "mean_tokens": 6430.648148,
+    "mean_tokens_uncapped": 3186.052632,
+    "n": 54,
+    "share_at_cap": 0.648148
+   },
+   "4": {
+    "mean_tokens": 6939.770833,
+    "mean_tokens_uncapped": 4184.866667,
+    "n": 48,
+    "share_at_cap": 0.6875
+   },
+   "5": {
+    "mean_tokens": 6101.772727,
+    "mean_tokens_uncapped": 3247.376344,
+    "n": 220,
+    "share_at_cap": 0.577273
+   }
+  }
+ },
+ "hub.truncation": {
+  "script": "s3_dynamics.py",
+  "value": {
+   "episodes_all_truncated": 0.04,
+   "episodes_any_truncation": 0.1775,
+   "mean_trunc_frac": 0.120399
+  }
+ },
+ "hub.within_never_band": {
+  "note": "difficulty held constant: the call-count gradient largely disappears",
+  "script": "s3_dynamics.py",
+  "value": {
+   "1": {
+    "acc": 0.0224,
+    "n": 134
+   },
+   "2": {
+    "acc": 0.0,
+    "n": 26
+   },
+   "3-4": {
+    "acc": 0.0526,
+    "n": 19
+   },
+   ">=5": {
+    "acc": 0.0238,
+    "n": 42
+   }
+  }
+ }
+}

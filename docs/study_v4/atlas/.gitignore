@@ -1,0 +1,11 @@
+# LaTeX build artifacts (atlas.pdf is committed; these are regenerable by build.sh)
+*.aux
+*.log
+*.blg
+*.out
+*.toc
+# large intermediates written by the recomputation scripts
+data/*.parquet
+scripts/*.log
+scripts/rerun.flag
+scripts/__pycache__/

@@ -1,0 +1,897 @@
+{
+ "geom.answer_anchor_by_domain": {
+  "script": "s4_geometry.py",
+  "value": {
+   "bcb": {
+    "cos_mean": {
+     "DEC": 0.06656,
+     "IND": 0.058542,
+     "p": 0.054076
+    },
+    "er": {
+     "DEC": 2.084231,
+     "IND": 2.816975,
+     "p": 0.0
+    },
+    "lam1_share": {
+     "DEC": 0.763207,
+     "IND": 0.610097,
+     "p": 0.0
+    },
+    "n_items": "58",
+    "norm_mean": {
+     "DEC": 174.919489,
+     "IND": 176.314597,
+     "p": 4.7e-05
+    },
+    "pair_max": {
+     "DEC": 84.841964,
+     "IND": 77.038173,
+     "p": 0.012552
+    },
+    "pair_mean": {
+     "DEC": 55.755381,
+     "IND": 55.325695,
+     "p": 0.832823
+    },
+    "pair_min": {
+     "DEC": 22.840697,
+     "IND": 30.784633,
+     "p": 0.0
+    },
+    "pr": {
+     "DEC": 1.711943,
+     "IND": 2.345343,
+     "p": 0.0
+    },
+    "total_var": {
+     "DEC": 2035.585133,
+     "IND": 1821.615991,
+     "p": 0.087548
+    }
+   },
+   "hle": {
+    "cos_mean": {
+     "DEC": 0.052014,
+     "IND": 0.04262,
+     "p": 0.065458
+    },
+    "er": {
+     "DEC": 2.282114,
+     "IND": 2.812978,
+     "p": 0.000627
+    },
+    "lam1_share": {
+     "DEC": 0.712467,
+     "IND": 0.613252,
+     "p": 0.00665
+    },
+    "n_items": "51",
+    "norm_mean": {
+     "DEC": 181.924517,
+     "IND": 184.951205,
+     "p": 0.0
+    },
+    "pair_max": {
+     "DEC": 74.166152,
+     "IND": 68.605716,
+     "p": 0.250647
+    },
+    "pair_mean": {
+     "DEC": 48.797087,
+     "IND": 49.19585,
+     "p": 0.890476
+    },
+    "pair_min": {
+     "DEC": 18.742673,
+     "IND": 27.941918,
+     "p": 0.0
+    },
+    "pr": {
+     "DEC": 1.986325,
+     "IND": 2.380809,
+     "p": 0.012342
+    },
+    "total_var": {
+     "DEC": 1717.562485,
+     "IND": 1476.329336,
+     "p": 0.150504
+    }
+   }
+  }
+ },
+ "geom.arm_context": {
+  "note": "peer-exposed members carry the peer packets in context; the arms are not length-matched",
+  "script": "s4_geometry.py",
+  "value": {
+   "CEN_FLAT": {
+    "completion_tokens": 3145.8,
+    "n": "303",
+    "prompt_tokens": 532.6
+   },
+   "DEC": {
+    "completion_tokens": 1694.3,
+    "n": "1508",
+    "prompt_tokens": 2153.1
+   },
+   "IND_VOTE": {
+    "completion_tokens": 3242.3,
+    "n": "6545",
+    "prompt_tokens": 378.7
+   }
+  }
+ },
+ "geom.dec_consensus": {
+  "note": "agreement recomputed from item files; geometry.parquet's own outcome_agreement is 30% null and matches 54% of the time",
+  "script": "s4_geometry.py",
+  "value": {
+   "bcb": {
+    "cos_mean": {
+     "correct": 0.065483,
+     "p_correct": 0.355308,
+     "p_rho": 0.636479,
+     "rho_agreement": -0.043956,
+     "split": 0.0616,
+     "unanimous": 0.064132,
+     "welch_p": 0.670622,
+     "wrong": 0.060134
+    },
+    "er": {
+     "correct": 2.21135,
+     "p_correct": 0.983094,
+     "p_rho": 0.212466,
+     "rho_agreement": -0.115624,
+     "split": 2.236236,
+     "unanimous": 2.181189,
+     "welch_p": 0.704216,
+     "wrong": 2.21432
+    },
+    "n": "118",
+    "n_split": "68",
+    "n_unanimous": "50",
+    "norm_mean": {
+     "correct": 174.998471,
+     "p_correct": 0.947473,
+     "p_rho": 1.4e-05,
+     "rho_agreement": 0.388624,
+     "split": 174.123606,
+     "unanimous": 176.226415,
+     "welch_p": 5e-06,
+     "wrong": 175.029219
+    },
+    "pair_max": {
+     "correct": 82.067902,
+     "p_correct": 0.491338,
+     "p_rho": 0.601439,
+     "rho_agreement": 0.048573,
+     "split": 79.736458,
+     "unanimous": 81.317436,
+     "welch_p": 0.740465,
+     "wrong": 78.905619
+    },
+    "pair_mean": {
+     "correct": 55.080534,
+     "p_correct": 0.343567,
+     "p_rho": 0.603768,
+     "rho_agreement": -0.048263,
+     "split": 53.292799,
+     "unanimous": 54.034349,
+     "welch_p": 0.807343,
+     "wrong": 52.276094
+    },
+    "pr": {
+     "correct": 1.844313,
+     "p_correct": 0.988842,
+     "p_rho": 0.285609,
+     "rho_agreement": -0.099112,
+     "split": 1.841858,
+     "unanimous": 1.850178,
+     "welch_p": 0.95601,
+     "wrong": 1.84635
+    },
+    "pr_partial_given_difficulty": -0.099154,
+    "pr_welch_p_drop_top3_split": 0.541237
+   },
+   "hle": {
+    "cos_mean": {
+     "correct": 0.046841,
+     "p_correct": 0.424784,
+     "p_rho": 0.044678,
+     "rho_agreement": 0.205407,
+     "split": 0.039291,
+     "unanimous": 0.057501,
+     "welch_p": 0.027308,
+     "wrong": 0.054124
+    },
+    "er": {
+     "correct": 2.460541,
+     "p_correct": 0.380806,
+     "p_rho": 0.005803,
+     "rho_agreement": -0.279583,
+     "split": 2.719196,
+     "unanimous": 2.110326,
+     "welch_p": 0.01296,
+     "wrong": 2.224658
+    },
+    "n": "96",
+    "n_split": "25",
+    "n_unanimous": "71",
+    "norm_mean": {
+     "correct": 182.012395,
+     "p_correct": 0.970758,
+     "p_rho": 0.417155,
+     "rho_agreement": 0.083761,
+     "split": 181.52932,
+     "unanimous": 182.21814,
+     "welch_p": 0.302285,
+     "wrong": 182.044844
+    },
+    "pair_max": {
+     "correct": 66.895057,
+     "p_correct": 0.293266,
+     "p_rho": 0.01926,
+     "rho_agreement": 0.238538,
+     "split": 59.356119,
+     "unanimous": 79.787463,
+     "welch_p": 0.01044,
+     "wrong": 76.214125
+    },
+    "pair_mean": {
+     "correct": 45.943067,
+     "p_correct": 0.415427,
+     "p_rho": 0.023509,
+     "rho_agreement": 0.231065,
+     "split": 41.410645,
+     "unanimous": 52.301081,
+     "welch_p": 0.020016,
+     "wrong": 50.27779
+    },
+    "pr": {
+     "correct": 2.190252,
+     "p_correct": 0.330744,
+     "p_rho": 0.005349,
+     "rho_agreement": -0.282162,
+     "split": 2.43674,
+     "unanimous": 1.805034,
+     "welch_p": 0.013339,
+     "wrong": 1.918608
+    },
+    "pr_partial_given_difficulty": -0.279948,
+    "pr_welch_p_drop_top3_split": 0.075617
+   }
+  }
+ },
+ "geom.dec_root_unavailable": {
+  "note": "no DEC-root group has the contracted 5 comparable states: only one root member per episode was captured, so there is no within-episode before/after baseline anywhere in the data",
+  "script": "s4_geometry.py",
+  "value": {
+   "rows": "3600",
+   "status": {
+    "insufficient": "3465",
+    "no_states": "135"
+   },
+   "usable": "0"
+  }
+ },
+ "geom.ind_full_pool": {
+  "note": "dimensionality of an item's whole 64-draw answer-state distribution",
+  "script": "s4_geometry.py",
+  "value": {
+   "bcb": {
+    "all_singleton": {
+     "p": 0.860177,
+     "rho": 0.023431
+    },
+    "cand_mean": {
+     "p": 0.211401,
+     "rho": -0.165113
+    },
+    "cand_mean_by_pr_tercile": {
+     "high": 0.3711,
+     "low": 0.5477,
+     "mid": 0.5543
+    },
+    "gap": {
+     "p": 0.228542,
+     "rho": -0.159167
+    },
+    "n": "59",
+    "oracle": {
+     "p": 0.294436,
+     "rho": -0.138803
+    }
+   },
+   "hle": {
+    "all_singleton": {
+     "p": 0.118104,
+     "rho": -0.215203
+    },
+    "cand_mean": {
+     "p": 0.552479,
+     "rho": 0.082635
+    },
+    "cand_mean_by_pr_tercile": {
+     "high": 0.1432,
+     "low": 0.1571,
+     "mid": 0.1302
+    },
+    "gap": {
+     "p": 0.131236,
+     "rho": 0.207995
+    },
+    "n": "54",
+    "oracle": {
+     "p": 0.466765,
+     "rho": 0.101147
+    }
+   },
+   "mean_pr": 4.788618,
+   "mean_states": 57.831858,
+   "n_items": "113"
+  }
+ },
+ "geom.items_per_method": {
+  "note": "IND_VOTE geometry exists for a minority of the 300-item panel: the native capture is ~72% complete",
+  "script": "s4_geometry.py",
+  "value": {
+   "CEN_FLAT": "293",
+   "DEC": "240",
+   "IND_VOTE": "124"
+  }
+ },
+ "geom.length_confound": {
+  "note": "within IND only: the 5 shortest vs the 5 longest completions per item, same anchor",
+  "script": "s4_geometry.py",
+  "value": {
+   "bcb": {
+    "er": {
+     "long": 2.611607,
+     "p": 0.214984,
+     "short": 2.748848
+    },
+    "n_items": "59",
+    "norm_mean": {
+     "long": 176.661226,
+     "p": 0.762479,
+     "short": 176.775018
+    },
+    "pair_mean": {
+     "long": 62.273754,
+     "p": 6e-06,
+     "short": 49.90639
+    },
+    "pr": {
+     "long": 2.121533,
+     "p": 0.099022,
+     "short": 2.329507
+    }
+   },
+   "hle": {
+    "er": {
+     "long": 2.800495,
+     "p": 0.012005,
+     "short": 3.145659
+    },
+    "n_items": "54",
+    "norm_mean": {
+     "long": 185.249263,
+     "p": 0.00947,
+     "short": 184.197752
+    },
+    "pair_mean": {
+     "long": 47.465506,
+     "p": 0.034162,
+     "short": 42.392466
+    },
+    "pr": {
+     "long": 2.377076,
+     "p": 0.006504,
+     "short": 2.790431
+    }
+   },
+   "mean_completion_tokens_by_method": {
+    "CEN_FLAT": 3145.8,
+    "DEC": 1694.3,
+    "IND_VOTE": 3242.3
+   },
+   "mean_prompt_tokens_by_method": {
+    "CEN_FLAT": 532.6,
+    "DEC": 2153.1,
+    "IND_VOTE": 378.7
+   }
+  }
+ },
+ "geom.table_status": {
+  "n": 19260,
+  "script": "s4_geometry.py",
+  "source": "neural/tables/geometry.parquet",
+  "value": {
+   "exact": "13212",
+   "insufficient": "3513",
+   "no_states": "708",
+   "subsampled": "1827"
+  }
+ },
+ "geom.trajectory": {
+  "note": "paired on items; IND subsampled to s=5 from ~58 available, DEC exact 5",
+  "script": "s4_geometry.py",
+  "value": {
+   "15_FINAL_OBJECT_CLOSE": {
+    "cos_mean": {
+     "DEC": 0.025566,
+     "IND": 0.023333,
+     "n": "109",
+     "p": 0.218369,
+     "ratio": 1.095704
+    },
+    "er": {
+     "DEC": 1.839867,
+     "IND": 2.490101,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.738872
+    },
+    "lam1_share": {
+     "DEC": 0.810756,
+     "IND": 0.680026,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 1.192242
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 57.831858,
+    "n_items": "109",
+    "norm_mean": {
+     "DEC": 136.571618,
+     "IND": 136.627367,
+     "n": "109",
+     "p": 0.914983,
+     "ratio": 0.999592
+    },
+    "pair_max": {
+     "DEC": 40.332344,
+     "IND": 38.435958,
+     "n": "109",
+     "p": 0.311325,
+     "ratio": 1.049339
+    },
+    "pair_mean": {
+     "DEC": 24.535142,
+     "IND": 25.581297,
+     "n": "109",
+     "p": 0.348496,
+     "ratio": 0.959105
+    },
+    "pair_min": {
+     "DEC": 6.250994,
+     "IND": 11.453667,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.545763
+    },
+    "pr": {
+     "DEC": 1.609969,
+     "IND": 2.089661,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.770445
+    },
+    "total_var": {
+     "DEC": 498.343625,
+     "IND": 464.795465,
+     "n": "109",
+     "p": 0.349371,
+     "ratio": 1.072178
+    }
+   },
+   "31_FINAL_OBJECT_CLOSE": {
+    "cos_mean": {
+     "DEC": 0.059754,
+     "IND": 0.051092,
+     "n": "109",
+     "p": 0.007377,
+     "ratio": 1.169532
+    },
+    "er": {
+     "DEC": 2.176818,
+     "IND": 2.815105,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.773264
+    },
+    "lam1_share": {
+     "DEC": 0.739466,
+     "IND": 0.611573,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 1.209122
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 57.831858,
+    "n_items": "109",
+    "norm_mean": {
+     "DEC": 178.197071,
+     "IND": 180.355578,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.988032
+    },
+    "pair_max": {
+     "DEC": 79.846859,
+     "IND": 73.092712,
+     "n": "109",
+     "p": 0.015512,
+     "ratio": 1.092405
+    },
+    "pair_mean": {
+     "DEC": 52.499666,
+     "IND": 52.457602,
+     "n": "109",
+     "p": 0.980516,
+     "ratio": 1.000802
+    },
+    "pair_min": {
+     "DEC": 20.923273,
+     "IND": 29.454555,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.710358
+    },
+    "pr": {
+     "DEC": 1.840323,
+     "IND": 2.361937,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.779159
+    },
+    "total_var": {
+     "DEC": 1886.785546,
+     "IND": 1660.05985,
+     "n": "109",
+     "p": 0.026585,
+     "ratio": 1.136577
+    }
+   },
+   "31_GENERATED_128": {
+    "cos_mean": {
+     "DEC": 0.629947,
+     "IND": 0.641882,
+     "n": "123",
+     "p": 0.031503,
+     "ratio": 0.981406
+    },
+    "er": {
+     "DEC": 3.769579,
+     "IND": 3.756477,
+     "n": "123",
+     "p": 0.531924,
+     "ratio": 1.003488
+    },
+    "lam1_share": {
+     "DEC": 0.360848,
+     "IND": 0.360306,
+     "n": "123",
+     "p": 0.910797,
+     "ratio": 1.001505
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 63.959677,
+    "n_items": "123",
+    "norm_mean": {
+     "DEC": 224.78421,
+     "IND": 225.820076,
+     "n": "123",
+     "p": 0.341642,
+     "ratio": 0.995413
+    },
+    "pair_max": {
+     "DEC": 288.629275,
+     "IND": 292.016156,
+     "n": "123",
+     "p": 0.128514,
+     "ratio": 0.988402
+    },
+    "pair_mean": {
+     "DEC": 252.478951,
+     "IND": 255.691452,
+     "n": "123",
+     "p": 0.1205,
+     "ratio": 0.987436
+    },
+    "pair_min": {
+     "DEC": 201.910389,
+     "IND": 201.49184,
+     "n": "123",
+     "p": 0.921919,
+     "ratio": 1.002077
+    },
+    "pr": {
+     "DEC": 3.60973,
+     "IND": 3.60099,
+     "n": "123",
+     "p": 0.746741,
+     "ratio": 1.002427
+    },
+    "total_var": {
+     "DEC": 32614.80518,
+     "IND": 33447.295612,
+     "n": "123",
+     "p": 0.108744,
+     "ratio": 0.97511
+    }
+   },
+   "31_GENERATED_32": {
+    "cos_mean": {
+     "DEC": 0.490066,
+     "IND": 0.48767,
+     "n": "123",
+     "p": 0.85099,
+     "ratio": 1.004913
+    },
+    "er": {
+     "DEC": 2.631793,
+     "IND": 2.646598,
+     "n": "123",
+     "p": 0.85775,
+     "ratio": 0.994406
+    },
+    "lam1_share": {
+     "DEC": 0.546942,
+     "IND": 0.539183,
+     "n": "115",
+     "p": 0.683714,
+     "ratio": 1.01439
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 63.959677,
+    "n_items": "123",
+    "norm_mean": {
+     "DEC": 226.060308,
+     "IND": 229.818101,
+     "n": "123",
+     "p": 0.001657,
+     "ratio": 0.983649
+    },
+    "pair_max": {
+     "DEC": 269.610087,
+     "IND": 272.993565,
+     "n": "123",
+     "p": 0.348554,
+     "ratio": 0.987606
+    },
+    "pair_mean": {
+     "DEC": 207.218449,
+     "IND": 209.123709,
+     "n": "123",
+     "p": 0.674981,
+     "ratio": 0.990889
+    },
+    "pair_min": {
+     "DEC": 53.918499,
+     "IND": 60.078853,
+     "n": "123",
+     "p": 0.427553,
+     "ratio": 0.897462
+    },
+    "pr": {
+     "DEC": 2.515072,
+     "IND": 2.563573,
+     "n": "115",
+     "p": 0.555644,
+     "ratio": 0.981081
+    },
+    "total_var": {
+     "DEC": 25639.038469,
+     "IND": 26436.769194,
+     "n": "123",
+     "p": 0.267269,
+     "ratio": 0.969825
+    }
+   },
+   "31_GENERATED_512": {
+    "cos_mean": {
+     "DEC": 0.601006,
+     "IND": 0.615036,
+     "n": "122",
+     "p": 0.082471,
+     "ratio": 0.977189
+    },
+    "er": {
+     "DEC": 3.763149,
+     "IND": 3.808659,
+     "n": "122",
+     "p": 0.005231,
+     "ratio": 0.988051
+    },
+    "lam1_share": {
+     "DEC": 0.3634,
+     "IND": 0.351819,
+     "n": "122",
+     "p": 0.011727,
+     "ratio": 1.032919
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 63.83871,
+    "n_items": "122",
+    "norm_mean": {
+     "DEC": 216.695783,
+     "IND": 217.627965,
+     "n": "122",
+     "p": 0.443561,
+     "ratio": 0.995717
+    },
+    "pair_max": {
+     "DEC": 275.522868,
+     "IND": 275.18775,
+     "n": "122",
+     "p": 0.910219,
+     "ratio": 1.001218
+    },
+    "pair_mean": {
+     "DEC": 238.481735,
+     "IND": 241.487404,
+     "n": "122",
+     "p": 0.247726,
+     "ratio": 0.987554
+    },
+    "pair_min": {
+     "DEC": 189.424898,
+     "IND": 198.260403,
+     "n": "122",
+     "p": 0.009371,
+     "ratio": 0.955435
+    },
+    "pr": {
+     "DEC": 3.588101,
+     "IND": 3.660048,
+     "n": "122",
+     "p": 0.003419,
+     "ratio": 0.980343
+    },
+    "total_var": {
+     "DEC": 29290.205944,
+     "IND": 29790.715758,
+     "n": "122",
+     "p": 0.410972,
+     "ratio": 0.983199
+    }
+   },
+   "31_NATIVE_PREFILL": {
+    "cos_mean": {
+     "DEC": 0.001617,
+     "IND": 4.8e-05,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 33.56845
+    },
+    "er": {
+     "DEC": 2.93887,
+     "IND": 1.449411,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 2.027631
+    },
+    "lam1_share": {
+     "DEC": 0.508671,
+     "IND": 0.57984,
+     "n": "23",
+     "p": 0.016905,
+     "ratio": 0.877261
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 63.959677,
+    "n_items": "123",
+    "norm_mean": {
+     "DEC": 160.681479,
+     "IND": 165.521987,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 0.970756
+    },
+    "pair_max": {
+     "DEC": 10.530801,
+     "IND": 1.669083,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 6.309335
+    },
+    "pair_mean": {
+     "DEC": 8.109292,
+     "IND": 1.024174,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 7.917889
+    },
+    "pair_min": {
+     "DEC": 4.848613,
+     "IND": 0.075791,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 63.973413
+    },
+    "pr": {
+     "DEC": 2.826751,
+     "IND": 2.326799,
+     "n": "23",
+     "p": 0.001585,
+     "ratio": 1.214867
+    },
+    "total_var": {
+     "DEC": 41.712063,
+     "IND": 1.342252,
+     "n": "123",
+     "p": 0.0,
+     "ratio": 31.076174
+    }
+   },
+   "47_FINAL_OBJECT_CLOSE": {
+    "cos_mean": {
+     "DEC": 0.072882,
+     "IND": 0.056458,
+     "n": "109",
+     "p": 1e-05,
+     "ratio": 1.290907
+    },
+    "er": {
+     "DEC": 2.41106,
+     "IND": 2.901294,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.831029
+    },
+    "lam1_share": {
+     "DEC": 0.699547,
+     "IND": 0.594332,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 1.17703
+    },
+    "n_avail_DEC": 5.0,
+    "n_avail_IND": 57.831858,
+    "n_items": "109",
+    "norm_mean": {
+     "DEC": 274.151215,
+     "IND": 273.762673,
+     "n": "109",
+     "p": 0.522872,
+     "ratio": 1.001419
+    },
+    "pair_max": {
+     "DEC": 133.022612,
+     "IND": 115.618127,
+     "n": "109",
+     "p": 3e-05,
+     "ratio": 1.150534
+    },
+    "pair_mean": {
+     "DEC": 92.585627,
+     "IND": 84.111009,
+     "n": "109",
+     "p": 0.00165,
+     "ratio": 1.100755
+    },
+    "pair_min": {
+     "DEC": 45.246139,
+     "IND": 49.622354,
+     "n": "109",
+     "p": 0.0,
+     "ratio": 0.91181
+    },
+    "pr": {
+     "DEC": 1.991663,
+     "IND": 2.439593,
+     "n": "109",
+     "p": 1e-06,
+     "ratio": 0.816392
+    },
+    "total_var": {
+     "DEC": 5436.628637,
+     "IND": 4185.651255,
+     "n": "109",
+     "p": 5e-06,
+     "ratio": 1.298873
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,468 @@
+\begin{thebibliography}{81}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Ashuach et~al.(2026)Ashuach, Gretz, Katz, Belinkov, and Ein-Dor]{ashuach2026masked}
+Tomer Ashuach, Shai Gretz, Yoav Katz, Yonatan Belinkov, and Liat Ein-Dor.
+\newblock Masked by consensus: Disentangling privileged knowledge in {LLM} correctness, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.12373}.
+
+\bibitem[Bahuguna(2026)]{bahuguna2026backfires}
+Utkarsh Bahuguna.
+\newblock When self-consistency backfires: Majority vote hurts the majority of hard science problems for small llms, 2026.
+\newblock URL \url{https://arxiv.org/abs/2608.11403}.
+
+\bibitem[Barzelay et~al.(2026)Barzelay, Azulai, Shapira, Friedman, Abo~Dahood, Lee, and Daniels]{barzelay2026varex}
+Udi Barzelay, Ophir Azulai, Inbar Shapira, Idan Friedman, Foad Abo~Dahood, Madison Lee, and Abraham Daniels.
+\newblock {VAREX}: A benchmark for multi-modal structured extraction from documents.
+\newblock \emph{arXiv preprint arXiv:2603.15118}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2603.15118}.
+
+\bibitem[Bertalani{\v c} and Fortuna(2026)]{bertalanic2026consensus}
+Bla{\v z} Bertalani{\v c} and Carolina Fortuna.
+\newblock The cost of consensus: Isolated self-correction prevails over unguided homogeneous multi-agent debate, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.00914}.
+
+\bibitem[Brown et~al.(2024)Brown, Juravsky, Ehrlich, Clark, Le, R{\'e}, and Mirhoseini]{brown2024monkeys}
+Bradley Brown, Jordan Juravsky, Ryan Ehrlich, Ronald Clark, Quoc~V. Le, Christopher R{\'e}, and Azalia Mirhoseini.
+\newblock Large language monkeys: Scaling inference compute with repeated sampling, 2024.
+\newblock URL \url{https://arxiv.org/abs/2407.21787}.
+\newblock arXiv:2407.21787; coverage-sample relationship is log-linear while majority voting and reward models plateau beyond several hundred samples and fail to fully scale.
+
+\bibitem[Cai et~al.(2026)Cai, Kulik, and Choudhury]{cai2026arbiter}
+Meng Cai, Lars Kulik, and Farhana Choudhury.
+\newblock Arbiter: Reasoning trajectory basins and majority vote failures in test-time sampling, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.26172}.
+
+\bibitem[Campos et~al.(2025)Campos, Kuschnereit, and Ulges]{campos2025multicalibration}
+Viola Campos, Robin Kuschnereit, and Adrian Ulges.
+\newblock Multicalibration for {LLM}-based code generation.
+\newblock \emph{arXiv preprint arXiv:2512.08810}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2512.08810}.
+
+\bibitem[Cemri et~al.(2025)Cemri, Pan, Yang, Agrawal, Chopra, Tiwari, Keutzer, Parameswaran, Klein, Ramchandran, Zaharia, Gonzalez, and Stoica]{cemri2025mast}
+Mert Cemri, Melissa~Z. Pan, Shuyi Yang, Lakshya~A. Agrawal, Bhavya Chopra, Rishabh Tiwari, Kurt Keutzer, Aditya Parameswaran, Dan Klein, Kannan Ramchandran, Matei Zaharia, Joseph~E. Gonzalez, and Ion Stoica.
+\newblock Why do multi-agent llm systems fail?
+\newblock \emph{arXiv preprint arXiv:2503.13657}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2503.13657}.
+
+\bibitem[Chen et~al.(2024{\natexlab{a}})Chen, Davis, Hanin, Bailis, Stoica, Zaharia, and Zou]{chen2024calls}
+Lingjiao Chen, Jared~Quincy Davis, Boris Hanin, Peter Bailis, Ion Stoica, Matei Zaharia, and James Zou.
+\newblock Are more {LLM} calls all you need? towards scaling laws of compound inference systems.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2024{\natexlab{a}}.
+\newblock \doi{10.48550/arXiv.2403.02419}.
+\newblock URL \url{https://arxiv.org/abs/2403.02419}.
+
+\bibitem[Chen et~al.(2024{\natexlab{b}})Chen, Davis, Hanin, Bailis, Stoica, Zaharia, and Zou]{chen2024more}
+Lingjiao Chen, Jared~Quincy Davis, Boris Hanin, Peter Bailis, Ion Stoica, Matei Zaharia, and James Zou.
+\newblock Are more {LLM} calls all you need? towards scaling laws of compound inference systems, 2024{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2403.02419}.
+
+\bibitem[Chen et~al.(2026)Chen, Tong, Yang, He, Zhang, Zou, Wang, and He]{chen2026diversity}
+Nuo Chen, Yicheng Tong, Yuzhe Yang, Yufei He, Xueyi Zhang, Qingyun Zou, Qian Wang, and Bingsheng He.
+\newblock Diversity collapse in multi-agent llm systems: Structural coupling and collective failure in open-ended idea generation.
+\newblock \emph{arXiv preprint arXiv:2604.18005}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.18005}.
+
+\bibitem[Cho et~al.(2026)Cho, Wang, Sui, and Grama]{cho2026symbolic}
+David Cho, Yifan Wang, Fanping Sui, and Ananth Grama.
+\newblock Inference-time code selection via symbolic equivalence partitioning, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.06485}.
+
+\bibitem[Choi et~al.(2025)Choi, Zhu, and Li]{choi2025debate}
+Hyeong~Kyu Choi, Xiaojin Zhu, and Yixuan Li.
+\newblock Debate or vote: Which yields better decisions in multi-agent large language models?
+\newblock \emph{arXiv preprint arXiv:2508.17536}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2508.17536}.
+
+\bibitem[Dai and Wang(2026)]{dai2026rescaling}
+Yuyang Dai and Yuxia Wang.
+\newblock Rescaling confidence: What scale design reveals about {LLM} metacognition.
+\newblock \emph{arXiv preprint arXiv:2603.09309}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2603.09309}.
+
+\bibitem[Di~Cicco(2026)]{dicicco2026code}
+Carlo Di~Cicco.
+\newblock Code correctness is linearly decodable from {LLM} hidden states before generation, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.14530}.
+
+\bibitem[Ferdous(2026)]{ferdous2026small}
+M~M~Asif Ferdous.
+\newblock Small vision-language models know when they are wrong but cannot say so: A two-model study of stated versus internal confidence under realistic image degradation.
+\newblock \emph{arXiv preprint arXiv:2607.22034}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2607.22034}.
+
+\bibitem[Fu et~al.(2025)Fu, Wang, Tian, and Zhao]{fu2025deepconf}
+Yichao Fu, Xuewei Wang, Yuandong Tian, and Jiawei Zhao.
+\newblock Deep think with confidence, 2025.
+\newblock URL \url{https://arxiv.org/abs/2508.15260}.
+
+\bibitem[Gao et~al.(2026)Gao, Wang, Yu, Ma, and Qu]{gao2026decisionbench}
+Yuxuan Gao, Megan Wang, Yi~Ling Yu, Zijian~Carl Ma, and Ao~Qu.
+\newblock Decisionbench: A benchmark for emergent delegation in long-horizon agentic workflows, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.19099}.
+\newblock arXiv:2605.19099; defines a delegation-rate metric and reports orchestrators predominantly self-handle (near-zero delegation on tau-bench, 0.06-0.42 calls/task elsewhere), with routing fidelity-at-1 of 7.5-29.5\% and a counterfactual-delegation ceiling 15-31pp above measured performance.
+
+\bibitem[Hao et~al.(2026)Hao, Wu, Qiu, Xiao, Xu, Zheng, and Qin]{hao2026flips}
+Xiqi Hao, Zengqing Wu, Yu-Xuan Qiu, Chuan Xiao, Ruiqi Xu, Shuyuan Zheng, and Jianbin Qin.
+\newblock Not all flips are conformity: Decomposing stance convergence in multi-agent llm debate, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.00820}.
+\newblock arXiv:2606.00820; three-source decomposition with a dedicated self-reflection condition in which the agent re-examines with no peer information, yielding 37-39\% flip rates vs 29\% strict conformity.
+
+\bibitem[Haupt et~al.(2026)Haupt, Hartenstein, Reuel, Kochenderfer, and Koyejo]{haupt2026welfare}
+Andreas Haupt, Justin Hartenstein, Anka Reuel, Mykel Kochenderfer, and Sanmi Koyejo.
+\newblock Welfare, improvability, and variance: A principal-agent approach to optimal benchmark item aggregation, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.30916}.
+
+\bibitem[Huang et~al.(2024)Huang, Chen, Mishra, Zheng, Yu, Song, and Zhou]{huang2024selfcorrect}
+Jie Huang, Xinyun Chen, Swaroop Mishra, Huaixiu~Steven Zheng, Adams~Wei Yu, Xinying Song, and Denny Zhou.
+\newblock Large language models cannot self-correct reasoning yet.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2024.
+\newblock \doi{10.48550/arXiv.2310.01798}.
+\newblock URL \url{https://arxiv.org/abs/2310.01798}.
+
+\bibitem[Hussain and Nielbo(2026)]{hussain2026frontier}
+Zafar Hussain and Kristoffer Nielbo.
+\newblock Conformity mitigations in large language models lie on a single resistance--receptivity frontier.
+\newblock \emph{arXiv preprint arXiv:2608.11247}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2608.11247}.
+
+\bibitem[Jiang et~al.(2026)Jiang, Yi, and Zhu]{jiang2026semantic}
+Shan Jiang, Zijian Yi, and Chenguang Zhu.
+\newblock Semantic voting: Execution-grounded consensus for llm code generation, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.08680}.
+
+\bibitem[Kang et~al.(2025)Kang, Zhao, and Song]{kang2025selfcertainty}
+Zhewei Kang, Xuandong Zhao, and Dawn Song.
+\newblock Scalable best-of-n selection for large language models via self-certainty, 2025.
+\newblock URL \url{https://arxiv.org/abs/2502.18581}.
+
+\bibitem[Kapoor et~al.(2024)Kapoor, Stroebl, Siegel, Nadgir, and Narayanan]{kapoor2024agents}
+Sayash Kapoor, Benedikt Stroebl, Zachary~S. Siegel, Nitya Nadgir, and Arvind Narayanan.
+\newblock {AI} agents that matter, 2024.
+\newblock URL \url{https://arxiv.org/abs/2407.01502}.
+
+\bibitem[Kumaran et~al.(2026)Kumaran, Conmy, Barbero, Osindero, Patraucean, and Veli{\v c}kovi{\'c}]{kumaran2026verbal}
+Dharshan Kumaran, Arthur Conmy, Federico Barbero, Simon Osindero, Viorica Patraucean, and Petar Veli{\v c}kovi{\'c}.
+\newblock How do {LLM}s compute verbal confidence, 2026.
+\newblock URL \url{https://arxiv.org/abs/2603.17839}.
+
+\bibitem[Landesberg(2026)]{landesberg2026judge}
+Eddie Landesberg.
+\newblock When {LLM} judge scores look good but best-of-n decisions fail, 2026.
+\newblock URL \url{https://arxiv.org/abs/2603.12520}.
+
+\bibitem[Launer et~al.(2026)Launer, H{\"u}botter, Bagatella, Hakimi, and Krause]{launer2026majority}
+Tim Launer, Jonas H{\"u}botter, Marco Bagatella, Ido Hakimi, and Andreas Krause.
+\newblock Majority voting for code generation, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.15618}.
+\newblock ICLR 2026 Test-Time Updates (TTU) Workshop.
+
+\bibitem[Leong(2026)]{leong2026recognition}
+Jun~Wen Leong.
+\newblock Recognition without enforcement: Configuration-dependent failures in {LLM} agent instruction arbitration and external control, 2026.
+\newblock URL \url{https://arxiv.org/abs/2608.28502}.
+
+\bibitem[Li et~al.(2024)Li, Zhang, Yu, Fu, and Ye]{li2024agents}
+Junyou Li, Qin Zhang, Yangbin Yu, Qiang Fu, and Deheng Ye.
+\newblock More agents is all you need.
+\newblock \emph{Transactions on Machine Learning Research}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2402.05120}.
+
+\bibitem[Li et~al.(2025)Li, Li, Livescu, and Zhou]{li2025dispersion}
+Yanhong Li, Ming Li, Karen Livescu, and Jiawei Zhou.
+\newblock On the predictive power of representation dispersion in language models.
+\newblock \emph{arXiv preprint arXiv:2506.24106}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2506.24106}.
+
+\bibitem[Liang et~al.(2026)Liang, Yu, Nasiri, and Garraghan]{liang2026divergence}
+Jie Liang, Zhengxin Yu, Hamid Nasiri, and Peter Garraghan.
+\newblock Geometry of divergence: Tracking hidden-state trajectories for adaptive multi-turn reasoning.
+\newblock \emph{arXiv preprint arXiv:2608.30650}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2608.30650}.
+
+\bibitem[Liu et~al.(2026)Liu, Mu, Huang, Wang, Shao, and Zhang]{liu2026reader}
+Jiaxu Liu, Sunnan Mu, Dong Huang, Liuyin Wang, Jing Shao, and Jie Zhang.
+\newblock {READER}: Dynamic {LLM} provenance from query-varying interactions, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.10794}.
+
+\bibitem[Liu(2026)]{liu2026jury}
+Ning Liu.
+\newblock Llms as a jury: Cross-model consensus can outperform process reward models for llm reasoning, 2026.
+\newblock URL \url{https://arxiv.org/abs/2607.10139}.
+
+\bibitem[Liu et~al.(2024)Liu, Wang, Huang, Xu, Zeng, Jiang, Yang, and Li]{liu2024groupdebate}
+Tongxuan Liu, Xingyu Wang, Weizhe Huang, Wenjiang Xu, Yuting Zeng, Lei Jiang, Hailong Yang, and Jing Li.
+\newblock Groupdebate: Enhancing the efficiency of multi-agent debate using group discussion.
+\newblock \emph{arXiv preprint arXiv:2409.14051}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2409.14051}.
+
+\bibitem[Lugoloobi et~al.(2026)Lugoloobi, Foster, Bankes, and Russell]{lugoloobi2026encode}
+William Lugoloobi, Thomas Foster, William Bankes, and Chris Russell.
+\newblock {LLM}s encode their failures: Predicting success from pre-generation activations, 2026.
+\newblock URL \url{https://arxiv.org/abs/2602.09924}.
+
+\bibitem[Miao and Ungar(2026)]{miao2026confidence}
+Miranda~Muqing Miao and Lyle Ungar.
+\newblock Closing the confidence-faithfulness gap in large language models, 2026.
+\newblock URL \url{https://arxiv.org/abs/2603.25052}.
+
+\bibitem[Muennighoff et~al.(2025)Muennighoff, Yang, Shi, Li, Fei-Fei, Hajishirzi, Zettlemoyer, Liang, Cand{\`e}s, and Hashimoto]{muennighoff2025s1}
+Niklas Muennighoff, Zitong Yang, Weijia Shi, Xiang~Lisa Li, Li~Fei-Fei, Hannaneh Hajishirzi, Luke Zettlemoyer, Percy Liang, Emmanuel Cand{\`e}s, and Tatsunori Hashimoto.
+\newblock s1: Simple test-time scaling, 2025.
+\newblock URL \url{https://arxiv.org/abs/2501.19393}.
+
+\bibitem[Nechepurenko and Shuvalov(2026)]{nechepurenko2026coordination}
+Maksym Nechepurenko and Pavel Shuvalov.
+\newblock Coordination as an architectural layer for {LLM}-based multi-agent systems: An information-controlled empirical study on prediction markets.
+\newblock \emph{arXiv preprint arXiv:2605.03310}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.03310}.
+
+\bibitem[Neveditsin et~al.(2025)Neveditsin, Lingras, and Mago]{neveditsin2025structured}
+Nikita Neveditsin, Pawan Lingras, and Vijay Mago.
+\newblock Evaluating structured output robustness of small language models for open attribute-value extraction from clinical notes.
+\newblock \emph{arXiv preprint arXiv:2507.01810}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2507.01810}.
+\newblock To appear in the ACL Anthology.
+
+\bibitem[Ontalvilla et~al.(2026)Ontalvilla, Azkune, and Ormazabal]{ontalvilla2026agreement}
+Paula Ontalvilla, Gorka Azkune, and Aitor Ormazabal.
+\newblock Agreement in representation space for open-ended self-consistency.
+\newblock \emph{arXiv preprint arXiv:2606.12003}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.12003}.
+
+\bibitem[Paleka et~al.(2025)Paleka, Goel, Geiping, and Tram{\`e}r]{paleka2025pitfalls}
+Daniel Paleka, Shashwat Goel, Jonas Geiping, and Florian Tram{\`e}r.
+\newblock Pitfalls in evaluating language model forecasters.
+\newblock \emph{arXiv preprint arXiv:2506.00723}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2506.00723}.
+
+\bibitem[Parupudi(2026)]{parupudi2026anisotropy}
+V.~S.~Raghu Parupudi.
+\newblock Anisotropy decides cosine vs. rank metrics for text embeddings.
+\newblock \emph{arXiv preprint arXiv:2606.29571}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.29571}.
+
+\bibitem[Patel(2026)]{patel2026collapse}
+Dipkumar Patel.
+\newblock Representational collapse in multi-agent llm committees: Measurement and diversity-aware consensus.
+\newblock \emph{arXiv preprint arXiv:2604.03809}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.03809}.
+
+\bibitem[Phan et~al.(2025{\natexlab{a}})Phan, Gatti, Han, et~al.]{phan2025hle}
+Long Phan, Alice Gatti, Ziwen Han, et~al.
+\newblock Humanity's last exam.
+\newblock \emph{arXiv preprint arXiv:2501.14249}, 2025{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2501.14249}.
+
+\bibitem[Phan et~al.(2025{\natexlab{b}})Phan, Gatti, Han, et~al.]{phan2025humanity}
+Long Phan, Alice Gatti, Ziwen Han, et~al.
+\newblock Humanity's last exam.
+\newblock \emph{arXiv preprint arXiv:2501.14249}, 2025{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2501.14249}.
+
+\bibitem[Podolak and Verma(2025)]{podolak2025read}
+Jakub Podolak and Rajeev Verma.
+\newblock Read your own mind: Reasoning helps surface self-confidence signals in {LLM}s, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.23845}.
+
+\bibitem[Prasad and Nguyen(2025)]{prasad2025debate}
+Pradyumna~Shyama Prasad and Minh~Nhat Nguyen.
+\newblock When two {LLM}s debate, both think they'll win.
+\newblock \emph{arXiv preprint arXiv:2505.19184}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.19184}.
+
+\bibitem[Qi et~al.(2025)Qi, Ye, Tang, Zhu, and Choi]{qi2025parallel}
+Jianing Qi, Xi~Ye, Hao Tang, Zhigang Zhu, and Eunsol Choi.
+\newblock Learning to reason across parallel samples for llm reasoning, 2025.
+\newblock URL \url{https://arxiv.org/abs/2506.09014}.
+
+\bibitem[Rudman et~al.(2022)Rudman, Gillman, Rayne, and Eickhoff]{rudman2022isoscore}
+William Rudman, Nate Gillman, Taylor Rayne, and Carsten Eickhoff.
+\newblock Isoscore: Measuring the uniformity of embedding space utilization.
+\newblock In \emph{Findings of the Association for Computational Linguistics: ACL 2022}, 2022.
+\newblock URL \url{https://aclanthology.org/2022.findings-acl.262/}.
+
+\bibitem[Shen(2026)]{shen2026provable}
+Jianru Shen.
+\newblock Provable limits and certified deferral for verbalized uncertainty in small language models.
+\newblock \emph{arXiv preprint arXiv:2608.05064}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2608.05064}.
+
+\bibitem[Shen et~al.(2024)Shen, Das, Greenewald, Sattigeri, Wornell, and Ghosh]{shen2024thermometer}
+Maohao Shen, Subhro Das, Kristjan Greenewald, Prasanna Sattigeri, Gregory~W. Wornell, and Soumya Ghosh.
+\newblock Thermometer: Towards universal calibration for large language models.
+\newblock In \emph{Proceedings of the 41st International Conference on Machine Learning (ICML)}, volume 235 of \emph{Proceedings of Machine Learning Research}, pages 44687--44711, 2024.
+\newblock URL \url{https://proceedings.mlr.press/v235/shen24c.html}.
+
+\bibitem[Shetty et~al.(2025)Shetty, Jain, Liu, Kethanaboyina, Sen, and Stoica]{shetty2025gso}
+Manish Shetty, Naman Jain, Jinjian Liu, Vijay Kethanaboyina, Koushik Sen, and Ion Stoica.
+\newblock {GSO}: Challenging software optimization tasks for evaluating {SWE}-agents, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.23671}.
+
+\bibitem[Shi et~al.(2026)Shi, Zhang, Bao, Nelson, and Ye]{shi2026confidence}
+Kaiwen Shi, Zheyuan Zhang, Han Bao, Colby Nelson, and Yanfang Ye.
+\newblock Confidence laundering in agent systems: Why uncertainty needs a latent carrier.
+\newblock \emph{arXiv preprint arXiv:2606.20662}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.20662}.
+
+\bibitem[Smit et~al.(2023)Smit, Duckworth, Grinsztajn, Barrett, and Pretorius]{smit2023mad}
+Andries Smit, Paul Duckworth, Nathan Grinsztajn, Thomas~D. Barrett, and Arnu Pretorius.
+\newblock Should we be going mad? a look at multi-agent debate strategies for llms.
+\newblock \emph{arXiv preprint arXiv:2311.17371}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2311.17371}.
+
+\bibitem[Snell et~al.(2024)Snell, Lee, Xu, and Kumar]{snell2024scaling}
+Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar.
+\newblock Scaling {LLM} test-time compute optimally can be more effective than scaling model parameters, 2024.
+\newblock URL \url{https://arxiv.org/abs/2408.03314}.
+
+\bibitem[Spiess et~al.(2025)Spiess, Gros, Pai, Pradel, Rabin, Alipour, Jha, Devanbu, and Ahmed]{spiess2025calibration}
+Claudio Spiess, David Gros, Kunal~Suresh Pai, Michael Pradel, Md~Rafiqul~Islam Rabin, Amin Alipour, Susmit Jha, Prem Devanbu, and Toufique Ahmed.
+\newblock Calibration and correctness of language models for code.
+\newblock In \emph{Proceedings of the IEEE/ACM 47th International Conference on Software Engineering (ICSE)}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2402.02047}.
+
+\bibitem[Steck et~al.(2024)Steck, Ekanadham, and Kallus]{steck2024cosine}
+Harald Steck, Chaitanya Ekanadham, and Nathan Kallus.
+\newblock Is cosine-similarity of embeddings really about similarity?
+\newblock In \emph{Companion Proceedings of the ACM Web Conference 2024 (WWW '24 Companion)}, 2024.
+\newblock \doi{10.1145/3589335.3651526}.
+\newblock URL \url{https://arxiv.org/abs/2403.05440}.
+
+\bibitem[Stroebl et~al.(2024{\natexlab{a}})Stroebl, Kapoor, and Narayanan]{stroebl2024flaws}
+Benedikt Stroebl, Sayash Kapoor, and Arvind Narayanan.
+\newblock Inference scaling flaws: The limits of {LLM} resampling with imperfect verifiers, 2024{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2411.17501}.
+
+\bibitem[Stroebl et~al.(2024{\natexlab{b}})Stroebl, Kapoor, and Narayanan]{stroebl2024inference}
+Benedikt Stroebl, Sayash Kapoor, and Arvind Narayanan.
+\newblock Inference scaling flaws: The limits of llm resampling with imperfect verifiers, 2024{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2411.17501}.
+
+\bibitem[Sun and Kazakov(2026)]{sun2026toolcall}
+Tianda Sun and Dimitar Kazakov.
+\newblock Tool-call dependency structure is linearly decodable in {LLM} agent residual streams, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.25310}.
+
+\bibitem[Tam et~al.(2024)Tam, Wu, Tsai, Lin, Lee, and Chen]{tam2024format}
+Zhi~Rui Tam, Cheng-Kuang Wu, Yi-Lin Tsai, Chieh-Yen Lin, Hung-yi Lee, and Yun-Nung Chen.
+\newblock Let me speak freely? a study on the impact of format restrictions on large language model performance.
+\newblock In \emph{Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing: Industry Track}, pages 1218--1236, 2024.
+\newblock \doi{10.18653/v1/2024.emnlp-industry.91}.
+\newblock URL \url{https://aclanthology.org/2024.emnlp-industry.91/}.
+
+\bibitem[Tao et~al.(2025)Tao, Yeh, Dong, Huang, Torr, and Xu]{tao2025revisiting}
+Linwei Tao, Yi-Fan Yeh, Minjing Dong, Tao Huang, Philip Torr, and Chang Xu.
+\newblock Revisiting uncertainty estimation and calibration of large language models, 2025.
+\newblock arXiv:2505.23854.
+
+\bibitem[Taubenfeld et~al.(2025)Taubenfeld, Sheffer, Ofek, Feder, Goldstein, Gekhman, and Yona]{taubenfeld2025confidence}
+Amir Taubenfeld, Tom Sheffer, Eran Ofek, Amir Feder, Ariel Goldstein, Zorik Gekhman, and Gal Yona.
+\newblock Confidence improves self-consistency in {LLM}s.
+\newblock In \emph{Findings of the Association for Computational Linguistics: ACL 2025}, pages 20090--20111, Vienna, Austria, 2025. Association for Computational Linguistics.
+\newblock URL \url{https://aclanthology.org/2025.findings-acl.1030/}.
+\newblock CISC: confidence-weighted vote beats self-consistency in nearly all configurations over nine models and four datasets; Within-Question Discrimination 62.3\% vs 50\% chance; max-confidence selection degrades.
+
+\bibitem[Tran and Kiela(2026)]{tran2026single}
+Dat Tran and Douwe Kiela.
+\newblock Single-agent {LLM}s outperform multi-agent systems on multi-hop reasoning under equal thinking token budgets, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.02460}.
+
+\bibitem[Wan et~al.(2026)Wan, Wu, Luo, Li, Wang, Chen, and Kan]{wan2026deliberative}
+Herun Wan, Jiaying Wu, Minnan Luo, Fanxiao Li, Ningnan Wang, Nancy~F. Chen, and Min-Yen Kan.
+\newblock The deliberative illusion: Diagnosing factual attrition and stance homogenization in multi-agent llm deliberation.
+\newblock \emph{arXiv preprint arXiv:2606.03032}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2606.03032}.
+
+\bibitem[Wang et~al.(2026{\natexlab{a}})Wang, Hong, and Bagci]{wang2026decodability}
+Wang, Hong, and Bagci.
+\newblock A decodability criterion predicts when hidden-state selection beats majority voting in large language models.
+\newblock \emph{arXiv preprint arXiv:2608.17124}, 2026{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2608.17124}.
+\newblock Reports the minority-correct (``Byzantine'') regime in which voting collapses: +41.3 pp for hidden-state selection over voting on minority-correct hard questions at N=16; within-question decodability AUC predicts the selection-minus-voting gain at Pearson r=0.96.
+
+\bibitem[Wang et~al.(2026{\natexlab{b}})Wang, Isola, and Cheung]{wang2026truth}
+Sophie~L. Wang, Phillip Isola, and Brian Cheung.
+\newblock The truth lies somewhere in the middle (of the generated tokens).
+\newblock \emph{arXiv preprint arXiv:2605.09969}, 2026{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2605.09969}.
+
+\bibitem[Wen et~al.(2025)Wen, Su, Zhang, Liu, Liu, Zhang, and Li]{wen2025parathinker}
+Hao Wen, Yifan Su, Feifei Zhang, Yunxin Liu, Yunhao Liu, Ya-Qin Zhang, and Yuanchun Li.
+\newblock {ParaThinker}: Native parallel thinking as a new paradigm to scale {LLM} test-time compute, 2025.
+\newblock URL \url{https://arxiv.org/abs/2509.04475}.
+
+\bibitem[Weng et~al.(2025)Weng, Chen, and Wang]{weng2025conformity}
+Zhiyuan Weng, Guikun Chen, and Wenguan Wang.
+\newblock Do as we do, not as you think: the conformity of large language models.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2501.13381}.
+
+\bibitem[Wunderlich et~al.(2026)Wunderlich, Kaesberg, Wahle, Ruas, and Gipp]{wunderlich2026pareto}
+Florian~Valentin Wunderlich, Lars~Benedikt Kaesberg, Jan~Philip Wahle, Terry Ruas, and Bela Gipp.
+\newblock Multi-agent reasoning improves compute efficiency: Pareto-optimal test-time scaling.
+\newblock \emph{arXiv preprint arXiv:2605.01566}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2605.01566}.
+
+\bibitem[Xiong et~al.(2024{\natexlab{a}})Xiong, Hu, Lu, Li, Fu, He, and Hooi]{xiong2024can}
+Miao Xiong, Zhiyuan Hu, Xinyang Lu, Yifei Li, Jie Fu, Junxian He, and Bryan Hooi.
+\newblock Can {LLM}s express their uncertainty? an empirical evaluation of confidence elicitation in {LLM}s.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2024{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2306.13063}.
+
+\bibitem[Xiong et~al.(2024{\natexlab{b}})Xiong, Hu, Lu, Li, Fu, He, and Hooi]{xiong2024canllms}
+Miao Xiong, Zhiyuan Hu, Xinyang Lu, Yifei Li, Jie Fu, Junxian He, and Bryan Hooi.
+\newblock Can {LLM}s express their uncertainty? an empirical evaluation of confidence elicitation in {LLM}s.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2024{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2306.13063}.
+
+\bibitem[Yang et~al.(2025)Yang, Yi, Ko, Lee, Jin, and Yun]{yang2025revisiting}
+Yongjin Yang, Euiin Yi, Jongwoo Ko, Kimin Lee, Zhijing Jin, and Se-Young Yun.
+\newblock Revisiting multi-agent debate as test-time scaling: A systematic study of conditional effectiveness, 2025.
+\newblock URL \url{https://arxiv.org/abs/2505.22960}.
+
+\bibitem[Zhang et~al.(2025)Zhang, Chen, Pan, Zhao, Panda, Li, and He]{zhang2025reasoning}
+Anqi Zhang, Yulin Chen, Jane Pan, Chen Zhao, Aurojit Panda, Jinyang Li, and He~He.
+\newblock Reasoning models know when they're right: Probing hidden states for self-verification, 2025.
+\newblock URL \url{https://arxiv.org/abs/2504.05419}.
+
+\bibitem[Zhang et~al.(2026{\natexlab{a}})Zhang, Tang, Long, Tang, and Luo]{zhang2026decomposing}
+Lizhuo Zhang, Mengmeng Tang, Chenfeng Long, Xiaoyong Tang, and Xiang Luo.
+\newblock Decomposing wrong-consensus agreement in llm self-consistency.
+\newblock \emph{arXiv preprint arXiv:2608.18795}, 2026{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2608.18795}.
+
+\bibitem[Zhang and Lin(2026)]{zhang2026simulated}
+Long Zhang and Fangwei Lin.
+\newblock Simulated adoption: Decoupling magnitude and direction in llm in-context conflict resolution.
+\newblock \emph{arXiv preprint arXiv:2602.04918}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2602.04918}.
+
+\bibitem[Zhang et~al.(2026{\natexlab{b}})Zhang, Goel, Ahmad, Huang, and Shen]{zhang2026judge}
+Yiyao Zhang, Diksha Goel, Hussain Ahmad, Shixun Huang, and Jun Shen.
+\newblock When the judge should not decide: Evidence-locked, non-compensatory selection bounds llm-judge failure in reasoning pipelines, 2026{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2608.07813}.
+
+\bibitem[Zhu et~al.(2025{\natexlab{a}})Zhu, Zhang, Stafford, Collier, and Vlachos]{zhu2025conformity}
+Xiaochen Zhu, Caiqi Zhang, Tom Stafford, Nigel Collier, and Andreas Vlachos.
+\newblock Conformity in large language models.
+\newblock In \emph{Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (ACL)}, 2025{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2410.12428}.
+
+\bibitem[Zhu et~al.(2026)Zhu, Zhang, Chi, Stafford, Collier, and Vlachos]{zhu2026demystifying}
+Xiaochen Zhu, Caiqi Zhang, Yizhou Chi, Tom Stafford, Nigel Collier, and Andreas Vlachos.
+\newblock Demystifying multi-agent debate: The role of confidence and diversity.
+\newblock \emph{arXiv preprint arXiv:2601.19921}, 2026.
+\newblock URL \url{https://arxiv.org/abs/2601.19921}.
+
+\bibitem[Zhu et~al.(2025{\natexlab{b}})Zhu, Liu, Lin, Tong, Zhong, and Shao]{zhu2025already}
+Yubo Zhu, Dongrui Liu, Zecheng Lin, Wei Tong, Sheng Zhong, and Jing Shao.
+\newblock The {LLM} already knows: Estimating {LLM}-perceived question difficulty via hidden representations.
+\newblock In \emph{Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2025{\natexlab{b}}.
+\newblock URL \url{https://aclanthology.org/2025.emnlp-main.61/}.
+
+\end{thebibliography}

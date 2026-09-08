@@ -1,0 +1,503 @@
+{
+ "C1": {
+  "closest": "Choi, Zhu & Li (2025), 'Debate or Vote: Which Yields Better Decisions in Multi-Agent Large Language Models?' (arXiv:2508.17536) \u2014 majority voting matches or beats decentralized, sparse and centralized MAD across seven benchmarks, with centralized MAD the weakest variant; supported by Smit et al. (arXiv:2311.17371).",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "Choi et al. decompose multi-agent debate and report exactly this ordering on Qwen2.5-7B \u2014 majority voting 0.7691 > decentralized MAD 0.7377 (T=2) > centralized MAD 0.6551 (T=2), centralized worst by the widest margin \u2014 and prove debate alone cannot raise expected correctness; Smit et al. independently find MAD does not reliably beat simpler protocols. The study's matched-FLOP allowance is a methodological tightening (Choi et al. let debate spend more tokens) and it finds a smaller gap (~4 pts vs ~11 pts), not a new phenomenon.",
+  "keys": [
+   "choi2025debate",
+   "smit2023mad",
+   "li2024agents"
+  ],
+  "verdict": "replication"
+ },
+ "C10": {
+  "adjudicated": {
+   "citation_keys": [
+    "shetty2025gso",
+    "muennighoff2025s1",
+    "lin2026bagen",
+    "kapoor2024agents"
+   ],
+   "claim_id": "C10",
+   "new_verdict": "extension",
+   "old_verdict": "novel",
+   "reason": "C10 is stated as a corollary of C9 (\"Because of this...\"), so once C9 is a replication the collapse counts are bookkeeping on the study's own grid rather than a finding about models or orchestration. The underlying phenomenon \u2014 a declared configuration axis that yields no distinct physical run \u2014 is what GSO, s1 and BAGEN already report, and the N=1 degeneracy where every policy reduces to one sample is structural and routine in the debate literature. Repeated searches for cell-collapse or duplicate-condition audits still return nothing, so this is not a replication, but 'novel' credits an internal design audit as a discovery; extension is the honest label \u2014 known phenomenon, genuinely new measurement (an explicit degeneracy audit reporting distinct compute and correctness vectors)."
+  },
+  "closest": "Kapoor et al., \"AI Agents That Matter\" (arXiv:2407.01502) \u2014 argues agent benchmarks lack cost control and that simple baselines Pareto-dominate complex scaffolds, but flags cost confounds rather than degenerate/duplicate experimental cells. GSO (arXiv:2505.23671) and Tran & Kiela (arXiv:2604.02460) are the nearest empirical evidence that a budget knob can fail to change behaviour.",
+  "cluster": "Test-time compute, budgets and caps",
+  "just": "Repeated searches for degenerate factorial cells, duplicate configurations, or cell-collapse audits in agent/orchestration studies returned nothing that quantifies how many nominal experimental cells are physically distinct. The closest literature critiques agent evaluation for conflating cost with capability and for uncontrolled compute, but treats every declared configuration as a real condition; no prior work reports a count like 59 nominal cells -> 41 compute vectors / 38 correctness vectors, or identifies team-size cells that are the same episode.",
+  "keys": [
+   "kapoor2024agents",
+   "shetty2025gso",
+   "tran2026single"
+  ],
+  "verdict": "extension"
+ },
+ "C11": {
+  "closest": "Huang et al., \"Large Language Models Cannot Self-Correct Reasoning Yet\" (arXiv:2310.01798, ICLR 2024) \u2014 debate/self-correction loses to self-consistency at matched response counts; ParaThinker (arXiv:2509.04475) makes the width-over-depth claim explicitly at matched budget.",
+  "cluster": "Test-time compute, budgets and caps",
+  "just": "Huang et al. (ICLR 2024) already show multi-agent debate underperforms plain self-consistency at an equivalent number of responses and that intrinsic self-correction without external feedback degrades accuracy; ParaThinker states directly that \"scaling compute in parallel (width) is a more effective and efficient way to superior reasoning than simply scaling sequentially (depth)\"; Bertalanic & Fortuna (Qwen2.5-7B/Llama-3.1-8B) find debate costs 2.1-3.4x the tokens for equal or lower accuracy; Jwalapuram et al. find automatic MAS underperform CoT-SC at up to 10x cost. Note the boundary condition: Snell et al. find sequential revision *can* beat parallel at matched budget on easy questions when a trained revision model and a verifier are available \u2014 conditions absent here.",
+  "keys": [
+   "huang2024selfcorrect",
+   "wen2025parathinker",
+   "bertalanic2026consensus",
+   "jwalapuram2026illusion",
+   "snell2024scaling"
+  ],
+  "verdict": "replication"
+ },
+ "C12": {
+  "closest": "Brown et al., \"Large Language Monkeys: Scaling Inference Compute with Repeated Sampling\" (arXiv:2407.21787), which states outright that selection methods fail to track coverage in domains without automatic verifiers; Qi et al. (arXiv:2506.09014) report the matching oracle-minus-selected table.",
+  "cluster": "Aggregation, voting and verification",
+  "just": "The coverage/selection gap under repeated sampling is the central result of Brown et al. 2024, who show coverage scales with samples while \"common methods for picking from a sample collection (majority voting and reward models) plateau\"; Qi et al. 2025 quantify the same gap directly (pass@5 59.74% vs majority vote 49.67% averaged over five math benchmarks), and Stroebl et al. 2024 give the theoretical bound. The study's numbers (oracle 0.542 vs delivered 0.328) reproduce this in a new model/benchmark pairing but establish no new phenomenon.",
+  "keys": [
+   "brown2024monkeys",
+   "qi2025parallel",
+   "stroebl2024inference",
+   "saadfalcon2025weaver"
+  ],
+  "verdict": "replication"
+ },
+ "C13": {
+  "closest": "Liu, \"LLMs as a Jury: Cross-Model Consensus Can Outperform Process Reward Models for LLM Reasoning\" (arXiv:2607.10139) \u2014 same-checkpoint self-judging captures essentially none of the selection headroom; Zhang et al. (arXiv:2608.07813) and Landesberg (arXiv:2603.12520) report the same for pointwise judges.",
+  "cluster": "Aggregation, voting and verification",
+  "just": "That a model scoring its own candidates adds essentially nothing is established: Liu 2026 finds a single-model self-verifier is \"the weakest of the selectors\" tested, capturing ~0% of the achievable gain over self-consistency on AIME-2024 and scoring *below* self-consistency on all four benchmarks, and Zhang et al. 2026 measure an unconstrained scalar judge at +1.0 pp over majority vote on GSM8K (10 pts worse on a held-out split). The small plurality-over-random margin is likewise consistent with prior hard-benchmark results (Qi et al. put majority vote ~4 pts over pass@1; Bahuguna 2026 finds majority vote is net negative on most GPQA Diamond items for small models).",
+  "keys": [
+   "liu2026jury",
+   "zhang2026judge",
+   "landesberg2026judge",
+   "chen2023universal",
+   "stechly2024selfverification",
+   "qi2025parallel"
+  ],
+  "verdict": "replication"
+ },
+ "C14": {
+  "closest": "Jiang, Yi & Zhu, \"Semantic Voting: Execution-Grounded Consensus for LLM Code Generation\" (arXiv:2605.08680) \u2014 18 configurations showing output-pattern voting is 18-52 pp behind every execution-based selector, framing selection as a signal-quality problem, but with no quantification of singleton pools or failure decomposition.",
+  "cluster": "Aggregation, voting and verification",
+  "just": "That syntactic/textual grouping of programs is the wrong equivalence relation is long-settled \u2014 AlphaCode and CodeT both cluster by execution behaviour for exactly this reason, and Jiang et al. 2026 measure execution-based selectors beating output-pattern majority voting by 19-52 pp \u2014 but no retrieved work quantifies the failure structure itself. Jiang et al. explicitly document the no-survivor failure only qualitatively; none report singleton-pool prevalence (144/200), a structural-vs-stochastic split of failures (77%), or a wrong-pick rate conditional on correct programs being the majority (6-8%). Caveat: AST-canonical grouping is a known-weak baseline, so the claim reads as an accounting of a baseline the field has already abandoned rather than a new defect.",
+  "keys": [
+   "jiang2026semantic",
+   "cho2026symbolic",
+   "launer2026majority",
+   "chen2022codet",
+   "li2022alphacode"
+  ],
+  "verdict": "extension"
+ },
+ "C15": {
+  "adjudicated": {
+   "citation_keys": [
+    "cai2026arbiter",
+    "bahuguna2026backfires",
+    "wang2026decodability",
+    "brown2024monkeys"
+   ],
+   "claim_id": "C15",
+   "new_verdict": "extension",
+   "old_verdict": "replication",
+   "reason": "I fetched ARBITER directly and it does not establish C15's claim. It reports only Oracle@k diagnostic ceilings (Qwen3-4B/GSM8K: 94.54% consensus vs 97.27% top-2; Llama-3.1-8B/MATH-500: 51.60% vs 60.80%) plus a single illustrative basin figure (B1=18 vs B2=4); it does not report minority-basin sizes or wrong-majority prevalence across its evaluation matrix, and the authors frame Oracle@k as a ceiling rather than a characterisation of failure structure. Bahuguna measures a different quantity entirely \u2014 per-item accuracy deltas from applying majority vote on GPQA Diamond (56.6%/65.7% of items hurt) \u2014 not the composition of covered-but-wrong pools. So no retrieved work establishes either the 91% decomposition or the class-size gap (median correct class 2 vs winning class 27). Substantively, ARBITER's top-2-recoverable framing implies near-miss failures, whereas C15 finds the correct class buried roughly an order of magnitude behind on a frontier-difficulty exam \u2014 a materially different regime, not a sharper version of the same measurement. Note also the inconsistency: this is the same evidence pattern (phenomenon known, failure structure unquantified) that the colleague correctly used to justify 'extension' for C14."
+  },
+  "closest": "Cai, Kulik & Choudhury, \"ARBITER: Reasoning Trajectory Basins and Majority Vote Failures in Test-Time Sampling\" (arXiv:2605.26172); Bahuguna, \"When Self-Consistency Backfires\" (arXiv:2608.11403) for the confidently-wrong-consensus regime.",
+  "cluster": "Aggregation, voting and verification",
+  "just": "Cai et al. 2026 name and characterise exactly this failure \u2014 sampled trajectories collapse into \"reasoning basins\" and \"the correct answer can appear in the pool yet lose to a larger wrong basin\", with worked cases of a 4-sample correct challenger losing to an 18-sample wrong dominant basin \u2014 and Bahuguna 2026 shows the wrong-consensus regime dominates on hard science questions (majority vote lowers per-problem accuracy on 56.6%/65.7% of GPQA Diamond items). The study's 91% prevalence and 2-vs-27 median class sizes are a sharper quantification on a harder exam, not a new effect.",
+  "keys": [
+   "cai2026arbiter",
+   "bahuguna2026backfires",
+   "phan2025hle"
+  ],
+  "verdict": "extension"
+ },
+ "C16": {
+  "adjudicated": {
+   "citation_keys": [
+    "taubenfeld2025confidence",
+    "fu2025deepconf",
+    "bahuguna2026backfires",
+    "phan2025hle"
+   ],
+   "claim_id": "C16",
+   "new_verdict": "contradicts",
+   "old_verdict": "replication",
+   "reason": "CISC \u2014 the colleague's own closest prior work \u2014 reports the opposite conclusion rather than the same one, and the colleague flagged the tension but did not act on it. Verified from the paper: confidence-weighted voting outperforms plain self-consistency in nearly all configurations across nine models and four datasets (P(True) +1.38pp micro-averaged at budget 5, +1.03pp at budget 10, up to +3.0pp per dataset), reduces required reasoning paths by over 40%, and reports Within-Question Discrimination of 62.3% against a 50% chance baseline \u2014 direct evidence that verbalized confidence separates correct from incorrect answers to the *same* question, which is precisely the signal C16 declares absent. CISC's stated conclusion is that 'LLMs indeed possess an intrinsic ability to reassess their own responses'; DeepConf independently reports 99.9% vs 97.0% for majority voting on AIME 2025. Critically, the study's own '<=1.5 points' band sits *inside* CISC's positive effect size, so the two sets of numbers agree while the conclusions are negations of each other \u2014 the study is reading as noise the exact margin prior work validated as signal. Only one sub-result genuinely replicates: CISC also found max-confidence selection degrades performance. A narrowed claim ('stated confidence yields no usable signal at HLE difficulty') would be a defensible extension, but the general negative as written is contradicted."
+  },
+  "closest": "Taubenfeld et al., \"Confidence Improves Self-Consistency in LLMs\" (arXiv:2502.06233, Findings of ACL 2025) \u2014 same selectors, same ~0.4-1.6 pt band, and the explicit within-question-discrimination diagnosis of why verbalized confidence fails.",
+  "cluster": "Aggregation, voting and verification",
+  "just": "The magnitude matches prior work almost exactly: CISC reports confidence-weighted voting gains of only 0.4-1.6 accuracy points over plain self-consistency across nine models, and introduces \"within-question discrimination\" precisely because verbalized confidence is near-constant across a question's own candidates while calibrating only across questions; HLE's own 81-93% RMS calibration errors say stated confidence is uninformative on this benchmark family. Note the interpretive gap: CISC and DeepConf treat that same ~1-point band as a real (compute-saving) signal, and both find logprob-derived confidence \u2014 not stated confidence \u2014 is the signal that works, so \"no usable selection signal\" is stronger than the retrieved evidence supports for confidence generally.",
+  "keys": [
+   "taubenfeld2025confidence",
+   "fu2025deepconf",
+   "kang2025selfcertainty",
+   "phan2025hle"
+  ],
+  "verdict": "contradicts"
+ },
+ "C17": {
+  "closest": "Taubenfeld et al. (2025), 'Confidence Improves Self-Consistency in LLMs' (ACL Findings), which defines Within-Question Discrimination and shows verbalized confidence is best on between-question calibration metrics and worst within-question; plus Bertalanic & Fortuna (2026), which measures the same near-zero within-item confidence-correctness association across sibling agents.",
+  "cluster": "Confidence, calibration and metacognition",
+  "just": "Both halves are established. Taubenfeld et al. introduce Within-Question Discrimination precisely because verbal confidence gets the best between-question ECE/Brier while sitting near chance within a question (Verbal Binary 52.2%, Verbal 0-100 56.1% vs 50% chance); Bertalanic & Fortuna report 31.3-83.7pp overconfidence gaps and a near-zero point-biserial confidence-correctness correlation (r=0.024-0.166) across 10 sibling agents answering the same item, with 78.5-95.6% of scores pinned at the maximum. The 45-62pp gap and the flat within-pool AUC land squarely inside those existing ranges; Qwen3/HLE/BCB is a new substrate, not a new phenomenon.",
+  "keys": [
+   "taubenfeld2025confidence",
+   "bertalanic2026consensus",
+   "xiong2024canllms",
+   "phan2025hle",
+   "wang2025dinco"
+  ],
+  "verdict": "replication"
+ },
+ "C18": {
+  "closest": "Nechepurenko & Shuvalov (2026), 'Coordination as an Architectural Layer for LLM-Based Multi-Agent Systems' - matched-budget Brier plus reliability/resolution across independent, orchestrator, peer-critique and consensus topologies, reproducing the same rank order; Bertalanic & Fortuna (2026) for the certainty-inflation-without-accuracy-gain result.",
+  "cluster": "Confidence, calibration and metacognition",
+  "just": "Bertalanic & Fortuna show peer exchange inflates confidence uniformly regardless of correctness and shrinks the correct-vs-wrong confidence gap relative to isolated agents, at equal or lower accuracy; Nechepurenko & Shuvalov, holding tools/context/token budget fixed and varying only topology, report exactly the ordering claimed here (independent ensemble Brier 0.159 < orchestrator-specialist 0.162 < peer-critique debate 0.170 < consensus alignment 0.181) with a Murphy reliability/resolution decomposition. Only one element is not already in the literature: that a single agent merely carrying its own history is the worst-calibrated arm of all, which prior work attributes to social conformity rather than context accumulation.",
+  "keys": [
+   "bertalanic2026consensus",
+   "nechepurenko2026coordination",
+   "prasad2025debate",
+   "cacioli2026saturation"
+  ],
+  "verdict": "replication"
+ },
+ "C19": {
+  "adjudicated": {
+   "citation_keys": [
+    "kumaran2026reported",
+    "spiess2025calibration",
+    "cho2025herd",
+    "shi2026confidence",
+    "taubenfeld2025confidence"
+   ],
+   "claim_id": "C19",
+   "new_verdict": "extension",
+   "old_verdict": "novel",
+   "reason": "The colleague concedes the second conjunct is replicated (Spiess et al. report negative Brier Skill Scores against a base-rate reference; near-zero within-item resolution follows from Taubenfeld's WQD-at-chance and Bertalanic & Fortuna's r_pb = 0.024-0.166), and a claim whose stated second half is prior-established cannot be 'novel'. The first conjunct's mechanism is also known rather than unknown: Kumaran (arXiv 2606.29490) shows verbal confidence is a behaviour-facing readout of an already-formed commitment state rather than an independent correctness estimate, and Cho et al. show agents' stated confidence is driven by peer-stated confidence in context. What is genuinely new is the degenerate limit and its scoring consequence - 896/896 exact verbatim reproduction across a nominally independent forecast handoff - which is a materially sharper measurement of a known phenomenon in a new regime (team-level meta-forecast channel), i.e. extension. Closest prior work remains Shi et al. (arXiv 2606.20662), which I confirmed is a position paper with no measurement."
+  },
+  "closest": "Shi et al. (2026), 'Confidence Laundering in Agent Systems' - defines uncertain-decision handoff and confidence laundering as exactly this failure mode, but is a position paper proposing latent uncertainty carriers and reports no experiment establishing verbatim confidence reproduction or its scoring consequences.",
+  "cluster": "Confidence, calibration and metacognition",
+  "just": "The second half replicates known results - Spiess et al. report Brier Skill Scores of -0.24 to -2.72 for reflective/verbalized confidence against an always-predict-base-rate reference, i.e. strictly worse than a constant, and near-zero within-item resolution follows from Bertalanic & Fortuna's r_pb ~ 0. The first half does not: 896/896 exact verbatim reproduction of the selected candidate's stated confidence by a nominally independent forecast channel is a total degeneracy that no retrieved paper measures. Shi et al. name this mechanism ('confidence laundering': downstream agents inherit the commitment without the uncertainty) but it is a position paper with no measurement, and Paleka et al. only flag the analogous risk that forecasters copy market probabilities from training data.",
+  "keys": [
+   "shi2026confidence",
+   "spiess2025calibration",
+   "paleka2025pitfalls",
+   "kumaran2026reported",
+   "ackerman2025metacognition"
+  ],
+  "verdict": "extension"
+ },
+ "C2": {
+  "closest": "Bertalanic & Fortuna (2026), 'The Cost of Consensus: Isolated Self-Correction Prevails Over Unguided Homogeneous Multi-Agent Debate' (arXiv:2605.00914) \u2014 sycophantic conformity (85.5% modal adoption), consensus collapse with a 32.3pp oracle gap, and debate-degraded confidence discrimination; corroborated by Zhu et al. (arXiv:2601.19921) and Hao et al. (arXiv:2606.00820).",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "Bertalanic & Fortuna report every component of this claim in the same experiment: debate inflates consensus over isolated self-correction (90.1% vs 81.7% on MMLU-Hard), oracle/pool coverage peaks then falls in later rounds (66.3% at R2 -> 64.5% at R3; Ministral collapsing to 53.0%), and debate shrinks the confidence gap between correct and incorrect answers to +1.4pp (vs +4.2pp under self-correction) on top of extreme miscalibration (98.1 mean confidence at 14.4% agent accuracy). The study's eight-round trajectories sharpen the resolution but not the finding.",
+  "keys": [
+   "bertalanic2026consensus",
+   "zhu2026demystifying",
+   "hao2026flips"
+  ],
+  "verdict": "replication"
+ },
+ "C20": {
+  "closest": "Spiess et al. (2025, ICSE), 'Calibration and Correctness of Language Models for Code' - shows verbalized/reflective confidence has strongly negative Brier Skill Score against a base-rate reference and that standard Platt rescaling cuts ECE from 0.32 to 0.03; Shen et al. (ICML 2024) generalize post-hoc calibration to unseen LLM tasks.",
+  "cluster": "Confidence, calibration and metacognition",
+  "just": "That a held-out-fitted post-hoc calibrator dominates raw LLM-stated confidence is well established, including on code, one of this study's two benchmarks: Spiess et al. apply Platt scaling to code-LLM confidence and report ECE falling from an average 0.32 to 0.03 (0.38 to 0.05 on the usable subset), and Campos et al. report multicalibration lifting Brier Skill Score by up to +1.03 over uncalibrated confidence. Thermometer establishes the same for held-out tasks with a learned auxiliary calibrator. The 0.491 -> 0.216 magnitude is a new datapoint, not a new finding.",
+  "keys": [
+   "spiess2025calibration",
+   "shen2024thermometer",
+   "campos2025multicalibration",
+   "tian2023justask"
+  ],
+  "verdict": "replication"
+ },
+ "C21": {
+  "adjudicated": {
+   "citation_keys": [
+    "brown2024monkeys",
+    "snell2024scaling",
+    "wunderlich2026pareto"
+   ],
+   "claim_id": "C21",
+   "new_verdict": "extension",
+   "old_verdict": "replication",
+   "reason": "Brown et al. measure oracle COVERAGE at fixed FLOPs, not final accuracy, and the paper's own thesis is that coverage does not convert into accuracy without a verifier \u2014 so it cannot establish C21's first half (8B matching 32B in final accuracy under aggregation policies). The only retrieved work measuring the same quantity, Wunderlich et al.'s compute-matched orchestration sweep, reports the opposite sign ('the best 8B configuration is approximately 13% less accurate than the 70B CoT pipeline'), and Snell et al.'s FLOPs-matched final-accuracy result holds only 'on problems where a smaller base model attains somewhat non-trivial success rates' \u2014 a condition HLE plainly violates. Since Brown does establish the domain-reversal half, 'contradicts' is wrong too: the correct reading is a known phenomenon carried into a materially new regime (final-answer accuracy under five orchestration policies, single dense family, exam-vs-code) where the literature is actually split."
+  },
+  "closest": "Brown et al. 2024, \"Large Language Monkeys: Scaling Inference Compute with Repeated Sampling\" (arXiv:2407.21787), Fig. 4 and the FLOP-rescaling section \u2014 8B dominates 70B at matched FLOPs on math/proof, 70B wins on code. Wunderlich et al. 2026 (arXiv:2605.01566) is the closest compute-matched *orchestration* sweep and disagrees.",
+  "cluster": "Model scale and format compliance",
+  "just": "Brown et al. (2024) already establish both halves within a single dense family at fixed inference FLOPs: Llama-3-8B-Instruct always beats the far larger 70B on MiniF2F/GSM8K/MATH, while for CodeContests \"the 70B model is almost always more cost effective\" \u2014 i.e. the same code-vs-non-code reversal of the size ordering, summarised as \"the ideal model size depends on the task, compute budget, and coverage requirements\". Only the vehicle is new (final-answer accuracy under five orchestration policies rather than oracle coverage under repeated sampling), and even the compute-matched orchestration sweep has a precedent that reports the opposite sign (Wunderlich et al. 2026: Llama-3.1-70B with plain CoT beats every compute-matched 8B self-consistency/debate/MoA configuration on MMLU-Pro), so the study lands on one side of an already-split literature rather than opening it.",
+  "keys": [
+   "brown2024monkeys",
+   "snell2024scaling",
+   "wunderlich2026pareto",
+   "zywot2026small"
+  ],
+  "verdict": "extension"
+ },
+ "C22": {
+  "closest": "Barzelay et al. 2026, \"VAREX: A Benchmark for Multi-Modal Structured Extraction from Documents\" (arXiv:2603.15118); plus Neveditsin et al. 2025 (arXiv:2507.01810) for the size-stratified parseability numbers and Tam et al. 2024 (EMNLP Industry) for format-restriction cost.",
+  "cluster": "Model scale and format compliance",
+  "just": "VAREX states the claim almost verbatim for the same size threshold \u2014 \"below 4B parameters, structured output compliance -- not extraction capability -- is a dominant bottleneck\" \u2014 with schema-echo alone costing 45\u201365 pp; Neveditsin et al. (2025) report parseability of 80.9% (3\u20134B) / 82.6% (8B) / 90.3% (14B), numerically very close to this study's 67% vs 80\u201383% split. The genuinely incremental piece is only the downstream consequence (thinner candidate pools at matched oracle coverage inside a multi-agent aggregation), and one caveat should be noted: Neveditsin et al. attribute small-model loss chiefly to degenerate repetition rather than format per se, so the mechanical/cognitive dichotomy is less clean than the claim asserts.",
+  "keys": [
+   "barzelay2026varex",
+   "neveditsin2025structured",
+   "tam2024format",
+   "farajidizaji2026task"
+  ],
+  "verdict": "replication"
+ },
+ "C23": {
+  "adjudicated": {
+   "citation_keys": [
+    "zhou2024larger",
+    "tao2025revisiting",
+    "xiong2024can"
+   ],
+   "claim_id": "C23",
+   "new_verdict": "extension",
+   "old_verdict": "contradicts",
+   "reason": "'Contradicts' overstates the conflict on two counts. First, Tao et al. reports ECE/AUROC on MMLU-Pro \u2014 where Qwen3 accuracy itself rises steeply with scale \u2014 and does not report mean verbalized confidence by model size at all, so it cannot contradict the decomposition C23 actually measures (confidence up, accuracy flat). Second, prior work does not uniformly report the opposite: Zhou et al. (Nature 2024) establishes the study's direction behaviorally on the same side \u2014 'scaling and shaping currently exchange avoidance for more incorrectness', with shaped-up models giving 'seemingly plausible but wrong answers' \u2014 so the literature is split by difficulty regime rather than aligned against the claim. The study extends a known overconfidence-with-scale phenomenon to numeric stated confidence within one open dense family at near-floor accuracy; the colleague's caveat (argue the regime explicitly, don't state the scale trend as general) should be kept as guidance, not encoded as a contradiction verdict."
+  },
+  "closest": "Tao et al. 2025, \"Revisiting Uncertainty Estimation and Calibration of Large Language Models\" (arXiv:2505.23854) \u2014 same Qwen3 0.6B\u201332B ladder, opposite scale trend in calibration; Xiong et al. 2024 (ICLR) reports the same positive scale\u2013calibration relation.",
+  "cluster": "Model scale and format compliance",
+  "just": "Tao et al. (2025) run the same family and range (Qwen3 0.6B\u201332B) with numerical verbalized uncertainty and report the opposite direction: Qwen3-14B and 32B \"consistently outperform their smaller counterparts\" on both ECE and AUROC, with 8B merely competitive, and Xiong et al. (2024) likewise find calibration improves as capability scales. The disagreement is plausibly regime-driven rather than an error \u2014 at HLE's near-floor accuracy scale buys no accuracy, so the hard\u2013easy effect documented by Michael et al. (2026) leaves the largest model with the widest confidence\u2013accuracy gap \u2014 but the study must argue that explicitly rather than state the scale trend as general.",
+  "keys": [
+   "tao2025revisiting",
+   "xiong2024can",
+   "phan2025humanity",
+   "michael2026confidence"
+  ],
+  "verdict": "extension"
+ },
+ "C24": {
+  "closest": "Dai & Wang 2026, \"Rescaling Confidence: What Scale Design Reveals About LLM Metacognition\" (arXiv:2603.09309) \u2014 round-number anchoring incl. 50, but across six frontier/large models with no 4B\u201332B breakdown and no abstention test; Shen 2026 (arXiv:2608.05064) for the 0.5 floor in 0.5B\u201314B models.",
+  "cluster": "Model scale and format compliance",
+  "just": "Round-number anchoring of verbalized confidence is established \u2014 Dai & Wang (2026) show the top three values absorb 78\u201392% of responses and name 50 as a prominent internal anchor, and Shen (2026) shows small instruction-tuned models' stated confidence rarely drops below one half \u2014 but no retrieved work resolves the 0.50 mode by parameter count (59% at 8B, 42% at 4B, 13% at 14B, 0.8% at 32B) or tests whether it carries information. The informativeness half is the real contribution and it cuts against the nearest evidence: Ferdous (2026) finds small-model verbalized confidence detects its own errors at chance (AUROC \u22480.50) while internal token probability reaches 0.92\u20130.99, so an abstention reading needs a stated discrimination statistic, not just a correlation with correctness.",
+  "keys": [
+   "dai2026rescaling",
+   "shen2026provable",
+   "ferdous2026small"
+  ],
+  "verdict": "extension"
+ },
+ "C25": {
+  "closest": "Patel, 'Representational Collapse in Multi-Agent LLM Committees: Measurement and Diversity-Aware Consensus' (arXiv:2604.03809) \u2014 effective rank ~2.17/3 for three role-conditioned agents on GSM8K/MATH-500, measured on nomic-embed-text embeddings of rationales, N=3, no code benchmark, no paired no-peer baseline.",
+  "cluster": "Representation geometry under orchestration",
+  "just": "Patel (2604.03809) already reports that multi-agent committees collapse to an effective rank of ~2.17 out of 3 with mean cosine 0.888, and Chen et al. (2604.18005) attribute diversity collapse to interaction structure itself \u2014 so 'orchestration contracts the space agents span' is established. This study moves the measurement from sentence-embedding space into the model's own residual stream, adds a paired independent-vs-peer-exposed contrast on matched items, and replicates it at three depths and in two domains, which is a materially new measurement regime rather than a new phenomenon.",
+  "keys": [
+   "patel2026collapse",
+   "chen2026diversity",
+   "wan2026deliberative"
+  ],
+  "verdict": "extension"
+ },
+ "C26": {
+  "closest": "Zhang & Lin, 'Simulated Adoption: Decoupling Magnitude and Direction in LLM In-Context Conflict Resolution' (arXiv:2602.04918) \u2014 radial/angular decomposition of hidden states on Qwen-3-4B and others, finds 'Orthogonal Interference' (rotation without magnitude suppression), but single-model knowledge conflict, no inter-agent distances, no dimensionality metric.",
+  "cluster": "Representation geometry under orchestration",
+  "just": "The methodological half is well established: cosine/scale-free geometry is known to be brittle and to license wrong conclusions (Steck et al. 2024; Rudman et al. 2022), transformer states are known to be anisotropic (Ethayarajh 2019), and Zhang & Lin (2602.04918) already decompose residual-stream updates into radial and angular components under in-context conflict and find magnitude preserved while direction rotates. What is new is the specific cross-agent dissociation \u2014 identical mean pairwise distance (52.57 vs 52.50) with a 29% closer nearest pair, 9% farther pair, and 17% higher angular dispersion \u2014 which no prior work reports for a multi-agent orchestration contrast.",
+  "keys": [
+   "zhang2026simulated",
+   "steck2024cosine",
+   "rudman2022isoscore",
+   "ethayarajh2019contextual"
+  ],
+  "verdict": "extension"
+ },
+ "C27": {
+  "closest": "Wang, Isola & Cheung, 'The Truth Lies Somewhere in the Middle (of the Generated Tokens)' (arXiv:2605.09969) \u2014 establishes position-dependence of hidden-state semantic content across generation, but for a single unmanipulated model, with kernel alignment rather than dimensionality, and no orchestration contrast.",
+  "cluster": "Representation geometry under orchestration",
+  "just": "Prior work establishes that representation quality varies systematically with generation position (Wang, Isola & Cheung: generated tokens beat prompt tokens, mid-generation pooling is richest) and that trajectory geometry evolves over turns, but none crosses an orchestration manipulation with generation-position anchors. The specific finding that peer exposure leaves mid-generation geometry indistinguishable, reverses ordering at the prompt, and reshapes only the committed answer state has no prior analogue I could retrieve.",
+  "keys": [
+   "wang2026truth",
+   "liang2026divergence",
+   "sun2026toolcall"
+  ],
+  "verdict": "novel"
+ },
+ "C28": {
+  "closest": "Ontalvilla, Azkune & Ormazabal, 'Agreement in Representation Space for Open-Ended Self-Consistency' (arXiv:2606.12003) \u2014 treats consistency as geometric concentration of sampled generations in embedding space (math, code, summarization), but uses external sentence embeddings, does not separate dispersion from dimensionality, and conditions on reliability rather than token-level unanimity.",
+  "cluster": "Representation geometry under orchestration",
+  "just": "The closest prior reads agreement as spatial concentration \u2014 Ontalvilla et al. cluster generations in embedding space and find central, concentrated generations more reliable \u2014 and hidden-state-consistency work treats correct consensus as higher mean pairwise cosine similarity; neither measures the dispersion-times-dimensionality signature this claim reports, and both point the opposite way on the dispersion axis. Zhang et al. decompose wrong-consensus agreement statistically with no geometry at all, so the joint 'more dispersed along fewer directions' result stands unestablished and in tension with the concentration reading.",
+  "keys": [
+   "ontalvilla2026agreement",
+   "li2025dispersion",
+   "zhang2026decomposing"
+  ],
+  "verdict": "novel"
+ },
+ "C29": {
+  "closest": "Parupudi, 'Anisotropy Decides Cosine vs. Rank Metrics for Text Embeddings' (arXiv:2606.29571) \u2014 shows metric choice changes conclusions as a function of embedding anisotropy across nineteen encoders and seven datasets, but for retrieval/similarity benchmarks, not multi-agent consensus, and not contrasting code against exam-style text.",
+  "cluster": "Representation geometry under orchestration",
+  "just": "Parupudi (2606.29571) already establishes the general principle empirically \u2014 embedding anisotropy determines whether cosine or non-scale-free metrics recover signal, with the dominant-direction variance fraction predicting the gap at r=0.95 across nineteen encoders \u2014 and Steck et al. make the analytic case that cosine can be arbitrary. The new content is the domain-specific instantiation: on BigCodeBench the scale-free metric is empty while the raw norm carries consensus at rho=+0.389, which turns a retrieval-metric caveat into a concrete measurement hazard for multi-agent code studies.",
+  "keys": [
+   "parupudi2026anisotropy",
+   "ontalvilla2026agreement",
+   "steck2024cosine"
+  ],
+  "verdict": "extension"
+ },
+ "C3": {
+  "closest": "Hussain & Nielbo (2026), 'Conformity Mitigations in Large Language Models Lie on a Single Resistance-Receptivity Frontier' (arXiv:2608.11247); with Weng et al. (ICLR 2025, arXiv:2501.13381) and Zhu et al. (ACL 2025, arXiv:2410.12428) establishing that conformity rises monotonically with majority size.",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "Hussain & Nielbo measure precisely the lone-correct-agent reversal under a unanimous wrong peer group with a clean dose-response in group size (11.2% at one peer -> 22.8% at four on MMLU; 54.8% GPQA; 71.0% SimpleQA), and show 84-89% of reversed answers match the peers' answer verbatim \u2014 i.e. the flip is copying, not reconsideration. Their resistance-receptivity frontier is the same asymmetry as the study's 'fixed only when a correct peer exists' decomposition, and Bertalanic & Fortuna's 70% contextual-fragility rate plus '96% of self-correction-only wins had a correct agent at R1' cover the same ground.",
+  "keys": [
+   "hussain2026frontier",
+   "weng2025conformity",
+   "zhu2025conformity",
+   "bertalanic2026consensus"
+  ],
+  "verdict": "replication"
+ },
+ "C30": {
+  "closest": "Sun & Kazakov (2026), Tool-Call Dependency Structure is Linearly Decodable in LLM Agent Residual Streams (arXiv:2605.25310) \u2014 an edge probe on Qwen3-32B's residual stream decodes the abstract tool-call dependency topology well above a Hewitt-Liang random-label control and a positional baseline, with counterfactual contrasts showing it tracks topology not identifier values; paired with Leong (2026, arXiv:2608.28502), where source-format/provenance features probe at 97.5-100% across four models while behaviour does not follow, and Cencerrado et al. (2025, arXiv:2509.10625), where question-only probes already carry most of the correctness signal (0.68-0.88 AUROC, near chance on reasoning).",
+  "cluster": "What is linearly decodable, and difficulty as a moderator",
+  "just": "Both halves of the dissociation are separately established: abstract orchestration/pipeline structure is already known to be near-ceiling linearly decodable from a reader model's residual stream (tool-call dependency graphs from Qwen3-32B; source-format provenance at 97.5-100% balanced accuracy; 100-way source-model attribution from a frozen proxy LLM), and correctness probes are known to be weak and to ride mostly on item difficulty rather than answer-specific evidence. The new regime is the label and the artifact: which of three orchestration policies compiled a multi-agent handoff report, read off the same representation that yields only 0.694 AUC for correctness, with an explicit question-only decomposition (0.649 of 0.694).",
+  "keys": [
+   "sun2026toolcall",
+   "leong2026recognition",
+   "liu2026reader",
+   "cencerrado2025noanswer",
+   "ashuach2026masked",
+   "villuri2026internal"
+  ],
+  "verdict": "extension"
+ },
+ "C31": {
+  "closest": "Lugoloobi et al. (2026), LLMs Encode Their Failures: Predicting Success from Pre-Generation Activations (arXiv:2602.09924) \u2014 linear probes on pre-generation activations predict policy-specific success on math and code, beat surface features, and separate model-specific from human difficulty; Di Cicco (2026, arXiv:2606.14530) reports AUC 0.881+/-0.008 pre-generation on Qwen3-4B/LiveCodeBench, and Ruan et al. (2026, arXiv:2607.06503) predict agent-episode failure from first-round hidden states.",
+  "cluster": "What is linearly decodable, and difficulty as a moderator",
+  "just": "That per-item difficulty and first-attempt success are linearly readable from the last prompt token before any generation is by now a standard result, demonstrated with stronger numbers than this study's rho=0.29 / 0.66 AUC \u2014 0.881 held-out AUC on LiveCodeBench with Qwen3-4B, rho 0.40-0.64 against model-derived difficulty and AUROC > 0.7 for success under fixed decoding, and a dedicated value-function estimator of LLM-perceived difficulty. The multi-agent framing (will a hub episode succeed) is the only new element, and hidden-state probes predicting eventual LLM-agent episode failure from the first round are also already published.",
+  "keys": [
+   "lugoloobi2026encode",
+   "dicicco2026code",
+   "zhu2025already",
+   "ruan2026doomed",
+   "cencerrado2025noanswer"
+  ],
+  "verdict": "replication"
+ },
+ "C32": {
+  "closest": "Wang, Hong & Bagci (2026), A decodability criterion predicts when hidden-state selection beats majority voting in LLMs (arXiv:2608.17124, Information Fusion) \u2014 defines within-question AUC on answer-token states, reports 0.51-0.59 for general-purpose models, and shows selection only beats voting above ~0.60; plus Ashuach et al. (2026, arXiv:2604.12373), which shows agreement/consensus structure is what probes actually read.",
+  "cluster": "What is linearly decodable, and difficulty as a moderator",
+  "just": "The first half is an almost exact numerical match to CASE, which trains a linear gate on answer-token hidden states and reports within-question ranking AUC of 0.51-0.59 for general models (Qwen, Llama) under question-grouped cross-validation \u2014 the same near-chance regime as the study's 0.54-0.63 exam / 0.49-0.54 code. The second half \u2014 consensus membership being more decodable than truth \u2014 is the explicit finding of Masked by Consensus, where probes exploit shared inter-model agreement patterns rather than correctness, and self-probe advantage only appears once disagreement subsets isolate it.",
+  "keys": [
+   "wang2026decodability",
+   "ashuach2026masked",
+   "zhang2025reasoning"
+  ],
+  "verdict": "replication"
+ },
+ "C33": {
+  "closest": "Kumaran et al. (2026), How do LLMs Compute Verbal Confidence (arXiv:2603.17839) \u2014 traces the information flow on Gemma 3 27B, Qwen 2.5 7B and Magistral Small 24B and finds confidence is gathered from answer tokens and cached post-answer, not tracked during generation; Miao & Ungar (2026, arXiv:2603.25052) add that accuracy and verbalized-confidence directions are near-orthogonal (cosine < 0.04).",
+  "cluster": "What is linearly decodable, and difficulty as a moderator",
+  "just": "Kumaran et al. establish exactly this, and causally rather than by decodability alone: confidence representations do not exist during answer generation, they emerge at answer-adjacent positions, are cached at the first post-answer position, and are retrieved at the verbalization site, shown by steering, patching, noising, swap and attention-blocking experiments. Podolak & Verma independently show the verbal score is a statistic of alternatives surfaced during reasoning, i.e. only trustworthy after exploration completes \u2014 the same commit-time picture the study infers from R2=0.10 and within-item rho=0.02 at 128/512 tokens.",
+  "keys": [
+   "kumaran2026verbal",
+   "podolak2025read",
+   "miao2026confidence"
+  ],
+  "verdict": "replication"
+ },
+ "C34": {
+  "closest": "Chen et al. (2024), Are More LLM Calls All You Need? Towards Scaling Laws of Compound Inference Systems (arXiv:2403.02419) \u2014 proves and measures that query-difficulty diversity drives non-monotone Vote/Filter-Vote scaling because easy and hard queries move in opposite directions; complemented by Yang et al. (2025, arXiv:2505.22960) on debate helping only as difficulty rises, and Haupt et al. (2026, arXiv:2605.30916) on aggregation over heterogeneous items diluting effects.",
+  "cluster": "What is linearly decodable, and difficulty as a moderator",
+  "just": "The mechanism is Chen et al.'s: within-task diversity of query difficulty makes aggregation help easy items and hurt hard ones, so pooled curves are non-monotone and pooled means misstate conditional effects; difficulty as the moderator of multi-agent debate is likewise established, and IRT audits already report that benchmarks are dominated by universally-easy and universally-hard items with only a minority discriminating (e.g. 23.8% / 8.4% / 66.8%). What is new here is the quantification under a matched-FLOP crossed design: the specific (0.3,0.7] contested band, the ~4x understatement factor, and the collapse of cross-policy agreement from phi=0.73 pooled to 0.09 inside the band.",
+  "keys": [
+   "chen2024more",
+   "yang2025revisiting",
+   "haupt2026welfare",
+   "zhou2025lost",
+   "land2026auditing"
+  ],
+  "verdict": "extension"
+ },
+ "C4": {
+  "closest": "Choi, Zhu & Li (2025), arXiv:2508.17536 \u2014 flat per-round agent accuracy with majority voting capturing the whole gain; plus Smit et al. (arXiv:2311.17371) and Liu et al. (arXiv:2409.14051) on round-count cost/benefit.",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "Choi et al. show mean agent accuracy is essentially flat (martingale) across debate rounds at T=2,3,5 while consensus tightens, and prove debate contributes no expected-correctness gain beyond the initial ensemble; Smit et al. find no reliable round-scaling benefit, and the token-cost blowup with rounds is quantified in the efficiency line (GroupDebate). The study's extension to eight rounds with an explicit 4.3x FLOP price tag is a more precise accounting of an already-established diminishing-returns result, though note Bertalanic & Fortuna do report continued R1->R3 accuracy gains on GSM-Hard (39.7% -> 56.1%), so 'round 1 delivers the entire gain' is regime-dependent.",
+  "keys": [
+   "choi2025debate",
+   "smit2023mad",
+   "liu2024groupdebate",
+   "bertalanic2026consensus"
+  ],
+  "verdict": "replication"
+ },
+ "C5": {
+  "closest": "Bertalanic & Fortuna (2026), arXiv:2605.00914 \u2014 explicit debate vs noise vs self-correction ablation showing peer content is inert and self-correction is not; Hao et al. (arXiv:2606.00820) for the 37% self-reflection flip rate; Huang et al. (ICLR 2024, arXiv:2310.01798) for the compatible half.",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "The decisive control runs the other way in prior work: Bertalanic & Fortuna execute the same three-arm ablation (peer debate / noise-injected irrelevant rationales / isolated self-correction) and find self-correction matches or beats debate (54.0% vs 56.1% at R3 on GSM-Hard; 5.9x more items solved by self-correction alone for Ministral) while the noise arm reaches 55.1%, concluding 'task-relevant peer rationales provide no measurable benefit over task-irrelevant ones' \u2014 the opposite of 'peer content is the active ingredient'. Hao et al. further report 37% of agent-question observations flip under self-reflection alone, roughly 4x the study's 8.5%; only the weak reading (intrinsic self-correction does not improve reasoning, Huang et al.) survives as replication.",
+  "keys": [
+   "bertalanic2026consensus",
+   "hao2026flips",
+   "huang2024selfcorrect"
+  ],
+  "verdict": "contradicts"
+ },
+ "C6": {
+  "closest": "Brown et al. (2024), 'Large Language Monkeys: Scaling Inference Compute with Repeated Sampling' (arXiv:2407.21787); with Li et al. (TMLR 2024, arXiv:2402.05120) for the slower voted-accuracy curve under the same sampling-and-voting scheme.",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "Brown et al. established exactly this asymmetry: coverage (any sample correct) scales log-linearly over four orders of magnitude while 'majority voting and reward models plateau beyond several hundred samples and fail to fully scale with the sample budget'. The size of the unconverted headroom has since been quantified as a 32.3pp oracle gap (Bertalanic & Fortuna) and a correct minority in ~1 of 4 divergent cases (He et al.); swapping sample count for team size N at matched FLOPs re-measures rather than extends this.",
+  "keys": [
+   "brown2024monkeys",
+   "li2024agents",
+   "bertalanic2026consensus",
+   "he2026minority"
+  ],
+  "verdict": "replication"
+ },
+ "C7": {
+  "adjudicated": {
+   "citation_keys": [
+    "gao2026decisionbench",
+    "cemri2025mast",
+    "brown2024monkeys"
+   ],
+   "claim_id": "C7",
+   "new_verdict": "extension",
+   "old_verdict": "novel",
+   "reason": "Their own cited paper refutes their novelty rationale: DecisionBench (Gao et al., arXiv:2605.19099) defines a 'delegation rate' metric (mean call_model invocations per task) and reports that orchestrators overwhelmingly solve tasks themselves rather than delegating -- near-zero on tau-bench (89 invocations across 5x1452 task-slots, ~1.2%), 0.06-0.17 on BFCL, 0.19-0.42 on GAIA -- at a far larger scale (23,375 instances, 11 models, 7 vendors) than this study, with its counterfactual-delegation ceiling (perfect delegation 15-31pp above measured) covering the 'hub accuracy equals a single draw' half. So two of C7's three components are established prior work, and the assessment's claim that 'nothing retrieved measures a hub's delegation rate' is contradicted by the citation it sits next to. What does survive independent search is the mechanism: I found nothing measuring output-cap truncation as the dominant hub error (75.5%), the 74% truncated-cycle continuation, or monotonically escalating retry reasoning (3,690->7,139 tokens) -- MAST, AgentEval, DecisionBench and the agentic-fault taxonomies treat context/prompt overflow but never instrument this per-call loop. Known phenomenon, materially new measurement: extension, not novel."
+  },
+  "closest": "Cemri et al. (2025), 'Why Do Multi-Agent LLM Systems Fail?' (arXiv:2503.13657) \u2014 MAST taxonomy over 1,600+ traces, with single-agent setups sometimes outperforming the multi-agent version; and Gao et al. (2026), 'DecisionBench' (arXiv:2605.19099) on emergent-delegation shortfalls.",
+  "cluster": "Orchestration topology, debate and conformity",
+  "just": "Prior work establishes the endpoint \u2014 supervisor/centralized MAS collapsing toward single-agent performance, and orchestrators delegating badly (routing fidelity-at-1 of only 7.5-29.5%, with perfect delegation 15-31pp above measured performance) \u2014 but nothing retrieved measures a hub's delegation rate (4.3% of episodes) or identifies output-cap truncation as the dominant hub error (75.5%) driving a self-reinforcing re-prompt loop (74% continuation) with monotonically escalating reasoning length (3,690 -> 7,139 tokens). MAST's 14 failure modes are hand-annotated over traces and include termination/design faults but do not instrument this mechanism per call.",
+  "keys": [
+   "cemri2025mast",
+   "gao2026decisionbench",
+   "choi2025debate",
+   "xiong2026clawarena"
+  ],
+  "verdict": "extension"
+ },
+ "C8": {
+  "closest": "Brown et al., \"Large Language Monkeys: Scaling Inference Compute with Repeated Sampling\" (arXiv:2407.21787) \u2014 coverage scales log-linearly with samples while majority voting and reward-model selection plateau; the identical claim at far larger k.",
+  "cluster": "Test-time compute, budgets and caps",
+  "just": "Brown et al. establish exactly this: coverage (pass@k) scales log-linearly over four orders of magnitude while \"majority voting and reward models plateau beyond several hundred samples and fail to fully scale with the sample budget.\" Stroebl et al. give the theoretical ceiling (imperfect verifiers bound resampling gains regardless of budget) and Landesberg shows the same failure for pointwise LLM judges in best-of-N (judge recovers only 21% of oracle-selection gain, 67% tie rate). The study's k range (1-10) is three orders of magnitude narrower than Brown's, so the Qwen3/HLE/BigCodeBench instantiation is a benchmark swap rather than a new regime.",
+  "keys": [
+   "brown2024monkeys",
+   "stroebl2024flaws",
+   "chen2024calls",
+   "landesberg2026judge",
+   "saadfalcon2025weaver"
+  ],
+  "verdict": "replication"
+ },
+ "C9": {
+  "adjudicated": {
+   "citation_keys": [
+    "shetty2025gso",
+    "muennighoff2025s1",
+    "lin2026bagen",
+    "ghosal2025mirage"
+   ],
+   "claim_id": "C9",
+   "new_verdict": "replication",
+   "old_verdict": "extension",
+   "reason": "The phenomenon \u2014 a nominal allowance the system never approaches, so raising it changes nothing \u2014 is already established, not extended. GSO \u00a75.3 is verbatim on this (\"Even with larger budgets of 200+ steps, 75% of trajectories terminate before 100 steps!\"), s1's budget forcing exists precisely because models will not spend an allowance unforced, BAGEN shows the failure is systematic across frontier agents and environments, and Ghosal et al. show budget increases past a floor produce no monotone change in behaviour. Neither thing the colleague treated as new survives: the spend percentages are the same measurement in a new harness, and byte-identity is mechanical rather than empirical \u2014 a parameter that never enters the computation cannot change the output under a fixed seed. Their second pillar also does not check out on retrieval: Tran & Kiela (arXiv:2604.02460) reports API budget-control artifacts and unaccounted compute/context confounds in MAS comparisons, not that visible thought plateaus below the requested budget."
+  },
+  "closest": "Shetty et al., \"GSO: Challenging Software Optimization Tasks for Evaluating SWE-Agents\" (arXiv:2505.23671), \u00a75.3 \"Agents Mismanage Compute\" \u2014 agents systematically terminate far below the step allowance; and Tran & Kiela (arXiv:2604.02460) App. G on thinking budgets not binding. Neither shows budget levels collapsing to identical episodes.",
+  "cluster": "Test-time compute, budgets and caps",
+  "just": "That nominal compute budgets go unspent is documented \u2014 GSO reports \"even with larger budgets of 200+ steps, 75% of trajectories terminate before 100 steps\", Tran & Kiela find visible thought \"tends to plateau well below the requested budget\" with 1000/2000-token settings already close to 5000/10000, and s1 exists precisely because models will not spend a budget unless forced. What is new is the design-level consequence measured here: exact spend fractions per budget level (72-89% vs 17-45%) across five orchestration policies, and the demonstration that budget is an inert factor because higher levels yield byte-identical episodes rather than merely similar accuracy.",
+  "keys": [
+   "shetty2025gso",
+   "tran2026single",
+   "muennighoff2025s1",
+   "kapoor2024agents"
+  ],
+  "verdict": "replication"
+ }
+}

@@ -1,0 +1,479 @@
+{
+ "design.alias_by_method": {
+  "script": "s1_design.py",
+  "source": "tables/episodes.parquet",
+  "value": {
+   "CEN_FLAT": {
+    "aliased": 0.66,
+    "calls": 2.16,
+    "generated": 1.5
+   },
+   "DEC": {
+    "aliased": 10.66,
+    "calls": 39.93,
+    "generated": 29.27
+   },
+   "DEC_ONE_ROUND": {
+    "aliased": 6.15,
+    "calls": 10.0,
+    "generated": 3.85
+   },
+   "DEGREE": {
+    "aliased": 9.0,
+    "calls": 14.0,
+    "generated": 5.0
+   },
+   "IND_PRIVATE_REVISION": {
+    "aliased": 5.0,
+    "calls": 10.0,
+    "generated": 5.0
+   },
+   "IND_VOTE": {
+    "aliased": 30.04,
+    "calls": 61.83,
+    "generated": 31.79
+   },
+   "S_FRESH": {
+    "aliased": 23.97,
+    "calls": 60.5,
+    "generated": 36.53
+   },
+   "S_HISTORY": {
+    "aliased": 23.78,
+    "calls": 61.87,
+    "generated": 38.09
+   }
+  }
+ },
+ "design.axis_levels": {
+  "script": "s1_design.py",
+  "source": "tables/*.parquet",
+  "value": {
+   "C1_topology": [
+    "CEN_FLAT",
+    "DEC",
+    "DEC_ONE_ROUND",
+    "DEGREE",
+    "IND_PRIVATE_REVISION",
+    "IND_VOTE",
+    "S_FRESH",
+    "S_HISTORY"
+   ],
+   "C2_team_size": [
+    1,
+    2,
+    3,
+    5,
+    9
+   ],
+   "C3_degree": [
+    0,
+    1,
+    2,
+    4,
+    8
+   ],
+   "C4_budget": [
+    1,
+    2,
+    4
+   ],
+   "C5_scale": [
+    "14B",
+    "32B",
+    "4B",
+    "8B"
+   ],
+   "C6_framing": [
+    "00",
+    "11",
+    "nat"
+   ],
+   "C7_selector": [
+    "JUDGE_BEST",
+    "VOTE"
+   ],
+   "C8_repetition": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "C9_domain": [
+    "bcb",
+    "hle"
+   ],
+   "C9b_answer_format": [
+    "code",
+    "exactMatch",
+    "multipleChoice"
+   ],
+   "C9c_stratum": [
+    "Gold",
+    "Revision",
+    "bcb"
+   ]
+  }
+ },
+ "design.difficulty_band_pass1": {
+  "script": "s1_design.py",
+  "value": {
+   "contested": 0.54,
+   "easy": 0.9532,
+   "hard": 0.1754,
+   "never": 0.0
+  }
+ },
+ "design.difficulty_bands": {
+  "n": 400,
+  "script": "s1_design.py",
+  "source": "tables/banks.parquet framing=00 ckpt=32B, main split",
+  "value": {
+   "contested": 45,
+   "easy": 77,
+   "hard": 57,
+   "never": 221
+  }
+ },
+ "design.difficulty_bands_by_domain": {
+  "script": "s1_design.py",
+  "value": {
+   "bcb": {
+    "contested": 28,
+    "easy": 65,
+    "hard": 27,
+    "never": 80
+   },
+   "hle": {
+    "contested": 17,
+    "easy": 12,
+    "hard": 30,
+    "never": 141
+   }
+  }
+ },
+ "design.distinct_compute_vectors": {
+  "script": "s1_design.py",
+  "value": 43
+ },
+ "design.distinct_correctness_vectors": {
+  "script": "s1_design.py",
+  "value": 40
+ },
+ "design.identical_cell_groups": {
+  "note": "nominal cells that are the same physical episode set",
+  "script": "s1_design.py",
+  "value": {
+   "0": [
+    "B|CEN_FLAT|32B|N5|B2",
+    "N|CEN_FLAT|32B|N5|B4"
+   ],
+   "1": [
+    "B|S_FRESH|32B|N5|B1",
+    "MX|IND_VOTE|32B|N3|B1"
+   ],
+   "10": [
+    "MX|IND_VOTE|8B|N3|B1",
+    "MX|IND_VOTE|8B|N3|B4",
+    "MX|IND_VOTE|8B|N9|B4"
+   ],
+   "2": [
+    "B|S_HISTORY|32B|N5|B1",
+    "B|S_HISTORY|32B|N5|B2"
+   ],
+   "3": [
+    "MX|CEN_FLAT|32B|N3|B1",
+    "MX|CEN_FLAT|32B|N3|B4",
+    "N|CEN_FLAT|32B|N3|B4"
+   ],
+   "4": [
+    "MX|CEN_FLAT|32B|N9|B4",
+    "N|CEN_FLAT|32B|N9|B4"
+   ],
+   "5": [
+    "MX|CEN_FLAT|8B|N3|B1",
+    "MX|CEN_FLAT|8B|N3|B4"
+   ],
+   "6": [
+    "MX|DEC|32B|N3|B1",
+    "MX|DEC|32B|N3|B4",
+    "N|DEC|32B|N3|B4"
+   ],
+   "7": [
+    "MX|DEC|32B|N9|B4",
+    "N|DEC|32B|N9|B4"
+   ],
+   "8": [
+    "MX|DEC|8B|N3|B1",
+    "MX|DEC|8B|N3|B4"
+   ],
+   "9": [
+    "MX|IND_VOTE|32B|N3|B4",
+    "MX|IND_VOTE|32B|N9|B4",
+    "N|IND_VOTE|32B|N1|B4",
+    "N|IND_VOTE|32B|N2|B4",
+    "N|IND_VOTE|32B|N3|B4",
+    "N|IND_VOTE|32B|N5|B4",
+    "N|IND_VOTE|32B|N9|B4"
+   ]
+  }
+ },
+ "design.largest_identical_group": {
+  "script": "s1_design.py",
+  "value": 7
+ },
+ "design.module_coverage": {
+  "script": "s1_design.py",
+  "source": "tables/episodes.parquet",
+  "value": {
+   "A": {
+    "B": [
+     4
+    ],
+    "N": [
+     5
+    ],
+    "checkpoints": [
+     "32B"
+    ],
+    "degrees": [],
+    "episodes": 2000,
+    "framings": [
+     "00",
+     "11",
+     "nat"
+    ],
+    "items": 400,
+    "methods": [
+     "CEN_FLAT",
+     "DEC",
+     "IND_VOTE",
+     "S_FRESH",
+     "S_HISTORY"
+    ],
+    "reps": [
+     0
+    ]
+   },
+   "B": {
+    "B": [
+     1,
+     2
+    ],
+    "N": [
+     5
+    ],
+    "checkpoints": [
+     "32B"
+    ],
+    "degrees": [],
+    "episodes": 1000,
+    "framings": [
+     "00",
+     "11",
+     "nat"
+    ],
+    "items": 100,
+    "methods": [
+     "CEN_FLAT",
+     "DEC",
+     "IND_VOTE",
+     "S_FRESH",
+     "S_HISTORY"
+    ],
+    "reps": [
+     0
+    ]
+   },
+   "D": {
+    "B": [
+     4
+    ],
+    "N": [
+     1
+    ],
+    "checkpoints": [
+     "32B"
+    ],
+    "degrees": [
+     0,
+     1,
+     2,
+     4,
+     8
+    ],
+    "episodes": 229,
+    "framings": [
+     "00"
+    ],
+    "items": 50,
+    "methods": [
+     "DEGREE"
+    ],
+    "reps": [
+     0
+    ]
+   },
+   "E": {
+    "B": [
+     4
+    ],
+    "N": [
+     5
+    ],
+    "checkpoints": [
+     "32B"
+    ],
+    "degrees": [],
+    "episodes": 600,
+    "framings": [
+     "00",
+     "11",
+     "nat"
+    ],
+    "items": 30,
+    "methods": [
+     "CEN_FLAT",
+     "DEC",
+     "IND_VOTE",
+     "S_FRESH"
+    ],
+    "reps": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ]
+   },
+   "M": {
+    "B": [
+     4
+    ],
+    "N": [
+     5
+    ],
+    "checkpoints": [
+     "14B",
+     "4B",
+     "8B"
+    ],
+    "degrees": [],
+    "episodes": 1350,
+    "framings": [
+     "11",
+     "nat"
+    ],
+    "items": 150,
+    "methods": [
+     "CEN_FLAT",
+     "DEC",
+     "IND_VOTE"
+    ],
+    "reps": [
+     0
+    ]
+   },
+   "MX": {
+    "B": [
+     1,
+     4
+    ],
+    "N": [
+     3,
+     9
+    ],
+    "checkpoints": [
+     "32B",
+     "8B"
+    ],
+    "degrees": [],
+    "episodes": 1800,
+    "framings": [
+     "00",
+     "nat"
+    ],
+    "items": 100,
+    "methods": [
+     "CEN_FLAT",
+     "DEC",
+     "IND_VOTE"
+    ],
+    "reps": [
+     0
+    ]
+   },
+   "N": {
+    "B": [
+     4
+    ],
+    "N": [
+     1,
+     2,
+     3,
+     5,
+     9
+    ],
+    "checkpoints": [
+     "32B"
+    ],
+    "degrees": [],
+    "episodes": 1700,
+    "framings": [
+     "00",
+     "nat"
+    ],
+    "items": 100,
+    "methods": [
+     "CEN_FLAT",
+     "DEC",
+     "DEC_ONE_ROUND",
+     "IND_PRIVATE_REVISION",
+     "IND_VOTE"
+    ],
+    "reps": [
+     0
+    ]
+   }
+  }
+ },
+ "design.never_band_pass10_max": {
+  "note": "ceiling of the never-solved band over 10 neutral draws",
+  "script": "s1_design.py",
+  "value": 0.0
+ },
+ "design.nominal_cells": {
+  "note": "module/method/checkpoint/N/B cells on the shared panel (D,E excluded)",
+  "script": "s1_design.py",
+  "value": 59
+ },
+ "scale.cells": {
+  "script": "s1_design.py",
+  "source": "reconcile.json",
+  "value": 1317
+ },
+ "scale.episode_rows": {
+  "script": "s1_design.py",
+  "source": "tables/episodes.parquet",
+  "value": 8760
+ },
+ "scale.items_by_domain": {
+  "script": "s1_design.py",
+  "value": {
+   "bcb": 200,
+   "hle": 200
+  }
+ },
+ "scale.items_main": {
+  "script": "s1_design.py",
+  "source": "tables/selections.parquet",
+  "value": 400
+ },
+ "scale.selection_rows": {
+  "script": "s1_design.py",
+  "source": "tables/selections.parquet",
+  "value": 42679
+ }
+}

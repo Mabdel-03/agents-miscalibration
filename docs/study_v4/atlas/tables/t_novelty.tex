@@ -1,0 +1,45 @@
+\begin{longtable}{@{}p{0.9cm}p{8.8cm}p{1.9cm}p{3.2cm}@{}}
+\toprule
+Axis & Claim & Verdict & Closest prior work \\
+\midrule
+\endfirsthead
+\toprule
+Axis & Claim & Verdict & Closest prior work \\
+\midrule
+\endhead
+\mx{M5} & The effect is anchor-specific: absent mid-generation, present only at the committed answer. & \vnov & \citep{wang2026truth,liang2026divergence,sun2026toolcall} \\
+\mx{M2} & Unanimous episodes have \emph{more} dispersed member states arranged along fewer directions. & \vnov & \citep{ontalvilla2026agreement,li2025dispersion,zhang2026decomposing} \\
+\ax{C1} & Private revision without peers is a no-op; peer content is the active ingredient. & \vcon & \citep{bertalanic2026consensus,hao2026flips,huang2024selfcorrect} \\
+\ax{C7} & Confidence-aware selectors land within 1.5 points of plain plurality. & \vcon & \citep{taubenfeld2025confidence,fu2025deepconf,kang2025selfcertainty} \\
+\ax{C1} & The orchestrator rarely delegates; multi-call episodes are output-cap retry loops. & \vext & \citep{cemri2025mast,gao2026decisionbench,choi2025debate} \\
+\ax{C4} & 59 nominal cells collapse to 40 distinct outcome vectors under content-addressed reuse. & \vext & \citep{kapoor2024agents,shetty2025gso,tran2026single} \\
+\ax{C7} & On code, syntactic grouping makes voting structurally unavailable in 77\% of failures. & \vext & \citep{jiang2026semantic,cho2026symbolic,launer2026majority} \\
+\ax{C7} & On the exam, 91\% of covered-but-wrong pools are a correct minority under a wrong consensus. & \vext & \citep{cai2026arbiter,bahuguna2026backfires,phan2025hle} \\
+\bx{B5} & The explicit self-forecast copies the read confidence verbatim in 896/896 cases. & \vext & \citep{shi2026confidence,spiess2025calibration,paleka2025pitfalls} \\
+\ax{C5} & 8B matches 32B at matched FLOPs; the scale ordering reverses by domain. & \vext & \citep{brown2024monkeys,snell2024scaling,wunderlich2026pareto} \\
+\ax{C5} & Stated confidence rises with scale while accuracy does not. & \vext & \citep{tao2025revisiting,xiong2024can,phan2025humanity} \\
+\ax{C5} & Small checkpoints emit a literal 0.50 that functions as abstention, not a default. & \vext & \citep{dai2026rescaling,shen2026provable,ferdous2026small} \\
+\mx{M1} & Peer-exposed agents commit from a lower-rank answer state (PR 2.36$\to$1.84). & \vext & \citep{patel2026collapse,chen2026diversity,wan2026deliberative} \\
+\mx{M2} & That drop is anisotropy: mean separation unchanged, variance share on $\lambda_1$ 0.61$\to$0.74. & \vext & \citep{zhang2026simulated,steck2024cosine,rudman2022isoscore} \\
+\mx{M3} & On code the consensus signal is in the norm ($\rho=+0.389$), invisible to the scale-free metric. & \vext & \citep{parupudi2026anisotropy,ontalvilla2026agreement,steck2024cosine} \\
+\mx{M7} & A reader's state identifies the harness at 0.989 and answer correctness at 0.694 (0.649 from task alone). & \vext & \citep{sun2026toolcall,leong2026recognition,liu2026reader} \\
+\ax{C10} & Bimodal item difficulty gates every axis; pooled averages understate conditional effects $\sim4\times$. & \vext & \citep{chen2024more,yang2025revisiting,haupt2026welfare} \\
+\ax{C1} & Independent+vote beats the centralised hub at matched compute; peer revision beats neither. & \vrep & \citep{choi2025debate,smit2023mad,li2024agents} \\
+\ax{C3} & Peer revision raises agreement and confidence monotonically while pool coverage falls. & \vrep & \citep{bertalanic2026consensus,zhu2026demystifying,hao2026flips} \\
+\ax{C2} & A lone correct member is overturned 75--86\% of the time at $N\ge5$. & \vrep & \citep{hussain2026frontier,weng2025conformity,zhu2025conformity} \\
+\ax{C3} & Round 1 delivers the whole correctness gain; rounds 2--8 cost $4.3\times$ and buy agreement. & \vrep & \citep{choi2025debate,smit2023mad,liu2024groupdebate} \\
+\ax{C2} & Team size buys pool coverage ($+0.13$) but not delivered accuracy ($+0.04$). & \vrep & \citep{brown2024monkeys,li2024agents,bertalanic2026consensus} \\
+\ax{C4} & pass@$k$ climbs while vote@$k$ and judge@$k$ stay flat. & \vrep & \citep{brown2024monkeys,stroebl2024flaws,chen2024calls} \\
+\ax{C4} & Nominal budget is inert once call/round caps bind; 17--45\% of the allowance is spent. & \vrep & \citep{shetty2025gso,tran2026single,muennighoff2025s1} \\
+\ax{C3} & Sequential compute is dominated by parallel compute at equal FLOPs. & \vrep & \citep{huang2024selfcorrect,wen2025parathinker,bertalanic2026consensus} \\
+\bx{B3} & Oracle coverage 0.542 against 0.328 delivered: a 21-point selection gap. & \vrep & \citep{brown2024monkeys,qi2025parallel,stroebl2024inference} \\
+\ax{C7} & Plurality adds $+0.026$ over a random valid draw; a pointwise judge adds nothing. & \vrep & \citep{liu2026jury,zhang2026judge,landesberg2026judge} \\
+\bx{B5} & Confidence is ordinal between items and empty within them (within-item AUC $\approx$0.50). & \vrep & \citep{taubenfeld2025confidence,bertalanic2026consensus,xiong2024canllms} \\
+\ax{C1} & Information sharing inflates certainty without improving it (Brier 0.478$\to$0.583). & \vrep & \citep{bertalanic2026consensus,nechepurenko2026coordination,prasad2025debate} \\
+\bx{B5} & Post-hoc recalibration cuts Brier 0.491$\to$0.216, dwarfing every other calibration effect. & \vrep & \citep{spiess2025calibration,shen2024thermometer,campos2025multicalibration} \\
+\ax{C5} & The 4B deficit is substantially a format-compliance failure (0.67 valid). & \vrep & \citep{barzelay2026varex,neveditsin2025structured,tam2024format} \\
+\mx{M7} & Item difficulty is decodable from the prompt state before any token is generated. & \vrep & \citep{lugoloobi2026encode,dicicco2026code,zhu2025already} \\
+\mx{M7} & Within an item, majority membership is more decodable than correctness. & \vrep & \citep{wang2026decodability,ashuach2026masked,zhang2025reasoning} \\
+\mx{M7} & The stated confidence value is not represented mid-generation ($R^2$ 0.10) but is at the answer token (0.63). & \vrep & \citep{kumaran2026verbal,podolak2025read,miao2026confidence} \\
+\bottomrule
+\end{longtable}

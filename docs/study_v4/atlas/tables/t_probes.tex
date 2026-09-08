@@ -1,0 +1,20 @@
+\begin{tabular}{llcl}
+\toprule
+Decoded target & site & value & metric \\
+\midrule
+which orchestration produced this report & report state, b31 & 0.989 & 3-way acc., chance 0.333 \\
+\quad from the task text alone & task anchor, b31 & 0.342 & 3-way acc. \\
+item difficulty & prompt, b31 & 0.287 & Spearman $\rho$, item level \\
+whether the delivered answer is right & report state, b31 & 0.689 & AUC \\
+\quad from the task text alone & task anchor, b31 & 0.652 & AUC \\
+is \emph{this} candidate right (exam) & answer token, b31 & 0.570 & within-item AUC \\
+is \emph{this} candidate right (code) & answer token, b31 & 0.529 & within-item AUC \\
+will it join the majority (exam) & answer token, b31 & 0.566 & within-item AUC \\
+will it join the majority (code) & answer token, b31 & 0.590 & within-item AUC \\
+the stated confidence value & 128 tokens in & 0.097 & grouped-CV $R^2$ \\
+the stated confidence value & 512 tokens in & 0.121 & grouped-CV $R^2$ \\
+the stated confidence value & answer token & 0.627 & grouped-CV $R^2$ \\
+hub will make extra calls (exam) & hub prompt, b31 & 0.603 & AUC \\
+\quad within the never-solved band & hub prompt, b31 & 0.593 & AUC, difficulty held \\
+\bottomrule
+\end{tabular}

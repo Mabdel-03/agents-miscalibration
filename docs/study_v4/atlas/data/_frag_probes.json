@@ -1,0 +1,364 @@
+{
+ "probe.candidate_correctness": {
+  "note": "'within_item' asks whether the state distinguishes right from wrong SIBLINGS of the same question",
+  "script": "s5_probes.py",
+  "value": {
+   "b15|all": {
+    "acc": 0.362414,
+    "conf_pooled_auc": 0.689191,
+    "conf_within_item": 0.494504,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.684823,
+    "within_item": 0.504265,
+    "within_item_centred": 0.563311,
+    "within_item_n": "53"
+   },
+   "b15|bcb": {
+    "acc": 0.510941,
+    "conf_pooled_auc": 0.579499,
+    "conf_within_item": 0.543758,
+    "items": "59",
+    "n": "3656",
+    "pooled_auc": 0.541942,
+    "within_item": 0.48033,
+    "within_item_centred": 0.474899,
+    "within_item_n": "31"
+   },
+   "b15|hle": {
+    "acc": 0.174455,
+    "conf_pooled_auc": 0.711496,
+    "conf_within_item": 0.425102,
+    "items": "59",
+    "n": "2889",
+    "pooled_auc": 0.507141,
+    "within_item": 0.572386,
+    "within_item_centred": 0.630638,
+    "within_item_n": "22"
+   },
+   "b31|all": {
+    "acc": 0.362414,
+    "conf_pooled_auc": 0.689191,
+    "conf_within_item": 0.494504,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.628774,
+    "within_item": 0.505076,
+    "within_item_centred": 0.540749,
+    "within_item_n": "53"
+   },
+   "b31|bcb": {
+    "acc": 0.510941,
+    "conf_pooled_auc": 0.579499,
+    "conf_within_item": 0.543758,
+    "items": "59",
+    "n": "3656",
+    "pooled_auc": 0.558771,
+    "within_item": 0.510869,
+    "within_item_centred": 0.52867,
+    "within_item_n": "31"
+   },
+   "b31|hle": {
+    "acc": 0.174455,
+    "conf_pooled_auc": 0.711496,
+    "conf_within_item": 0.425102,
+    "items": "59",
+    "n": "2889",
+    "pooled_auc": 0.559986,
+    "within_item": 0.598479,
+    "within_item_centred": 0.569842,
+    "within_item_n": "22"
+   },
+   "b47|all": {
+    "acc": 0.362414,
+    "conf_pooled_auc": 0.689191,
+    "conf_within_item": 0.494504,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.699452,
+    "within_item": 0.523,
+    "within_item_centred": 0.546811,
+    "within_item_n": "53"
+   },
+   "b47|bcb": {
+    "acc": 0.510941,
+    "conf_pooled_auc": 0.579499,
+    "conf_within_item": 0.543758,
+    "items": "59",
+    "n": "3656",
+    "pooled_auc": 0.563166,
+    "within_item": 0.533627,
+    "within_item_centred": 0.53242,
+    "within_item_n": "31"
+   },
+   "b47|hle": {
+    "acc": 0.174455,
+    "conf_pooled_auc": 0.711496,
+    "conf_within_item": 0.425102,
+    "items": "59",
+    "n": "2889",
+    "pooled_auc": 0.494856,
+    "within_item": 0.530253,
+    "within_item_centred": 0.620554,
+    "within_item_n": "22"
+   }
+  }
+ },
+ "probe.confidence_representation": {
+  "note": "the value is fully decodable only at the answer token, i.e. after it has been emitted",
+  "script": "s5_probes.py",
+  "value": {
+   "FINAL_OBJECT_CLOSE": {
+    "items_with_variation": "111",
+    "n": "6545",
+    "r2": 0.627179,
+    "rho": 0.766471,
+    "within_item_rho": 0.558611
+   },
+   "GENERATED_128": {
+    "items_with_variation": "111",
+    "n": "6545",
+    "r2": 0.09651,
+    "rho": 0.390595,
+    "within_item_rho": 0.01248
+   },
+   "GENERATED_512": {
+    "items_with_variation": "111",
+    "n": "6530",
+    "r2": 0.121269,
+    "rho": 0.429094,
+    "within_item_rho": 0.029477
+   }
+  }
+ },
+ "probe.hub_delegation": {
+  "note": "the pooled figure is largely a domain classifier; inside the never-solved HLE band the signal is gone",
+  "script": "s5_probes.py",
+  "value": {
+   "bcb_multi_call": {
+    "auc": 0.376225,
+    "base": 0.081081,
+    "n": "148"
+   },
+   "episode_correct": {
+    "auc": 0.619845,
+    "base": 0.300341,
+    "n": "293"
+   },
+   "hle_multi_call": {
+    "auc": 0.603356,
+    "base": 0.475862,
+    "n": "145"
+   },
+   "hle_never_band_multi_call": {
+    "auc": 0.59326,
+    "base": 0.568627,
+    "n": "102"
+   },
+   "multi_call_rate_by_difficulty": {
+    "never": 0.377358,
+    "solvable": 0.156716
+   },
+   "pooled_multi_call": {
+    "auc": 0.781971,
+    "base": 0.276451,
+    "n": "293"
+   }
+  }
+ },
+ "probe.majority_membership": {
+  "note": "compare with probe.candidate_correctness: mainstream-ness is more legible than correctness",
+  "script": "s5_probes.py",
+  "value": {
+   "bcb": {
+    "base_rate": 0.436269,
+    "conf_within_item": 0.523219,
+    "items": "40",
+    "n": "3656",
+    "within_item_auc": 0.590357
+   },
+   "hle": {
+    "base_rate": 0.618965,
+    "conf_within_item": 0.540694,
+    "items": "46",
+    "n": "2879",
+    "within_item_auc": 0.566019
+   }
+  }
+ },
+ "probe.report_architecture": {
+  "note": "which orchestration produced this report, 3-way, chance 1/3",
+  "script": "s5_probes.py",
+  "value": {
+   "b15|evidence_delta": {
+    "accuracy": 0.756356,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b15|report_state": {
+    "accuracy": 0.974576,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b15|task_only": {
+    "accuracy": 0.337924,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b31|evidence_delta": {
+    "accuracy": 0.738347,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b31|report_state": {
+    "accuracy": 0.989407,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b31|task_only": {
+    "accuracy": 0.342161,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b47|evidence_delta": {
+    "accuracy": 0.817797,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b47|report_state": {
+    "accuracy": 0.997881,
+    "chance": 0.333333,
+    "n": "944"
+   },
+   "b47|task_only": {
+    "accuracy": 0.346398,
+    "chance": 0.333333,
+    "n": "944"
+   }
+  }
+ },
+ "probe.report_correctness": {
+  "note": "whether the delivered answer is right; compare task_only against report_state",
+  "script": "s5_probes.py",
+  "value": {
+   "b15|evidence_delta": {
+    "auc": 0.635643,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b15|report_state": {
+    "auc": 0.693557,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b15|task_only": {
+    "auc": 0.628238,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b31|evidence_delta": {
+    "auc": 0.658801,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b31|report_state": {
+    "auc": 0.689253,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b31|task_only": {
+    "auc": 0.651905,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b47|evidence_delta": {
+    "auc": 0.661901,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b47|report_state": {
+    "auc": 0.667452,
+    "base": 0.314898,
+    "n": "886"
+   },
+   "b47|task_only": {
+    "auc": 0.649271,
+    "base": 0.314898,
+    "n": "886"
+   }
+  }
+ },
+ "probe.report_displacement": {
+  "note": "how far the compiled evidence moves the reader's state, relative to the task-only state",
+  "script": "s5_probes.py",
+  "value": {
+   "bcb": {
+    "mean_rel_disp": 0.789366,
+    "n": "442",
+    "p_oracle": 0.038412,
+    "p_selected": 0.912449,
+    "rho_oracle": 0.098519,
+    "rho_selected_correct": 0.005245
+   },
+   "by_method": {
+    "CEN_FLAT": 0.7905,
+    "DEC": 0.8108,
+    "IND_VOTE": 0.809
+   },
+   "hle": {
+    "mean_rel_disp": 0.81879,
+    "n": "444",
+    "p_oracle": 0.121905,
+    "p_selected": 0.482288,
+    "rho_oracle": 0.073517,
+    "rho_selected_correct": 0.03343
+   }
+  }
+ },
+ "probe.trajectory": {
+  "note": "block 31, independent solvers; the last column is between-item difficulty",
+  "script": "s5_probes.py",
+  "value": {
+   "FINAL_OBJECT_CLOSE": {
+    "item_difficulty_rho": 0.099414,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.628774,
+    "within_item": 0.505076,
+    "within_item_centred": 0.540749
+   },
+   "GENERATED_128": {
+    "item_difficulty_rho": -0.015362,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.625423,
+    "within_item": 0.495157,
+    "within_item_centred": 0.482469
+   },
+   "GENERATED_32": {
+    "item_difficulty_rho": 0.183417,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.644488,
+    "within_item": 0.552724,
+    "within_item_centred": 0.521045
+   },
+   "GENERATED_512": {
+    "item_difficulty_rho": 0.153183,
+    "items": "118",
+    "n": "6530",
+    "pooled_auc": 0.664445,
+    "within_item": 0.499391,
+    "within_item_centred": 0.481697
+   },
+   "NATIVE_PREFILL": {
+    "item_difficulty_rho": 0.286912,
+    "items": "118",
+    "n": "6545",
+    "pooled_auc": 0.58415,
+    "within_item": 0.517781,
+    "within_item_centred": 0.532167
+   }
+  }
+ }
+}
