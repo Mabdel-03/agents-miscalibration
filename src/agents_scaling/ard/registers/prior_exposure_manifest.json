@@ -1,0 +1,23 @@
+{
+  "study_id": "ard36",
+  "statement": "Earlier runs of this harness already used both ARD36 task families. No first-exposure claim is made and contamination relative to prior harness runs is not controlled.",
+  "datasets": [
+    {"name": "MATH-500", "hf_id": "HuggingFaceH4/MATH-500", "revision": "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be",
+     "prior_use": "full_sweep_v1 and earlier pilots of this repository used MATH-500 as a benchmark; study_v4's prior_exposure_manifest lists it.",
+     "ard36_use": "192 items drawn over 35 subject-by-level strata; 308 held in a named reserve."},
+    {"name": "MMLU-Pro", "hf_id": "TIGER-Lab/MMLU-Pro", "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+     "prior_use": "full_sweep_v1 and earlier pilots used MMLU-Pro; study_v4's prior_exposure_manifest lists it.",
+     "ard36_use": "192 items drawn from the 9,742 de-duplicated ten-option rows over 14 categories; 9,550 in reserve."}
+  ],
+  "checkpoints": [
+    {"id": "Qwen/Qwen3-8B", "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+     "prior_use": "study_v4 modules M and MX; full_sweep_v1 dense panel."},
+    {"id": "Qwen/Qwen3-32B", "revision": "9216db5781bf21249d130ec9da846c4624c16137",
+     "prior_use": "study_v4 flagship across every module."}
+  ],
+  "legacy_reuse": {
+    "store": "agents_scaling_results/study_v4",
+    "use": "E0 reanalysis only (spec section 8). Legacy runs used a single 8,192-token cap with no separate final allowance, so no legacy sample is relabelled as an ARD36 split-budget run.",
+    "labels": "HLE labels are treated as judge-agreement labels until independently audited."
+  }
+}
