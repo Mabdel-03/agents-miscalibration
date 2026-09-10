@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name=asys-loop-keepalive
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=2G
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/loop_keepalive_%j.out
+
+# Keepalive runs as a SLURM job so it survives login-node session changes/cleanup that
+# kill nohup processes. CPU-only, minimal resources; just probes + sbatch as needed.
+set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] legacy keepalive requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+# SELF-RESUBMIT before running so walltime expiry is just a baton pass; see loop_driver.
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{REPO}/slurm/loop_keepalive.sbatch.{RUN_ID}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "{REPO}"
+exec python -u slurm/keepalive.py \
+  --allow-legacy-fleet \
+  --run-id "{RUN_ID}" \
+  --spec "{SPEC}" \
+  --interval {KEEPALIVE_INTERVAL_S}

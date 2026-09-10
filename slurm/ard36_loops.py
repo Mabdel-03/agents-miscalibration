@@ -38,6 +38,7 @@ from agents_scaling.config import DEFAULT_RESULTS_ROOT  # noqa: E402
 DEFAULT_MODEL_CONTRACT = "/orcd/data/tpoggio/001/mabdel03/agents_scaling/configs/model_contracts.v1.json"
 #: plan §6 / §7: one 15-minute pass per lane for the whole 36-hour window.
 LOOP_INTERVAL_S = 900
+KEEPALIVE_INTERVAL_S = 180  # ou_bcs_low replicas lived 12-17 min under preemption in study_v4
 LOOP_ITERATIONS = 160
 #: CPU shape per lane (plan §6): generation cells are 1 CPU HTTP clients; grading is
 #: latency-critical with 2 CPUs; the analysis lane compacts and bootstraps.
@@ -125,6 +126,7 @@ def main(argv=None) -> int:
     ap.add_argument("--partition", default="mit_preemptable,mit_normal")
     ap.add_argument("--time", default="12:00:00")
     ap.add_argument("--loop-interval-s", type=int, default=LOOP_INTERVAL_S)
+    ap.add_argument("--keepalive-interval-s", type=int, default=KEEPALIVE_INTERVAL_S)
     ap.add_argument("--loop-iterations", type=int, default=LOOP_ITERATIONS)
     ap.add_argument("--model-contract", default=os.environ.get("ASYS_MODEL_CONTRACT", DEFAULT_MODEL_CONTRACT))
     ap.add_argument("--dry-run", action="store_true", help="render the sbatch files; submit nothing")
@@ -144,7 +146,9 @@ def main(argv=None) -> int:
     common = {"REPO": str(REPO), "RUN_ID": args.run_id, "PARTITION": args.partition,
               "TIME": args.time, "LOG_DIR": str(log_dir)}
 
-    keepalive_job = _render_submit("loop_keepalive.sbatch.tmpl", dict(common, SPEC=args.spec),
+    keepalive_job = _render_submit("ard36_keepalive.sbatch.tmpl",
+                                   dict(common, SPEC=args.spec,
+                                        KEEPALIVE_INTERVAL_S=str(args.keepalive_interval_s)),
                                    export, args.dry_run)
     print(f"[ard36-loops] keepalive -> {keepalive_job}")
     if args.keepalive_only:
