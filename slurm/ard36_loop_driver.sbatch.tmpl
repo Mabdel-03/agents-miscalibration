@@ -1,0 +1,45 @@
+#!/bin/bash
+#SBATCH --job-name=asys-ard36-loop-driver
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/ard36_loop_driver_%j.out
+
+# ARD36 chunk-driver loop (WP4; fork of study_loop_driver.sbatch.tmpl).  Runs as a Slurm
+# job, never a login-node nohup, and self-resubmits with afterany so a walltime expiry is a
+# baton pass.  NEVER add --requeue (chain duplication; see launch_loops.py).
+#
+# study_v4 operational fix carried here: ONE INDEPENDENT LOOP PER LANE.  Each lane re-runs
+# its idempotent driver every 15 minutes — complete and in-flight chunks are skipped, chunks
+# whose array left the queue with cells still lacking meta.json are resubmitted, and cells
+# waiting on a controller:/state: register (EXIT_DEPS_UNMET) are re-dispatched as soon as
+# the register lands.  Lanes never wait on each other: the 8B chain can gate for hours on
+# QOS room while grade/analysis keep draining.
+set -euo pipefail
+if [[ "${ASYS_ALLOW_LEGACY_CONTROL:-0}" != "1" ]]; then
+  echo "[retired] ard36 loop driver requires ASYS_ALLOW_LEGACY_CONTROL=1" >&2
+  exit 2
+fi
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{REPO}/slurm/ard36_loop_driver.sbatch.{RUN_ID}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "{REPO}"
+lane_loop() {
+  local name="$1"; shift
+  local n=0
+  while [ $n -lt {LOOP_ITERATIONS} ]; do
+    n=$((n+1))
+    echo "[loop:$name] iteration $n $(date)"
+    bash -c "$1" || true
+    sleep {LOOP_INTERVAL_S}
+  done
+}
+{LANE_COMMANDS}
+wait || true

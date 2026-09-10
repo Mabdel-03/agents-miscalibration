@@ -30,7 +30,7 @@ import hashlib
 import hmac
 from collections import Counter as _Counter
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from agents_scaling.ard import contract as K
 from agents_scaling.study import metrics_reference
@@ -44,6 +44,7 @@ __all__ = [
     "SELECTOR_CONFIDENCE",
     "SELECTOR_PLURALITY",
     "VoteCandidate",
+    "candidate_from_report",
     "class_counts",
     "confidence_weighted_plurality",
     "fresh_prefix_votes",
@@ -91,6 +92,26 @@ class VoteCandidate:
     def keyed(self) -> bool:
         """Eligible to win: structurally valid *and* carrying a canonical class."""
         return bool(self.valid) and isinstance(self.canonical_class, str) and bool(self.canonical_class)
+
+
+def candidate_from_report(
+    candidate_id: str, report: Any, classify: Callable[[str | None], str | None]
+) -> VoteCandidate:
+    """Bridge one :class:`~agents_scaling.ard.report.Report` into a pool row.
+
+    ``classify`` is WP3's gold-independent ``ard.graders.canonical_class`` bound to the
+    item's family.  It is injected rather than imported so this module stays free of the
+    grader (and of sympy) and the class collapse is unit-testable on its own; an invalid
+    report is never classified at all, so a malformed answer can never form a content
+    class (spec §7).
+    """
+    valid = bool(getattr(report, "valid", False))
+    return VoteCandidate(
+        candidate_id=str(candidate_id),
+        canonical_class=classify(report.final_answer) if valid else None,
+        valid=valid,
+        confidence=report.confidence,
+    )
 
 
 def public_candidates(pool: Sequence[VoteCandidate]) -> list[PublicCandidate]:
@@ -203,9 +224,6 @@ def plurality(
     is never dropped from the denominator.
     """
     _check_pool(pool, pool_kind)
-    if pool_kind not in K.POOL_KINDS and not pool_kind.startswith("bank_prefix"):
-        # informative only: WP4/WP7 add derived pool kinds (e.g. suffix, fork branches)
-        pass
     selection = plurality_vote(
         public_candidates(pool), source_id=str(source_id), tie_seed=vote_tie_seed(study_seed)
     )

@@ -44,6 +44,11 @@ from agents_scaling.study.types import (
 
 ARD_SCHEMA_VERSION: int = 1
 
+#: The single synthetic item id of a whole-run analysis cell (COMPACT / E0): those kinds run
+#: once over the run root, not per public item, so this id is deliberately absent from
+#: ``items.parquet`` and the runner does not look it up there.
+ANALYSIS_ITEM: str = "ALL"
+
 #: The ARD36 lane tuple (contract §"Cohorts, lanes, serving profiles"), re-exported so no
 #: ARD module re-declares it and no study module is edited.
 LANES: tuple[str, ...] = K.LANES
@@ -310,6 +315,7 @@ class DecisionRef(_Record):
     protected: bool = False
     answer_raw: str | None = None
     answer_class: str | None = None
+    content_sha256: str | None = None      # report content identity (the second change rule)
     evidence_text: str | None = None
     confidence: float | None = None
     parse_status: str = K.ParseStatus.OK.value
@@ -436,7 +442,7 @@ def decision_id_for(episode_id: str, *, round_: int, agent_id: int, phase: str) 
 
 
 __all__ = [
-    "ARD_SCHEMA_VERSION", "ArdCellKind", "ArdCellSpec", "ArdItemResult", "ArdManifestError",
+    "ANALYSIS_ITEM", "ARD_SCHEMA_VERSION", "ArdCellKind", "ArdCellSpec", "ArdItemResult", "ArdManifestError",
     "CELL_DEP_PREFIX", "CONTROLLER_DEP_PREFIX", "STATE_DEP_PREFIX", "HARD_DEP_PREFIXES",
     "DecisionRef", "EPISODE_KINDS", "EXIT_CODES", "EXIT_DEPS_UNMET", "EXIT_DONE",
     "EXIT_INCOMPLETE", "EXIT_NO_SERVER", "EXIT_SUSPENDED", "EpisodeRecord",

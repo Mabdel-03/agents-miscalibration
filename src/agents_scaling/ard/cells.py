@@ -35,6 +35,7 @@ from agents_scaling.ard import contract as K
 from agents_scaling.ard import kinds as KINDS
 from agents_scaling.ard.items import ArdTask, load_ard_tasks
 from agents_scaling.ard.types import (
+    ANALYSIS_ITEM,
     ArdCellKind,
     ArdCellSpec,
     ArdManifestError,
@@ -217,46 +218,82 @@ class ArdBuilder(_Builder):
         key = (kind.value, cohort.value, protocol.value if protocol else "", checkpoint,
                reasoning_allowance, round_, team_id, parent_tag(parent_ref), instance, episode_rep)
         made: list[ArdCellSpec] = []
-        ordered = dispatch_order(tasks) if kind is not ArdCellKind.SUFFIX else list(tasks)
-        for shard_items in item_shards(ordered, size):
-            shard = self._next_shard(key)
-            split = _split_of(ordered, shard_items)
-            cell = ArdCellSpec(
-                cell_id=cell_id_for(
-                    kind, cohort=cohort, checkpoint=checkpoint, shard=shard, protocol=protocol,
+        # One shard never straddles two splits: train and validation are dispatched first
+        # (plan §7) and a cell's ``split`` must name exactly one frozen split.
+        for split, group in split_groups(tasks):
+            for shard_items in item_shards(group, size):
+                shard = self._next_shard(key)
+                cell = self._make(
+                    kind, shard_items, cohort=cohort, checkpoint=checkpoint, protocol=protocol,
                     reasoning_allowance=reasoning_allowance, round_=round_, team_id=team_id,
-                    parent_ref=parent_ref, instance=instance),
-                kind=kind,
-                protocol=protocol,
-                round=round_,
-                cohort=cohort,
-                checkpoint=checkpoint,
-                reasoning_allowance=int(reasoning_allowance),
-                final_allowance=K.FINAL_TOKENS,
-                items=tuple(shard_items),
-                team_id=team_id,
-                parent_ref=parent_ref,
-                leader_seed=leader_seed,
-                depends_on=tuple(depends_on),
-                max_inflight=spec.max_inflight,
-                parallel_items=spec.parallel_items,
-                lane=spec.lane_for(checkpoint),
-                split=split,
-                instance=instance,
-                shard=shard,
-                episode_rep=int(episode_rep),
-                options=dict(options or {}),
-            )
-            self.add(cell)
-            made.append(cell)
+                    parent_ref=parent_ref, instance=instance, depends_on=depends_on,
+                    leader_seed=leader_seed, episode_rep=episode_rep, options=options,
+                    split=split, shard=shard, spec=spec)
+                self.add(cell)
+                made.append(cell)
         return made
 
+    def _make(
+        self,
+        kind: ArdCellKind,
+        shard_items: Sequence[str],
+        *,
+        cohort: K.Cohort,
+        checkpoint: str,
+        protocol: K.Protocol | None,
+        reasoning_allowance: int,
+        round_: int | None,
+        team_id: str | None,
+        parent_ref: str | None,
+        instance: str | None,
+        depends_on: Sequence[str],
+        leader_seed: str | None,
+        episode_rep: int,
+        options: Mapping[str, Any] | None,
+        split: str,
+        shard: int,
+        spec: KINDS.KindSpec,
+    ) -> ArdCellSpec:
+        cell = ArdCellSpec(
+            cell_id=cell_id_for(
+                kind, cohort=cohort, checkpoint=checkpoint, shard=shard, protocol=protocol,
+                reasoning_allowance=reasoning_allowance, round_=round_, team_id=team_id,
+                parent_ref=parent_ref, instance=instance),
+            kind=kind,
+            protocol=protocol,
+            round=round_,
+            cohort=cohort,
+            checkpoint=checkpoint,
+            reasoning_allowance=int(reasoning_allowance),
+            final_allowance=K.FINAL_TOKENS,
+            items=tuple(shard_items),
+            team_id=team_id,
+            parent_ref=parent_ref,
+            leader_seed=leader_seed,
+            depends_on=tuple(depends_on),
+            max_inflight=spec.max_inflight,
+            parallel_items=spec.parallel_items,
+            lane=spec.lane_for(checkpoint),
+            split=split,
+            instance=instance,
+            shard=shard,
+            episode_rep=int(episode_rep),
+            options=dict(options or {}),
+        )
+        return cell
 
-def _split_of(tasks: Sequence[ArdTask], item_ids: Sequence[str]) -> str:
-    """The split of a shard; a shard that straddles two splits is labelled ``mixed``."""
-    by_id = {task.item_id: task.split for task in tasks}
-    splits = {by_id.get(item_id, "test") for item_id in item_ids}
-    return splits.pop() if len(splits) == 1 else "mixed"
+
+def split_groups(tasks: Sequence[ArdTask]) -> list[tuple[str, list[ArdTask]]]:
+    """``[(split, family-interleaved items)]`` in dispatch order, empty splits dropped."""
+    out: list[tuple[str, list[ArdTask]]] = []
+    for split in SPLIT_ORDER:
+        group = interleave_families([task for task in tasks if task.split == split])
+        if group:
+            out.append((split, group))
+    unknown = [task for task in tasks if task.split not in SPLIT_ORDER]
+    if unknown:
+        raise ArdManifestError(f"{len(unknown)} tasks carry a split outside {SPLIT_ORDER}")
+    return out
 
 
 # --------------------------------------------------------------------------- modules
@@ -547,7 +584,7 @@ def build_analysis_cells(
                             shard=0, instance=instance),
         kind=kind, protocol=None, round=None, cohort=K.Cohort.NATURAL,
         checkpoint=K.CHECKPOINT_SMALL, reasoning_allowance=K.THINKING_TOKENS_LOW,
-        final_allowance=K.FINAL_TOKENS, items=("ALL",), team_id=None, parent_ref=None,
+        final_allowance=K.FINAL_TOKENS, items=(ANALYSIS_ITEM,), team_id=None, parent_ref=None,
         leader_seed=None, depends_on=tuple(depends_on), max_inflight=spec.max_inflight,
         parallel_items=spec.parallel_items, lane=spec.lane, split="test", instance=instance,
         options=dict(options or {}),
@@ -708,6 +745,6 @@ __all__ = [
     "build_e1_roots", "build_e2_natural", "build_e2c_challenge", "build_e2d_high_budget",
     "build_e3_receiver", "build_e4_forks", "build_e4_gate", "build_e4_selector_audit",
     "build_e5_suffix", "build_e6_capture", "build_grade_cells", "build_module", "cell_id_for",
-    "dispatch_order", "interleave_families", "item_shards", "load_ard_cells_file",
+    "dispatch_order", "interleave_families", "item_shards", "load_ard_cells_file", "split_groups",
     "manifest_meta", "parent_tag", "write_ard_cells_file",
 ]

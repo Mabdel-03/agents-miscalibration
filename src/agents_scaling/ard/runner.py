@@ -29,6 +29,12 @@ around them without editing it:
 
 The per-kind work itself is resolved through :data:`agents_scaling.ard.kinds.KIND_TABLE`,
 so a kind owned by a work package that has not landed yet fails loudly on its own cell.
+The episode-shaped kinds run WP2's loop through :func:`wp2_episode_executor`, which adapts
+the frozen contract §2 interface (``run_episode`` / ``run_roots``) to the WP4 record types
+over WP2's own spec §18 row shapes; :func:`baseline_episode_executor` stands in only while
+``ard/episode.py`` does not exist, and stamps every row it writes so no analysis can mistake
+it for protocol evidence.  GATE's protection choice comes from WP5 through
+:func:`resolve_controller_chooser`; without it a GATE cell refuses to run (spec §12.3).
 """
 
 from __future__ import annotations
@@ -54,6 +60,7 @@ from agents_scaling.ard.client import (
 )
 from agents_scaling.ard.items import ArdTask, load_ard_tasks
 from agents_scaling.ard.types import (
+    ANALYSIS_ITEM,
     ARD_SCHEMA_VERSION,
     EXIT_DEPS_UNMET,
     EXIT_DONE,
@@ -74,7 +81,7 @@ from agents_scaling.experiment import io
 from agents_scaling.study import identity
 from agents_scaling.study.config import FROZEN_FILENAME, StudyConfig, load_config
 from agents_scaling.study.resources.oracle import make_cost_fn
-from agents_scaling.study.runner import CellRunner, unmet_dependencies
+from agents_scaling.study.runner import CellRunner, item_file_valid, unmet_dependencies
 from agents_scaling.study.types import Checkpoint, ProtocolError, SeedKey
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -158,6 +165,26 @@ def _content_digest(path: Path) -> tuple[str, str]:
     return raw_digest, "raw_bytes"
 
 
+def freeze_register(
+    run_root: str | os.PathLike, kind: str, payload: Mapping[str, Any]
+) -> str:
+    """Write a ``controller:``/``state:`` register and return the sha the dependency names.
+
+    The writer that matches :func:`_content_digest` rule 2: the payload is hashed as
+    canonical JSON, the digest is stamped into the object as ``<kind>_sha256``, and the file
+    lands at ``<run_root>/controller/<sha>/MODEL.json`` (or ``states/<sha>/REGISTER.json``).
+    WP5 freezes the controller through this function so a GATE cell's gate and the freeze
+    can never disagree about what "the frozen controller" hashes to.
+    """
+    field_name = "controller_sha256" if kind == "controller" else "state_sha256"
+    body = {key: value for key, value in dict(payload).items() if key != field_name}
+    digest = identity.sha256_hex(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    path = register_path(run_root, kind, digest)
+    io.write_json(path, {**body, field_name: digest})
+    return digest
+
+
 def resolve_hard_dependencies(
     cell: ArdCellSpec, run_root: str | os.PathLike
 ) -> list[DependencyStatus]:
@@ -221,17 +248,32 @@ def resolve_worker(kind: ArdCellKind) -> Callable[..., Any]:
 class EpisodeJob:
     """Everything an episode executor needs for one item of one cell.
 
-    ``decide`` is the only way to reach vLLM: it stamps the seed key (and therefore the
-    request identity) from the arguments below, so nothing can be sent to the server that is
-    not part of the cache key (contract §0.3).
+    ``generate`` and ``decide`` are the only ways to reach vLLM.  ``generate`` takes a fully
+    built :class:`DecisionRequest` (WP2's ``episode.Generate``); ``decide`` builds the seed
+    key from named arguments for callers that do not construct their own.  Either way the
+    seed key is part of the request identity, so nothing can be sent to the server that is
+    not inside the cache key (contract §0.3).
+
+    ``records`` accumulates every :class:`DecisionRecord` this item generated, keyed by
+    request id, so a caller that only gets report references back (WP2's ``run_roots``) can
+    still recover the token counts, latency and FLOPs of each root.
     """
 
     cell: ArdCellSpec
     task: ArdTask
     checkpoint: Checkpoint
     decide: Callable[..., DecisionRecord]
+    generate: Callable[[DecisionRequest], DecisionRecord]
+    classify: Callable[[str | None], str | None]
+    study_seed: bytes
+    model_cell: str
     run_root: Path
     event: Callable[..., None]
+    records: dict[str, DecisionRecord] = field(default_factory=dict)
+    #: Wall-clock arrival per request id, for the GPU-second attribution of
+    #: ``ard/resources.py`` (a record carries only its latency, never its arrival).
+    arrivals: dict[str, float] = field(default_factory=dict)
+    choose_protected: Callable[[Any, int], int] | None = None
     clock: Callable[[], float] = time.time
     options: Mapping[str, Any] = field(default_factory=dict)
 
@@ -241,21 +283,59 @@ EpisodeExecutor = Callable[[EpisodeJob], Sequence[EpisodeRecord]]
 
 
 def resolve_episode_executor() -> tuple[EpisodeExecutor, bool]:
-    """``(executor, is_wp2)`` — WP2's loop when it is importable, else the WP4 baseline.
+    """``(executor, is_wp2)`` — WP2's episode loop when it is importable, else the baseline.
 
-    WP2 (``ard/episode.py``) publishes ``episode_executor(job) -> Sequence[EpisodeRecord]``.
-    Until it lands, :func:`baseline_episode_executor` runs the frozen dispatch shape (five
-    agents × three rounds, no early stop, reads only round t-1) so the offline dry run and
-    the resume machinery are exercised end to end.  Every decision it produces carries
-    ``fallback=True`` and every episode a ``packet_policy`` of ``fallback:<protocol>``, and
-    ``ard/compact.py`` refuses to compact such rows into the scientific tables.
+    Resolution order:
+
+    1. ``ard.episode.episode_executor(job)``, if WP2 ever publishes this exact seam;
+    2. :func:`wp2_episode_executor`, the adapter over WP2's frozen contract interface
+       ``run_episode(item, protocol, checkpoint, *, generate, …) -> Episode`` (contract §2);
+    3. :func:`baseline_episode_executor`, the WP4 dispatch shape, used only while
+       ``ard/episode.py`` does not exist.  Its rows are stamped ``fallback=True`` with a
+       ``packet_policy`` of ``fallback:<protocol>``, and ``ard/compact.py`` keeps them out of
+       the scientific tables, so a dry run can never be mistaken for protocol evidence.
     """
     try:
         module = importlib.import_module("agents_scaling.ard.episode")
-        executor = getattr(module, "episode_executor")
-    except (ImportError, AttributeError):
+    except ImportError:
         return baseline_episode_executor, False
-    return executor, True
+    executor = getattr(module, "episode_executor", None)
+    if callable(executor):
+        return executor, True
+    if callable(getattr(module, "run_episode", None)):
+        return wp2_episode_executor, True
+    return baseline_episode_executor, False
+
+
+def resolve_controller_chooser(
+    run_root: Path, cell: ArdCellSpec
+) -> Callable[[Any, int], int] | None:
+    """GATE's ``choose_protected(state, round_) -> slot`` from WP5's frozen controller.
+
+    WP5 (``ard/controller.py``) is expected to publish ``load_controller(path)`` and the
+    contract §2 ``choose_protected(controller, state, *, round_, episode_id)``.  Until it
+    does this returns ``None``, and a GATE or CONF_PROTECT cell refuses to run rather than
+    inventing a protection choice (spec §12.3).
+    """
+    if cell.protocol not in (K.Protocol.GATE, K.Protocol.CONF_PROTECT):
+        return None
+    try:
+        module = importlib.import_module("agents_scaling.ard.controller")
+        load = getattr(module, "load_controller")
+        choose = getattr(module, "choose_protected")
+    except (ImportError, AttributeError):
+        return None
+    shas = [sha for kind, sha in (parse_dependency(dep) for dep in cell.depends_on)
+            if kind == "controller"]
+    if not shas:
+        return None
+    controller = load(register_path(run_root, "controller", shas[0]))
+
+    def _choose(state: Any, round_: int) -> int:
+        return int(choose(controller, state, round_=round_,
+                          episode_id=getattr(state, "episode_id", "")))
+
+    return _choose
 
 
 # --------------------------------------------------------------------------- runner
@@ -304,6 +384,19 @@ class ArdCellRunner(CellRunner):
         if (self.run_root / FROZEN_FILENAME).exists():
             self.frozen = self.cfg.frozen(self.run_root)
 
+    def _todo(self) -> list[str]:
+        """The study resume rule, minus the public-export lookup for analysis cells.
+
+        ``study/runner._todo`` refuses an item that is not in the public export; a COMPACT or
+        E0 cell runs once over the whole run root under the synthetic
+        :data:`agents_scaling.ard.types.ANALYSIS_ITEM` id, which is deliberately not a task.
+        """
+        if self.kind_spec.needs_endpoint or self.ard_cell.kind is ArdCellKind.GRADE:
+            return super()._todo()
+        assert ANALYSIS_ITEM  # documented above: analysis cells carry the synthetic item id
+        return [sid for sid in self.cell.items
+                if not item_file_valid(self.paths.item(sid), self.cell, sid)]
+
     def _deps_unmet_path(self) -> Path:
         return self.paths.cell_dir / DEPS_UNMET_FILE
 
@@ -318,7 +411,7 @@ class ArdCellRunner(CellRunner):
                        "detail": s.detail} for s in unmet],
         })
         self.event("deps_unmet", unmet=[s.dep for s in unmet],
-                   status=[s.status for s in unmet])
+                   statuses=[s.status for s in unmet])
 
     def run(self) -> int:
         """The study ``run()`` sequence with an injected task loader and a hard dep gate."""
@@ -350,7 +443,7 @@ class ArdCellRunner(CellRunner):
                     self.event("no_server", error=str(exc))
                     return EXIT_NO_SERVER
             worker = self._item_worker()
-            self.event("started", n_todo=len(todo), kind=self.ard_cell.kind.value,
+            self.event("started", n_todo=len(todo), cell_kind=self.ard_cell.kind.value,
                        parallel_items=cell.parallel_items, max_inflight=self.max_inflight)
             self._run_items(todo, worker)
             if self.shared.suspended is not None:
@@ -427,6 +520,17 @@ class ArdCellRunner(CellRunner):
             seed_key=seed_key,
             purpose=purpose,
         )
+        return self.generate(request)
+
+    # ---- per-kind workers ------------------------------------------------------------
+    def _item_worker(self) -> Callable[[str], None]:
+        worker = resolve_worker(self.ard_cell.kind)
+        return lambda item_id: worker(self, item_id)
+
+    def generate(self, request: DecisionRequest) -> DecisionRecord:
+        """WP2's ``episode.Generate``: one built request -> one committed decision record."""
+        if self.pool is None or self.cost_fn is None or self.decision_context is None:
+            raise ProtocolError("generate() before _connect(): this kind declared needs_endpoint=False")
         record = generate_decision(
             request, store=self.store, pool=self.pool, cost_fn=self.cost_fn,
             context=self.decision_context, client=self.client, cell_id=self.cell.cell_id,
@@ -437,17 +541,27 @@ class ArdCellRunner(CellRunner):
             self.shared.flops_total += int((record.flops or {}).get("total") or 0)
         return record
 
-    # ---- per-kind workers ------------------------------------------------------------
-    def _item_worker(self) -> Callable[[str], None]:
-        worker = resolve_worker(self.ard_cell.kind)
-        return lambda item_id: worker(self, item_id)
-
     def episode_job(self, task: ArdTask) -> EpisodeJob:
+        records: dict[str, DecisionRecord] = {}
+        arrivals: dict[str, float] = {}
+
+        def _generate(request: DecisionRequest) -> DecisionRecord:
+            arrived = self.clock()
+            record = self.generate(request)
+            records.setdefault(record.request_id, record)
+            arrivals.setdefault(record.request_id, arrived)
+            return record
+
         return EpisodeJob(
             cell=self.ard_cell, task=task, checkpoint=self._checkpoint(),
             decide=lambda **kwargs: self.decide(task=task, **kwargs),
-            run_root=self.run_root, event=self.event, clock=self.clock,
-            options=dict(self.ard_cell.options),
+            generate=_generate,
+            classify=lambda answer: _canonical_class(task.family, answer),
+            study_seed=self.cfg.study_seed,
+            model_cell=self._checkpoint().model_cell,
+            run_root=self.run_root, event=self.event, records=records, arrivals=arrivals,
+            choose_protected=resolve_controller_chooser(self.run_root, self.ard_cell),
+            clock=self.clock, options=dict(self.ard_cell.options),
         )
 
     def executor(self) -> EpisodeExecutor:
@@ -455,7 +569,7 @@ class ArdCellRunner(CellRunner):
             self._episode_executor, self._executor_is_wp2 = resolve_episode_executor()
             if not self._executor_is_wp2:
                 self.event("fallback_executor", reason="agents_scaling.ard.episode is absent",
-                           kind=self.ard_cell.kind.value)
+                           cell_kind=self.ard_cell.kind.value)
         return self._episode_executor
 
     def write_item(
@@ -494,8 +608,16 @@ def episode_worker(runner: ArdCellRunner, item_id: str) -> None:
     started = runner.clock()
     task = runner.tasks[item_id]
     executor = runner.executor()
+    job = runner.episode_job(task)
+    if (runner.ard_cell.protocol in (K.Protocol.GATE, K.Protocol.CONF_PROTECT)
+            and job.choose_protected is None
+            and executor is not baseline_episode_executor):
+        raise ProtocolError(
+            f"{runner.ard_cell.protocol.value} needs the frozen controller's protection "
+            "choice (spec §12.3): ard/controller.py (WP5) must publish load_controller(path) "
+            "and choose_protected(controller, state, *, round_, episode_id)")
     try:
-        episodes = list(executor(runner.episode_job(task)))
+        episodes = list(executor(job))
     except ContextTooLong as exc:
         runner.event("context_failure", source_id=item_id, error=str(exc))
         runner.write_item(task, (), status="context_failure", started=started)
@@ -516,6 +638,9 @@ def grade_worker(runner: ArdCellRunner, item_id: str) -> None:
     task = runner.tasks[item_id]
     store = graders.bind_gold(runner.run_root)
     rows: list[dict[str, Any]] = []
+    # WP2 keys a decision by its content-addressed request id, so one root decision is shared
+    # by every protocol that drew it: grade it once, not once per aliasing cell.
+    seen: set[str] = set()
     for cell_id in runner.ard_cell.options.get("cells", []):
         path = Path(runner.run_root) / "cells" / str(cell_id) / "items" / f"{item_id}.json"
         if not path.exists():
@@ -523,6 +648,10 @@ def grade_worker(runner: ArdCellRunner, item_id: str) -> None:
         payload = json.loads(path.read_text(encoding="utf-8"))
         for episode in payload.get("episodes") or []:
             for decision in episode.get("decisions") or []:
+                decision_id = str(decision.get("decision_id") or "")
+                if decision_id in seen:
+                    continue
+                seen.add(decision_id)
                 answer = decision.get("answer_raw")
                 result = graders.grade(task.family, answer, item_id, store=store)
                 row = result.to_row()
@@ -533,6 +662,192 @@ def grade_worker(runner: ArdCellRunner, item_id: str) -> None:
     io.write_json(Path(runner.run_root) / "eval" / "grades" / runner.cell.cell_id /
                   f"{item_id}.json", {"item_id": item_id, "rows": rows})
     runner.write_item(task, (), started=started, grades=rows)
+
+
+# --------------------------------------------------------------------------- WP2 adapter
+
+
+def _ref_from_wp2_row(
+    row: Mapping[str, Any],
+    record: DecisionRecord | None,
+    *,
+    cell: ArdCellSpec,
+    episode_id: str,
+    protected_slot: int | None,
+    classify: Callable[[str | None], str | None],
+    arrivals: Mapping[str, float],
+) -> DecisionRef:
+    """One WP2 ``Decision.to_row()`` (spec §18 shape) → the joinable :class:`DecisionRef`.
+
+    Built from WP2's public row rather than from its internal fields, so the two packages
+    meet on the §18 field list and nothing else.
+    """
+    flops = dict((record.flops or {}) if record is not None else {})
+    agent_id = int(row.get("agent_id") or 0)
+    answer = row.get("answer_raw")
+    return DecisionRef(
+        decision_id=str(row.get("decision_id") or ""),
+        episode_id=str(row.get("episode_id") or episode_id),
+        request_id=str(row.get("request_hash") or (record.request_id if record else "")),
+        agent_id=agent_id,
+        round=int(row.get("round") or 0),
+        phase=str(row.get("phase") or ""),
+        protocol=cell.protocol.value if cell.protocol else "NONE",
+        checkpoint=cell.checkpoint,
+        parent_state_id=row.get("parent_state_id"),
+        parent_decision_id=row.get("parent_decision_id"),
+        root_report_id=row.get("root_report_id"),
+        prior_report_id=row.get("prior_report_id"),
+        seen_message_ids=tuple(row.get("seen_message_ids") or ()),
+        message_order=tuple(range(len(row.get("seen_message_ids") or ()))),
+        n_packets=len(row.get("seen_message_ids") or ()),
+        packet_tokens=int(row.get("packet_tokens") or 0),
+        protected=protected_slot is not None and agent_id == int(protected_slot),
+        answer_raw=answer,
+        answer_class=classify(answer) if answer is not None else None,
+        content_sha256=row.get("content_sha256"),
+        evidence_text=row.get("evidence_text"),
+        confidence=row.get("confidence"),
+        parse_status=str(row.get("parse_status") or K.ParseStatus.OK.value),
+        thinking_tokens=int(row.get("thinking_tokens") or 0),
+        final_tokens=int(row.get("final_tokens") or 0),
+        prompt_tokens=int(row.get("prompt_tokens") or 0),
+        cached_prefill_tokens=int(row.get("cached_prefill_tokens") or 0),
+        budget_tokens=int(record.budget_tokens) if record is not None else cell.reasoning_allowance,
+        cap_hit=bool(row.get("cap_hit")),
+        boundary_injected=bool(row.get("boundary_injected")),
+        final_overrun=bool(row.get("final_overrun")),
+        answer_logprob=row.get("answer_logprob"),
+        finish_reason=str(row.get("finish_reason") or ""),
+        latency_s=float(row.get("latency") or 0.0),
+        arrival_ts=float(arrivals.get(str(row.get("request_hash") or ""), 0.0)),
+        endpoint_id=str(row.get("endpoint_id") or ""),
+        flops=flops,
+        aliased=bool(row.get("aliased")),
+        fallback=False,
+    )
+
+
+def _ref_from_report_ref(
+    ref: Any, record: DecisionRecord | None, *, cell: ArdCellSpec, episode_id: str,
+    classify: Callable[[str | None], str | None], arrivals: Mapping[str, float],
+) -> DecisionRef:
+    """A WP2 ``ReportRef`` (roots carry no ``Decision`` object) → a round-0 decision row."""
+    row = {"decision_id": ref.decision_id, "episode_id": episode_id,
+           "agent_id": ref.agent_slot, "round": ref.round_, "phase": "root",
+           "request_hash": ref.decision_id, **ref.report.to_dict()}
+    if record is not None:
+        row.update({"thinking_tokens": record.thinking_tokens,
+                    "final_tokens": record.final_tokens,
+                    "prompt_tokens": record.prompt_tokens,
+                    "cached_prefill_tokens": record.cached_prefill_tokens,
+                    "cap_hit": record.cap_hit,
+                    "boundary_injected": record.boundary_injected,
+                    "answer_logprob": record.answer_logprob,
+                    "latency": record.latency_s, "endpoint_id": record.endpoint_id,
+                    "finish_reason": record.finish_reason, "aliased": record.aliased})
+    return _ref_from_wp2_row(row, record, cell=cell, episode_id=episode_id,
+                             protected_slot=None, classify=classify, arrivals=arrivals)
+
+
+def _state_from_wp2(state: Any, refs: Sequence[DecisionRef], *, protected_slot: int | None) -> RoundState:
+    classes = tuple(state.canonical_class(agent.latest.report) for agent in state.agents)
+    return RoundState(
+        state_id=identity.sha256_hex("|".join(state.state_ids())),
+        episode_id=state.episode_id,
+        round=int(state.round_),
+        decision_ids=tuple(agent.latest.decision_id for agent in state.agents),
+        answer_classes=classes,
+        valid=tuple(agent.latest.report.valid for agent in state.agents),
+        protected_slot=protected_slot,
+        leader_id=state.leader,
+    )
+
+
+def wp2_episode_executor(job: EpisodeJob) -> list[EpisodeRecord]:
+    """Adapter over WP2's ``ard/episode.py`` (contract §2: ``run_episode`` / ``run_roots``).
+
+    A ROOTS cell runs the ``ROOT_DRAWS``-draw stateless bank (spec §5.2) through
+    ``run_roots``; every other episode-shaped kind runs ``run_episode`` with this cell's
+    protocol, cohort, budget and, for the protection protocols, WP5's controller choice.
+    The result is translated into the WP4 record types through WP2's own §18 row shapes.
+    """
+    from agents_scaling.ard import episode as E
+
+    cell, task = job.cell, job.task
+    protocol = cell.protocol or K.Protocol.PRIVATE
+    spec = E.EpisodeSpec(
+        item_id=str(task.item_id), source_id=str(task.source_id), split=str(task.split),
+        family=str(task.family), task_text=str(task.task_text), protocol=protocol,
+        checkpoint=cell.checkpoint, model_cell=job.model_cell, cohort=cell.cohort.value,
+        episode_rep=int(cell.episode_rep), thinking_tokens=int(cell.reasoning_allowance),
+    )
+    if cell.kind is ArdCellKind.ROOTS:
+        refs = E.run_roots(spec, generate=job.generate, draws=range(K.ROOT_DRAWS))
+        decisions = tuple(
+            _ref_from_report_ref(ref, job.records.get(ref.decision_id), cell=cell,
+                                 episode_id=spec.episode_id, classify=job.classify,
+                                 arrivals=job.arrivals)
+            for ref in refs)
+        state = RoundState(
+            state_id=identity.sha256_hex(spec.episode_id + "|roots"),
+            episode_id=spec.episode_id, round=0,
+            decision_ids=tuple(ref.decision_id for ref in decisions[:K.N_AGENTS]),
+            answer_classes=tuple(ref.answer_class for ref in decisions[:K.N_AGENTS]),
+            valid=tuple(ref.valid for ref in decisions[:K.N_AGENTS]))
+        return [EpisodeRecord(
+            episode_id=spec.episode_id, item_id=task.item_id, cohort=cell.cohort.value,
+            protocol=protocol.value, checkpoint=cell.checkpoint,
+            checkpoint_revision=K.REVISIONS[cell.checkpoint],
+            reasoning_allowance=K.ROOT_THINKING_TOKENS, final_allowance=cell.final_allowance,
+            packet_policy="roots", team_id=cell.team_id, parent_ref=cell.parent_ref,
+            root_candidate_ids=tuple(ref.decision_id for ref in decisions[:K.N_AGENTS]),
+            root_seed_ids=tuple(str(draw) for draw in range(K.ROOT_DRAWS)),
+            condition_manifest_hash=identity.sha256_hex(cell.cell_id),
+            decisions=decisions, states=(state,))]
+
+    episode = E.run_episode(
+        task, protocol, cell.checkpoint, generate=job.generate, study_seed=job.study_seed,
+        model_cell=job.model_cell, classify=job.classify, cohort=cell.cohort.value,
+        episode_rep=int(cell.episode_rep), thinking_tokens=int(cell.reasoning_allowance),
+        choose_protected=job.choose_protected,
+    )
+    episode_row = episode.to_row()
+    episode_id = str(episode_row["episode_id"])
+    root_refs = tuple(
+        _ref_from_report_ref(ref, job.records.get(ref.decision_id), cell=cell,
+                             episode_id=episode_id, classify=job.classify,
+                             arrivals=job.arrivals)
+        for ref in episode.roots)
+    decisions: list[DecisionRef] = list(root_refs)
+    states: list[RoundState] = [_state_from_wp2(episode.root_state, root_refs, protected_slot=None)]
+    for result in episode.rounds:
+        refs = [
+            _ref_from_wp2_row(decision.to_row(), decision.record, cell=cell,
+                              episode_id=episode_id, protected_slot=result.protected_slot,
+                              classify=job.classify, arrivals=job.arrivals)
+            for decision in result.decisions]
+        refs.sort(key=lambda ref: ref.agent_id)
+        decisions.extend(refs)
+        states.append(_state_from_wp2(result.state, refs, protected_slot=result.protected_slot))
+    return [EpisodeRecord(
+        episode_id=episode_id, item_id=task.item_id,
+        cohort=str(episode_row.get("cohort") or cell.cohort.value),
+        protocol=str(episode_row.get("protocol") or protocol.value),
+        checkpoint=str(episode_row.get("checkpoint") or cell.checkpoint),
+        checkpoint_revision=str(episode_row.get("checkpoint_revision") or ""),
+        N=int(episode_row.get("N") or K.N_AGENTS),
+        horizon=int(episode_row.get("horizon") or K.UPDATE_ROUNDS),
+        reasoning_allowance=int(episode_row.get("reasoning_allowance") or cell.reasoning_allowance),
+        final_allowance=int(episode_row.get("final_allowance") or cell.final_allowance),
+        packet_policy=str(episode_row.get("packet_policy") or protocol.value),
+        memory_policy=str(episode_row.get("memory_policy") or ""),
+        leader_id=episode_row.get("leader_id"),
+        team_id=cell.team_id, parent_ref=cell.parent_ref,
+        root_candidate_ids=tuple(episode_row.get("root_candidate_ids") or ()),
+        root_seed_ids=tuple(str(draw) for draw in (episode_row.get("root_draws") or ())),
+        condition_manifest_hash=identity.sha256_hex(cell.cell_id),
+        decisions=tuple(decisions), states=tuple(states))]
 
 
 # --------------------------------------------------------------------------- baseline loop
@@ -819,7 +1134,9 @@ def run_ard_cell(
 
 __all__ = [
     "ARD_CONFIG_PATH", "ArdCellRunner", "DEPS_UNMET_FILE", "DependencyStatus", "EpisodeJob",
-    "baseline_episode_executor", "episode_worker", "grade_worker", "load_ard_config",
-    "register_path", "resolve_episode_executor", "resolve_hard_dependencies",
-    "resolve_worker", "run_ard_cell", "unmet_hard_dependencies",
+    "baseline_episode_executor", "episode_worker", "freeze_register", "grade_worker",
+    "load_ard_config",
+    "register_path", "resolve_controller_chooser", "resolve_episode_executor",
+    "resolve_hard_dependencies", "resolve_worker", "run_ard_cell", "unmet_hard_dependencies",
+    "wp2_episode_executor",
 ]

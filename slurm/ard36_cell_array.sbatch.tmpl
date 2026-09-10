@@ -1,0 +1,41 @@
+#!/bin/bash
+#SBATCH --job-name=asys-ard36-{RUN_ID}-{LANE}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --array=0-{LAST_INDEX}%{THROTTLE}
+#SBATCH --output={LOG_DIR}/ard36_{LANE}_%A_%a.out
+#SBATCH --signal=B:USR1@1200
+#SBATCH --no-requeue
+#SBATCH --exclude=node3804
+
+# ARD36 cell worker (WP4): one array task = one cell of {CELLS_FILE}.  Fork of
+# study_cell_array.sbatch.tmpl with the ARD runner and the EXIT_DEPS_UNMET path.
+#
+# SIGUSR1 20 min before the walltime makes run_one finish its in-flight items and exit 0
+# WITHOUT meta.json, so ard36_launch_chunked.py re-queues the cell (spec §10.4).
+#
+# Exit 5 = EXIT_DEPS_UNMET: a controller:/state: dependency is absent or tampered.  No
+# meta.json was written and no request was generated, so this is NOT a failure — the task
+# exits 0 and the lane driver re-dispatches the cell on a later 15-minute pass, once the
+# controller freeze (plan §7 P2) or the state seal has landed.  Slurm must not see it as
+# FAILED or the array's accounting would report a defect that does not exist.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+set +e
+python -m agents_scaling.ard.run_one \
+  --run-id "{RUN_ID}" \
+  --server-run-id "{SERVER_RUN_ID}" \
+  --cells-file "{CELLS_FILE}" \
+  --index "$SLURM_ARRAY_TASK_ID"
+rc=$?
+set -e
+
+if [ "$rc" -eq 5 ]; then
+  echo "[ard36] cell index $SLURM_ARRAY_TASK_ID: dependencies unmet (EXIT_DEPS_UNMET); no meta.json, no requests; the lane loop will re-queue it"
+  exit 0
+fi
+exit "$rc"

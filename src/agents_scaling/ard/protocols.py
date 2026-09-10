@@ -32,7 +32,7 @@ GATE and PEER produce byte-identical packets where the spec says they must.
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Sequence
 
 from agents_scaling.ard import contract as K
 from agents_scaling.ard.packets import (
