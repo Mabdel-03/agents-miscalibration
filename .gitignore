@@ -49,3 +49,4 @@ paper/tables/
 paper/figures/
 paper/_build/
 paper/.stamp-*
+.tmp/
