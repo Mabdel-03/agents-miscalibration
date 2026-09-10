@@ -336,6 +336,13 @@ class Decoding(_Record):
     max_tokens: int
     enable_thinking: bool
     guided_json: bool = False  # amendment E2: judges/forecast only, decided at pilot (P2-1)
+    #: ARD36 (plan §4.2, §5.2): the vLLM ``thinking_token_budget`` sent in ``extra_body``
+    #: and the independent post-``</think>`` report allowance.  Everything sent to the
+    #: engine must enter the request identity, so both are hashed.  Ints, never floats
+    #: (JCS forbids floats).  ``0`` means "not part of this request" and is the value of
+    #: every study_v4 decoding, so the frozen study hashes are unchanged.
+    thinking_tokens: int = 0
+    final_tokens: int = 0
 
     def as_strings(self) -> dict[str, Any]:
         """Identity form: floats as fixed strings, ints/bools native (architecture §1.2)."""
@@ -349,6 +356,8 @@ class Decoding(_Record):
             "max_tokens": int(self.max_tokens),
             "enable_thinking": bool(self.enable_thinking),
             "guided_json": bool(self.guided_json),
+            "thinking_tokens": int(self.thinking_tokens),
+            "final_tokens": int(self.final_tokens),
         }
 
     @property

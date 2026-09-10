@@ -22,8 +22,17 @@ words of the frozen templates under ``study/prompts/templates``):
 * ``quality_score`` → JUDGE_BEST (§4.4) score object;
 * ``extracted_final_answer`` → the cais/hle judge (§3.3) as a JSON object;
 * ``q_personal`` / ``PERSONAL_FINAL`` → §8.7 shadow forecast object;
+* ``<final>`` → an ARD36 report (spec §6.3) per ``report_mode``;
 * otherwise → a valid §3.5 candidate whose ``final_answer`` is drawn from a small
   per-item pool (so §4.4 VOTE is non-degenerate), or an invalid output at ``invalid_rate``.
+
+ARD36 extensions (all off by default, so the study_v4 response bytes are unchanged):
+``extra_body["thinking_token_budget"]`` is honoured by forcing ``</think>`` once the
+generated thinking count reaches the budget (``thinking_words`` is the per-request knob
+that makes a test hit the cap); ``logprobs``/``top_logprobs`` produce a real
+``choices[0].logprobs`` block; ``cached_prefill_ratio`` fills
+``usage.prompt_tokens_details.cached_tokens``; ``think_open``/``think_close`` inject the
+two delimiter faults (``no_think_open`` / ``premature_reasoning_eos``).
 
 Fault injection: :meth:`FakeVllmServer.fail_next` (HTTP 5xx/429 for the next *n* chat
 requests), :meth:`FakeVllmServer.hang` (sleep before answering, to trigger client
@@ -61,6 +70,17 @@ WORKER_MARKER = "subtask_result"
 JUDGE_BEST_MARKER = "quality_score"
 HLE_JUDGE_MARKER = "extracted_final_answer"
 FORECAST_MARKERS = ("q_personal", "PERSONAL_FINAL")
+
+#: ARD36 (spec §6.3): the report contract is three tags in the post-``</think>`` span.
+#: Detected as a literal string; the fake never imports the ARD parser.
+ARD_FINAL_OPEN, ARD_FINAL_CLOSE = "<final>", "</final>"
+ARD_EVIDENCE_OPEN, ARD_EVIDENCE_CLOSE = "<evidence>", "</evidence>"
+ARD_CONFIDENCE_OPEN, ARD_CONFIDENCE_CLOSE = "<confidence>", "</confidence>"
+ARD_REPORT_MARKER = ARD_FINAL_OPEN
+#: ``report_mode`` values of :class:`FakeVllmServer` (see its docstring).
+ARD_REPORT_MODES = ("valid", "no_confidence", "unclosed_final", "empty_final", "invalid")
+#: vLLM's prefix-cache block size in this build (verified: ``block_size=16``).
+PREFIX_CACHE_BLOCK = 16
 
 DEFAULT_ANSWER_POOL: tuple[str, ...] = ("A", "B", "C")
 #: Cumulative draw weights over the pool, rotated per item so the plurality answer differs
@@ -182,6 +202,8 @@ def detect_mode(messages: Sequence[Mapping[str, Any]]) -> str:
         return "hle_judge"
     if any(marker in text for marker in FORECAST_MARKERS):
         return "forecast"
+    if ARD_REPORT_MARKER in text:
+        return "ard_report"
     return "solver"
 
 
@@ -194,6 +216,21 @@ def item_key(messages: Sequence[Mapping[str, Any]]) -> str:
     match = _TASK_RE.search(text)
     span = match.group(1).strip() if match else text
     return hashlib.sha256(span.encode("utf-8")).hexdigest()
+
+
+def thinking_budget_of(body: Mapping[str, Any]) -> int | None:
+    """vLLM's ``thinking_token_budget`` for one request body, or ``None``.
+
+    The OpenAI SDK merges ``extra_body`` into the top level, so production requests carry
+    it there; a raw body that still nests it is accepted too.
+    """
+    for source in (body, body.get("extra_body") or {}):
+        if isinstance(source, Mapping) and source.get("thinking_token_budget") is not None:
+            value = int(source["thinking_token_budget"])
+            if value < 1:
+                raise ValueError("thinking_token_budget must be >= 1")
+            return value
+    return None
 
 
 def _fence(content: str) -> str:
@@ -278,6 +315,11 @@ class FakeVllmServer:
         guided_json_mode: str = "ignore",
         max_model_len: int = 40960,
         reasoning_words: int = 12,
+        thinking_words: int | Callable[[dict[str, Any]], int] | None = None,
+        report_mode: str | Callable[[str], str] = "valid",
+        think_open: bool = True,
+        think_close: bool = True,
+        cached_prefill_ratio: float = 0.0,
         responder: Callable[[dict[str, Any]], str | None] | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
@@ -290,6 +332,10 @@ class FakeVllmServer:
             raise ValueError("guided_json_mode must be 'ignore' or 'enforce'")
         if worker_mode not in ("complete", "partial", "failed", "invalid"):
             raise ValueError("worker_mode must be complete|partial|failed|invalid")
+        if not callable(report_mode) and report_mode not in ARD_REPORT_MODES:
+            raise ValueError(f"report_mode must be one of {ARD_REPORT_MODES} or a callable")
+        if not 0.0 <= cached_prefill_ratio <= 1.0:
+            raise ValueError("cached_prefill_ratio must lie in [0, 1]")
         self.served_model_name = served_model_name
         self.tokenizer = tokenizer if tokenizer is not None else FakeTokenizer()
         self.invalid_rate = float(invalid_rate)
@@ -302,6 +348,11 @@ class FakeVllmServer:
         self.guided_json_mode = guided_json_mode
         self.max_model_len = int(max_model_len)
         self.reasoning_words = int(reasoning_words)
+        self.thinking_words = thinking_words
+        self.report_mode = report_mode
+        self.think_open = bool(think_open)
+        self.think_close = bool(think_close)
+        self.cached_prefill_ratio = float(cached_prefill_ratio)
         self.responder = responder
         self.finish_reason_override: str | None = None
 
@@ -516,19 +567,40 @@ class FakeVllmServer:
 
         reasoning: str | None = None
         completion_ids: list[int] = []
-        if enable_thinking:
-            words = [f"think-{key[:6]}-{i}" for i in range(self.reasoning_words)]
-            reasoning = "\nOkay, let me reason about this carefully. " + " ".join(words) + "\n"
-            completion_ids += [THINK_START_ID] + self.tokenizer.encode(reasoning) + [THINK_END_ID]
-            content = "\n\n" + content
-        answer_ids = self.tokenizer.encode(content)
-        completion_ids += answer_ids
         finish_reason = "stop"
+        if enable_thinking:
+            n_words = self._thinking_word_count(key, body)
+            words = [f"think-{key[:6]}-{i}" for i in range(n_words)]
+            reasoning = "\nOkay, let me reason about this carefully. " + " ".join(words) + "\n"
+            think_ids = self.tokenizer.encode(reasoning)
+            # ARD36 spec §6.2 / vLLM 0.21 ``thinking_budget_state``: the sampler forces the
+            # reasoning-end id the moment the generated thinking count reaches the budget.
+            # Forcing is a logits boost, so 151668 is genuinely sampled into token_ids and
+            # nothing in the response marks the injection: the detector must infer it from
+            # ``thinking_tokens == budget``.
+            budget = thinking_budget_of(body)
+            if budget is not None and len(think_ids) >= budget:
+                think_ids = think_ids[:budget]
+                reasoning = self.tokenizer.decode(think_ids)
+            if self.think_open:
+                completion_ids.append(THINK_START_ID)
+            completion_ids += think_ids
+            if self.think_close:
+                completion_ids.append(THINK_END_ID)
+                content = "\n\n" + content
+            else:
+                # The completion ran out of room before closing the channel: everything is
+                # the reasoning channel and there is no report span (§6.3
+                # ``premature_reasoning_eos``).
+                content = None
+                finish_reason = "length"
+        answer_ids = self.tokenizer.encode(content) if content is not None else []
+        completion_ids += answer_ids
         if len(completion_ids) + 1 > max_tokens:
             completion_ids = completion_ids[:max_tokens]
             finish_reason = "length"
             reasoning, content = self._split_truncated(completion_ids, enable_thinking)
-        else:
+        elif finish_reason != "length":
             completion_ids.append(IM_END_ID)
         if self.finish_reason_override is not None:
             finish_reason = self.finish_reason_override
@@ -552,7 +624,7 @@ class FakeVllmServer:
                 {
                     "index": 0,
                     "message": message,
-                    "logprobs": None,
+                    "logprobs": self._logprobs_block(body, completion_ids, key),
                     "finish_reason": finish_reason,
                     "stop_reason": None,
                     "token_ids": completion_ids,
@@ -565,7 +637,7 @@ class FakeVllmServer:
                 "prompt_tokens": len(prompt_ids),
                 "total_tokens": len(prompt_ids) + len(completion_ids),
                 "completion_tokens": len(completion_ids),
-                "prompt_tokens_details": None,
+                "prompt_tokens_details": self._prompt_tokens_details(len(prompt_ids)),
             },
             "prompt_logprobs": None,
             "prompt_token_ids": prompt_ids,
@@ -573,6 +645,92 @@ class FakeVllmServer:
             "prompt_routed_experts": None,
             "kv_transfer_params": None,
         }
+
+    # ---- ARD36 extensions (spec §6.2 split budget, §6.3 report contract) ---------
+    def _thinking_word_count(self, key: str, body: Mapping[str, Any]) -> int:
+        """Thinking length of one request: the per-request knob, else ``reasoning_words``.
+
+        ``thinking_words`` may be an int or a callable of ``{"key", "body"}``.  It must be
+        a pure function of the request so the store still aliases and the resume tests
+        hold; a test forces a budget cap hit by asking for more words than the budget.
+        """
+        knob = self.thinking_words
+        if knob is None:
+            return self.reasoning_words
+        value = int(knob({"key": key, "body": dict(body)})) if callable(knob) else int(knob)
+        if value < 0:
+            raise ValueError("thinking_words must be >= 0")
+        return value
+
+    def _logprobs_block(
+        self, body: Mapping[str, Any], completion_ids: Sequence[int], key: str
+    ) -> dict[str, Any] | None:
+        """``choices[0].logprobs`` in the OpenAI chat shape, or ``None`` when not asked for.
+
+        One entry per generated token (vLLM reports the whole completion, thinking span
+        included), so a client can align the list with ``token_ids`` by index.  Values are
+        finite and a pure function of ``(key, index)``.
+        """
+        if not body.get("logprobs"):
+            return None
+        top_n = int(body.get("top_logprobs") or 0)
+        content: list[dict[str, Any]] = []
+        for index, token_id in enumerate(completion_ids):
+            token = self.tokenizer.decode([token_id])
+            logprob = -2.0 * _unit(f"{key}:{index}", "logprob")
+            entry: dict[str, Any] = {
+                "token": token,
+                "logprob": round(logprob, 6),
+                "bytes": list(token.encode("utf-8")),
+                "top_logprobs": [
+                    {
+                        "token": token if rank == 0 else f"alt{rank}",
+                        "logprob": round(logprob - rank, 6),
+                        "bytes": list((token if rank == 0 else f"alt{rank}").encode("utf-8")),
+                    }
+                    for rank in range(max(0, top_n))
+                ],
+            }
+            content.append(entry)
+        return {"content": content, "refusal": None}
+
+    def _prompt_tokens_details(self, prompt_tokens: int) -> dict[str, Any] | None:
+        """``usage.prompt_tokens_details`` with vLLM's prefix-cache hit count.
+
+        ``None`` (the study_v4 shape) unless ``cached_prefill_ratio`` is set.  Hits are
+        whole 16-token blocks, as the real engine reports them.
+        """
+        if self.cached_prefill_ratio <= 0.0:
+            return None
+        blocks = int(prompt_tokens * self.cached_prefill_ratio) // PREFIX_CACHE_BLOCK
+        return {"cached_tokens": min(prompt_tokens, blocks * PREFIX_CACHE_BLOCK)}
+
+    def _ard_report_content(self, messages: Sequence[Mapping[str, Any]], key: str) -> str:
+        """One ARD36 report: ``<final>…</final><evidence>…</evidence><confidence>p</confidence>``.
+
+        ``report_mode`` selects the variant (see :data:`ARD_REPORT_MODES`): ``valid``;
+        ``no_confidence`` (a missing feature, never 0.5); ``unclosed_final`` and
+        ``empty_final`` (malformed / empty ``<final>``); ``invalid`` (no tags at all).
+        The answer is drawn from the same per-item pool as :meth:`candidate`, so a team of
+        five draws is non-degenerate and BALANCED sees several canonical classes.
+        """
+        mode = self.report_mode(_prompt_text(messages)) if callable(self.report_mode) else self.report_mode
+        if mode not in ARD_REPORT_MODES:
+            raise ValueError(f"unknown report_mode {mode!r}")
+        answer = self.candidate(messages, key)["final_answer"]
+        confidence = round(0.5 + 0.45 * _unit(key, "ard_confidence"), 3)
+        evidence = f"{ARD_EVIDENCE_OPEN} checked {key[:8]} against the task {ARD_EVIDENCE_CLOSE}"
+        tail = f"{ARD_CONFIDENCE_OPEN} {confidence} {ARD_CONFIDENCE_CLOSE}"
+        if mode == "invalid":
+            return f"I am fairly sure the answer is {answer} but I will not tag it."
+        if mode == "unclosed_final":
+            return f"{ARD_FINAL_OPEN} {answer} {evidence} {tail}"
+        if mode == "empty_final":
+            return f"{ARD_FINAL_OPEN}{ARD_FINAL_CLOSE} {evidence} {tail}"
+        head = f"{ARD_FINAL_OPEN} {answer} {ARD_FINAL_CLOSE}"
+        if mode == "no_confidence":
+            return f"{head} {evidence}"
+        return f"{head} {evidence} {tail}"
 
     def _split_truncated(self, ids: list[int], enable_thinking: bool) -> tuple[str | None, str | None]:
         """Reasoning/content of a ``length``-truncated completion, as the qwen3 parser would split it."""
@@ -587,6 +745,8 @@ class FakeVllmServer:
 
     # ---- content generators ----------------------------------------------------
     def _content_for(self, mode: str, messages: Sequence[Mapping[str, Any]], key: str) -> str:
+        if mode == "ard_report":
+            return self._ard_report_content(messages, key)
         if mode == "hub":
             return self._hub_content(messages, key)
         if mode == "worker":
@@ -750,8 +910,17 @@ def unregister_fake(run_root: str | Path, profile: str, host: str, port: int) ->
 
 
 __all__ = [
+    "ARD_CONFIDENCE_CLOSE",
+    "ARD_CONFIDENCE_OPEN",
+    "ARD_EVIDENCE_CLOSE",
+    "ARD_EVIDENCE_OPEN",
+    "ARD_FINAL_CLOSE",
+    "ARD_FINAL_OPEN",
+    "ARD_REPORT_MARKER",
+    "ARD_REPORT_MODES",
     "FakeTokenizer",
     "FakeVllmServer",
+    "PREFIX_CACHE_BLOCK",
     "DEFAULT_ANSWER_POOL",
     "THINK_START_ID",
     "THINK_END_ID",
@@ -760,5 +929,6 @@ __all__ = [
     "item_key",
     "register_fake",
     "request_key",
+    "thinking_budget_of",
     "unregister_fake",
 ]

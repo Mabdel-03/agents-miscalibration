@@ -12,6 +12,8 @@ smaller for throughput; selective ``-long`` profiles preserve context-heavy trea
 * ``32B-long`` -- the two-GPU 40K profile used for coordinated intermediate/CoT cells.
 * ``0.6B-long`` through ``14B-long`` -- one-GPU 40K profiles for large coordinated
   peer blocks at the highest reasoning/agent-count rungs.
+* ``ard36-8B`` / ``ard36-32B`` -- the Agents Round Dynamics 36h study's 16K profiles
+  (plan §4.2); see the ARD36 block below for the context and port-base reasoning.
 """
 
 from __future__ import annotations
@@ -86,6 +88,56 @@ SERVING_PROFILES[LONG_32B_PROFILE] = ServingProfile(
     # layout choice from leaking into result rows or changing the capacity treatment.
     served_model_name="32B",
 )
+
+
+# --------------------------------------------------------------------------- ARD36
+# Agents Round Dynamics 36h (plan §4.2): two dedicated profiles so the study never shares
+# a replica pool -- or a port -- with a study_v4 fleet.
+#
+# ``max_model_len`` is ARD36_MAX_MODEL_LEN = 16,384: the frozen prompt cap (~3.3k) plus the
+# largest output allowance (1 + 4,096 + 1 + 256 = 4,354) plus the 128-token reserve, with
+# margin.  Not 40,960 (2.5x the KV waste) and not 8,192 (the 4,096-thinking arms would not
+# fit).  The names are chosen for their crc32 port bases (8925 / 8992), which are >= 16
+# clear of every existing profile -- ``32B-ard36`` would land on 8830, four ports from
+# ``32B-long``'s 8826, a silent SO_REUSEPORT split if a study_v4 replica were live.
+# ``launch_server.assert_port_base_clearance`` re-checks this at import of the launcher.
+# Every value below comes from the frozen ARD36 contract; nothing is re-declared here.
+# ``agents_scaling.ard.contract`` is a leaf module (stdlib only), so this import adds no
+# dependency cycle and no runtime cost.
+from agents_scaling.ard.contract import (  # noqa: E402
+    CHECKPOINT_LARGE as _ARD36_LARGE_SIZE,
+    DTYPE as ARD36_DTYPE,
+    CHECKPOINT_SMALL as _ARD36_SMALL_SIZE,
+    MAX_MODEL_LEN as ARD36_MAX_MODEL_LEN,
+    MAX_NUM_SEQS_LARGE as _ARD36_SEQS_LARGE,
+    MAX_NUM_SEQS_SMALL as _ARD36_SEQS_SMALL,
+    PROFILE_LARGE as ARD36_LARGE_PROFILE,
+    PROFILE_SMALL as ARD36_SMALL_PROFILE,
+)
+
+ARD36_PROFILES = (ARD36_SMALL_PROFILE, ARD36_LARGE_PROFILE)
+#: vLLM ``--max-num-seqs`` per profile (spec §6.1 throughput; a serve-template placeholder).
+ARD36_MAX_NUM_SEQS = {
+    ARD36_SMALL_PROFILE: _ARD36_SEQS_SMALL,
+    ARD36_LARGE_PROFILE: _ARD36_SEQS_LARGE,
+}
+# ARD36_DTYPE (spec §6.1: one precision throughout, never quantize only the larger model)
+# is re-exported above straight from the contract.
+
+for _ard_name, _ard_size, _ard_tp in (
+    (ARD36_SMALL_PROFILE, _ARD36_SMALL_SIZE, 1),
+    (ARD36_LARGE_PROFILE, _ARD36_LARGE_SIZE, 2),
+):
+    SERVING_PROFILES[_ard_name] = ServingProfile(
+        name=_ard_name,
+        model_size=_ard_size,
+        hf_id=REGISTRY[_ard_size].hf_id,
+        tp_size=_ard_tp,
+        max_model_len=ARD36_MAX_MODEL_LEN,
+        # The OpenAI model name stays the scientific model size, so a runtime layout
+        # choice never leaks into a result row.
+        served_model_name=_ard_size,
+    )
 
 
 def get_serving_profile(name: str) -> ServingProfile:

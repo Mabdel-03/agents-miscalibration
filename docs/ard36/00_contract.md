@@ -14,9 +14,14 @@ Branch `ard36`. Run root `/orcd/data/tpoggio/001/mabdel03/agents_scaling_results
 1. **`src/agents_scaling/study/` is frozen.** Import from it. The only permitted edits are the
    additive ones in §4.2 of the plan, and they belong to **WP1 alone**. The existing 541
    `tests/study` tests must stay green.
-2. **Gold never enters a runtime module.** `ard/items_build.py` is the sole importer of
-   `agents_scaling.benchmarks.loaders` / `datasets`. Runtime code reads the frozen public
-   parquet through `ard/items.py`. The firewall test is transitive over the import closure.
+2. **Gold never enters a runtime module.** The rule is absolute and mechanical: the import
+   closure of any runtime module must not reach `agents_scaling.benchmarks` **at all**, nor
+   `datasets`, nor a protected path. There is no per-function whitelist, because one would have to
+   be re-adjudicated on every future edit to the whitelisted module. `ard/graders/_boxed.py`
+   vendors the one pure helper this cost us, with a parity test against the original so the copy
+   cannot drift. `ard/items_build.py` is the single evaluator-side exception and is listed in the
+   firewall's WRITER_SIDE.
+   Runtime code reads the frozen public parquet through `ard/items.py`.
 3. **Anything sent to vLLM enters the request identity**, or two different requests silently
    share one cache entry. Budgets go into `Decoding`; floats are forbidden by JCS.
 4. **Every observable is emitted at the round grain** for every protocol and cohort. See plan §5.8.

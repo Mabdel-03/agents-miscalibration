@@ -1,0 +1,186 @@
+# Agents Round Dynamics 36h (ARD36) — committed study manifest.
+#
+# Spec: expermt_agent_specs/AgentsRoundV1/Agents_Round_Dynamics_36h_Spec.md
+# Plan: ~/.claude/plans/expermt-agent-specs-agents-round-dynamic-woolly-naur.md
+# Contract: docs/ard36/00_contract.md; frozen constants: src/agents_scaling/ard/contract.py
+#
+# Modelled on configs/study_v4.yaml so that agents_scaling.study.config.load_config()
+# accepts it unchanged and ard/runner.py can reuse the frozen Checkpoint/seed plumbing.
+# The blocks the study loader validates (`caps`, `decoding`, `items`, `budget`) keep the
+# study_v4 values because the loader compares them against the frozen study constants;
+# they are NOT the ARD36 experimental envelopes.  Every ARD36 envelope lives in
+# src/agents_scaling/ard/contract.py and is mirrored, for the freeze manifest only, in the
+# `ard:` block at the bottom.  contract.py is the single source of truth: a divergence is
+# a configuration error, checked by tests/ard/test_wp1_client.py.
+study_id: ard36
+
+# Generated ONCE with secrets.token_hex(32) on 2026-09-10 and never regenerated
+# (spec §18 cache identity).  Deliberately independent of study_v4's seeds: no ARD36
+# request may alias a study_v4 request.
+study_seed_hex: eeec635de7d68af95a25eab18cad530f0cf98b1e54753cb0583ce90bc9ff5781
+split_salt_hex: bc1158bd28eee3e0be945a108e97f9e4284739a75d7d4e27743b53ea4ba78cd9
+
+# Pinned HF snapshots, verified present in the offline cache
+# ($HF_HOME/hub/models--Qwen--Qwen3-<size>/snapshots/<revision>/).  model_revision ==
+# tokenizer_revision (one snapshot, one tokenizer blob: <think>=151667, </think>=151668).
+# The profiles are the ARD36 16,384-token ones (serving/profiles.py, plan §4.2).
+checkpoints:
+  8B:
+    hf_id: Qwen/Qwen3-8B
+    model_revision: b968826d9c46dd6066d109eabc6255188de91218
+    tokenizer_revision: b968826d9c46dd6066d109eabc6255188de91218
+    profile: ard36-8B
+    tp_size: 1
+    served_model_name: 8B
+  32B:
+    hf_id: Qwen/Qwen3-32B
+    model_revision: 9216db5781bf21249d130ec9da846c4624c16137
+    tokenizer_revision: 9216db5781bf21249d130ec9da846c4624c16137
+    profile: ard36-32B
+    tp_size: 2
+    served_model_name: 32B
+
+flagship: 8B           # the 8B panel carries every protocol; 32B is the scale replicate
+judge_checkpoint: 32B  # LLM-audit selector only (spec §7); never a grader
+
+# Engine facts entering engine_digest (study/identity.py) — informational for the freeze.
+engine:
+  vllm_version: "0.21.0"
+  dtype: bfloat16
+  reasoning_parser: qwen3
+  max_model_len: 16384
+  enable_prefix_caching: true
+  block_size: 16
+  max_logprobs: 20
+
+# ---------------------------------------------------------------------------
+# ARD36 experimental contract (mirror of src/agents_scaling/ard/contract.py).
+# Written into FROZEN.yaml; the tests assert every value here equals the module.
+# ---------------------------------------------------------------------------
+ard:
+  contract_version: 1
+  seed_namespace: ARD36_v1
+
+  team:
+    n_agents: 5
+    update_rounds: 3
+    early_stop_on_unanimity: false
+
+  # Split budget: vLLM's native thinking_token_budget (spec §6.2).  max_tokens is
+  # 1 + T + 1 + 256 so the two delimiters cannot eat into the report allowance.
+  generation:
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    enable_thinking: true
+    thinking_tokens_low: 1024      # every arm except E2d / the receiver high arm
+    thinking_tokens_high: 4096
+    root_thinking_tokens: 1024     # roots alias across arms; never regenerated at 4,096
+    final_tokens: 256
+    max_tokens_low: 1282           # 1 + 1024 + 1 + 256
+    max_tokens_high: 4354          # 1 + 4096 + 1 + 256
+    think_start_id: 151667
+    think_end_id: 151668
+    receiver_top_logprobs: 20      # the answer-logit margin needs more than one
+
+  # Prompt envelope (plan §5.2); asserted before every request by
+  # ard/client.py::preflight_decision against profile.max_model_len.
+  prompt_budget:
+    task_tokens: 1024
+    report_tokens: 256             # own root / own latest / one peer packet
+    template_overhead: 512
+    context_reserve: 128
+    prompt_tokens_cap: 3072        # 1024 + 2*256 + 4*256 + 512
+
+  items:
+    families: [math500, mmlu_pro]
+    per_family: {train: 48, validation: 24, test: 120}
+    natural_total: 384
+    mmlu_required_options: 10
+    large_subset_per_family: 48
+
+  serving:
+    small: {profile: ard36-8B, checkpoint: 8B, tp_size: 1, max_num_seqs: 128}
+    large: {profile: ard36-32B, checkpoint: 32B, tp_size: 2, max_num_seqs: 64}
+    max_model_len: 16384
+    gpu_memory_utilization: 0.90
+    dtype: bfloat16
+
+  statistics:
+    n_resamples: 20000
+    alpha: 0.05
+    n_primary: 3
+    noninferiority_margin: 0.08
+
+# ---------------------------------------------------------------------------
+# Blocks below exist so agents_scaling.study.config.load_config() validates this file.
+# They are the frozen study_v4 constants (types.py is their source of truth) and are NOT
+# the ARD36 envelopes: ARD36 output caps come from contract.max_tokens_for().
+# ---------------------------------------------------------------------------
+decoding:
+  solver:
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_tokens: 8192
+    enable_thinking: true
+    guided_json: false
+  judge:
+    temperature: 0.0
+    top_p: 1.0
+    top_k: 1
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_tokens: 1024
+    enable_thinking: false
+    guided_json: false
+  forecast:
+    temperature: 0.0
+    top_p: 1.0
+    top_k: 1
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    max_tokens: 256
+    enable_thinking: false
+    guided_json: false
+
+caps:
+  task_tokens: 4096
+  prompt_tokens: 32768
+  solver_out: 8192
+  selector_out: 1024
+  forecast_out: 256
+  own_candidate_tokens: 8192
+  packet_tokens: 2048
+  packet_final_tokens: 1024
+  subtask_result_tokens: 4096
+  hub_prior_plan_tokens: 8192
+  forwarded_results_tokens: 8192
+  hub_returned_results_tokens: 16384
+  hub_action_error_tokens: 512
+  solver_calls: 64
+  selector_calls: 64
+  dec_max_rounds: 8
+  cen_max_cycles: 8
+
+# ARD36 does not use the study's hle/bcb domains; ard/items.py owns the item counts
+# (see ard.items above).  Zeroed so the study loader has the shape it requires.
+items:
+  dev: {hle: 0, bcb: 0}
+  main: {hle: 0, bcb: 0}
+  panels: {}
+
+# ARD36 has no B-multiplier grid (no per-cell FLOP budget); the single multiplier keeps
+# the loader happy.  Cost is measured, not budgeted: see ard/client.py's FLOP oracle.
+budget:
+  B0_flops: null
+  budget_multipliers: [1]
+  primary: 1

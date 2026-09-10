@@ -22,6 +22,7 @@ import sys
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 from agents_scaling.config import DEFAULT_RESULTS_ROOT
@@ -33,7 +34,12 @@ from agents_scaling.serving.fleet_contract import (
     load_fleet_contract,
 )
 from agents_scaling.serving.model_contracts import load_model_contracts
-from agents_scaling.serving.profiles import ServingProfile, get_serving_profile
+from agents_scaling.serving.profiles import (
+    ARD36_MAX_NUM_SEQS,
+    SERVING_PROFILES,
+    ServingProfile,
+    get_serving_profile,
+)
 
 REPO = Path(__file__).resolve().parents[3]  # .../agents_scaling
 TEMPLATE = REPO / "slurm" / "serve_qwen.sbatch.tmpl"
@@ -41,6 +47,19 @@ TEMPLATE = REPO / "slurm" / "serve_qwen.sbatch.tmpl"
 # A100-80GB nodes; pi_tpoggio is the dedicated 7-day partition.
 _PARTITION_DEFAULT = "pi_tpoggio"
 _GPU_TYPE_DEFAULT = "a100"
+
+# ---- serve-template engine defaults (promoted to placeholders for ARD36, plan §4.2) ----
+#: study_v4 served every profile with these three values baked into the template.
+DEFAULT_MAX_NUM_SEQS = 64
+DEFAULT_GPU_MEMORY_UTILIZATION = 0.90
+#: Qwen3 configs are bf16; stating it keeps a replica from silently coming up fp16 or
+#: quantized (ARD36 spec §6.1 forbids quantizing only the larger model).
+DEFAULT_SERVE_DTYPE = "bfloat16"
+#: The one persistently broken A100 node, previously hard-coded in the template.
+DEFAULT_EXCLUDE_NODES: tuple[str, ...] = ("node3804",)
+#: Ports are ``base(profile) + replica``; two profiles closer than this could collide on
+#: one node once each has several replicas (SO_REUSEPORT would silently split traffic).
+MIN_PORT_BASE_CLEARANCE = 16
 
 
 @dataclass(frozen=True)
@@ -181,6 +200,78 @@ def _port_for(profile_name: str, replica: int = 0) -> int:
     return 8000 + (zlib.crc32(profile_name.encode()) % 1000) + replica + int(os.environ.get("ASYS_PORT_OFFSET", "0") or 0)
 
 
+def port_base(profile_name: str) -> int:
+    """The replica-0 port of ``profile_name`` (``_port_for`` without the replica offset)."""
+    return 8000 + (zlib.crc32(profile_name.encode()) % 1000)
+
+
+def port_base_table(names: Sequence[str] | None = None) -> dict[str, int]:
+    """``{profile: base port}`` for every registered profile, sorted by name."""
+    keys = sorted(names) if names is not None else sorted(SERVING_PROFILES)
+    return {name: port_base(name) for name in keys}
+
+
+def assert_port_base_clearance(
+    new_names: Sequence[str], *, min_clearance: int = MIN_PORT_BASE_CLEARANCE
+) -> dict[str, int]:
+    """Refuse a new profile name whose crc32 port base crowds an existing profile.
+
+    Ports are ``base + replica``, so two bases closer than the largest replica count can
+    put two *different* profiles on the same host:port.  With SO_REUSEPORT that is not an
+    error: the two servers silently split each other's requests.  ARD36's names
+    (``ard36-8B`` → 8925, ``ard36-32B`` → 8992) were chosen against this check; the naive
+    ``32B-ard36`` would land on 8830, four ports from ``32B-long``'s 8826 (plan §4.2).
+
+    Returns the checked ``{name: base}`` mapping so a caller can print the table.
+    """
+    new = {str(name): port_base(str(name)) for name in new_names}
+    others = {name: base for name, base in port_base_table().items() if name not in new}
+    for name, base in new.items():
+        for other, other_base in sorted(others.items()):
+            gap = abs(base - other_base)
+            if gap < min_clearance:
+                raise ValueError(
+                    f"serving profile {name!r} port base {base} is only {gap} from "
+                    f"{other!r} ({other_base}); rename it so the gap is >= "
+                    f"{min_clearance} (SO_REUSEPORT would split the two replica pools)"
+                )
+        for other, other_base in new.items():
+            if other != name and abs(base - other_base) < min_clearance:
+                raise ValueError(
+                    f"new serving profiles {name!r} ({base}) and {other!r} ({other_base}) "
+                    f"are closer than {min_clearance} ports"
+                )
+    return new
+
+
+def max_num_seqs_for(profile_name: str, override: int | None = None) -> int:
+    """vLLM ``--max-num-seqs`` for one profile (ARD36 profiles raise the 8B concurrency)."""
+    if override is not None:
+        value = int(override)
+        if value < 1:
+            raise ValueError("max_num_seqs must be >= 1")
+        return value
+    return int(ARD36_MAX_NUM_SEQS.get(profile_name, DEFAULT_MAX_NUM_SEQS))
+
+
+def _gpu_memory_utilization_str(value: float | None) -> str:
+    used = DEFAULT_GPU_MEMORY_UTILIZATION if value is None else float(value)
+    if not 0.0 < used <= 1.0:
+        raise ValueError(f"gpu_memory_utilization must lie in (0, 1], got {used!r}")
+    return f"{used:.2f}"
+
+
+def _exclude_line(nodes: Sequence[str] | None) -> str:
+    """The ``#SBATCH --exclude=`` directive line (empty string excludes nothing)."""
+    names = DEFAULT_EXCLUDE_NODES if nodes is None else tuple(str(n) for n in nodes if str(n))
+    if not names:
+        return ""
+    for name in names:
+        if not re.fullmatch(r"[A-Za-z0-9_.\[\]\-,]+", name):
+            raise ValueError(f"refusing to render a node exclusion {name!r}")
+    return "#SBATCH --exclude=" + ",".join(names) + "\n"
+
+
 def _resolve_profile(model_size: str, profile_name: str | None) -> ServingProfile:
     """Resolve legacy model-only calls and explicit named-profile calls.
 
@@ -273,6 +364,10 @@ def render_sbatch(
     rollout_generation: int | None = None,
     standby: bool = False,
     qos: str | None = None,
+    max_num_seqs: int | None = None,
+    dtype: str | None = None,
+    gpu_memory_utilization: float | None = None,
+    exclude_nodes: Sequence[str] | None = None,
 ) -> str:
     profile = _resolve_profile(model_size, serving_profile)
     canonical_run_root = str(Path(run_root).expanduser().resolve())
@@ -584,6 +679,14 @@ def render_sbatch(
         "HF_HOME": hf_home,
         "TP_SIZE": str(profile.tp_size),
         "MAX_MODEL_LEN": str(profile.max_model_len),
+        # Engine knobs promoted to placeholders for ARD36 (plan §4.2).  The defaults
+        # reproduce the study_v4 command exactly, except that the precision is now stated
+        # rather than inferred from config.json (spec §6.1: one precision throughout, so a
+        # replica can never silently come up fp16 or quantized).
+        "MAX_NUM_SEQS": str(max_num_seqs_for(profile.name, max_num_seqs)),
+        "DTYPE": str(dtype or DEFAULT_SERVE_DTYPE),
+        "GPU_MEMORY_UTILIZATION": _gpu_memory_utilization_str(gpu_memory_utilization),
+        "EXCLUDE_LINE": _exclude_line(exclude_nodes),
         "PARTITION": partition,
         "QOS_LINE": "" if qos is None else f"#SBATCH --qos={qos}\n",
         "GPU_TYPE": gpu_type,
