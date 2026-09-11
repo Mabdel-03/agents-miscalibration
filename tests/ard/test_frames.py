@@ -140,3 +140,35 @@ def test_only_finished_cells_contribute(tmp_path):
     (cell / "items" / "math500-4.json").write_text(json.dumps(peer))   # no meta.json
     assert frames.build_paired_rows(
         tmp_path, peer_cells=["EPISODE.natural.PEER.8B.T1024.train.s000"], labels={}) == []
+
+
+def test_a_mixed_manifest_does_not_pair_private_states_with_their_own_children(tmp_path):
+    """A manifest is a dispatch unit, not a branch.
+
+    P1 holds PEER and PRIVATE cells together, so passing it as ``peer_cells`` used to make
+    every PRIVATE state a decision point and pair it with its *own* PRIVATE child as the
+    "peer branch" -- a counterfactual against itself.  It looked healthy (thousands of paired
+    rows at every round) which is exactly why it needs a test rather than an eyeball.
+    """
+    roots = [f"math500-9-root-{k}" for k in range(K.N_AGENTS)]
+    peer, peer_state = _episode("math500-9", "PEER", root_ids=roots)
+    private, _ = _episode("math500-9", "PRIVATE", root_ids=roots)
+
+    # Both protocols in one manifest, exactly as P1 is shaped.
+    _write(tmp_path, "EPISODE.natural.PEER.8B.T1024.train.s000", peer, "math500-9")
+    _write(tmp_path, "EPISODE.natural.PRIVATE.8B.T1024.train.s000", private, "math500-9")
+    mixed = ["EPISODE.natural.PEER.8B.T1024.train.s000",
+             "EPISODE.natural.PRIVATE.8B.T1024.train.s000"]
+
+    rows = frames.build_paired_rows(tmp_path, peer_cells=mixed, private_cells=mixed, labels={})
+    # One decision point per agent -- the shared root state -- not two.
+    assert len(rows) == K.N_AGENTS
+    assert {r.parent_state_id for r in rows} == {a.state_id for a in peer_state.agents}
+
+    # And each row's two branches are genuinely different decisions.
+    peer_ids = {f"math500-9-PEER-r1-{k}" for k in range(K.N_AGENTS)}
+    private_ids = {f"math500-9-PRIVATE-r1-{k}" for k in range(K.N_AGENTS)}
+    labels = {i: 1 for i in peer_ids} | {i: 0 for i in private_ids}
+    rows = frames.build_paired_rows(tmp_path, peer_cells=mixed, private_cells=mixed,
+                                    labels=labels)
+    assert all(r.y_peer == 1 and r.y_private == 0 for r in rows)

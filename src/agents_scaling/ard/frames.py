@@ -175,16 +175,33 @@ def _episode_files(run_root: Path, cell_ids: Sequence[str]) -> Iterable[tuple[st
             yield cell_id, path
 
 
-def _children_by_parent(payload: Mapping[str, Any]) -> dict[tuple[str, int], Mapping[str, Any]]:
-    """``{(parent_state_id, agent_slot): decision}`` for every update in this item file."""
+def _children_by_parent(
+    payload: Mapping[str, Any], *, protocols: Sequence[str] | None = None
+) -> dict[tuple[str, int], Mapping[str, Any]]:
+    """``{(parent_state_id, agent_slot): decision}`` for every update in this item file.
+
+    ``protocols`` filters by the *episode's* protocol rather than trusting the caller to have
+    passed a protocol-pure manifest.  A manifest is a dispatch unit, not a branch: the P1
+    manifest holds PEER and PRIVATE cells together, so taking it as "the peer branch" pairs
+    each PRIVATE state with its own PRIVATE child and calls the result a counterfactual.
+    """
+    wanted = {str(p) for p in protocols} if protocols else None
     out: dict[tuple[str, int], Mapping[str, Any]] = {}
     for episode in payload.get("episodes") or []:
+        if wanted is not None and str(episode.get("protocol")) not in wanted:
+            continue
         for decision in episode.get("decisions") or []:
             parent = str(decision.get("parent_state_id") or "")
             if not parent or int(decision.get("round") or 0) == 0:
                 continue
             out[(parent, int(decision.get("agent_id") or 0))] = decision
     return out
+
+
+#: The protocol whose trajectory is the *peer* branch, and the one whose round-1 child is the
+#: private branch of the t=0 pair.  Both are filtered by episode, never by manifest.
+PEER_PROTOCOL = K.Protocol.PEER.value
+PRIVATE_PROTOCOL = K.Protocol.PRIVATE.value
 
 
 def build_paired_rows(
@@ -195,19 +212,26 @@ def build_paired_rows(
     fork_cells: Sequence[str] = (),
     labels: Mapping[str, int] | None = None,
 ) -> list[PairedRow]:
-    """The fork frame: one row per (shared parent state, focal agent) with both outcomes."""
+    """The fork frame: one row per (shared parent state, focal agent) with both outcomes.
+
+    The branches are selected by *episode protocol*, so the same manifest may be passed for
+    both ``peer_cells`` and ``private_cells`` -- which is how P1 is actually shaped.
+    """
     root = Path(run_root)
     labels = dict(labels if labels is not None else load_labels(root))
 
-    # Peer branch: the main trajectory's child off each parent state, plus the states and
-    # features those parents carry.
+    # Peer branch: the PEER trajectory's child off each parent state, plus the states and
+    # features those PEER parents carry.  Only PEER states are decision points here: a
+    # PRIVATE state has no peer-branch counterfactual to compare against.
     peer_children: dict[tuple[str, int], Mapping[str, Any]] = {}
     states: dict[str, RoundState] = {}
     meta: dict[str, dict[str, Any]] = {}
     for _cell_id, path in _episode_files(root, peer_cells):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        peer_children.update(_children_by_parent(payload))
+        peer_children.update(_children_by_parent(payload, protocols=(PEER_PROTOCOL,)))
         for (episode_id, round_), state in reconstruct_states(payload).items():
+            if state.protocol.value != PEER_PROTOCOL:
+                continue
             for slot, agent in enumerate(state.agents):
                 states[agent.state_id] = state
                 meta[agent.state_id] = {
@@ -216,13 +240,18 @@ def build_paired_rows(
                     "split": str(payload.get("split") or ""),
                 }
 
-    # Private branch: the t=0 pair comes from PRIVATE's own round-1 child off the shared root
-    # state; t=1,2 come from the fork cells.
+    # Private branch: at t=0 it is PRIVATE's own round-1 child, which hangs off the *shared*
+    # root state; at t=1,2 it is the FORK cell's branch off the sealed PEER state.  A PRIVATE
+    # trajectory's round-1/2 children hang off PRIVATE's own parents and must never be read as
+    # a counterfactual for a PEER state -- filtering by protocol is what prevents that.
     private_children: dict[tuple[str, int], Mapping[str, Any]] = {}
-    for cells in (private_cells, fork_cells):
-        for _cell_id, path in _episode_files(root, cells):
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            private_children.update(_children_by_parent(payload))
+    for _cell_id, path in _episode_files(root, private_cells):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        private_children.update(
+            _children_by_parent(payload, protocols=(PRIVATE_PROTOCOL,)))
+    for _cell_id, path in _episode_files(root, fork_cells):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        private_children.update(_children_by_parent(payload))   # a fork cell is all forks
 
     rows: list[PairedRow] = []
     for state_id, info in sorted(meta.items()):

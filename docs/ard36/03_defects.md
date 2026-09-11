@@ -240,3 +240,28 @@ imported rather than spelled out, and leaves everything else unobserved.
 
 Verified on the live grades: 9,891 labels (7,726 correct, 2,165 incorrect), 1,149 ambiguous or
 timed-out correctly excluded.
+
+### D-09 — the frame builder took a manifest as a branch (self-inflicted, caught by reading the numbers)
+**Severity: would have fit the controller on counterfactuals against themselves; fixed before any fit.**
+
+`frames.build_paired_rows` selected the peer branch by *manifest* rather than by episode
+protocol. The P1 manifest holds PEER and PRIVATE cells together — a manifest is a dispatch
+unit, not a branch — so passing it as `peer_cells` made every PRIVATE state a decision point
+and paired it with its **own** PRIVATE child as the "peer branch": a counterfactual against
+itself. The private branch was contaminated symmetrically.
+
+What makes this worth recording is how it presented. The dry run reported 3,600 paired rows,
+2,439 with both branches observed, and paired rows at all three decision rounds — every
+coverage check green, before the FORK cells had produced a single completed cell. That is the
+tell: rounds 1 and 2 *cannot* have paired rows until forks land, because a PRIVATE trajectory's
+round-1 and round-2 children hang off PRIVATE's own parent states, not off PEER's. The numbers
+looked healthy and were meaningless.
+
+Branch selection is now by `episode.protocol`, so the same manifest can be passed for both
+arguments — which is how P1 is actually shaped — and a PRIVATE state is never a decision point.
+`_children_by_parent` takes an explicit protocol filter; fork cells are unfiltered, being all
+forks by construction.
+
+Pinned by `test_frames.py::test_a_mixed_manifest_does_not_pair_private_states_with_their_own_children`,
+which feeds one mixed manifest and asserts exactly `N_AGENTS` decision points on the shared root
+state, with the two branches resolving to genuinely different decisions.
