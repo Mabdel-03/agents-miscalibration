@@ -160,6 +160,12 @@ ROOT_THINKING_TOKENS: Final[int] = THINKING_TOKENS_LOW
 # Report contract (spec 6.3)
 # --------------------------------------------------------------------------- #
 
+#: Text forms of the reasoning delimiters.  The token ids are THINK_START_ID/THINK_END_ID;
+#: these are needed because a *continuation* can emit a second `</think>` inside the span
+#: handed to the parser (the model rehearses the output contract before writing the report),
+#: and spec §6.3's rule -- the report is the post-`</think>` span -- then selects the real
+#: report over the rehearsal.
+THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
 FINAL_OPEN, FINAL_CLOSE = "<final>", "</final>"
 EVIDENCE_OPEN, EVIDENCE_CLOSE = "<evidence>", "</evidence>"
 CONFIDENCE_OPEN, CONFIDENCE_CLOSE = "<confidence>", "</confidence>"

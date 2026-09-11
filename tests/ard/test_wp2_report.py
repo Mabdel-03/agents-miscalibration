@@ -179,3 +179,29 @@ def test_context_failure_report() -> None:
     assert isinstance(report, Report)
     assert report.parse_status is K.ParseStatus.CONTEXT_FAILURE
     assert not report.valid and report.final_answer is None and report.confidence is None
+
+
+def test_a_rehearsed_contract_block_does_not_void_the_real_report() -> None:
+    """Observed on 32B: the continuation rehearses the schema, then writes the report.
+
+    Prefilled with `<final>`, the model pattern-completed the contract block it had seen in
+    the prompt ("canonical answer or option letter"), closed it with a second `</think>`, and
+    only then wrote the real answer.  Reading that as a duplicated `<final>` threw away a
+    perfectly good report.  Spec §6.3's own rule -- the report is the post-`</think>` span --
+    selects the report over the rehearsal.
+    """
+    rehearsal = (f"{K.FINAL_OPEN}canonical answer or option letter{K.FINAL_CLOSE}\n"
+                 f"<evidence>one or two concise, checkable reasons</evidence>\n"
+                 f"<confidence>probability from 0 to 1</confidence>\n</think>\n\n")
+    real = (f"{K.FINAL_OPEN}D{K.FINAL_CLOSE}\n<evidence>1 - P(X<=8)^3 with X ~ Bin(10, 0.7)"
+            f"</evidence>\n<confidence>0.95</confidence>")
+    report = parse_report(rehearsal + real, "stop", _ids())
+    assert report.parse_status is OK
+    assert report.final_answer == "D"          # the report, not the template
+    assert report.confidence == 0.95           # the forecast, not "probability from 0 to 1"
+    assert report.rehearsed_contract is True
+
+    # A report with no rehearsal is untouched, and the flag stays false.
+    plain = parse_report(f"{K.FINAL_OPEN}42{K.FINAL_CLOSE}{E}{C}", "stop", _ids())
+    assert plain.parse_status is OK and plain.final_answer == "42"
+    assert plain.rehearsed_contract is False

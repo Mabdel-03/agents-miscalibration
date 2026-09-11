@@ -94,6 +94,9 @@ class Report:
     confidence_status: str = TAG_MISSING
     final_overrun: bool = False
     raw_sha256: str = ""
+    #: The span carried a second `</think>`: the model rehearsed the output contract before
+    #: writing the real report.  Recorded so the rate is reportable, never used as a filter.
+    rehearsed_contract: bool = False
 
     @property
     def valid(self) -> bool:
@@ -263,6 +266,14 @@ def parse_report(
     5. ``OK``.
     """
     text = "" if final_text is None else str(final_text)
+    # Spec §6.3: the report is the post-`</think>` span.  A continuation prefilled with
+    # `<final>` sometimes rehearses the contract block it saw in the prompt, closes it with
+    # another `</think>`, and only then writes the real report -- so applying the rule to the
+    # *last* delimiter picks the report over the rehearsal, rather than reading a duplicated
+    # `<final>` as malformed.  With no second delimiter this is a no-op.
+    rehearsed = K.THINK_CLOSE in text
+    if rehearsed:
+        text = text.rsplit(K.THINK_CLOSE, 1)[1]
     think_status, n_final_ids = _think_status(completion_ids)
     overrun = int(n_final_ids) > K.FINAL_TOKENS
 
@@ -315,6 +326,7 @@ def parse_report(
         confidence_status=confidence_status,
         final_overrun=overrun,
         raw_sha256=identity.sha256_hex(text),
+        rehearsed_contract=rehearsed,
     )
 
 
