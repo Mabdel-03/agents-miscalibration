@@ -24,29 +24,39 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from agents_scaling.ard import contract as K
+from agents_scaling.ard import episode as E
 
-#: decision phase / protocol -> the gate's call-type vocabulary
-CALL_TYPE_OF = {
-    ("root", None): "ROOT",
-    ("revise", "PEER"): "PEER_REVISE",
-    ("revise", "BALANCED"): "BALANCED_REVISE",
-    ("revise", "GATE"): "PEER_REVISE",
-    ("revise", "RANDOM_PROTECT"): "PEER_REVISE",
-    ("revise", "PRIVATE"): "PEER_REVISE",
-    ("revise", "FRESH"): "ROOT",
-    ("hub", "HUB5"): "HUB_LEADER",
-    ("worker", "HUB5"): "HUB_WORKER",
-    ("receiver", None): "RECEIVER",
-}
+#: The phase vocabulary is WP2's, imported rather than spelled out: this table used to key
+#: on "revise"/"hub", which ``episode.py`` never emits (it writes "update"/"leader"), so every
+#: revision fell through the lookup and was counted as a ROOT.  That left PEER_REVISE and
+#: BALANCED_REVISE with no measured row at all and silently mixed revisions into the root
+#: parse-validity the launch gate reads.
+#:
+#: A FRESH update is a new independent draw on the same task, so it costs what a root costs.
+PROTOCOL_CALL_TYPE = {"BALANCED": "BALANCED_REVISE", "FRESH": "ROOT"}
 
 
 def call_type(dec: dict) -> str:
     phase = str(dec.get("phase") or "")
     proto = dec.get("protocol")
     proto = None if proto in (None, "NONE", "") else str(proto)
-    if int(dec.get("budget_tokens") or 0) > 1024 and phase != "receiver":
+    budget = int(dec.get("budget_tokens") or 0)
+    if phase == K.PURPOSE_RECEIVER:
+        return "RECEIVER"
+    if budget > K.THINKING_TOKENS_LOW:
         return "HIGH_BUDGET"
-    return CALL_TYPE_OF.get((phase, proto)) or CALL_TYPE_OF.get((phase, None)) or "ROOT"
+    if phase == E.PHASE_ROOT:
+        return "ROOT"
+    if phase == E.PHASE_LEADER:
+        return "HUB_LEADER"
+    if phase == E.PHASE_WORKER:
+        return "HUB_WORKER"
+    if phase == E.PHASE_UPDATE:
+        return PROTOCOL_CALL_TYPE.get(proto or "", "PEER_REVISE")
+    raise SystemExit(
+        f"unknown decision phase {phase!r}: the gate's call-type table and WP2's phase "
+        "vocabulary have diverged; fix the mapping rather than let it default"
+    )
 
 
 def load_decisions(run_root: Path, cells: list[str] | None) -> list[dict]:
