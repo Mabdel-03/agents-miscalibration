@@ -73,3 +73,29 @@ recorded as amendment I6. Found by the pilot, before the write-once freeze.
   analytic oracle is a pure function of token counts, so the figure is an upper bound.
 - `cached_prefill_tokens` on a merged record is phase 1's, not the sum; phase 2's sits in the
   `continuation` block. Summing would drive `prefill_tokens = prompt_tokens − cached` to zero.
+
+### D-03 — a round's five calls were issued one at a time
+**Severity: high for the schedule; none for results.**
+
+`KIND_TABLE` declares `max_inflight=N_AGENTS` for every episode kind, but `episode.execute_updates`
+looped over the slots and blocked on each `generate` in turn, and `run_roots` did the same over the
+16 bank draws. `max_inflight` was declared and never read. Measured on the pilot: peak concurrency
+**1 per cell**, each agent starting within 20 ms of the previous one finishing, so a cell's wall
+clock was the *sum* over its decisions rather than the max over its agents. Thirteen 8B replicas
+served an aggregate 234 tok/s across ~3.4 average concurrent requests — a fleet essentially idle.
+
+Fixed by `episode.dispatch_batch`: every prompt in a round is rendered from the immutable pre-round
+snapshot first, then the batch is dispatched through a thread pool bounded by `max_inflight`, and
+results are collected in slot order. This is result-identical rather than merely faster, and for a
+reason the loop already documented: the batch is exchangeable by construction (no member can observe
+another's round-*t* output), request identity is content-addressed, and the engine seed is
+HMAC-derived from the seed key — so a record depends on neither when it was issued nor which replica
+served it. A refused slot (`ContextTooLong`) is returned rather than raised, so one over-long prompt
+cannot cancel the other four decisions of its round.
+
+The inference layer was already built for this: `EndpointPool`, `VllmChatClient` and the continuation
+path all carry locks, `EndpointAffinity` uses `threading.local()`, and the cell runner has always run
+items in parallel threads. Pinned by
+`test_wp2_episode.py::test_a_round_goes_out_as_one_concurrent_batch_without_changing_its_results`,
+which asserts peak in-flight equals `N_AGENTS`, that concurrent and serial dispatch agree element for
+element, and that a refusal in one slot leaves the rest of the round intact.

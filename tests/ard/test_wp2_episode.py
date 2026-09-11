@@ -371,3 +371,60 @@ def test_an_all_invalid_team_fails_selection_without_stopping_the_episode(tmp_pa
         assert current.selection_failed is True
         assert current.planned_count == K.N_AGENTS and current.valid_count == 0
         assert V.plurality_expected_correctness(current, {}) == 0.0
+
+
+# --------------------------------------------------------------------------- batch dispatch
+
+
+def test_a_round_goes_out_as_one_concurrent_batch_without_changing_its_results() -> None:
+    """The five calls of a round are issued together, and order still decides nothing.
+
+    ``KIND_TABLE`` declares ``max_inflight=N_AGENTS`` for every episode kind, but the loop
+    used to issue the five calls one at a time: a cell's wall clock was the *sum* over its
+    agents instead of the max, and thirteen replicas served about five concurrent requests.
+    Concurrency is safe here only because every prompt in the batch is rendered from the
+    immutable pre-round snapshot, so this pins both halves -- that the batch really is
+    concurrent, and that its results are exactly the serial results in slot order.
+    """
+    import threading
+    import time
+
+    from agents_scaling.ard.client import ContextTooLong
+    from agents_scaling.ard.episode import dispatch_batch
+    from agents_scaling.serving.context import ContextPreflight
+
+    preflight = ContextPreflight(profile_name="ard36-8B", prompt_tokens=99_000,
+                                 requested_output_tokens=256, reserve_tokens=128,
+                                 served_context=K.MAX_MODEL_LEN)
+
+    inflight = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow(request):
+        nonlocal inflight, peak
+        with lock:
+            inflight += 1
+            peak = max(peak, inflight)
+        time.sleep(0.05)
+        with lock:
+            inflight -= 1
+        return request                      # stand-in for the record
+
+    requests = [f"r{i}" for i in range(K.N_AGENTS)]
+    out = dispatch_batch(requests, slow, max_workers=K.N_AGENTS)
+    assert out == requests, "results must come back in request order, whatever finishes first"
+    assert peak == K.N_AGENTS, f"the round did not go out together (peak in flight {peak})"
+
+    # Serial and concurrent dispatch agree element for element.
+    assert dispatch_batch(requests, slow, max_workers=1) == out
+
+    # One refused slot is returned, not raised: it must not cancel the rest of its round.
+    def refuse_slot_2(request):
+        if request == "r2":
+            raise ContextTooLong(preflight)
+        return request
+
+    mixed = dispatch_batch(requests, refuse_slot_2, max_workers=K.N_AGENTS)
+    assert isinstance(mixed[2], ContextTooLong)
+    assert [m for i, m in enumerate(mixed) if i != 2] == ["r0", "r1", "r3", "r4"]

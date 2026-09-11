@@ -37,6 +37,7 @@ Frozen interface: ``docs/ard36/00_contract.md`` §2 (WP2).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
@@ -72,6 +73,51 @@ PHASE_WORKER = "worker"
 
 #: ``generate(request) -> DecisionRecord`` — WP4 binds the store, pool and cost function.
 Generate = Callable[[DecisionRequest], DecisionRecord]
+
+
+def dispatch_batch(
+    requests: Sequence[DecisionRequest],
+    generate: Generate,
+    *,
+    max_workers: int = K.N_AGENTS,
+) -> list[DecisionRecord | ContextTooLong]:
+    """Run one exchangeable batch of requests, returning results in request order.
+
+    Every request in a batch is rendered from the same immutable pre-round snapshot, so no
+    member of the batch can observe another's output and the batch is order-independent
+    *by construction* (see :func:`execute_updates`).  That is what makes running them
+    concurrently result-identical rather than merely faster: request identity is
+    content-addressed and the engine seed is HMAC-derived from the seed key, so a record
+    does not depend on when it was issued or on which replica served it.
+
+    ``KIND_TABLE`` declares ``max_inflight=N_AGENTS`` for every episode kind; before this
+    the five calls of a round were issued one at a time, which left the fleet idle and made
+    a cell's wall clock the *sum* of its decisions rather than the max over its agents.
+
+    A build-time :class:`ContextTooLong` is returned in place of a record rather than
+    raised, so one refused slot does not cancel the rest of its round.
+    """
+    if not requests:
+        return []
+    workers = max(1, min(int(max_workers), len(requests)))
+    if workers == 1:
+        out: list[DecisionRecord | ContextTooLong] = []
+        for request in requests:
+            try:
+                out.append(generate(request))
+            except ContextTooLong as exc:
+                out.append(exc)
+        return out
+
+    def one(request: DecisionRequest) -> DecisionRecord | ContextTooLong:
+        try:
+            return generate(request)
+        except ContextTooLong as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ard-batch") as pool:
+        # ``map`` preserves input order, so slot k is always results[k].
+        return list(pool.map(one, requests))
 
 
 # --------------------------------------------------------------------------- spec
@@ -313,7 +359,11 @@ def _archive_pairs(state: RoundState) -> list[tuple[int, ReportRef]]:
 
 
 def run_roots(
-    spec: EpisodeSpec, *, generate: Generate, draws: Sequence[int] | None = None
+    spec: EpisodeSpec,
+    *,
+    generate: Generate,
+    draws: Sequence[int] | None = None,
+    max_workers: int = K.N_AGENTS,
 ) -> tuple[ReportRef, ...]:
     """Generate (or alias) the team's root reports — round 0 (spec §5.2, §7).
 
@@ -322,9 +372,9 @@ def run_roots(
     protocol, every budget arm and every cohort that shares an item shares these records:
     the store returns them aliased and no GPU work is repeated (plan §5.1).
     """
-    refs: list[ReportRef] = []
-    for slot, draw in enumerate(draws if draws is not None else spec.root_draws):
-        request = DecisionRequest(
+    wanted = list(draws if draws is not None else spec.root_draws)
+    requests = [
+        DecisionRequest(
             messages=P.render_root_prompt(spec.task_text),
             checkpoint=spec.checkpoint,
             thinking_tokens=K.ROOT_THINKING_TOKENS,
@@ -337,7 +387,14 @@ def run_roots(
             ),
             purpose=K.PURPOSE_ROOT,
         )
-        record = generate(request)
+        for draw in wanted
+    ]
+    # Independent draws of one stateless bank: nothing in draw k depends on draw j.
+    results = dispatch_batch(requests, generate, max_workers=max_workers)
+    refs: list[ReportRef] = []
+    for slot, record in enumerate(results):
+        if isinstance(record, ContextTooLong):
+            raise record          # a root that will not fit is a cell-level failure
         report = parse_report(record.final_text, record.finish_reason, record.completion_token_ids)
         refs.append(ReportRef(decision_id=record.request_id, report=report, round_=0, agent_slot=slot))
     return tuple(refs)
@@ -455,6 +512,7 @@ def execute_updates(
     phase: str = PHASE_UPDATE,
     purpose: str = K.PURPOSE_REVISE,
     action: str | None = None,
+    max_workers: int = K.N_AGENTS,
 ) -> tuple[Decision, ...]:
     """Run one synchronous batch of updates from the **immutable** pre-round snapshot.
 
@@ -472,20 +530,25 @@ def execute_updates(
     protocol = K.Protocol(spec.protocol)
     targets = list(range(K.N_AGENTS) if slots is None else slots)
     decisions: list[Decision] = []
+    # Render every prompt from the snapshot *before* issuing any of them.  This is what
+    # makes the batch exchangeable, and it is why the calls can then go out together.
+    planned: list[tuple[int, tuple[ArdPacket, ...], DecisionRequest]] = []
     for slot in targets:
         packets = tuple(plan.get(slot, ()))
         _assert_packet_rounds(protocol, packets, round_=round_, phase=phase)
-        request = _request_for(
-            snapshot, spec, slot, packets, round_=round_, purpose=purpose
+        planned.append(
+            (slot, packets,
+             _request_for(snapshot, spec, slot, packets, round_=round_, purpose=purpose))
         )
+    results = dispatch_batch([req for _, _, req in planned], generate, max_workers=max_workers)
+    for (slot, packets, request), outcome in zip(planned, results):
         parent_state_id = snapshot.agents[slot].state_id
-        try:
-            record = generate(request)
-        except ContextTooLong:
+        if isinstance(outcome, ContextTooLong):
             report = context_failure_report()
             record = None
             decision_id = ""
         else:
+            record = outcome
             report = parse_report(
                 record.final_text, record.finish_reason, record.completion_token_ids
             )
