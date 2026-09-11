@@ -321,3 +321,24 @@ def test_a_cell_may_declare_its_own_decisions_per_item(tmp_path):
 def test_non_decision_kinds_are_not_scored(tmp_path):
     cell = _cell(None, items=("ALL",), kind=ArdCellKind.COMPACT)
     assert G.decision_coverage(tmp_path, [cell]) == []
+
+
+def test_a_call_type_the_tier_does_not_run_is_absent_not_unmeasured():
+    """HUB5 is dropped by §16.4 step 2, so demanding a HUB batch would make the gate
+    unpassable for an honest reduced-tier run.  Silence must still fail; only an explicit
+    ``not_in_tier`` marker passes, and its reason is carried into the report."""
+    from agents_scaling.ard import gates as G
+
+    declared = {"tokens_per_s": 900.0, "latency_mean_s": 9.0, "latency_p95_s": 15.0,
+                "prompt_tokens_mean": 220.0, "generated_tokens_mean": 800.0, "n_requests": 32}
+    measured = {"throughput_by_call_type": {
+        "ROOT": declared,
+        "HUB_LEADER": {"not_in_tier": True, "reason": "HUB5 dropped by §16.4 step 2"},
+    }}
+    checks = {c.name.split(":", 1)[1]: c
+              for c in G._throughput_checks(measured, ("ROOT", "HUB_LEADER", "RECEIVER"))}
+    assert checks["ROOT"].passed
+    assert checks["HUB_LEADER"].passed and checks["HUB_LEADER"].value == "not_in_tier"
+    assert "HUB5" in checks["HUB_LEADER"].note
+    # silence is still a failure: an unmeasured call type must not slip through
+    assert not checks["RECEIVER"].passed

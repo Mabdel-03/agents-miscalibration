@@ -246,6 +246,16 @@ def _throughput_checks(measured: Mapping[str, Any],
     checks: list[GateCheck] = []
     for call_type in call_types:
         row = table.get(call_type)
+        # A call type the frozen tier does not run is legitimately absent, not unmeasured.
+        # HUB5 is dropped by §16.4 step 2 under the reduced tier, so demanding a measured
+        # HUB_LEADER/HUB_WORKER batch would make an honest gate unpassable.  The caller must
+        # say so explicitly -- silence still fails -- and the reason is carried into the report.
+        if isinstance(row, Mapping) and row.get("not_in_tier"):
+            checks.append(GateCheck(
+                name=f"throughput:{call_type}", passed=True, value="not_in_tier",
+                threshold=list(CALL_TYPE_FIELDS),
+                note=str(row.get("reason") or "not run under the frozen tier (§16.4)")))
+            continue
         if not isinstance(row, Mapping):
             checks.append(GateCheck(
                 name=f"throughput:{call_type}", passed=False, value=None,
