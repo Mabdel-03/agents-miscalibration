@@ -216,3 +216,27 @@ paired rows carrying the full 31-column frozen schema, and **all 640 round-0 sta
 branches** — the "t=0 pairs for free" claim of spec §12.1, confirmed on real data rather than
 assumed. The 1,280 round-1 and round-2 states are peer-only, which is exactly the gap the FORK
 cells fill.
+
+
+### D-08 — the frame builder read the wrong label key (self-inflicted, caught on first real use)
+**Severity: would have trained the controller on nothing; fixed before any fit.**
+
+`frames.load_labels` read `row["status"]`. The evaluator writes `evaluator_status` and
+`is_correct`. Against the live grades that returned **zero labels from 11,040 graded rows** —
+so every paired row would have carried `y_private = y_peer = None`, the fitter would have seen
+no observed outcome, and the controller would have been fit on an empty frame or refused
+outright.
+
+Written into D-07's own module, one commit after documenting this exact defect class. Worth
+recording as such: knowing the shape of a bug is not the same as not writing it.
+
+The fix also avoids the trap next to it. `is_correct` alone is **not** the label: the grader
+sets it `False` for `ambiguous` and `timeout` as well as `incorrect`, so reading it directly
+would score every ungradeable answer as wrong. On this run that is 1,149 of 11,040 decisions
+(10.4%), concentrated on answers the symbolic comparison could not parse rather than on answers
+the model got wrong — precisely the bias D-07's docstring warns about. `load_labels` now gates
+on `evaluator_status` against the grader's own `STATUS_CORRECT`/`STATUS_INCORRECT` constants,
+imported rather than spelled out, and leaves everything else unobserved.
+
+Verified on the live grades: 9,891 labels (7,726 correct, 2,165 incorrect), 1,149 ambiguous or
+timed-out correctly excluded.

@@ -149,14 +149,20 @@ def load_labels(run_root: str | os.PathLike) -> dict[str, int]:
     grades = Path(run_root) / "eval" / "grades"
     if not grades.exists():
         return labels
+    # The evaluator's own vocabulary, imported rather than spelled out.  ``is_correct`` alone
+    # is NOT the label: the grader sets it False for ``ambiguous`` and ``timeout`` as well as
+    # ``incorrect``, so reading it directly would score every ungradeable answer as wrong --
+    # and on this run that is 10% of decisions, concentrated on the answers the symbolic
+    # comparison could not parse rather than on the ones the model got wrong.
+    observed = {graders.STATUS_CORRECT, graders.STATUS_INCORRECT}
     for path in grades.glob("*/*.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
         for row in payload.get("rows") or []:
             decision_id = str(row.get("decision_id") or "")
-            status = str(row.get("status") or "")
-            if not decision_id or status not in ("correct", "incorrect"):
+            status = str(row.get("evaluator_status") or "")
+            if not decision_id or status not in observed:
                 continue                  # ambiguous / timeout stay unobserved, never 0
-            labels[decision_id] = int(status == "correct")
+            labels[decision_id] = int(status == graders.STATUS_CORRECT)
     return labels
 
 

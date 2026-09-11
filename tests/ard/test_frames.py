@@ -104,13 +104,23 @@ def test_an_ungraded_decision_is_unobserved_not_zero(tmp_path):
     # The evaluator's ambiguous/timeout statuses never become labels either.
     grades = tmp_path / "eval" / "grades" / "GRADE.s000"
     grades.mkdir(parents=True)
+    # The real grade-row shape: `evaluator_status` plus `is_correct`.  The grader sets
+    # is_correct False for ambiguous and timeout as well as incorrect, so reading it directly
+    # would score every ungradeable answer as wrong.
     (grades / "math500-2.json").write_text(json.dumps({"rows": [
-        {"decision_id": "math500-2-PEER-r1-0", "status": "ambiguous"},
-        {"decision_id": "math500-2-PEER-r1-1", "status": "timeout"},
-        {"decision_id": "math500-2-PEER-r1-2", "status": "correct"},
+        {"decision_id": "math500-2-PEER-r1-0", "evaluator_status": "ambiguous",
+         "is_correct": False},
+        {"decision_id": "math500-2-PEER-r1-1", "evaluator_status": "timeout",
+         "is_correct": False},
+        {"decision_id": "math500-2-PEER-r1-2", "evaluator_status": "correct",
+         "is_correct": True},
+        {"decision_id": "math500-2-PEER-r1-3", "evaluator_status": "incorrect",
+         "is_correct": False},
     ]}))
     labels = frames.load_labels(tmp_path)
-    assert labels == {"math500-2-PEER-r1-2": 1}
+    assert labels == {"math500-2-PEER-r1-2": 1, "math500-2-PEER-r1-3": 0}
+    assert "math500-2-PEER-r1-0" not in labels   # ambiguous is unobserved, not incorrect
+    assert "math500-2-PEER-r1-1" not in labels
 
 
 def test_a_test_row_never_reaches_the_controller_frame(tmp_path):
