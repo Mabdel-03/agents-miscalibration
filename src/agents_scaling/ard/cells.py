@@ -153,6 +153,7 @@ def cell_id_for(
     parent_ref: str | None = None,
     instance: str | None = None,
     split: str | None = None,
+    episode_rep: int = 0,
 ) -> str:
     """``KIND.cohort.PROTOCOL.ckpt.T<budget>[.g<team>][.r<round>][.p<parent8>][.w<inst>].SPLIT.s###``.
 
@@ -172,6 +173,12 @@ def cell_id_for(
         parts.append(f"p{tag}")
     if instance is not None:
         parts.append(f"w{instance}")
+    if int(episode_rep):
+        # ``episode_rep`` is a *seed*, and it is part of the shard counter's key -- so two
+        # reps each restart at s000 and, without it here, produce the same id.  The receiver
+        # grid (2 seeds per condition) is the first thing to ask for a second rep.  Only a
+        # non-zero rep is stamped, so every single-seed id is unchanged.
+        parts.append(f"e{int(episode_rep)}")
     if split is not None:
         parts.append(str(split))
     parts.append(f"s{int(shard):03d}")
@@ -271,7 +278,8 @@ class ArdBuilder(_Builder):
             cell_id=cell_id_for(
                 kind, cohort=cohort, checkpoint=checkpoint, shard=shard, protocol=protocol,
                 reasoning_allowance=reasoning_allowance, round_=round_, team_id=team_id,
-                parent_ref=parent_ref, instance=instance, split=split),
+                parent_ref=parent_ref, instance=instance, split=split,
+                episode_rep=episode_rep),
             kind=kind,
             protocol=protocol,
             round=round_,

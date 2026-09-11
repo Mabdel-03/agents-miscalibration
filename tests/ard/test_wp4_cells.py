@@ -236,3 +236,24 @@ def test_two_manifests_of_the_same_module_cannot_share_a_cell_directory():
     assert len(made) == len(set(made)) == 6
     assert sorted(c.rsplit(".", 1)[1] for c in made) == ["s000", "s000", "s000",
                                                          "s001", "s001", "s001"]
+
+
+def test_a_second_seed_does_not_reuse_the_first_seeds_cell_id(tasks):
+    """``episode_rep`` keys the shard counter, so each rep restarts at s000.
+
+    Without the rep in the id, seed 0 and seed 1 of the same condition are the same
+    directory. The receiver grid (2 seeds per condition, spec §11) is the first thing to ask
+    for a second rep, and it is exactly where a repeated seed must stay a *separate* draw.
+    """
+    from agents_scaling.ard.cells import ArdBuilder
+    from agents_scaling.ard.types import ArdCellKind
+
+    b = ArdBuilder()
+    for rep in (0, 1):
+        b.emit(ArdCellKind.RECEIVER, tasks, cohort=K.Cohort.RECEIVER,
+               checkpoint=K.CHECKPOINT_SMALL, episode_rep=rep, per_cell=4)
+    ids = [c.cell_id for c in b.cells]
+    assert len(ids) == len(set(ids)), f"repeated-seed cell id collision: {ids}"
+    assert any(".e1." in c for c in ids) and not any(".e0." in c for c in ids)
+    by_rep = {c.episode_rep for c in b.cells}
+    assert by_rep == {0, 1}
