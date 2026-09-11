@@ -197,15 +197,17 @@ def results_summary(run_root: Path) -> str:
                   "primary endpoint**. Missing confidence is excluded and reported, never "
                   "imputed to 0.5; the missingness is not random (it lands on cap-hit draws, "
                   "amendment I7), so `conf_missing_rate` is printed beside every estimate.", "",
-                  "| protocol | ckpt | round | signal | valid n | miss | acc | mean conf | "
-                  "ECE | within-item AUC |", "|---|---|---:|---|---:|---:|---:|---:|---:|---:|"]
+                  "| protocol | ckpt | cohort | round | signal | valid n | miss | acc | "
+                  "mean conf | ECE | within-item AUC |",
+                  "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|"]
         for row in sorted(panel, key=lambda r: (str(r["protocol"]), str(r["checkpoint"]),
                                                 int(r["round"]), str(r["signal"]))):
             if row["signal"] not in ("self_reported", "system_vote_fraction"):
                 continue
             def g(v, n=3):
                 return "n/a" if v is None else f"{v:.{n}f}"
-            lines.append(f"| {row['protocol']} | {row['checkpoint']} | {row['round']} | "
+            lines.append(f"| {row['protocol']} | {row['checkpoint']} | {row['cohort']} | "
+                         f"{row['round']} | "
                          f"{row['signal']} | {row['valid_n']} | {g(row['conf_missing_rate'])} | "
                          f"{g(row['accuracy'])} | {g(row['mean_confidence'])} | "
                          f"{g(row['ece_primary'])} | {g(row['within_item_auc'])} |")
@@ -213,13 +215,14 @@ def results_summary(run_root: Path) -> str:
         if delta:
             lines += ["System minus agent ECE (the headline of this axis): positive means the "
                       "team-level signal is *less* calibrated than its members.", "",
-                      "| protocol | round | system signal | agent ECE | system ECE | delta |",
-                      "|---|---:|---|---:|---:|---:|"]
+                      "| protocol | ckpt | cohort | round | agent ECE | system ECE | delta |",
+                      "|---|---|---|---:|---:|---:|---:|"]
             for row in sorted(delta, key=lambda r: (str(r["protocol"]), int(r["round"]),
                                                     str(r["system_signal"]))):
                 if row["system_signal"] != "system_vote_fraction":
                     continue
-                lines.append(f"| {row['protocol']} | {row['round']} | {row['system_signal']} | "
+                lines.append(f"| {row['protocol']} | {row['checkpoint']} | {row['cohort']} | "
+                             f"{row['round']} | "
                              f"{row['agent_ece']:.4f} | {row['system_ece']:.4f} | "
                              f"{row['system_minus_agent_ece']:+.4f} |")
             lines.append("")
