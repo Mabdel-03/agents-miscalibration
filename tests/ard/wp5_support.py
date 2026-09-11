@@ -22,7 +22,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Sequence
 
 from tests.ard import wp1_support as S1  # sets HF_HOME / offline before transformers loads
 from tests.ard import wp2_support as S2

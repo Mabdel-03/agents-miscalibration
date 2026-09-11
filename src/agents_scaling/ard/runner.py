@@ -361,7 +361,7 @@ class ArdCellRunner(CellRunner):
             raise TypeError("cell must be an ArdCellSpec")
         self.ard_cell = cell
         self.kind_spec = KINDS.spec_for(cell.kind)
-        self._task_loader = task_loader or (lambda root: load_ard_tasks(root))
+        self._task_loader = task_loader or _default_task_loader(cell)
         self._episode_executor = episode_executor
         self._executor_is_wp2 = episode_executor is not None
         self.cost_fn: Callable[..., Mapping[str, Any]] | None = None
@@ -1118,6 +1118,25 @@ def _state(episode_id: str, round_: int, refs: Sequence[DecisionRef], *,
         valid=tuple(ref.valid for ref in refs),
         protected_slot=protected_slot,
     )
+
+
+def _default_task_loader(cell: ArdCellSpec):
+    """The task loader a cell kind needs when the caller injects none.
+
+    The E3 receiver programs are *generated*, not drawn from ``items.parquet``, so the
+    frozen ``study/runner._todo`` would refuse every one of them as "absent from the public
+    export" and suspend the cell.  A RECEIVER cell therefore loads its own synthetic tasks;
+    everything else reads the frozen public table.  Imported lazily so ``ard.runner`` does
+    not depend on the assay module at import time.
+    """
+    if getattr(cell, "kind", None) == ArdCellKind.RECEIVER:
+        def _receiver(root: Path) -> Mapping[str, ArdTask]:
+            from agents_scaling.ard import receiver as RX
+
+            return RX.receiver_task_loader(root)
+
+        return _receiver
+    return lambda root: load_ard_tasks(root)
 
 
 def run_ard_cell(

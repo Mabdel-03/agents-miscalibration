@@ -141,7 +141,7 @@ def test_a_model_selector_without_features_reports_the_gap_instead_of_guessing()
     assert row.selected_candidate_id is None and row.selection_failed
 
 
-def test_a_model_selector_without_a_controller_reports_that(controller_free=None):
+def test_a_model_selector_without_a_controller_reports_that():
     pool = S.pool_of(features=[S.feature_row()] * 5)
     row = SEL.score_selector(SEL.SELECTOR_DYNAMICS, pool, study_seed=SEED, controller=None)
     assert row.status == SEL.STATUS_NO_CONTROLLER

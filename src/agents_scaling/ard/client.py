@@ -183,6 +183,10 @@ class DecisionRecord:
     budget_tokens: int
     think_status: K.ParseStatus | None = None
     aliased: bool = False
+    #: Top-k alternatives over the final span, populated only when the request asked
+    #: for more than one (the receiver purpose).  Spec §11's answer-logit margin is
+    #: uncomputable without them, and would otherwise be missing for every E3 decision.
+    final_top_logprobs: tuple[tuple[dict[str, Any], ...], ...] | None = None
 
     @property
     def valid_delimiters(self) -> bool:
@@ -203,6 +207,8 @@ class DecisionRecord:
             "final_overrun": self.final_overrun,
             "final_text": self.final_text,
             "answer_logprob": self.answer_logprob,
+            "final_top_logprobs": (None if self.final_top_logprobs is None else
+                                   [list(row) for row in self.final_top_logprobs]),
             "prompt_tokens": self.prompt_tokens,
             "cached_prefill_tokens": self.cached_prefill_tokens,
             "finish_reason": self.finish_reason,
@@ -366,6 +372,7 @@ class ArdChatClient(VllmChatClient):
         parsed = super()._parse_response(response, local_ids)
         choice = response.choices[0]
         parsed["token_logprobs"] = _token_logprobs(choice)
+        parsed["top_logprobs"] = _top_logprobs(choice)
         parsed["cached_prefill_tokens"] = _cached_tokens(getattr(response, "usage", None))
         return parsed
 
@@ -411,6 +418,38 @@ def _token_logprobs(choice: Any) -> list[float | None] | None:
     for entry in content:
         value = entry.get("logprob") if isinstance(entry, Mapping) else getattr(entry, "logprob", None)
         out.append(_finite(value))
+    return out
+
+
+def _top_logprobs(choice: Any) -> list[list[dict[str, Any]]] | None:
+    """Per-token top-k alternatives of ``choices[0].logprobs.content[i].top_logprobs``.
+
+    Needed only by the receiver assay, whose answer-logit margin (spec §11) is the logprob
+    difference between the two supplied candidates' first differing answer token.  Without
+    the alternatives that margin is uncomputable and would have to be recorded as missing
+    for every receiver decision.  Kept over the final span only (see
+    :func:`decision_from_record`), so an ordinary decision carries nothing extra.
+    """
+    block = getattr(choice, "logprobs", None)
+    if block is None:
+        return None
+    content = getattr(block, "content", None)
+    if content is None and isinstance(block, Mapping):
+        content = block.get("content")
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
+        return None
+    out: list[list[dict[str, Any]]] = []
+    for entry in content:
+        alts = (entry.get("top_logprobs") if isinstance(entry, Mapping)
+                else getattr(entry, "top_logprobs", None)) or ()
+        row: list[dict[str, Any]] = []
+        for alt in alts:
+            token = alt.get("token") if isinstance(alt, Mapping) else getattr(alt, "token", None)
+            value = _finite(alt.get("logprob") if isinstance(alt, Mapping)
+                            else getattr(alt, "logprob", None))
+            if token is not None and value is not None:
+                row.append({"token": str(token), "logprob": float(value)})
+        out.append(row)
     return out
 
 
@@ -522,6 +561,15 @@ def decision_from_record(
         stop=start + len(kept),
     )
 
+    top_block = response.get("top_logprobs")
+    final_top = None
+    if top_block and len(kept):
+        width = max((len(row) for row in top_block), default=0)
+        if width > 1:                     # only the receiver purpose asks for more than one
+            n = len(ids)
+            lo = start if len(top_block) == n else max(0, len(top_block) - (n - start))
+            final_top = tuple(tuple(row) for row in top_block[lo:lo + len(kept)])
+
     endpoint = record.endpoint or {}
     return DecisionRecord(
         request_id=record.request_id,
@@ -542,6 +590,7 @@ def decision_from_record(
         flops=flops,
         budget_tokens=int(budget_tokens),
         think_status=think_status,
+        final_top_logprobs=final_top,
         aliased=bool(aliased),
     )
 
