@@ -301,3 +301,33 @@ supporting changes:
 Pinned by `test_fork_executor.py`: a fork cell produces exactly `N_AGENTS` decisions, all
 parented on the sealed PEER state; a missing parent suspends the cell rather than yielding an
 empty one; and a parent whose decision ids have moved since sealing is refused by name.
+
+### D-11 — eight root banks report 32 draws where the frozen bank is 16 *(open, unresolved)*
+**Severity: confined to the bank panel; no primary endpoint depends on it.**
+
+`bank_summary.parquet` reports `n_draws = 32` for 8 of 480 banks — all 8B, and all of them items
+that were used in the hour-9 pilots. The other 472 banks are exactly the frozen 16.
+
+Two separate things were found here, and only the first is fixed:
+
+1. **Aliased duplicate refs (fixed).** `bank_summary_rows` collected root refs across cells
+   without collapsing them, so a root aliased into several cells entered the pool more than
+   once and `metrics_reference._validate_pool` rightly refused it. A decision id is the
+   content-addressed request id, so the same id is the same draw seen twice, never two
+   opportunities; two genuinely different draws have different seeds and cannot collide.
+   Deduping by id collapsed 256 refs across 16 banks and the pool validates.
+
+2. **Eight banks still carry 32 *distinct* draws (open).** These were invisible to the
+   duplicate check precisely because the two sets are disjoint. Four separate probes — by
+   directory name, by embedded cell kind, by filename and by `source_id` — each find exactly
+   one 8B ROOTS item file contributing 16 refs for these items. Where the second set of 16
+   enters `bank_summary_rows` is **not explained**, and this entry does not pretend otherwise.
+
+**How it is handled rather than hidden:** the 8 affected items are excluded from every
+bank-level statistic (pass@k, vote@k, the generation-selection gap), and the exclusion with its
+item count is stated in `results_summary.md`. Nothing else is touched: `decisions`, `labels`,
+`round_summary`, `transitions`, `forks` and the three primary contrasts are computed from the
+episode trajectories and do not read this table.
+
+An unexplained defect that is contained and declared is a better outcome than a tidy one that
+was made tidy by a rule invented to fit it.

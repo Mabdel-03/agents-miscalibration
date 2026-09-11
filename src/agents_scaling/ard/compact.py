@@ -836,8 +836,17 @@ def bank_summary_rows(
         banks[key].extend(ref for ref in episode.decisions if ref.round == 0)
         splits[key] = cell.split
     rows = []
+    dropped_total = 0
     for (item_id, checkpoint), refs in sorted(banks.items()):
-        refs = sorted(refs, key=lambda ref: ref.decision_id)
+        # A decision id is the content-addressed request id, so the *same* id is the same
+        # draw seen twice -- a root aliased into more than one cell -- never two independent
+        # opportunities.  Collapse them: the bank is a set of distinct draws, and
+        # ``metrics_reference._validate_pool`` rightly refuses a pool that would double-count
+        # one opportunity.  Two genuinely different draws cannot collide here, because their
+        # seeds differ and the id is derived from the request.
+        by_id = {ref.decision_id: ref for ref in refs}
+        dropped_total += len(refs) - len(by_id)
+        refs = sorted(by_id.values(), key=lambda ref: ref.decision_id)
         outcomes = [bool(_is_correct(labels, ref)) for ref in refs]
         n, c = len(refs), sum(outcomes)
         classes = [ref.answer_class for ref in refs if ref.valid]
@@ -864,6 +873,10 @@ def bank_summary_rows(
         for k in K.PASS_KS:
             row[f"pass_at_{k}"] = MR.pass_at_k(n, c, k) if n >= k >= 1 else None
         rows.append(row)
+    if dropped_total:
+        print(f"[compact] bank_summary: collapsed {dropped_total} aliased root refs "
+              f"(the same content-addressed draw seen in more than one cell)",
+              file=sys.stderr)
     return rows
 
 
