@@ -185,3 +185,34 @@ different content raises, since a content address disagreeing with itself is a h
 
 Verified on the live run before use: 16 completed PEER cells → 128 episodes → 256 sealed states
 across rounds 1 and 2, exactly 2 per episode.
+
+### D-07 — the controller had no path from generated data to a fitted model
+**Severity: blocking for E4, the study's primary estimand; found before it was needed.**
+
+`features.features_from_state` turns a WP2 `RoundState` into the frozen v1 vector.
+`controller.fit_controller` consumes `PairedFrame`s. Neither reads the run root, `compact.py`
+emits `"features": []`, and nothing assembled a frame from the episodes and forks on disk — so
+the chain from generated data to a frozen controller, and therefore to GATE, did not exist.
+Third instance of the run's recurring shape: both ends built, no middle.
+
+`ard/frames.py` is the middle. It reconstructs the round states each episode already records
+(only four state attributes are read by the feature builder, so the reconstruction is faithful
+rather than guessed), builds the frozen vector on each, and pairs the two branches spec §12.1
+asks for: the t=0 pair from PRIVATE's and PEER's round-1 children off the shared root state,
+and the t=1,2 pairs from the FORK cells against the main PEER trajectory.
+
+Two rules it enforces, both about not manufacturing training data:
+
+* **A pair is only a pair when both children share a `parent_state_id`**, which is a content
+  address — so a mismatched join cannot quietly become a training row.
+* **An ungraded decision is an unobserved outcome, never a zero.** The evaluator's `ambiguous`
+  and `timeout` statuses do not become labels either. Scoring them 0 would teach the controller
+  that every ungraded branch failed, and ungraded correlates with *hard*, not with *wrong*.
+
+Test rows are refused rather than filtered, so a leak raises instead of shrinking the frame.
+
+Verified on the live run before use: 16 PEER and 18 PRIVATE completed cells reconstruct 1,920
+paired rows carrying the full 31-column frozen schema, and **all 640 round-0 states join both
+branches** — the "t=0 pairs for free" claim of spec §12.1, confirmed on real data rather than
+assumed. The 1,280 round-1 and round-2 states are peer-only, which is exactly the gap the FORK
+cells fill.
