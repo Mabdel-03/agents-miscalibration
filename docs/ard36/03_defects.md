@@ -302,7 +302,7 @@ Pinned by `test_fork_executor.py`: a fork cell produces exactly `N_AGENTS` decis
 parented on the sealed PEER state; a missing parent suspends the cell rather than yielding an
 empty one; and a parent whose decision ids have moved since sealing is refused by name.
 
-### D-11 — eight root banks report 32 draws where the frozen bank is 16 *(open, unresolved)*
+### D-11 — eight root banks report 32 draws where the frozen bank is 16 *(root cause found)*
 **Severity: confined to the bank panel; no primary endpoint depends on it.**
 
 `bank_summary.parquet` reports `n_draws = 32` for 8 of 480 banks — all 8B, and all of them items
@@ -331,3 +331,27 @@ episode trajectories and do not read this table.
 
 An unexplained defect that is contained and declared is a better outcome than a tidy one that
 was made tidy by a rule invented to fit it.
+
+
+**Root cause (found 2026-09-11, while verifying the minority frame).** A ROOTS cell has no
+protocol, and `wp2_episode_executor` defaults `cell.protocol or K.Protocol.PRIVATE` — so a root
+bank's episode id is built as if it were the PRIVATE episode of that item. The 16-draw bank and
+the 5-agent PRIVATE round-0 therefore **share one `episode_id`**, and any code that groups by
+`(episode_id, round)` silently merges them: 16 + 5 = 21 members. The 8 affected items carry four
+ROOTS episodes each under that shared id, which is where 32 distinct draws in one bank came from.
+
+This was invisible to every probe that keyed on the *item* (all four found exactly one 8B ROOTS
+file per item, which was true) because the collision is on the episode id, not the item.
+
+Consequences and handling:
+* `bank_summary` — the 8 items stay excluded from bank-level statistics, as already stated.
+* `minority_frame` — the frame now keeps **only groups of exactly `N_AGENTS` members** and counts
+  what it dropped (1,280 single-agent receiver rounds, 472 bank+PRIVATE collisions, 8 of the
+  four-bank items). Without that filter `n_correct` for PRIVATE round 0 would have been computed
+  over 21 "agents", silently redefining the study's central variable.
+* Nothing else groups by `(episode_id, round)`: `round_summary` is written per episode by the
+  compactor from the episode's own decisions, and the three primary contrasts read trajectories.
+
+The fix for the id itself is not applied mid-run: changing how a ROOTS episode id is derived
+would invalidate the content-addressed ids of every root already generated. It is recorded here
+for the next run instead, which is the right place for a change of that blast radius.
