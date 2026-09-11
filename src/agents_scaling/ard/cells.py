@@ -33,7 +33,7 @@ from typing import Any, NamedTuple
 
 from agents_scaling.ard import contract as K
 from agents_scaling.ard import kinds as KINDS
-from agents_scaling.ard.items import ArdTask, load_ard_tasks
+from agents_scaling.ard.items import ArdTask, large_panel, load_ard_tasks
 from agents_scaling.ard.types import (
     ANALYSIS_ITEM,
     ArdCellKind,
@@ -716,7 +716,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     run_root = Path(args.run_root)
-    tasks = list(load_ard_tasks(run_root).values())
+    all_tasks = load_ard_tasks(run_root)
+    if args.checkpoint == K.CHECKPOINT_LARGE:
+        # The 32B arms run the frozen 96-item panel, never the whole natural cohort: the
+        # large lane is ~20x the cost per decision and its cohort is fixed in the spec.
+        all_tasks = large_panel(all_tasks)
+    tasks = list(all_tasks.values())
     if args.split:
         tasks = [task for task in tasks if task.split in set(args.split)]
     cells = build_module(
