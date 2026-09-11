@@ -128,3 +128,30 @@ Two fixes, because either alone leaves the hazard:
 
 Pinned by `test_wp4_cells.py::test_two_manifests_of_the_same_module_cannot_share_a_cell_directory`
 and `test_wp4_runner.py::test_a_cell_refuses_a_directory_that_holds_another_manifests_items`.
+
+### D-05 — the frozen manifest wrote the config hash where the freeze gate does not read it
+**Severity: blocking; the whole run stopped for 17 minutes.**
+
+`ard/freeze.py` recorded the study-config hash nested, as `config: {sha256: ...}`. The freeze
+gate every generate cell calls before its first request — `study.config.StudyConfig.frozen` —
+reads **top-level** `config_sha256`. It therefore read `None`, compared it against the real
+hash, and raised "stale or edited manifest" for every cell. `FROZEN.yaml` was written at
+03:06 UTC and **95 cells suspended** against it; not one cell ever passed its gate. The 33
+cells that completed after 03:06 had started before the file existed, when the gate was a
+no-op, so nothing ran under a manifest it had actually verified.
+
+The failure mode is the one this run keeps meeting: two modules agreeing on a fact and
+disagreeing on where it lives. The writer was ARD's, the reader is the frozen study's, and
+nothing tied them together.
+
+Fixed by writing `config_sha256` at the top level (the nested block stays, it carries the
+path and the raw config), and by refusing to *write* a FROZEN.yaml without it — a freeze that
+cannot be verified should fail once, loudly, at freeze time, not once per cell for the rest
+of the run.
+
+`FROZEN.yaml` is write-once, so the unusable file was preserved as
+`FROZEN.yaml.d05-superseded` and re-frozen. The two differ in exactly three top-level keys:
+`config_sha256` (`None` → the real hash), `frozen_at`, and `code_version` (the commit carrying
+the fix). `tier`, `contract` and `items` are identical — no scientific content changed, and
+the tier decision of amendment S6 was taken from the launch gate, not from this file. All 95
+suspensions were verified to share this single cause before they were cleared.

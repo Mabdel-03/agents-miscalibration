@@ -217,6 +217,12 @@ def freeze(run_root: str | os.PathLike, *, tier: str = "reduced",
 
     manifest: dict[str, Any] = {
         "study_id": C.STUDY_ID,
+        # Top level, not only inside ``config``: ``study.config.StudyConfig.frozen`` -- the
+        # freeze gate every generate cell calls before its first request -- reads
+        # ``config_sha256`` from the top level and refuses the cell when it does not match.
+        # Writing the hash only as ``config.sha256`` left that read returning None and
+        # suspended every cell in the run (defect D-05).
+        "config_sha256": config_block.get("sha256"),
         "run_root": str(root),
         "frozen_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         "code_version": _code_version(),
@@ -232,6 +238,12 @@ def freeze(run_root: str | os.PathLike, *, tier: str = "reduced",
         },
         "extra": dict(extra or {}),
     }
+    if not manifest.get("config_sha256"):
+        raise ProtocolError(
+            f"cannot freeze: the study config at {cfg_path} is missing or unreadable, so "
+            "FROZEN.yaml would carry no top-level config_sha256 -- and the freeze gate every "
+            "generate cell calls would then refuse the whole run (defect D-05)"
+        )
     payload = yaml.safe_dump(manifest, sort_keys=True, allow_unicode=True,
                              default_flow_style=False)
     _atomic_write_bytes(target, payload.encode("utf-8"))
