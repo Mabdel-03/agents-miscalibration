@@ -130,3 +130,23 @@ print(r.list_live_servers('$RESULTS/$RUN'))"    # must be empty
 - Compile caches must stay on node-local `/tmp`; `$HOME` is at 92% of its file quota and TP>1 ranks
   racing on one inductor dir gave `Stale file handle` on NFS.
 - Write nothing to `/orcd/scratch` — it is inode-exhausted at 100%.
+
+## As launched (2026-09-10)
+
+The planned spec asked for 7 GPUs on pi_manoli and 4 on pi_tpoggio. At launch only 5 and 2 were
+idle, so the planned spec would have requeued third-party jobs on both PI nodes. Capacity on
+ou_bcs_normal (29 idle A100, per-user cap 8) and ou_bcs_low (47 idle) made that unnecessary, so
+the fleet was launched to fit inside idle capacity with **zero preemption of other users' work**:
+
+```
+ard36-32B:2:pi_manoli:2-00:00:00,ard36-8B:1:pi_manoli:2-00:00:00,\
+ard36-32B:1:ou_bcs_normal:1-00:00:00,ard36-8B:6:ou_bcs_normal:20:00:00,\
+ard36-8B:6:ou_bcs_low:1-00:00:00
+```
+
+3 x 32B TP2 + 13 x 8B TP1 = 19 GPUs, which meets the 20-GPU tier's intent. ou_bcs_normal sits
+exactly at the 8-A100 per-user cap (the other project's four jobs there are H100 and draw on a
+separate cap). Walltimes are staggered so the fleet never loses eight replicas at once.
+
+If the PI partitions free up, add `ard36-8B:N:pi_manoli` rather than displacing anyone. If the
+launch gate shows the fleet short, the tier stays reduced rather than preempting to reach full.
