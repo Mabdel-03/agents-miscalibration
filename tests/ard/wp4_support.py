@@ -143,3 +143,51 @@ def runner_kwargs(**overrides: Any) -> dict[str, Any]:
     }
     kwargs.update(overrides)
     return kwargs
+
+
+# --------------------------------------------------------------------------- #
+# A genuine minimal controller artifact (WP4 fixtures + the offline dry run)
+# --------------------------------------------------------------------------- #
+#
+# WP4 predates WP5, so its fixtures used to hand a stub payload to
+# ``freeze_register``.  Once ard/controller.py landed, ``load_controller`` rightly
+# refused it ("is a None artifact, not ARD36_CONTROLLER").  The fix is not to relax
+# the validator: it is to have the fixture write a REAL artifact, so the GATE path
+# these tests exercise is the same one the run will take.  The models are fitted on
+# a tiny separable problem rather than hand-stuffed, so the artifact is valid by
+# construction rather than by our say-so.
+
+def minimal_controller_payload(feature_names=None):
+    """A valid ``FrozenController`` payload with fitted p_private / p_peer heads."""
+    import numpy as np
+
+    from agents_scaling.ard import controller as CTRL
+    from agents_scaling.study.neural import readout as R
+
+    # The real frozen v1 names, not invented ones: the episode builds rows against
+    # FEATURES_V1 and a head naming an absent column trips the feature firewall.
+    from agents_scaling.ard import features as FE
+
+    names = list(feature_names or FE.FEATURES_V1)
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(64, len(names)))
+    heads = {}
+    for head, sign in ((CTRL.HEAD_PRIVATE, +1.0), (CTRL.HEAD_PEER, -1.0)):
+        y = (sign * X[:, 0] > 0).astype(float)
+        model = R.LogisticModel(penalty=1.0, feature_names=list(names))
+        model.fit(X, y)
+        heads[head] = model
+    return CTRL.FrozenController(
+        feature_names=tuple(names),
+        models=heads,
+        meta={"provenance": "wp4_support.minimal_controller_payload",
+              "note": "bring-up artifact for fixtures and the offline dry run; "
+                      "never produced by the fitting path"},
+    ).payload()
+
+
+def freeze_minimal_controller(run_root):
+    """Write the artifact through the one register writer and return its sha."""
+    from agents_scaling.ard import runner as ard_runner
+
+    return ard_runner.freeze_register(run_root, "controller", minimal_controller_payload())

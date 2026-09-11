@@ -30,6 +30,7 @@ from agents_scaling.ard.types import (
     ArdCellKind,
 )
 from tests.ard.wp4_support import (
+    freeze_minimal_controller,
     fake_server,
     make_run_root,
     runner_kwargs,
@@ -92,7 +93,7 @@ def test_a_gate_cell_without_its_controller_exits_deps_unmet_with_no_meta_and_no
 
 
 def test_a_tampered_controller_file_is_refused_exactly_like_an_absent_one(run_root):
-    sha = ard_runner.freeze_register(run_root, "controller", {"schema": "v1", "w": [1, 2]})
+    sha = freeze_minimal_controller(run_root)
     path = ard_runner.register_path(run_root, "controller", sha)
     payload = json.loads(path.read_text())
     payload["w"] = [1, 3]                       # same declared hash, different content
@@ -135,7 +136,7 @@ def test_gate_passes_the_gate_but_refuses_to_invent_a_protection_choice(run_root
     protecting an arbitrary agent — unless ``ard/controller.py`` (WP5) is importable, in
     which case it runs.
     """
-    sha = ard_runner.freeze_register(run_root, "controller", {"schema": "v1"})
+    sha = freeze_minimal_controller(run_root)
     cell = _episode_cell(run_root, protocol=K.Protocol.GATE, depends_on=(f"controller:{sha}",))
     chooser_available = ard_runner.resolve_controller_chooser(run_root, cell) is not None
     with fake_server(run_root):

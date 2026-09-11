@@ -278,8 +278,12 @@ def main(argv: list[str] | None = None) -> int:
     server.register(run_root, K.PROFILE_SMALL)
     print(f"[dry-run] fake vLLM at {server.base_url} registered on {K.PROFILE_SMALL}")
 
-    controller_sha = ard_runner.freeze_register(
-        run_root, "controller", {"schema": "ard36-controller-v1", "features": list(range(3))})
+    # A REAL controller artifact, not a stub: ard/controller.py validates the kind and the
+    # canonical-JSON digest, so a placeholder would make the GATE path here diverge from the
+    # path the run takes (spec §12.3).
+    from tests.ard.wp4_support import freeze_minimal_controller
+
+    controller_sha = freeze_minimal_controller(run_root)
     state_sha = ard_runner.freeze_register(
         run_root, "state", {"schema": "ard36-state-v1", "states": []})
     print(f"[dry-run] controller:{controller_sha[:12]}  state:{state_sha[:12]}")
