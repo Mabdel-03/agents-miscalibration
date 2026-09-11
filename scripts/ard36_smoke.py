@@ -92,6 +92,40 @@ def _row(decs: list[dict]) -> dict:
     }
 
 
+def confirm_bf16(run_root: Path) -> dict:
+    """Spec §6.1: one precision throughout, confirmed from what each replica *reports*.
+
+    vLLM prints the resolved dtype at startup, so the serve log of each live replica is the
+    replica's own report -- not the flag we asked for.  Quantizing only the larger model and
+    reading the difference as scale is the failure this exists to catch, so an unreadable log
+    is a failure, never a pass by omission.
+    """
+    from agents_scaling.serving import registry
+
+    seen: Counter = Counter()
+    replicas, unreadable = 0, []
+    for profile in (K.PROFILE_SMALL, K.PROFILE_LARGE):
+        for entry in registry.list_live_servers(run_root, profile):
+            replicas += 1
+            job = str(getattr(entry, "slurm_job_id", "") or "")
+            hits = sorted((run_root / "logs").glob(f"serve_{profile}_{job}.out")) if job else []
+            dtype = None
+            for log in hits:
+                for line in log.read_text(errors="replace").splitlines():
+                    if "dtype=torch." in line:
+                        dtype = line.split("dtype=torch.", 1)[1].split(",")[0].split(")")[0].strip()
+                        break
+                if dtype:
+                    break
+            if dtype is None:
+                unreadable.append(f"{profile}:{job or 'no-job-id'}")
+            else:
+                seen[dtype] += 1
+    confirmed = bool(replicas) and not unreadable and set(seen) == {K.DTYPE}
+    return {"bf16_confirmed": confirmed, "replicas": replicas,
+            "dtypes": dict(seen), "unreadable": unreadable}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -134,7 +168,9 @@ def main() -> int:
     validity = (n_valid / len(roots)) if roots else 0.0
     cap = sum(1 for d in roots if d.get("boundary_injected"))
 
+    bf16 = confirm_bf16(args.run_root)
     measured = {
+        "bf16_confirmed": bf16["bf16_confirmed"],
         "root_parse_validity": round(validity, 4),
         "http_error_rate": args.http_error_rate,
         "grader_items_per_s": args.grader_items_per_s,
@@ -149,6 +185,7 @@ def main() -> int:
         "provenance": {
             "n_decisions": len(decs),
             "n_root_decisions": len(roots),
+            "bf16": bf16,
             "root_parse_status": dict(status),
             "root_valid_statuses": sorted(valid_statuses),
             "root_conf_missing_rate": (

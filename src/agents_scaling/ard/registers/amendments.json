@@ -198,5 +198,15 @@
     "unsupported_claim": "The answer channel is unaffected -- these reports commit before the cut. What it does limit is the *confidence* axis: a cut tail loses `<confidence>` (and `<evidence>`), so these draws carry a missing confidence under the frozen missing-is-missing policy, never an imputed 0.5. That missingness is **not random** -- it lands only on cap-hit draws, i.e. the longer, harder items -- so every calibration and confidence panel reports `conf_missing_rate` beside its estimate, the matched-n rule (plan §5.8) governs any cross-round or cross-protocol comparison, and confidence-conditioned controller features carry their existing missing-indicator. On this pilot that is 12.5% of decisions. Report-format compliance is already excluded as a model property for cap-hit draws under I6.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
+  },
+  {
+    "id": "S6",
+    "section": "scope",
+    "section_title": "Scope",
+    "deviation": "**The full core tier is restored; the prospective §16.4 downscope is lifted.** The plan applied §16.4 steps 1-3 prospectively at T0 because the clock started with implementation inside the 36 hours (no HUB5, E2d 16 items, challenge <=48, receiver 32, selector audit on two pools, extensions off), reducing the core to 47,424 8B + 8,256 32B decisions. The plan's own condition for restoring the full 62,224 + 9,376 core was that the *measured* projection with the 20% reserve completes by hour 30. At hour 9.7 the launch gate passes all 20 checks on that measured projection: critical path 13.8 h against a 16 h deadline, total 21.6 h against 34 h, and the bundle's own budget_check -- run out of the shipped zip, not paraphrased -- projects 5.36 h for the small lane and 4.29 h for the large lane. The measured rates behind it are 548 tok/s per 8B replica and 342 per 32B replica under real load (7.16 and 1.67 logical decisions/s), measured after defect D-03 raised per-cell concurrency from 1 to N_AGENTS.",
+    "spec_clause": "§16.3 (the launch gate), §16.4 (the downscope ladder), §17",
+    "unsupported_claim": "None to any estimand: the restoration adds arms and items, it removes none, and every reduced-tier cell is a subset of the full-tier manifest. The decision was taken on throughput, validity and replica census alone -- **no test outcome, correctness result or protocol contrast had been computed when it was made**, which is the condition the plan attaches to any tier change. HUB5 re-enters the tier, so its throughput was piloted before the gate rather than assumed. What it does commit: the run now owes the full cohort, so a later shortfall must be reported as incomplete coverage against the full ledger rather than silently rebased.",
+    "source": "docs/ard36/02_amendments.md",
+    "when": "pre_dispatch"
   }
 ]
