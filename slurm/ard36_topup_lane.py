@@ -70,8 +70,13 @@ def live_indices(run_root: Path, lane: str, cells_file: str) -> set[int]:
         return set()
     entries = json.loads(log_path.read_text())
     live: set[int] = set()
+    wanted = Path(cells_file).name
     for entry in entries:
-        if str(entry.get("cells_file") or "") != cells_file:
+        # Compare basenames: the launcher records whatever path it was given, and a topup
+        # invoked with an absolute path must still recognise a live task submitted with a
+        # relative one.  Getting this wrong reports "0 live" and dispatches a second worker
+        # for a cell that already has one.
+        if Path(str(entry.get("cells_file") or "")).name != wanted:
             continue
         job_id = entry.get("job_id")
         if job_id:
@@ -117,7 +122,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     waiting = waiting_indices(run_root, cells)
     live = live_indices(run_root, args.lane, args.cells_file)
     plan = plan_topup(todo, live, max_tasks=args.max_tasks)
-    stem = args.cells_file[:-5] if args.cells_file.endswith(".json") else args.cells_file
+    # The chunk renders are named from the manifest's *basename*; deriving the stem from the
+    # raw argument put an absolute path inside the glob, which matched nothing and printed
+    # "no chunk render" while exiting 0 -- a top-up loop that silently dispatches nothing.
+    stem = Path(args.cells_file).name
+    stem = stem[:-5] if stem.endswith(".json") else stem
     print(f"[topup:{args.lane}] {args.cells_file}: {len(cells)} cells, {len(todo)} unfinished "
           f"({len(waiting)} waiting on a dependency), {len(live)} live, {len(plan)} to dispatch")
     if not plan:
@@ -133,7 +142,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         candidates = sorted(run_root.glob(f"chunk_{args.lane}_{stem}_*.sbatch"))
         candidates = [p for p in candidates if ".resume." not in p.name and ".topup." not in p.name]
         if not candidates:
-            print(f"[topup:{args.lane}] no chunk render for {args.cells_file}")
+            print(f"[topup:{args.lane}] no chunk render matching "
+                  f"chunk_{args.lane}_{stem}_*.sbatch in {run_root}; dispatch the manifest "
+                  f"once with ard36_launch_chunked.py first, or pass --template")
             return 5
         template = candidates[0]
     out_path = run_root / f"chunk_{args.lane}_{stem}.topup.sbatch"
