@@ -328,6 +328,10 @@ class DecisionRef(_Record):
     boundary_injected: bool = False
     final_overrun: bool = False
     answer_logprob: float | None = None
+    #: Every physical request the logical decision cost.  A cap-hit draw is generated in
+    #: two phases (spec §6.2: "Count both physical requests and any repeated prefill in
+    #: runtime cost"), so counting one per decision under-reports the run's real cost.
+    physical_request_ids: tuple[str, ...] = ()
     finish_reason: str = ""
     latency_s: float = 0.0
     arrival_ts: float = 0.0

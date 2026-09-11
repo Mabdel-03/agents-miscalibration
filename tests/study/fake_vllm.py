@@ -34,8 +34,15 @@ that makes a test hit the cap); ``logprobs``/``top_logprobs`` produce a real
 ``usage.prompt_tokens_details.cached_tokens``; ``think_open``/``think_close`` inject the
 two delimiter faults (``no_think_open`` / ``premature_reasoning_eos``).
 
-Fault injection: :meth:`FakeVllmServer.fail_next` (HTTP 5xx/429 for the next *n* chat
-requests), :meth:`FakeVllmServer.hang` (sleep before answering, to trigger client
+``POST /v1/completions`` is served too (ARD36 spec §6.2 phase-2 report continuation):
+``prompt`` may be a ``list[int]`` token prefix, ``return_token_ids`` fills the per-choice
+``prompt_token_ids``/``token_ids``, and ``logprobs: n`` produces the completions-shaped
+block (``tokens``/``token_logprobs``/``top_logprobs``/``text_offset``).  A prompt whose last
+token is ``<final>`` is answered with the rest of an ARD36 report, so a client that
+prefilled the opening tag reassembles one complete report.
+
+Fault injection: :meth:`FakeVllmServer.fail_next` (HTTP 5xx/429 for the next *n* chat or
+completion requests), :meth:`FakeVllmServer.hang` (sleep before answering, to trigger client
 timeouts) and :meth:`FakeVllmServer.kill` (close the listening socket → connection
 refused).  ``guided_json`` in the request body is recorded and — like the real stack —
 NOT enforced unless ``guided_json_mode="enforce"``.
@@ -360,7 +367,9 @@ class FakeVllmServer:
         self.requests: list[dict[str, Any]] = []
         self.request_count = 0
         self.chat_count = 0
+        self.completion_count = 0
         self._fail_queue: list[tuple[int, str]] = []
+        self._fail_queues: dict[str, list[tuple[int, str]]] = {}
         self._hang_s = 0.0
         self._hub_calls_per_item: dict[str, int] = {}
         self._killed = False
@@ -417,11 +426,30 @@ class FakeVllmServer:
         self.stop()
 
     # ---- fault injection ---------------------------------------------------
-    def fail_next(self, n: int, status: int = 500, message: str = "injected failure") -> None:
-        """Answer the next ``n`` chat requests with HTTP ``status`` (500 → InternalServerError,
-        429 → RateLimitError, 400 → BadRequestError: a non-exogenous fault)."""
+    def fail_next(
+        self, n: int, status: int = 500, message: str = "injected failure", *, path: str | None = None
+    ) -> None:
+        """Answer the next ``n`` requests with HTTP ``status`` (500 → InternalServerError,
+        429 → RateLimitError, 400 → BadRequestError: a non-exogenous fault).
+
+        ``path`` restricts the faults to one route (``"/v1/chat/completions"`` or
+        ``"/v1/completions"``), which is how a test faults the second phase of an ARD36
+        two-phase decision without spending the first phase's retries.  Without it the
+        faults are taken by whichever route asks first, as before.
+        """
         with self._lock:
-            self._fail_queue.extend([(int(status), message)] * int(n))
+            queue = self._fail_queue if path is None else self._fail_queues.setdefault(str(path), [])
+            queue.extend([(int(status), message)] * int(n))
+
+    def _take_fault(self, path: str) -> tuple[int, str] | None:
+        """The next fault for ``path`` — its own queue first, then the any-route one.
+
+        Callers already hold ``self._lock``.
+        """
+        queue = self._fail_queues.get(path)
+        if queue:
+            return queue.pop(0)
+        return self._fail_queue.pop(0) if self._fail_queue else None
 
     def hang(self, seconds: float) -> None:
         """Sleep ``seconds`` before answering every following chat request (0 disables)."""
@@ -431,6 +459,7 @@ class FakeVllmServer:
     def reset_faults(self) -> None:
         with self._lock:
             self._fail_queue.clear()
+            self._fail_queues.clear()
             self._hang_s = 0.0
 
     # ---- registry ------------------------------------------------------------
@@ -462,6 +491,9 @@ class FakeVllmServer:
             return
         if method == "POST" and path == "/v1/chat/completions":
             self._send(handler, *self._chat(body))
+            return
+        if method == "POST" and path == "/v1/completions":
+            self._send(handler, *self._completions(body))
             return
         self._send(handler, 404, {"detail": "Not Found"})
 
@@ -518,7 +550,7 @@ class FakeVllmServer:
             return 400, {"error": {"message": "messages required", "type": "BadRequestError", "code": 400}}
         with self._lock:
             self.chat_count += 1
-            fault = self._fail_queue.pop(0) if self._fail_queue else None
+            fault = self._take_fault("/v1/chat/completions")
             hang_s = self._hang_s
             self.requests.append(
                 {
@@ -644,6 +676,169 @@ class FakeVllmServer:
             "prompt_text": None,
             "prompt_routed_experts": None,
             "kv_transfer_params": None,
+        }
+
+    # ---- text completion (ARD36 phase 2; spec §6.2 continuation) -----------------
+    def _completions(self, body: Any) -> tuple[int, Any]:
+        """``POST /v1/completions`` — the route an ARD36 report continuation takes.
+
+        Same fault injection, model check and determinism rule as :meth:`_chat`; counted
+        separately (``completion_count``) so a test can assert how many *physical* requests
+        one logical decision cost.
+        """
+        if not isinstance(body, Mapping) or body.get("prompt") is None:
+            return 400, {"error": {"message": "prompt required", "type": "BadRequestError", "code": 400}}
+        with self._lock:
+            self.completion_count += 1
+            fault = self._take_fault("/v1/completions")
+            hang_s = self._hang_s
+            self.requests.append(
+                {
+                    "path": "/v1/completions",
+                    "body": json.loads(json.dumps(body)),
+                    "guided_json": body.get("guided_json"),
+                    "received_at": time.time(),
+                    "fault": fault,
+                }
+            )
+        if hang_s > 0:
+            time.sleep(hang_s)
+        if fault is not None:
+            status, message = fault
+            return status, {"error": {"message": message, "type": "ServerError", "code": status}}
+        if body.get("model") != self.served_model_name:
+            return 404, {"error": {"message": f"The model `{body.get('model')}` does not exist.", "type": "NotFoundError", "code": 404}}
+        return 200, self.text_completion_payload(body)
+
+    def prompt_token_ids(self, body: Mapping[str, Any]) -> list[int]:
+        """The prompt of a completions body as token ids (``list[int]`` is sent verbatim)."""
+        prompt = body.get("prompt")
+        if isinstance(prompt, str):
+            return list(self.tokenizer.encode(prompt))
+        if isinstance(prompt, Sequence) and all(isinstance(i, int) and not isinstance(i, bool) for i in prompt):
+            return [int(i) for i in prompt]
+        raise ValueError("prompt must be a string or a list of token ids")
+
+    def text_completion_payload(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """The full ``/v1/completions`` response object for ``body`` (pure: no counters).
+
+        A prompt whose last token is the ARD36 ``<final>`` opening is a phase-2 report
+        continuation: the server answers with the *rest* of the report (the opening tag is
+        already in the prompt), so the client's reassembled span is one complete report.
+        Any other prompt gets the ordinary content for its detected mode.
+        """
+        prompt_ids = self.prompt_token_ids(body)
+        seed = body.get("seed")
+        max_tokens = int(body.get("max_tokens") or 16)
+        prompt_text = self.tokenizer.decode(prompt_ids)
+        messages = [{"role": "user", "content": prompt_text}]
+        key = request_key(messages, seed)
+        # The opening tag may be one token or several, so look at the decoded tail.
+        continuation = bool(prompt_ids) and self.tokenizer.decode(prompt_ids[-4:]).strip().endswith(
+            ARD_FINAL_OPEN
+        )
+
+        content = None
+        if self.responder is not None:
+            content = self.responder(
+                {
+                    "messages": messages,
+                    "prompt_token_ids": list(prompt_ids),
+                    "seed": seed,
+                    "mode": "ard_continuation" if continuation else detect_mode(messages),
+                    "key": key,
+                    "body": dict(body),
+                }
+            )
+        if content is None:
+            content = (
+                self._ard_continuation_content(messages, key)
+                if continuation
+                else self._content_for(detect_mode(messages), messages, key)
+            )
+
+        completion_ids = list(self.tokenizer.encode(content))
+        finish_reason = "stop"
+        if len(completion_ids) + 1 > max_tokens:
+            completion_ids = completion_ids[:max_tokens]
+            finish_reason = "length"
+        else:
+            completion_ids.append(IM_END_ID)
+        if self.finish_reason_override is not None:
+            finish_reason = self.finish_reason_override
+        text = self.tokenizer.decode(completion_ids)
+        return {
+            "id": f"cmpl-{uuid.uuid4().hex}",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": self.served_model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "text": text,
+                    "logprobs": self._completion_logprobs_block(body, completion_ids, key),
+                    "finish_reason": finish_reason,
+                    "stop_reason": None,
+                    "token_ids": completion_ids,
+                    "prompt_logprobs": None,
+                    "prompt_token_ids": list(prompt_ids),
+                    "routed_experts": None,
+                }
+            ],
+            "service_tier": None,
+            "system_fingerprint": None,
+            "usage": {
+                "prompt_tokens": len(prompt_ids),
+                "total_tokens": len(prompt_ids) + len(completion_ids),
+                "completion_tokens": len(completion_ids),
+                "prompt_tokens_details": self._prompt_tokens_details(len(prompt_ids)),
+            },
+            "prompt_routed_experts": None,
+            "kv_transfer_params": None,
+        }
+
+    def _ard_continuation_content(self, messages: Sequence[Mapping[str, Any]], key: str) -> str:
+        """One ARD36 report *minus* its opening tag, which the prompt already carries."""
+        report = self._ard_report_content(messages, key)
+        if report.startswith(ARD_FINAL_OPEN):
+            report = report[len(ARD_FINAL_OPEN):]
+        return report.strip()
+
+    def _completion_logprobs_block(
+        self, body: Mapping[str, Any], completion_ids: Sequence[int], key: str
+    ) -> dict[str, Any] | None:
+        """``choices[0].logprobs`` in the /v1/completions shape (``logprobs`` is a width).
+
+        Unlike chat, the completions route reports parallel arrays — ``tokens``,
+        ``token_logprobs``, ``top_logprobs`` (one ``token -> logprob`` mapping per
+        generated token) and ``text_offset`` — and there is no ``top_logprobs`` parameter:
+        ``logprobs: n`` asks for n alternatives.  Values are finite and a pure function of
+        ``(key, index)``, as in :meth:`_logprobs_block`.
+        """
+        width = body.get("logprobs")
+        if width is None:
+            return None
+        width = max(1, int(width))
+        tokens: list[str] = []
+        token_logprobs: list[float] = []
+        top_logprobs: list[dict[str, float]] = []
+        text_offset: list[int] = []
+        offset = 0
+        for index, token_id in enumerate(completion_ids):
+            token = self.tokenizer.decode([token_id])
+            logprob = round(-2.0 * _unit(f"{key}:{index}", "logprob"), 6)
+            tokens.append(token)
+            token_logprobs.append(logprob)
+            text_offset.append(offset)
+            offset += len(token)
+            top_logprobs.append(
+                {(token if rank == 0 else f"alt{rank}"): round(logprob - rank, 6) for rank in range(width)}
+            )
+        return {
+            "tokens": tokens,
+            "token_logprobs": token_logprobs,
+            "top_logprobs": top_logprobs,
+            "text_offset": text_offset,
         }
 
     # ---- ARD36 extensions (spec §6.2 split budget, §6.3 report contract) ---------

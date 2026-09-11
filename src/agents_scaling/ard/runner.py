@@ -985,6 +985,8 @@ def _decision_ref(
         arrival_ts=arrival_ts,
         endpoint_id=record.endpoint_id,
         flops=dict(record.flops or {}),
+        physical_request_ids=tuple(getattr(record, "physical_request_ids", None)
+                                   or (record.request_id,)),
         aliased=record.aliased,
         fallback=True,
     )

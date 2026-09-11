@@ -208,11 +208,18 @@ def test_natural_close_under_budget(cfg, run_root, context, cost_fn, serve):
 
 
 def test_forced_close_at_the_budget_is_boundary_injected(cfg, run_root, context, cost_fn, serve):
-    """vLLM forces ``</think>`` once the thinking count reaches T (contract §3)."""
+    """vLLM forces ``</think>`` once the thinking count reaches T (contract §3).
+
+    A forced boundary is also the phase-2 trigger, so this draw is delivered as two
+    physical requests (``tests/ard/test_two_phase.py`` owns that behaviour).  What is
+    asserted here is the thinking-side accounting, which the continuation must leave
+    exactly as it was.
+    """
     budget = K.THINKING_TOKENS_LOW
     req = S.make_request(cfg)
     with serve(thinking_words=budget + 500) as srv:
         record = _run(req, run_root, context, cost_fn, srv)
+        assert (srv.chat_count, srv.completion_count) == (1, 1)
     ids = record.completion_token_ids
     assert record.thinking_tokens == budget == record.budget_tokens
     assert ids[budget + 1] == K.THINK_END_ID
@@ -221,6 +228,7 @@ def test_forced_close_at_the_budget_is_boundary_injected(cfg, run_root, context,
     # §6.2: the 256-token report allowance survives a cap hit intact.
     assert record.final_tokens > 0 and record.final_text.startswith(K.FINAL_OPEN)
     assert record.finish_reason == "stop"
+    assert record.continued is True and len(record.physical_request_ids) == 2
 
 
 def test_no_think_open_maps_to_its_parse_status(cfg, run_root, context, cost_fn, serve):

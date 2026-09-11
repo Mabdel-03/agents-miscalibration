@@ -37,14 +37,19 @@ from agents_scaling.study.types import Decoding
 
 __all__ = [
     "ARD_DECODING_ROLE",
+    "CONTINUATION_DECODING",
+    "CONTINUATION_PREFILL_TEXT",
+    "CONTINUATION_ROLE",
     "HIGH_DECODING",
     "LOW_DECODING",
     "ROOT_DECODING",
     "THINKING_BUDGETS",
     "ard_decoding",
     "budget_of",
+    "continuation_decoding",
     "decoding_for",
     "decoding_for_purpose",
+    "is_continuation",
     "is_root_purpose",
     "max_tokens_for",
 ]
@@ -129,3 +134,63 @@ def decoding_for_purpose(purpose: str, thinking_tokens: int) -> Decoding:
 def budget_of(decoding: Decoding) -> int:
     """The thinking budget carried by ``decoding`` (``0`` when it is not an ARD decoding)."""
     return int(getattr(decoding, "thinking_tokens", 0) or 0)
+
+
+# --------------------------------------------------------------------------- phase 2
+
+
+#: ``RequestSpec.role`` of a phase-2 report continuation (ledger metadata only).
+CONTINUATION_ROLE: Final[str] = "ard_continuation"
+
+#: The report opening prefilled into the phase-2 *prompt* (plan §5.2 contingency).
+#:
+#: A forced ``</think>`` removes the delimiter from the stream but does not make the model
+#: switch into report mode: measured on the pilot roots cell, a third of the cap-hit draws
+#: emit no ``<final>`` at all and simply carry on deriving.  Prefilling the opening tag is
+#: what makes phase 2 work — the model resumes reasoning without it — and the leading
+#: ``\n\n`` is what a Qwen3 completion writes after ``</think>`` anyway, so the prefix
+#: tokenizes exactly as a natural close would have.
+CONTINUATION_PREFILL_TEXT: Final[str] = "\n\n" + K.FINAL_OPEN
+
+
+def continuation_decoding(*, final_tokens: int = K.FINAL_TOKENS) -> Decoding:
+    """Sampling recipe of the phase-2 continuation (spec §6.3 report allowance).
+
+    The same §6.2 sampler settings as the decision itself — a continuation is the *same*
+    draw, resumed — with three differences that are all forced by the route it takes:
+
+    ``max_tokens`` is the bare report allowance (no delimiters to pay for, no thinking
+    channel); ``thinking_tokens`` is 0 because no ``thinking_token_budget`` is sent (the
+    thinking channel is already closed, inside the prompt); and ``enable_thinking`` is
+    false because ``/v1/completions`` renders no chat template at all — the prompt is an
+    exact token prefix, so the flag is identity bookkeeping and records "no template".
+    """
+    final = int(final_tokens)
+    if final < 1:
+        raise ValueError(f"final allowance must be >= 1, got {final_tokens!r}")
+    return Decoding(
+        temperature=K.TEMPERATURE,
+        top_p=K.TOP_P,
+        top_k=K.TOP_K,
+        min_p=K.MIN_P,
+        presence_penalty=K.PRESENCE_PENALTY,
+        repetition_penalty=K.REPETITION_PENALTY,
+        max_tokens=final,
+        enable_thinking=False,
+        guided_json=False,
+        thinking_tokens=0,
+        final_tokens=final,
+    )
+
+
+#: The one frozen phase-2 decoding (``contract.FINAL_TOKENS`` report tokens).
+CONTINUATION_DECODING: Final[Decoding] = continuation_decoding()
+
+
+def is_continuation(decoding: Decoding) -> bool:
+    """Whether ``decoding`` is a phase-2 report continuation rather than a decision."""
+    return (
+        budget_of(decoding) == 0
+        and int(getattr(decoding, "final_tokens", 0) or 0) > 0
+        and int(decoding.max_tokens) == int(decoding.final_tokens)
+    )

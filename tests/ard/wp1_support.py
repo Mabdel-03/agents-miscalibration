@@ -24,11 +24,19 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from agents_scaling.ard import contract as K  # noqa: E402
-from agents_scaling.ard.client import DecisionContext, DecisionRequest  # noqa: E402
+from agents_scaling.ard.client import (  # noqa: E402
+    DecisionContext,
+    DecisionRecord,
+    DecisionRequest,
+    decision_from_record,
+    generate_decision,
+    request_spec,
+)
+from agents_scaling.ard.decoding import budget_of  # noqa: E402
 from agents_scaling.study.config import StudyConfig, load_config  # noqa: E402
 from agents_scaling.study.inference.client import EndpointPool  # noqa: E402
 from agents_scaling.study.inference.store import RequestStore  # noqa: E402
-from agents_scaling.study.types import SeedKey  # noqa: E402
+from agents_scaling.study.types import ProtocolError, RequestRecord, SeedKey  # noqa: E402
 from tests.study.fake_vllm import FakeVllmServer  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -152,3 +160,70 @@ def make_pool(run_root: Path, profile: str = K.PROFILE_SMALL, **kwargs: Any) -> 
 
 def make_store(run_root: Path) -> RequestStore:
     return RequestStore(run_root / "requests")
+
+
+def run_decision(
+    req: DecisionRequest, run_root: Path, context: DecisionContext, cost_fn: Any, **kwargs: Any
+) -> DecisionRecord:
+    """``generate_decision`` with this directory's store and pool wired up."""
+    return generate_decision(
+        req,
+        store=make_store(run_root),
+        pool=make_pool(run_root, context.checkpoint(req.checkpoint).profile),
+        cost_fn=cost_fn,
+        context=context,
+        **kwargs,
+    )
+
+
+# --------------------------------------------------------------------------- phase 2
+
+
+def cap_hit_words(budget: int = K.THINKING_TOKENS_LOW, *, over: int = 64) -> int:
+    """A ``thinking_words`` knob that makes the sampler force ``</think>`` at ``budget``.
+
+    The fake server truncates its reasoning at ``thinking_token_budget`` exactly as vLLM's
+    logits boost does, so asking for more words than the budget is what produces a
+    ``boundary_injected`` draw (contract §3).
+    """
+    return int(budget) + int(over)
+
+
+def unreported_derivation(text: str = "So m^2 = 1 so m = 1 or m = -1 . Therefore the slopes are") -> Any:
+    """A ``responder`` reproducing the measured defect: phase 1 keeps deriving, phase 2 reports.
+
+    Returns ``text`` (no report tag anywhere) for the chat request and ``None`` for the
+    phase-2 continuation, which lets the fake server answer that one with its own report
+    tail.  This is what the pilot cell actually measured: after a forced boundary about a
+    third of the draws simply continue the derivation.
+    """
+
+    def responder(request: dict[str, Any]) -> str | None:
+        return None if request.get("mode") == "ard_continuation" else text
+
+    return responder
+
+
+def stored_record(run_root: Path, req: DecisionRequest, context: DecisionContext) -> RequestRecord:
+    """The committed phase-1 request of ``req`` (raises if the decision was never made)."""
+    spec = request_spec(req, context)
+    record = make_store(run_root).get(spec.request_id)
+    if record is None:
+        raise ProtocolError(f"no committed request {spec.request_id[:12]} under {run_root}")
+    return record
+
+
+def stored_decision(run_root: Path, req: DecisionRequest, context: DecisionContext) -> DecisionRecord:
+    """Phase 1 of ``req`` as the store holds it — the decision *before* any continuation."""
+    spec = request_spec(req, context)
+    return decision_from_record(
+        stored_record(run_root, req, context),
+        budget_tokens=budget_of(spec.decoding),
+        tokenizer=context.tokenizer(req.checkpoint),
+        aliased=True,
+    )
+
+
+def sent(server: FakeVllmServer, path: str) -> list[dict[str, Any]]:
+    """The request bodies ``server`` received on ``path``, in order."""
+    return [r["body"] for r in server.requests if r["path"] == path]

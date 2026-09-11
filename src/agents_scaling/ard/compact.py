@@ -300,7 +300,9 @@ def decision_rows(triples: Sequence[tuple[ArdCellSpec, str, EpisodeRecord]]) -> 
                 "prompt_tokens": decision.prompt_tokens, "cap_hit": decision.cap_hit,
                 "boundary_injected": decision.boundary_injected,
                 "logical_decision_id": decision.decision_id,
-                "physical_request_ids": [decision.request_id], "latency": decision.latency_s,
+                "physical_request_ids": list(decision.physical_request_ids
+                                             or (decision.request_id,)),
+                "latency": decision.latency_s,
                 "endpoint_id": decision.endpoint_id, "final_overrun": decision.final_overrun,
                 "answer_logprob": decision.answer_logprob,
                 "packet_tokens": decision.packet_tokens, "n_packets": decision.n_packets,
@@ -897,7 +899,10 @@ def cost_summary_rows(
                 "thinking_tokens": sum(ref.thinking_tokens for ref in refs),
                 "final_tokens": sum(ref.final_tokens for ref in refs),
                 "logical_flops": logical, "cumulative_logical_flops": cumulative,
-                "physical_requests": sum(0 if ref.aliased else 1 for ref in refs),
+                # A cap-hit draw costs two physical requests, not one (spec §6.2).
+                "physical_requests": sum(
+                    0 if ref.aliased else max(1, len(ref.physical_request_ids or ()))
+                    for ref in refs),
                 "attributed_gpu_seconds": math.fsum(
                     attributed.get(ref.decision_id, 0.0) for ref in refs),
                 "wall_clock_s": math.fsum(latencies), "critical_path_s": critical,
