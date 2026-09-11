@@ -286,6 +286,21 @@ class ArdCellSpec(_Record):
 # --------------------------------------------------------------------------- run records
 
 
+def physical_request_ids_of(record: Any) -> tuple[str, ...]:
+    """Every physical request one logical decision cost, read off its ``DecisionRecord``.
+
+    A cap-hit draw is generated in two phases (amendment I6), so a ``DecisionRef`` built
+    field-by-field from a record must copy the pair rather than let it default to empty --
+    an empty tuple is charged as a single request and silently under-reports the run
+    (defect D-02).  Every site that constructs a ``DecisionRef`` from a record uses this.
+    """
+    ids = tuple(getattr(record, "physical_request_ids", None) or ())
+    if ids:
+        return tuple(str(i) for i in ids)
+    rid = str(getattr(record, "request_id", "") or "")
+    return (rid,) if rid else ()
+
+
 @dataclass(frozen=True)
 class DecisionRef(_Record):
     """One logical decision inside an episode (spec §18 ``decisions.parquet`` grain).

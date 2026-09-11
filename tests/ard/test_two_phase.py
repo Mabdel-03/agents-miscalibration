@@ -576,3 +576,46 @@ def test_the_wp2_adapter_carries_both_physical_requests(cfg, run_root, context, 
     bare = _ref_from_wp2_row(row, None, cell=cell, episode_id="ep",
                              protected_slot=None, classify=lambda a: a, arrivals={})
     assert bare.physical_request_ids == (record.request_id,)
+
+
+def test_every_decision_ref_construction_site_copies_the_physical_requests() -> None:
+    """Defect D-02 recurred in ``receiver.py`` after being fixed in ``runner.py``.
+
+    ``DecisionRef.physical_request_ids`` defaults to an empty tuple, so *forgetting* it at a
+    new construction site is silent -- the run simply under-reports its own cost.  Rather
+    than trust three call sites to remember, assert that every one of them routes through
+    the shared helper.
+    """
+    import ast
+    import inspect
+
+    from agents_scaling.ard import receiver, runner, selectors
+    from agents_scaling.ard.types import physical_request_ids_of
+
+    # The helper itself: a record with two ids keeps both; one with none falls back to its
+    # own request id rather than to nothing.
+    class _Rec:
+        request_id = "r1"
+        physical_request_ids = ("r1", "r2")
+
+    assert physical_request_ids_of(_Rec()) == ("r1", "r2")
+
+    class _Bare:
+        request_id = "r1"
+        physical_request_ids = ()
+
+    assert physical_request_ids_of(_Bare()) == ("r1",)
+
+    sites: list[str] = []
+    for module in (runner, receiver, selectors):
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "DecisionRef"):
+                continue
+            names = {kw.arg for kw in node.keywords}
+            sites.append(f"{module.__name__}:{node.lineno}")
+            assert "physical_request_ids" in names, (
+                f"{module.__name__}:{node.lineno} builds a DecisionRef without "
+                "physical_request_ids; a continued decision there is charged as one request"
+            )
+    assert len(sites) >= 3, f"expected every construction site to be seen, got {sites}"

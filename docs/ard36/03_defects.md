@@ -44,6 +44,17 @@ continuations. Fixed by consulting the record in the adapter (`runner._physical_
 on the re-scored pilot: 61 decisions at one physical request, 67 at two, matching the 67
 continuation events exactly.
 
+**Recurrence (2026-09-10).** The same omission was then found at the two *other* sites that
+build a `DecisionRef` field-by-field from a record: `receiver.py` (E3) and `selectors.py`
+(the selector audit). The receiver pilot cell recorded 4 continuation events and charged 4
+single requests. The field defaults to an empty tuple, so forgetting it at a new site is
+silent -- it costs no test and no error, only an under-reported run. All three sites now
+route through `types.physical_request_ids_of`, and
+`test_every_decision_ref_construction_site_copies_the_physical_requests` walks the AST of
+all three modules and fails on any `DecisionRef(...)` built without the field, so a fourth
+site cannot reintroduce it. Re-run receiver pilot: 4 decisions, 4 cap hits, all at two
+physical requests.
+
 ## Closed
 
 ### D-00 — the forced reasoning boundary produced no report *(closed 2026-09-10)*

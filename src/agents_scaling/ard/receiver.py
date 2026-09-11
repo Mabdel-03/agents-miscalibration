@@ -1314,7 +1314,8 @@ def run_receiver_cell(runner: Any, item_id: str) -> None:
     answer-logit margin recorded on the episode.
     """
     from agents_scaling.ard.report import parse_decision
-    from agents_scaling.ard.types import DecisionRef, EpisodeRecord, decision_id_for, episode_id_for
+    from agents_scaling.ard.types import (DecisionRef, EpisodeRecord, decision_id_for,
+                                          episode_id_for, physical_request_ids_of)
 
     started = runner.clock()
     cell = runner.ard_cell
@@ -1363,6 +1364,7 @@ def run_receiver_cell(runner: Any, item_id: str) -> None:
         boundary_injected=bool(record.boundary_injected),
         final_overrun=bool(record.final_overrun),
         answer_logprob=record.answer_logprob,
+        physical_request_ids=physical_request_ids_of(record),
         finish_reason=str(record.finish_reason),
         latency_s=float(record.latency_s),
         endpoint_id=str(record.endpoint_id),

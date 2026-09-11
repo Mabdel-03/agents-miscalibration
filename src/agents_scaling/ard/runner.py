@@ -76,6 +76,7 @@ from agents_scaling.ard.types import (
     decision_id_for,
     episode_id_for,
     parse_dependency,
+    physical_request_ids_of,
 )
 from agents_scaling.experiment import io
 from agents_scaling.study import identity
@@ -667,20 +668,10 @@ def grade_worker(runner: ArdCellRunner, item_id: str) -> None:
 # --------------------------------------------------------------------------- WP2 adapter
 
 
-def _physical_ids(
-    row: Mapping[str, Any], record: DecisionRecord | None
-) -> tuple[str, ...]:
-    """Every physical request one logical decision cost, newest path first.
-
-    ``DecisionRecord`` carries the authoritative tuple (one id normally, two after a
-    continuation).  A decision replayed from the store without its record falls back to
-    the single content-addressed request id, which is what it cost to re-derive.
-    """
-    ids = tuple(getattr(record, "physical_request_ids", None) or ()) if record else ()
-    if ids:
-        return tuple(str(i) for i in ids)
-    fallback = str(row.get("request_hash") or (record.request_id if record else ""))
-    return (fallback,) if fallback else ()
+def _row_request_id(row: Mapping[str, Any]) -> tuple[str, ...]:
+    """A decision replayed without its record still cost the request it is keyed by."""
+    rid = str(row.get("request_hash") or "")
+    return (rid,) if rid else ()
 
 
 def _ref_from_wp2_row(
@@ -737,7 +728,8 @@ def _ref_from_wp2_row(
         # A cap-hit decision is two physical requests (client.continue_decision), and the
         # count lives on the record, not on WP2's §18 row.  Without this the cost tables
         # charge every continued decision as one request (defect D-02).
-        physical_request_ids=_physical_ids(row, record),
+        physical_request_ids=(physical_request_ids_of(record) if record is not None
+                              else _row_request_id(row)),
         finish_reason=str(row.get("finish_reason") or ""),
         latency_s=float(row.get("latency") or 0.0),
         arrival_ts=float(arrivals.get(str(row.get("request_hash") or ""), 0.0)),
