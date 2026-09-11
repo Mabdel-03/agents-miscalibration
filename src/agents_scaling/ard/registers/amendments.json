@@ -178,5 +178,15 @@
     "unsupported_claim": "None; the study package stays frozen and its 541 tests stay green.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
+  },
+  {
+    "id": "I6",
+    "section": "implementation",
+    "section_title": "Implementation",
+    "deviation": "Pre-freeze schema repair. The output contract gains one line: *\"If your reasoning is cut short, still reply with only these three tags: commit to your best current answer instead of continuing to reason in the report.\"* The pilot (128 root draws, 8B) gave 83.6% valid reports against the 95% gate; all 21 truncations came from draws whose thinking hit the 1,024-token cap, while reports that closed reasoning naturally had a median of 77 tokens. Cut off mid-reasoning, the model continues reasoning inside the report and overruns the 256-token allowance. Applied uniformly to every item and every protocol; the pilot data generated before it are superseded and regenerated.",
+    "spec_clause": "\u00a76.3 lines 250-252 (\"repair the schema/cap **before freezing the run**\"; \"Do not change the cap selectively on difficult test items\")",
+    "unsupported_claim": "None: the repair is the remedy the clause prescribes, and the allowances themselves are unchanged at 1,024 + 256. The cap-hit rate stays a reported outcome rather than something engineered away.",
+    "source": "docs/ard36/02_amendments.md",
+    "when": "pre_dispatch"
   }
 ]

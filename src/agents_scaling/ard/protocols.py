@@ -78,7 +78,15 @@ OUTPUT_CONTRACT = (
     f"{K.EVIDENCE_MAX_TOKENS} tokens{K.EVIDENCE_CLOSE}\n"
     f"{K.CONFIDENCE_OPEN}probability from 0 to 1{K.CONFIDENCE_CLOSE}\n"
     "The answer precedes the confidence. The whole report is at most "
-    f"{K.FINAL_TOKENS} tokens."
+    f"{K.FINAL_TOKENS} tokens.\n"
+    # Pre-freeze schema repair (spec §6.3).  The pilot showed the report allowance is
+    # never the binding constraint when reasoning closes naturally (median 77 tokens),
+    # but every truncated report came from a draw whose thinking hit the cap: cut off
+    # mid-reasoning, the model carries on reasoning inside the report and overruns.  This
+    # line addresses that case and nothing else, and applies to every item uniformly --
+    # the spec forbids changing the cap selectively on difficult items.
+    "If your reasoning is cut short, still reply with only these three tags: commit to "
+    "your best current answer instead of continuing to reason in the report."
 )
 
 _ROOT_INSTRUCTION = "Solve the task independently and report in the required format."
