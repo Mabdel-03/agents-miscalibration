@@ -155,3 +155,33 @@ of the run.
 the fix). `tier`, `contract` and `items` are identical — no scientific content changed, and
 the tier decision of amendment S6 was taken from the launch gate, not from this file. All 95
 suspensions were verified to share this single cause before they were cleared.
+
+### D-06 — the fork stage had a dependency mechanism at both ends and no step in the middle
+**Severity: blocking for E4 (forks, and therefore the controller); found before it was needed.**
+
+`runner.resolve_hard_dependencies` refuses a FORK or SUFFIX cell until `state:<sha>` resolves to
+`<run_root>/states/<sha>/REGISTER.json`, and `runner.freeze_register` is exactly the writer that
+satisfies that reader. Nothing ever called it outside tests. `states.py` has a `StateRegister`
+that writes a *different* layout (`states/<file>`, no sha directory), so the two halves could
+never have met: `build_e4_forks(state_sha=...)` had no way to obtain a sha, and every fork cell
+would have exited `EXIT_DEPS_UNMET` forever.
+
+Same shape as D-04 and D-05 — two modules agreeing on a fact and disagreeing on where it lives.
+
+`ard/seal.py` is the missing step: it reads the per-round states each completed episode already
+records, seals exactly the parent rounds a fork branches from, and returns the sha a manifest
+pins. Two rules travel with it, because a fork frame is controller training data:
+
+* **Only completed cells seal.** A cell without `meta.json` is still generating, and sealing its
+  states would freeze a cohort about to grow — the sha would then name a set no later run could
+  reproduce. Skipped cells are counted in the census rather than passed over silently.
+* **An empty seal is refused.** A dependency that resolves but contains no parents is worse than
+  an unmet one: the cell would run, generate nothing, and report success.
+
+The register is content-addressed over its own contents, so re-sealing the same states returns
+the same sha, adding a cell produces a *new* register rather than mutating the frozen one, and a
+tampered register is reported as `tampered` rather than met. A `state_id` that appears twice with
+different content raises, since a content address disagreeing with itself is a harness defect.
+
+Verified on the live run before use: 16 completed PEER cells → 128 episodes → 256 sealed states
+across rounds 1 and 2, exactly 2 per episode.
