@@ -265,3 +265,39 @@ forks by construction.
 Pinned by `test_frames.py::test_a_mixed_manifest_does_not_pair_private_states_with_their_own_children`,
 which feeds one mixed manifest and asserts exactly `N_AGENTS` decision points on the shared root
 state, with the two branches resolving to genuinely different decisions.
+
+### D-10 — a FORK cell ran an ordinary PRIVATE episode instead of a counterfactual branch
+**Severity: E4's training data was wrong; caught before the controller was fit.**
+
+`ard/forks.py` implements the spec §19 contract in full — `fork_private(previous_peer_state,
+focal_agent)` issues exactly one private revision of one agent from a sealed parent, and
+`free_root_pair` gives the t=0 pair. **The runner never called any of it.** `episode_worker`
+dispatched FORK cells to the same `wp2_episode_executor` as EPISODE cells, which has a branch
+for ROOTS and otherwise runs `run_episode` — so each FORK cell generated a fresh three-round
+PRIVATE trajectory from its own roots: 20 decisions per item instead of 5, parented on its own
+states instead of the sealed PEER ones.
+
+Measured on the completed cells before the fix: 2,160 distinct fork parent states, **zero**
+overlap with the 288 sealed states. The forks pair with nothing, which is exactly why
+`ard/fit.py` kept refusing with "no paired rows at round(s) [1, 2]" even after all 36 fork
+cells had completed and been graded. The refusal check earned its place here — without it the
+controller would have been fit on the t=0 pairs alone and reported as if it covered all three
+decision rounds.
+
+Fourth instance of this run's dominant shape: both ends built, no middle.
+
+The executor now branches on `ArdCellKind.FORK` and calls `fork_private` per focal agent. Two
+supporting changes:
+
+* `states.rebuild_round_states` puts a written episode back into a WP2 `RoundState`, with the
+  canonical classifier **injected** — a FORK cell runs on the generation path, where importing
+  the grader would breach the no-gold firewall. `frames.py` now delegates to it rather than
+  keeping a second copy.
+* The parent is read back from the PEER cells named in `options['parent_cells']` and **checked
+  against the sealed register** before any request is issued. Without that check the seal is
+  decorative: a PEER cell regenerated after sealing would hand the fork a different parent than
+  the manifest pinned, and nothing would notice.
+
+Pinned by `test_fork_executor.py`: a fork cell produces exactly `N_AGENTS` decisions, all
+parented on the sealed PEER state; a missing parent suspends the cell rather than yielding an
+empty one; and a parent whose decision ids have moved since sealing is refused by name.

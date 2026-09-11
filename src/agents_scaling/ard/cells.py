@@ -462,6 +462,7 @@ def build_e4_forks(
     checkpoint: str,
     state_sha: str,
     parent_rounds: Sequence[int] = K.FORK_PARENT_ROUNDS,
+    parent_cells: Sequence[str] = (),
     instance: str | None = None,
 ) -> list[ArdCellSpec]:
     """E4 training data (spec §12.1): one private counterfactual branch per agent per state.
@@ -476,7 +477,12 @@ def build_e4_forks(
             ArdCellKind.FORK, tasks, cohort=K.Cohort.FORK, checkpoint=checkpoint,
             protocol=K.Protocol.PRIVATE, round_=int(round_), depends_on=(dep,),
             parent_ref=dep, instance=instance,
-            options={"focal_agents": list(range(K.N_AGENTS)), "parent_protocol": K.Protocol.PEER.value},
+            options={"focal_agents": list(range(K.N_AGENTS)),
+                     "parent_protocol": K.Protocol.PEER.value,
+                     # The PEER cells holding the parent states.  A fork reads its parent back
+                     # from the run rather than regenerating it: a fork whose parent is
+                     # re-rolled is not a counterfactual of anything (defect D-10).
+                     "parent_cells": list(parent_cells)},
         )
     return made
 

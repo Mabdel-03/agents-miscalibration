@@ -40,7 +40,7 @@ from agents_scaling.ard import graders
 from agents_scaling.ard.cells import load_ard_cells_file
 from agents_scaling.ard.controller import PairedFrame, PairedRow
 from agents_scaling.ard.report import Report
-from agents_scaling.ard.states import AgentState, ReportRef, RoundState
+from agents_scaling.ard.states import RoundState, rebuild_round_states
 from agents_scaling.study.types import ProtocolError
 
 #: Rounds whose *post-state* is a controller decision point: GATE acts before rounds 1, 2, 3,
@@ -48,95 +48,17 @@ from agents_scaling.study.types import ProtocolError
 DECISION_ROUNDS: tuple[int, ...] = (0,) + tuple(K.FORK_PARENT_ROUNDS)
 
 
-def _report_of(decision: Mapping[str, Any]) -> Report:
-    """The Report a decision row carries.
-
-    Only the four fields the frozen v1 features read are reconstructed with real values
-    (`final_answer`, `confidence`, `parse_status` -> `valid`, `content_sha256`); the rest keep
-    their defaults and are never consulted here.  Reconstructing more would invent provenance
-    the row does not carry.
-    """
-    return Report(
-        final_answer=decision.get("answer_raw"),
-        evidence=decision.get("evidence_text"),
-        confidence=decision.get("confidence"),
-        parse_status=K.ParseStatus(str(decision.get("parse_status") or K.ParseStatus.OK.value)),
-        content_sha256=str(decision.get("content_sha256") or ""),
-    )
-
-
-def _classifier(family: str) -> Callable[[str | None], str | None]:
-    """The gold-independent canonical classifier for this item's family."""
-    return lambda answer: graders.canonical_class(family, answer)
-
-
 def reconstruct_states(payload: Mapping[str, Any]) -> dict[tuple[str, int], RoundState]:
     """``{(episode_id, round): RoundState}`` for one episode item file.
 
-    The episode already records, per round, the decision ids of each slot; the decisions
-    carry the reports.  ``pseudonyms`` and ``study_seed`` are placeholders: the frozen v1
-    feature builder reads only ``agents``, ``latest()``, ``reports_of_round()`` and
-    ``canonical_class``, and never the packet-facing fields.
+    Thin wrapper over WP2's :func:`states.rebuild_round_states` with the evaluator-side
+    canonical classifier bound in.  The rebuild itself lives in ``states.py`` because the
+    FORK executor needs it too and runs on the generation path, where importing the grader
+    would breach the no-gold firewall (contract §0.2).
     """
     family = str(payload.get("family") or "")
-    classify = _classifier(family)
-    out: dict[tuple[str, int], RoundState] = {}
-    for episode in payload.get("episodes") or []:
-        by_id = {str(d.get("decision_id") or ""): d for d in episode.get("decisions") or []}
-        by_round: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
-        for decision in episode.get("decisions") or []:
-            by_round[int(decision.get("round") or 0)].append(decision)
-        archive: dict[int, tuple[ReportRef, ...]] = {}
-        for round_, rows in by_round.items():
-            refs = tuple(
-                ReportRef(decision_id=str(r.get("decision_id") or ""), report=_report_of(r),
-                          round_=round_, agent_slot=int(r.get("agent_id") or 0))
-                for r in sorted(rows, key=lambda r: int(r.get("agent_id") or 0))
-            )
-            archive[round_] = refs
-        if 0 not in archive:
-            continue                      # a cell that records no root cannot be reconstructed
-        roots = archive[0]
-        episode_id = str(episode.get("episode_id") or "")
-        for state in episode.get("states") or []:
-            round_ = int(state.get("round", -1))
-            ids = [str(x) for x in (state.get("decision_ids") or [])]
-            if round_ not in K.ROUNDS or len(ids) != K.N_AGENTS:
-                continue
-            agents = []
-            ok = True
-            for slot, decision_id in enumerate(ids):
-                row = by_id.get(decision_id)
-                if row is None or slot >= len(roots):
-                    ok = False
-                    break
-                agents.append(AgentState(
-                    item_id=str(episode.get("item_id") or ""),
-                    checkpoint=str(episode.get("checkpoint") or ""),
-                    agent_slot=slot, round_=round_,
-                    root=roots[slot],
-                    latest=ReportRef(decision_id=decision_id, report=_report_of(row),
-                                     round_=round_, agent_slot=slot),
-                    episode_id=episode_id,
-                    protocol=str(episode.get("protocol") or ""),
-                ))
-            if not ok:
-                continue
-            out[(episode_id, round_)] = RoundState(
-                episode_id=episode_id,
-                pairing_id=str(episode.get("item_id") or ""),
-                item_id=str(episode.get("item_id") or ""),
-                protocol=K.Protocol(str(episode.get("protocol") or "PEER")),
-                checkpoint=str(episode.get("checkpoint") or ""),
-                round_=round_,
-                agents=tuple(agents),
-                archive={r: refs for r, refs in archive.items() if r <= round_},
-                pseudonyms=tuple(f"agent-{i}" for i in range(K.N_AGENTS)),
-                study_seed=b"\x00" * 32,
-                classify=classify,
-                family=family,
-            )
-    return out
+    return rebuild_round_states(
+        payload, lambda answer: graders.canonical_class(family, answer))
 
 
 def load_labels(run_root: str | os.PathLike) -> dict[str, int]:

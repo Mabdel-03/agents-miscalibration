@@ -803,6 +803,124 @@ def _state_from_wp2(state: Any, refs: Sequence[DecisionRef], *, protected_slot: 
     )
 
 
+def _sealed_parent_index(job: EpisodeJob) -> dict[tuple[str, int], tuple[str, ...]]:
+    """``{(episode_id, round): decision_ids}`` from the ``state:<sha>`` this cell depends on.
+
+    The register is what makes the parent cohort frozen; without reading it back the seal is
+    decorative, and a PEER cell regenerated after sealing would silently give the fork a
+    different parent than the one the manifest pinned.
+    """
+    for dep in job.cell.hard_dependencies:
+        kind, sha = parse_dependency(dep)
+        if kind != "state":
+            continue
+        path = register_path(job.run_root, kind, sha)
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {
+            (str(row.get("episode_id") or ""), int(row.get("round", -1))):
+                tuple(str(x) for x in (row.get("decision_ids") or []))
+            for row in payload.get("states") or []
+        }
+    return {}
+
+
+def _parent_peer_states(job: EpisodeJob, round_: int) -> Any:
+    """The sealed PEER round-``round_`` state this item's forks branch from.
+
+    The parent is another cell's episode, so it is read back from the run rather than
+    regenerated: a fork whose parent is re-rolled is not a counterfactual of anything.  The
+    PEER cells are named in the FORK cell's ``options['parent_cells']``, and the state that
+    comes back is checked against the sealed register before a single request is issued.
+    """
+    from agents_scaling.ard.states import rebuild_round_states
+
+    item_id = str(job.task.item_id)
+    sealed = _sealed_parent_index(job)
+    for cell_id in job.cell.options.get("parent_cells", []):
+        path = Path(job.run_root) / "cells" / str(cell_id) / "items" / f"{item_id}.json"
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        states = rebuild_round_states(payload, job.classify,
+                                      protocols=(K.Protocol.PEER.value,))
+        for (episode_id, r), state in states.items():
+            if int(r) != int(round_):
+                continue
+            if sealed:
+                want = sealed.get((episode_id, int(r)))
+                got = tuple(agent.latest.decision_id for agent in state.agents)
+                if want is None:
+                    raise ProtocolError(
+                        f"fork parent {episode_id} round {r} is not in the sealed register "
+                        f"{job.cell.parent_ref}: the fork would branch from a state the "
+                        "manifest never pinned"
+                    )
+                if tuple(want) != got:
+                    raise ProtocolError(
+                        f"fork parent {episode_id} round {r} has changed since it was sealed "
+                        f"(sealed {want[:1]}..., found {got[:1]}...); a fork off a re-rolled "
+                        "parent is not a counterfactual of anything"
+                    )
+            return state
+    return None
+
+
+def _run_fork_cell(job: EpisodeJob, spec: Any) -> list[EpisodeRecord]:
+    """E4 (spec §12.1, §19): one private counterfactual branch per focal agent.
+
+    A FORK cell is **not** an episode.  It takes the sealed PEER state at its parent round
+    and regenerates exactly one agent privately; every other agent's next step already exists
+    in the main trajectory, and that is the pairing that makes ``y_private`` against
+    ``y_peer`` a comparison of one prefix under two exposures.  Running a fresh PRIVATE
+    episode here instead -- which is what happened before defect D-10 -- produces a different
+    trajectory from different roots and pairs with nothing.
+    """
+    from agents_scaling.ard import forks as FK
+
+    cell = job.cell
+    round_ = int(cell.round or 0)
+    parent = _parent_peer_states(job, round_)
+    if parent is None:
+        raise ProtocolError(
+            f"fork cell {cell.cell_id} found no PEER round-{round_} state for "
+            f"{job.task.item_id!r} in parent_cells={list(cell.options.get('parent_cells', []))}; "
+            "a fork cannot branch from a parent that has not been generated"
+        )
+    focal = [int(a) for a in cell.options.get("focal_agents", range(K.N_AGENTS))]
+    made = [
+        FK.fork_private(parent, slot, spec=spec, generate=job.generate,
+                        study_seed=job.study_seed,
+                        thinking_tokens=int(cell.reasoning_allowance))
+        for slot in focal
+    ]
+    decisions = [
+        _ref_from_wp2_row(
+            {"decision_id": fork.child_decision_ids[0] if fork.child_decision_ids else "",
+             "episode_id": spec.episode_id, "agent_id": fork.focal_agent,
+             "round": fork.parent_round + 1, "phase": FK.ACTION_PRIVATE,
+             "request_hash": fork.child_decision_ids[0] if fork.child_decision_ids else "",
+             "parent_state_id": fork.shared_prefix_hash,
+             **fork.report.to_dict()},
+            fork.record, cell=cell, episode_id=spec.episode_id, protected_slot=None,
+            classify=job.classify, arrivals=job.arrivals)
+        for fork in made
+    ]
+    return [EpisodeRecord(
+        episode_id=spec.episode_id, item_id=str(job.task.item_id), cohort=cell.cohort.value,
+        protocol=(cell.protocol or K.Protocol.PRIVATE).value, checkpoint=cell.checkpoint,
+        checkpoint_revision=K.REVISIONS[cell.checkpoint],
+        reasoning_allowance=int(cell.reasoning_allowance),
+        final_allowance=cell.final_allowance, packet_policy="fork_private",
+        team_id=cell.team_id, parent_ref=cell.parent_ref,
+        root_candidate_ids=tuple(a.root.decision_id for a in parent.agents),
+        root_seed_ids=(), condition_manifest_hash=identity.sha256_hex(cell.cell_id),
+        decisions=tuple(decisions), states=(),
+        # No fork field on EpisodeRecord: compact.fork_rows derives forks.parquet from the
+        # decisions of a FORK cell, and each decision already carries its parent_state_id.
+        events=tuple(fork.to_row() for fork in made),
+    )]
+
+
 def wp2_episode_executor(job: EpisodeJob) -> list[EpisodeRecord]:
     """Adapter over WP2's ``ard/episode.py`` (contract §2: ``run_episode`` / ``run_roots``).
 
@@ -821,6 +939,9 @@ def wp2_episode_executor(job: EpisodeJob) -> list[EpisodeRecord]:
         checkpoint=cell.checkpoint, model_cell=job.model_cell, cohort=cell.cohort.value,
         episode_rep=int(cell.episode_rep), thinking_tokens=int(cell.reasoning_allowance),
     )
+    if cell.kind is ArdCellKind.FORK:
+        return _run_fork_cell(job, spec)
+
     if cell.kind is ArdCellKind.ROOTS:
         refs = E.run_roots(spec, generate=job.generate, draws=range(K.ROOT_DRAWS))
         decisions = tuple(

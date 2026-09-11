@@ -220,6 +220,96 @@ class RoundState:
 # --------------------------------------------------------------------------- register
 
 
+def _report_from_row(decision: Mapping[str, Any]) -> Report:
+    """The :class:`Report` a written decision row carries.
+
+    Only the fields a consumer of a rebuilt state actually reads are given real values
+    (`final_answer`, `evidence`, `confidence`, `parse_status` -> `valid`, `content_sha256`);
+    the rest keep their defaults rather than inventing provenance the row does not carry.
+    """
+    return Report(
+        final_answer=decision.get("answer_raw"),
+        evidence=decision.get("evidence_text"),
+        confidence=decision.get("confidence"),
+        parse_status=K.ParseStatus(str(decision.get("parse_status") or K.ParseStatus.OK.value)),
+        content_sha256=str(decision.get("content_sha256") or ""),
+    )
+
+
+def rebuild_round_states(
+    payload: Mapping[str, Any],
+    classify: Callable[[str | None], str | None],
+    *,
+    protocols: Sequence[str] | None = None,
+) -> dict[tuple[str, int], "RoundState"]:
+    """``{(episode_id, round): RoundState}`` rebuilt from one written episode item file.
+
+    A round state is not stored whole: the item file records, per round, each slot's decision
+    id, and the decisions carry the reports.  This puts them back together so a later stage --
+    a FORK cell branching off a sealed parent, or the controller frame builder -- can work on
+    the same object the episode loop used.
+
+    ``classify`` is injected for the same reason WP2 injects it everywhere else: the canonical
+    classifier lives in the evaluator namespace, and a generation-path module must not import
+    it (contract §0.2 firewall).  ``pseudonyms`` and ``study_seed`` are placeholders here --
+    they are packet-facing and no consumer of a rebuilt state reads them.
+    """
+    wanted = {str(p) for p in protocols} if protocols else None
+    out: dict[tuple[str, int], RoundState] = {}
+    for episode in payload.get("episodes") or []:
+        if wanted is not None and str(episode.get("protocol")) not in wanted:
+            continue
+        by_id = {str(d.get("decision_id") or ""): d for d in episode.get("decisions") or []}
+        archive: dict[int, tuple[ReportRef, ...]] = {}
+        grouped: dict[int, list[Mapping[str, Any]]] = {}
+        for decision in episode.get("decisions") or []:
+            grouped.setdefault(int(decision.get("round") or 0), []).append(decision)
+        for round_, rows in grouped.items():
+            archive[round_] = tuple(
+                ReportRef(decision_id=str(r.get("decision_id") or ""),
+                          report=_report_from_row(r), round_=round_,
+                          agent_slot=int(r.get("agent_id") or 0))
+                for r in sorted(rows, key=lambda r: int(r.get("agent_id") or 0))
+            )
+        if 0 not in archive:
+            continue
+        roots = archive[0]
+        episode_id = str(episode.get("episode_id") or "")
+        for state in episode.get("states") or []:
+            round_ = int(state.get("round", -1))
+            ids = [str(x) for x in (state.get("decision_ids") or [])]
+            if round_ not in K.ROUNDS or len(ids) != K.N_AGENTS or len(roots) < K.N_AGENTS:
+                continue
+            agents: list[AgentState] = []
+            for slot, decision_id in enumerate(ids):
+                row = by_id.get(decision_id)
+                if row is None:
+                    break
+                agents.append(AgentState(
+                    item_id=str(episode.get("item_id") or ""),
+                    checkpoint=str(episode.get("checkpoint") or ""),
+                    agent_slot=slot, round_=round_, root=roots[slot],
+                    latest=ReportRef(decision_id=decision_id, report=_report_from_row(row),
+                                     round_=round_, agent_slot=slot),
+                    episode_id=episode_id, protocol=str(episode.get("protocol") or ""),
+                ))
+            if len(agents) != K.N_AGENTS:
+                continue
+            out[(episode_id, round_)] = RoundState(
+                episode_id=episode_id,
+                pairing_id=str(episode.get("item_id") or ""),
+                item_id=str(episode.get("item_id") or ""),
+                protocol=K.Protocol(str(episode.get("protocol") or "PEER")),
+                checkpoint=str(episode.get("checkpoint") or ""),
+                round_=round_, agents=tuple(agents),
+                archive={r: refs for r, refs in archive.items() if r <= round_},
+                pseudonyms=tuple(f"agent-{i}" for i in range(K.N_AGENTS)),
+                study_seed=b"\x00" * 32, classify=classify,
+                family=str(payload.get("family") or ""),
+            )
+    return out
+
+
 def states_path(run_root: str | os.PathLike) -> Path:
     return Path(run_root) / "states" / STATES_FILE
 
