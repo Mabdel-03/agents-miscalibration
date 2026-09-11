@@ -200,3 +200,39 @@ def test_every_manifest_cell_lands_on_a_declared_lane(tasks, test_tasks):
     lanes = {cell.lane for cell in builder.cells}
     assert lanes <= set(K.LANES)
     assert {"32B", "8B", "grade", "analysis", "capture"} <= lanes
+
+
+def test_two_manifests_of_the_same_module_cannot_share_a_cell_directory():
+    """A cell id is a directory, and shard numbers restart at s000 in every builder run.
+
+    Building `--split train` and `--split test` manifests of one module as separate CLI
+    invocations produced `ROOTS.natural.none.8B.T1024.s000` twice, with different item lists.
+    Both then wrote into one directory: the item files mixed two cohorts, the second run
+    overwrote the first's meta.json, and coverage was counted against the wrong split.
+    """
+    from agents_scaling.ard.cells import ArdBuilder
+    from agents_scaling.ard.types import ArdCellKind
+
+    def ids(split):
+        tasks = synthetic_tasks(6, splits=(split,))
+        b = ArdBuilder("8B")
+        b.emit(ArdCellKind.ROOTS, tasks, cohort=K.Cohort.NATURAL,
+               checkpoint=K.CHECKPOINT_SMALL, per_cell=4)
+        return [c.cell_id for c in b.cells]
+
+    train, test = ids("train"), ids("test")
+    assert len(train) == len(test) == 3
+    assert not (set(train) & set(test)), f"cell id collision: {sorted(set(train) & set(test))}"
+    assert all(".train." in c for c in train)
+    assert all(".test." in c for c in test)
+
+    # One builder covering several splits stays collision-free too, and numbering restarts
+    # per split rather than running on, so a cell id is stable however the manifest is cut.
+    every = synthetic_tasks(4, splits=("train", "validation", "test"))
+    b = ArdBuilder("8B")
+    b.emit(ArdCellKind.ROOTS, every, cohort=K.Cohort.NATURAL,
+           checkpoint=K.CHECKPOINT_SMALL, per_cell=4)
+    made = [c.cell_id for c in b.cells]
+    assert len(made) == len(set(made)) == 6
+    assert sorted(c.rsplit(".", 1)[1] for c in made) == ["s000", "s000", "s000",
+                                                         "s001", "s001", "s001"]

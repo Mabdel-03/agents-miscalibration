@@ -308,3 +308,31 @@ def test_the_runner_module_level_import_closure_never_reaches_gold():
             targets = [node.module, f"{node.module}.{node.names[0].name}"]
         for target in targets:
             assert target not in forbidden, f"ard/runner.py imports {target} at module level"
+
+
+def test_a_cell_refuses_a_directory_that_holds_another_manifests_items(run_root):
+    """Defect D-04: a cell id is a directory, and two manifests can collide on one.
+
+    Shard numbers restart at s000 in every builder run, so `--split train` and `--split test`
+    manifests of one module produced the same cell id with different item lists.  The second
+    run would append its items beside the first's and overwrite meta.json, leaving a directory
+    that claims one cohort while holding two -- undetectable downstream, because every item
+    file in it is individually well formed.
+    """
+    from agents_scaling.study.types import ProtocolError
+
+    cell = _episode_cell(run_root)
+    with fake_server(run_root):
+        assert _run(cell, run_root) == EXIT_DONE
+
+    # Another manifest lands on the same directory with a different item list.
+    intruder = ard_cells.ArdCellSpec.from_dict(
+        {**cell.to_dict(), "items": ["math500-9999", "mmlu_pro-9999"]}
+    )
+    with fake_server(run_root):
+        with pytest.raises(ProtocolError, match="same cell id"):
+            _run(intruder, run_root)
+
+    # The cell's own items are not foreign to it: re-running it is still fine.
+    with fake_server(run_root):
+        assert _run(cell, run_root) == EXIT_DONE

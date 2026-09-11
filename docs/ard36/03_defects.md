@@ -99,3 +99,32 @@ items in parallel threads. Pinned by
 `test_wp2_episode.py::test_a_round_goes_out_as_one_concurrent_batch_without_changing_its_results`,
 which asserts peak in-flight equals `N_AGENTS`, that concurrent and serial dispatch agree element for
 element, and that a refusal in one slot leaves the rest of the round intact.
+
+### D-04 — two manifests could be given the same cell id
+**Severity: high; caught before it corrupted anything.**
+
+A cell id *is* a directory under `<run_root>/cells/`, but shard numbers restart at `s000` in
+every `ArdBuilder`, and the id carried no split. So building a module's `--split train` and
+`--split test` manifests as separate CLI invocations produced
+`ROOTS.natural.none.8B.T1024.s000` twice, with different item lists and different cohorts.
+The second run would have written its items beside the first's and overwritten `meta.json`,
+leaving one directory that claims one manifest's cohort while holding two — and nothing
+downstream could tell, because every item file in it is individually well formed. Coverage
+would then be counted against the wrong split, which is the one thing the hour-18 and hour-24
+gates exist to measure.
+
+Found by inspecting the live run after dispatching the test-split roots: the 8B ROOTS
+directories were 12 train + 6 validation (complete, `s000`–`s017`) and 12 empty test cells
+(`s018`–`s029`) — the test cells that would have collided had not yet written. **No directory
+was ever conflated** (verified over every cell in the run).
+
+Two fixes, because either alone leaves the hazard:
+1. The split is now part of the cell id (`ROOTS.natural.none.8B.T1024.test.s000`), and the
+   shard counter is keyed per split so numbering is stable however a manifest is cut.
+2. `ard/runner.py` refuses to run a cell whose directory holds item files the cell does not
+   declare, whatever the cause. Refusing is cheap and reversible — requests are
+   content-addressed, so a cell re-dispatched under a correct id re-derives its items from the
+   store with no new generation. Silently merging two cohorts is neither.
+
+Pinned by `test_wp4_cells.py::test_two_manifests_of_the_same_module_cannot_share_a_cell_directory`
+and `test_wp4_runner.py::test_a_cell_refuses_a_directory_that_holds_another_manifests_items`.

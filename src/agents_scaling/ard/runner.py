@@ -414,6 +414,32 @@ class ArdCellRunner(CellRunner):
         self.event("deps_unmet", unmet=[s.dep for s in unmet],
                    statuses=[s.status for s in unmet])
 
+    def _assert_directory_is_this_cells(self, cell: ArdCellSpec) -> None:
+        """A cell directory holds exactly the cell's items, or the cell refuses to run.
+
+        A cell id *is* a directory, and shard numbers restart at ``s000`` in every builder
+        run, so two manifests of one module can name the same cell with different item lists
+        (defect D-04).  When that happens the second run appends its items beside the first's
+        and overwrites ``meta.json``, leaving one directory that claims one manifest's cohort
+        while holding two -- and nothing downstream can tell, because every item file is
+        individually well formed.
+
+        Refusing here is cheap and reversible: the requests are content-addressed, so a cell
+        re-dispatched under a correct id re-derives its items from the store without new
+        generation.  Silently merging two cohorts is neither.
+        """
+        declared = set(cell.items)
+        present = {path.stem for path in self.paths.items.glob("*.json")}
+        foreign = sorted(present - declared)
+        if foreign:
+            raise ProtocolError(
+                f"cell directory {self.paths.items.parent.name!r} holds "
+                f"{len(foreign)} item(s) this cell does not declare "
+                f"(e.g. {foreign[:3]}): two manifests have been given the same cell id. "
+                "Rebuild the manifests so the ids are distinct and re-dispatch; the store "
+                "makes the re-run free."
+            )
+
     def run(self) -> int:
         """The study ``run()`` sequence with an injected task loader and a hard dep gate."""
         cell = self.cell
@@ -421,6 +447,7 @@ class ArdCellRunner(CellRunner):
             self.event("already_suspended", path=str(self.paths.suspended))
             return EXIT_SUSPENDED
         self.paths.items.mkdir(parents=True, exist_ok=True)
+        self._assert_directory_is_this_cells(cell)
         # ---- hard gate, BEFORE _todo(), before any endpoint, before any request --------
         unmet = unmet_hard_dependencies(self.ard_cell, self.run_root)
         if unmet:

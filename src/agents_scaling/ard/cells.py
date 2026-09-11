@@ -152,8 +152,15 @@ def cell_id_for(
     team_id: str | None = None,
     parent_ref: str | None = None,
     instance: str | None = None,
+    split: str | None = None,
 ) -> str:
-    """``KIND.cohort.PROTOCOL.ckpt.T<budget>[.g<team>][.r<round>][.p<parent8>][.w<inst>].s###``."""
+    """``KIND.cohort.PROTOCOL.ckpt.T<budget>[.g<team>][.r<round>][.p<parent8>][.w<inst>].SPLIT.s###``.
+
+    The split is part of the id because shard numbers restart at ``s000`` in every builder,
+    and a cell id is a *directory*.  Without it, ``--split test`` and ``--split train``
+    manifests of the same module collide: two different item lists share one cell directory,
+    one overwrites the other's ``meta.json``, and coverage is counted against the wrong cohort.
+    """
     parts = [kind.value, cohort.value, protocol.value if protocol else "none",
              checkpoint, f"T{int(reasoning_allowance)}"]
     if team_id is not None:
@@ -165,6 +172,8 @@ def cell_id_for(
         parts.append(f"p{tag}")
     if instance is not None:
         parts.append(f"w{instance}")
+    if split is not None:
+        parts.append(str(split))
     parts.append(f"s{int(shard):03d}")
     return ".".join(parts)
 
@@ -215,12 +224,16 @@ class ArdBuilder(_Builder):
         size = per_cell or KINDS.items_per_cell(
             kind, checkpoint=checkpoint, reasoning_allowance=reasoning_allowance,
             protocol=protocol)
-        key = (kind.value, cohort.value, protocol.value if protocol else "", checkpoint,
-               reasoning_allowance, round_, team_id, parent_tag(parent_ref), instance, episode_rep)
+        base_key = (kind.value, cohort.value, protocol.value if protocol else "", checkpoint,
+                    reasoning_allowance, round_, team_id, parent_tag(parent_ref), instance,
+                    episode_rep)
         made: list[ArdCellSpec] = []
         # One shard never straddles two splits: train and validation are dispatched first
         # (plan §7) and a cell's ``split`` must name exactly one frozen split.
         for split, group in split_groups(tasks):
+            # Shard numbers restart per split, and the split is in the cell id, so a cell
+            # built by a --split test run can never land on a --split train run's directory.
+            key = (*base_key, split)
             for shard_items in item_shards(group, size):
                 shard = self._next_shard(key)
                 cell = self._make(
@@ -258,7 +271,7 @@ class ArdBuilder(_Builder):
             cell_id=cell_id_for(
                 kind, cohort=cohort, checkpoint=checkpoint, shard=shard, protocol=protocol,
                 reasoning_allowance=reasoning_allowance, round_=round_, team_id=team_id,
-                parent_ref=parent_ref, instance=instance),
+                parent_ref=parent_ref, instance=instance, split=split),
             kind=kind,
             protocol=protocol,
             round=round_,
@@ -581,7 +594,7 @@ def build_analysis_cells(
     spec = KINDS.spec_for(kind)
     cell = ArdCellSpec(
         cell_id=cell_id_for(kind, cohort=K.Cohort.NATURAL, checkpoint=K.CHECKPOINT_SMALL,
-                            shard=0, instance=instance),
+                            shard=0, instance=instance, split="test"),
         kind=kind, protocol=None, round=None, cohort=K.Cohort.NATURAL,
         checkpoint=K.CHECKPOINT_SMALL, reasoning_allowance=K.THINKING_TOKENS_LOW,
         final_allowance=K.FINAL_TOKENS, items=(ANALYSIS_ITEM,), team_id=None, parent_ref=None,
