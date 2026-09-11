@@ -106,3 +106,157 @@ def tiny_engine(tokenizer, *, blocks: tuple[int, ...] = (0, 1), max_batch_tokens
     model = support.tiny_qwen3(seed=0, vocab_size=int(tokenizer.vocab_size) + len(tokenizer.added_tokens_decoder) + 64)
     return CaptureEngine(None, blocks, device_map="cpu", dtype=torch.float32, model=model,
                          max_batch_tokens=max_batch_tokens)
+
+
+# --------------------------------------------------------------------------- stores/engines
+
+
+class StubStore:
+    """A ``study.inference.store.RequestStore``-shaped store: ``get(request_id)``."""
+
+    def __init__(self, records: Any = ()) -> None:
+        self._by_id: dict[str, Any] = {}
+        for record in records:
+            self.add(record)
+
+    def add(self, record: Any) -> Any:
+        self._by_id[str(record.request_id)] = record
+        return record
+
+    def get(self, request_id: str) -> Any:
+        return self._by_id.get(str(request_id))
+
+    def __len__(self) -> int:
+        return len(self._by_id)
+
+
+class RecordingEngine:
+    """Transparent wrapper that keeps every ``CaptureRequest`` the runner submitted.
+
+    Used to assert what the capture pass asked the model for — in particular that
+    ``logit_positions`` (the full-vocabulary rows) are requested at the two
+    ``contract.ENTROPY_ANCHORS`` and nowhere else.
+    """
+
+    def __init__(self, engine: Any) -> None:
+        self.engine = engine
+        self.requests: list[Any] = []
+        self.batches = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.engine, name)
+
+    def forward(self, requests):
+        self.requests.extend(requests)
+        self.batches += 1
+        return self.engine.forward(requests)
+
+
+# --------------------------------------------------------------------------- manifests
+
+
+def work_row(
+    decision_id: str,
+    *,
+    item_id: str = "math500:0001",
+    episode_id: str = "ep0",
+    agent_id: int = 0,
+    round_: int = 0,
+    protocol: str = "PEER",
+    split: str = "train",
+    family: str = "math500",
+    boundary_injected: bool = False,
+    cell_id: str = "cap.000",
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """A decision-manifest row in ``decisions.parquet`` field names."""
+    return {
+        "decision_id": decision_id,
+        "request_id": decision_id if request_id is None else request_id,
+        "episode_id": episode_id,
+        "item_id": item_id,
+        "agent_id": int(agent_id),
+        "round": int(round_),
+        "protocol": protocol,
+        "cohort": K.Cohort.CAPTURE.value,
+        "split": split,
+        "family": family,
+        "checkpoint": K.CHECKPOINT_SMALL,
+        "boundary_injected": bool(boundary_injected),
+        "cell_id": cell_id,
+    }
+
+
+def chunk_rows(run_root: Path, stage: str = "native") -> list[dict[str, Any]]:
+    """Every stored ``ActivationRow`` (as a dict) under a run root, in chunk order."""
+    from agents_scaling.study.neural import storage as S
+
+    return [dict(row) for _, row in S.iter_rows(run_root, stage)]
+
+
+# --------------------------------------------------------------------------- probe frames
+
+
+SIGNAL_SITE: tuple[int, str] = (17, "ANSWER_END")
+NOISE_SITE: tuple[int, str] = (8, "ANSWER_END")
+
+
+def probe_dataset(
+    *,
+    n_items: int = 24,
+    hidden: int = 16,
+    sites: tuple[tuple[int, str], ...] = (SIGNAL_SITE,),
+    signal_sites: tuple[tuple[int, str], ...] = (SIGNAL_SITE,),
+    round_: int = 2,
+    split: str = "train",
+    item_prefix: str = "it",
+    # 1.5 keeps the label separable *within* an item while the per-item offsets keep the
+    # pooled problem non-separable — an L2 logistic fit on separable data only crawls
+    # towards infinite weights and would make this kit slow for no extra coverage.
+    signal: float = 1.5,
+    behaviour_signal: float = 0.08,
+    seed: int = 0,
+):
+    """Synthetic captured states with a known within-item structure.
+
+    Every item is *mixed* (1-3 of the five agents correct), so within-item AUC is
+    defined everywhere.  At a ``signal_sites`` site the state carries the label along one
+    hidden direction; at any other site it carries only the item offset and noise.  The
+    behavioural channel carries a weak version of the same label, and the answer class is
+    deliberately independent of it so the answer-class baseline is a real control.
+
+    Returns ``(rows, H)`` for :func:`agents_scaling.ard.neural.probes.build_frame`.
+    """
+    import numpy as np
+
+    from agents_scaling.ard.neural import probes as P
+
+    rng = np.random.default_rng(seed)
+    rows: list[Any] = []
+    vectors: list[Any] = []
+    for i in range(n_items):
+        item = f"{item_prefix}{i:03d}"
+        family = K.FAMILIES[i % len(K.FAMILIES)].value
+        offset = rng.standard_normal(hidden) * 0.5
+        labels = np.zeros(K.N_AGENTS)
+        labels[: 1 + (i % 3)] = 1.0
+        rng.shuffle(labels)
+        for agent in range(K.N_AGENTS):
+            y = float(labels[agent])
+            u = (0.6 if y else -0.4) + float(rng.normal(scale=0.05))
+            for layer, anchor in sites:
+                vector = offset + rng.standard_normal(hidden) * 0.2
+                if (layer, anchor) in signal_sites:
+                    vector = vector + np.eye(hidden)[0] * (signal * y)
+                vectors.append(vector)
+                rows.append(P.ProbeRow(
+                    row_id=f"{item}:{agent}:{layer}:{anchor}",
+                    item_id=item, episode_id=f"ep{i}", agent_id=agent, protocol="PEER",
+                    round_=round_, layer=layer, anchor=anchor, vector_index=len(vectors) - 1,
+                    split=split, family=family,
+                    behaviour={"confidence": 0.5 + behaviour_signal * y + float(rng.normal(scale=0.25)),
+                               "prompt_tokens": 800.0 + float(rng.normal(scale=20.0))},
+                    answer_class="ABCD"[int(rng.integers(4))],
+                    targets={P.TARGET_CURRENT: y, P.TARGET_EXPOSURE_VALUE: u},
+                ))
+    return rows, np.asarray(vectors, dtype=float)
