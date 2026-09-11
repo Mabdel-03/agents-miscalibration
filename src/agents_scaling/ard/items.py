@@ -21,10 +21,13 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, fields
+from typing import Mapping
 from pathlib import Path
 
 from agents_scaling.ard.contract import (
     FAMILIES,
+    LARGE_SPLIT_COUNTS_PER_FAMILY,
+    LARGE_SUBSET_PER_FAMILY,
     MMLU_REQUIRED_OPTIONS,
     SPLITS,
     Family,
@@ -193,6 +196,42 @@ def tasks_by_split(tasks: dict[str, ArdTask]) -> dict[str, list[ArdTask]]:
         out[task.split].append(task)
     for group in out.values():
         group.sort(key=lambda task: (task.family, task.rank))
+    return out
+
+
+def large_panel(tasks: Mapping[str, ArdTask]) -> dict[str, ArdTask]:
+    """The frozen 96-item 32B subset (spec §5.1, plan §5.1): 48 per family, 12/6/30 per split.
+
+    Chosen by the frozen hash order *within* each natural (family, split) stratum -- ``rank``
+    is that order, fixed when the item table was built -- so the subset is decided before any
+    generation and can never be re-drawn on measured gains. Selecting a prefix of a frozen
+    permutation is what "by frozen hash within the split" means; it is not a difficulty or
+    quality ordering.
+
+    Fails closed: a stratum that cannot fill its quota is an error rather than a quietly
+    smaller 32B panel, because the 32B contrasts are reported against a stated cohort size.
+    """
+    out: dict[str, ArdTask] = {}
+    for family in (f.value for f in FAMILIES):
+        for split in SPLITS:
+            want = int(LARGE_SPLIT_COUNTS_PER_FAMILY[split])
+            stratum = sorted(
+                (task for task in tasks.values()
+                 if task.family == family and task.split == split),
+                key=lambda task: task.rank,
+            )
+            if len(stratum) < want:
+                raise ItemsError(
+                    f"32B panel: ({family}, {split}) has {len(stratum)} items, needs {want}; "
+                    "the public table is not the frozen natural panel"
+                )
+            for task in stratum[:want]:
+                out[task.item_id] = task
+        chosen = sum(1 for task in out.values() if task.family == family)
+        if chosen != int(LARGE_SUBSET_PER_FAMILY):
+            raise ItemsError(
+                f"32B panel: {family} selected {chosen}, expected {LARGE_SUBSET_PER_FAMILY}"
+            )
     return out
 
 

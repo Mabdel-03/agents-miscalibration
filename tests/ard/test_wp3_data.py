@@ -373,3 +373,55 @@ def test_allocation_is_proportional_and_min_one():
         items_build.proportional_allocation(sizes, 3, b"salt")
     with pytest.raises(items_build.BuildError):
         items_build.proportional_allocation(sizes, 1000, b"salt")
+
+
+# --------------------------------------------------------------------------- the 32B panel
+
+
+def test_the_large_panel_is_frozen_stratified_and_a_strict_subset(built):
+    """Spec §5.1: 96 items, 48 per family, chosen by frozen hash *within* each split.
+
+    The 32B contrasts are reported against a stated cohort, so the panel has to be decided
+    before any generation and be reproducible from the item table alone.
+    """
+    from agents_scaling.ard.contract import (LARGE_SPLIT_COUNTS_PER_FAMILY,
+                                             LARGE_SUBSET_PER_FAMILY)
+
+    tasks = items.load_ard_tasks(built)
+    panel = items.large_panel(tasks)
+
+    assert len(panel) == 2 * LARGE_SUBSET_PER_FAMILY == 96
+    for family in Family:
+        for split in SPLITS:
+            block = [t for t in panel.values() if t.family == family.value and t.split == split]
+            assert len(block) == LARGE_SPLIT_COUNTS_PER_FAMILY[split], (family, split)
+
+    # A subset of the natural panel, never a re-draw: same items, same splits, same groups.
+    assert set(panel) <= set(tasks)
+    for item_id, task in panel.items():
+        assert task == tasks[item_id]
+
+    # Deterministic: recomputing selects exactly the same items, and the choice is the frozen
+    # rank prefix of each stratum rather than anything measured.
+    assert set(items.large_panel(tasks)) == set(panel)
+    for family in Family:
+        for split in SPLITS:
+            stratum = sorted((t for t in tasks.values()
+                              if t.family == family.value and t.split == split),
+                             key=lambda t: t.rank)
+            want = LARGE_SPLIT_COUNTS_PER_FAMILY[split]
+            assert [t.item_id for t in stratum[:want]] == [
+                t.item_id for t in sorted(
+                    (x for x in panel.values()
+                     if x.family == family.value and x.split == split),
+                    key=lambda x: x.rank)
+            ]
+
+
+def test_a_short_stratum_fails_the_large_panel_rather_than_shrinking_it(built):
+    """A 32B panel that quietly comes back smaller would misstate every 32B cohort size."""
+    tasks = items.load_ard_tasks(built)
+    thinned = {i: t for i, t in tasks.items()
+               if not (t.family == Family.MATH500.value and t.split == "test" and t.rank >= 5)}
+    with pytest.raises(items.ItemsError, match="needs"):
+        items.large_panel(thinned)
