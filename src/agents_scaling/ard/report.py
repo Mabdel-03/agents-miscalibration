@@ -254,9 +254,11 @@ def parse_report(
     1. ``NO_THINK_OPEN`` — the completion did not start with ``<think>``.
     2. ``PREMATURE_REASONING_EOS`` — the thinking channel never closed, so there is no
        report span at all.
-    3. ``TRUNCATED`` — the span exists but was cut (see :func:`span_cut`); the tags that
-       *were* recovered are still returned for diagnostics, but the status is not ``OK``
-       and the report casts no vote.
+    3. ``TRUNCATED`` / ``TRUNCATED_AFTER_FINAL`` — the span exists but was cut (see
+       :func:`span_cut`).  If a well-formed, non-empty ``<final>...</final>`` closed
+       *before* the cut the answer is intact and is delivered as
+       ``TRUNCATED_AFTER_FINAL`` (a valid status); the lost tail means ``confidence`` is
+       missing, never imputed.  Otherwise the report casts no vote (``TRUNCATED``).
     4. ``MALFORMED_FINAL`` / ``EMPTY_FINAL`` / ``MISSING_FINAL`` — the ``<final>`` tag.
     5. ``OK``.
     """
@@ -277,7 +279,14 @@ def parse_report(
     if think_status is not None:
         status = think_status
     elif span_cut(finish_reason, n_final_ids):
-        status = K.ParseStatus.TRUNCATED
+        # The cut costs the tail, not necessarily the answer: the report commits the
+        # moment </final> closes, and everything after it is evidence prose plus the
+        # confidence forecast (spec §6.3).
+        status = (
+            K.ParseStatus.TRUNCATED_AFTER_FINAL
+            if final_status == TAG_OK
+            else K.ParseStatus.TRUNCATED
+        )
     elif final_status == TAG_MISSING:
         status = K.ParseStatus.MISSING_FINAL
     elif final_status == TAG_MALFORMED:
@@ -287,9 +296,9 @@ def parse_report(
     else:
         status = K.ParseStatus.OK
 
-    if status is not K.ParseStatus.OK:
-        # Only an OK report delivers an answer; the excerpts stay for the audit trail but
-        # never reach a vote, a packet or a grader.
+    if status not in K.VALID_PARSE_STATUSES:
+        # Only a valid report delivers an answer; the excerpts stay for the audit trail
+        # but never reach a vote, a packet or a grader.
         answer: str | None = None
     else:
         answer = final_answer

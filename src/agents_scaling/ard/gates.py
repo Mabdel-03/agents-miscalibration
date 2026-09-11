@@ -314,7 +314,7 @@ def launch_gate(
     checks.append(GateCheck(
         name="root_parse_validity", passed=float(measured["root_parse_validity"]) >= PARSE_VALIDITY_MIN,
         value=float(measured["root_parse_validity"]), threshold=PARSE_VALIDITY_MIN,
-        note="fraction of pilot root reports with ParseStatus.OK"))
+        note="fraction of pilot root reports in contract.VALID_PARSE_STATUSES"))
     checks.append(GateCheck(
         name="http_error_rate", passed=float(measured["http_error_rate"]) <= HTTP_ERROR_RATE_MAX,
         value=float(measured["http_error_rate"]), threshold=HTTP_ERROR_RATE_MAX,

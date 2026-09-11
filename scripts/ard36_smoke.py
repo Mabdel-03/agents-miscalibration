@@ -23,6 +23,8 @@ import statistics as st
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from agents_scaling.ard import contract as K
+
 #: decision phase / protocol -> the gate's call-type vocabulary
 CALL_TYPE_OF = {
     ("root", None): "ROOT",
@@ -114,7 +116,12 @@ def main() -> int:
 
     roots = by_type.get("ROOT", [])
     status = Counter(str(d.get("parse_status")) for d in roots)
-    validity = (status.get("ok", 0) / len(roots)) if roots else 0.0
+    # Validity is the contract's set, not the string "ok": a span cut after </final> closed
+    # still delivers its answer (amendment I7).  Hard-coding "ok" here would report a
+    # validity the parser, the vote and the graders all disagree with.
+    valid_statuses = {st.value for st in K.VALID_PARSE_STATUSES}
+    n_valid = sum(c for st, c in status.items() if st in valid_statuses)
+    validity = (n_valid / len(roots)) if roots else 0.0
     cap = sum(1 for d in roots if d.get("boundary_injected"))
 
     measured = {
@@ -133,6 +140,11 @@ def main() -> int:
             "n_decisions": len(decs),
             "n_root_decisions": len(roots),
             "root_parse_status": dict(status),
+            "root_valid_statuses": sorted(valid_statuses),
+            "root_conf_missing_rate": (
+                round(sum(1 for d in roots if d.get("confidence") is None) / len(roots), 4)
+                if roots else None
+            ),
             "root_cap_hit_rate": round(cap / len(roots), 4) if roots else None,
             "call_types_measured": sorted(k for k, v in table.items() if "not_in_tier" not in v),
             "call_types_not_in_tier": sorted(k for k, v in table.items() if "not_in_tier" in v),

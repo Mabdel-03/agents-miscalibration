@@ -30,9 +30,19 @@ continued draws. Owner: whoever runs the E6 capture, before the parity panel is 
 
 `ard/resources.py` derives attributed GPU-seconds from the decision row's token counts, so a
 continued draw's phase-2 prefix prefill and phase 1's discarded post-boundary span fall outside
-it. Logical FLOPs are already correct end to end (both phases are summed on the record), and
-`physical_requests` is now correct too. This affects only the wall-clock attribution column,
-which is documented as an approximation.
+it. Logical FLOPs are correct end to end (both phases are summed on the record). This affects
+only the wall-clock attribution column, which is documented as an approximation.
+
+**Correction (2026-09-10).** An earlier revision of this entry claimed `physical_requests` was
+"now correct too". It was not. `DecisionRecord` carried the two ids, but the joinable
+`DecisionRef` is built by `runner._ref_from_wp2_row` from WP2's §18 row, which has a single
+`request_hash` and no place for the second request — so the field defaulted to an empty tuple on
+*every* decision and `cost_summary` charged one request per continued draw. Caught on the
+two-phase pilot, where all 128 decisions carried an empty tuple despite 67 recorded
+continuations. Fixed by consulting the record in the adapter (`runner._physical_ids`), pinned by
+`tests/ard/test_two_phase.py::test_the_wp2_adapter_carries_both_physical_requests`, and verified
+on the re-scored pilot: 61 decisions at one physical request, 67 at two, matching the 67
+continuation events exactly.
 
 ## Closed
 

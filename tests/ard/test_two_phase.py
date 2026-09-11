@@ -534,3 +534,45 @@ def test_the_prefix_cache_hit_on_the_continuation_is_recorded(cfg, run_root, con
     assert record.continuation.cached_prefill_tokens == blocks * F.PREFIX_CACHE_BLOCK > 0
     assert record.continuation.cached_prefill_tokens > record.prompt_tokens
     assert record.cached_prefill_tokens <= record.prompt_tokens
+
+
+# --------------------------------------------------------------------------- cost accounting
+
+
+def test_the_wp2_adapter_carries_both_physical_requests(cfg, run_root, context, cost_fn, serve):
+    """Defect D-02: the §18 decision row has no place for the second physical request.
+
+    ``DecisionRecord`` knows a continued decision cost two requests, but the joinable
+    ``DecisionRef`` is built from WP2's public row, which carries one ``request_hash``.
+    Without the record consulted explicitly every continued decision is charged as one
+    request and ``cost_summary`` under-reports the run.
+    """
+    from agents_scaling.ard.runner import _ref_from_wp2_row
+    from agents_scaling.ard.types import ArdCellKind, ArdCellSpec
+
+    cell = ArdCellSpec(
+        cell_id="ROOTS.natural.none.8B.T1024.s000", kind=ArdCellKind.ROOTS,
+        protocol=None, round=None, cohort=K.Cohort.NATURAL,
+        checkpoint=K.CHECKPOINT_SMALL, reasoning_allowance=K.THINKING_TOKENS_LOW,
+        final_allowance=K.FINAL_TOKENS, items=("math500-0001",), team_id=None,
+        parent_ref=None, leader_seed=None, depends_on=(), max_inflight=5,
+        parallel_items=1, lane="8B",
+    )
+    req = S.make_request(cfg)
+    with serve() as srv:
+        record = S.run_decision(req, run_root, context, cost_fn)
+        assert srv.completion_count == 1          # the continuation really ran
+    assert record.continued is True and len(record.physical_request_ids) == 2
+
+    row = {"decision_id": record.request_id, "episode_id": "ep", "agent_id": 0,
+           "round": 0, "phase": "root", "request_hash": record.request_id}
+    ref = _ref_from_wp2_row(row, record, cell=cell, episode_id="ep",
+                            protected_slot=None, classify=lambda a: a, arrivals={})
+    assert ref.physical_request_ids == record.physical_request_ids
+    assert len(ref.physical_request_ids) == 2
+
+    # A decision replayed without its record still costs the one request it is keyed by,
+    # never zero -- an empty tuple is what silently produced the under-count.
+    bare = _ref_from_wp2_row(row, None, cell=cell, episode_id="ep",
+                             protected_slot=None, classify=lambda a: a, arrivals={})
+    assert bare.physical_request_ids == (record.request_id,)

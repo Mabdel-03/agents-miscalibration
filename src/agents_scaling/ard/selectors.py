@@ -686,7 +686,7 @@ def _candidate_from_decision(row: Mapping[str, Any]) -> SelectorCandidate:
     """One ``decisions``-grain row (``types.DecisionRef.to_dict()``) as a pool candidate."""
     answer_class = row.get("answer_class")
     parse_status = str(row.get("parse_status") or "")
-    valid = parse_status == K.ParseStatus.OK.value and bool(answer_class)
+    valid = parse_status in {s.value for s in K.VALID_PARSE_STATUSES} and bool(answer_class)
     confidence = row.get("confidence")
     return SelectorCandidate(
         candidate_id=str(row.get("decision_id") or ""),

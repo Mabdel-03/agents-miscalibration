@@ -342,8 +342,11 @@ class DecisionRef(_Record):
 
     @property
     def valid(self) -> bool:
-        """A delivered answer: an ``ok`` parse with a keyable canonical class."""
-        return self.parse_status == K.ParseStatus.OK.value and self.answer_class is not None
+        """A delivered answer: a valid parse with a keyable canonical class."""
+        return (
+            self.parse_status in {s.value for s in K.VALID_PARSE_STATUSES}
+            and self.answer_class is not None
+        )
 
 
 @dataclass(frozen=True)

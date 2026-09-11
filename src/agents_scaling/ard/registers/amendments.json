@@ -3,8 +3,8 @@
     "id": "S1",
     "section": "scope",
     "section_title": "Scope and tier",
-    "deviation": "The 36-hour clock starts at implementation rather than at fleet allocation (user decision, 2026-09-10). \u00a716.4 steps 1\u20133 are therefore applied **prospectively at T0**, before any test outcome exists: HUB5 dropped, E2d 32\u219216 items, challenge cap 96\u219248, receiver 64\u219232 programs, selector audit reduced to the root and GATE-final pools, extensions off. Reduced core 47,424 8B + 8,256 32B decisions.",
-    "spec_clause": "\u00a716.4, \u00a716.5 line 666",
+    "deviation": "The 36-hour clock starts at implementation rather than at fleet allocation (user decision, 2026-09-10). §16.4 steps 1–3 are therefore applied **prospectively at T0**, before any test outcome exists: HUB5 dropped, E2d 32→16 items, challenge cap 96→48, receiver 64→32 programs, selector audit reduced to the root and GATE-final pools, extensions off. Reduced core 47,424 8B + 8,256 32B decisions.",
+    "spec_clause": "§16.4, §16.5 line 666",
     "unsupported_claim": "No HUB5 result. Challenge and receiver intervals are wider than the spec's power sketch. The full core is restored only if the launch-gate projection fits by hour 30.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -13,9 +13,9 @@
     "id": "S2",
     "section": "scope",
     "section_title": "Scope and tier",
-    "deviation": "Extensions 5\u20138 of the plan (team size N=3/9, cost-matched long single-agent baseline, heterogeneous teams, neural-augmented GATE) are not run.",
-    "spec_clause": "\u00a717 items 4, 5, 7, 9",
-    "unsupported_claim": "**No claim of superiority over optimised single-agent inference is made**, because \u00a717 item 9's cost-matched baseline was not run. No post-interaction team-size effect. No cross-scale team claim.",
+    "deviation": "Extensions 5–8 of the plan (team size N=3/9, cost-matched long single-agent baseline, heterogeneous teams, neural-augmented GATE) are not run.",
+    "spec_clause": "§17 items 4, 5, 7, 9",
+    "unsupported_claim": "**No claim of superiority over optimised single-agent inference is made**, because §17 item 9's cost-matched baseline was not run. No post-interaction team-size effect. No cross-scale team claim.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
   },
@@ -24,7 +24,7 @@
     "section": "scope",
     "section_title": "Scope and tier",
     "deviation": "The native BigCodeBench bridge, a second model family and activation patching are not run.",
-    "spec_clause": "\u00a75.5, \u00a717 items 6, 8; \u00a714.4",
+    "spec_clause": "§5.5, §17 items 6, 8; §14.4",
     "unsupported_claim": "No code-domain generality. Results are one model family, one sampling recipe, two task families.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -34,7 +34,7 @@
     "section": "scope",
     "section_title": "Scope and tier",
     "deviation": "The calibrated-confidence communication ablation is not run.",
-    "spec_clause": "\u00a76.4 line 262",
+    "spec_clause": "§6.4 line 262",
     "unsupported_claim": "No evidence on whether transmitting peer confidence changes the dynamics; confidence is stripped from every base protocol.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -44,7 +44,7 @@
     "section": "scope",
     "section_title": "Scope and tier",
     "deviation": "Reported attribution / cited source ids are not collected: the frozen report schema has no citation field.",
-    "spec_clause": "\u00a710 line 355",
+    "spec_clause": "§10 line 355",
     "unsupported_claim": "Influence is never inferred from answer matches. Only the randomised packet manipulations support causal language.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -54,7 +54,7 @@
     "section": "measurement",
     "section_title": "Measurement",
     "deviation": "ECE, MCE, reliability panels and the system-minus-agent miscalibration delta are reported although the specification never asks for them (the string ECE does not occur in its 880 lines). Added at the user's request; it was this repository's original headline quantity.",
-    "spec_clause": "beyond \u00a710, \u00a715.2",
+    "spec_clause": "beyond §10, §15.2",
     "unsupported_claim": "These are labelled exploratory additions, not spec-required outcomes, and carry the matched-n rule because valid-confidence counts vary by round.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -74,7 +74,7 @@
     "section": "measurement",
     "section_title": "Measurement",
     "deviation": "The 256-token final allowance is enforced at parse time (the first 256 post-`</think>` tokens, with `final_overrun` recorded) rather than by a server-side cap.",
-    "spec_clause": "\u00a76.2",
+    "spec_clause": "§6.2",
     "unsupported_claim": "Distributionally equivalent under autoregressive sampling; the surplus is wasted compute only, bounded by `max_tokens`. Recorded because it is a mechanism difference.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -83,8 +83,8 @@
     "id": "M4",
     "section": "measurement",
     "section_title": "Measurement",
-    "deviation": "The noninferiority margin for \"does not hurt correct majorities\" is pre-registered at **\u03b4 = 8 points** on the constructed C0=4 challenge cohort, not on the natural C0\u2208{4,5} subgroup.",
-    "spec_clause": "\u00a715.3 line 575",
+    "deviation": "The noninferiority margin for \"does not hurt correct majorities\" is pre-registered at **δ = 8 points** on the constructed C0=4 challenge cohort, not on the natural C0∈{4,5} subgroup.",
+    "spec_clause": "§15.3 line 575",
     "unsupported_claim": "At the planned SE of 0.029 a 3-point margin could only be cleared by a superiority result. The natural subgroup is reported as estimation-only.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -94,7 +94,7 @@
     "section": "data",
     "section_title": "Data and grading",
     "deviation": "The \"existing validated symbolic evaluator\" does not exist in this repository. MATH grading uses **lark 1.3.1** driving `sympy.parsing.latex.parse_latex(backend='lark')` with a per-item timeout, pinned into the grader hash.",
-    "spec_clause": "\u00a75.1 line 186",
+    "spec_clause": "§5.1 line 186",
     "unsupported_claim": "None, given D2: validated pre-freeze on all 500 pinned gold answers at parse rate 1.000, self-equivalence 1.000, and 500/500 agreement with each item's own worked solution.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -104,7 +104,7 @@
     "section": "data",
     "section_title": "Data and grading",
     "deviation": "Five MATH answer shapes are handled by hand-rolled rewrites outside the lark grammar: `\\pi` (absent from sympy's greek grammar), leading-dot decimals, `x \\in [-2,7]`, `pmatrix` with `&` separators, and a unit suffix after a fraction. Shapes still unsupported (`\\sigma`, `\\iota`, `\\Pi`, other missing commands) are reported as unparsed, never guessed.",
-    "spec_clause": "\u00a75.1 line 171",
+    "spec_clause": "§5.1 line 171",
     "unsupported_claim": "Ambiguous parses stay explicit as their own evaluator status and are reported separately, as the spec requires.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -114,7 +114,7 @@
     "section": "data",
     "section_title": "Data and grading",
     "deviation": "MMLU-Pro is restricted to the 9,981 ten-option rows, and 239 duplicate question strings are dropped (the plan estimated 231; the difference is stripping whitespace before de-duplicating).",
-    "spec_clause": "\u00a75.1 line 173",
+    "spec_clause": "§5.1 line 173",
     "unsupported_claim": "The cohort is not a uniform sample of MMLU-Pro. Reported as a ten-option subset, never as a benchmark evaluation.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -124,7 +124,7 @@
     "section": "data",
     "section_title": "Data and grading",
     "deviation": "**Prior exposure:** earlier runs of this harness already used MMLU-Pro and MATH-500.",
-    "spec_clause": "\u00a718, study_v4 `prior_exposure_manifest.json`",
+    "spec_clause": "§18, study_v4 `prior_exposure_manifest.json`",
     "unsupported_claim": "No first-exposure claim. Contamination relative to prior harness runs is not controlled.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -133,8 +133,8 @@
     "id": "I1",
     "section": "implementation",
     "section_title": "Implementation",
-    "deviation": "The split budget is one chat request using vLLM's native `thinking_token_budget`, not two requests with an exact-token-prefix continuation. Verified: forcing is a logits boost, so the boundary token is genuinely sampled, `boundary_injected == (thinking_tokens == budget)` is exact, exact token ids are preserved trivially, and \u2265256 final tokens always remain after a cap hit.",
-    "spec_clause": "\u00a76.2 line 232",
+    "deviation": "The split budget is one chat request using vLLM's native `thinking_token_budget`, not two requests with an exact-token-prefix continuation. Verified: forcing is a logits boost, so the boundary token is genuinely sampled, `boundary_injected == (thinking_tokens == budget)` is exact, exact token ids are preserved trivially, and ≥256 final tokens always remain after a cap hit.",
+    "spec_clause": "§6.2 line 232",
     "unsupported_claim": "None. This is the \"existing tested backend mechanism\" the clause asks for. The two-phase path remains the documented fallback if the smoke fails.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -144,7 +144,7 @@
     "section": "implementation",
     "section_title": "Implementation",
     "deviation": "`configs/model_contracts.v1.json` is unedited: it is sha256-pinned, its loader rejects any key set other than the ordered dense ladder, and both ARD36 profiles already resolve through it by model size to the pinned revisions.",
-    "spec_clause": "\u00a76.1",
+    "spec_clause": "§6.1",
     "unsupported_claim": "None.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -154,7 +154,7 @@
     "section": "implementation",
     "section_title": "Implementation",
     "deviation": "`study/types.py` `NAMESPACES`/`PURPOSES` are unextended; the ARD namespaces live in `ard/contract.py`. The whitelist is enforced in `study/policies/base.py::ctx.seed()`, which the ARD episode loop does not use.",
-    "spec_clause": "\u00a718 cache identity",
+    "spec_clause": "§18 cache identity",
     "unsupported_claim": "None.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -164,7 +164,7 @@
     "section": "implementation",
     "section_title": "Implementation",
     "deviation": "The no-gold firewall is absolute rather than per-function: no runtime import closure may reach `agents_scaling.benchmarks` at all. `ard/graders/_boxed.py` vendors the one pure extractor this cost, with a parity test against the original.",
-    "spec_clause": "\u00a718 line 693",
+    "spec_clause": "§18 line 693",
     "unsupported_claim": "Strengthens the guarantee. The claim is code-level discipline plus a runtime scan, never filesystem isolation, since the HF dataset cache is world-readable.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
@@ -183,9 +183,19 @@
     "id": "I6",
     "section": "implementation",
     "section_title": "Implementation",
-    "deviation": "**Two-phase report generation for cap-hit draws.** The pilot (128 root draws, 8B) gave 83.6% valid reports against the 95% gate. Diagnosis: vLLM forces `</think>` at the thinking budget by a logits boost, but the model does not switch into report mode \u2014 it continues its derivation and spends all 256 report tokens on reasoning, emitting no tag at all (0 of 17 truncated draws contained even an opening `<final>`). A prompt-wording repair was tried first and **failed**, moving validity by under one point, because a model mid-derivation does not attend to the instruction. The remedy is the contingency the plan already documented: when and only when phase 1 hits the thinking cap, the report is generated as a `/v1/completions` continuation from the exact phase-1 token prefix through `</think>`, with the `<final>` opening prefilled so the answer comes first. The trigger is `boundary_injected` alone \u2014 uniform over every cap-hit draw, never conditioned on what phase 1 produced. Both physical requests are recorded and their FLOPs summed.",
-    "spec_clause": "\u00a76.2 line 232 (the split budget uses the existing tested backend mechanism; \"Preserve exact token IDs across the continuation\"; \"Count both physical requests and any repeated prefill in runtime cost\"), \u00a76.3 lines 250-252",
-    "unsupported_claim": "This is the more faithful reading of \u00a76.2's *independent* 256-token final allowance: under a forced boundary the genuinely independent report is the continuation, not the tail of an interrupted reasoning stream. The allowances stay 1,024 + 256 and the cap-hit rate remains a reported outcome. What it does limit: a cap-hit report is written from a prefilled opening tag, so its *format* is induced rather than spontaneous, and report-format compliance must not be reported as a model property for those draws.",
+    "deviation": "**Two-phase report generation for cap-hit draws.** The pilot (128 root draws, 8B) gave 83.6% valid reports against the 95% gate. Diagnosis: vLLM forces `</think>` at the thinking budget by a logits boost, but the model does not switch into report mode — it continues its derivation and spends all 256 report tokens on reasoning, emitting no tag at all (0 of 17 truncated draws contained even an opening `<final>`). A prompt-wording repair was tried first and **failed**, moving validity by under one point, because a model mid-derivation does not attend to the instruction. The remedy is the contingency the plan already documented: when and only when phase 1 hits the thinking cap, the report is generated as a `/v1/completions` continuation from the exact phase-1 token prefix through `</think>`, with the `<final>` opening prefilled so the answer comes first. The trigger is `boundary_injected` alone — uniform over every cap-hit draw, never conditioned on what phase 1 produced. Both physical requests are recorded and their FLOPs summed.",
+    "spec_clause": "§6.2 line 232 (the split budget uses the existing tested backend mechanism; \"Preserve exact token IDs across the continuation\"; \"Count both physical requests and any repeated prefill in runtime cost\"), §6.3 lines 250-252",
+    "unsupported_claim": "This is the more faithful reading of §6.2's *independent* 256-token final allowance: under a forced boundary the genuinely independent report is the continuation, not the tail of an interrupted reasoning stream. The allowances stay 1,024 + 256 and the cap-hit rate remains a reported outcome. What it does limit: a cap-hit report is written from a prefilled opening tag, so its *format* is induced rather than spontaneous, and report-format compliance must not be reported as a model property for those draws.",
+    "source": "docs/ard36/02_amendments.md",
+    "when": "pre_dispatch"
+  },
+  {
+    "id": "I7",
+    "section": "implementation",
+    "section_title": "Implementation",
+    "deviation": "**A report span cut by `max_tokens` after `</final>` closed still delivers its answer** (new `ParseStatus.TRUNCATED_AFTER_FINAL`, admitted to `VALID_PARSE_STATUSES`). The parser previously ranked the `truncated` status *above* the `<final>` checks, so any cut span was invalid even when a well-formed `<final>...</final>` had closed before the cut. Spec §6.3 conditions validity on the `<final>` tag alone (\"missing/malformed `<final>` = invalid\"), so the implementation was stricter than the contract it implements. Found by the two-phase pilot (128 root draws, 8B, train-split items only, pre-freeze): the continuation writes the answer immediately from the prefilled tag (`8</final>`, `0.0996</final>`) and then keeps reasoning inside `<evidence>`, exhausting the 256-token report allowance without closing it. All 16 such draws had committed a closed, non-empty answer. Measured effect on that pilot: validity 0.875 -> 1.000 with 0 of 67 cap-hit draws left undelivered.",
+    "spec_clause": "§6.3 lines 250-252 (the report schema and its validity rule)",
+    "unsupported_claim": "The answer channel is unaffected -- these reports commit before the cut. What it does limit is the *confidence* axis: a cut tail loses `<confidence>` (and `<evidence>`), so these draws carry a missing confidence under the frozen missing-is-missing policy, never an imputed 0.5. That missingness is **not random** -- it lands only on cap-hit draws, i.e. the longer, harder items -- so every calibration and confidence panel reports `conf_missing_rate` beside its estimate, the matched-n rule (plan §5.8) governs any cross-round or cross-protocol comparison, and confidence-conditioned controller features carry their existing missing-indicator. On this pilot that is 12.5% of decisions. Report-format compliance is already excluded as a model property for cap-hit draws under I6.",
     "source": "docs/ard36/02_amendments.md",
     "when": "pre_dispatch"
   }

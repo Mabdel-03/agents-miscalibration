@@ -70,17 +70,40 @@ def test_no_think_open_and_premature_eos() -> None:
     assert parse_report("", "stop", ()).parse_status is K.ParseStatus.NO_THINK_OPEN
 
 
-def test_truncated_span_is_not_ok() -> None:
-    body = f"{K.FINAL_OPEN}42{K.FINAL_CLOSE}{E}{C}"
-    cut = parse_report(body, "length", _ids())
+def test_truncated_span_before_final_is_not_ok() -> None:
+    """A cut that lands *before* ``</final>`` closes destroys the answer channel."""
+    # The report opened but never closed its answer: nothing was committed.
+    cut = parse_report(f"{K.FINAL_OPEN}4", "length", _ids())
     assert cut.parse_status is K.ParseStatus.TRUNCATED
     assert cut.final_answer is None and not cut.valid
+    # No report at all in the span -- the pre-continuation cap-hit failure mode.
+    empty = parse_report("Therefore the next step is", "length", _ids())
+    assert empty.parse_status is K.ParseStatus.TRUNCATED
+    assert empty.final_answer is None and not empty.valid
+
+
+def test_truncated_after_closed_final_still_delivers_the_answer() -> None:
+    """Spec §6.3 conditions validity on ``<final>`` alone, so a lost tail is not a lost vote.
+
+    The observed cap-hit continuation writes ``ANSWER</final>`` immediately and then runs
+    past the 256-token report allowance inside ``<evidence>``.  The answer is committed;
+    only the tail is gone, and the confidence that went with it is *missing* (amendment I7).
+    """
+    body = f"{K.FINAL_OPEN}42{K.FINAL_CLOSE}<evidence>because the shoelace formula gives"
+    cut = parse_report(body, "length", _ids())
+    assert cut.parse_status is K.ParseStatus.TRUNCATED_AFTER_FINAL
+    assert cut.final_answer == "42" and cut.valid
+    assert cut.confidence is None      # never imputed, never 0.5
+    assert cut.evidence is None        # the unclosed tag yields no evidence text
+
     # ``final_overrun``: more than FINAL_TOKENS were generated after </think>, so the text
     # handed to the parser is a prefix of the report (plan §5.2).
-    over = parse_report(body, "stop", _ids(K.FINAL_TOKENS + 1))
+    full = f"{K.FINAL_OPEN}42{K.FINAL_CLOSE}{E}{C}"
+    over = parse_report(full, "stop", _ids(K.FINAL_TOKENS + 1))
     assert over.final_overrun is True
-    assert over.parse_status is K.ParseStatus.TRUNCATED
-    exact = parse_report(body, "stop", _ids(K.FINAL_TOKENS))
+    assert over.parse_status is K.ParseStatus.TRUNCATED_AFTER_FINAL
+    assert over.valid and over.final_answer == "42"
+    exact = parse_report(full, "stop", _ids(K.FINAL_TOKENS))
     assert exact.final_overrun is False and exact.parse_status is OK
 
 

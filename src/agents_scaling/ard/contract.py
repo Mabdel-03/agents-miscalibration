@@ -175,12 +175,21 @@ class ParseStatus(str, Enum):
     EMPTY_FINAL = "empty_final"               # <final></final>
     NO_THINK_OPEN = "no_think_open"           # completion did not start with <think>
     PREMATURE_REASONING_EOS = "premature_reasoning_eos"   # never closed </think>
-    TRUNCATED = "truncated"                   # report span cut by max_tokens
+    TRUNCATED = "truncated"                   # report span cut before <final> closed
+    #: Span cut by ``max_tokens``, but a well-formed ``<final>...</final>`` closed before
+    #: the cut.  The answer channel is intact and the report votes; the tail (evidence,
+    #: confidence) is lost, so ``confidence`` is *missing* under the frozen
+    #: missing-is-missing policy (spec §6.3) and never imputed.  Amendment I7.
+    TRUNCATED_AFTER_FINAL = "truncated_after_final"
     CONTEXT_FAILURE = "context_failure"       # prompt refused at build time
 
 
-#: Statuses that still yield a gradeable answer string.
-VALID_PARSE_STATUSES: Final[frozenset[ParseStatus]] = frozenset({ParseStatus.OK})
+#: Statuses that still yield a gradeable answer string.  Validity is a property of the
+#: ``<final>`` channel alone (spec §6.3: "missing/malformed ``<final>`` = invalid"), so a
+#: cut tail after a closed ``<final>`` does not void the answer.
+VALID_PARSE_STATUSES: Final[frozenset[ParseStatus]] = frozenset(
+    {ParseStatus.OK, ParseStatus.TRUNCATED_AFTER_FINAL}
+)
 
 # --------------------------------------------------------------------------- #
 # Prompt budget (plan 5.2; asserted at build time by generate_decision)
