@@ -251,3 +251,48 @@ def nd_unreported_derivation(text: str = "So m ^ 2 = 1 so m = 1 or m = -1 . Ther
         return text
 
     return _respond
+
+
+#: Commands that change cluster state.  A test that reaches one of these has escaped its
+#: sandbox: the WP4 suite once left two 12-hour `asys-nextdyn-*` control jobs running on
+#: mit_preemptable because `test_every_runbook_verb_parses` exercised the `run` verb without
+#: --dry-run, and nothing noticed for over an hour.  Injected runners are the design (every
+#: dispatch entry point takes one); this is the net under it.
+SCHEDULER_COMMANDS = ("sbatch", "scancel", "srun", "salloc", "scontrol")
+
+
+@pytest.fixture(autouse=True)
+def _no_test_ever_reaches_the_scheduler(monkeypatch):
+    """Refuse `sbatch` and friends for the whole suite.
+
+    Read-only Slurm queries (`squeue`, `sinfo`, `sacct`) are left alone: they are how the
+    fleet and status modules observe the cluster, they change nothing, and stubbing them out
+    would hide the very code paths those tests exist to cover.
+    """
+    import subprocess
+
+    real_run, real_popen, real_check = subprocess.run, subprocess.Popen, subprocess.check_output
+
+    def _refuse(cmd):
+        argv = cmd if isinstance(cmd, (list, tuple)) else str(cmd).split()
+        head = str(argv[0]).rsplit("/", 1)[-1] if argv else ""
+        if head in SCHEDULER_COMMANDS:
+            raise AssertionError(
+                f"a test tried to run {head!r}: tests never change cluster state. "
+                "Inject a runner (every dispatch entry point takes one) or pass --dry-run.")
+
+    def run(cmd, *a, **k):
+        _refuse(cmd)
+        return real_run(cmd, *a, **k)
+
+    def popen(cmd, *a, **k):
+        _refuse(cmd)
+        return real_popen(cmd, *a, **k)
+
+    def check_output(cmd, *a, **k):
+        _refuse(cmd)
+        return real_check(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(subprocess, "check_output", check_output)

@@ -25,7 +25,9 @@ RUNBOOK = [
     ["power", "--pilot-root", "/tmp/x/pilot"],
     ["plan", "--config", "CONFIG", "--dry-run"],
     ["freeze", "--config", "CONFIG"],
-    ["run", "--manifest", "/tmp/x/frozen_manifest.json"],
+    # --dry-run: parsing every verb must not submit anything.  The real submit path is
+    # covered by tests/nextdyn/test_dispatch.py with an injected runner.
+    ["run", "--manifest", "/tmp/x/frozen_manifest.json", "--dry-run"],
     ["materialize", "--run-root", "/tmp/x"],
     ["capture", "--run-root", "/tmp/x"],
     ["analyze", "--run-root", "/tmp/x", "--locked"],
