@@ -1,0 +1,126 @@
+# task_conditioned_dynamics_v1 — fleet, lanes, cell shapes and dispatch constants (plan §3.2, §3.3).
+#
+# Every numeric dispatch/fleet constant of the package lives here (asserted by
+# tests/nextdyn/test_guards.py::test_no_numeric_dispatch_constant_lives_in_code).  Compiled by
+# agents_scaling.nextdyn.config.load_compute(); unknown keys are refused.
+# Preflight facts (2026-09-15) are in the plan; `fleet up` re-reads the live census into
+# preflight/h0.json and refuses any spec whose per-(partition, gpu_type) GPU sum exceeds the caps.
+
+serving:
+  engine:
+    vllm: "0.21.0"
+    torch: "2.11"
+    cuda: "13.0"
+    dtype: bfloat16
+    reasoning_parser: qwen3
+  # max_num_seqs is a scheduling knob outside request identity, so it may differ per GPU type.
+  # 32B is TP2 everywhere (tp enters engine_digest); TP1 on H200 is not used.
+  max_num_seqs_by_gpu:
+    a100: {8B: 96, 32B: 48}
+    h100: {8B: 96, 32B: 48}
+    h200: {8B: 128, 32B: 64}
+    l40s: {8B: 40}
+  gpu_memory_utilization: 0.90
+  exclude_nodes: [node3804]
+
+# Pools are sub-run-roots: $RUN/pools/<pool>/servers (registry.servers_dir is hard-coded to
+# <root>/servers).  Spec grammar: size:count:partition:time[:gpu_type] (slurm/keepalive.parse_spec).
+pools:
+  deadline:
+    port_offset: 0
+    preemptable_allowed: false
+    spec: "nd1-32B:2:pi_manoli:3-00:00:00,nd1-32B:1:pi_tpoggio:3-00:00:00,nd1-8B:2:pi_tpoggio:2-12:00:00,nd1-32B:1:ou_bcs_normal:1-00:00:00:h100,nd1-8B:4:ou_bcs_normal:20:00:00:h100,nd1-8B:8:ou_bcs_normal:1-00:00:00,nd1-32B:1:mit_normal_gpu:6:00:00:h200"
+  low:
+    port_offset: 200
+    preemptable_allowed: true
+    spec: "nd1-8B:2:mit_preemptable:2-00:00:00:h200,nd1-32B:1:mit_preemptable:2-00:00:00:h200,nd1-8B:8:ou_bcs_low:1-00:00:00,nd1-8B:4:ou_bcs_low:1-00:00:00:h100"
+  audit:
+    port_offset: 100
+    preemptable_allowed: false
+    spec: "nd1-32B:1:ou_bcs_normal:1-00:00:00:h100,nd1-32B:1:pi_tpoggio:3-00:00:00"
+  # kind -> pool, optionally "<kind>@<model cell>" for a per-model override (kinds.pool_for).
+  assignment:
+    difficulty_bank: low
+    donor_bank: low
+    natural_root: low
+    episode: deadline
+    receiver: low
+    receiver@scale: low
+    selection_audit: audit
+
+capture:
+  partition: ou_bcs_low
+  gpu_type: a100
+  gpus_per_job: 1
+  fallback:
+    partition: mit_preemptable
+    gpu_types: [l40s, h200]
+
+# Per-user QOS caps as observed on 2026-09-15 (plan "Preflight facts"), a PLANNING snapshot
+# `plan --dry-run` sizes the floor against.  They are not the authority: `fleet up` captures
+# MaxTRESPU live into preflight/h0.json (plan D20, §3.2) and refuses any spec whose
+# per-(partition, gpu_type) GPU sum exceeds EITHER the live caps or these; a live cap below
+# a value here is reported as drift.  null = no cap of that kind.
+partitions:
+  pi_manoli:      {gpu: {a100: 8},                  gpu_total: 8,    cpu: null, mem_gb: null, max_submit: 500, preemptable: false, max_walltime: "7-00:00:00"}
+  pi_tpoggio:     {gpu: {a100: 6},                  gpu_total: 6,    cpu: null, mem_gb: null, max_submit: 500, preemptable: false, max_walltime: "7-00:00:00"}
+  ou_bcs_normal:  {gpu: {a100: 8, h100: 8},         gpu_total: 16,   cpu: null, mem_gb: null, max_submit: 256, preemptable: false, max_walltime: "1-00:00:00"}
+  ou_bcs_low:     {gpu: {a100: 32, h100: 32},       gpu_total: null, cpu: null, mem_gb: null, max_submit: 256, preemptable: true,  max_walltime: "1-00:00:00"}
+  mit_normal_gpu: {gpu: {h200: 2, l40s: 2, h100: 2}, gpu_total: 2,   cpu: 32,   mem_gb: null, max_submit: 64,  preemptable: false, max_walltime: "6:00:00"}
+  mit_preemptable: {gpu: {h200: 4, l40s: 4, a100: 4, h100: 4}, gpu_total: 4, cpu: 1024, mem_gb: null, max_submit: 448, preemptable: true, max_walltime: "2-00:00:00"}
+  mit_normal:     {gpu: {},                         gpu_total: 0,    cpu: 96,   mem_gb: 386,  max_submit: 448, preemptable: false, max_walltime: "1-00:00:00"}
+
+association:
+  max_submit_jobs: 500                  # counts every array task
+
+dispatch:
+  # cells per live endpoint, applied live with `scontrol update ArrayTaskThrottle`
+  throttle_per_endpoint:
+    episode: 8
+    difficulty_bank: 3
+    donor_bank: 3
+    natural_root: 3
+    receiver: 6
+    selection_audit: 6
+  lane_submit_caps: {8B: 200, 32B: 80, audit: 60, cpu: 40, capture: 4}
+  bank_submit_cap: 80
+  global_submit_cap: 380                # 500 - ~40 serve jobs - ~10 control jobs - margin
+  planner_pass_s: 900
+  cpu_driver_pass_s: 300
+  lane_driver_pass_s: 600
+  pending_alert_min: 60
+  stall_alert_min: 30
+  http_error_rate_max: 0.01
+  signal_seconds_before_walltime: 1200
+  inflight_target_8b: [40, 90]
+  inflight_target_32b: [24, 48]
+
+keepalive:
+  tick_s: 180
+  max_launch: 3
+  cpus: 2
+  mem: 2G
+  time: "12:00:00"
+  partitions: [mit_normal, mit_preemptable]
+
+# Cell workers (HTTP clients) by pool class; deadline workers overflow to mit_preemptable
+# when the deadline fleet exceeds 12 8B replicas (plan §3.3).
+workers:
+  deadline:      {cpus: 1, mem: 3G, time: "1-00:00:00", partition: mit_normal,      overflow_partition: mit_preemptable}
+  loss_tolerant: {cpus: 1, mem: 3G, time: "1-00:00:00", partition: mit_preemptable, overflow_partition: null}
+
+cells:
+  # items_per_cell is quoted at this reference shape and rescaled by kinds.items_per_cell.
+  reference: {n_agents: 5, revision_rounds: 4, thinking_cap: 2048}
+  kinds:
+    difficulty_bank: {items_per_cell: 16, parallel_items: 2, max_inflight: 16,       cpus: null, mem: null, time: null, partition: null}
+    donor_bank:      {items_per_cell: 16, parallel_items: 2, max_inflight: 16,       cpus: null, mem: null, time: null, partition: null}
+    natural_root:    {items_per_cell: 32, parallel_items: 4, max_inflight: 5,        cpus: null, mem: null, time: null, partition: null}
+    episode:         {items_per_cell: 12, parallel_items: 2, max_inflight: n_agents, cpus: null, mem: null, time: null, partition: null}
+    receiver:        {items_per_cell: 1,  parallel_items: 8, max_inflight: 1,        cpus: null, mem: null, time: null, partition: null}
+    selection_audit: {items_per_cell: 16, parallel_items: 4, max_inflight: 2,        cpus: null, mem: null, time: null, partition: null}
+    grade:           {items_per_cell: 64, parallel_items: 2, max_inflight: 1,        cpus: 2, mem: 4G,  time: "4:00:00",   partition: mit_normal}
+    construct:       {items_per_cell: 1,  parallel_items: 1, max_inflight: 1,        cpus: 4, mem: 8G,  time: "2:00:00",   partition: mit_preemptable}
+    e0:              {items_per_cell: 1,  parallel_items: 1, max_inflight: 1,        cpus: 4, mem: 32G, time: "1-00:00:00", partition: mit_preemptable}
+    capture:         {items_per_cell: 16, parallel_items: 1, max_inflight: 1,        cpus: 8, mem: 64G, time: "4:00:00",   partition: null}   # partition: capture.partition (R1)
+    materialize:     {items_per_cell: 1,  parallel_items: 1, max_inflight: 1,        cpus: 8, mem: 64G, time: "6:00:00",   partition: mit_preemptable}

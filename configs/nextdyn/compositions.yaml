@@ -1,0 +1,34 @@
+# task_conditioned_dynamics_v1 — root-team compositions as data (plan §2.4; spec 8.2, 11.2).
+#
+# Loaded by agents_scaling.nextdyn.construct (WP3).  Composition {name, n, c0, wrong_pattern}:
+#   wrong_pattern: coherent            -> the n-c0 wrong donors share one class w*
+#   wrong_pattern: {fragmented: [...]} -> per-class counts over distinct wrong classes (sum = n-c0)
+# Eligibility: largest correct class >= c0 and a wrong class >= n-c0 (fragmented: per-class counts).
+# focal_slot is the unique minority slot when min(c0, n-c0) == 1, else null (E3a refuses those).
+# Team ids, slot labels and exports never carry a composition name (test_solver_export_contains_no_gold_or_construction_correctness).
+
+compositions:
+  C1_COHERENT:   {n: 5, c0: 1, wrong_pattern: coherent,             enabled: true}
+  C4_COHERENT:   {n: 5, c0: 4, wrong_pattern: coherent,             enabled: true}
+  C1_FRAGMENTED: {n: 5, c0: 1, wrong_pattern: {fragmented: [2, 1, 1]}, enabled: true}
+  C2_OF_5:       {n: 5, c0: 2, wrong_pattern: coherent,             enabled: false}
+  C0_UNANIMOUS:  {n: 5, c0: 0, wrong_pattern: coherent,             enabled: false}   # optional all-wrong baseline
+  C5_UNANIMOUS:  {n: 5, c0: 5, wrong_pattern: coherent,             enabled: false}   # optional all-correct baseline
+  C1_OF_3:       {n: 3, c0: 1, wrong_pattern: coherent,             enabled: false}   # E3b block B
+  C1_OF_9:       {n: 9, c0: 1, wrong_pattern: coherent,             enabled: false}
+  C3_OF_9:       {n: 9, c0: 3, wrong_pattern: coherent,             enabled: false}
+
+# Paired panels: both members built on the same item with the same w*; shared c0/w0 donors recorded.
+pairs:
+  primary:    [C1_COHERENT, C4_COHERENT]
+  fragmented: [C1_COHERENT, C1_FRAGMENTED]
+
+# Frozen extension rule (plan §2.4): extend the donor bank to donor_max_draws iff stage 0,
+# not paired-eligible, >=1 C and >=1 W resolved.
+extension_rule:
+  name: extend_once_when_near_eligible_v1
+  min_correct_resolved: 1
+  min_wrong_resolved: 1
+
+# Construction rule version stamped into root_teams.construction_rule_version.
+construction_rule_version: nextdyn_construct_v1

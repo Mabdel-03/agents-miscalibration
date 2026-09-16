@@ -1,0 +1,66 @@
+# task_conditioned_dynamics_v1 — E0 legacy source registry (plan §2.6, D10; spec 7.1).
+#
+# Loaded by agents_scaling.nextdyn.e0.registry (WP7).  Every E0 read is a bounded named path
+# from this file, never a directory walk; a missing path yields a BLOCKED_MISSING_SOURCE row.
+# Paths are on the data filesystem (never the scratch FS; the compiler refuses scratch paths).
+# `repo:` prefixes resolve against the repository root.
+
+ard36:
+  root: /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/ard36
+  tables: tables_v2                      # the repaired tables (v1 delta rows per claim)
+  tables_v1: tables
+  cells: cells
+  items: data/public/items.parquet
+  items_reserve: data/public/items_reserve.json
+  items_summary: data/public/items_summary.json
+  provenance: provenance
+  stats: tables_v2/ard_stats.json
+  calibration_panel: tables_v2/calibration_panel.parquet
+  bank_summary: tables_v2/bank_summary.parquet
+
+study_v4:
+  root: /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4
+  tables: tables
+  seals: seals
+  tasks: data/tasks.jsonl
+  data_sha256: data/DATA_SHA256.json
+  raw_bcb: data/raw/bigcodebench_v0.1.4.parquet
+  eval_hle: eval/hle
+  eval_bcb: eval/bcb
+  geometry: neural/tables/geometry.parquet
+  cells: cells
+
+full_sweep_v1:
+  root: /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/full_sweep_v1
+  cells: cells
+  cells_json: cells.json
+  contracts: benchmark_contracts.v1.json
+  contracts_sha256: benchmark_contracts.v1.sha256
+  cache:
+    cells_dedup: repo:analysis/cache/cells_dedup_v1.parquet
+    analysis_view: repo:analysis/cache/analysis_view_v1.parquet
+    items: repo:analysis/cache/items_v1.parquet
+    agents: repo:analysis/cache/agents_v1.parquet
+    ingest_manifest: repo:analysis/cache/ingest_manifest_v1.json
+  findings: repo:analysis/full_sweep_v1_findings.parquet
+
+# Prior roots without contract sidecars: their items are `unknown`, never "untouched" (spec 5.2).
+prior_roots:
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/full_sweep_agent_count_7_v1
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/full_sweep_agent_counts_v1
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/long_context_protocol_smoke_v1
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/long_context_protocol_smoke_v4
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/long_context_protocol_smoke_v5
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/long_context_protocol_smoke_v6
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/long_context_protocol_smoke_v7
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/reasoning_pilot
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/recovery
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/selective_long_profiles_smoke_v1
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/smoke1
+  - /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4_judge
+
+bcb_repair:
+  sandbox_sif: study_v4:data/raw/bigcodebench_evaluator.sif   # resolved through study_v4.root; absent -> BLOCKED_MISSING_SOURCE
+  input_generator_policy: dev_frozen_v1
+  max_inputs_per_task: 20
+  audit_suite_inputs: 20

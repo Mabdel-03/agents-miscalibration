@@ -1,0 +1,66 @@
+{
+  "cuda_version": null,
+  "hf_home": null,
+  "locked_at": null,
+  "models": {
+    "family_transfer": {
+      "adapter": "total_output_envelope",
+      "blocked_reason": "skeleton: run lock-inputs",
+      "chat_template_sha256": null,
+      "config_sha256": null,
+      "dtype": null,
+      "hf_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "n_layers": null,
+      "reasoning_parser": null,
+      "revision": null,
+      "safetensors": null,
+      "status": "blocked",
+      "tokenizer_revision": null
+    },
+    "primary": {
+      "adapter": "native_thinking",
+      "blocked_reason": "skeleton: run lock-inputs",
+      "chat_template_sha256": null,
+      "config_sha256": null,
+      "dtype": null,
+      "hf_id": "Qwen/Qwen3-8B",
+      "n_layers": null,
+      "reasoning_parser": null,
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "safetensors": null,
+      "status": "blocked",
+      "tokenizer_revision": "b968826d9c46dd6066d109eabc6255188de91218"
+    },
+    "qwen_nonthinking": {
+      "adapter": "total_output_envelope",
+      "blocked_reason": "skeleton: run lock-inputs",
+      "chat_template_sha256": null,
+      "config_sha256": null,
+      "dtype": null,
+      "hf_id": "Qwen/Qwen3-8B",
+      "n_layers": null,
+      "reasoning_parser": null,
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "safetensors": null,
+      "status": "blocked",
+      "tokenizer_revision": "b968826d9c46dd6066d109eabc6255188de91218"
+    },
+    "scale": {
+      "adapter": "native_thinking",
+      "blocked_reason": "skeleton: run lock-inputs",
+      "chat_template_sha256": null,
+      "config_sha256": null,
+      "dtype": null,
+      "hf_id": "Qwen/Qwen3-32B",
+      "n_layers": null,
+      "reasoning_parser": null,
+      "revision": "9216db5781bf21249d130ec9da846c4624c16137",
+      "safetensors": null,
+      "status": "blocked",
+      "tokenizer_revision": "9216db5781bf21249d130ec9da846c4624c16137"
+    }
+  },
+  "schema_version": 1,
+  "torch_version": null,
+  "vllm_version": null
+}

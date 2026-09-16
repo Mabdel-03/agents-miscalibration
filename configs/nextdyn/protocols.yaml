@@ -1,0 +1,185 @@
+# task_conditioned_dynamics_v1 — conditions as data (plan D7, §1.5; spec 6.3, 8.4, 9.1, 9.5, 10.1, 10.3, 10.4, 11.1).
+#
+# Loaded by agents_scaling.nextdyn.protocols.load_registry (WP2).  Two kinds of condition:
+#   episodes:  VisibilitySpec {own_draft, graph{kind, ref{name, params}}, packet_content, filler, template,
+#              schedule (only `synchronous` is admitted), display_label, legacy_alias, equivalent_to, enabled}
+#   receivers: ReceiverSpec {packet_content, support, checker, draft_role, phases, templates, display_label,
+#              legacy_alias, equivalent_to, enabled}
+# The condition hash is ids.condition_hash(identity_object()) with the label keys excluded, so
+# IN1_OUT1 hashes equal to PEER (its resolved graph is complete) and the planner emits a
+# reuse_of cell instead of dispatching it (plan §1.3).  Graph params may reference $focal
+# (RootTeam.focal_slot), $protected (blind protect slot), $perm_once / $perm_round (blind ring
+# permutations); a spec is team-independent and its hash is stable.
+# Edge counts at N=5: IN1_OUT1 20, IN0_OUT1 16, IN1_OUT0 16, IN0_OUT0 12 (asserted by test_graphs).
+
+episodes:
+  PRIVATE:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: empty, params: {}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: PRIVATE
+    legacy_alias: R_PRIVATE
+    equivalent_to: null
+    enabled: true
+  PEER:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: complete, params: {}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: PEER
+    legacy_alias: C_FULL
+    equivalent_to: null
+    enabled: true
+  FRESH:
+    own_draft: false
+    graph: {kind: fixed, ref: {name: empty, params: {}}}
+    packet_content: full
+    filler: none
+    template: root
+    schedule: synchronous
+    display_label: FRESH
+    legacy_alias: FRESH_N
+    equivalent_to: null
+    enabled: true
+  PEER_ANSWER_ONLY:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: complete, params: {}}}
+    packet_content: answer_only
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: PEER_ANSWER_ONLY
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  IN1_OUT1:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: focal_channels, params: {focal: $focal, incoming: true, outgoing: true}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: IN1_OUT1
+    legacy_alias: null
+    equivalent_to: PEER                 # resolved graph == complete(n); byte-identical prompts (spec 10.1 explicit reuse)
+    enabled: true
+  IN0_OUT1:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: focal_channels, params: {focal: $focal, incoming: false, outgoing: true}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: IN0_OUT1
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  IN1_OUT0:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: focal_channels, params: {focal: $focal, incoming: true, outgoing: false}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: IN1_OUT0
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  IN0_OUT0:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: focal_channels, params: {focal: $focal, incoming: false, outgoing: false}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: IN0_OUT0
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  IN0_OUT1_FILLED:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: focal_channels, params: {focal: $focal, incoming: false, outgoing: true}}}
+    packet_content: full
+    filler: inert_length_matched
+    template: revision
+    schedule: synchronous
+    display_label: IN0_OUT1_FILLED
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  IN1_OUT0_FILLED:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: focal_channels, params: {focal: $focal, incoming: true, outgoing: false}}}
+    packet_content: full
+    filler: inert_length_matched
+    template: revision
+    schedule: synchronous
+    display_label: IN1_OUT0_FILLED
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  RANDOM_PROTECT:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: protect_slot, params: {slot: $protected}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: RANDOM_PROTECT
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true
+  RING_FIXED:
+    own_draft: true
+    graph: {kind: fixed, ref: {name: ring_fixed, params: {perm: $perm_once}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: RING_FIXED
+    legacy_alias: null
+    equivalent_to: null
+    enabled: true                       # expressible (E3b), dispatched only when experiments.E3b.enabled
+  RING_REWIRED:
+    own_draft: true
+    graph: {kind: per_round, ref: {name: ring_fixed, params: {perm: $perm_round}}}
+    packet_content: full
+    filler: none
+    template: revision
+    schedule: synchronous
+    display_label: RING_REWIRED
+    legacy_alias: null
+    equivalent_to: null
+    enabled: false
+
+# Receiver grid (spec 9.1 E2a one-call, 9.4/9.5 E2b two-phase).  `support` is the endorsement
+# cue for the correct candidate (1:4 = correct minority, 4:1 = correct majority, hidden);
+# `draft_role` is the assigned working draft; `phases: 1` = decision only at the full cap B.
+receivers:
+  E2A_1_4_CORRECT:  {packet_content: full, support: "1:4",  checker: false, draft_role: correct, phases: 1, templates: [receiver_decision], display_label: E2A_1_4_CORRECT,  legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_1_4_WRONG:    {packet_content: full, support: "1:4",  checker: false, draft_role: wrong,   phases: 1, templates: [receiver_decision], display_label: E2A_1_4_WRONG,    legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_4_1_CORRECT:  {packet_content: full, support: "4:1",  checker: false, draft_role: correct, phases: 1, templates: [receiver_decision], display_label: E2A_4_1_CORRECT,  legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_4_1_WRONG:    {packet_content: full, support: "4:1",  checker: false, draft_role: wrong,   phases: 1, templates: [receiver_decision], display_label: E2A_4_1_WRONG,    legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_HIDDEN_CORRECT: {packet_content: full, support: hidden, checker: false, draft_role: correct, phases: 1, templates: [receiver_decision], display_label: E2A_HIDDEN_CORRECT, legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_HIDDEN_WRONG:   {packet_content: full, support: hidden, checker: false, draft_role: wrong,   phases: 1, templates: [receiver_decision], display_label: E2A_HIDDEN_WRONG,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_CONTROL_CORRECT: {packet_content: none, support: hidden, checker: false, draft_role: correct, phases: 1, templates: [receiver_decision], display_label: E2A_CONTROL_CORRECT, legacy_alias: null, equivalent_to: null, enabled: true}
+  E2A_CONTROL_WRONG:   {packet_content: none, support: hidden, checker: false, draft_role: wrong,   phases: 1, templates: [receiver_decision], display_label: E2A_CONTROL_WRONG,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_1_4_NOCHECK_CORRECT: {packet_content: full, support: "1:4",  checker: false, draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_1_4_NOCHECK_CORRECT, legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_1_4_NOCHECK_WRONG:   {packet_content: full, support: "1:4",  checker: false, draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_1_4_NOCHECK_WRONG,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_1_4_CHECK_CORRECT:   {packet_content: full, support: "1:4",  checker: true,  draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_1_4_CHECK_CORRECT,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_1_4_CHECK_WRONG:     {packet_content: full, support: "1:4",  checker: true,  draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_1_4_CHECK_WRONG,     legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_4_1_NOCHECK_CORRECT: {packet_content: full, support: "4:1",  checker: false, draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_4_1_NOCHECK_CORRECT, legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_4_1_NOCHECK_WRONG:   {packet_content: full, support: "4:1",  checker: false, draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_4_1_NOCHECK_WRONG,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_4_1_CHECK_CORRECT:   {packet_content: full, support: "4:1",  checker: true,  draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_4_1_CHECK_CORRECT,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_4_1_CHECK_WRONG:     {packet_content: full, support: "4:1",  checker: true,  draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_4_1_CHECK_WRONG,     legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_HIDDEN_NOCHECK_CORRECT: {packet_content: full, support: hidden, checker: false, draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_HIDDEN_NOCHECK_CORRECT, legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_HIDDEN_NOCHECK_WRONG:   {packet_content: full, support: hidden, checker: false, draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_HIDDEN_NOCHECK_WRONG,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_HIDDEN_CHECK_CORRECT:   {packet_content: full, support: hidden, checker: true,  draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_HIDDEN_CHECK_CORRECT,   legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_HIDDEN_CHECK_WRONG:     {packet_content: full, support: hidden, checker: true,  draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_HIDDEN_CHECK_WRONG,     legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_CONTROL_CORRECT: {packet_content: none, support: hidden, checker: false, draft_role: correct, phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_CONTROL_CORRECT, legacy_alias: null, equivalent_to: null, enabled: true}
+  E2B_CONTROL_WRONG:   {packet_content: none, support: hidden, checker: false, draft_role: wrong,   phases: 2, templates: [receiver_plan, receiver_decision], display_label: E2B_CONTROL_WRONG,   legacy_alias: null, equivalent_to: null, enabled: true}

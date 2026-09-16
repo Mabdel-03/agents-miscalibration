@@ -1,0 +1,43 @@
+# task_conditioned_dynamics_v1 — analysis profiles (spec 14, 16.1; plan §1.9, §4).
+#
+# `confirmatory` is complete; `test` overrides leaves of it (a key the confirmatory profile
+# does not declare is refused).  Compiled by agents_scaling.nextdyn.config.load_analysis().
+# Frozen at S3 into analysis_lock_hash; the efficiency reference cost and the reliability bins
+# are null until the pilot cost profile / dev calibration fix them (never guessed here).
+# Holm's n_primary is len(study.analysis.primary_hypotheses), its alpha is
+# study.analysis.familywise_alpha, and the power-planning alpha is familywise_alpha / n_primary:
+# all three are computed by stats/power from study.yaml, never re-typed here (R1).
+
+profiles:
+  confirmatory:
+    n_resamples: 10000
+    bootstrap_seed_label_rule: "ard.stats.analysis_seed(study_seed_hex, hypothesis_id)"
+    families: {MATH: 1.0, MMLU_PRO: 1.0, TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE: 1.0}   # equal weights
+    difficulty_cutpoints: [0.2, 0.5, 0.8]
+    reliability_bins: null                        # fixed dev bins, set after the pilot
+    confidence_weighted:
+      mapping: task_dev_root_success_rate
+      fallback: global_dev_base_rate
+      min_task_support: 10
+      missing_confidence_weight: global_dev_base_rate
+      complete_confidence_sensitivity: true
+    equivalence_margin_pp: 5
+    secondary_fdr_q: 0.10
+    min_clusters_for_test: 30                     # below: estimation_only
+    webb_below_clusters: 10                       # Webb weights below 10 clusters
+    posterior_draws: 200
+    passk_ks: [1, 3, 5, 10, 25]
+    efficiency:
+      reference_cost: null                        # 5 roots + one PEER update + plurality, from pilot cost_profile.json at S3
+      budget_levels: [0.5, 1, 2]
+      truncation_rule: last_complete_round
+    power:
+      n_values: [150, 200, 300, 450, 600]
+      n_sims: 1000
+      target: 0.8
+  test:
+    n_resamples: 200
+    posterior_draws: 5
+    power:
+      n_sims: 10
+      n_values: [4]

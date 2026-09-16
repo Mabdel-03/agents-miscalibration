@@ -1,0 +1,305 @@
+# task_conditioned_dynamics_v1 — committed study manifest (spec 17.4, extended per the plan).
+#
+# Spec: expermt_agent_specs/taskCondAgentDynV1/task_conditioned_agent_dynamics_experiment_spec_v1_0.md
+# Plan: ~/.claude/plans/please-flesh-out-the-velvet-brooks.md
+# Contract: docs/nextdyn/00_contract.md; shapes: src/agents_scaling/nextdyn/contract.py
+#
+# Compiled by agents_scaling.nextdyn.config.load_study(): every key here maps onto a dataclass
+# field of the same name, unknown keys are refused, every leaf has a declared consumer
+# (config.CONSUMERS).  Null lock/budget fields are INTENTIONAL launch blockers, not values to
+# fill with guesses: the compiler refuses `mode: confirmation` while any of them is null.
+# No experimental number lives in code; every value the package uses comes from this file,
+# compute.yaml, analysis.yaml, protocols.yaml or compositions.yaml.
+# One fact, one declaration (R1): a number that has a home elsewhere is not repeated here
+# (tests/nextdyn/test_guards.py::test_no_fact_is_declared_twice_across_the_configs lists the
+# forbidden pairs); a non-null locks.*_lock_hash must equal sha256 of the lock file beside
+# this file (the .sha256 sidecars are a convenience, never the pin).
+
+study:
+  id: task_conditioned_dynamics_v1
+  schema_version: 1
+  spec_version: "1.0"
+  contract_version: 1
+  mode: pilot_only                 # test | pilot_only | confirmation
+  confirmation_authorized: false
+
+seeds:
+  # Generated ONCE with secrets.token_hex(32) on 2026-09-15 and never regenerated
+  # (spec §17.2 cache identity).  Deliberately independent of ard36's and study_v4's seeds:
+  # no nextdyn request may alias an ARD36 or study_v4 request (plan D4).
+  study_seed_hex: d158789970caf885c88a3bcb3a9050875c945060c0976bfcc0079006e0bb3720
+  split_salt_hex: c09abf9510ff3e5a705aef09052b287ff6eee3ad9edc926903ae89fefa860880
+
+# Lock hashes: null until `lock-inputs` / `inventory` / `freeze` fill them.  The lock files
+# themselves live beside this file (models.lock.json, datasets.lock.json, prompts.lock.json).
+locks:
+  models_lock_hash: null
+  datasets_lock_hash: null
+  prompts_lock_hash: null
+  source_inventory_hash: null
+  prior_use_inventory_hash: null
+  git_commit: null
+  container_digests: null
+
+# Model cells (spec 5.4).  Revisions are the pinned snapshots verified in the offline HF cache
+# (configs/ard36.yaml; one snapshot, one tokenizer blob: <think>=151667, </think>=151668).
+# Profiles nd1-8B (tp1) / nd1-32B (tp2; crc32 port bases 8884/8083, serving/profiles.py) serve a 32,768-token window (plan D5).
+# `lane` is the generation lane (8B | 32B), a scale class independent of the served name, so
+# the Llama entry compiles onto the 8B lane and blocks only at request time (plan D11).
+# `thinking_tokens` is the spec-17.4 trap field: the ONLY admitted value is null.  On the
+# envelope adapter a value is the spec's error; on a native cell it would be a per-cell
+# override nothing implements in v1 (the one native cap is budgets.thinking_tokens_main).
+# `total_output_tokens` is the envelope adapter's single cap (spec 5.6) and rides on
+# contract.ModelCell; it must be null on a native-thinking cell.
+models:
+  primary:
+    model_id: Qwen/Qwen3-8B
+    revision: b968826d9c46dd6066d109eabc6255188de91218
+    tokenizer_revision: b968826d9c46dd6066d109eabc6255188de91218
+    adapter: native_thinking
+    profile: nd1-8B
+    tp: 1
+    served_model_name: 8B
+    lane: 8B
+    enabled: true
+    thinking_tokens: null
+    total_output_tokens: null
+  scale:
+    model_id: Qwen/Qwen3-32B
+    revision: 9216db5781bf21249d130ec9da846c4624c16137
+    tokenizer_revision: 9216db5781bf21249d130ec9da846c4624c16137
+    adapter: native_thinking
+    profile: nd1-32B
+    tp: 2
+    served_model_name: 32B
+    lane: 32B
+    enabled: true
+    thinking_tokens: null
+    total_output_tokens: null
+  family_transfer:
+    # Weights absent (gated); NOT_RUN by amendment A4.  Compiles, never dispatched.
+    model_id: meta-llama/Llama-3.1-8B-Instruct
+    revision: null
+    tokenizer_revision: null
+    adapter: total_output_envelope
+    profile: nd1-llama-8B
+    tp: 1
+    served_model_name: llama8B
+    lane: 8B
+    enabled: false
+    thinking_tokens: null
+    total_output_tokens: 3072
+  qwen_nonthinking:
+    # Spec 5.6 companion: Qwen3-8B with enable_thinking=false at the same total output envelope.
+    model_id: Qwen/Qwen3-8B
+    revision: b968826d9c46dd6066d109eabc6255188de91218
+    tokenizer_revision: b968826d9c46dd6066d109eabc6255188de91218
+    adapter: total_output_envelope
+    profile: nd1-8B
+    tp: 1
+    served_model_name: 8B
+    lane: 8B
+    enabled: false
+    thinking_tokens: null
+    total_output_tokens: 3072
+
+# Spec 5.5 (official Qwen thinking guidance; caps are experimental choices).
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  min_p: 0.0
+  repetition_penalty: 1.0
+  presence_penalty: 0.0
+  frequency_penalty: 0.0
+
+budgets:
+  thinking_tokens_main: 2048            # vLLM thinking_token_budget; max_tokens = 1+2048+1+1024 = 3074 (A1)
+  final_phase_tokens_main: 1024
+  receiver_thinking_tokens: [1024, 4096]   # B; each E2b phase gets B/2 (spec 9.4)
+  receiver_plan_final_tokens: 256
+  receiver_decision_final_tokens: 512
+  served_window_tokens: 32768
+  context_reserve_tokens: 256
+  public_packet_token_cap: 512          # transmitted packet cap, sender's tokenizer (spec 6.1)
+  public_rationale_token_cap: 256       # recorded as flags, never rewritten
+  claims_max: 4
+  claim_token_cap: 64
+  campaign_gpu_hours: null              # spec 16.4: authorized at freeze (plan proposes 670)
+  campaign_cpu_hours: null              # (plan proposes 120)
+  campaign_api_currency_limit: null     # no paid API in this study
+  storage_limit_bytes: null             # (plan proposes 200 GB)
+  compute_reserve_fraction: 0.15
+  storage_reserve_fraction: 0.20
+
+cohorts:
+  families: [MATH, MMLU_PRO, TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE]
+  pilot_items_per_family: 60
+  pilot_eligibility_extensions: [120, 180]
+  pilot_min_paired_items: 20            # spec 14.3: below this the extension rule fires
+  natural_target_per_family: 200        # also the size of the natural random-protection panel (spec 10.4)
+  constructed_target_per_family: 300
+  paired_compositions: [C1_COHERENT, C4_COHERENT]
+  fragmented_composition: C1_FRAGMENTED
+  allow_natural_constructed_item_overlap: true
+  allow_pilot_confirmation_overlap: false
+  donor_initial_draws: 32
+  donor_max_draws: 64
+  difficulty_draws: 16
+  natural_root_draws: 5
+  natural_frame_prior_use: [reserved_unused, unknown]   # plan D19 natural frame rule
+  # Hash-selected sub-panels (plan §1.4 item_splits), prefixes of rank_key(split_salt, "sub:<name>:"+id).
+  # Only the panels with no other home are sized here: the E3a panel is
+  # experiments.E3a.target_items_per_task, capture is instrumentation.target_items_per_task,
+  # E2a is experiments.E2a.items_per_task, natural protection is natural_target_per_family (R1).
+  sub_panels:
+    second_root: 60
+    bridge: 60
+    fragmented: 100
+    e3a_fill: 60
+    capture_natural: 30
+
+protocol:
+  n_agents: 5
+  root_round: 0
+  revision_rounds: 4
+  score_rounds: [0, 1, 2, 3, 4]
+  protocols: [PRIVATE, PEER, FRESH]     # the core set E1 runs on natural AND constructed cohorts (protocols.yaml names)
+  synchronous: true
+  early_stop_on_consensus: false
+  own_previous_public_draft: true
+  visible_history: previous_round_only
+  native_thinking_shared: false
+  confidence_shared: false
+  final_phase_constrained_decoding: false   # guided decoding is accepted but not enforced on vLLM 0.21 (D6)
+  full_archive_stored_externally: true
+
+selection:
+  primary: current_round_plurality
+  pool_scope: terminal_only
+  tie_break: item_class_hash            # min sha256(JCS([source_item_id, canonical_class, selection_seed]))
+  synthesis_allowed: false
+  gold_access: false
+  secondary_deployed: [random_valid, confidence_weighted, pointwise_audit]
+  analysis_only: [oracle_analysis]      # never in a deployed list (spec 17.4 compile rule)
+  audit_model: scale
+  audit_thinking_tokens: 1024
+  audit_final_tokens: 256
+  audit_failure_fallback: current_round_plurality
+  archive_audit_enabled: false
+
+experiments:
+  E0:
+    enabled: true
+    bcb_array_cells: 40
+  E1:
+    enabled: true
+    bridge_protocol: PEER_ANSWER_ONLY   # the answer-only bridge panel (sub_panels.bridge); core protocols: protocol.protocols
+  E2a:
+    enabled: true
+    items_per_task: 100
+    tasks: [MATH, MMLU_PRO]
+    replicates: 2
+    models: [primary, scale]
+  E2b:
+    enabled: true
+    source_problems: 300
+    total_displayed_operations: 24
+    chain_depths: [4, 12, 24]
+    modulus: 97
+    # The declared grid (spec 17.4 names).  protocols.yaml `receivers:` instantiates exactly this
+    # product through config.E2B_ENDORSEMENT_SUPPORT (correct_minority -> "1:4", correct_majority
+    # -> "4:1"); the compiler refuses a mismatch.
+    endorsement: [correct_minority, correct_majority, hidden]
+    checker_access: [false, true]
+    initial_draft: [correct, wrong]
+    replicates: 2
+    max_checks: 4
+    generation_phases: 2
+    models: [primary, scale]
+  E3a:
+    enabled: true
+    target_items_per_task: 150
+    arms: [IN1_OUT1, IN0_OUT1, IN1_OUT0, IN0_OUT0]
+    filled_arms: [IN0_OUT1_FILLED, IN1_OUT0_FILLED]
+    natural_random_protection: true
+    protection_protocol: RANDOM_PROTECT
+  E3b:
+    enabled: false                      # expressible, not dispatched (plan D11)
+    ring_protocols: [RING_FIXED, RING_REWIRED]
+    team_sizes: [3, 9]
+    horizon_rounds: 8
+    horizon_score_rounds: [0, 1, 2, 3, 4, 8]
+    budgets: [1024, 4096]
+  E3c:
+    enabled: false
+    model: scale
+    native_init: true
+  E3C_FAMILY:
+    enabled: false
+    models: [qwen_nonthinking, family_transfer]
+  E4:
+    enabled: false
+
+instrumentation:
+  enabled: true
+  target_items_per_task: 100            # also the size of the capture sub-panel (plan §1.4)
+  capture_all_root_agents: true
+  anchors: [PROMPT_END, PRE_FINAL, ANSWER_END]
+  relative_layers: [0.25, 0.50, 0.75]
+  mode: read_only_replay
+  intervention_enabled: false
+  protocols: [PRIVATE, PEER]
+
+# Spec 19.1 exact pilot dispatch subset + the `validate --smoke` sizes (plan §3.1).  The pilot
+# planner reads these; nothing in plan.py hard-codes a pilot number.
+pilot:
+  natural_items_per_family: 20          # first hash-selected pilot items per task, 5 roots, PRIVATE/PEER/FRESH
+  constructed_paired_items_per_family: 30   # <= 30 paired-eligible per task, both compositions, 3 protocols
+  directional_items_per_family: 10      # first 10 paired-eligible per task, all four directed arms
+  natural_receiver_items: 10            # per task in natural_receiver_tasks, full grid, one seed, primary
+  natural_receiver_tasks: [MATH, MMLU_PRO]
+  synthetic_receiver_problems: 30       # ten per depth, full grid, one seed, primary
+  adapter_check_problems: 12            # fixed 12-problem 32B adapter check, four per depth
+  capture_items_per_family: 10          # first 10 eligible pilot items per task under PRIVATE and PEER
+  smoke_solver_calls_per_model: 20      # validate --smoke: per model/adapter incl. the non-thinking companion
+  smoke_receiver_episodes: 5            # validate --smoke: complete synthetic receiver episodes
+
+# Spec 18.6 pilot-gate operational targets (design-quality targets; never grounds to delete
+# confirmation examples).  Rates are fractions of decisions; the differential is in pp and
+# applies to both the infrastructure-failure rate and the continuation rate (plan D5).
+gates:
+  max_unresolved_infra_rate: 0.01
+  max_format_failure_rate: 0.02
+  max_arm_differential_pp: 1.0
+
+analysis:
+  primary_hypotheses: [H1, H2, H3, H4, H5, H6, H7, H8]
+  primary_endpoint_round: 4
+  familywise_alpha: 0.05
+  multiplicity: holm
+  cluster: source_item_id
+  paired: true
+  task_summary_weights: equal
+  semantic_correctness_states: [C, W, U]
+  missingness_bounds_required: true
+  power_target: 0.80
+  confirmatory_sample_size_lock: null   # from power_lock.json at S3
+  analysis_lock_hash: null              # sha256(analysis.yaml || analysis/stats/outcomes/panels/calib digests)
+  profile: confirmatory                 # analysis.yaml profile (tests use `test`)
+
+failure_policy:
+  transient_retries: 2
+  retry_same_request_and_seed: true
+  model_output_repair_calls: 0
+  wrong_answer_retry: false
+  context_overflow: typed_failure
+  unresolved_semantics: unknown
+  null_item_ids: fatal
+  duplicate_logical_keys: fatal
+  hidden_label_leakage: fatal
+
+# Applied only when study.mode == test (tests/nextdyn/conftest.py loads mode="test").
+test_mode:
+  revision_rounds: 2
+  score_rounds: [0, 1, 2]

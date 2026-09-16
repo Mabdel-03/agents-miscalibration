@@ -1,0 +1,186 @@
+"""Locks: sidecars verified, null fields fail closed, drift fails closed, the verb reports
+models / prompts / datasets separately."""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pytest
+import yaml
+
+from agents_scaling.nextdyn import config as C
+from agents_scaling.nextdyn import locks as L
+from agents_scaling.nextdyn.cli import Report
+from agents_scaling.nextdyn.errors import LockError
+
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs" / "nextdyn"
+ORG, NAME, REV = "FakeOrg", "Fake-8B", "0123456789abcdef0123456789abcdef01234567"
+
+
+def _fake_hf_home(tmp_path: Path, *, n_shards: int = 2, chat_template: str = "{{ messages }}") -> Path:
+    home = tmp_path / "hf"
+    repo = home / "hub" / f"models--{ORG}--{NAME}"
+    blobs = repo / "blobs"
+    snap = repo / "snapshots" / REV
+    blobs.mkdir(parents=True)
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text(json.dumps({"num_hidden_layers": 36, "architectures": ["Qwen3ForCausalLM"]}))
+    (snap / "tokenizer_config.json").write_text(json.dumps({"chat_template": chat_template}))
+    for i in range(n_shards):
+        content = f"shard-{i}".encode()
+        sha = hashlib.sha256(content).hexdigest()
+        (blobs / sha).write_bytes(content)
+        os.symlink(f"../../blobs/{sha}", snap / f"model-{i + 1:05d}-of-{n_shards:05d}.safetensors")
+    return home
+
+
+def _fake_cfg(tmp_path: Path, *, enabled: bool = True, revision: str | None = REV) -> Path:
+    data = yaml.safe_load((CONFIG_DIR / "study.yaml").read_text())
+    data["models"] = {
+        "primary": {**data["models"]["primary"], "model_id": f"{ORG}/{NAME}", "revision": revision,
+                    "tokenizer_revision": revision, "enabled": enabled},
+        "scale": {**data["models"]["scale"], "model_id": f"{ORG}/{NAME}", "revision": revision,
+                  "tokenizer_revision": revision, "enabled": False},
+    }
+    data["experiments"]["E3C_FAMILY"]["models"] = ["scale"]
+    data["experiments"]["E3c"]["model"] = "scale"
+    path = tmp_path / "study.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    (tmp_path / "compute.yaml").write_text((CONFIG_DIR / "compute.yaml").read_text())
+    return path
+
+
+def test_lock_round_trip_verifies_the_sidecar(tmp_path):
+    lock = L.load_models_lock(CONFIG_DIR / "models.lock.json")
+    assert lock.schema_version == L.LOCK_SCHEMA_VERSION and lock.locked_at is None
+    assert set(lock.models) == {"primary", "scale", "family_transfer", "qwen_nonthinking"}
+    assert all(e.status == L.MODEL_STATUS_BLOCKED for e in lock.models.values())
+    path = tmp_path / "models.lock.json"
+    sha = L.write_models_lock(path, lock)
+    assert (tmp_path / "models.lock.json.sha256").read_text().split()[0] == sha
+    assert L.load_models_lock(path) == lock
+    path.write_text(path.read_text().replace('"blocked"', '"locked"', 1))
+    with pytest.raises(LockError, match="drift"):
+        L.load_models_lock(path)
+    with pytest.raises(LockError):
+        L.load_models_lock(tmp_path / "nope.lock.json")
+
+
+def test_skeleton_locks_have_null_fields_and_fail_closed(tmp_path):
+    models = L.load_models_lock(CONFIG_DIR / "models.lock.json")
+    with pytest.raises(LockError):
+        L.verify_models_lock(models, tmp_path, required=["primary"])
+    prompts = L.load_prompts_lock(CONFIG_DIR / "prompts.lock.json")
+    assert prompts.templates == {} and prompts.continuation_prefill_sha256 is None
+    with pytest.raises(LockError, match="skeleton"):
+        L.verify_prompts_lock(prompts, tmp_path, "x")
+    datasets = L.load_datasets_lock(CONFIG_DIR / "datasets.lock.json")
+    assert set(datasets.datasets) >= {"MATH", "MMLU_PRO", "TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE", "MATH_EXPANDED", "MOD97"}
+    assert set(datasets.legacy_roots) == {"ard36", "study_v4", "full_sweep_v1"}
+    assert all(e.revision is None for e in datasets.datasets.values())
+
+
+def test_lock_models_reads_blob_names_and_verify_detects_drift(tmp_path):
+    home = _fake_hf_home(tmp_path)
+    cfg = C.load_study(_fake_cfg(tmp_path))
+    compute = C.load_compute(tmp_path / "compute.yaml")
+    lock = L.lock_models(cfg, compute, home)
+    entry = lock.models["primary"]
+    assert entry.status == L.MODEL_STATUS_LOCKED and entry.n_layers == 36
+    assert entry.safetensors == {f"model-{i + 1:05d}-of-00002.safetensors": hashlib.sha256(f"shard-{i}".encode()).hexdigest()
+                                 for i in range(2)}
+    assert entry.chat_template_sha256 == hashlib.sha256(b"{{ messages }}").hexdigest()
+    assert entry.config_sha256 == hashlib.sha256((home / "hub" / f"models--{ORG}--{NAME}" / "snapshots" / REV / "config.json").read_bytes()).hexdigest()
+    assert lock.vllm_version == "0.21.0" and entry.dtype == "bfloat16" and entry.reasoning_parser == "qwen3"
+    assert lock.models["scale"].status == L.MODEL_STATUS_LOCKED    # disabled but cached -> locked anyway
+    L.verify_models_lock(lock, home)
+
+    # config drift
+    snap = home / "hub" / f"models--{ORG}--{NAME}" / "snapshots" / REV
+    (snap / "config.json").write_text(json.dumps({"num_hidden_layers": 36, "x": 1}))
+    with pytest.raises(LockError, match="config.json drifted"):
+        L.verify_models_lock(lock, home)
+    (snap / "config.json").write_text(json.dumps({"num_hidden_layers": 36, "architectures": ["Qwen3ForCausalLM"]}))
+    # shard drift: re-point a symlink at another blob
+    shard = snap / "model-00002-of-00002.safetensors"
+    shard.unlink()
+    other = hashlib.sha256(b"other").hexdigest()
+    (snap.parent.parent / "blobs" / other).write_bytes(b"other")
+    os.symlink(f"../../blobs/{other}", shard)
+    with pytest.raises(LockError, match="safetensors shards drifted"):
+        L.verify_models_lock(lock, home)
+    # chat template drift
+    shard.unlink()
+    os.symlink(f"../../blobs/{hashlib.sha256(b'shard-1').hexdigest()}", shard)
+    (snap / "tokenizer_config.json").write_text(json.dumps({"chat_template": "{{ other }}"}))
+    with pytest.raises(LockError, match="chat template drifted"):
+        L.verify_models_lock(lock, home)
+    # a null pin fails closed
+    nulled = dataclasses.replace(lock, models={**lock.models, "primary": dataclasses.replace(entry, config_sha256=None)})
+    with pytest.raises(LockError, match="config_sha256 is null"):
+        L.verify_models_lock(nulled, home)
+
+
+def test_enabled_model_without_weights_cannot_lock(tmp_path):
+    home = tmp_path / "empty_hf"
+    home.mkdir()
+    cfg = C.load_study(_fake_cfg(tmp_path))
+    compute = C.load_compute(tmp_path / "compute.yaml")
+    with pytest.raises(LockError, match="enabled model cell 'primary'"):
+        L.lock_models(cfg, compute, home)
+    disabled = C.load_study(_fake_cfg(tmp_path, enabled=False))
+    lock = L.lock_models(disabled, compute, home)
+    assert lock.models["primary"].status == L.MODEL_STATUS_BLOCKED and "not a cached snapshot" in lock.models["primary"].blocked_reason
+    with pytest.raises(LockError, match="blocked"):
+        L.verify_models_lock(lock, home, required=["primary"])
+    unpinned = C.load_study(_fake_cfg(tmp_path, enabled=False, revision=None))
+    assert "no pinned revision" in L.lock_models(unpinned, compute, home).models["primary"].blocked_reason
+
+
+def test_lock_prompts_hashes_every_template_and_the_prefill(tmp_path):
+    templates = tmp_path / "templates"
+    (templates / "sub").mkdir(parents=True)
+    (templates / "root.txt").write_text("SYSTEM\nSolve.")
+    (templates / "sub" / "filler_words.txt").write_text("alpha beta")
+    prefill = '\n\n{\n  "reasoning": "'
+    lock = L.lock_prompts(templates, prefill)
+    assert set(lock.templates) == {"root.txt", "sub/filler_words.txt"}
+    assert lock.templates["root.txt"] == hashlib.sha256(b"SYSTEM\nSolve.").hexdigest()
+    assert lock.continuation_prefill_sha256 == hashlib.sha256(prefill.encode()).hexdigest()
+    L.verify_prompts_lock(lock, templates, prefill)
+    (templates / "root.txt").write_text("SYSTEM\nSolve!")
+    with pytest.raises(LockError, match="template hashes drifted"):
+        L.verify_prompts_lock(lock, templates, prefill)
+    with pytest.raises(LockError):
+        L.lock_prompts(tmp_path / "missing", prefill)
+    with pytest.raises(LockError):
+        L.lock_prompts(templates, "")
+
+
+def test_lock_inputs_verb_reports_models_prompts_and_datasets_separately(tmp_path, monkeypatch):
+    home = _fake_hf_home(tmp_path)
+    cfg_path = _fake_cfg(tmp_path)
+    report = L.lock_inputs_main(["--config", str(cfg_path), "--hf-home", str(home)])
+    assert isinstance(report, Report)
+    assert report.completed == 1                        # models locked
+    assert report.failed == 0
+    assert report.blocked == 2                          # prompts (WP2/WP1 pending) and datasets (WP3 pending)
+    assert "prompts blocked" in report.detail and "datasets blocked" in report.detail
+    written = L.load_models_lock(tmp_path / "models.lock.json")
+    assert written.models["primary"].status == L.MODEL_STATUS_LOCKED
+    assert (tmp_path / "models.lock.json.sha256").exists()
+    assert report.exit_code("lock-inputs") == 2
+
+
+def test_hf_home_defaults_to_the_data_filesystem(monkeypatch):
+    monkeypatch.delenv(L.HF_HOME_ENV, raising=False)
+    assert str(L.hf_home()).startswith("/orcd/data/")
+    monkeypatch.setenv(L.HF_HOME_ENV, "/tmp/elsewhere")
+    assert L.hf_home() == Path("/tmp/elsewhere")
+    assert L.snapshot_dir("/x", "Qwen/Qwen3-8B", "abc") == Path("/x/hub/models--Qwen--Qwen3-8B/snapshots/abc")
+    with pytest.raises(LockError):
+        L.snapshot_dir("/x", "Qwen3-8B", "abc")

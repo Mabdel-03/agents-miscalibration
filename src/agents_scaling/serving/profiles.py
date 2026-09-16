@@ -140,6 +140,37 @@ for _ard_name, _ard_size, _ard_tp in (
     )
 
 
+# --------------------------------------------------------------------------- nextdyn
+# task_conditioned_dynamics_v1 (plan D5): two dedicated 32K profiles so both compared
+# models are served at the SAME window (spec 5.5: never quietly give only 32B a smaller
+# window).  ``max_model_len`` is 32,768: worst-case revision prompt (~3.1k) + 1 + 2,048
+# thinking + 1 + 1,024 final + 256 reserve is ~6.5k, so the window never binds; it is the
+# declared served window, not a KV budget.  32B is TP2 everywhere: TP1 at 32K is the
+# documented KV OOM, and ``tp`` enters ``engine_digest`` so one profile has one digest.
+# The names are chosen for their crc32 port bases (nd1-8B -> 8884, nd1-32B -> 8083), each
+# >= 25 clear of every existing profile; ``nextdyn-32B`` would have landed on 8301, one
+# port from ``0.6B`` (8302).  ``--max-num-seqs`` is NOT a profile property here: it varies
+# by GPU type and is passed per replica by ``nextdyn.fleet`` (``compute.yaml``).
+NEXTDYN_MAX_MODEL_LEN = 32768
+NEXTDYN_SMALL_PROFILE = "nd1-8B"
+NEXTDYN_LARGE_PROFILE = "nd1-32B"
+NEXTDYN_PROFILES = (NEXTDYN_SMALL_PROFILE, NEXTDYN_LARGE_PROFILE)
+
+for _nd_name, _nd_size, _nd_tp in (
+    (NEXTDYN_SMALL_PROFILE, "8B", 1),
+    (NEXTDYN_LARGE_PROFILE, "32B", 2),
+):
+    SERVING_PROFILES[_nd_name] = ServingProfile(
+        name=_nd_name,
+        model_size=_nd_size,
+        hf_id=REGISTRY[_nd_size].hf_id,
+        tp_size=_nd_tp,
+        max_model_len=NEXTDYN_MAX_MODEL_LEN,
+        # The OpenAI model name stays the scientific model size (same rule as ARD36).
+        served_model_name=_nd_size,
+    )
+
+
 def get_serving_profile(name: str) -> ServingProfile:
     """Return a named serving profile, raising a useful error for unknown names."""
     try:

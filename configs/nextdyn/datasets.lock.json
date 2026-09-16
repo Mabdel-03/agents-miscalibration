@@ -1,0 +1,88 @@
+{
+  "datasets": {
+    "MATH": {
+      "config_name": null,
+      "file_path": null,
+      "file_sha256": null,
+      "filters": null,
+      "n_overlap_removed": null,
+      "n_rows": null,
+      "option_count_histogram": null,
+      "repo_id": null,
+      "revision": null,
+      "row_content_sha256": null,
+      "split": null
+    },
+    "MATH_EXPANDED": {
+      "config_name": null,
+      "file_path": null,
+      "file_sha256": null,
+      "filters": null,
+      "n_overlap_removed": null,
+      "n_rows": null,
+      "option_count_histogram": null,
+      "repo_id": null,
+      "revision": null,
+      "row_content_sha256": null,
+      "split": null
+    },
+    "MMLU_PRO": {
+      "config_name": null,
+      "file_path": null,
+      "file_sha256": null,
+      "filters": null,
+      "n_overlap_removed": null,
+      "n_rows": null,
+      "option_count_histogram": null,
+      "repo_id": null,
+      "revision": null,
+      "row_content_sha256": null,
+      "split": null
+    },
+    "MOD97": {
+      "config_name": null,
+      "file_path": null,
+      "file_sha256": null,
+      "filters": null,
+      "n_overlap_removed": null,
+      "n_rows": null,
+      "option_count_histogram": null,
+      "repo_id": null,
+      "revision": null,
+      "row_content_sha256": null,
+      "split": null
+    },
+    "TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE": {
+      "config_name": null,
+      "file_path": null,
+      "file_sha256": null,
+      "filters": null,
+      "n_overlap_removed": null,
+      "n_rows": null,
+      "option_count_histogram": null,
+      "repo_id": null,
+      "revision": null,
+      "row_content_sha256": null,
+      "split": null
+    }
+  },
+  "hf_home": null,
+  "legacy_roots": {
+    "ard36": {
+      "manifest_sha256": null,
+      "path": null
+    },
+    "full_sweep_v1": {
+      "manifest_sha256": null,
+      "path": null
+    },
+    "study_v4": {
+      "manifest_sha256": null,
+      "path": null
+    }
+  },
+  "locked_at": null,
+  "prior_use_inventory_hash": null,
+  "schema_version": 1,
+  "source_inventory_hash": null
+}
