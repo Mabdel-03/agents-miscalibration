@@ -246,3 +246,84 @@ def test_an_unknown_over_limits_key_is_refused():
                             raw_text="", content_hash="c:0", over_limits={"invented": True},
                             final_answer_span=None, confidence_span=None,
                             confidence_emitted_before_answer=False)
+
+
+def test_a_numeric_final_answer_is_an_answer():
+    """``{"final_answer": 314}`` is how a model writes a MATH answer, and it was thrown away.
+
+    The field was required to be a ``str``, so a complete, well-formed object whose only
+    offence was a bare number scored MISSING_FINAL.  Measured on the smoke's first 144 bank
+    draws: 20 of them, 14%.  That loss is not random -- it concentrates on numeric-answer
+    tasks -- so it would have inflated ``U`` exactly where MATH lives, widened its Manski
+    bounds against the other families, and done it silently.
+    """
+    def answered(answer_json: str):
+        return parse('{"reasoning": "because", "shareable_claims": ["a claim"], '
+                     '"final_answer": %s, "confidence": 0.75}' % answer_json)
+
+    assert answered("314").final_answer == "314"
+    assert answered("314").parse_status is ParseStatus.OK
+    assert answered("3.5").final_answer == "3.5"
+    assert answered('"314"').final_answer == "314"
+    # zero is an answer, and it is falsey -- the shape of this bug is a bare truthiness test
+    assert answered("0").final_answer == "0"
+    assert answered("0").parse_status is ParseStatus.OK
+    # and the things that are still not answers
+    for not_an_answer in ("true", "false", "null", "[1]", '{"a": 1}', '""'):
+        assert answered(not_an_answer).final_answer is None, not_an_answer
+        assert answered(not_an_answer).parse_status is ParseStatus.MISSING_FINAL
+    # the span still points at the value, so the capture anchors keep working
+    assert answered("314").final_answer_span is not None
+
+
+def test_the_escape_salvage_rule_is_source_blind_on_adversarial_fixtures():
+    """Salvage rule 2 (amendment A5): unescaped backslashes, repaired blind to content.
+
+    Measured on the smoke's first 159 bank draws: 18% of MATH draws were unparseable and every
+    one for this reason -- ordinary mathematical prose (``$ a \\equiv -1 \\mod m $``) inside the
+    ``reasoning`` string, where ``\\e`` and ``\\m`` are not JSON escapes.  MMLU-Pro and
+    TruthfulQA measured 1.000, so the loss sat in one family and would have made the H2
+    cross-family contrast partly an artifact of JSON escaping.
+    """
+    def latex(answer: str, claim: str = "the LCM of 3, 5, 7, 9 is 315"):
+        return ('{"reasoning": "rewrite as $ a \\equiv -1 \\mod m $ for each $ m $", '
+                '"shareable_claims": ["%s"], "final_answer": "%s", "confidence": 0.9}'
+                % (claim, answer))
+
+    right, wrong = parse(latex("8880")), parse(latex("0"))
+    assert right.parse_status is ParseStatus.OK and wrong.parse_status is ParseStatus.OK
+    assert (right.final_answer, wrong.final_answer) == ("8880", "0")
+    # source-blind: the repair depended on the backslashes, not on which answer was given
+    assert right.escape_repaired and wrong.escape_repaired
+    # the repair is information-preserving: the backslash the model meant is still there
+    assert "\\equiv" in right.reasoning and "\\mod" in right.reasoning
+
+    # already-valid JSON is never touched, because the rule is reached only after a failure
+    clean = parse(_ok())
+    assert clean.parse_status is ParseStatus.OK and not clean.escape_repaired
+    # valid escapes survive a repaired document byte-for-byte
+    mixed = parse('{"reasoning": "a \\equiv b, then a line\\nbreak and a \\"quote\\"", '
+                  '"shareable_claims": [], "final_answer": "7", "confidence": 0.5}')
+    assert mixed.parse_status is ParseStatus.OK and mixed.escape_repaired
+    assert "\n" in mixed.reasoning and '"quote"' in mixed.reasoning
+    assert "\\equiv" in mixed.reasoning
+
+    # and what is still a failure stays one: the rule repairs escapes, it does not invent JSON
+    for hopeless in ('{"reasoning": "x", ', "not json at all", '{"reasoning": }', "{,}"):
+        assert parse(hopeless).parse_status in (ParseStatus.INVALID_JSON, ParseStatus.NO_JSON)
+
+
+def test_a_repaired_draw_still_reports_its_spans_against_the_generated_text():
+    """The repair shifts offsets; the activation anchors must not follow it.
+
+    ``final_answer_span`` points into the token stream that was actually generated, so it is
+    measured on the original body -- a span computed on the repaired string would drift by one
+    character per doubled backslash and the capture would read the wrong tokens.
+    """
+    out = parse('{"reasoning": "a \\equiv b and \\mod c", "shareable_claims": [], '
+                '"final_answer": "314", "confidence": 0.9}')
+    assert out.escape_repaired and out.final_answer == "314"
+    assert out.final_answer_span is not None
+    raw = out.raw_text.encode("utf-8")
+    start, end = out.final_answer_span
+    assert raw[start:end].decode("utf-8").strip().strip('"') == "314"

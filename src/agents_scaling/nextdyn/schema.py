@@ -1,4 +1,4 @@
-"""The public JSON output: one shape, one parser, one salvage rule (spec 6.1; plan D6, §1.6).
+"""The public JSON output: one shape, one parser, two salvage rules (spec 6.1; plan D6, §1.6).
 
 Rule R1 says the output shape lives in exactly one place, and this is it.  ARD36 let three
 call sites decide independently what "a valid report" was, which is how a missing confidence
@@ -15,12 +15,19 @@ became ``0.5`` in one path and ``None`` in another.  Here every consumer reads
 * the thinking span is never read here.  :func:`split_native_reasoning` separates it from
   the final text once, from token ids, and the parser only ever sees the final text.
 
-The **one** salvage rule (source-blind, documented, tested on adversarial fixtures): if the
-final text is not itself JSON, and stripping whitespace leaves exactly one Markdown fenced
-block with nothing outside it, the fence body is parsed.  Everything else is a parse failure.
-The rule looks only at the *shape* of the text, never at what the fields say, so a fenced
-wrong answer and a fenced right answer are salvaged identically
+The salvage rules are source-blind, documented, and tested on adversarial fixtures.  Both look
+only at the *shape* of the text, never at what the fields say, so a wrong answer and a right
+answer are salvaged identically
 (``test_parse_salvage_rule_is_source_blind_on_adversarial_fixtures``).
+
+1. **The fence rule.**  If the final text is not itself JSON, and stripping whitespace leaves
+   exactly one Markdown fenced block with nothing outside it, the fence body is parsed.
+2. **The escape rule** (:func:`repair_escapes`, amendment A5).  If the body does not parse, any
+   backslash not beginning one of the eight JSON escapes is doubled and the parse is retried
+   once.  Reached only after strict parsing has failed, so valid JSON is never touched, and
+   recorded on the row as ``escape_repaired`` -- salvage is counted, never silent.
+
+Everything else is a parse failure.
 
 Byte spans for ``final_answer`` and ``confidence`` are recorded for the activation anchors
 (spec 13.2): ``ANSWER_END`` is eligible for pre-confidence analysis only when confidence had
@@ -108,6 +115,10 @@ class PublicOutput:
     final_answer_span: tuple[int, int] | None
     confidence_span: tuple[int, int] | None
     confidence_emitted_before_answer: bool
+    #: Did salvage rule 2 have to run?  Recorded rather than silent, so analysis can count the
+    #: repaired draws and check they are not concentrated in one arm (they are expected to be
+    #: concentrated in one *family*, which is why the rule exists).
+    escape_repaired: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shareable_claims", tuple(self.shareable_claims))
@@ -230,12 +241,78 @@ def _json_body(final_text: str) -> tuple[str, int] | None:
     return body, offset + match.start("body")
 
 
+#: The JSON escapes that may follow a backslash (RFC 8259 §7).  Anything else is not an
+#: escape, so the backslash stands for itself.
+JSON_ESCAPES: Final[str] = '"\\/bfnrtu'
+
+
+def repair_escapes(body: str) -> str:
+    """Double every backslash that does not begin a valid JSON escape (salvage rule 2).
+
+    Measured on the smoke's first 159 bank draws: 18% of **MATH** draws were unparseable and
+    every one of them for this reason -- the model writes ordinary mathematical prose into the
+    ``reasoning`` string (``$ a \\equiv -1 \\mod m $``), and ``\\e``/``\\m`` are not JSON
+    escapes, so the whole object failed even though ``final_answer`` was present and right.
+    MMLU-Pro and TruthfulQA measured 1.000, so the loss was concentrated in one family: it
+    would have inflated ``U`` on MATH alone, widened its Manski bounds against the others, and
+    made the H2 cross-family contrast partly an artifact of JSON escaping.
+
+    Source-blind in the same sense as the fence rule: it looks only at whether a backslash is
+    followed by one of the eight escape characters, never at what the fields say, so a wrong
+    answer and a right answer are repaired identically.  It is also unambiguous rather than a
+    guess -- ``\\equiv`` inside a JSON string has exactly one possible reading, a literal
+    backslash followed by ``equiv``, which is what the model meant.  It never deletes, reorders
+    or rewrites content, and a document that is already valid JSON is never touched, because
+    the rule is only reached after strict parsing has failed.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if char != "\\":
+            out.append(char)
+            i += 1
+            continue
+        following = body[i + 1] if i + 1 < len(body) else ""
+        if following in JSON_ESCAPES and following:
+            out.append(char)
+            out.append(following)
+            i += 2
+            continue
+        out.append("\\\\")
+        i += 1
+    return "".join(out)
+
+
 def _claims(value: Any) -> tuple[tuple[str, ...], bool]:
     """``(claims, malformed)``: a non-list or a non-string entry is dropped, never rewritten."""
     if not isinstance(value, list):
         return (), value is not None
     kept = tuple(v for v in value if isinstance(v, str))
     return kept, len(kept) != len(value)
+
+
+def _final_answer(value: Any) -> str | None:
+    """The answer the model gave, as text -- accepting the JSON scalars it actually emits.
+
+    This used to require ``isinstance(value, str)``, and so scored ``{"final_answer": 314}`` as
+    MISSING_FINAL.  Measured on the smoke's 144 bank draws: 20 of them, every one a complete
+    well-formed object whose only offence was writing a MATH answer as a bare number, which is
+    the natural way to write one.  That is 14% of draws discarded as unparseable -- and not at
+    random, but concentrated on numeric-answer tasks, so it would have inflated ``U`` exactly
+    where MATH lives, widened its Manski bounds against the other families, and done it
+    silently.
+
+    Numbers are rendered through ``json.dumps`` so the text is the JSON form of what was
+    emitted (``314`` -> ``"314"``), which is what the graders normalize anyway.  ``bool`` is
+    refused explicitly because it is a subclass of ``int`` and "true" is not an answer;
+    containers are refused because a list or object is not an answer either.
+    """
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return json.dumps(value)
 
 
 def _confidence(value: Any) -> float | None:
@@ -262,7 +339,7 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
     empty = dict(reasoning=None, shareable_claims=(), final_answer=None, confidence=None,
                  field_order=(), order_violation=False, raw_text=text, content_hash=content_hash,
                  over_limits={}, final_answer_span=None, confidence_span=None,
-                 confidence_emitted_before_answer=False)
+                 confidence_emitted_before_answer=False, escape_repaired=False)
 
     if not text.strip():
         status = (ParseStatus.MISSING_FINAL if finish_reason == FINISH_LENGTH
@@ -275,11 +352,21 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
     if found is None:
         return PublicOutput(parse_status=ParseStatus.NO_JSON, **empty)
     body, offset = found
+    escape_repaired = False
     try:
         parsed = json.loads(body)
     except ValueError:
-        status = ParseStatus.MISSING_FINAL if finish_reason == FINISH_LENGTH else ParseStatus.INVALID_JSON
-        return PublicOutput(parse_status=status, **empty)
+        # Salvage rule 2 (:func:`repair_escapes`), reached only after strict parsing failed, so
+        # a document that was already valid JSON is never touched.  Spans are still measured
+        # against the *original* ``body`` below: the repair changes offsets, and the activation
+        # anchors have to point into the token stream that was actually generated.
+        try:
+            parsed = json.loads(repair_escapes(body))
+        except ValueError:
+            status = (ParseStatus.MISSING_FINAL if finish_reason == FINISH_LENGTH
+                      else ParseStatus.INVALID_JSON)
+            return PublicOutput(parse_status=status, **empty)
+        escape_repaired = True
     if not isinstance(parsed, dict):
         return PublicOutput(parse_status=ParseStatus.INVALID_JSON, **empty)
 
@@ -291,8 +378,7 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
     reasoning = parsed.get(REASONING)
     reasoning = reasoning if isinstance(reasoning, str) else None
     claims, claims_malformed = _claims(parsed.get(SHAREABLE_CLAIMS))
-    final_answer = parsed.get(FINAL_ANSWER)
-    final_answer = final_answer if isinstance(final_answer, str) and final_answer != "" else None
+    final_answer = _final_answer(parsed.get(FINAL_ANSWER))
     confidence = _confidence(parsed.get(CONFIDENCE))
 
     over_limits = {
@@ -327,7 +413,7 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
         confidence=confidence, field_order=field_order, order_violation=order_violation,
         parse_status=status, raw_text=text, content_hash=content_hash, over_limits=over_limits,
         final_answer_span=final_answer_span, confidence_span=confidence_span,
-        confidence_emitted_before_answer=emitted_before,
+        confidence_emitted_before_answer=emitted_before, escape_repaired=escape_repaired,
     )
 
 

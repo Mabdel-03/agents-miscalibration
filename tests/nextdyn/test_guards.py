@@ -472,3 +472,50 @@ def test_table_producers_and_consumers_are_package_modules():
                 pending.add(name)
     print(f"pending table producers/consumers: {sorted(pending)}")
     assert PACKAGE + ".tables" not in pending
+
+
+def test_every_row_field_the_gates_read_is_a_field_the_writer_writes():
+    """D-05, caught structurally: a reader may not name a column that does not exist.
+
+    Two of these were live at once and both scored a healthy run as a failure.  ``_valid``
+    tested ``parse_status.startswith("OK")`` -- the enum's *name*, where the row carries its
+    value ``"ok"`` -- so 117 of 144 draws that parsed cleanly were counted as format failures.
+    And ``generated_tokens`` is not a column at all (``DecisionRow`` has ``thinking_tokens``,
+    ``final_tokens``, ``discarded_span_tokens``), so ``getattr(row, "generated_tokens", 0)``
+    returned 0.0 for every row and the smoke reported zero generated tokens on a run producing
+    ~1,800 per draw.
+
+    Both were invisible to the existing guards: the config-consumer walk sees a knob being
+    read, not whether the name being read exists on the other side of the writer.
+    """
+    import ast
+
+    from agents_scaling.nextdyn import gates, tables
+
+    columns = {f.name for f in dataclasses.fields(tables.DecisionRow)}
+    tree = ast.parse(Path(gates.__file__).read_text(encoding="utf-8"))
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr" and len(node.args) >= 2):
+            continue
+        target, name = node.args[0], node.args[1]
+        if not (isinstance(target, ast.Name) and target.id == "row"):
+            continue
+        if isinstance(name, ast.Constant) and isinstance(name.value, str):
+            read.add(name.value)
+    assert read, "the scan found no row reads at all; it has stopped testing anything"
+    missing = sorted(read - columns)
+    assert not missing, (f"gates.py reads {missing} off a decisions row, and DecisionRow has no "
+                         f"such column; a default-valued getattr made that silent")
+
+
+def test_the_gate_agrees_with_the_parser_about_which_statuses_are_valid():
+    """One declaration of "gradeable" (R1), not one per reader."""
+    from agents_scaling.nextdyn import gates, schema
+
+    for status in schema.ParseStatus:
+        row = type("Row", (), {"parse_status": status.value})()
+        assert gates._valid(row) is (status in schema.VALID_STATUSES), status
+        # and the enum member itself reads the same as its value, so neither spelling drifts
+        assert gates._valid(type("Row", (), {"parse_status": status})()) is gates._valid(row)

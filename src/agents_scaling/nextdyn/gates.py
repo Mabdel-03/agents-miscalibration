@@ -164,7 +164,7 @@ def smoke_measurements(run_root: str | os.PathLike, cells: Sequence[Any] | None 
             parse_valid=_mean(_valid(row) for row in mine),
             boundary_rate=_mean(bool(getattr(row, "boundary_injected", False)) for row in mine),
             continuation_rate=_mean(bool(getattr(row, "continuation_used", False)) for row in mine),
-            generated_tokens=_mean(_int(getattr(row, "generated_tokens", 0)) for row in mine),
+            generated_tokens=_mean(_generated_tokens(row) for row in mine),
             prompt_tokens=_mean(_int(getattr(row, "prompt_tokens", 0)) for row in mine),
             latency_s=_mean(float(getattr(row, "latency_s", 0.0) or 0.0) for row in mine),
             http_error_rate=_mean(_infra_failed(row) for row in mine),
@@ -203,7 +203,35 @@ def _decisions_of(run_root: Path, cells: Sequence[Any] | None) -> list[Any]:
 
 
 def _valid(row: Any) -> bool:
-    return str(getattr(row, "parse_status", "")).startswith("OK")
+    """Is this row's answer gradeable?  ``schema.VALID_STATUSES`` decides, not this function.
+
+    It used to ask ``str(parse_status).startswith("OK")``.  ``ParseStatus.OK`` is the *name*;
+    its value -- what the row actually carries -- is ``"ok"``, so the test matched nothing and
+    the gate scored a healthy run at 0.000 parse validity.  Measured live: 117 of 144 bank
+    draws parsed ``ok``, and the launch gate called every one of them a format failure.
+
+    A second declaration of "which statuses are gradeable" is the R1 defect underneath that;
+    ``VALID_STATUSES`` is the first one, so this defers to it.
+    """
+    from agents_scaling.nextdyn.schema import VALID_STATUSES
+
+    status = getattr(row, "parse_status", None)
+    return any(status == ok or str(status) == ok.value for ok in VALID_STATUSES)
+
+
+def _generated_tokens(row: Any) -> float:
+    """Tokens this draw actually produced.
+
+    ``generated_tokens`` is not a column: ``DecisionRow`` records ``thinking_tokens``,
+    ``final_tokens`` and ``discarded_span_tokens``.  Reading the name that does not exist
+    returned 0.0 for every row through ``getattr(..., 0)``, so the smoke reported zero
+    generated tokens on a run that generated ~2,000 per draw.
+
+    The discarded span counts: it is the phase-1 tail a cap-hit draw threw away, and the GPU
+    produced it either way -- the same reason plan §3.7 attributes it in the cost accounting.
+    """
+    return (_int(getattr(row, "thinking_tokens", 0)) + _int(getattr(row, "final_tokens", 0))
+            + _int(getattr(row, "discarded_span_tokens", 0)))
 
 
 def _infra_failed(row: Any) -> bool:

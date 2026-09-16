@@ -333,6 +333,10 @@ class DecisionRow:
     answer_token_count: int | None
     logprob_norm_scheme: str | None
     parse_status: str
+    #: Did the escape salvage rule have to run on this draw (schema.repair_escapes, A5)?
+    #: Counted so analysis can show the repairs are not concentrated in one *arm*; they are
+    #: expected to concentrate in one *family*, which is the reason the rule exists.
+    escape_repaired: bool
     field_order_violation: bool
     validity: bool
     delivery_success: bool

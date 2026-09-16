@@ -203,6 +203,7 @@ def decision_row(record: DecisionRecord, key: I.CompositeKey, out: "PublicOutput
         answer_token_count=count,
         logprob_norm_scheme=None if mean is None else LOGPROB_NORM_MEAN_FINAL_SPAN,
         parse_status=str(getattr(out.parse_status, "value", out.parse_status)),
+        escape_repaired=bool(getattr(out, "escape_repaired", False)),
         field_order_violation=bool(out.order_violation),
         validity=valid,
         delivery_success=bool(valid and status == INFRA_OK),

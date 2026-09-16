@@ -15,6 +15,7 @@ import pytest
 from agents_scaling.nextdyn import cells as CE
 from agents_scaling.nextdyn import contract as K
 from agents_scaling.nextdyn import gates as G
+from agents_scaling.nextdyn.schema import ParseStatus
 from agents_scaling.nextdyn.cells import Block, CellSpec, ConditionRef
 from agents_scaling.nextdyn.ids import CellKind
 from agents_scaling.nextdyn.kinds import Lane, Pool
@@ -23,7 +24,13 @@ from agents_scaling.nextdyn.kinds import Lane, Pool
 class Row:
     """The columns the gate reads off a ``decisions`` row (``telemetry.decision_row`` writes)."""
 
-    def __init__(self, *, phase: str, label: str | None = None, parse_status: str = "OK",
+    #: The *value* the writer writes (``"ok"``), taken from the enum rather than spelled here.
+    #: This fixture used to say ``"OK"`` -- the enum's *name* -- and the gate's reader tested
+    #: ``startswith("OK")`` to match it, so fixture and reader agreed with each other and
+    #: neither agreed with ``telemetry.decision_row``.  Live, that scored a run whose draws
+    #: parsed ``ok`` at 0.000 parse validity.
+    def __init__(self, *, phase: str, label: str | None = None,
+                 parse_status: str = ParseStatus.OK.value,
                  infra: str | None = None, continuation: bool = False, boundary: bool = False):
         self.phase = phase
         self.display_label = label
