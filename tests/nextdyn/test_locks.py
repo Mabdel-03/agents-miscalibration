@@ -55,15 +55,24 @@ def _fake_cfg(tmp_path: Path, *, enabled: bool = True, revision: str | None = RE
 
 
 def test_lock_round_trip_verifies_the_sidecar(tmp_path):
-    lock = L.load_models_lock(CONFIG_DIR / "models.lock.json")
-    assert lock.schema_version == L.LOCK_SCHEMA_VERSION and lock.locked_at is None
-    assert set(lock.models) == {"primary", "scale", "family_transfer", "qwen_nonthinking"}
-    assert all(e.status == L.MODEL_STATUS_BLOCKED for e in lock.models.values())
+    """Write, re-read, and refuse a lock whose bytes changed under its sidecar.
+
+    The fixture is built here rather than loaded from ``configs/nextdyn``: the committed lock is
+    a moving target once ``lock-inputs`` has run, and what this test is about is the round trip
+    and the drift refusal, neither of which depends on which models happen to be pinned today.
+    """
+    home = _fake_hf_home(tmp_path)
+    cfg = C.load_study(_fake_cfg(tmp_path))
+    compute = C.load_compute(tmp_path / "compute.yaml")
+    lock = L.lock_models(cfg, compute, home)
+    assert lock.schema_version == L.LOCK_SCHEMA_VERSION
+    assert any(e.status == L.MODEL_STATUS_LOCKED for e in lock.models.values())
     path = tmp_path / "models.lock.json"
     sha = L.write_models_lock(path, lock)
     assert (tmp_path / "models.lock.json.sha256").read_text().split()[0] == sha
     assert L.load_models_lock(path) == lock
-    path.write_text(path.read_text().replace('"blocked"', '"locked"', 1))
+    # Any byte change under a sidecar is drift, whatever it touched.
+    path.write_text(path.read_text().replace("bfloat16", "float16", 1))
     with pytest.raises(LockError, match="drift"):
         L.load_models_lock(path)
     with pytest.raises(LockError):
@@ -71,13 +80,38 @@ def test_lock_round_trip_verifies_the_sidecar(tmp_path):
 
 
 def test_skeleton_locks_have_null_fields_and_fail_closed(tmp_path):
-    models = L.load_models_lock(CONFIG_DIR / "models.lock.json")
+    """A lock with nothing in it refuses; it never verifies vacuously.
+
+    Asserted on a skeleton this test writes, not on the committed files: those are filled in by
+    ``lock-inputs`` as soon as the study is real, and a test that pins them empty would fail the
+    moment the study advanced -- and would have been asserting the wrong thing anyway.  What
+    must hold forever is the *shape*: an empty lock is a launch blocker.
+    """
+    skeleton = tmp_path / "models.lock.json"
+    skeleton.write_text(json.dumps({"schema_version": L.LOCK_SCHEMA_VERSION, "locked_at": None,
+                                    "hf_home": None, "vllm_version": None, "torch_version": None,
+                                    "cuda_version": None, "models": {}}), encoding="utf-8")
+    models = L.load_models_lock(skeleton)
+    assert models.locked_at is None and models.models == {}
     with pytest.raises(LockError):
         L.verify_models_lock(models, tmp_path, required=["primary"])
-    prompts = L.load_prompts_lock(CONFIG_DIR / "prompts.lock.json")
+
+    empty_prompts = tmp_path / "prompts.lock.json"
+    empty_prompts.write_text(json.dumps({"schema_version": L.LOCK_SCHEMA_VERSION, "locked_at": None,
+                                         "templates": {}, "continuation_prefill_text": None,
+                                         "continuation_prefill_sha256": None}), encoding="utf-8")
+    prompts = L.load_prompts_lock(empty_prompts)
     assert prompts.templates == {} and prompts.continuation_prefill_sha256 is None
     with pytest.raises(LockError, match="skeleton"):
         L.verify_prompts_lock(prompts, tmp_path, "x")
+
+    # And the committed locks, whatever state the study has reached, must be self-consistent:
+    # a lock that carries entries must carry the facts that make it verifiable.
+    committed = L.load_models_lock(CONFIG_DIR / "models.lock.json")
+    for name, entry in committed.models.items():
+        if entry.status == L.MODEL_STATUS_LOCKED:
+            assert entry.revision and entry.config_sha256 and entry.chat_template_sha256, name
+            assert entry.safetensors, name
     # The datasets lock is no longer a skeleton: WP3 locked it against the offline cache.  What
     # must hold is that every family sourced from the Hub carries an exact revision (a null one
     # is a launch blocker), while the two families that have no Hub revision by construction --

@@ -139,6 +139,16 @@ cohorts:
   pilot_min_paired_items: 20            # spec 14.3: below this the extension rule fires
   natural_target_per_family: 200        # also the size of the natural random-protection panel (spec 10.4)
   constructed_target_per_family: 300
+  # How many frozen-order items the constructed scan screens to fill that quota (spec 5.2: stop
+  # at the quota or an exhausted frame).  Eligibility is only knowable by screening, so the
+  # screened prefix is quota / rate.  These are PLANNING assumptions from the pass@1 rates of
+  # the prior runs, deliberately conservative; the 60-item pilot measures the realized rate per
+  # family and `power` rewrites them before freeze.  Screening the whole frame instead costs
+  # 740k bank calls (about 755 GPU-hours) to fill 900 paired items.
+  assumed_paired_eligibility:
+    MATH: 0.25                          # MATH-500 pass@1 is high, so most items are too easy to pair
+    MMLU_PRO: 0.35
+    TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE: 0.35
   paired_compositions: [C1_COHERENT, C4_COHERENT]
   fragmented_composition: C1_FRAGMENTED
   allow_natural_constructed_item_overlap: true

@@ -183,6 +183,7 @@ class CohortsBlock:
     pilot_min_paired_items: int
     natural_target_per_family: int
     constructed_target_per_family: int
+    assumed_paired_eligibility: Mapping[str, float]
     paired_compositions: tuple[str, ...]
     fragmented_composition: str
     allow_natural_constructed_item_overlap: bool
@@ -1217,6 +1218,7 @@ CONSUMERS: Final[Mapping[str, str]] = {
     "study.cohorts.pilot_min_paired_items": _MOD + "gates",
     "study.cohorts.natural_target_per_family": _MOD + "inventory",
     "study.cohorts.constructed_target_per_family": _MOD + "plan",
+    "study.cohorts.assumed_paired_eligibility.*": _MOD + "plan",
     "study.cohorts.paired_compositions": _MOD + "construct",
     "study.cohorts.fragmented_composition": _MOD + "construct",
     "study.cohorts.allow_natural_constructed_item_overlap": _MOD + "inventory",

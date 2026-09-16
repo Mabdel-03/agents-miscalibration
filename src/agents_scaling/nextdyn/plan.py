@@ -25,6 +25,7 @@ What this module refuses to do, and why:
 from __future__ import annotations
 
 import json
+import math
 import fcntl
 import os
 import time
@@ -36,7 +37,7 @@ from agents_scaling.nextdyn import cells as CE
 from agents_scaling.nextdyn import cli, config as C, contract as K
 from agents_scaling.nextdyn import deps, ids, kinds, tables, workload as WL
 from agents_scaling.nextdyn.cells import Block, Bucket, CellSpec, PlanState
-from agents_scaling.nextdyn.errors import ContractViolation, ManifestError
+from agents_scaling.nextdyn.errors import ConfigError, ContractViolation, ManifestError
 from agents_scaling.nextdyn.ids import CellKind
 from agents_scaling.study import identity
 
@@ -64,6 +65,21 @@ GRADE_TAG_EPISODES: Final[str] = "g1"
 
 
 # --------------------------------------------------------------------------- inventory
+
+
+def _screened_prefix(quota: int, rates: Mapping[str, float], family: str, frame: int) -> int:
+    """How many items of ``family`` the frozen scan screens to fill ``quota`` paired items.
+
+    A rate at or below zero means "no assumption": screen the whole frame.  The result is never
+    larger than the frame, so an exhausted frame stops the scan exactly as spec 5.2 says, and
+    the recruitment flow reports the realized eligibility beside the assumed one.
+    """
+    rate = float(rates.get(family, 0.0) or 0.0)
+    if rate <= 0.0:
+        return frame
+    if not 0.0 < rate <= 1.0:
+        raise ConfigError(f"study.cohorts.assumed_paired_eligibility[{family}] must be in (0, 1], got {rate}")
+    return min(frame, int(math.ceil(quota / rate)))
 
 
 @dataclass(frozen=True)
@@ -109,6 +125,15 @@ class Inventory:
                 if _truthy(row.get(f"{SUB_PANEL_PREFIX}{panel}")):
                     panels[panel][cohort].append(item_id)
         quota = int(cfg.cohorts.constructed_target_per_family)
+        # Spec 5.2: scan a frozen ordering of the eligible frame and stop at the preregistered
+        # quota or an exhausted frame -- NOT at the end of the frame regardless.  Eligibility is
+        # only knowable by screening, so the screened prefix is the quota divided by the assumed
+        # paired-eligibility rate for that cohort; the pilot measures the real rate and `power`
+        # rewrites it before freeze.  Screening the whole frame instead would have cost 740k
+        # bank calls (755 GPU-hours) to fill a 900-item quota -- three quarters of it discarded.
+        screen = {f: _screened_prefix(quota, cfg.cohorts.assumed_paired_eligibility, f,
+                                      len(by_family[f])) for f in families}
+        by_family = {f: v[:screen[f]] for f, v in by_family.items()}
         panel_of = {item_id: item.family for item_id, item in store.items()}
         buckets = {f: tuple(Bucket(family=f, index=i, source_item_id=item, pair=_pair_name(cfg),
                                    panel_family=panel_of.get(item, f))
