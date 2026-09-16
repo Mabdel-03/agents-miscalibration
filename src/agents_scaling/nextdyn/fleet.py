@@ -328,16 +328,18 @@ SINFO_FIELDS: Final[tuple[str, ...]] = ("host", "gres", "gres_used", "state")
 def _gres_count(field_text: str, gpu_type: str) -> int:
     """The GPU count in one ``Gres``/``GresUsed`` field (parity: ``ard36_preflight._free_gpus``).
 
-    Field ``[2]``, not ``[-1]``.  ``Gres`` is ``gpu:h100:4``, where the two agree, but
-    ``GresUsed`` is ``gpu:h100:4(IDX:0-3)`` -- whose *last* colon-separated piece is ``0-3)``,
-    not a digit, so ``[-1]`` returned 0 for every allocated node.  ``used`` was therefore
+    The count is what follows ``gpu:<type>:`` up to the first parenthesis.  ``Gres`` is
+    ``gpu:h100:4`` and ``GresUsed`` is ``gpu:h100:4(IDX:0-3)``; splitting on ``:`` and taking
+    the *last* piece gives ``4`` for the first and ``0-3)`` for the second, which is not a
+    digit, so it returned 0 for every allocated node.  ``used`` was therefore
     always 0, ``scale_to_idle`` saw a fully-busy partition as entirely idle, and `fleet up`
     would have launched a whole spec on top of other people's jobs -- the exact opposite of
     D20's scale-to-idle-and-preempt-nobody.  ARD36 had this right; the vendoring lost it.
     """
     for chunk in str(field_text).split(","):
-        if chunk.startswith(f"gpu:{gpu_type}:"):
-            token = chunk.split(":")[2].split("(")[0]
+        prefix = f"gpu:{gpu_type}:"
+        if chunk.startswith(prefix):
+            token = chunk.removeprefix(prefix).split("(")[0]
             return int(token) if token.isdigit() else 0
     return 0
 

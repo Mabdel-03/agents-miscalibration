@@ -227,3 +227,40 @@ def test_the_smoke_measurement_is_written_where_the_launch_gate_reads_it(tmp_run
     assert path == tmp_run_root / G.SMOKE_DIR / G.MEASURED_FILE
     assert G.load_measured(path) == measured
     assert G.launch_gate(tmp_run_root, G.load_measured(path), cfg=study_cfg).ok
+
+
+def test_a_draw_that_ran_past_its_thinking_budget_fails_the_launch_gate(study_cfg):
+    """The boundary has to be exact, or the continuation silently never fires.
+
+    ``boundary_injected`` is *defined* as ``thinking_tokens == budget``
+    (``adapters.split_native``), so a draw that ran past the budget is recorded as an ordinary
+    completion: no continuation, tail discarded, and nothing in the rates to show it.  ARD36
+    measured the boundary at 1024 and 4096; this study runs at 2048, so the gate checks it.
+    """
+    clean = full_measurement(max_thinking_tokens=2048, over_budget_draws=0)
+    report = G.launch_gate("/tmp/x", clean, cfg=study_cfg)
+    check = next(c for c in report.checks if c.name == "thinking_boundary_exact")
+    assert check.status == G.PASS and check.observed == "none"
+    assert "bank=2048" in check.detail
+
+    overshot = dict(clean)
+    overshot["revision"] = measurement("revision", max_thinking_tokens=2100, over_budget_draws=3)
+    report = G.launch_gate("/tmp/x", overshot, cfg=study_cfg)
+    check = next(c for c in report.checks if c.name == "thinking_boundary_exact")
+    assert check.status == G.FAIL and "revision: 3 draws" in check.observed
+
+
+def test_the_measurement_counts_an_overshoot_against_the_phases_own_budget(tmp_run_root):
+    """Per phase, because the receiver budgets are larger than the main ones.
+
+    A single ceiling over all phases would be the largest receiver budget, and a 2048-budget
+    revision draw that reached 4096 would pass it -- which is the case the check exists for.
+    """
+    rows = [Row(phase=K.PHASE_REVISION), Row(phase=K.PHASE_REVISION)]
+    rows[0].thinking_tokens, rows[1].thinking_tokens = 2048, 3000
+    measured = G.smoke_measurements(tmp_run_root, rows=rows, budget_of=lambda r: 2048)
+    assert measured[K.PHASE_REVISION].max_thinking_tokens == 3000
+    assert measured[K.PHASE_REVISION].over_budget_draws == 1
+    # with no budget supplied nothing is claimed either way -- an unmeasured thing is not a pass
+    measured = G.smoke_measurements(tmp_run_root, rows=rows)
+    assert measured[K.PHASE_REVISION].over_budget_draws == 0

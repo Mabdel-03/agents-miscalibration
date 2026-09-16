@@ -109,6 +109,30 @@ def missing_endpoints(run_root: Path, wanted: Sequence[tuple[str, str]]) -> list
     return out
 
 
+def budget_reader(cfg: Any) -> Any:
+    """``row -> the thinking budget that row must not have exceeded``, by phase.
+
+    Per phase rather than one ceiling, because the receiver budgets go to 4096 and the main
+    phases run at 2048: a single maximum would have let a 2048-budget draw reach 4096 without
+    the check noticing, which is exactly the failure being looked for.  Within the receiver's
+    own two budgets it stays loose -- the row carries ``budget_hash``, not the value -- so a
+    1024 receiver draw is only caught above 4096.  The main phases, where the study's 2048 cap
+    lives and where ARD36 has no measurement, are exact.
+    """
+    from agents_scaling.nextdyn import contract as NK
+
+    receiver = max(int(b) for b in cfg.budgets.receiver_thinking_tokens)
+    ceilings = {
+        NK.PHASE_BANK: int(cfg.contract.tokens.thinking_cap),
+        NK.PHASE_REVISION: int(cfg.contract.tokens.thinking_cap),
+        NK.PHASE_RECEIVER_PLAN: receiver,
+        NK.PHASE_RECEIVER_DECISION: receiver,
+        NK.PHASE_AUDIT: int(cfg.contract.audit_tokens.thinking_cap),
+    }
+    default = max(ceilings.values())
+    return lambda row: ceilings.get(str(getattr(row, "phase", "")), default)
+
+
 def drive(run_root: Path, manifest: Path, cfg_path: Path, *, wait_s: float) -> list[int]:
     cells = CE.load_manifest(manifest)
     codes: list[int] = []
@@ -185,7 +209,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("[smoke] some cells did not finish; the measurement below covers what did",
                   file=sys.stderr)
 
-    measured = G.smoke_measurements(run_root)
+    # The budget a row was drawn under, so the measurement can say whether anything ran past
+    # it.  Read from the contract rather than assumed: the receiver phases run at B/2.
+    measured = G.smoke_measurements(run_root, budget_of=budget_reader(cfg))
     if not measured:
         print(f"[smoke] no decisions under {run_root}: nothing to measure", file=sys.stderr)
         return 1
@@ -193,7 +219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for phase, row in sorted(measured.items()):
         print(f"[smoke] {phase:<18} n={row.n_calls:<5} parse_valid={row.parse_valid:.3f} "
               f"boundary={row.boundary_rate:.3f} continuation={row.continuation_rate:.3f} "
-              f"gen_tokens={row.generated_tokens:.0f} latency={row.latency_s:.1f}s")
+              f"gen_tokens={row.generated_tokens:.0f} latency={row.latency_s:.1f}s "
+              f"max_think={row.max_thinking_tokens} over_budget={row.over_budget_draws}")
     uncovered = [phase for phase in G.GENERATING_PHASES if phase not in measured]
     if uncovered:
         print(f"[smoke] phases with no measured call: {uncovered} -- the launch gate will "

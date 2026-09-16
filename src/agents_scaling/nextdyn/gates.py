@@ -131,13 +131,21 @@ class PhaseMeasurement:
     prompt_tokens: float
     latency_s: float
     http_error_rate: float
+    #: The largest ``thinking_tokens`` seen, and how many draws exceeded the budget.  The rate
+    #: alone cannot answer the question the smoke exists to answer, because
+    #: ``boundary_injected`` is *defined* as ``thinking_tokens == budget``
+    #: (``adapters.split_native``): a draw that overshot would read as "not a boundary", take
+    #: no continuation, and be silently truncated.  So the smoke reports the overshoot count.
+    max_thinking_tokens: int = 0
+    over_budget_draws: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 def smoke_measurements(run_root: str | os.PathLike, cells: Sequence[Any] | None = None,
-                       *, rows: Sequence[Any] | None = None) -> dict[str, PhaseMeasurement]:
+                       *, rows: Sequence[Any] | None = None,
+                       budget_of: Any = None) -> dict[str, PhaseMeasurement]:
     """Measure per **phase** over the smoke cells' decision rows (never per protocol label).
 
     The keys are ``contract.PHASE_*``: the same strings ``telemetry.decision_row`` writes, so
@@ -159,7 +167,11 @@ def smoke_measurements(run_root: str | os.PathLike, cells: Sequence[Any] | None 
             generated_tokens=_mean(_int(getattr(row, "generated_tokens", 0)) for row in mine),
             prompt_tokens=_mean(_int(getattr(row, "prompt_tokens", 0)) for row in mine),
             latency_s=_mean(float(getattr(row, "latency_s", 0.0) or 0.0) for row in mine),
-            http_error_rate=_mean(_infra_failed(row) for row in mine))
+            http_error_rate=_mean(_infra_failed(row) for row in mine),
+            max_thinking_tokens=max((int(_int(getattr(row, "thinking_tokens", 0)))
+                                     for row in mine), default=0),
+            over_budget_draws=sum(1 for row in mine if budget_of is not None
+                                  and _int(getattr(row, "thinking_tokens", 0)) > budget_of(row)))
     return out
 
 
@@ -244,6 +256,23 @@ def launch_gate(run_root: str | os.PathLike, measured: Mapping[str, PhaseMeasure
             continue
         checks.append(_rate_check(f"parse_validity[{phase}]", round(1.0 - row.parse_valid, PRECISION),
                                   format_limit, detail=f"{row.n_calls} calls"))
+    # The thinking boundary is exact, or the continuation never fires.  ``boundary_injected``
+    # is *defined* as ``thinking_tokens == budget``, so a draw that ran past the budget would
+    # be recorded as an ordinary completion, take no continuation, and lose its tail silently.
+    # ARD36 verified this at 1024 and 4096; this study runs at 2048 and checks it there.
+    overshot = {phase: row.over_budget_draws for phase, row in measured.items()
+                if row.over_budget_draws}
+    checks.append(Check(
+        name="thinking_boundary_exact",
+        # With nothing measured the boundary is *unmeasured*, not exact: a check that passed on
+        # an empty measurement would be the ARD36 shape this gate exists to refuse.
+        status=UNMEASURED if not measured else (FAIL if overshot else PASS),
+        required="no draw exceeds its thinking budget",
+        observed=("; ".join(f"{p}: {n} draws" for p, n in sorted(overshot.items()))
+                  if overshot else ("nothing measured" if not measured else "none")),
+        detail=("the smoke made no call at all" if not measured else
+                "max thinking_tokens per phase: " + ", ".join(
+                    f"{p}={m.max_thinking_tokens}" for p, m in sorted(measured.items())))))
     if required_replicas is not None:
         observed = int(live_endpoints or 0)
         checks.append(Check(name="live_replicas", status=PASS if observed >= int(required_replicas) else FAIL,
