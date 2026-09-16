@@ -3,8 +3,11 @@
 Spec ``expermt_agent_specs/AgentsRoundV1/Agents_Round_Dynamics_36h_Spec.md`` §14 (E6 —
 neural/uncertainty instrumentation), plan §5.6 and the neural panel of §5.8.
 
-Four modules, in the order the run uses them:
+The modules, in the order the run uses them:
 
+* :mod:`~agents_scaling.ard.neural.panel` — the frozen family/split-balanced 144-item
+  capture panel (``contract.CAPTURE_TOTAL_ITEMS``) and its sha256 manifest, drawn from a
+  declared seed before anything is captured.
 * :mod:`~agents_scaling.ard.neural.anchors` — the four spec §14.2 capture sites of one
   decision, resolved from tokenizer byte spans and typed when missing, plus the
   ``feature_time`` / ``last_allowed_round`` timing labels.
@@ -23,6 +26,6 @@ already-graded values on the evaluator side.
 
 from __future__ import annotations
 
-from agents_scaling.ard.neural import anchors, capture, geometry, probes
+from agents_scaling.ard.neural import anchors, capture, geometry, panel, probes
 
-__all__ = ["anchors", "capture", "geometry", "probes"]
+__all__ = ["anchors", "capture", "geometry", "panel", "probes"]

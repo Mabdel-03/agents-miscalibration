@@ -196,7 +196,8 @@ def test_every_manifest_cell_lands_on_a_declared_lane(tasks, test_tasks):
                                protocols=(K.Protocol.PEER,))
     ard_cells.build_grade_cells(builder, tasks)
     ard_cells.build_analysis_cells(builder)
-    ard_cells.build_e6_capture(builder, test_tasks, decision_manifest_sha="ef" * 32)
+    ard_cells.build_e6_capture(builder, test_tasks, decision_manifest_sha="ef" * 32,
+                               generation_cells=E6_SOURCES, snapshot_path="/snap")
     lanes = {cell.lane for cell in builder.cells}
     assert lanes <= set(K.LANES)
     assert {"32B", "8B", "grade", "analysis", "capture"} <= lanes
@@ -257,3 +258,88 @@ def test_a_second_seed_does_not_reuse_the_first_seeds_cell_id(tasks):
     assert any(".e1." in c for c in ids) and not any(".e0." in c for c in ids)
     by_rep = {c.episode_rep for c in b.cells}
     assert by_rep == {0, 1}
+
+
+# --------------------------------------------------------------------------- E6 wiring
+
+#: Generation cells of the shape ``capture_generation_cells`` returns.
+E6_SOURCES = ("EPISODE.natural.PRIVATE.8B.T1024.test.s000",
+              "EPISODE.natural.PEER.8B.T1024.test.s000",
+              "EPISODE.natural.BALANCED.8B.T1024.test.s000")
+
+
+def test_e6_emits_the_options_the_capture_worker_actually_reads(test_tasks):
+    """Regression: the builder used to emit only relative_layers / anchors / the manifest
+    sha, none of which ``run_capture_cell`` reads.  Every cell then resolved an empty work
+    list and exited 0, so a GPU cell looked complete having captured nothing."""
+    from agents_scaling.ard.neural import capture as C
+
+    builder = ard_cells.ArdBuilder()
+    made = ard_cells.build_e6_capture(builder, test_tasks, decision_manifest_sha="ef" * 32,
+                                      generation_cells=E6_SOURCES, snapshot_path="/snap")
+    assert made
+    for cell in made:
+        assert cell.options["cells"] == list(E6_SOURCES)
+        assert cell.options["snapshot_path"] == "/snap"
+        assert cell.options["protocols"] == [p.value for p in K.CAPTURE_PROTOCOLS]
+        assert cell.options["decision_manifest_sha256"] == "ef" * 32
+        assert cell.options["anchors"] == list(K.CAPTURE_ANCHORS)
+        # the work list resolves from these options alone, and every generation cell is a
+        # declared ordering dependency
+        assert {"cells", "snapshot_path"} <= set(cell.options)
+        assert len(cell.depends_on) == len(E6_SOURCES)
+        # the storage shard name derived from this cell id must be writable (no ".c")
+        assert ".c" not in C.shard_name_for(cell.cell_id)
+
+
+def test_e6_without_generation_cells_or_a_snapshot_is_refused_at_manifest_time(test_tasks):
+    builder = ard_cells.ArdBuilder()
+    with pytest.raises(ArdManifestError, match="generation cells"):
+        ard_cells.build_e6_capture(builder, test_tasks, decision_manifest_sha="ef" * 32,
+                                   generation_cells=(), snapshot_path="/snap")
+    with pytest.raises(ArdManifestError, match="snapshot_path"):
+        ard_cells.build_e6_capture(builder, test_tasks, decision_manifest_sha="ef" * 32,
+                                   generation_cells=E6_SOURCES, snapshot_path="")
+
+
+def test_e6_is_one_cell_family_not_one_per_protocol(test_tasks):
+    """One item file carries every protocol's decisions plus the shared round-0 roots, so a
+    per-protocol cell family replayed the same decisions three times over."""
+    builder = ard_cells.ArdBuilder()
+    made = ard_cells.build_e6_capture(builder, test_tasks, decision_manifest_sha="ef" * 32,
+                                      generation_cells=E6_SOURCES, snapshot_path="/snap")
+    assert {cell.protocol for cell in made} == {None}
+    assert sum(len(cell.items) for cell in made) == len(test_tasks)
+    assert len({item for cell in made for item in cell.items}) == len(test_tasks)
+
+
+def test_e6_refuses_a_panel_over_the_capture_budget():
+    """The 2.67x budget overrun: build_module handed E6 all 384 natural items because no
+    144-item panel selector existed."""
+    oversized = synthetic_tasks(K.CAPTURE_TOTAL_ITEMS, splits=("test",))   # 4x144 items
+    builder = ard_cells.ArdBuilder()
+    # test-split-only, so the real selector refuses it too: either way an over-budget task
+    # list never reaches a cell.
+    with pytest.raises(ArdManifestError, match="(?i)panel"):
+        ard_cells.build_e6_capture(builder, oversized, decision_manifest_sha="ef" * 32,
+                                   generation_cells=E6_SOURCES, snapshot_path="/snap")
+    panel = [t.item_id for t in oversized[:K.CAPTURE_TOTAL_ITEMS]]
+    made = ard_cells.build_e6_capture(builder, oversized, decision_manifest_sha="ef" * 32,
+                                      generation_cells=E6_SOURCES, snapshot_path="/snap",
+                                      panel=panel)
+    assert sum(len(cell.items) for cell in made) == K.CAPTURE_TOTAL_ITEMS
+    with pytest.raises(ArdManifestError, match="absent from the task list"):
+        ard_cells.capture_panel_items(oversized, panel=["not-an-item"])
+
+
+def test_capture_generation_cells_reads_the_live_natural_8b_episode_cells(tmp_path):
+    for name in (*E6_SOURCES,
+                 "EPISODE.natural.PRIVATE.32B.T1024.test.s000",     # wrong checkpoint
+                 "EPISODE.natural.GATE.8B.T1024.p3d87bd87.test.s000",  # not a capture protocol
+                 "FORK.fork.PRIVATE.8B.T1024.r1.p21aa0c00.train.s000",  # not a generation cell
+                 "EPISODE.high_budget.PEER.8B.T4096.test.s000"):    # wrong cohort/budget
+        (tmp_path / "cells" / name / "items").mkdir(parents=True)
+    (tmp_path / "cells" / "EPISODE.natural.PEER.8B.T1024.train.s000").mkdir()  # no items/ yet
+    assert ard_cells.capture_generation_cells(tmp_path) == sorted(E6_SOURCES)
+    with pytest.raises(ArdManifestError, match="does not exist"):
+        ard_cells.capture_generation_cells(tmp_path / "absent")

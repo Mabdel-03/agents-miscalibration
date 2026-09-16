@@ -42,8 +42,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from agents_scaling.ard import contract as K
+from agents_scaling.ard import graders as G
 from agents_scaling.ard import resources as RES
-from agents_scaling.ard.types import ArdCellSpec, DecisionRef, EpisodeRecord
+from agents_scaling.ard.types import ArdCellKind, ArdCellSpec, DecisionRef, EpisodeRecord
 from agents_scaling.experiment import io
 from agents_scaling.study import identity
 from agents_scaling.study import metrics_reference as MR
@@ -68,7 +69,7 @@ SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
                  "checkpoint_revision", "root_candidate_ids", "root_seed_ids", "N", "horizon",
                  "reasoning_allowance", "final_allowance", "packet_policy", "memory_policy",
                  "leader_id", "team_id", "parent_ref", "condition_manifest_hash", "cell_id",
-                 "split", "family", "fallback"),
+                 "cell_kind", "split", "family", "fallback"),
     "decisions": ("decision_id", "episode_id", "parent_state_id", "agent_id", "round", "phase",
                   "action", "checkpoint", "seed", "request_hash", "prompt_token_hash",
                   "completion_token_hash", "root_report_id", "prior_report_id",
@@ -79,7 +80,8 @@ SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
                   "final_overrun", "answer_logprob", "packet_tokens", "n_packets",
                   "cached_prefill_tokens", "flops_prefill", "flops_decode", "flops_total",
                   "flops_oracle", "protocol", "cohort", "protected", "content_sha256",
-                  "aliased", "fallback", "arrival_ts", "budget_tokens"),
+                  "aliased", "fallback", "arrival_ts", "budget_tokens", "cell_id", "cell_kind",
+                  "item_id"),
     "labels": ("decision_id", "is_correct", "evaluator_status", "grader_version",
                "hidden_test_or_reference_hash", "grading_duration", "answer_class", "item_id"),
     "features": ("decision_or_state_id", "feature_time", "last_allowed_round",
@@ -96,7 +98,8 @@ SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
     # ---- plan §5.8 descriptive --------------------------------------------------------
     "round_summary": (
         "episode_id", "round", "item_id", "family", "split", "cohort", "constructed_C0",
-        "team_id", "reasoning_allowance", "parent_ref", "protocol", "checkpoint",
+        "team_id", "cell_id", "cell_kind", "reasoning_allowance", "parent_ref", "protocol",
+        "checkpoint", "n_graded", "n_ungraded", "team_fully_graded", "team_class_complete",
         "C_t", "m_t", "delta_C", "delta_m", "n_wrong_to_correct", "n_correct_to_wrong",
         "accounting_residual", "a_correction", "d_destruction", "n_initially_wrong",
         "n_initially_correct", "coverage_current", "coverage_archive", "class_multiset",
@@ -118,16 +121,21 @@ SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
     "transitions": ("episode_id", "item_id", "agent_id", "round_from", "round_to", "protocol",
                     "checkpoint", "cohort", "class_from", "class_to", "valid_from", "valid_to",
                     "correct_from", "correct_to", "transition", "invalidity_class",
-                    "changed_class", "changed_content", "protected", "n_packets",
+                    "changed_class", "switched_class", "lost_validity", "gained_validity",
+                    "alternate_correct_switch", "cell_id", "cell_kind",
+                    "changed_content", "protected", "n_packets",
                     "confidence_from", "confidence_to"),
     "c_dist": ("protocol", "checkpoint", "family", "cohort", "C0", "round", "c", "p",
                "n_episodes"),
     "drift": ("protocol", "checkpoint", "family", "cohort", "round", "m", "n_episodes",
               "a_of_m", "d_of_m", "realized_delta_m", "predicted_delta_m", "residual"),
-    "bank_summary": ("item_id", "checkpoint", "family", "split", "n_draws", "c_correct",
+    "bank_summary": ("item_id", "checkpoint", "family", "split", "n_draws", "n_graded",
+                     "n_ungraded", "c_correct", "plurality_gradeable",
                      "class_histogram", "correct_plurality_status", "subset_id",
                      "plurality_correct", "confidence_weighted_correct", "oracle_coverage",
-                     "candidate_mean", "selection_gap") + tuple(f"pass_at_{k}" for k in K.PASS_KS),
+                     "oracle_coverage_upper", "candidate_mean", "selection_gap")
+                    + tuple(f"pass_at_{k}" for k in K.PASS_KS)
+                    + tuple(f"pass_at_{k}_upper" for k in K.PASS_KS),
     "calibration_panel": ("protocol", "checkpoint", "cohort", "round", "signal", "n", "valid_n",
                           "conf_missing_rate", "mean_confidence", "accuracy", "signed_gap",
                           "brier", "brier_reliability", "brier_resolution", "nll", "ece_primary",
@@ -143,14 +151,37 @@ SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
                       "mean_decode_tokens", "mean_logical_flops", "total_logical_flops",
                       "attributed_gpu_seconds", "round3_selected_accuracy", "ci_low", "ci_high",
                       "n_episodes", "decision_matched", "flop_matched"),
+    # The first sixteen / fourteen names are the WP4-frozen prefix and keep their order; the
+    # tail is what the E6 shards→tables adapter emits (``ard.neural.geometry``
+    # GEOMETRY_JOIN_COLUMNS / AGENT_JOIN_COLUMNS, asserted equal in tests).  It is declared
+    # here because ``_project`` is a strict whitelist: without ``cell_id``/``episode_id`` a
+    # neural row could not be joined to ``round_summary``/``minority_frame`` (keyed by
+    # episode × round), and without ``decision_id`` an agent row could not be joined to
+    # ``decisions`` or clustered by item.
     "neural_geometry": ("item_id", "protocol", "round", "layer", "anchor", "participation_ratio",
                         "entropy_rank", "leading_eigenvalue_share", "total_variance",
                         "mean_pairwise", "min_pairwise", "max_pairwise", "cosine_distance",
-                        "normalised", "feature_time", "last_allowed_round"),
+                        "normalised", "feature_time", "last_allowed_round",
+                        "cell_id", "episode_id", "checkpoint", "cohort", "split", "family",
+                        "agent_ids", "n_states", "n_sites", "team_complete", "n_missing_states",
+                        "missing_codes", "hidden_size", "rank_ceiling", "n_nonzero_eigenvalues",
+                        "spectrum_testable", "representation", "state_norm_mean",
+                        "state_norm_std", "entropy_anchor", "entropy_bits_mean",
+                        "n_entropy_states", "has_previous_state", "mean_own_displacement",
+                        "mean_displacement_alignment", "n_displacement_states",
+                        "consumer_revision", "hook_convention"),
     "neural_agent": ("item_id", "protocol", "round", "layer", "anchor", "agent_id", "state_norm",
                      "distance_to_peer_centroid", "distance_to_nearest_peer",
                      "own_displacement", "displacement_alignment", "near_zero_denominator",
-                     "feature_time", "last_allowed_round"),
+                     "feature_time", "last_allowed_round",
+                     "decision_id", "cell_id", "episode_id", "checkpoint", "cohort", "split",
+                     "family", "boundary_injected", "present", "missingness",
+                     "nearest_peer_agent", "has_previous_state", "previous_decision_id",
+                     "displacement_denominator", "direction_denominator", "n_team_states",
+                     "hidden_size", "token_offset", "channel", "generated_token_count",
+                     "entropy_anchor", "entropy_nats", "entropy_bits", "top1_prob",
+                     "logit_margin", "prompt_tokens", "completion_tokens", "consumer_revision",
+                     "hook_convention"),
     "challenge_teams": ("team_id", "item_id", "checkpoint", "constructed_C0",
                         "eligible_correct_roots", "eligible_incorrect_roots",
                         "wrong_concentration_class", "root_candidate_ids", "overlap_with_sibling"),
@@ -224,11 +255,33 @@ def load_labels(run_root: str | os.PathLike) -> dict[str, dict[str, Any]]:
 
 
 def _is_correct(labels: Mapping[str, Mapping[str, Any]], decision: DecisionRef) -> bool | None:
+    """Tri-state correctness: ``None`` whenever the grader could not resolve the answer.
+
+    ``is_correct`` is not usable for this: ``graders.GradeResult.to_row`` emits
+    ``status == STATUS_CORRECT``, so every ``ambiguous``/``timeout`` row is written ``False``
+    and "the grader could not resolve this" becomes "the agent was wrong" (defect M1). The
+    status is the only field that distinguishes them.
+    """
     row = labels.get(decision.decision_id)
     if row is None:
         return None
-    value = row.get("is_correct")
-    return None if value is None else bool(value)
+    status = str(row.get("evaluator_status") or "")
+    if status == G.STATUS_CORRECT:
+        return True
+    if status == G.STATUS_INCORRECT:
+        return False
+    return None
+
+
+def _is_roots(cell: ArdCellSpec) -> bool:
+    """A ROOTS cell is the 16-draw stateless bank, not a five-agent team.
+
+    It defaults its protocol to PRIVATE and shares an ``episode_id`` with the real PRIVATE
+    episode of the same item (defect M2/D-11), so every team-shaped panel must skip it or the
+    bank's 16 draws are scored as a team round.
+    """
+    kind = getattr(cell, "kind", None)
+    return kind is ArdCellKind.ROOTS or str(getattr(kind, "value", kind)) == "ROOTS"
 
 
 # --------------------------------------------------------------------------- spec tables
@@ -259,7 +312,8 @@ def episode_rows(triples: Sequence[tuple[ArdCellSpec, str, EpisodeRecord]],
             "memory_policy": episode.memory_policy, "leader_id": episode.leader_id,
             "team_id": episode.team_id, "parent_ref": episode.parent_ref,
             "condition_manifest_hash": episode.condition_manifest_hash,
-            "cell_id": cell.cell_id, "split": cell.split,
+            "cell_id": cell.cell_id, "cell_kind": str(getattr(getattr(cell, "kind", ""), "value", cell.kind) or ""),
+            "split": cell.split,
             "family": families.get(item_id, ""), "fallback": _is_fallback(episode),
         })
     return rows
@@ -278,6 +332,15 @@ def _content_hash(decision: DecisionRef) -> str:
 
 
 def decision_rows(triples: Sequence[tuple[ArdCellSpec, str, EpisodeRecord]]) -> list[dict[str, Any]]:
+    """One row per decision **per cell that claims it**.
+
+    An aliased root draw is claimed by several cells, so ``decision_id`` is not a key here
+    (14,336 of 67,104 v1 rows repeat one). ``cell_id`` is what separates them: without it a
+    16-draw ROOTS bank and the five-agent PRIVATE episode of the same item are indistinguishable
+    inside one ``episode_id``, which is how the bank came to be scored as a team (M2). ``item_id``
+    is carried for the same reason -- every item-clustered estimator needs it, and joining it
+    back through ``episodes`` is ambiguous precisely where the aliasing is.
+    """
     rows = []
     for cell, _item_id, episode in triples:
         for decision in episode.decisions:
@@ -313,6 +376,9 @@ def decision_rows(triples: Sequence[tuple[ArdCellSpec, str, EpisodeRecord]]) -> 
                 "protected": decision.protected, "content_sha256": _content_hash(decision),
                 "aliased": decision.aliased, "fallback": decision.fallback,
                 "arrival_ts": decision.arrival_ts, "budget_tokens": decision.budget_tokens,
+                "cell_id": cell.cell_id,
+                "cell_kind": str(getattr(getattr(cell, "kind", ""), "value", cell.kind) or ""),
+                "item_id": _item_id,
             })
     return rows
 
@@ -451,6 +517,8 @@ def round_summary_rows(
     rows: list[dict[str, Any]] = []
     challenge_c0 = challenge_c0 or {}
     for cell, item_id, episode in triples:
+        if _is_roots(cell):
+            continue                      # the 16-draw bank is not a team round (M2)
         by_round = _round_decisions(episode)
         rounds = sorted(by_round)
         if not rounds:
@@ -536,6 +604,15 @@ def round_summary_rows(
                 "cohort": episode.cohort,
                 "constructed_C0": challenge_c0.get(str(episode.team_id or "")),
                 "team_id": episode.team_id,
+                "cell_id": cell.cell_id,
+                # Under tri-state correctness C_t counts only GRADED members, so every
+                # n_correct-conditioned statistic and the C_t identity are valid only on a
+                # fully-graded team. Published so a reader can condition instead of guessing.
+                "n_graded": sum(1 for v in round_correct if v is not None),
+                "n_ungraded": sum(1 for v in round_correct if v is None),
+                "team_fully_graded": all(v is not None for v in round_correct),
+                "team_class_complete": all(ref.answer_class for ref in refs),
+                "cell_kind": str(getattr(getattr(cell, "kind", ""), "value", cell.kind) or ""),
                 "reasoning_allowance": episode.reasoning_allowance,
                 "parent_ref": episode.parent_ref, "protocol": episode.protocol,
                 "checkpoint": episode.checkpoint,
@@ -638,7 +715,9 @@ def selection_rows(
     be read as independent votes.
     """
     rows: list[dict[str, Any]] = []
-    for _cell, item_id, episode in triples:
+    for cell, item_id, episode in triples:
+        if _is_roots(cell):
+            continue                      # the bank is selected from, never selected over (M2)
         by_round = _round_decisions(episode)
         rounds = sorted(by_round)
         archive: list[DecisionRef] = []
@@ -715,9 +794,17 @@ def transition_rows(
     triples: Sequence[tuple[ArdCellSpec, str, EpisodeRecord]],
     labels: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Agent-round transitions with CC/CW/WC/WW, invalidity classes and both change rules."""
+    """Agent-round transitions with CC/CW/WC/WW, invalidity classes and both change rules.
+
+    ``changed_class`` is true whenever the class string differs, which conflates three distinct
+    events: an agent genuinely switching between two parsed answers, and an answer merely
+    entering or leaving validity (``None`` on one side). 40.0% of v1's ``changed_class`` rows are
+    validity flips, so a "switch rate" read off that column overstates real switching by two
+    thirds. The three are separated here; ``switched_class`` is the one that means what readers
+    assume ``changed_class`` means.
+    """
     rows: list[dict[str, Any]] = []
-    for _cell, item_id, episode in triples:
+    for cell, item_id, episode in triples:
         by_round = _round_decisions(episode)
         rounds = sorted(by_round)
         for index in range(len(rounds) - 1):
@@ -745,6 +832,18 @@ def transition_rows(
                     "correct_from": correct_from, "correct_to": correct_to,
                     "transition": transition, "invalidity_class": invalidity,
                     "changed_class": prior.answer_class != after.answer_class,
+                    # both sides parsed and the answer actually moved
+                    "switched_class": bool(prior.answer_class and after.answer_class
+                                           and prior.answer_class != after.answer_class),
+                    "lost_validity": bool(prior.answer_class and not after.answer_class),
+                    "gained_validity": bool(not prior.answer_class and after.answer_class),
+                    # graded correct on both sides yet a different class: either the grader
+                    # accepts two spellings of one answer, or a class key is unstable
+                    "alternate_correct_switch": bool(
+                        correct_from and correct_to and prior.answer_class and after.answer_class
+                        and prior.answer_class != after.answer_class),
+                    "cell_id": cell.cell_id,
+                    "cell_kind": str(getattr(getattr(cell, "kind", ""), "value", cell.kind) or ""),
                     "changed_content": _content_hash(prior) != _content_hash(after),
                     "protected": after.protected, "n_packets": after.n_packets,
                     "confidence_from": prior.confidence, "confidence_to": after.confidence,
@@ -847,8 +946,18 @@ def bank_summary_rows(
         by_id = {ref.decision_id: ref for ref in refs}
         dropped_total += len(refs) - len(by_id)
         refs = sorted(by_id.values(), key=lambda ref: ref.decision_id)
-        outcomes = [bool(_is_correct(labels, ref)) for ref in refs]
-        n, c = len(refs), sum(outcomes)
+        # Tri-state, then complete-case. ``bool(None)`` would score a draw the grader could
+        # not resolve as a failed attempt, which biases pass@k DOWN and -- because the team
+        # panel no longer makes that mistake -- would leave the two halves of the
+        # "communication vs sampling" comparison on different conventions. pass@k is therefore
+        # estimated on the graded draws, with a Manski upper bound (every ungradeable draw
+        # counted correct) published beside it so the unresolved mass stays visible.
+        graded = [_is_correct(labels, ref) for ref in refs]
+        outcomes = [bool(v) for v in graded]
+        n_draws = len(refs)
+        n_graded = sum(1 for v in graded if v is not None)
+        n_ungraded = n_draws - n_graded
+        n, c = n_graded, sum(1 for v in graded if v is True)
         classes = [ref.answer_class for ref in refs if ref.valid]
         correct_classes = {ref.answer_class for ref, ok in zip(refs, outcomes)
                            if ok and ref.answer_class}
@@ -857,10 +966,14 @@ def bank_summary_rows(
         weighted = _confidence_weighted(refs)
         oracle_coverage = 1.0 if c > 0 else 0.0
         candidate_mean = c / n if n else 0.0
-        selected_correct = float(bool(chosen is not None and _is_correct(labels, chosen)))
+        chosen_correct = _is_correct(labels, chosen) if chosen is not None else None
+        selected_correct = float(bool(chosen_correct))
         row = {
             "item_id": item_id, "checkpoint": checkpoint, "family": families.get(item_id, ""),
-            "split": splits.get((item_id, checkpoint), ""), "n_draws": n, "c_correct": c,
+            "split": splits.get((item_id, checkpoint), ""), "n_draws": n_draws, "c_correct": c,
+            "n_graded": n_graded, "n_ungraded": n_ungraded,
+            "plurality_gradeable": chosen_correct is not None,
+            "oracle_coverage_upper": 1.0 if (c + n_ungraded) > 0 else 0.0,
             "class_histogram": json.dumps(dict(sorted(Counter(classes).items()))),
             "correct_plurality_status": _plurality_status(classes, correct_classes),
             "subset_id": identity.sha256_hex("|".join(ref.decision_id for ref in refs))[:16],
@@ -872,6 +985,8 @@ def bank_summary_rows(
         }
         for k in K.PASS_KS:
             row[f"pass_at_{k}"] = MR.pass_at_k(n, c, k) if n >= k >= 1 else None
+            row[f"pass_at_{k}_upper"] = (MR.pass_at_k(n_draws, c + n_ungraded, k)
+                                         if n_draws >= k >= 1 else None)
         rows.append(row)
     if dropped_total:
         print(f"[compact] bank_summary: collapsed {dropped_total} aliased root refs "
@@ -890,7 +1005,9 @@ def cost_summary_rows(
     """Per episode-round cost panel (plan §5.8 "Compute cost")."""
     attributed = attributed or {}
     rows: list[dict[str, Any]] = []
-    for _cell, item_id, episode in triples:
+    for cell, item_id, episode in triples:
+        if _is_roots(cell):
+            continue                      # bank cost is attributed to the ROOTS cell itself (M2)
         by_round = _round_decisions(episode)
         cumulative = 0
         for round_ in sorted(by_round):
@@ -1016,9 +1133,13 @@ def compact(
     summary = round_summary_rows(scientific, labels, families=families,
                                  challenge_c0=challenge_c0, strict_residual=strict_residual)
     costs = cost_summary_rows(scientific, attributed)
+    # One pass over the capture store feeds both neural tables (it is the only table input
+    # that is not derived from the item files, and re-reading it would double a ~1 GB load).
+    episode_table = episode_rows(triples, families)
+    neural = neural_shard_tables(run_root, decisions, episode_table)
     tables: dict[str, list[dict[str, Any]]] = {
         "items": items_rows(run_root),
-        "episodes": episode_rows(triples, families),
+        "episodes": episode_table,
         "decisions": decisions,
         "labels": label_rows(labels),
         "features": [],
@@ -1033,8 +1154,8 @@ def compact(
         "calibration_panel": [],
         "cost_summary": costs,
         "cost_accuracy": cost_accuracy_rows(costs, summary),
-        "neural_geometry": [],
-        "neural_agent": [],
+        "neural_geometry": neural_geometry_rows(run_root, decisions, shard_tables=neural),
+        "neural_agent": neural_agent_rows(run_root, decisions, shard_tables=neural),
         "challenge_teams": [],
         "suffix_summary": [],
     }
@@ -1053,6 +1174,48 @@ def compact(
         "attribution_rule": RES.ATTRIBUTION_RULE,
     })
     return counts
+
+
+def neural_shard_tables(
+    run_root: str | os.PathLike,
+    decisions: Sequence[Mapping[str, Any]] | None = None,
+    episodes: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    anchors: Sequence[str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read the E6 capture store once (``<run_root>/neural/native``) for both neural tables.
+
+    Imported lazily: a run with no capture shards must still compact, and the neural stack
+    pulls in the activation store that a pure-CPU compaction has no other reason to touch.
+    An absent store is not an error — it yields empty tables, which ``_write_parquet``
+    turns into the ``.empty`` sentinels the export step already handles.
+    """
+    from agents_scaling.ard.neural import tables as NT
+
+    return NT.neural_tables_from_shards(run_root, decisions=decisions, episodes=episodes,
+                                        **({} if anchors is None else {"anchors": anchors}))
+
+
+def neural_geometry_rows(
+    run_root: str | os.PathLike,
+    decisions: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    shard_tables: Mapping[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Team-grain geometry rows: one per (cell, episode, round, layer, anchor) × raw/normalised."""
+    tables = shard_tables if shard_tables is not None else neural_shard_tables(run_root, decisions)
+    return list(tables["neural_geometry"])
+
+
+def neural_agent_rows(
+    run_root: str | os.PathLike,
+    decisions: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    shard_tables: Mapping[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Agent-grain rows: one per (decision, layer, anchor), joinable on ``decision_id``."""
+    tables = shard_tables if shard_tables is not None else neural_shard_tables(run_root, decisions)
+    return list(tables["neural_agent"])
 
 
 def _project(table: str, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1126,6 +1289,6 @@ __all__ = [
     "SELECTION_TABLE", "TABLES_DIR", "bank_summary_rows", "c_dist_rows", "compact",
     "cost_accuracy_rows", "cost_summary_rows", "decision_rows", "drift_rows", "episode_rows",
     "fork_rows", "items_rows", "iter_item_files", "label_rows", "load_episodes", "load_labels",
-    "resource_rows", "round_summary_rows", "run_compact_cell", "selection_rows",
-    "transition_rows",
+    "neural_agent_rows", "neural_geometry_rows", "neural_shard_tables", "resource_rows",
+    "round_summary_rows", "run_compact_cell", "selection_rows", "transition_rows",
 ]

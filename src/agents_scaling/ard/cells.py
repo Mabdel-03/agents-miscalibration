@@ -43,6 +43,7 @@ from agents_scaling.ard.types import (
     controller_dependency,
     state_dependency,
 )
+from agents_scaling.config import DEFAULT_HF_HOME
 from agents_scaling.study import identity
 from agents_scaling.study.cells import (  # reused verbatim
     _Builder,
@@ -560,25 +561,191 @@ def build_e5_suffix(
     return made
 
 
+# --------------------------------------------------------------------------- E6 inputs
+
+#: A live 8B natural generation cell of a captured protocol:
+#: ``EPISODE.natural.<PROTOCOL>.8B.T<low>.<split>.s###``.  Anchored, so a challenge, fork or
+#: 32B cell can never be mistaken for one, and the ``cells/`` directory of the run root is
+#: the live set (superseded waves live in ``cells_superseded_*``).
+_CAPTURE_SOURCE_RE = re.compile(
+    r"^EPISODE\.%s\.(?P<protocol>%s)\.%s\.T%d\.(?P<split>%s)\.s\d{3}$" % (
+        K.Cohort.NATURAL.value,
+        "|".join(p.value for p in K.CAPTURE_PROTOCOLS),
+        K.CHECKPOINT_SMALL,
+        K.THINKING_TOKENS_LOW,
+        "|".join(K.SPLITS),
+    )
+)
+
+
+def capture_generation_cells(
+    run_root: str | os.PathLike,
+    *,
+    protocols: Sequence[K.Protocol] = K.CAPTURE_PROTOCOLS,
+    splits: Sequence[str] = K.SPLITS,
+) -> list[str]:
+    """The generation cells E6 replays: the 8B natural PRIVATE/PEER/BALANCED episode cells.
+
+    A capture cell reads ``cells/<cell_id>/items/<item_id>.json`` for each id it is given,
+    so these ids *are* the decision manifest (spec §14.2).  They are read off the run root's
+    live ``cells/`` directory rather than a cells file, because the natural cohort was built
+    over several manifests (``cells_P1_*``, ``cells_P3_*``) and a missed manifest would
+    silently drop a protocol from the capture cohort.
+    """
+    root = Path(run_root) / "cells"
+    if not root.is_dir():
+        raise ArdManifestError(f"{root} does not exist: E6 needs a run root with generation cells")
+    wanted = {p.value for p in protocols}
+    out: list[str] = []
+    for path in sorted(root.iterdir()):
+        match = _CAPTURE_SOURCE_RE.match(path.name)
+        if match and match.group("protocol") in wanted and match.group("split") in splits:
+            if (path / "items").is_dir():
+                out.append(path.name)
+    if not out:
+        raise ArdManifestError(
+            f"no 8B natural {sorted(wanted)} episode cells with an items/ directory under "
+            f"{root}; E6 has nothing to replay")
+    return out
+
+
+def capture_snapshot_path(
+    checkpoint: str = K.CHECKPOINT_SMALL, *, hf_home: str | os.PathLike | None = None
+) -> str:
+    """The pinned offline HF snapshot directory of ``checkpoint``, frozen into the manifest.
+
+    Resolved at *manifest* time, not at replay time: the revision is part of the frozen
+    cell, so a capture cell can never silently replay against a different local snapshot
+    than the one the manifest was reviewed with.  Imported lazily so ``cells`` keeps its
+    small import closure (``engine`` pulls no torch at import time, but it is a neural
+    module and this file is imported by every manifest CLI).
+    """
+    from agents_scaling.models import get_model
+    from agents_scaling.study.neural.engine import snapshot_dir
+
+    home = Path(hf_home or os.environ.get("HF_HOME") or DEFAULT_HF_HOME)
+    # contract.REVISIONS is the pin ("verified present in the offline HF cache"); the model
+    # registry only supplies the repo id the cache directory is named after.
+    path = snapshot_dir(home, get_model(str(checkpoint)).hf_id, K.REVISIONS[str(checkpoint)])
+    if not (path / "config.json").is_file():
+        raise ArdManifestError(
+            f"{path} is not an offline HF snapshot (no config.json); set HF_HOME or pass "
+            "--snapshot-path")
+    return str(path)
+
+
+def _panel_selector() -> Any | None:
+    """``ard.neural.panel.select_capture_panel`` if WP6's panel module has landed, else None.
+
+    The 144-item panel selector (spec §14.2: 64 train / 16 validation / 64 test) is owned by
+    ``ard/neural/panel.py``, which is being written in parallel with this fix.  The import is
+    defensive on purpose: this builder must not fail to import before that module lands, and
+    it must pick it up without an edit once it does.
+    """
+    try:
+        from agents_scaling.ard.neural import panel as PANEL  # type: ignore[attr-defined]
+    except ImportError:
+        return None
+    selector = getattr(PANEL, "select_capture_panel", None) or getattr(PANEL, "capture_panel", None)
+    return selector if callable(selector) else None
+
+
+def capture_panel_items(
+    tasks: Sequence[ArdTask], *, panel: Sequence[str] = ()
+) -> list[ArdTask]:
+    """The ≤``CAPTURE_TOTAL_ITEMS`` item panel E6 replays.
+
+    Three sources, in order: an explicit ``panel`` of item ids (``--panel-item`` / a panel
+    file), ``ard.neural.panel.select_capture_panel`` once it lands, or — only when the task
+    list is already within budget — the tasks as given.
+
+    >>> INJECTION POINT <<<  Until ``ard/neural/panel.py`` lands, handing this builder the
+    whole 384-item natural cohort raises instead of quietly emitting 19,200 replays
+    (25.07 M tokens, ~1.89 GB of fp16 rows, 2.67x the §14.2 budget).
+    """
+    if panel:
+        wanted = {str(i) for i in panel}
+        chosen = [t for t in tasks if t.item_id in wanted]
+        missing = wanted - {t.item_id for t in chosen}
+        if missing:
+            raise ArdManifestError(
+                f"{len(missing)} panel item(s) are absent from the task list "
+                f"(first: {sorted(missing)[0]})")
+    else:
+        chosen = None
+        selector = _panel_selector()
+        if selector is not None:
+            try:
+                chosen = list(selector(tasks))
+            except ValueError as exc:
+                # ``panel.PanelError`` (a ValueError): this task list is not the frozen
+                # natural cohort the selector strata are defined over — a --split subset, or
+                # a unit test's four items.  That is only fatal if the list is over budget.
+                if len(tasks) > K.CAPTURE_TOTAL_ITEMS:
+                    raise ArdManifestError(
+                        f"the capture panel selector refused {len(tasks)} items: {exc}") from exc
+        if chosen is None:
+            if len(tasks) > K.CAPTURE_TOTAL_ITEMS:
+                raise ArdManifestError(
+                    f"E6 was handed {len(tasks)} items but the capture panel is "
+                    f"{K.CAPTURE_TOTAL_ITEMS} ({K.CAPTURE_SPLIT_ITEMS}); ard/neural/panel.py "
+                    "(select_capture_panel) is not importable, so pass the panel explicitly "
+                    "with --panel-item/--panel-file")
+            chosen = list(tasks)
+    if len(chosen) > K.CAPTURE_TOTAL_ITEMS:
+        raise ArdManifestError(
+            f"the capture panel selected {len(chosen)} items, over the {K.CAPTURE_TOTAL_ITEMS} "
+            "the §14.2 replay budget was sized for")
+    return chosen
+
+
 def build_e6_capture(
     builder: ArdBuilder,
     tasks: Sequence[ArdTask],
     *,
     decision_manifest_sha: str,
+    generation_cells: Sequence[str],
+    snapshot_path: str,
+    panel: Sequence[str] = (),
     protocols: Sequence[K.Protocol] = K.CAPTURE_PROTOCOLS,
     layers: Sequence[float] = K.CAPTURE_RELATIVE_LAYERS,
+    anchors: Sequence[str] = K.CAPTURE_ANCHORS,
     instance: str | None = None,
 ) -> list[ArdCellSpec]:
-    """E6 (spec §14.2): teacher-forced replay of the frozen decision work list, 8B only."""
-    made: list[ArdCellSpec] = []
-    for protocol in protocols:
-        made += builder.emit(
-            ArdCellKind.CAPTURE, tasks, cohort=K.Cohort.CAPTURE, checkpoint=K.CHECKPOINT_SMALL,
-            protocol=protocol, parent_ref=f"decisions:{decision_manifest_sha}", instance=instance,
-            options={"relative_layers": list(layers), "anchors": list(K.CAPTURE_ANCHORS),
-                     "decision_manifest_sha256": decision_manifest_sha},
-        )
-    return made
+    """E6 (spec §14.2): teacher-forced replay of the frozen decision work list, 8B only.
+
+    The options block is exactly what ``neural.capture.run_capture_cell`` consumes:
+    ``cells`` (the generation cells whose item files *are* the decision manifest),
+    ``snapshot_path`` (the pinned offline snapshot the replay engine loads), ``protocols``
+    (the work-list filter), plus the ``relative_layers`` / ``anchors`` /
+    ``decision_manifest_sha256`` provenance the analysis side reads back.  Emitting anything
+    less produced a cell that exited 0 having captured nothing.
+
+    **One cell family, not one per protocol.**  A capture cell's work list is keyed by
+    *item*, and one item file carries every protocol's decisions plus the round-0 roots the
+    three protocols share, so a per-protocol cell family replayed the same 50 decisions
+    three times over (3x the GPU hours, three writers racing for one set of storage keys).
+    The protocol therefore lives in ``options['protocols']``, not in the cell id.
+    """
+    if not generation_cells:
+        raise ArdManifestError(
+            "E6 needs the generation cells whose item files hold the decisions to replay "
+            "(capture_generation_cells(run_root)); without them every capture cell would "
+            "resolve an empty work list and exit 0 having captured nothing")
+    if not snapshot_path:
+        raise ArdManifestError("E6 needs the pinned snapshot_path of the 8B checkpoint")
+    items = capture_panel_items(tasks, panel=panel)
+    return builder.emit(
+        ArdCellKind.CAPTURE, items, cohort=K.Cohort.CAPTURE, checkpoint=K.CHECKPOINT_SMALL,
+        protocol=None, parent_ref=f"decisions:{decision_manifest_sha}", instance=instance,
+        depends_on=tuple(cell_dependency(cell_id) for cell_id in generation_cells),
+        options={"cells": list(generation_cells),
+                 "snapshot_path": str(snapshot_path),
+                 "protocols": [p.value for p in protocols],
+                 "relative_layers": list(layers),
+                 "anchors": list(anchors),
+                 "decision_manifest_sha256": decision_manifest_sha},
+    )
 
 
 def build_grade_cells(
@@ -679,8 +846,15 @@ def build_module(
     teams_sha: str | None = None,
     team_ids: Sequence[str] = (),
     instance: str | None = None,
+    generation_cells: Sequence[str] = (),
+    snapshot_path: str | None = None,
+    panel: Sequence[str] = (),
 ) -> list[ArdCellSpec]:
-    """One module's cells, in dispatch order (``MODULES``)."""
+    """One module's cells, in dispatch order (``MODULES``).
+
+    ``generation_cells`` / ``snapshot_path`` / ``panel`` are E6 inputs; :func:`main` resolves
+    them from the run root when the CLI does not name them.
+    """
     builder = ArdBuilder(lane)
     if module == "E1":
         build_e1_roots(builder, tasks, checkpoint=checkpoint, instance=instance)
@@ -712,7 +886,8 @@ def build_module(
         build_e5_suffix(builder, tasks, checkpoint=checkpoint, state_sha=state_sha, instance=instance)
     elif module == "E6":
         build_e6_capture(builder, tasks, decision_manifest_sha=state_sha or "0" * 64,
-                         instance=instance)
+                         generation_cells=generation_cells,
+                         snapshot_path=snapshot_path or "", panel=panel, instance=instance)
     elif module == "OPS":
         build_grade_cells(builder, tasks, instance=instance)
         build_analysis_cells(builder, kind=ArdCellKind.COMPACT, instance=instance)
@@ -736,8 +911,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--teams-sha", default=None)
     p.add_argument("--team-id", action="append", default=[])
     p.add_argument("--instance", default=None, help="wave tag; keeps two waves in separate directories")
+    # E6 only.  Defaults are resolved from the run root (the live generation cells) and the
+    # offline HF cache (the pinned 8B snapshot); both are frozen into the manifest.
+    p.add_argument("--generation-cell", action="append", default=[],
+                   help="E6: a generation cell id whose item files hold decisions to replay")
+    p.add_argument("--snapshot-path", default=None, help="E6: offline HF snapshot of the 8B checkpoint")
+    p.add_argument("--panel-item", action="append", default=[], help="E6: an item id of the capture panel")
+    p.add_argument("--panel-file", default=None,
+                   help="E6: JSON list (or {\"items\": [...]}) of the capture panel item ids")
     p.add_argument("--dry-run", action="store_true")
     return p
+
+
+def _panel_arg(args: argparse.Namespace) -> list[str]:
+    """``--panel-item`` ids plus the ids in ``--panel-file`` (a panel selector's output)."""
+    items = [str(i) for i in args.panel_item]
+    if args.panel_file:
+        payload = json.loads(Path(args.panel_file).read_text(encoding="utf-8"))
+        rows = payload["items"] if isinstance(payload, Mapping) else payload
+        items += [str(r["item_id"]) if isinstance(r, Mapping) else str(r) for r in rows]
+    return list(dict.fromkeys(items))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -751,10 +944,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks = list(all_tasks.values())
     if args.split:
         tasks = [task for task in tasks if task.split in set(args.split)]
+    generation_cells: list[str] = list(args.generation_cell)
+    snapshot_path = args.snapshot_path
+    if args.module == "E6":
+        generation_cells = generation_cells or capture_generation_cells(run_root)
+        snapshot_path = snapshot_path or capture_snapshot_path(args.checkpoint)
     cells = build_module(
         args.module, tasks, lane=args.lane, checkpoint=args.checkpoint,
         controller_sha=args.controller_sha, state_sha=args.state_sha, teams_sha=args.teams_sha,
-        team_ids=args.team_id, instance=args.instance,
+        team_ids=args.team_id, instance=args.instance, generation_cells=generation_cells,
+        snapshot_path=snapshot_path, panel=_panel_arg(args),
     )
     meta = manifest_meta(module=args.module, lane=args.lane, cells=cells,
                          checkpoint=args.checkpoint, instance=args.instance)
@@ -776,7 +975,8 @@ __all__ = [
     "ArdBuilder", "MODULES", "SPLIT_ORDER", "assert_opaque_team_id", "build_analysis_cells",
     "build_e1_roots", "build_e2_natural", "build_e2c_challenge", "build_e2d_high_budget",
     "build_e3_receiver", "build_e4_forks", "build_e4_gate", "build_e4_selector_audit",
-    "build_e5_suffix", "build_e6_capture", "build_grade_cells", "build_module", "cell_id_for",
+    "build_e5_suffix", "build_e6_capture", "build_grade_cells", "build_module", "capture_generation_cells",
+    "capture_panel_items", "capture_snapshot_path", "cell_id_for",
     "dispatch_order", "interleave_families", "item_shards", "load_ard_cells_file", "split_groups",
     "manifest_meta", "parent_tag", "write_ard_cells_file",
 ]

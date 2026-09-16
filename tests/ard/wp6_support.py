@@ -8,6 +8,7 @@ resolved against real byte spans while the forward pass costs milliseconds.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -260,3 +261,85 @@ def probe_dataset(
                     targets={P.TARGET_CURRENT: y, P.TARGET_EXPOSURE_VALUE: u},
                 ))
     return rows, np.asarray(vectors, dtype=float)
+
+
+# --------------------------------------------------------------------------- capture cells
+
+
+class FakeTask:
+    """The two ``ArdTask`` fields ``runner.write_item`` reads."""
+
+    def __init__(self, item_id: str, *, family: str = "math500", split: str = "train") -> None:
+        self.item_id = item_id
+        self.family = family
+        self.split = split
+
+
+class FakeCell:
+    """The ``ArdCellSpec`` surface ``run_capture_cell`` touches: an id and an options block."""
+
+    def __init__(self, options: dict[str, Any], *, cell_id: str = "CAPTURE.capture.none.8B.T1024.train.s000") -> None:
+        self.cell_id = cell_id
+        self.options = dict(options)
+
+
+class FakeRunner:
+    """An ``ArdCellRunner``-shaped stand-in for the CAPTURE worker (no endpoint, no Slurm).
+
+    ``write_item`` records the status instead of writing an ``ArdItemResult``, so a test can
+    tell "wrote no_decisions and exited 0" from "raised" — the exact distinction the two
+    wiring defects turned on.
+    """
+
+    def __init__(self, run_root: Path, options: dict[str, Any], *, items: tuple[str, ...] = ()) -> None:
+        self.run_root = Path(run_root)
+        self.ard_cell = FakeCell(options)
+        self.tasks = {item: FakeTask(item) for item in items}
+        self.written: list[tuple[str, str]] = []
+        self.events: list[tuple[str, dict[str, Any]]] = []
+        self._t = 0.0
+
+    def clock(self) -> float:
+        self._t += 1.0
+        return self._t
+
+    def event(self, name: str, **fields: Any) -> None:
+        self.events.append((name, dict(fields)))
+
+    def write_item(self, task: Any, episodes: Any, *, status: str = "complete",
+                   started: float | None = None, grades: Any = ()) -> None:
+        self.written.append((task.item_id, status))
+
+
+def item_result_file(
+    run_root: Path,
+    cell_id: str,
+    item_id: str,
+    *,
+    decisions: Sequence[tuple[str, str, int, int]] = (),
+    split: str = "train",
+    family: str = "math500",
+) -> Path:
+    """A ``cells/<cell_id>/items/<item_id>.json`` the capture manifest reader accepts.
+
+    ``decisions`` are ``(decision_id, protocol, round, agent_id)`` tuples, grouped into one
+    episode per protocol — the shape WP2 writes.
+    """
+    episodes: dict[str, dict[str, Any]] = {}
+    for decision_id, protocol, round_, agent in decisions:
+        episode = episodes.setdefault(protocol, {
+            "episode_id": f"ep-{protocol}", "protocol": protocol,
+            "cohort": K.Cohort.CAPTURE.value, "decisions": []})
+        episode["decisions"].append({
+            "decision_id": decision_id, "request_id": decision_id,
+            "episode_id": episode["episode_id"], "item_id": item_id,
+            "agent_id": int(agent), "round": int(round_), "protocol": protocol,
+            "checkpoint": K.CHECKPOINT_SMALL, "boundary_injected": False,
+        })
+    path = Path(run_root) / "cells" / cell_id / "items" / f"{item_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "source_id": item_id, "split": split, "family": family,
+        "cell": {"cell_id": cell_id}, "episodes": list(episodes.values()),
+    }), encoding="utf-8")
+    return path

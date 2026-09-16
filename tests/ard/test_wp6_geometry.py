@@ -286,13 +286,15 @@ def test_neural_tables_emit_both_representations_and_one_row_per_agent():
     assert [row["agent_id"] for row in agents] == list(range(K.N_AGENTS))
 
     for row in geometry:
-        assert set(G.GEOMETRY_COLUMNS) <= set(row)
+        # the StateSet path produces the spec statistics; the cell/episode join tail is
+        # added by the shards->tables adapter, which is the only path that knows a cell id
+        assert set(G.GEOMETRY_SPEC_COLUMNS) <= set(row)
         assert (row["item_id"], row["protocol"], row["round"], row["layer"], row["anchor"]) == \
                ("math500:0001", "PEER", 2, 17, ANCHOR)
         assert row["feature_time"] == A.feature_time_of(ANCHOR) == A.FEATURE_TIME_POST
         assert row["last_allowed_round"] == A.last_allowed_round(ANCHOR, 2) == 2
     for row in agents:
-        assert set(G.AGENT_COLUMNS) <= set(row)
+        assert set(G.AGENT_SPEC_COLUMNS) <= set(row)
         assert row["feature_time"] == A.FEATURE_TIME_POST and row["last_allowed_round"] == 2
 
 

@@ -2,7 +2,9 @@
 
 Pre-registered estimator policy (analysis plan §3):
   * continuous confidence signals (logprobs, verbal)  -> equal-mass 10-bin L1 ECE
-  * discrete signals (vote_fraction: atoms {1/3, 2/3, 1}) -> exact-atom ECE (no binning)
+  * discrete signals (vote_fraction: atoms {1/3, 2/3, 1}) -> exact-atom ECE (no binning),
+    selected by name for the by-construction set or by an explicit `signal_type` for a
+    signal whose support is finite only in the data at hand (see `is_discrete`)
   * robustness: debiased l2-ECE (Kumar-Liang-Ma 2019) and Brier reliability (Murphy)
   * the 15-bin equal-width plug-in is reported once, only for Kim et al. comparability
 Never compare plug-in ECEs across cells with different n; use the debiased estimator or
@@ -14,9 +16,32 @@ from __future__ import annotations
 import numpy as np
 
 # Signals that are discrete by construction (finite atoms), not merely coarse.
-DISCRETE_SIGNALS = {"vote_fraction"}
+# ``system_vote_fraction`` is ``vote_fraction`` under the name the ARD calibration panel uses
+# for it; it is the same k/n agreement ratio, so it belongs to the by-construction set.
+DISCRETE_SIGNALS = {"vote_fraction", "system_vote_fraction"}
+
+#: Values for the ``signal_type`` override accepted below.
+CONTINUOUS = "continuous"
+DISCRETE = "discrete"
 
 _EPS = 1e-6
+
+
+def is_discrete(signal: str, signal_type: str | None = None) -> bool:
+    """Whether the exact-atom estimator applies; an explicit ``signal_type`` wins.
+
+    :data:`DISCRETE_SIGNALS` is reserved for signals that are discrete *by construction*, and
+    keeping it that way is what makes the pre-registered policy readable. A signal that is
+    discrete only empirically — a verbal forecast the model reports on a fixed ordinal grid is
+    finite-support in this run but is not finite-support by definition — declares itself at the
+    call site instead, so a dataset's accident never silently rewrites the registry for every
+    other caller of that name.
+    """
+    if signal_type is None:
+        return signal in DISCRETE_SIGNALS
+    if signal_type not in (CONTINUOUS, DISCRETE):
+        raise ValueError(f"signal_type must be {CONTINUOUS!r} or {DISCRETE!r}, got {signal_type!r}")
+    return signal_type == DISCRETE
 
 
 def _clean(conf, correct, weights=None):
@@ -79,9 +104,10 @@ def ece_discrete(conf, correct, weights: np.ndarray | None = None) -> float:
     return grouped_ece(conf, correct, groups, weights)
 
 
-def ece_primary(conf, correct, signal: str, n_bins: int = 10) -> float:
+def ece_primary(conf, correct, signal: str, n_bins: int = 10,
+                signal_type: str | None = None) -> float:
     """Dispatch on the pre-registered signal-type policy."""
-    if signal in DISCRETE_SIGNALS:
+    if is_discrete(signal, signal_type):
         return ece_discrete(conf, correct)
     return ece_equal_mass(conf, correct, n_bins=n_bins)
 
@@ -209,20 +235,23 @@ def apply_temperature(conf, t: float) -> np.ndarray:
     return 1 / (1 + np.exp(-_logit(np.asarray(conf, float)) / t))
 
 
-def cell_calibration(conf, correct, signal: str) -> dict:
+def cell_calibration(conf, correct, signal: str, signal_type: str | None = None) -> dict:
     """Full per-cell calibration summary under the pre-registered estimator policy."""
     conf, correct, _ = _clean(conf, correct)
     out = {"n": int(len(conf))}
     if len(conf) == 0:
         return out | {"ece": np.nan, "ece_db": np.nan, "ece_plugin15": np.nan,
                       "signed_gap": np.nan, "brier": np.nan, "brier_rel": np.nan,
-                      "cox_intercept": np.nan, "cox_slope": np.nan}
-    out["ece"] = ece_primary(conf, correct, signal)
-    out["ece_db"] = (np.nan if signal in DISCRETE_SIGNALS
-                     else ece_debiased_l2(conf, correct))
+                      "resolution": np.nan, "cox_intercept": np.nan, "cox_slope": np.nan}
+    discrete = is_discrete(signal, signal_type)
+    out["ece"] = ece_primary(conf, correct, signal, signal_type=signal_type)
+    # The variance correction subtracts a per-bin term that equal-mass bins cannot form on
+    # discrete support, so the debiased estimator is NaN by design, not by failure.
+    out["ece_db"] = np.nan if discrete else ece_debiased_l2(conf, correct)
     out["ece_plugin15"] = ece_plugin_15(conf, correct)
     out["signed_gap"] = signed_gap(conf, correct)
     bd = brier_decomposition(conf, correct)
     out["brier"], out["brier_rel"] = bd["brier"], bd["reliability"]
+    out["resolution"] = bd["resolution"]
     out |= cox_recalibration(conf, correct)
     return out

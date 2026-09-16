@@ -23,6 +23,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+TABLES_DIR: str = "tables"
+
 from agents_scaling.ard import contract as K
 
 #: Modules of the frozen full-core tier, and how a reader should treat each one.
@@ -85,7 +87,7 @@ def _git_sha(repo: Path) -> str:
         return ""
 
 
-def hardware_report(run_root: Path) -> str:
+def hardware_report(run_root: Path, *, tables_dir: str = TABLES_DIR) -> str:
     """Partitions, replicas, precision and realized compute (plan §5.8 export)."""
     frozen = {}
     try:
@@ -96,8 +98,8 @@ def hardware_report(run_root: Path) -> str:
             frozen = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:                       # noqa: BLE001
         frozen = {}
-    resources = _read_parquet(run_root / "tables" / "resources.parquet")
-    decisions = _read_parquet(run_root / "tables" / "decisions.parquet")
+    resources = _read_parquet(run_root / tables_dir / "resources.parquet")
+    decisions = _read_parquet(run_root / tables_dir / "decisions.parquet")
 
     by_endpoint = Counter(str(r.get("endpoint_id") or "") for r in decisions)
     flops = defaultdict(float)
@@ -137,12 +139,12 @@ def hardware_report(run_root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def results_summary(run_root: Path) -> str:
-    stats = _json(run_root / "tables" / "ard_stats.json")
-    stats_md = (run_root / "tables" / "ard_stats.md")
+def results_summary(run_root: Path, *, tables_dir: str = TABLES_DIR) -> str:
+    stats = _json(run_root / tables_dir / "ard_stats.json")
+    stats_md = (run_root / tables_dir / "ard_stats.md")
     census = cell_census(run_root)
-    panel = _read_parquet(run_root / "tables" / "calibration_panel.parquet")
-    delta = _read_parquet(run_root / "tables" / "calibration_system_minus_agent.parquet")
+    panel = _read_parquet(run_root / tables_dir / "calibration_panel.parquet")
+    delta = _read_parquet(run_root / tables_dir / "calibration_system_minus_agent.parquet")
     frozen_tier = ""
     try:
         import yaml
@@ -278,15 +280,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m agents_scaling.ard.results",
                                  description=__doc__.split("\n\n")[0])
     ap.add_argument("--run-root", required=True)
+    ap.add_argument("--tables-dir", default=TABLES_DIR,
+                    help="table directory to read (e.g. tables_v2 for the repaired tables)")
+    ap.add_argument("--prefix", default="",
+                    help="filename prefix for the two reports, so a v2 run does not "
+                         "overwrite the frozen v1 deliverables")
     args = ap.parse_args(argv)
     run_root = Path(args.run_root)
 
-    summary = results_summary(run_root)
-    hardware = hardware_report(run_root)
-    (run_root / "results_summary.md").write_text(summary, encoding="utf-8")
-    (run_root / "hardware_report.md").write_text(hardware, encoding="utf-8")
-    print(json.dumps({"results_summary": str(run_root / "results_summary.md"),
-                      "hardware_report": str(run_root / "hardware_report.md"),
+    summary = results_summary(run_root, tables_dir=args.tables_dir)
+    hardware = hardware_report(run_root, tables_dir=args.tables_dir)
+    summary_path = run_root / f"{args.prefix}results_summary.md"
+    hardware_path = run_root / f"{args.prefix}hardware_report.md"
+    summary_path.write_text(summary, encoding="utf-8")
+    hardware_path.write_text(hardware, encoding="utf-8")
+    print(json.dumps({"results_summary": str(summary_path),
+                      "hardware_report": str(hardware_path),
+                      "tables_dir": args.tables_dir,
                       "summary_bytes": len(summary), "hardware_bytes": len(hardware)}, indent=2))
     return 0
 

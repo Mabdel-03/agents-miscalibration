@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -72,6 +73,7 @@ from agents_scaling.study.neural.replay import (
 
 __all__ = [
     "CAPTURE_STAGE",
+    "CaptureCellError",
     "CaptureWorkItem",
     "JOIN_KEYS",
     "SPLIT_ORDER",
@@ -84,8 +86,11 @@ __all__ = [
     "root_prefill_identity",
     "manifest_for_item",
     "manifest_from_item_file",
+    "assert_capture_progress",
+    "resolve_cell_work",
     "run_capture",
     "run_capture_cell",
+    "shard_name_for",
     "shard_of",
     "staging_root",
     "work_list",
@@ -740,13 +745,18 @@ def primary_block(num_layers: int) -> int:
     return blocks_for(int(num_layers), (K.CAPTURE_PRIMARY_LAYER,))[0]
 
 
-def manifest_from_item_file(path: str | os.PathLike) -> list[CaptureWorkItem]:
+def manifest_from_item_file(
+    path: str | os.PathLike, *, protocols: Sequence[str] = ()
+) -> list[CaptureWorkItem]:
     """Work items for one ``cells/<cell_id>/items/<item_id>.json`` file (WP4 ``ArdItemResult``).
 
     This *is* the decision manifest: one row per ``DecisionRef``, carrying the join keys.
     Decisions of the CAPTURE protocols only (``contract.CAPTURE_PROTOCOLS``, plus every
     round-0 root, which is shared by all of them — spec §14.2 "Reuse root captures across
     protocols").
+
+    ``protocols`` narrows that set (the cell option of the same name); the round-0 roots are
+    kept whatever it says, because one root is replayed once and joined by every protocol.
     """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     split = str(payload.get("split") or "")
@@ -754,7 +764,7 @@ def manifest_from_item_file(path: str | os.PathLike) -> list[CaptureWorkItem]:
     item_id = str(payload.get("source_id") or payload.get("item_id") or "")
     cell = payload.get("cell") or {}
     cell_id = str(cell.get("cell_id") or "")
-    captured = {p.value for p in K.CAPTURE_PROTOCOLS}
+    captured = {str(p) for p in protocols} or {p.value for p in K.CAPTURE_PROTOCOLS}
     out: list[CaptureWorkItem] = []
     for episode in payload.get("episodes") or ():
         protocol = str(episode.get("protocol") or "")
@@ -789,6 +799,7 @@ def manifest_for_item(
     *,
     cell_ids: Sequence[str] = (),
     manifest: str | os.PathLike | None = None,
+    protocols: Sequence[str] = (),
 ) -> tuple[CaptureWorkItem, ...]:
     """The frozen work list for one item: an explicit manifest file, or the item files of
     the named generation cells (never a directory scan of the whole run root)."""
@@ -798,8 +809,104 @@ def manifest_for_item(
     for cell_id in cell_ids:
         path = Path(run_root) / "cells" / str(cell_id) / "items" / f"{item_id}.json"
         if path.exists():
-            rows.extend(manifest_from_item_file(path))
+            rows.extend(manifest_from_item_file(path, protocols=protocols))
     return work_list(rows)
+
+
+class CaptureCellError(RuntimeError):
+    """A CAPTURE cell was asked to replay nothing, or replayed nothing it was asked for.
+
+    This exists so the two failure modes are *loud*.  A replay cell has no endpoint and no
+    grader watching it: if the worker exits 0 having captured nothing, the cell's
+    ``meta.json`` is written, the lane driver marks it complete, and the run ends with an
+    empty ``native`` stage that nobody notices until the analysis finds no rows.
+    """
+
+
+def resolve_cell_work(
+    run_root: str | os.PathLike,
+    item_id: str,
+    options: Mapping[str, Any],
+) -> tuple[CaptureWorkItem, ...]:
+    """The work list for one CAPTURE cell item, refusing the "nothing was asked for" cases.
+
+    Two empties must never be confused (they look identical at the work-list level):
+
+    * **nothing was asked for** — a *manifest* defect.  The cell options carry neither
+      ``cells`` nor ``manifest``; or the named generation cells do not exist under this run
+      root (wrong ids, wrong run root, or an instance tag that never ran); or the explicit
+      manifest file holds no rows at all.  Every one of these raises, because no amount of
+      GPU time would have produced a vector.
+    * **this item has none** — legitimate.  The generation cells *are* there and were read,
+      and this particular item simply contributes no eligible decision (its episodes were
+      context failures, or its decisions all fall outside ``protocols``).  The caller writes
+      ``status="no_decisions"`` and moves on.
+
+    The discriminator is therefore "did we successfully read the sources we were pointed
+    at", not "is the work list empty".
+    """
+    cell_ids = tuple(str(c) for c in (options.get("cells") or ()))
+    manifest = options.get("manifest")
+    protocols = tuple(str(p) for p in (options.get("protocols") or ()))
+    if not cell_ids and manifest is None:
+        raise CaptureCellError(
+            "CAPTURE cell options carry neither 'cells' nor 'manifest': there is no decision "
+            "work list to replay.  cells.build_e6_capture must emit the generation cell ids "
+            "in options['cells'] (or a frozen manifest path in options['manifest'])")
+    if manifest is not None:
+        rows = load_manifest(manifest)
+        if not rows:
+            raise CaptureCellError(f"decision manifest {manifest} holds no rows")
+        return work_list([w for w in rows if str(w.item_id) == str(item_id)])
+    present = [c for c in cell_ids
+               if (Path(run_root) / "cells" / c / "items").is_dir()]
+    if not present:
+        raise CaptureCellError(
+            f"none of the {len(cell_ids)} generation cells named in options['cells'] has an "
+            f"items/ directory under {run_root} (first: {cell_ids[0]!r}); the cell ids or the "
+            "run root are wrong, so this cell could never capture anything")
+    rows = []
+    for cell_id in present:
+        path = Path(run_root) / "cells" / cell_id / "items" / f"{item_id}.json"
+        if path.exists():
+            rows.extend(manifest_from_item_file(path, protocols=protocols))
+    return work_list(rows)
+
+
+def shard_name_for(cell_id: str) -> str:
+    """A storage shard name for a CAPTURE cell id.
+
+    ``storage.ShardWriter`` refuses any shard name containing ``.c``: a chunk is
+    ``<shard>.cNNNNN.jsonl`` and ``storage.CHUNK_RE`` splits on exactly that.  *Every* ARD
+    capture cell id contains ``.capture.`` (the cohort segment), so the obvious default
+    ``f"ard36.{cell_id}"`` raised ``ValueError`` inside the writer on every real cell —
+    after the model was loaded.  Flattening the separators keeps the cell id readable in the
+    chunk file name and leaves exactly one ``.c`` in it, the chunk separator.
+    """
+    return "ard36_" + re.sub(r"[^A-Za-z0-9_-]", "_", str(cell_id))
+
+
+def assert_capture_progress(stats: Mapping[str, Any], *, cell_id: str = "") -> Mapping[str, Any]:
+    """Refuse a cell that captured nothing (spec §14.5: a cell is complete or it failed).
+
+    Zero captures is legitimate in exactly one case: a **resume** where every (decision,
+    block, anchor) key of the work list is already committed, i.e. ``pending == 0`` over a
+    non-empty work list.  Any other zero — every record missing, every anchor unresolved, an
+    engine that returned nothing — is a defect that would otherwise be written out as a
+    complete cell holding no vectors.
+    """
+    captured = int(stats.get("captured", 0))
+    work_items = int(stats.get("work_items", 0))
+    pending = int(stats.get("pending", 0))
+    if captured > 0:
+        return stats
+    if work_items > 0 and pending == 0:
+        return stats                      # fully resumed: every key already committed
+    raise CaptureCellError(
+        f"CAPTURE cell {cell_id or '?'} captured 0 of {pending} pending decisions "
+        f"({work_items} work items; missing_records={stats.get('missing_records')}, "
+        f"anchor_errors={stats.get('anchor_errors')}): a cell that captures nothing must "
+        "fail, not look complete")
 
 
 def default_engine_factory(options: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -813,7 +920,16 @@ def default_engine_factory(options: Mapping[str, Any]) -> tuple[Any, Any]:
 
     from agents_scaling.study.neural.engine import CaptureEngine, blocks_for
 
+    # A bare KeyError here reads as a code bug; it is a *manifest* bug, and the message has
+    # to say which builder owes the option (spec §14.5: the snapshot is pinned in the frozen
+    # manifest, never resolved from the environment at replay time).
+    if not options.get("snapshot_path"):
+        raise CaptureCellError(
+            "CAPTURE cell options carry no 'snapshot_path'; cells.build_e6_capture must pin "
+            "the offline HF snapshot directory of the 8B checkpoint into the frozen manifest")
     snapshot = Path(options["snapshot_path"])
+    if not (snapshot / "config.json").is_file():
+        raise CaptureCellError(f"snapshot {snapshot} is not an offline HF snapshot directory")
     config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
     num_layers = int(config["num_hidden_layers"])
     if options.get("degraded"):
@@ -842,16 +958,20 @@ def run_capture_cell(runner: Any, item_id: str) -> None:
     No vLLM endpoint is involved — this is a teacher-forced replay on a replay GPU
     (spec §14.5) — so the cell's only inputs are the committed request records and the
     decision manifest of the generation cells named in ``options["cells"]``.
+
+    The two empties are separated by :func:`resolve_cell_work` (an unusable options block
+    raises; an item that genuinely contributes no decision is written ``no_decisions``), and
+    :func:`assert_capture_progress` refuses a cell that replayed nothing it was asked for.
     """
     from agents_scaling.study.inference.store import RequestStore
 
     options = dict(runner.ard_cell.options)
     started = runner.clock()
-    items = manifest_for_item(runner.run_root, item_id,
-                              cell_ids=options.get("cells") or (),
-                              manifest=options.get("manifest"))
+    items = resolve_cell_work(runner.run_root, item_id, options)
     task = runner.tasks.get(item_id) if hasattr(runner.tasks, "get") else runner.tasks[item_id]
     if not items:
+        # Legitimate: the generation cells were read and this item has no eligible decision.
+        log(f"{item_id}: no eligible decisions in {len(options.get('cells') or ())} generation cells")
         if task is not None:
             runner.write_item(task, (), status="no_decisions", started=started)
         return
@@ -860,7 +980,7 @@ def run_capture_cell(runner: Any, item_id: str) -> None:
     config = CaptureConfig(
         revision=str(options.get("revision") or K.REVISIONS.get(str(options.get("checkpoint") or K.CHECKPOINT_SMALL), "")),
         checkpoint=str(options.get("checkpoint") or K.CHECKPOINT_SMALL),
-        shard_name=str(options.get("shard_name") or f"ard36.{runner.ard_cell.cell_id}".replace("/", "_")),
+        shard_name=str(options.get("shard_name") or shard_name_for(runner.ard_cell.cell_id)),
         chunk_rows=int(options.get("chunk_rows", 128)),
         group_size=int(options.get("group_size", 8)),
         anchors=anchors_option,
@@ -874,6 +994,7 @@ def run_capture_cell(runner: Any, item_id: str) -> None:
     stats = run_capture(items, engine=engine, tokenizer=tokenizer,
                         store=RequestStore(Path(runner.run_root) / "requests"),
                         run_root=runner.run_root, config=config, staging=options.get("staging"))
+    assert_capture_progress(stats, cell_id=str(runner.ard_cell.cell_id))
     if hasattr(runner, "event"):
         runner.event("captured", captured=stats["captured"], rows=stats["rows"], tokens=stats["tokens"])
     if task is not None:

@@ -26,6 +26,7 @@ The three pieces this module owns:
 
 from __future__ import annotations
 
+import bisect
 import math
 import os
 import subprocess
@@ -210,28 +211,73 @@ class RequestResource:
         return float(self.arrival_ts) + max(0.0, float(self.latency_s))
 
 
+def _concurrency_steps(
+    peers: Sequence[RequestResource],
+) -> tuple[list[float], list[float], list[float]]:
+    """Step function ``C(t)`` = in-flight count, as ``(times, level, prefix_integral)``.
+
+    ``C`` is piecewise constant on ``[times[i], times[i+1])`` with value ``level[i]``, counting
+    peers whose half-open span ``[arrival, end)`` contains ``t``. ``prefix[i]`` is
+    ``∫ max(1, C) dt`` from ``times[0]`` to ``times[i]``, so any request's time-weighted mean
+    concurrency is a difference of two interpolated prefix values.
+
+    This replaces a per-request rescan of every peer. That scan was O(n) inside each of O(n)
+    sub-intervals for each of n requests -- cubic per replica, which only ever terminated
+    because defect B-1 left every ``latency_s`` at zero and so made every span degenerate.
+    """
+    delta: dict[float, float] = {}
+    for peer in peers:
+        start, end = float(peer.arrival_ts), peer.end_ts
+        if end <= start:
+            continue                       # an empty span contains no instant, so C ignores it
+        delta[start] = delta.get(start, 0.0) + 1.0
+        delta[end] = delta.get(end, 0.0) - 1.0
+    times = sorted(delta)
+    level: list[float] = []
+    prefix: list[float] = [0.0]
+    running = 0.0
+    for index, point in enumerate(times):
+        running += delta[point]
+        level.append(max(0.0, running))
+        if index + 1 < len(times):
+            prefix.append(prefix[-1] + (times[index + 1] - point) * max(1.0, level[index]))
+    return times, level, prefix
+
+
+def _level_at(times: Sequence[float], level: Sequence[float], point: float) -> float:
+    """``C(point)`` for the half-open step function built by :func:`_concurrency_steps`."""
+    if not times or point < times[0]:
+        return 0.0
+    index = bisect.bisect_right(times, point) - 1
+    return level[index] if index < len(level) else 0.0
+
+
+def _integral_at(times: Sequence[float], level: Sequence[float], prefix: Sequence[float],
+                 point: float) -> float:
+    """``∫ max(1, C) dt`` from ``times[0]`` to ``point``, interpolated inside a segment."""
+    if not times or point <= times[0]:
+        return 0.0
+    if point >= times[-1]:
+        return prefix[-1]
+    index = bisect.bisect_right(times, point) - 1
+    return prefix[index] + (point - times[index]) * max(1.0, level[index])
+
+
 def _mean_concurrency(target: RequestResource, peers: Sequence[RequestResource]) -> float:
     """Time-weighted mean number of in-flight requests on the replica over ``target``'s span."""
+    times, level, prefix = _concurrency_steps(peers)
+    return _mean_concurrency_from(target, times, level, prefix)
+
+
+def _mean_concurrency_from(target: RequestResource, times: Sequence[float],
+                           level: Sequence[float], prefix: Sequence[float]) -> float:
+    """:func:`_mean_concurrency` against a step function built once for the whole replica."""
     start, end = float(target.arrival_ts), target.end_ts
     span = end - start
     if span <= 0:
-        overlapping = sum(1 for peer in peers if peer.arrival_ts <= start < peer.end_ts)
-        return float(max(1, overlapping))
-    edges = {start, end}
-    for peer in peers:
-        for point in (float(peer.arrival_ts), peer.end_ts):
-            if start < point < end:
-                edges.add(point)
-    ordered = sorted(edges)
-    weighted = 0.0
-    for left, right in zip(ordered, ordered[1:]):
-        width = right - left
-        if width <= 0:
-            continue
-        middle = left + width / 2.0
-        n = sum(1 for peer in peers if peer.arrival_ts <= middle < peer.end_ts)
-        weighted += width * max(1, n)
-    return weighted / span if span > 0 else 1.0
+        return float(max(1, int(_level_at(times, level, start))))
+    weighted = _integral_at(times, level, prefix, end) - _integral_at(times, level, prefix, start)
+    return weighted / span
 
 
 def attribute_gpu_seconds(
@@ -250,11 +296,12 @@ def attribute_gpu_seconds(
     totals: dict[str, dict[str, float]] = {}
     for endpoint, group in by_endpoint.items():
         ordered = sorted(group, key=lambda r: (r.arrival_ts, r.request_id))
+        steps = _concurrency_steps(ordered)
         busy = _union_seconds(ordered)
         summed = math.fsum(max(0.0, r.latency_s) for r in ordered)
         attributed_total = 0.0
         for request in ordered:
-            concurrency = _mean_concurrency(request, ordered)
+            concurrency = _mean_concurrency_from(request, *steps)
             attributed = max(0.0, float(request.latency_s)) / concurrency
             attributed_total += attributed
             rows.append({
@@ -313,7 +360,10 @@ def request_resources_from_decisions(decisions: Iterable[Mapping[str, Any]]) -> 
             request_id=str(row.get("request_id") or row.get("decision_id") or ""),
             endpoint_id=str(row.get("endpoint_id") or ""),
             arrival_ts=float(row.get("arrival_ts") or 0.0),
-            latency_s=float(row.get("latency_s") or 0.0),
+            # ``decisions.parquet`` names this column ``latency`` (compact.decision_rows);
+            # reading only ``latency_s`` silently attributed zero GPU-seconds to every request
+            # in the frozen run (defect B-1), so accept either spelling.
+            latency_s=float(row.get("latency_s") or row.get("latency") or 0.0),
             prompt_tokens=int(row.get("prompt_tokens") or 0),
             cached_prefill_tokens=int(row.get("cached_prefill_tokens") or 0),
             decode_tokens=int(row.get("thinking_tokens") or 0) + int(row.get("final_tokens") or 0),

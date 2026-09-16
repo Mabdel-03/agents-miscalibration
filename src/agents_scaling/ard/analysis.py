@@ -239,9 +239,15 @@ def coverage_change_arm(
     then averaged to the item; differencing item means of two rounds would silently pair
     different episodes.
     """
-    per_episode: dict[str, dict[int, float]] = defaultdict(dict)
+    # Keyed on (cell_id, episode_id). Three different cells can carry one episode_id: a ROOTS
+    # bank aliasing the real PRIVATE episode (472 ids), the eight D-11 items (5 rows each), and
+    # two FORK cells branching off parent rounds 1 and 2, which differ ONLY in cell_id (144 ids).
+    # An episode_id-only key let one cell's round-0 coverage overwrite another's, inverting
+    # primary 3. ``cell_id`` is absent from v1 tables, where "" reproduces the old behaviour.
+    per_episode: dict[tuple[str, str], dict[int, float]] = defaultdict(dict)
     for row in tables.get("round_summary", ()):
         eid = str(row.get("episode_id"))
+        key = (str(row.get("cell_id") or ""), eid)
         meta = index.get(eid, {})
         if (str(row.get("protocol")) != protocol or str(row.get("cohort")) != cohort
                 or str(meta.get("split")) != split
@@ -249,10 +255,10 @@ def coverage_change_arm(
             continue
         value = _as_float(row.get(column))
         if value is not None:
-            per_episode[eid][int(row["round"])] = value
+            per_episode[key][int(row["round"])] = value
     acc: dict[str, list[float]] = defaultdict(list)
     family: dict[str, str] = {}
-    for eid, by_round in per_episode.items():
+    for (_cell_id, eid), by_round in per_episode.items():
         if from_round not in by_round or to_round not in by_round:
             continue
         meta = index.get(eid, {})
@@ -848,6 +854,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m agents_scaling.ard.analysis",
                                 description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--run-root", required=True)
+    p.add_argument("--tables-dir", default=TABLES_DIR,
+                   help="table directory under the run root to read AND write "
+                        "(use tables_v2 to analyse the repaired tables without touching v1)")
     p.add_argument("--n-resamples", type=int, default=K.N_RESAMPLES)
     p.add_argument("--checkpoint", default=K.CHECKPOINT_SMALL)
     p.add_argument("--allow-unavailable", action="store_true",
@@ -859,7 +868,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = run_analysis(args.run_root, n_resamples=args.n_resamples,
+    result = run_analysis(args.run_root, tables_dir=args.tables_dir,
+                          n_resamples=args.n_resamples,
                           checkpoint=args.checkpoint,
                           allow_unavailable=args.allow_unavailable,
                           with_secondary=not args.no_secondary)

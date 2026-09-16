@@ -42,6 +42,10 @@ from typing import Any, Mapping, Sequence
 
 from agents_scaling.ard.contract import N_AGENTS
 
+# ROOTS is the stateless 16-draw bank; RECEIVER is a single-agent probe. Neither has a
+# "how many of the five hold the correct class", so neither may enter the team frame.
+_NON_TEAM_KINDS: frozenset[str] = frozenset({"ROOTS", "RECEIVER"})
+
 TABLE = "minority_frame.parquet"
 
 
@@ -70,19 +74,26 @@ def build_frame(tables: Path) -> list[dict[str, Any]]:
             return None                    # ungradeable: unobserved, never scored wrong
         return int(bool(row.get("is_correct")))
 
-    # Group the decisions of each (episode, round) so team state can be computed from the
+    # Group the decisions of each (cell, episode, round) so team state can be computed from the
     # same rows the agent statistics come from, rather than trusting two sources to agree.
-    by_round: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    #
+    # The cell is part of the key, not decoration. A ROOTS cell defaults its protocol to
+    # PRIVATE, so its 16-draw bank and the five-agent PRIVATE episode of the same item share an
+    # ``episode_id`` (M2/D-11) and collide into one 21-member group. Selecting teams by
+    # ``len(members) == N_AGENTS`` -- what this module used to do -- therefore did not exclude
+    # the bank: it excluded the *collision*, silently dropping all 2,400 natural PRIVATE
+    # round-0 rows, the arm PRIVATE is measured against. Keying on ``cell_id`` separates them,
+    # so those rows come back and the bank never enters as a team.
+    by_round: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
     for row in decisions:
-        by_round[(str(row.get("episode_id")), int(row.get("round") or 0))].append(row)
+        kind = str(row.get("cell_kind") or "")
+        if kind in _NON_TEAM_KINDS:
+            continue                       # a bank of draws and a single-agent probe are not teams
+        by_round[(str(row.get("cell_id") or ""), str(row.get("episode_id")),
+                  int(row.get("round") or 0))].append(row)
 
-    # Only real five-agent teams. A ROOTS cell defaults its protocol to PRIVATE, so a
-    # 16-draw root bank and the PRIVATE episode of the same item share an episode_id and
-    # land in the same group (16 + 5 = 21 members); the RECEIVER assay is a single agent.
-    # Neither is a team, and "how many of the five hold the correct class" is meaningless
-    # for them -- computing it anyway would silently redefine the study's central variable.
     excluded: Counter = Counter()
-    teams: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    teams: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for key, members in by_round.items():
         if len(members) == N_AGENTS:
             teams[key] = members
@@ -91,7 +102,8 @@ def build_frame(tables: Path) -> list[dict[str, Any]]:
     build_frame.excluded_groups = dict(sorted(excluded.items()))
 
     frame: list[dict[str, Any]] = []
-    for (episode_id, round_), members in sorted(teams.items(), key=lambda kv: str(kv[0])):
+    for (cell_id, episode_id, round_), members in sorted(teams.items(),
+                                                         key=lambda kv: str(kv[0])):
         episode = episodes.get(episode_id) or {}
         item_id = str(episode.get("item_id") or "")
         item = items.get(item_id) or {}
@@ -116,7 +128,7 @@ def build_frame(tables: Path) -> list[dict[str, Any]]:
             summary = rounds.get((episode_id, round_)) or {}
             frame.append({
                 # identity
-                "episode_id": episode_id, "item_id": item_id,
+                "episode_id": episode_id, "cell_id": cell_id, "item_id": item_id,
                 "agent_id": int(row.get("agent_id") or 0), "round": round_,
                 "decision_id": decision_id,
                 # configuration
@@ -169,9 +181,9 @@ def build_frame(tables: Path) -> list[dict[str, Any]]:
             })
 
     # What happened next, joined on (episode, agent, round -> round+1).
-    nxt = {(r["episode_id"], r["agent_id"], r["round"]): r for r in frame}
+    nxt = {(r["cell_id"], r["episode_id"], r["agent_id"], r["round"]): r for r in frame}
     for row in frame:
-        after = nxt.get((row["episode_id"], row["agent_id"], row["round"] + 1))
+        after = nxt.get((row["cell_id"], row["episode_id"], row["agent_id"], row["round"] + 1))
         row["next_correct"] = None if after is None else after["correct"]
         row["next_class"] = None if after is None else after["answer_class"]
         row["changed_class"] = (None if after is None

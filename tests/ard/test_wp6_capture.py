@@ -543,3 +543,132 @@ def test_a_narrowed_entropy_anchor_set_is_honoured_on_both_sides(tok, engine, tm
     assert {r["anchor_kind"] for r in rows if r["extra"]["entropy_anchor"]} == {A.ANCHOR_PROMPT_END}
     assert all("entropy_nats" not in r["extra"] for r in rows
                if r["anchor_kind"] != A.ANCHOR_PROMPT_END)
+
+
+# --------------------------------------------------------------------------- the cell worker
+
+# Regression cover for the two wiring defects that would have made a GPU run silently
+# useless: (a) ``cells.build_e6_capture`` emitted no ``cells``/``manifest``/``snapshot_path``,
+# so every item resolved an empty work list, and (b) ``run_capture_cell`` wrote item status
+# "no_decisions" and exited 0 on that empty list — a cell that captured nothing looked
+# complete.  The pair is only visible in the worker, so these tests drive the worker.
+
+CAPTURE_CELL = "EPISODE.natural.PEER.8B.T1024.train.s000"
+
+
+def capture_run(tok, tmp_path, *, item_id="i1", n=2, cells=(CAPTURE_CELL,)):
+    """A run root with one generation cell, ``n`` replayable decisions and their records."""
+    run_root = tmp_path / "run"
+    from agents_scaling.study.inference.store import RequestStore
+
+    store = RequestStore(run_root / "requests")
+    decisions = []
+    for i in range(n):
+        rid = did(200 + i)
+        store.publish(W.request_record(tok, rid, task=f"Task {i}?", content=GOOD))
+        decisions.append((rid, "PEER", 1, i))
+    W.item_result_file(run_root, cells[0], item_id, decisions=decisions)
+    options = {"cells": list(cells), "snapshot_path": "unused (ENGINE_FACTORY is stubbed)",
+               "protocols": [p.value for p in K.CAPTURE_PROTOCOLS],
+               "anchors": list(K.CAPTURE_ANCHORS), "staging": str(tmp_path / "stage"),
+               "revision": W.REVISION_8B}
+    return run_root, options
+
+
+@pytest.fixture
+def stub_factory(monkeypatch, tok, engine):
+    """Replace the HF snapshot loader: these tests exercise wiring, not the model."""
+    monkeypatch.setattr(C, "ENGINE_FACTORY", lambda options: (engine, tok))
+
+
+def test_a_cell_whose_options_name_no_decision_source_is_refused(tok, tmp_path, stub_factory):
+    """Defect (a): the builder emitted only relative_layers/anchors/sha, so the worker had
+    nothing to replay — and said so by exiting 0."""
+    run_root, options = capture_run(tok, tmp_path)
+    for key in ("cells", "manifest"):
+        options.pop(key, None)
+    runner = W.FakeRunner(run_root, options, items=("i1",))
+    with pytest.raises(C.CaptureCellError, match="neither 'cells' nor 'manifest'"):
+        C.run_capture_cell(runner, "i1")
+    assert runner.written == []                     # nothing was marked complete
+
+
+def test_a_cell_pointed_at_generation_cells_that_do_not_exist_is_refused(tok, tmp_path, stub_factory):
+    run_root, options = capture_run(tok, tmp_path)
+    options["cells"] = ["EPISODE.natural.PEER.8B.T1024.train.s404"]
+    runner = W.FakeRunner(run_root, options, items=("i1",))
+    with pytest.raises(C.CaptureCellError, match="items/ directory"):
+        C.run_capture_cell(runner, "i1")
+    assert runner.written == []
+
+
+def test_an_item_with_no_eligible_decision_is_a_clean_no_decisions(tok, tmp_path, stub_factory):
+    """The legitimate empty: the generation cells were read, this item has nothing in them
+    (every episode was a context failure).  That is not a defect and must not raise."""
+    run_root, options = capture_run(tok, tmp_path)
+    W.item_result_file(run_root, CAPTURE_CELL, "i2", decisions=())
+    runner = W.FakeRunner(run_root, options, items=("i1", "i2"))
+    C.run_capture_cell(runner, "i2")
+    assert runner.written == [("i2", "no_decisions")]
+
+
+def test_a_cell_that_captures_nothing_fails_instead_of_looking_complete(tok, tmp_path, stub_factory):
+    """Defect (b): a non-empty work list whose every decision was skipped (here: no record
+    in the store, with strict_records off) used to write a complete item."""
+    run_root, options = capture_run(tok, tmp_path, n=0)
+    W.item_result_file(run_root, CAPTURE_CELL, "i1",
+                       decisions=[(did(900), "PEER", 1, 0), (did(901), "PEER", 1, 1)])
+    options["strict_records"] = False
+    runner = W.FakeRunner(run_root, options, items=("i1",))
+    with pytest.raises(C.CaptureCellError, match="captured 0 of 2"):
+        C.run_capture_cell(runner, "i1")
+    assert runner.written == []
+
+
+def test_a_cell_that_captures_its_decisions_completes_and_reports_the_count(tok, tmp_path, stub_factory):
+    run_root, options = capture_run(tok, tmp_path, n=2)
+    runner = W.FakeRunner(run_root, options, items=("i1",))
+    C.run_capture_cell(runner, "i1")
+    assert runner.written == [("i1", "complete")]
+    captured = dict(runner.events)["captured"]
+    assert captured["captured"] == 2
+    assert captured["rows"] == 2 * len(K.CAPTURE_ANCHORS) * len(W.tiny_engine(tok).blocks)
+
+    # ...and a second run over the same committed keys is a no-op resume, not a failure:
+    # zero captures is only legitimate when nothing was pending.
+    again = W.FakeRunner(run_root, options, items=("i1",))
+    C.run_capture_cell(again, "i1")
+    assert again.written == [("i1", "complete")]
+    assert dict(again.events)["captured"]["captured"] == 0
+
+
+def test_assert_capture_progress_separates_a_resume_from_a_silent_zero():
+    ok_resume = {"work_items": 12, "pending": 0, "captured": 0}
+    assert C.assert_capture_progress(ok_resume) is ok_resume
+    with pytest.raises(C.CaptureCellError, match="captured 0 of 12"):
+        C.assert_capture_progress({"work_items": 12, "pending": 12, "captured": 0,
+                                   "missing_records": 0, "anchor_errors": 12})
+    # an empty work list is a bug at this point: resolve_cell_work already returned early
+    with pytest.raises(C.CaptureCellError):
+        C.assert_capture_progress({"work_items": 0, "pending": 0, "captured": 0})
+
+
+def test_the_engine_factory_names_the_builder_when_the_snapshot_is_unpinned():
+    """``options['snapshot_path']`` was the only hard KeyError in the worker, and it was
+    reached *after* the empty-work-list exit — so the real run never saw it."""
+    with pytest.raises(C.CaptureCellError, match="snapshot_path"):
+        C.default_engine_factory({"relative_layers": list(K.CAPTURE_RELATIVE_LAYERS)})
+    with pytest.raises(C.CaptureCellError, match="offline HF snapshot"):
+        C.default_engine_factory({"snapshot_path": "/nonexistent/snapshot"})
+
+
+def test_the_protocol_filter_keeps_the_shared_round_0_roots(tok, tmp_path):
+    """``options['protocols']`` narrows rounds 1-3 only: one root is replayed once and
+    joined by every protocol (spec §14.2 "reuse root captures across protocols")."""
+    run_root, options = capture_run(tok, tmp_path, n=0)
+    W.item_result_file(run_root, CAPTURE_CELL, "i1", decisions=[
+        (did(300), "PEER", 0, 0), (did(301), "PEER", 1, 0), (did(302), "BALANCED", 1, 0)])
+    both = C.resolve_cell_work(run_root, "i1", options)
+    assert {(w.protocol, w.round_) for w in both} == {("PEER", 0), ("PEER", 1), ("BALANCED", 1)}
+    narrowed = C.resolve_cell_work(run_root, "i1", {**options, "protocols": ["PEER"]})
+    assert {(w.protocol, w.round_) for w in narrowed} == {("PEER", 0), ("PEER", 1)}

@@ -53,8 +53,12 @@ from agents_scaling.study.neural.geometry import (
 
 __all__ = [
     "AGENT_COLUMNS",
+    "AGENT_JOIN_COLUMNS",
+    "AGENT_SPEC_COLUMNS",
     "DEGENERATE_EPS",
     "GEOMETRY_COLUMNS",
+    "GEOMETRY_JOIN_COLUMNS",
+    "GEOMETRY_SPEC_COLUMNS",
     "GeometryError",
     "StateSet",
     "TEAM_STATISTIC_NONCLAIM",
@@ -77,18 +81,54 @@ TEAM_STATISTIC_NONCLAIM = (
     "requires the per-agent features in neural_agent (spec 14.3)."
 )
 
-#: ``ard.compact.SCHEMAS["neural_geometry"]`` (frozen by WP4); extras are appended after.
-GEOMETRY_COLUMNS: tuple[str, ...] = (
+#: The WP4-frozen prefix of ``ard.compact.SCHEMAS["neural_geometry"]``: the §14.3 team
+#: statistics, in the order WP4 fixed.  It never changes.
+GEOMETRY_SPEC_COLUMNS: tuple[str, ...] = (
     "item_id", "protocol", "round", "layer", "anchor", "participation_ratio", "entropy_rank",
     "leading_eigenvalue_share", "total_variance", "mean_pairwise", "min_pairwise",
     "max_pairwise", "cosine_distance", "normalised", "feature_time", "last_allowed_round",
 )
-#: ``ard.compact.SCHEMAS["neural_agent"]``.
-AGENT_COLUMNS: tuple[str, ...] = (
+#: What the shards→tables adapter (:mod:`agents_scaling.ard.neural.tables`) must also
+#: declare, because ``compact._project`` is a strict whitelist.  ``cell_id``/``episode_id``
+#: are load-bearing, not decoration: ``round_summary`` and ``minority_frame`` are keyed by
+#: ``episode_id × round``, and an item × protocol key collides for the two challenge teams
+#: of one item (``ard.compact`` module docstring).  The rest are ledger facts (what the
+#: store actually held) and completeness denominators (how many of the five agents had a
+#: state at all), so no coverage claim has to be made outside the table.
+GEOMETRY_JOIN_COLUMNS: tuple[str, ...] = (
+    "cell_id", "episode_id", "checkpoint", "cohort", "split", "family", "agent_ids",
+    "n_states", "n_sites", "team_complete", "n_missing_states", "missing_codes",
+    "hidden_size", "rank_ceiling", "n_nonzero_eigenvalues", "spectrum_testable",
+    "representation", "state_norm_mean", "state_norm_std",
+    "entropy_anchor", "entropy_bits_mean", "n_entropy_states",
+    "has_previous_state", "mean_own_displacement", "mean_displacement_alignment",
+    "n_displacement_states", "consumer_revision", "hook_convention",
+)
+#: ``ard.compact.SCHEMAS["neural_geometry"]`` in full.
+GEOMETRY_COLUMNS: tuple[str, ...] = GEOMETRY_SPEC_COLUMNS + GEOMETRY_JOIN_COLUMNS
+
+#: The WP4-frozen prefix of ``ard.compact.SCHEMAS["neural_agent"]``.
+AGENT_SPEC_COLUMNS: tuple[str, ...] = (
     "item_id", "protocol", "round", "layer", "anchor", "agent_id", "state_norm",
     "distance_to_peer_centroid", "distance_to_nearest_peer", "own_displacement",
     "displacement_alignment", "near_zero_denominator", "feature_time", "last_allowed_round",
 )
+#: Same rule as :data:`GEOMETRY_JOIN_COLUMNS`, plus ``decision_id`` — the column that makes
+#: an agent row joinable to ``decisions``/``minority_frame``, and ``item_id`` (already in
+#: the frozen prefix) the column it is clustered on.  ``present``/``missingness`` keep the
+#: decisions whose anchor was never reached *in* the table with NaN geometry, so a
+#: denominator is never reconstructed from outside it.
+AGENT_JOIN_COLUMNS: tuple[str, ...] = (
+    "decision_id", "cell_id", "episode_id", "checkpoint", "cohort", "split", "family",
+    "boundary_injected", "present", "missingness", "nearest_peer_agent",
+    "has_previous_state", "previous_decision_id", "displacement_denominator",
+    "direction_denominator", "n_team_states", "hidden_size", "token_offset", "channel",
+    "generated_token_count", "entropy_anchor", "entropy_nats", "entropy_bits", "top1_prob",
+    "logit_margin", "prompt_tokens", "completion_tokens", "consumer_revision",
+    "hook_convention",
+)
+#: ``ard.compact.SCHEMAS["neural_agent"]`` in full.
+AGENT_COLUMNS: tuple[str, ...] = AGENT_SPEC_COLUMNS + AGENT_JOIN_COLUMNS
 
 
 # --------------------------------------------------------------------------- additions
