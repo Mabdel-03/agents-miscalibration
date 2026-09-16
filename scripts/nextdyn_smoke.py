@@ -36,36 +36,91 @@ from agents_scaling.nextdyn import config as C  # noqa: E402
 from agents_scaling.nextdyn import gates as G  # noqa: E402
 from agents_scaling.nextdyn import plan as PLAN  # noqa: E402
 from agents_scaling.nextdyn import run_one  # noqa: E402
-from agents_scaling.nextdyn.kinds import Lane  # noqa: E402
 from agents_scaling.study.types import EXIT_DONE  # noqa: E402
 
-SMOKE_BLOCK = CE.Block.BANKS
 SMOKE_MANIFEST = "SMOKE"
+AUDIT_MANIFEST = "SMOKE_AUDIT"
 
 
-def smoke_manifest(run_root: Path, cfg: Any, inventory: PLAN.Inventory) -> Path:
-    """One tiny manifest: the bank block at the ``pilot.smoke_solver_calls_per_model`` size.
+def smoke_manifests(run_root: Path, cfg: Any, inventory: PLAN.Inventory,
+                    blocks: Sequence[str] | None = None) -> list[Path]:
+    """One manifest per smoke block, in dispatch order (``plan.SMOKE_BLOCKS``).
 
-    A bank cell is the right shape for the smoke: one call per draw, no dependency, every
-    model and adapter reachable by changing one cell field -- and the draws it commits are
-    real draws the pilot then reuses through the store rather than throwing away.
+    Every phase the launch gate scores gets a producer here.  The first version of this built
+    the bank block alone, so four of the gate's five phases came back ``unmeasured`` -- the
+    "both ends built, no middle" shape that rule R3 exists to catch, in the very step whose
+    job is to catch it before the campaign starts.
     """
-    calls = int(cfg.pilot.smoke_solver_calls_per_model)
-    per_family = max(calls // max(len(inventory.families), 1), 1)
-    reduced = inventory.limited(per_family=per_family)
-    dag = PLAN.build_dag(cfg, reduced, stage=CE.STAGE_SMOKE, blocks=(SMOKE_BLOCK,))
-    path = CE.manifest_path(run_root, SMOKE_BLOCK, SMOKE_MANIFEST)
-    CE.write_manifest(path, dag.of_block(SMOKE_BLOCK), block=SMOKE_BLOCK,
-                      meta={"stage": CE.STAGE_SMOKE, "solver_calls_per_model": calls})
+    dag = PLAN.smoke_dag(cfg, inventory)
+    wanted = tuple(blocks) if blocks else PLAN.SMOKE_BLOCKS
+    out: list[Path] = []
+    for block in PLAN.SMOKE_BLOCKS:
+        if block not in wanted:
+            continue
+        cells = dag.of_block(block)
+        if not cells:
+            continue
+        path = CE.manifest_path(run_root, block, SMOKE_MANIFEST)
+        CE.write_manifest(path, cells, block=block, meta={"stage": CE.STAGE_SMOKE})
+        out.append(path)
+    return out
+
+
+def audit_manifest(run_root: Path, cfg: Any) -> Path | None:
+    """The ``audit`` manifest, emitted after the episodes committed and their pools sealed."""
+    cells = PLAN.smoke_audit_dag(run_root, cfg)
+    if not cells:
+        return None
+    path = CE.manifest_path(run_root, CE.Block.AUDIT, AUDIT_MANIFEST)
+    CE.write_manifest(path, cells, block=CE.Block.AUDIT, meta={"stage": CE.STAGE_SMOKE})
     return path
+
+
+def endpoints_of(manifests: Sequence[Path]) -> list[tuple[str, str]]:
+    """The ``(pool, lane)`` pairs the smoke's cells will ask for an endpoint in.
+
+    The pair, not the pool alone: the E2b block puts its 8B and 32B cells in the *same* pool,
+    so a `low` pool with a live 8B and no 32B satisfies a pool-level check and then stalls
+    every 32B cell for the full wait.  ``cell.pool`` is a :class:`kinds.Pool`, whose ``str()``
+    is ``Pool.LOW`` while its ``value`` is the directory name that names the sub-run-root.
+    """
+    # ``.value`` on both: ``Pool.LOW``/``Lane.SMALL`` are what ``str()`` gives, while ``low``
+    # and ``8B`` are the sub-run-root directory and the serving-profile suffix they mean.
+    pairs = {(str(getattr(cell.pool, "value", cell.pool)),
+              str(getattr(cell.lane, "value", cell.lane)))
+             for path in manifests for cell in CE.load_manifest(path) if cell.pool is not None}
+    return sorted(pairs)
+
+
+def missing_endpoints(run_root: Path, wanted: Sequence[tuple[str, str]]) -> list[str]:
+    """Refuse up front when something the smoke needs has no registered endpoint.
+
+    Without this the smoke sits for ``wait_s`` *per cell* against an empty pool and prints
+    nothing at all -- the first live run waited half an hour on a `low` pool that had no
+    replica because the fleet had been brought up on `deadline`.  A missing endpoint is an
+    operator error with an obvious fix, so it is reported before anything is dispatched.
+    """
+    from agents_scaling.nextdyn import fleet as FL
+
+    out: list[str] = []
+    for pool, lane in wanted:
+        root = FL.pool_run_root(run_root, pool)
+        live = {FL.model_size_of(name) for name in FL._served_names(root)}
+        if lane not in live:
+            out.append(f"{pool}/{lane}")
+    return out
 
 
 def drive(run_root: Path, manifest: Path, cfg_path: Path, *, wait_s: float) -> list[int]:
     cells = CE.load_manifest(manifest)
-    return [run_one.main(["--run-root", str(run_root), "--config", str(cfg_path),
-                          "--manifest", str(manifest), "--index", str(index),
-                          "--wait-s", str(wait_s)])
-            for index in range(len(cells))]
+    codes: list[int] = []
+    for index in range(len(cells)):
+        code = run_one.main(["--run-root", str(run_root), "--config", str(cfg_path),
+                             "--manifest", str(manifest), "--index", str(index),
+                             "--wait-s", str(wait_s)])
+        codes.append(code)
+        print(f"[smoke] {manifest.stem} cell {index + 1}/{len(cells)} -> exit {code}", flush=True)
+    return codes
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -76,9 +131,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="how long a cell waits for a live endpoint before exit 2")
     parser.add_argument("--measure-only", action="store_true",
                         help="skip the dispatch and measure what is already committed")
+    parser.add_argument("--allow-empty-pools", action="store_true",
+                        help="dispatch even when a pool has no registered endpoint")
+    parser.add_argument("--blocks", default=None,
+                        help="comma-separated subset of %s; the manifests are the same cells "
+                             "either way, so a later run finishes what this one left"
+                             % ",".join(PLAN.SMOKE_BLOCKS))
+    parser.add_argument("--skip-audit", action="store_true",
+                        help="do not emit the audit manifest (its phase then goes unmeasured)")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     cfg = C.load_study(args.config)
+    compute = C.load_compute(C.sibling_config(args.config, C.DEFAULT_COMPUTE_CONFIG.name)
+                             or C.DEFAULT_COMPUTE_CONFIG)
     run_root = Path(args.run_root)
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -89,8 +154,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:                     # noqa: BLE001 - reported, not a traceback
             print(f"[smoke] no inventory under {run_root}: {exc}", file=sys.stderr)
             return 2
-        manifest = smoke_manifest(run_root, cfg, inventory)
-        codes = drive(run_root, manifest, args.config, wait_s=args.wait_s)
+        blocks = tuple(b.strip() for b in args.blocks.split(",")) if args.blocks else None
+        unknown = sorted(set(blocks or ()) - set(PLAN.SMOKE_BLOCKS))
+        if unknown:
+            print(f"[smoke] not smoke blocks: {unknown}; choose from {list(PLAN.SMOKE_BLOCKS)}",
+                  file=sys.stderr)
+            return 2
+        manifests = smoke_manifests(run_root, cfg, inventory, blocks)
+        wanted = endpoints_of(manifests)
+        missing = missing_endpoints(run_root, wanted)
+        if missing and not args.allow_empty_pools:
+            need = ", ".join(f"{pool}/{lane}" for pool, lane in wanted)
+            print(f"[smoke] no registered endpoint for {missing}; the smoke needs {need}.  "
+                  "Bring them up (`nextdyn fleet up --pool <p> --spec …`) or pass "
+                  "--allow-empty-pools to wait anyway", file=sys.stderr)
+            return 2
+        for path in manifests:
+            n = len(CE.load_manifest(path))
+            print(f"[smoke] {path.stem}: {n} cells", flush=True)
+            codes += drive(run_root, path, args.config, wait_s=args.wait_s)
+        audit = None if args.skip_audit else audit_manifest(run_root, cfg)
+        if args.skip_audit:
+            print("[smoke] --skip-audit: the audit phase will be unmeasured", file=sys.stderr)
+        elif audit is None:
+            print("[smoke] no pool sealed, so no audit cell: the launch gate will score the "
+                  "audit phase unmeasured, which is a failure", file=sys.stderr)
+        else:
+            print(f"[smoke] {audit.stem}: {len(CE.load_manifest(audit))} cells", flush=True)
+            codes += drive(run_root, audit, args.config, wait_s=args.wait_s)
         print(f"[smoke] {len(codes)} cells -> {sorted(set(codes))}")
         if any(code != EXIT_DONE for code in codes):
             print("[smoke] some cells did not finish; the measurement below covers what did",

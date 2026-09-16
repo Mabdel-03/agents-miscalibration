@@ -351,6 +351,8 @@ class PilotBlock:
     capture_items_per_family: int
     smoke_solver_calls_per_model: int
     smoke_receiver_episodes: int
+    smoke_episode_items: int
+    smoke_audit_cells: int
 
 
 @dataclass(frozen=True)
@@ -1316,6 +1318,8 @@ CONSUMERS: Final[Mapping[str, str]] = {
     "study.pilot.capture_items_per_family": _MOD + "plan",
     "study.pilot.smoke_solver_calls_per_model": _MOD + "gates",
     "study.pilot.smoke_receiver_episodes": _MOD + "gates",
+    "study.pilot.smoke_episode_items": _MOD + "plan",
+    "study.pilot.smoke_audit_cells": _MOD + "plan",
     "study.gates.max_unresolved_infra_rate": _MOD + "gates",
     "study.gates.max_format_failure_rate": _MOD + "gates",
     "study.gates.max_arm_differential_pp": _MOD + "gates",

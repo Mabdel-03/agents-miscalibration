@@ -293,3 +293,49 @@ def test_a_second_planner_pass_on_a_locked_run_exits_zero(tmp_run_root, study_cf
     # the lock is released with the file: the next pass does the work
     after = PLAN.planner_pass(tmp_run_root, study_cfg, inventory=inventory)
     assert after.skipped != 1 or "lock" not in after.detail
+
+
+# --------------------------------------------------------------------------- the smoke
+
+
+def test_the_smoke_produces_every_phase_the_launch_gate_scores(study_cfg, compute_cfg, inventory):
+    """R3 in the one place it was missing: the gate's five consumers, five producers.
+
+    ``gates.launch_gate`` scores parse validity for every phase in ``GENERATING_PHASES`` and
+    reports a phase with no calls as ``unmeasured``, which is a failure.  The smoke built the
+    bank block alone, so four of those five phases could never be anything but unmeasured --
+    "both ends built, no middle" inside the step whose whole job is to catch that before the
+    campaign starts.  ``audit`` is absent from ``SMOKE_BLOCKS`` on purpose: its cells cannot
+    exist until a pool is sealed from committed episodes, so ``smoke_audit_dag`` emits it
+    afterwards, and this asserts the remaining four are planned up front.
+    """
+    from agents_scaling.nextdyn import gates as G
+    from agents_scaling.nextdyn import contract as NK
+    from agents_scaling.nextdyn import kinds as K
+
+    dag = PLAN.smoke_dag(study_cfg, inventory, compute=compute_cfg)
+    phases = {phase for block in PLAN.SMOKE_BLOCKS for cell in dag.of_block(block)
+              for phase in K.phases_of(cell.kind)}
+    assert set(G.GENERATING_PHASES) - phases == {NK.PHASE_AUDIT}
+    assert all(dag.of_block(block) for block in PLAN.SMOKE_BLOCKS)
+
+
+def test_the_smoke_is_the_floor_not_the_declared_call_budget(study_cfg, compute_cfg, inventory):
+    """One item per family, because a bank *item* is 16 or 32 draws.
+
+    Reading ``smoke_solver_calls_per_model: 20`` as twenty items per family dispatched 864
+    calls against a 20-call declaration -- a knob whose meaning was not what it did.  The
+    smoke takes the floor (``smoke_episode_items``) and the gate checks the call count it
+    actually produced against its own ``>=`` floor.
+    """
+    reduced = PLAN.smoke_inventory(study_cfg, inventory)
+    assert all(len(v) <= int(study_cfg.pilot.smoke_episode_items)
+               for v in reduced.items.values())
+    assert len(reduced.problems) <= int(study_cfg.pilot.smoke_receiver_episodes)
+    # and the E2b cut is per model, so the 32B adapter is never the half that goes unmeasured
+    e2b = PLAN.smoke_dag(study_cfg, inventory, compute=compute_cfg).of_block(CE.Block.E2B)
+    by_model: dict[str, int] = {}
+    for cell in e2b:
+        by_model[cell.model] = by_model.get(cell.model, 0) + 1
+    assert len(by_model) == len(study_cfg.experiments.E2b.models) >= 2, by_model
+    assert all(n <= int(study_cfg.pilot.smoke_receiver_episodes) for n in by_model.values())

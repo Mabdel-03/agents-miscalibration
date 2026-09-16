@@ -178,6 +178,18 @@ CELL_KIND_COMPAT: Final[Mapping[str, tuple[CellKind, str | None]]] = {
 }
 
 
+def phases_of(kind: CellKind | str) -> tuple[str, ...]:
+    """The ``decisions.phase`` values cells of this kind write, read off ``CELL_KIND_COMPAT``.
+
+    Derived rather than declared again (R1): that map is already the one statement of which
+    kind writes which phase, and a second list would be the thing that drifts.  A kind that
+    writes no generating phase (CAPTURE, GRADE, …) returns empty.
+    """
+    kind = coerce_kind(kind)
+    return tuple(dict.fromkeys(phase for cell_kind, phase in CELL_KIND_COMPAT.values()
+                               if cell_kind is kind and phase is not None))
+
+
 def spec_for(kind: CellKind | str) -> KindSpec:
     return KIND_TABLE[coerce_kind(kind)]
 
@@ -306,5 +318,5 @@ def is_bank(kind: CellKind | str) -> bool:
 __all__ = [
     "CELL_KIND_COMPAT", "CellShape", "DEADLINE_BEARING", "GENERATION_LANES", "KIND_FIELD_CONSUMERS",
     "KIND_TABLE", "KindSpec", "Lane", "PRIORITY",
-    "Pool", "cell_shape", "is_bank", "items_per_cell", "lane_for", "pool_for", "priority_rank", "spec_for",
+    "Pool", "cell_shape", "is_bank", "items_per_cell", "lane_for", "pool_for", "phases_of", "priority_rank", "spec_for",
 ]

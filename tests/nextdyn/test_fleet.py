@@ -371,3 +371,24 @@ def test_a_missing_model_contract_is_refused_before_a_gpu_is_allocated(tmp_path,
     monkeypatch.setenv(FL.MODEL_CONTRACT_ENV, str(tmp_path / "gone.json"))
     with pytest.raises(ManifestError, match="does not exist"):
         FL.model_contract_path()
+
+
+def test_a_replica_registered_under_its_profile_name_is_counted(tmp_run_root, compute_cfg,
+                                                                monkeypatch):
+    """A live pool counted zero, because the lookup used the wrong one of two names.
+
+    ``registry.servers_dir`` names each directory for the **serving profile** (``nd1-8B``),
+    while ``compute.serving.max_num_seqs_by_gpu`` is keyed by model *size* (``8B``).  Counting
+    endpoints under the size meant a healthy fleet reported no live replicas -- and
+    ``gates launch --required-replicas`` reads this number, so the launch gate would have
+    failed against a fleet that was up.
+    """
+    root = FL.pool_run_root(tmp_run_root, Pool.DEADLINE)
+    (root / FL.SERVERS_DIR / "nd1-8B").mkdir(parents=True)
+    (root / FL.SERVERS_DIR / "nd1-32B").mkdir(parents=True)
+    assert FL._served_names(root) == ("nd1-32B", "nd1-8B")
+    monkeypatch.setattr(FL.REG, "list_live_servers", lambda r, name, **k: [object()])
+    assert FL.live_endpoint_count(tmp_run_root, compute=compute_cfg, pool=Pool.DEADLINE) == 2
+    # a pool that nothing registered in is zero, not an error
+    assert FL.live_endpoint_count(tmp_run_root, compute=compute_cfg, pool=Pool.AUDIT) == 0
+    assert FL._served_names(FL.pool_run_root(tmp_run_root, Pool.LOW)) == ()

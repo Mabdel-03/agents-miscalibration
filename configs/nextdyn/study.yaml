@@ -277,8 +277,10 @@ pilot:
   synthetic_receiver_problems: 30       # ten per depth, full grid, one seed, primary
   adapter_check_problems: 12            # fixed 12-problem 32B adapter check, four per depth
   capture_items_per_family: 10          # first 10 eligible pilot items per task under PRIVATE and PEER
-  smoke_solver_calls_per_model: 20      # validate --smoke: per model/adapter incl. the non-thinking companion
-  smoke_receiver_episodes: 5            # validate --smoke: complete synthetic receiver episodes
+  smoke_solver_calls_per_model: 20      # validate --smoke: the floor the launch gate scores the bank phase against
+  smoke_receiver_episodes: 5            # validate --smoke: complete synthetic receiver episodes, per model
+  smoke_episode_items: 1                # validate --smoke: items per family for the revision phase (one is the floor)
+  smoke_audit_cells: 1                  # validate --smoke: audit cells off the pools the smoke's episodes sealed
 
 # Spec 18.6 pilot-gate operational targets (design-quality targets; never grounds to delete
 # confirmation examples).  Rates are fractions of decisions; the differential is in pp and

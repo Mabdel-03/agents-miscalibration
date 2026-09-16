@@ -53,6 +53,8 @@ FLEET_DIR: Final[str] = "fleet"
 PREFLIGHT_FILE: Final[str] = "preflight/h0.json"
 RESOURCES_DIR: Final[str] = "resources"
 LOGS_DIR: Final[str] = "logs"
+#: ``registry.servers_dir`` is hard-coded to ``<root>/servers`` (plan §3.2).
+SERVERS_DIR: Final[str] = "servers"
 #: The model contract the registrar loads, and the env var that may override it.
 MODEL_CONTRACT_FILE: Final[str] = "model_contracts.v1.json"
 MODEL_CONTRACT_ENV: Final[str] = "ASYS_MODEL_CONTRACT"
@@ -226,28 +228,34 @@ SERVE_FIELDS: Final[tuple[str, ...]] = ("job_id", "name", "partition", "state", 
 def live_endpoint_count(run_root: str | os.PathLike, *, compute: Any,
                         pool: Pool | str | None = None) -> int:
     """Registered, live endpoints across the pools (what the lane throttle is computed from)."""
+    del compute                          # the registry declares its own names; see _served_names
     total = 0
     pools = [pool] if pool is not None else list(Pool)
     for one in pools:
         root = pool_run_root(run_root, one)
-        if not (root / "servers").exists():
-            continue
-        for model in _served_names(compute):
+        for name in _served_names(root):
             try:
-                total += len(REG.list_live_servers(root, model))
+                total += len(REG.list_live_servers(root, name))
             except Exception:                            # noqa: BLE001 - a monitor never raises
                 continue
     return total
 
 
-def _served_names(compute: Any) -> tuple[str, ...]:
-    """The served model names the registry files are keyed by (``8B``/``32B``)."""
-    names: list[str] = []
-    for table in compute.serving.max_num_seqs_by_gpu.values():
-        for key in table:
-            if key not in names:
-                names.append(str(key))
-    return tuple(names)
+def _served_names(server_root: Path) -> tuple[str, ...]:
+    """The names this pool's registry is actually keyed by, read from the registry itself.
+
+    A registry directory is named for the **serving profile** (``nd1-8B``), not for the served
+    model name (``8B``).  Deriving the names from ``compute.serving.max_num_seqs_by_gpu``, whose
+    tables are keyed by model size, meant this counted endpoints under ``servers/8B/`` while
+    every replica had registered under ``servers/nd1-8B/`` -- so a pool with live replicas
+    counted zero, and ``gates launch --required-replicas`` would have failed against a healthy
+    fleet forever.  Reading the directory is also what makes an ad-hoc ``fleet up --spec`` with
+    a profile that is in no pool spec count correctly.
+    """
+    base = server_root / SERVERS_DIR
+    if not base.is_dir():
+        return ()
+    return tuple(sorted(entry.name for entry in base.iterdir() if entry.is_dir()))
 
 
 # --------------------------------------------------------------------------- idle capacity

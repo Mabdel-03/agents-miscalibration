@@ -150,8 +150,14 @@ class Inventory:
         return tuple(self.panels.get(name, {}).get(family, ()))
 
     def limited(self, *, per_family: int | None = None,
-                panels: Mapping[str, int] | None = None) -> "Inventory":
-        """A prefix of every list (the pilot subset is exactly this, spec 19.1)."""
+                panels: Mapping[str, int] | None = None,
+                problems: int | None = None) -> "Inventory":
+        """A prefix of every list (the pilot subset is exactly this, spec 19.1).
+
+        ``problems`` is separate from ``per_family`` because the E2b panel is *generated* from
+        the study seed rather than read from the item store, so it has no family to be cut
+        within: a ``limited(per_family=1)`` inventory still carried all 33,600 E2b cells.
+        """
         def cut(values: Sequence[str], n: int | None) -> tuple[str, ...]:
             return tuple(values) if n is None else tuple(values[:n])
 
@@ -164,6 +170,7 @@ class Inventory:
                     for p, fam in self.panels.items()},
             buckets={f: tuple(b for b in v if per_family is None or b.index < per_family)
                      for f, v in self.buckets.items()},
+            problems=cut(self.problems, problems),
         )
 
 
@@ -994,6 +1001,76 @@ def _episode_cells_by_family(run_root: Path) -> Mapping[str, tuple[str, ...]]:
                 and (directory / deps.META_FILE).exists():
             out.setdefault(_family_of(directory.name), []).append(directory.name)
     return {family: tuple(cells) for family, cells in out.items()}
+
+
+# --------------------------------------------------------------------------- the smoke
+
+#: The blocks ``validate --smoke`` dispatches, in the order it dispatches them.  Chosen to be
+#: the smallest set that reaches every phase ``gates.launch_gate`` scores: BANKS and
+#: NATURAL_ROOTS produce ``bank``, E1_NATURAL produces ``revision``, E2B produces
+#: ``receiver_plan`` and ``receiver_decision``.  The fifth phase, ``audit``, has no block here
+#: because its cells do not exist until the planner seals a pool from completed episodes --
+#: :func:`smoke_audit_dag` emits it after the episode blocks have run.
+SMOKE_BLOCKS: Final[tuple[str, ...]] = (
+    Block.BANKS, Block.NATURAL_ROOTS, Block.E1_NATURAL, Block.E2B,
+)
+
+
+def smoke_inventory(cfg: Any, inventory: Inventory) -> Inventory:
+    """The smallest inventory that still reaches every scored phase.
+
+    One item per family rather than ``smoke_solver_calls_per_model`` items per family, which is
+    what the first version of this did: a bank *item* is 16 or 32 draws, so reading a 20-*call*
+    budget as 20 items per family dispatched 864 calls -- a knob whose declared meaning was not
+    what it did, which is the D-03 shape this package is built to design out.  One item per
+    family is the floor, and it clears the gate's ``>= 20`` comfortably (144 bank calls).
+    """
+    return inventory.limited(per_family=int(cfg.pilot.smoke_episode_items),
+                             problems=int(cfg.pilot.smoke_receiver_episodes))
+
+
+def smoke_dag(cfg: Any, inventory: Inventory, *, compute: Any | None = None) -> Plan:
+    """The dispatchable part of the smoke: every block whose cells exist before any run.
+
+    E2b is cut *per model* rather than by a flat cell prefix.  The builder orders its cells by
+    arm and then by model, so a flat prefix would have been entirely 8B and the 32B adapter --
+    the thing the smoke exists to check on both models -- would have gone unmeasured while the
+    gate reported the receiver phases green.
+    """
+    plan = build_dag(cfg, smoke_inventory(cfg, inventory), stage=CE.STAGE_SMOKE,
+                     compute=compute, blocks=SMOKE_BLOCKS)
+    per_model = int(cfg.pilot.smoke_receiver_episodes)
+    kept: dict[str, int] = {}
+    e2b: list[CellSpec] = []
+    for cell in plan.of_block(Block.E2B):
+        if kept.get(cell.model, 0) >= per_model:
+            continue
+        kept[cell.model] = kept.get(cell.model, 0) + 1
+        e2b.append(cell)
+    manifests = dict(plan.manifests)
+    manifests[Block.E2B] = tuple(e2b)
+    return replace(plan, manifests=manifests)
+
+
+def smoke_audit_dag(run_root: str | os.PathLike, cfg: Any, *, compute: Any | None = None
+                    ) -> tuple[CellSpec, ...]:
+    """The ``audit`` phase: SELECTION_AUDIT cells over the pools the smoke's episodes sealed.
+
+    Read off disk rather than planned, because an audit cell's identity *is* the sha of a pool
+    that did not exist until the episodes committed.  Returns empty when no pool sealed, which
+    the caller reports -- the launch gate then scores ``audit`` as unmeasured, which is a
+    failure, and that is the correct outcome for a smoke whose episodes never landed.
+    """
+    root = Path(run_root)
+    pools = seal_pools(root, cfg)
+    if not pools:
+        return ()
+    inventory = Inventory.from_run_root(root, cfg)
+    state = plan_state(cfg, smoke_inventory(cfg, inventory), stage=CE.STAGE_SMOKE,
+                       compute=compute, pool_registers=tuple(sorted(pools.items())),
+                       panel_registers={}, packet_registers={}, episode_cells={})
+    cells = CE.build_block(Block.AUDIT, state)
+    return tuple(cells[:int(cfg.pilot.smoke_audit_cells)])
 
 
 # --------------------------------------------------------------------------- the verb
