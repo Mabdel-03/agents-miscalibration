@@ -29,6 +29,7 @@ test over a dozen spec strings.  Every number -- tick interval, launches per tic
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,10 @@ FLEET_DIR: Final[str] = "fleet"
 PREFLIGHT_FILE: Final[str] = "preflight/h0.json"
 RESOURCES_DIR: Final[str] = "resources"
 LOGS_DIR: Final[str] = "logs"
+#: The model contract the registrar loads, and the env var that may override it.
+MODEL_CONTRACT_FILE: Final[str] = "model_contracts.v1.json"
+MODEL_CONTRACT_ENV: Final[str] = "ASYS_MODEL_CONTRACT"
+MODEL_CONTRACT_SHA_ENV: Final[str] = "ASYS_MODEL_CONTRACT_SHA256"
 SBATCH_DIR: Final[str] = "sbatch"
 JOB_PREFIX: Final[str] = "asys-nextdyn"
 SAMPLER_SCRIPT: Final[str] = "slurm/nextdyn_gpu_sampler.sh"
@@ -607,7 +612,8 @@ def _launch(run_root: Path, pool: Pool | str, target: Target, *, compute: Any, r
         target.time_limit, str(log_dir), replica=replica, serving_profile=target.size,
         max_num_seqs=max_num_seqs_for(compute, profile=target.size, gpu_type=target.gpu_type),
         gpu_memory_utilization=float(compute.serving.gpu_memory_utilization),
-        exclude_nodes=list(compute.serving.exclude_nodes))
+        exclude_nodes=list(compute.serving.exclude_nodes),
+        **model_contract_render_args())
     text = prepare_serve_script(rendered, run_root=run_root,
                                 repo=REPO_ROOT if repo is None else repo)
     path = serve_script_path(server_root, target, replica)
@@ -619,6 +625,46 @@ def _launch(run_root: Path, pool: Pool | str, target: Target, *, compute: Any, r
     if submit is not None:
         return str(submit(path, target, replica))
     return str(_sbatch(path))
+
+
+
+def model_contract_path() -> Path:
+    """The model contract the in-job registrar loads, resolved here rather than inherited."""
+    override = os.environ.get(MODEL_CONTRACT_ENV)
+    path = Path(override) if override else REPO_ROOT / "configs" / MODEL_CONTRACT_FILE
+    if not path.exists():
+        raise ManifestError(
+            f"model contract {path} does not exist; the in-job registrar cannot start without it "
+            f"(set {MODEL_CONTRACT_ENV} or restore configs/{MODEL_CONTRACT_FILE})")
+    return path
+
+
+def model_contract_render_args() -> dict[str, str]:
+    """The contract's path and digest, from one read of one file.
+
+    ``launch_server.render_sbatch`` defaults both of these to ambient ``ASYS_*`` environment
+    variables, and the serve template scrubs every ``ASYS_*`` name before it runs -- so whatever
+    the in-job registrar needs must be *rendered into* the script.  Launching from a shell that
+    had exported the digest but not the path rendered ``ASYS_MODEL_CONTRACT=""`` beside a valid
+    ``ASYS_MODEL_CONTRACT_SHA256``; the registrar resolved the empty path to the repo root and
+    died with ``ModelContractError: missing regular model contract`` six seconds in, with the
+    GPU already allocated.
+
+    The path and the digest are one fact, so they are produced by one read here.  The digest is
+    still a real check: it is taken at render time on the login node and re-verified inside the
+    job on the compute node, so a contract edited between spool and start is caught.  An
+    inherited ``ASYS_MODEL_CONTRACT_SHA256`` that disagrees with the file is refused rather than
+    silently preferred -- disagreement means the environment is describing a different file than
+    the one about to be shipped.
+    """
+    path = model_contract_path()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    inherited = os.environ.get(MODEL_CONTRACT_SHA_ENV)
+    if inherited and inherited != digest:
+        raise ManifestError(
+            f"{MODEL_CONTRACT_SHA_ENV}={inherited} disagrees with {path} (sha256 {digest}); the "
+            f"environment names a different contract than the one being shipped")
+    return {"model_contract_path": str(path), "model_contract_sha256": digest}
 
 
 def _sbatch(path: Path) -> str:
@@ -797,6 +843,8 @@ __all__ = [
     "SAMPLER_SCRIPT", "ServeJob", "TickReport",
     "Target", "assert_within_caps", "caps_from_preflight", "census", "fleet_stop_path",
     "free_gpus", "inject_gpu_sampler", "inject_sacct_capture", "is_stopped", "job_names",
+    "model_contract_path", "model_contract_render_args", "MODEL_CONTRACT_ENV",
+    "MODEL_CONTRACT_FILE", "MODEL_CONTRACT_SHA_ENV",
     "keepalive_job_name", "live_endpoint_count", "load_preflight", "main", "max_num_seqs_for",
     "assert_pool_preemption", "assert_walltimes", "gpus_per_replica", "parse_spec",
     "planning_caps", "pool_block", "pool_run_root", "port_offset", "prepare_serve_script",

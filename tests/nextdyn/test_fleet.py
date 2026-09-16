@@ -322,3 +322,52 @@ def test_the_serving_profile_is_projected_onto_the_model_size_it_names():
     assert FL.model_size_of("nd1-32B") == "32B"
     with pytest.raises(ConfigError, match="no serving profile"):
         FL.model_size_of("nd1-nope")
+
+
+def test_the_serve_script_never_ships_an_empty_model_contract_path(tmp_run_root, compute_cfg,
+                                                                   monkeypatch):
+    """The smoke fleet's first launch died in six seconds with the GPU already allocated.
+
+    ``launch_server.render_sbatch`` defaults the contract's path *and* its digest to ambient
+    ``ASYS_*`` variables, and the serve template scrubs every ``ASYS_*`` name before it runs --
+    so a launch from a shell that had exported the digest but not the path rendered
+    ``ASYS_MODEL_CONTRACT=""`` next to a perfectly good ``ASYS_MODEL_CONTRACT_SHA256``.  The
+    in-job registrar resolved the empty path to the repo root:
+    ``ModelContractError: missing regular model contract``.  Both halves are rendered in now,
+    from one read of one file, and this drives the real launch path with the environment
+    deliberately unset.
+    """
+    monkeypatch.delenv(FL.MODEL_CONTRACT_ENV, raising=False)
+    monkeypatch.delenv(FL.MODEL_CONTRACT_SHA_ENV, raising=False)
+    spooled: list[Path] = []
+    targets = FL.parse_spec("nd1-8B:1:ou_bcs_low:1-00:00:00", "a100")
+    FL.tick(tmp_run_root, Pool.LOW, targets, compute=compute_cfg,
+            submit=lambda path, target, replica: spooled.append(Path(path)) or "4242",
+            runner=lambda cmd: "")
+    text = spooled[0].read_text()
+    contract = FL.model_contract_path()
+    assert f'export {FL.MODEL_CONTRACT_ENV}="{contract}"' in text
+    assert f'{FL.MODEL_CONTRACT_ENV}=""' not in text
+    # the digest travels with the path, and it is the digest *of that file*
+    import hashlib
+
+    digest = hashlib.sha256(contract.read_bytes()).hexdigest()
+    assert f'{FL.MODEL_CONTRACT_SHA_ENV}="{digest}"' in text
+
+
+def test_a_digest_inherited_from_the_environment_may_not_disagree_with_the_file(monkeypatch):
+    """Naming a different file in the environment than the one being shipped is a hard failure.
+
+    Preferring the inherited digest would ship a script that fails verification inside the job;
+    preferring the file's would silently ignore an environment that thinks it is pinning
+    something.  Neither is a resolution, so the disagreement is reported.
+    """
+    monkeypatch.setenv(FL.MODEL_CONTRACT_SHA_ENV, "0" * 64)
+    with pytest.raises(ManifestError, match="disagrees with"):
+        FL.model_contract_render_args()
+
+
+def test_a_missing_model_contract_is_refused_before_a_gpu_is_allocated(tmp_path, monkeypatch):
+    monkeypatch.setenv(FL.MODEL_CONTRACT_ENV, str(tmp_path / "gone.json"))
+    with pytest.raises(ManifestError, match="does not exist"):
+        FL.model_contract_path()
