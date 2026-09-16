@@ -391,3 +391,34 @@ def test_two_selectors_that_issue_the_same_request_key_are_refused(
     with pytest.raises(ContractViolation):
         audit_run(nd_contract, nd_ctx, nd_serve, nd_pool, [sealed],
                   registry={**S.SELECTORS, clash.name: clash})
+
+
+def test_the_cells_scoring_calls_go_out_together_rather_than_one_at_a_time(
+        nd_contract, nd_ctx, nd_serve, nd_pool):
+    """R2's behavioural companion: ``max_inflight`` must govern the thing it names.
+
+    The static consumer check was satisfied -- ``worker_concurrency`` read the knob -- while
+    the worker looped over its packets calling ``generate`` one at a time and never used it.
+    That is D-03, and a read-check alone cannot see it, which is why the plan asks for a
+    "peak in-flight" companion.  The audit block is the largest single load on the 32B lane,
+    which the plan already calls the critical path.
+    """
+    import threading
+
+    sealed = pool("A", "B", "C", "D")
+    n_packets = len(bodies(sealed))
+    assert n_packets >= 2, "this test needs a pool with several distinct packets"
+    ctx_obj = nd_ctx(cell_id="selection_audit/test", pool=nd_pool(AUDIT_PROFILE))
+    # A barrier rather than a peak counter: every call must be in flight *at the same time* or
+    # the wait times out, so the test states the property instead of racing to observe it.
+    barrier = threading.Barrier(n_packets, timeout=10)
+
+    def counting(request):
+        barrier.wait()
+        return INF.generate_decision(request, ctx=ctx_obj)
+
+    with nd_serve(profile=AUDIT_PROFILE, responder=audit_responder("0.8")):
+        runner = Runner(nd_contract, counting, [sealed])
+        runner.concurrency = type("C", (), {"max_inflight": n_packets})()
+        AU.audit_worker(runner, FakeItem().source_item_id)
+    assert not barrier.broken, f"the audit's {n_packets} scoring calls were issued serially"
