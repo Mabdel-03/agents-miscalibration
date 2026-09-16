@@ -599,6 +599,45 @@ def capture_worker(runner, source_item_id) -> ItemFile                 # WP6
 
 Every `main(argv)` behind a verb returns `cli.Report`; the dispatcher prints one summary line.
 
+<!-- WP4 correction to §2.5 (dispatch and operations).  Every item below is an ADDITION or a
+     narrowing that the frozen signature could not express; no frozen name, positional
+     parameter or return type changed, except the two `tables.py` constraints named at the end,
+     which could not hold on a real run.  Reason column says why. -->
+
+**§2.5 corrections (WP4).**
+
+| Frozen form | As implemented | Why |
+|---|---|---|
+| `cell_id_for(kind, *, family, model, tokens_hash8, condition_hash12, split_role, replicate, shard, extra=())` | unchanged, but every component is a **bounded token** (`[A-Za-z0-9_-]{1,40}`) and the composition travels as a *member index* (`m0`/`m1`), never as its name | a cell id is a directory name and it travels into every option that names the cell (the capture panel's `cells` list), where `C1_COHERENT` would be the label-conditioned construction in a manifest (spec 5.3).  The composition name stays on `CellSpec.condition.composition`, which is a planning field the generation lane never reads. |
+| `build_dag(cfg, inventory, *, stage) -> Plan` | `…, compute=None, registry=None, blocks=None`; `Inventory` is WP4's own pre-outcome view (families, natural frame, sub-panels, buckets, mod97 problem ids) | §2.5 names `inventory` without a type, and the planner needs exactly the facts `item_splits` fixes *before any outcome* (plan §2.2).  `blocks` is what makes `plan --block E3B_RING --dry-run` -- the release gate -- a call rather than a special case. |
+| `run_cell(cell, run_root, *, server_run_root, pool, stop_event, cfg, max_inflight=None, dry_run=False)` | unchanged; `pool` selects the sub-run-root `$RUN/pools/<pool>` when `server_run_root` is not given | plan §3.2: `registry.servers_dir` is hard-coded to `<root>/servers`, so a pool *is* a run root. |
+| `materialize(run_root, *, out_dir="tables", strict=True) -> Report` | `…, cell_ids=None, cfg=None` and returns a `MaterializeReport` (version, dirs, row counts, violations); `materialize:main` returns the `cli.Report` | the verb's contract is the report line; the *function's* caller (the MATERIALIZE worker, the dry run, a test) needs the published version and the row census, and `cfg` is what lets it read `failure_policy.duplicate_logical_keys` rather than assume it. |
+| `FrozenManifest{contract_sha256, config_sha256, locks, manifests, sample_size_lock, analysis_lock_hash, code_version, frozen_at}` | gains `schema_version`, `study_id`, `stage`, `budgets`, `amendments_sha256`, `cost_profile`, `projection`, `host` | `freeze` refuses null **budgets** (spec 16.4) and snapshots the amendment ledger (plan §3.5 S3), so both have to be *in* the manifest the gate verifies; `projection` and `cost_profile` are what the admission decision was made against, which is the number a reader needs to judge it later. |
+| `smoke(...)` | `smoke_measurements(run_root, cells=None, *, rows=None)` + `write_measured` / `load_measured`, keyed on `contract.PHASE_*` | §2.5 names the function without a signature.  The keys are the phase vocabulary `telemetry.decision_row` writes, which is the ARD36 defect this replaces: its call-type table was keyed on `revise`/`hub` while the engine wrote `update`/`leader`, so revisions were silently counted as roots. |
+| `launch_gate(...)` / `pilot_gate(...)` / `coverage_gate(...)` / `release_check(run_root)` | `launch_gate(run_root, measured, *, cfg, required_replicas=None, live_endpoints=None)`; `pilot_gate(pilot_root, *, cfg, eligibility=None, storage_bytes_per_request=None, adapter_parity=None, capture_parity=None, rows=None)`; `coverage_gate(run_root, manifests=None, *, by="block")`; `release_check` delegates to `release.check` | every threshold is a `study.yaml` value (`gates:`, `cohorts.pilot_min_paired_items`, `pilot:`), so the gates take the compiled config rather than re-reading it, and each measurement the caller supplies is `None`-able **because an unsupplied measurement is a failure** (`unmeasured`), not a default. |
+| *(new)* | `runner.CountingTokenizer` | `banks.bank_worker` passes `runner.tokenizer_for(model)` straight to `schema.parse_public_output` as the token *counter*, while `episode`/`receiver` use it as the *tokenizer* (they build their own counter and the client needs `apply_chat_template`/`decode`).  Both readings are right; the wrapper satisfies both instead of giving the runner two accessors that differ by one call. |
+| *(new)* | `runner._with_records` attaches each bundle slot's bank-draw `DecisionRecord` | contract §2.2 note 2 says a root reference carries the draw's record and that `RootSlot.record` is optional -- nothing filled it.  The bundle cannot: it is label-free and a draw index is a construction fact (`bundles.LABEL_DENYLIST`).  The runner re-derives the record through the **request store** from the draw's `banks` row, so round 0 is a reference and no endpoint is touched (the dry run's resume proves it: the call count does not move). |
+| *(new)* | `plan.planner_pass` / `plan.seal_pools` / `plan.seal_capture_panel` | the blocks whose dependency is a *register* (AUDIT, CAPTURE, E2A) cannot be emitted at freeze -- the register sha is a runtime fact -- so the planner seals and emits them, content-addressed, on each pass.  "Written once" stays literally true: a pass that sees the same completions rewrites the same bytes at the same path, and no ledger decides which file is authoritative. |
+| `tables.RootTeamRow.__unique__ = (("export_hash",),)` | **corrected** to `(("construction_hash",),)` | a *bucket* is one exported file and a paired bucket holds BOTH members of the declared pair (`construct.seal_root_teams(run_root, family, bucket, teams, …)` -> one `plan/root_teams/<family>/<bucket>.json`, which `bundles.load_bucket` reads as a tuple), so the two teams of a pair share an `export_hash` by construction and the original constraint could never hold.  `construction_hash` is the per-team content address and carries the invariant that was meant. |
+| `tables.referential_violations`: `transmissions.source_round == destination_round - 1` | **scoped** by `declared_edge`: the graph-produced slots keep that rule, and an *assigned* receiver slot (`receiver.DECLARED_EDGE_ASSIGNED`) asserts `source_round == destination_round` instead | spec 6.4's "previous round only" is about the episode packet slots a resolved graph produced.  A receiver assay's packets are two frozen candidates the harness *shows* and its episode has a single round, so the original form could never hold once E2a/E2b ran. |
+
+Two operational decisions worth recording, both narrowings rather than additions:
+
+1. *The MATERIALIZE cell declares no `cell:` dependency.*  "All complete -> materialize" (plan
+   §3.4) is the happy path, but a bucket the frozen scan never filled terminates as
+   `skipped_quota_unfilled` (spec 5.2), and a blanket dependency on every planned cell would
+   let one unfillable bucket block the close-out of the whole run -- silently, because an unmet
+   dependency is not a failure.  What has to hold is that every planned cell is *terminal*,
+   which is the `plan` table's census and is asserted by `release-check`.
+2. *The deadline partition filter applies only where the pool cannot already speak.*
+   `kinds.pool_for` refuses a deadline-bearing kind on a pool whose `preemptable_allowed` is
+   true, and each pool is a separate sub-run-root the keepalive fills from that pool's own
+   spec, so a deadline cell reading `$RUN/pools/deadline/servers` cannot see a preemptable
+   replica at all.  `NextdynEndpointPool(allowed_partitions=…)` is fail-closed by design (an
+   endpoint whose Slurm job cannot be resolved is excluded), and applying it unconditionally
+   would mean a deadline lane that excluded every endpoint because `squeue` was slow -- a worse
+   failure than the one it prevents, while the pool separation still holds.
+
 ## 3. Facts already verified (do not re-derive)
 
 - vLLM 0.21.0 wire shape: `choices[0].message.reasoning`, top-level `prompt_token_ids`,

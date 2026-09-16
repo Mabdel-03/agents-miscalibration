@@ -329,14 +329,23 @@ def _ard_name_exists(name: str) -> bool:
 # ---------------------------------------------------------------------------- §3.3: no dispatch numbers in code
 
 DISPATCH_MODULES = ("kinds", "deps", "cli", "dispatch", "fleet", "runner", "run_one", "status", "plan", "cells", "gates")
-ALLOWED_INTS = {0, 1}
+ALLOWED_NUMBERS = {0, 1}
+#: A unit conversion says what a minute, a gigabyte or a percent *is*; no operator would ever
+#: tune it in ``compute.yaml``, and it is exempt by its declaration site -- the name of the
+#: module-level constant it is assigned to.  An inline ``24.0`` in an expression, or a policy
+#: quantity dressed as a constant (``TARGET_WALL_HOURS``), is still an offender.
+UNIT_CONSTANT = re.compile(r"^(?:[A-Z0-9]+_PER_[A-Z0-9_]+)$")
 
 
 def test_no_numeric_dispatch_constant_lives_in_code():
-    """Every throttle, cap, poll interval and cell size comes from compute.yaml (plan §3.3).
+    """Every throttle, cap, poll interval, walltime and cell size comes from compute.yaml (§3.3).
 
-    Exempt: process exit codes (``EXIT_*``), JSON ``indent=`` widths, and slice bounds used to
-    shorten hashes in messages -- none of them is a dispatch quantity.
+    Ints *and* floats: ``plan.TARGET_WALL_HOURS = 24.0`` -- the wall clock the whole fleet floor
+    is sized against -- slipped an int-only guard for the length of a work package.
+
+    Exempt: process exit codes (``EXIT_*``), JSON ``indent=`` widths, slice bounds used to
+    shorten hashes in messages, and named unit conversions (:data:`UNIT_CONSTANT`) -- none of
+    them is a dispatch quantity.
     """
     offenders = []
     for stem in DISPATCH_MODULES:
@@ -348,17 +357,28 @@ def test_no_numeric_dispatch_constant_lives_in_code():
         for node in ast.walk(tree):
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                if any(isinstance(t, ast.Name) and t.id.startswith("EXIT_") for t in targets):
+                names = [t.id for t in targets if isinstance(t, ast.Name)]
+                if any(name.startswith("EXIT_") or UNIT_CONSTANT.match(name) for name in names):
                     exempt.update(id(c) for c in ast.walk(node))
             elif isinstance(node, ast.keyword) and node.arg == "indent":
                 exempt.update(id(c) for c in ast.walk(node))
             elif isinstance(node, ast.Slice):
                 exempt.update(id(c) for c in ast.walk(node))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
-                if node.value not in ALLOWED_INTS and id(node) not in exempt:
+            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) \
+                    and not isinstance(node.value, bool):
+                if node.value not in ALLOWED_NUMBERS and id(node) not in exempt:
                     offenders.append(f"{stem}.py:{node.lineno}: {node.value}")
     assert not offenders, f"numeric constants in dispatch modules (move them to compute.yaml): {offenders}"
+
+
+def test_the_fleet_floors_target_wall_clock_comes_from_compute_yaml(compute_cfg):
+    """plan §3.3: the hours the floor is sized against are a dispatch number like any other."""
+    from agents_scaling.nextdyn import plan as PLAN
+
+    assert not hasattr(PLAN, "TARGET_WALL_HOURS")
+    assert PLAN._target_hours(compute_cfg) == float(compute_cfg.dispatch.target_wall_hours)
+    assert C.consumer_of("compute.dispatch.target_wall_hours") == PACKAGE + ".plan"
 
 
 def test_compute_yaml_carries_every_plan_throttle_and_cap(compute_cfg):

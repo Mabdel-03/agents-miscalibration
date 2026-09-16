@@ -72,10 +72,18 @@ def test_every_runbook_verb_parses(argv, capsys, monkeypatch, tmp_config):
         assert code in (cli.EXIT_OK, cli.EXIT_FAILED, cli.EXIT_BLOCKED)
 
 
-def test_missing_module_is_blocked_not_a_traceback(capsys):
+def test_missing_module_is_blocked_not_a_traceback(capsys, monkeypatch):
+    """A verb whose work package has not landed reports ``blocked``, never a traceback.
+
+    Written against a verb that is *made* to point at an absent module rather than against one
+    that happened to be absent when this was written: every verb's module has landed now, and a
+    test that depended on that not being true would only have kept passing by accident.
+    """
+    monkeypatch.setitem(cli.VERBS, "plan", "agents_scaling.nextdyn.not_yet_written:main")
     report = cli.run_verb("plan", ["--dry-run"])
     assert report == cli.Report(blocked=1, detail=report.detail)
-    assert "agents_scaling.nextdyn.plan" in report.detail
+    assert "agents_scaling.nextdyn.not_yet_written" in report.detail
+    assert "work package has not landed" in report.detail
     assert cli.main(["plan", "--dry-run"]) == cli.EXIT_BLOCKED
     assert capsys.readouterr().out.strip() == "completed=0 failed=0 skipped=0 blocked=1 reused=0"
     with pytest.raises(NextdynError):

@@ -1,0 +1,40 @@
+#!/bin/bash
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --array={ARRAY}%{THROTTLE}
+#SBATCH --output={LOG_DIR}/nextdyn_cpu_{LANE}_%A_%a.out
+#SBATCH --signal=B:USR1@{SIGNAL_SECONDS}
+#SBATCH --no-requeue
+{EXCLUDE_LINE}
+# nextdyn cpu cell worker (WP4): GRADE / CONSTRUCT / E0 / MATERIALIZE cells of {MANIFEST}.
+#
+# Same contract as nextdyn_cell_array.sbatch.tmpl -- one array task is one cell, exit
+# {EXIT_DEPS_UNMET} means "waiting for a dependency", never "failed" -- with no endpoint and
+# no GPU.  These cells are the writer side (grades, teams, the published tables), so they run
+# on a non-preemptable CPU partition by default and their private rows land under
+# protected/cells/ (R7), never beside the public item files.
+#
+# The SIGUSR1 margin is compute.yaml's dispatch.signal_seconds_before_walltime, rendered above.
+# NEVER add --requeue.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+cd "{REPO}"
+set +e
+python -m agents_scaling.nextdyn.run_one \
+  --run-root "{RUN_ROOT}" \
+  --config "{CONFIG}" \
+  --manifest "{MANIFEST}" \
+  --index "$SLURM_ARRAY_TASK_ID"
+rc=$?
+set -e
+
+if [ "$rc" -eq {EXIT_DEPS_UNMET} ]; then
+  echo "[nextdyn] cpu cell index $SLURM_ARRAY_TASK_ID: dependencies unmet (EXIT_DEPS_UNMET); the lane driver will re-queue it"
+  exit 0
+fi
+exit "$rc"

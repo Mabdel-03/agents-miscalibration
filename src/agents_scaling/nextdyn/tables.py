@@ -199,7 +199,16 @@ class RootTeamRow:
     """Public root-team row: opaque tag, ordered member uids, focal slot, export hash."""
 
     __table__: ClassVar[str] = "root_teams"
-    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = (("export_hash",),)
+    # WP4 correction (plan §2.4, §1.3): the unique constraint is ``construction_hash``, not
+    # ``export_hash``.  A *bucket* is one exported file and a paired bucket holds BOTH members
+    # of the declared pair (``construct.seal_root_teams(run_root, family, bucket, teams, ...)``
+    # -> ``plan/root_teams/<family>/<bucket>.json``, which ``bundles.load_bucket`` reads as a
+    # tuple of teams), so the two teams of one pair share an ``export_hash`` by construction and
+    # the original constraint could never hold on a real run.  ``construction_hash`` is the
+    # per-team content address (rule version, composition, n, item, variant, ordered members,
+    # focal slot) and carries the invariant that was meant: two *different* teams are never the
+    # same construction.  Appended, never moved or dropped (R1).
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = (("construction_hash",),)
 
     root_team_id: str = pk()
     team_tag: str
@@ -984,6 +993,12 @@ def read_table(tables_dir: str | os.PathLike, name: str, columns: Sequence[str] 
 # duplicate-group counting and worst-first ordering, keyed by TABLES instead of a hand list, and
 # extended to the declared unique constraints.
 
+#: ``transmissions.declared_edge`` of a receiver assay's assigned packet (``receiver.py``
+#: declares it; spelled here rather than imported because ``tables`` sits below every producer
+#: in the import order and importing one back would make the row dataclasses unimportable).
+#: ``tests/nextdyn/test_materialize.py`` holds the two spellings together.
+DECLARED_EDGE_ASSIGNED: Final[str] = "assigned"
+
 EXAMPLE_LIMIT: Final[int] = 5
 STATUS_OK: Final[str] = "ok"
 STATUS_DUPLICATE: Final[str] = "duplicate_keys"
@@ -1146,10 +1161,27 @@ def referential_violations(tables_dir: str | os.PathLike) -> list[str]:
                        "(spec 5.3: the difficulty bank is never a root)")
         if len(set(members)) != len(members):
             out.append(f"root_teams {team['root_team_id']}: a generation record appears twice")
-    for t in read_table(root, "transmissions", ["transmission_id", "source_round", "destination_round"]):
-        if t["source_round"] != t["destination_round"] - 1:
-            out.append(f"transmissions {t['transmission_id']}: source_round {t['source_round']} != "
-                       f"destination_round {t['destination_round']} - 1")
+    # WP4 correction (spec 6.4 vs spec 9.1): the "previous round only" rule is about the
+    # *episode* packet slots a resolved graph produced.  A receiver assay's packets are
+    # ASSIGNED -- two frozen candidates the harness shows, not another agent's previous output
+    # -- and its episode has a single round, so ``source_round == destination_round == 0`` by
+    # construction and the original form of this check could never hold once E2a/E2b ran.  The
+    # check is scoped by ``declared_edge`` (``packets.DECLARED_EDGE_GRAPH`` / ``_FILLER`` are
+    # the graph-produced slots, ``receiver.DECLARED_EDGE_ASSIGNED`` the assay's) and the
+    # assigned slots get their own assertion: they never claim to come from an earlier round.
+    # Appended, never dropped (R1).
+    for row in read_table(root, "transmissions",
+                          ["transmission_id", "source_round", "destination_round", "declared_edge"]):
+        if row["declared_edge"] == DECLARED_EDGE_ASSIGNED:
+            if row["source_round"] != row["destination_round"]:
+                out.append(f"transmissions {row['transmission_id']}: an assigned receiver packet "
+                           f"carries source_round {row['source_round']} != destination_round "
+                           f"{row['destination_round']} (it is shown, not received from a round)")
+            continue
+        if row["source_round"] != row["destination_round"] - 1:
+            out.append(f"transmissions {row['transmission_id']}: source_round "
+                       f"{row['source_round']} != destination_round "
+                       f"{row['destination_round']} - 1")
     return out
 
 

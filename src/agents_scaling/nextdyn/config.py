@@ -508,6 +508,7 @@ class DispatchBlock:
     signal_seconds_before_walltime: int
     inflight_target_8b: tuple[int, int]
     inflight_target_32b: tuple[int, int]
+    target_wall_hours: float
 
 
 @dataclass(frozen=True)
@@ -1379,6 +1380,7 @@ CONSUMERS: Final[Mapping[str, str]] = {
     "compute.dispatch.signal_seconds_before_walltime": _SLURM_CELLS,
     "compute.dispatch.inflight_target_8b": _MOD + "status",
     "compute.dispatch.inflight_target_32b": _MOD + "status",
+    "compute.dispatch.target_wall_hours": _MOD + "plan",
     "compute.keepalive.tick_s": _MOD + "fleet",
     "compute.keepalive.max_launch": _MOD + "fleet",
     "compute.keepalive.cpus": _SLURM_KEEPALIVE,

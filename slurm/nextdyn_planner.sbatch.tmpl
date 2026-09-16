@@ -1,0 +1,40 @@
+#!/bin/bash
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/nextdyn_planner_%j.out
+#SBATCH --no-requeue
+
+# nextdyn planner (WP4).  Every {PLANNER_INTERVAL_S} s it does the work that depends on what
+# has completed since the last pass, and nothing else:
+#
+#   * seals the selection pools of finished episode cells   -> register:pool/<sha>
+#   * seals the capture panel                               -> register:panel/<sha>
+#   * seals the E2a fixed packet pairs                      -> register:packets/<sha>
+#   * emits the block manifests those registers unblock (AUDIT, CAPTURE, E2A)
+#   * repairs registers whose REGISTER.json is missing (`plan --repair-registers`)
+#
+# It never grades and never constructs in process: those are GRADE and CONSTRUCT cells on the
+# cpu lane, so a planner pass that dies mid-way costs one interval and no data (every artifact
+# is tmp+fsync+rename and every pass is a pure function of disk state).
+#
+# A second instance exits 0: the pass holds a flock on $RUN/plan/.planner.lock.
+# NEVER add --requeue.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{SELF}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "{REPO}"
+exec python -u -m agents_scaling.nextdyn plan \
+  --run-root "{RUN_ROOT}" \
+  --config "{CONFIG}" \
+  --planner-pass \
+  --interval {PLANNER_INTERVAL_S}

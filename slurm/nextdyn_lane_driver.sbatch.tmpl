@@ -1,0 +1,37 @@
+#!/bin/bash
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/nextdyn_driver_{LANE}_%j.out
+#SBATCH --no-requeue
+
+# nextdyn lane driver (WP4; fork of slurm/ard36_loop_driver.sbatch.tmpl).
+#
+# ONE INDEPENDENT DRIVER PER LANE (the study_v4 operational fix): each lane re-runs its
+# idempotent pass every {INTERVAL_S} s -- complete and in-flight chunks are skipped, chunks
+# whose array left the queue with cells still lacking meta.json are resubmitted as sparse
+# arrays, and cells waiting on a bundle: or register: dependency are re-dispatched as soon as
+# it lands.  Lanes never wait on each other: the 8B lane can gate for hours on QOS room while
+# cpu and capture keep draining.
+#
+# Runs as a Slurm job, never a login-node nohup (the login-node reaper kills those), and
+# self-resubmits with afterany so a walltime expiry is a baton pass.  NEVER add --requeue: a
+# requeue duplicates the chain, which is how study_v4 ended up with two drivers per lane.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{SELF}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "{REPO}"
+exec python -u -m agents_scaling.nextdyn drive \
+  --run-root "{RUN_ROOT}" \
+  --config "{CONFIG}" \
+  --lane "{LANE}" \
+  --passes {PASSES}

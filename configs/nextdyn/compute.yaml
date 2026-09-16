@@ -94,6 +94,10 @@ dispatch:
   signal_seconds_before_walltime: 1200
   inflight_target_8b: [40, 90]
   inflight_target_32b: [24, 48]
+  # The wall clock plan --dry-run sizes the fleet floor against (plan 3.1: "pilot day + 1.5
+  # core days"; the core must fit inside one deadline keepalive walltime cycle).  A dispatch
+  # quantity, so it lives here and not in plan.py.
+  target_wall_hours: 24
 
 keepalive:
   tick_s: 180

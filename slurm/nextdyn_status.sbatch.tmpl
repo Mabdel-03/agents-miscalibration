@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/nextdyn_status_%j.out
+#SBATCH --no-requeue
+
+# nextdyn status job (WP4): the outcome-blind monitor on a {CPU_INTERVAL_S} s loop, writing
+# $RUN/status/latest.json and appending $RUN/status/alerts.jsonl so a human (or an overseer)
+# can read the run's state without opening a single outcome.
+#
+# It is the same code path as `nextdyn status` on the login node; running it as a job means
+# the alert history survives a session and the stall detectors keep firing overnight.
+# NEVER add --requeue.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{SELF}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+cd "{REPO}"
+exec python -u -m agents_scaling.nextdyn status \
+  --run-root "{RUN_ROOT}" \
+  --config "{CONFIG}" \
+  --loop {CPU_INTERVAL_S}

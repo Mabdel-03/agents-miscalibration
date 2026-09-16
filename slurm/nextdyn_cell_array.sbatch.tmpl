@@ -1,0 +1,45 @@
+#!/bin/bash
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --array={ARRAY}%{THROTTLE}
+#SBATCH --output={LOG_DIR}/nextdyn_{LANE}_%A_%a.out
+#SBATCH --signal=B:USR1@{SIGNAL_SECONDS}
+#SBATCH --no-requeue
+{EXCLUDE_LINE}
+# nextdyn cell worker (WP4): one array task = one cell of {MANIFEST}.
+#
+# Fork of slurm/ard36_cell_array.sbatch.tmpl with the nextdyn runner, the nextdyn job-name
+# prefix and the path-addressed manifest.  NEVER add --requeue: a requeued array task races
+# the cell's flock and duplicates work (slurm/launch_loops.py has the study_v4 post-mortem).
+#
+# SIGUSR1 {SIGNAL_SECONDS} s before the walltime makes run_one finish its in-flight items and
+# exit 0 WITHOUT meta.json, so the lane driver re-queues the cell (spec 15.3).  The margin is
+# compute.yaml's dispatch.signal_seconds_before_walltime; it is rendered, never written here.
+#
+# Exit {EXIT_DEPS_UNMET} = EXIT_DEPS_UNMET: a cell:/bundle:/register: dependency is absent or
+# tampered.  No meta.json was written and no request was generated, so this is NOT a failure --
+# the task exits 0 and the lane driver re-dispatches the cell on a later pass, once the
+# CONSTRUCT cell's bundle or the planner's register has landed.  Slurm must not see it as
+# FAILED or the array's accounting would report a defect that does not exist.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+cd "{REPO}"
+set +e
+python -m agents_scaling.nextdyn.run_one \
+  --run-root "{RUN_ROOT}" \
+  --config "{CONFIG}" \
+  --manifest "{MANIFEST}" \
+  --index "$SLURM_ARRAY_TASK_ID"
+rc=$?
+set -e
+
+if [ "$rc" -eq {EXIT_DEPS_UNMET} ]; then
+  echo "[nextdyn] cell index $SLURM_ARRAY_TASK_ID: dependencies unmet (EXIT_DEPS_UNMET); no meta.json, no requests; the lane driver will re-queue it"
+  exit 0
+fi
+exit "$rc"

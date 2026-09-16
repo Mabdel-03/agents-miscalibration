@@ -1,0 +1,44 @@
+#!/bin/bash
+#SBATCH --job-name={JOB_NAME}
+#SBATCH --partition={PARTITION}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/nextdyn_keepalive_{POOL}_%j.out
+#SBATCH --no-requeue
+
+# nextdyn fleet keepalive (WP4), one job per pool.  CPU-only: it probes the census and calls
+# sbatch, nothing else, and runs on compute.yaml's keepalive.partitions (rendered above).  Runs as a Slurm job so it survives the login-node session cleanup
+# that kills nohup processes, and self-resubmits with afterany so a walltime expiry is a baton
+# pass.  NEVER add --requeue.
+#
+# Two rules this template exists to enforce:
+#   1. FLEET_STOP is checked at the top of every tick by `fleet up` itself, so a teardown that
+#      wrote $RUN/FLEET_STOP can never be undone by a keepalive that was already in flight.
+#   2. ASYS_PORT_OFFSET is exported AFTER the environment scrub in common.sh (the
+#      launch_server.py:703-711 pattern), or the pool would silently serve on the default
+#      ports and two pools would collide.
+set -euo pipefail
+source "{REPO}/slurm/common.sh"
+mamba activate "$ASYS_HARNESS_ENV"
+
+export ASYS_PORT_OFFSET={PORT_OFFSET}
+
+cd "{REPO}"
+if [ -z "${NO_RESUBMIT:-}" ]; then
+  sbatch --dependency=afterany:$SLURM_JOB_ID "{SELF}" \
+    && echo "[self-resubmit] queued successor with dependency on $SLURM_JOB_ID" \
+    || echo "[self-resubmit] WARNING: failed to queue successor"
+fi
+
+while true; do
+  if [ -f "{RUN_ROOT}/FLEET_STOP" ]; then
+    echo "[nextdyn-keepalive] {RUN_ROOT}/FLEET_STOP exists; launching nothing and exiting"
+    exit 0
+  fi
+  python -u -m agents_scaling.nextdyn fleet up \
+    --run-root "{RUN_ROOT}" \
+    --config "{CONFIG}" \
+    --pool "{POOL}" || echo "[nextdyn-keepalive] tick failed; retrying next interval"
+  sleep {TICK_S}
+done
