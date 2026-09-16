@@ -412,3 +412,54 @@ def test_a_registry_directory_outlives_the_replica_that_made_it(tmp_run_root, mo
     # so `.get(lane)` is falsey for a caller asking "can I dispatch an 8B cell here?"
     assert not FL.live_endpoints_by_lane(tmp_run_root, Pool.LOW).get("8B")
     assert FL.live_endpoints_by_lane(tmp_run_root, Pool.AUDIT) == {}
+
+
+#: One node of each shape ``sinfo -O "NodeHost:20,Gres:60,GresUsed:60,StateLong:20"`` emits:
+#: fully busy, partly busy, idle, and drained.  ``GresUsed`` carries an ``(IDX:…)`` suffix
+#: whenever anything is allocated, which is the whole difficulty.
+SINFO_FIXTURE = (
+    "node1802   gpu:h100:4   gpu:h100:4(IDX:0-3)   mixed-\n"
+    "node1803   gpu:h100:4   gpu:h100:2(IDX:1-2)   mixed-\n"
+    "node1804   gpu:h100:4   gpu:h100:0(IDX:N/A)   idle\n"
+    "node3804   gpu:h100:4   gpu:h100:4(IDX:0-3)   drained\n"
+)
+
+
+def test_an_allocated_gpu_counts_as_used(monkeypatch):
+    """``used`` was always zero, so a full partition looked entirely idle.
+
+    ``Gres`` is ``gpu:h100:4`` and ``GresUsed`` is ``gpu:h100:4(IDX:0-3)``.  Reading the count
+    as the *last* colon-separated piece gives ``4`` for the first and ``0-3)`` for the second,
+    which is not a digit and fell through to 0.  ``scale_to_idle`` then saw every busy GPU as
+    free, and `fleet up` would have launched a whole spec on top of other users' jobs -- the
+    exact opposite of D20, whose rule is to preempt nobody.
+    """
+    census = FL.free_gpus("p", "h100", runner=lambda cmd: SINFO_FIXTURE)
+    assert (census.total, census.used) == (12, 6)        # the drained node counts for neither
+    assert census.drained == ("node3804",)
+    # and the scaler now refuses to fill more than the six that are actually free
+    scaled = FL.scale_to_idle(FL.parse_spec("nd1-8B:9:p:1-00:00:00", "h100"),
+                              idle={("p", "h100"): census.total - census.used},
+                              gpus_per_replica={"nd1-8B": 1})
+    assert sum(t.count for t in scaled) == 6
+
+
+def test_the_gres_count_is_the_one_ard36_shipped():
+    """Parity with the vendored source (``scripts/ard36_preflight.py`` ``_free_gpus.count``).
+
+    ARD36 read field ``[2]``; the nextdyn copy was transcribed as ``[-1]``.  The VENDORED table
+    exists so a transcription that changes behaviour is caught here rather than in a fleet that
+    quietly stops respecting idle capacity, so this runs the original text against the copy.
+    """
+    def ard36_count(field: str, gpu_type: str) -> int:
+        for chunk in field.split(","):
+            if chunk.startswith(f"gpu:{gpu_type}:"):
+                n = chunk.split(":")[2].split("(")[0]
+                return int(n) if n.isdigit() else 0
+        return 0
+
+    fields = ["gpu:h100:4", "gpu:h100:4(IDX:0-3)", "gpu:h100:0(IDX:N/A)", "gpu:a100:8(IDX:0-7)",
+              "gpu:h100:2(IDX:1-2),gpu:a100:1(IDX:0)", "(null)", ""]
+    for field in fields:
+        for gpu_type in ("h100", "a100"):
+            assert FL._gres_count(field, gpu_type) == ard36_count(field, gpu_type), field
