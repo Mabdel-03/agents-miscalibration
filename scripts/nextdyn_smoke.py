@@ -104,9 +104,7 @@ def missing_endpoints(run_root: Path, wanted: Sequence[tuple[str, str]]) -> list
 
     out: list[str] = []
     for pool, lane in wanted:
-        root = FL.pool_run_root(run_root, pool)
-        live = {FL.model_size_of(name) for name in FL._served_names(root)}
-        if lane not in live:
+        if not FL.live_endpoints_by_lane(run_root, pool).get(lane):
             out.append(f"{pool}/{lane}")
     return out
 

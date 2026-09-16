@@ -241,6 +241,31 @@ def live_endpoint_count(run_root: str | os.PathLike, *, compute: Any,
     return total
 
 
+def live_endpoints_by_lane(run_root: str | os.PathLike, pool: Pool | str) -> dict[str, int]:
+    """How many *probed-live* endpoints this pool has, per lane (``8B`` / ``32B``).
+
+    Per lane, because a pool serves more than one: E2b puts its 8B and 32B cells in the same
+    `low` pool, so "the pool has an endpoint" is not the question a 32B cell is asking.
+
+    Probed, because a registry *directory* outlives the replica that made it.
+    ``list_live_servers`` deliberately never deletes a shared record on a failed observation
+    (keepalive owns cleanup), so after a preemption the directory still names the dead host --
+    and a check that only listed directory names called the pool live, dispatched into it, and
+    got ``exit 2`` from every cell.
+    """
+    root = pool_run_root(run_root, pool)
+    out: dict[str, int] = {}
+    for name in _served_names(root):
+        try:
+            live = len(REG.list_live_servers(root, name))
+        except Exception:                                # noqa: BLE001 - a monitor never raises
+            continue
+        if live:
+            lane = model_size_of(name)
+            out[lane] = out.get(lane, 0) + live
+    return out
+
+
 def _served_names(server_root: Path) -> tuple[str, ...]:
     """The names this pool's registry is actually keyed by, read from the registry itself.
 
@@ -850,7 +875,7 @@ __all__ = [
     "GpuCensus", "POOLS_DIR", "PREFLIGHT_FILE", "REPO_ROOT", "SACCT_CALL", "SAMPLER_CALL",
     "SAMPLER_SCRIPT", "ServeJob", "TickReport",
     "Target", "assert_within_caps", "caps_from_preflight", "census", "fleet_stop_path",
-    "free_gpus", "inject_gpu_sampler", "inject_sacct_capture", "is_stopped", "job_names",
+    "free_gpus", "inject_gpu_sampler", "live_endpoints_by_lane", "inject_sacct_capture", "is_stopped", "job_names",
     "model_contract_path", "model_contract_render_args", "MODEL_CONTRACT_ENV",
     "MODEL_CONTRACT_FILE", "MODEL_CONTRACT_SHA_ENV",
     "keepalive_job_name", "live_endpoint_count", "load_preflight", "main", "max_num_seqs_for",

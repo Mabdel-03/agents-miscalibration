@@ -392,3 +392,23 @@ def test_a_replica_registered_under_its_profile_name_is_counted(tmp_run_root, co
     # a pool that nothing registered in is zero, not an error
     assert FL.live_endpoint_count(tmp_run_root, compute=compute_cfg, pool=Pool.AUDIT) == 0
     assert FL._served_names(FL.pool_run_root(tmp_run_root, Pool.LOW)) == ()
+
+
+def test_a_registry_directory_outlives_the_replica_that_made_it(tmp_run_root, monkeypatch):
+    """A preempted replica leaves its record behind, and the pool must not look live.
+
+    ``list_live_servers`` never deletes a shared registry record on a failed observation --
+    keepalive owns cleanup -- so after the `low` pool's preemptable replica was preempted, the
+    directory still named the dead host.  A check that only listed directory names called the
+    pool live, dispatched into it, and took ``exit 2`` from every cell.  Liveness is a probe.
+    """
+    root = FL.pool_run_root(tmp_run_root, Pool.LOW)
+    (root / FL.SERVERS_DIR / "nd1-8B").mkdir(parents=True)
+    (root / FL.SERVERS_DIR / "nd1-32B").mkdir(parents=True)
+    monkeypatch.setattr(FL.REG, "list_live_servers",
+                        lambda r, name, **k: [object()] if name == "nd1-32B" else [])
+    assert FL.live_endpoints_by_lane(tmp_run_root, Pool.LOW) == {"32B": 1}
+    # the 8B directory is there and names nothing live: the lane is absent, not zero-valued,
+    # so `.get(lane)` is falsey for a caller asking "can I dispatch an 8B cell here?"
+    assert not FL.live_endpoints_by_lane(tmp_run_root, Pool.LOW).get("8B")
+    assert FL.live_endpoints_by_lane(tmp_run_root, Pool.AUDIT) == {}
