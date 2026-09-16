@@ -293,10 +293,30 @@ class GpuCensus:
     total: int
     used: int
     drained: tuple[str, ...] = ()
+    #: Free GPUs per node, for the nodes that have any.  A partition total cannot answer where
+    #: a replica goes: see :meth:`placements`.
+    free_by_node: tuple[tuple[str, int], ...] = ()
 
     @property
     def free(self) -> int:
         return max(self.total - self.used, 0)
+
+    def placements(self, gpus_per_replica: int) -> int:
+        """How many replicas of this width can actually be *placed*.
+
+        A partition total answers "how many GPUs are idle", which is the wrong question for
+        anything wider than one GPU: a TP2 replica needs its two GPUs **on one node**.  Seven
+        free H200s spread one per node is seven idle GPUs and zero places to put a 32B, and
+        ``scale_to_idle`` reading the total would admit three replicas that can never start --
+        they sit in PENDING/Resources while the lane they were meant to serve stays empty.
+
+        Falls back to the total when the per-node detail is absent, so a census from a stubbed
+        runner that only knows totals keeps its old meaning.
+        """
+        width = max(int(gpus_per_replica), 1)
+        if not self.free_by_node:
+            return self.free // width
+        return sum(free // width for _, free in self.free_by_node)
 
 
 def free_gpus(partition: str, gpu_type: str, *, exclude: Sequence[str] = (),
@@ -306,6 +326,7 @@ def free_gpus(partition: str, gpu_type: str, *, exclude: Sequence[str] = (),
                            "NodeHost:20,Gres:60,GresUsed:60,StateLong:20"])
     total = used = 0
     drained: list[str] = []
+    by_node: list[tuple[str, int]] = []
     for line in raw.splitlines():
         parts = line.split()
         if len(parts) < len(SINFO_FIELDS):
@@ -316,10 +337,14 @@ def free_gpus(partition: str, gpu_type: str, *, exclude: Sequence[str] = (),
         if "drain" in state.lower() or "down" in state.lower() or host in exclude:
             drained.append(host)
             continue
-        total += _gres_count(gres, gpu_type)
-        used += _gres_count(gres_used, gpu_type)
+        node_total = _gres_count(gres, gpu_type)
+        node_used = _gres_count(gres_used, gpu_type)
+        total += node_total
+        used += node_used
+        if node_total > node_used:
+            by_node.append((host, node_total - node_used))
     return GpuCensus(partition=partition, gpu_type=gpu_type, total=total, used=used,
-                     drained=tuple(drained))
+                     drained=tuple(drained), free_by_node=tuple(sorted(by_node)))
 
 
 SINFO_FIELDS: Final[tuple[str, ...]] = ("host", "gres", "gres_used", "state")
@@ -350,18 +375,42 @@ def scale_to_idle(targets: Sequence[Target], *, idle: Mapping[tuple[str, str], i
 
     Entries are visited in spec order and each one consumes the idle pool it draws from, so
     two entries on one (partition, gpu_type) cannot both be told "there are four free".
+
+    ``idle`` values may be a :class:`GpuCensus` or a bare GPU count.  Prefer the census: a
+    count cannot say *where* the GPUs are, and a replica wider than one GPU needs them on a
+    single node.  Measured on this cluster: ``ou_bcs_low`` H100 had four free GPUs and room
+    for exactly one TP2 replica, and ``mit_preemptable`` H200 had seven free and room for
+    three -- a total-based scaler would have launched four and seven, and the surplus would
+    have sat in PENDING/Resources while the lane it was meant to serve stayed empty.
     """
-    remaining = {key: int(value) for key, value in idle.items()}
+    remaining: dict[tuple[str, str], list[int]] = {}
+    for key, value in idle.items():
+        # A census knows which node each free GPU is on; a bare int is one undifferentiated
+        # bucket, which is what a stubbed runner or an older caller supplies.
+        by_node = getattr(value, "free_by_node", None)
+        if by_node:
+            remaining[key] = [free for _, free in by_node]
+        else:
+            remaining[key] = [int(getattr(value, "free", value))]
+
     out: list[Target] = []
     for target in targets:
         per_replica = max(int(gpus_per_replica.get(target.size, 1)), 1)
         pool_key = (target.partition, target.gpu_type)
-        available = remaining.get(pool_key)
-        if available is None:
+        nodes = remaining.get(pool_key)
+        if nodes is None:
             out.append(target)
             continue
-        count = min(int(target.count), available // per_replica)
-        remaining[pool_key] = available - count * per_replica
+        # First fit across nodes: a replica's GPUs have to come from one node, so a pool with
+        # four free GPUs one-per-node has room for four TP1 replicas and no TP2 replica at all.
+        count = 0
+        for index, free in enumerate(nodes):
+            if count >= int(target.count):
+                break
+            take = min(free // per_replica, int(target.count) - count)
+            if take:
+                nodes[index] = free - take * per_replica
+                count += take
         if count > 0:
             out.append(replace(target, count=count))
     return out
@@ -733,7 +782,7 @@ def up(run_root: str | os.PathLike, pool: Pool | str, *, compute: Any, spec: str
     gpus = gpus_per_replica(contract)
     idle = {(t.partition, t.gpu_type): free_gpus(t.partition, t.gpu_type,
                                                  exclude=compute.serving.exclude_nodes,
-                                                 runner=runner).free
+                                                 runner=runner)
             for t in targets}
     scaled = scale_to_idle(targets, idle=idle, gpus_per_replica=gpus)
     if preflight is not None:

@@ -219,6 +219,7 @@ def _decision_row(decision_id: str, out: SC.PublicOutput, *, request_ids: tuple[
         final_answer_raw=out.final_answer, canonical_class=None, confidence=out.confidence,
         answer_logprob_sum=None, answer_logprob_mean=None, answer_token_count=None,
         logprob_norm_scheme=None, parse_status=out.parse_status.value,
+        escape_repaired=bool(getattr(out, "escape_repaired", False)),
         field_order_violation=out.order_violation, validity=out.valid,
         delivery_success=out.valid, infrastructure_status="ok", termination_reason="stop",
         boundary_injected=False, continuation_used=len(request_ids) > 1, discarded_span_tokens=0,

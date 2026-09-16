@@ -463,3 +463,54 @@ def test_the_gres_count_is_the_one_ard36_shipped():
     for field in fields:
         for gpu_type in ("h100", "a100"):
             assert FL._gres_count(field, gpu_type) == ard36_count(field, gpu_type), field
+
+
+#: Four free GPUs of one type, spread one per node -- room for four TP1 replicas and no TP2.
+SCATTERED = (
+    "node01   gpu:h200:4   gpu:h200:3(IDX:0-2)   mixed\n"
+    "node02   gpu:h200:4   gpu:h200:3(IDX:0-2)   mixed\n"
+    "node03   gpu:h200:4   gpu:h200:3(IDX:0-2)   mixed\n"
+    "node04   gpu:h200:4   gpu:h200:3(IDX:0-2)   mixed\n"
+)
+#: The same four free GPUs, two nodes with two each -- room for two TP2 replicas.
+PAIRED = (
+    "node01   gpu:h200:4   gpu:h200:2(IDX:0-1)   mixed\n"
+    "node02   gpu:h200:4   gpu:h200:2(IDX:0-1)   mixed\n"
+)
+
+
+def test_a_wide_replica_needs_its_gpus_on_one_node(monkeypatch):
+    """"Four GPUs are free" does not mean "two TP2 replicas fit".
+
+    A 32B replica is TP2 and its two GPUs must be on a single node, so a partition total is the
+    wrong question for it.  Measured on this cluster while the smoke was queued: `ou_bcs_low`
+    H100 had four free and room for exactly one TP2; `mit_preemptable` H200 had seven free and
+    room for three.  Scaling on the total would have launched the surplus into
+    PENDING/Resources, where it serves nothing while the lane it was meant to fill stays empty
+    -- and `fleet up` would have reported them as launched.
+    """
+    scattered = FL.free_gpus("p", "h200", runner=lambda cmd: SCATTERED)
+    paired = FL.free_gpus("p", "h200", runner=lambda cmd: PAIRED)
+    assert scattered.free == paired.free == 4                  # the same idle GPU count
+    assert (scattered.placements(1), scattered.placements(2)) == (4, 0)
+    assert (paired.placements(1), paired.placements(2)) == (4, 2)
+
+    def scaled(census, profile, width):
+        targets = FL.parse_spec(f"{profile}:4:p:1-00:00:00", "h200")
+        out = FL.scale_to_idle(targets, idle={("p", "h200"): census},
+                               gpus_per_replica={profile: width})
+        return sum(t.count for t in out)
+
+    assert scaled(scattered, "nd1-32B", 2) == 0, "a TP2 replica cannot straddle two nodes"
+    assert scaled(paired, "nd1-32B", 2) == 2
+    assert scaled(scattered, "nd1-8B", 1) == 4, "TP1 is happy with scattered GPUs"
+
+
+def test_the_scaler_still_accepts_a_bare_idle_count():
+    """An older caller (or a stub that only knows totals) keeps its previous meaning."""
+    targets = FL.parse_spec("nd1-32B:4:p:1-00:00:00", "h200")
+    out = FL.scale_to_idle(targets, idle={("p", "h200"): 4}, gpus_per_replica={"nd1-32B": 2})
+    assert sum(t.count for t in out) == 2
+    # and a pool the spec does not name is left alone rather than scaled to nothing
+    other = FL.scale_to_idle(targets, idle={}, gpus_per_replica={"nd1-32B": 2})
+    assert sum(t.count for t in other) == 4
