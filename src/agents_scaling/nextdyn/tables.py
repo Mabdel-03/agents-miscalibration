@@ -378,6 +378,13 @@ class TransmissionRow:
     packet_content_mode: str
     declared_edge: str
     display_position: int
+    # WP5 append (spec 9.2 "Log token length and error position"): where the injected error of
+    # an E2b wrong trace sits along the answer chain, relative in [0, 1).  The *token length*
+    # half of that sentence is already ``transmitted_tokens`` above, so only the position
+    # needed a home.  Null on every episode packet slot and on a correct E2b packet; appended
+    # last with a default so ``packets.transmissions_for`` keeps its call shape (R1: this is
+    # the one declaration of the column).
+    error_position_rel: float | None = None
 
 
 @dataclass(frozen=True)
@@ -650,6 +657,26 @@ def schema(name: str) -> TableSchema:
         return TABLES[name]
     except KeyError as exc:
         raise MaterializeError(f"unknown table {name!r}; declared: {sorted(TABLES)}") from exc
+
+
+# WP5 append (R3: every producer is declared, none implied).  A table has exactly one *owning*
+# producer -- the module that declares the row's shape and writes the common case -- and may
+# have a second writer for a case the first cannot express.  ``transmissions`` is the one such
+# table: ``packets.transmissions_for`` writes the episode packet slots from a resolved
+# ``PacketPlan``, while ``receiver.transmission_rows`` writes the *assigned* receiver slots,
+# which have no plan, no sender decision, a ``declared_edge`` of "assigned" and the E2b
+# ``error_position_rel``.  Declared here rather than left implied, because an undeclared
+# second writer is how two row constructors drift apart (ARD36 D-05).
+CO_PRODUCERS: Final[Mapping[str, tuple[str, ...]]] = {
+    "transmissions": (_P + "receiver",),
+}
+if set(CO_PRODUCERS) - set(_PRODUCERS):                     # pragma: no cover - import-time
+    raise RuntimeError("a co-producer names a table that does not exist")
+
+
+def producers(name: str) -> tuple[str, ...]:
+    """Every module that writes rows of ``name``: the owning producer first (R3)."""
+    return (schema(name).producer, *CO_PRODUCERS.get(name, ()))
 
 
 # --------------------------------------------------------------------------- rows <-> dicts
@@ -1134,7 +1161,8 @@ def assert_referential(tables_dir: str | os.PathLike, *, strict: bool = True) ->
 
 
 __all__ = [
-    "ActivationRow", "BankRow", "Column", "DERIVED_PRIMARY_KEYS", "DecisionRow", "DuplicateKey",
+    "ActivationRow", "BankRow", "CO_PRODUCERS", "Column", "DERIVED_PRIMARY_KEYS", "DecisionRow",
+    "DuplicateKey",
     "EMPTY_SUFFIX", "EXAMPLE_LIMIT", "FALLBACK_STATUSES", "GradePrivateRow", "ITEMS_DIR", "ItemFile",
     "ItemSplitRow", "ItemStatus", "ItemVariantRow", "KeyCheck", "KeyViolation", "MetricRow",
     "PLAN_STATUSES", "PRIMARY_KEYS", "PRIOR_USE_STATUSES", "PRIVATE_TABLES", "PROTECTED_DIR",
@@ -1143,7 +1171,8 @@ __all__ = [
     "SEMANTIC_STATES", "STATUS_DUPLICATE", "STATUS_OK", "STATUS_UNVERIFIABLE", "SelectionRow",
     "SourceItemRow", "TABLES", "TOOL_STATUSES", "TableSchema", "ToolEventRow", "TransmissionRow",
     "assert_keys", "assert_referential", "check_keys", "item_path", "pk", "project",
-    "protected_item_path", "read_table", "referential_violations", "row_from_dict", "row_to_dict",
+    "producers", "protected_item_path", "read_table", "referential_violations", "row_from_dict",
+    "row_to_dict",
     "run_checks", "schema", "schema_of", "write_parquet_rows", "write_table",
 ]
 

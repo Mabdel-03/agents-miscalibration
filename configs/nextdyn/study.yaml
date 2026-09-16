@@ -201,6 +201,11 @@ experiments:
     tasks: [MATH, MMLU_PRO]
     replicates: 2
     models: [primary, scale]
+    # The spec-9.1 constructed endorsement panel: 5 advisers, so the declared levels are 1:4
+    # and 4:1 (receiver.support_counts derives both from this number).  Deliberately NOT
+    # protocol.n_agents -- "not literally the other four agents of E1".  E2b shows the same
+    # panel and reads the same leaf.
+    support_panel_size: 5
   E2b:
     enabled: true
     source_problems: 300

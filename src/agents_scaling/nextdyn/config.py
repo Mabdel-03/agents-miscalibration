@@ -250,6 +250,10 @@ class E2aBlock:
     tasks: tuple[str, ...]
     replicates: int
     models: tuple[str, ...]
+    #: WP5: how many advisers the spec-9.1 constructed endorsement panel holds.  The 1:4 / 4:1
+    #: levels are derived from it (``receiver.support_counts``), and E2b displays the same
+    #: panel, so this one leaf is the single declaration for both assays.
+    support_panel_size: int
 
 
 @dataclass(frozen=True)
@@ -1260,6 +1264,7 @@ CONSUMERS: Final[Mapping[str, str]] = {
     "study.experiments.E2a.tasks": _MOD + "config",
     "study.experiments.E2a.replicates": _MOD + "cells",
     "study.experiments.E2a.models": _MOD + "config",
+    "study.experiments.E2a.support_panel_size": _MOD + "receiver",
     "study.experiments.E2b.enabled": _MOD + "plan",
     "study.experiments.E2b.source_problems": _MOD + "cells",
     "study.experiments.E2b.total_displayed_operations": _MOD + "mod97",

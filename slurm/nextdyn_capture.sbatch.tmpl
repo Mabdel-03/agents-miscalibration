@@ -1,0 +1,120 @@
+#!/bin/bash
+#SBATCH --job-name=asys-nextdyn-{RUN_ID}-capture
+#SBATCH --partition={PARTITION}
+#SBATCH --gres=gpu:{GPU_TYPE}:{GPUS_PER_JOB}
+#SBATCH --cpus-per-task={CPUS}
+#SBATCH --mem={MEM}
+#SBATCH --time={TIME}
+#SBATCH --output={LOG_DIR}/nextdyn_capture_%j.out
+#SBATCH --no-requeue
+#SBATCH --export=NONE
+
+# nextdyn CAPTURE lane (WP6): teacher-forced replay of a sealed capture panel.
+#
+# OWNERSHIP: contract SS1 assigns slurm/nextdyn_* to WP4.  WP6 drafted this file only
+# because config.CONSUMERS already names it as the declared consumer of
+# compute.capture.{gpu_type,gpus_per_job,partition} and the R2 guard has nothing to read
+# without it.  WP4 owns it from the moment it lands: it invokes WP4's
+# agents_scaling.nextdyn.run_one, and the render test in tests/nextdyn/test_capture.py
+# moves with the file if WP4 would rather keep it beside the other lane templates.
+#
+# A fork of slurm/ard36_e6_capture.sbatch under the nextdyn_ prefix (D2: no ARD36 file is
+# edited).  No vLLM, no endpoint, no sampler: the request store already holds
+# prompt_token_ids + response.token_ids for every decision, so this job replays exactly
+# those ids and writes fp16 residual-stream vectors at the spec-13.2 anchors
+# PROMPT_END / PRE_FINAL / ANSWER_END x the floor(f*L)-1 blocks of the pinned model.
+# "Instrumented inference must not alter behavioural generation" (spec 13.2) is structural:
+# agents_scaling.nextdyn.capture's import closure never reaches nextdyn.inference.
+#
+# Template placeholders and the compute.yaml leaf each one renders from (plan §3.3: every
+# numeric dispatch constant lives in configs/nextdyn/compute.yaml, never in code or here):
+#
+#   {PARTITION}      compute.capture.partition        (the capture lane's one declaration, R1;
+#                                                      cells.kinds.capture.partition is null)
+#   {GPU_TYPE}       compute.capture.gpu_type
+#   {GPUS_PER_JOB}   compute.capture.gpus_per_job
+#   {CPUS} {MEM} {TIME}
+#                    compute.cells.kinds.capture.cpus / .mem / .time
+#   {RUN_ID} {RUN_ROOT} {REPO} {LOG_DIR} {MANIFEST} {FIRST_INDEX} {LAST_INDEX}
+#                    the frozen manifest and run identity the dispatcher supplies
+#
+# The fallback lane (compute.capture.fallback.partition / .gpu_types) is chosen by
+# nextdyn.dispatch when the primary capture partition has no free GPU; this template is
+# rendered once per chosen (partition, gpu type) pair.
+#
+# Environment block mirrors tests/study_neural/gpu_smoke.sbatch, the configuration
+# CaptureEngine was verified on (offline HF, node-local compile/caches, causal mask policy,
+# expandable_segments).  It deliberately does NOT source slurm/common.sh: that activates the
+# harness env and prepends the serve env's libstdc++ for vLLM/FlashInfer, neither of which a
+# replay job wants.
+
+set -euo pipefail
+umask 027
+
+REPO="{REPO}"
+RUN_ID="{RUN_ID}"
+RUN_ROOT="{RUN_ROOT}"
+MANIFEST="{MANIFEST}"
+PYTHON="${NEXTDYN_PYTHON:-/orcd/data/tpoggio/001/mabdel03/envs/neural_env/bin/python}"
+
+export PATH=/usr/bin:/bin
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+export PYTHONPATH="$REPO/src"
+export HF_HOME=/orcd/data/tpoggio/001/mabdel03/.cache/huggingface
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1
+export TOKENIZERS_PARALLELISM=false DO_NOT_TRACK=1
+export ASYS_RESULTS_ROOT="$(dirname "$RUN_ROOT")"
+
+# Node-local staging: chunks are written here and consolidated into the run root atomically,
+# .npz before its .jsonl (the commit marker).  NEXTDYN_LOCAL_SCRATCH is what
+# nextdyn.capture.staging_root reads first; the shared filesystem never sees a partial chunk.
+ASYS_LOCAL_CACHE="/tmp/asys_nextdyn_capture_${SLURM_JOB_ID:-$$}"
+mkdir -p "$ASYS_LOCAL_CACHE/xdg" "$ASYS_LOCAL_CACHE/triton" \
+         "$ASYS_LOCAL_CACHE/torchinductor" "$ASYS_LOCAL_CACHE/tmp" "$ASYS_LOCAL_CACHE/staging"
+trap 'rm -rf "$ASYS_LOCAL_CACHE"' EXIT
+export XDG_CACHE_HOME="$ASYS_LOCAL_CACHE/xdg"
+export TRITON_CACHE_DIR="$ASYS_LOCAL_CACHE/triton"
+export TORCHINDUCTOR_CACHE_DIR="$ASYS_LOCAL_CACHE/torchinductor"
+export TMPDIR="$ASYS_LOCAL_CACHE/tmp"
+export NEXTDYN_LOCAL_SCRATCH="$ASYS_LOCAL_CACHE/staging"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+mkdir -p "$RUN_ROOT/logs"
+echo "[capture] job=${SLURM_JOB_ID:-none} host=$(hostname) run=$RUN_ID start=$(date -Is)"
+nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader || true
+cd "$REPO"
+"$PYTHON" -c "import torch, transformers; print('[capture] torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'transformers', transformers.__version__)"
+
+# One cell per run_one invocation (the frozen CLI), sequentially on the one GPU this job
+# holds.  Exit 5 is EXIT_DEPS_UNMET -- the capture panel register or an episode cell is not
+# sealed yet.  Nothing was written and no vector was produced, so the loop CONTINUES to the
+# next cell and the lane driver re-dispatches this one on a later pass; any other non-zero is
+# a real failure and stops the job so it is never mistaken for a complete capture.
+DEPS_UNMET=0
+FIRST="{FIRST_INDEX}"
+LAST="{LAST_INDEX}"
+if [ -n "${NEXTDYN_INDEX_START:-}" ]; then FIRST="$NEXTDYN_INDEX_START"; fi
+if [ -n "${NEXTDYN_INDEX_END:-}" ]; then LAST="$NEXTDYN_INDEX_END"; fi
+for index in $(seq "$FIRST" "$LAST"); do
+  echo "[capture] cell index $index start=$(date -Is)"
+  set +e
+  "$PYTHON" -m agents_scaling.nextdyn.run_one \
+    --manifest "$MANIFEST" \
+    --run-root "$RUN_ROOT" \
+    --index "$index"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 5 ]; then
+    echo "[capture] cell index $index: dependencies unmet (EXIT_DEPS_UNMET); nothing written, the lane driver will re-queue it"
+    DEPS_UNMET=$((DEPS_UNMET + 1))
+    continue
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "[capture] cell index $index FAILED rc=$rc" >&2
+    exit "$rc"
+  fi
+  echo "[capture] cell index $index done=$(date -Is)"
+done
+
+echo "[capture] end=$(date -Is) indices=$FIRST..$LAST deps_unmet=$DEPS_UNMET"
