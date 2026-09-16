@@ -362,6 +362,45 @@ def request_rows(record: DecisionRecord, key: CompositeKey, *, cell_id: str, req
     # first_decision_id is None at write time (materialize fills it per generation_uid)
 ```
 
+<!-- WP1 correction to §2.1 (inference).  Two of the signatures above cannot be implemented as
+written; everything else in §2.1 is unchanged, and every name below is an ADDITION that leaves
+the listed signatures intact.  Reason for each is given inline. -->
+
+**§2.1 corrections and additions (WP1).**
+
+1. `continuation_decoding(tokens, sampling)` — **signature corrected.** As listed
+   (`continuation_decoding(tokens)`) it is unimplementable: a `Decoding` needs the spec-5.5
+   sampler recipe, that recipe is a `study.yaml` value, and no experimental number may be a
+   module constant in this package (contract preamble), so it cannot be defaulted. The recipe
+   is passed explicitly. Callers use `decoding.decoding_for_contract(...)` /
+   `continuation.ContinuationContract`, which read it from `StudyContract.sampling`.
+2. `ModelAdapter.total_output_tokens: int | None` — **protocol member added.** §2.1 requires
+   `decoding_for` to assert `max_tokens == total_output_tokens` for the envelope adapter, and
+   `decoding_for(adapter, sampling, tokens, *, purpose)` receives only the adapter, so the
+   envelope cap has to be reachable through it. `None` on the native contract, whose caps are
+   `TokenContract`'s and live in one place only (R1). `adapters.adapter_for(model)` binds it
+   from `ModelCell.total_output_tokens`.
+3. Additions that no listed signature changes (WP1 module placement is WP1's to choose):
+   `adapters.BlockedAdapter` (a `NextdynError`; §2.1 names it without a home) and
+   `inference.ContextTooLong` (likewise, carrying the `serving.context.ContextPreflight`);
+   `inference.ReplicaStamp` / `JobInfo` / `NextdynEndpointPool.replica_stamp` (the registry
+   entry names a Slurm job, not its partition or GPU type, and `RequestRow` declares both);
+   `inference.request_specs_for(req, ctx, record)` (rebuilds a continued decision's phase-2
+   spec so `request_rows`' frozen signature can be satisfied without keeping one alive across
+   the two calls); `inference.server_batch_id` + `ARRIVAL_BUCKET_S` (vendored from
+   `ard/resources.py:177-186`, which is not on the `ARD_IMPORTS` allowlist, with a parity test);
+   `continuation.ContinuationContract` (every ARD36 constant of the vendored
+   `ard/client.py:978-1358` as a parameter — this is what makes the parity test possible);
+   `telemetry.Metering` / `RequestResource` / `ReplicaRef` / `ConservationRow` and the
+   `INFRA_*` / `LOGPROB_NORM_*` / `TERMINATION_REASONS` vocabularies (`decisions` column values
+   are facts and `telemetry` is that table's producer, R1).
+4. `DecisionRecord` field semantics fixed by WP1 where §2.1 lists a name but not a meaning, and
+   `telemetry.decision_row` depends on it: `final_tokens` is the length of the **delivered**
+   final span after the `final_cap` truncation, `answer_logprob` is the mean over exactly those
+   tokens (so `answer_logprob_sum == mean * answer_token_count` holds by construction, R1), and
+   `final_overrun` says the raw span was longer. `request_ids` are the specs that were asked
+   for and `physical_request_ids` the ids the store holds; the merge asserts they agree.
+
 ### 2.2 WP2 — protocol engine (`graphs`, `protocols`, `prompts`, `schema`, `packets`, `states`, `episode`)
 
 ```python
@@ -416,6 +455,39 @@ class EpisodeSpec: cell_kind: CellKind; source_item: SourceItem; roots: RootBund
 def run_episode(spec: EpisodeSpec, generate: Generate, *, tokenizer, study_seed: bytes, on_event=None) -> Episode
 def request_for(spec, snapshot, slot, r, plan, packets) -> DecisionRequest
 ```
+
+<!-- WP2 correction to §2.2 (protocol engine).  Every item below is an ADDITION that the
+     frozen signature could not express; no frozen name, positional parameter or return type
+     changed.  Reason column says why the frozen form was unimplementable. -->
+
+**§2.2 corrections (WP2).**
+
+| Frozen form | As implemented | Why |
+|---|---|---|
+| `VisibilitySpec{… display_label; legacy_alias=None; equivalent_to=None}` and `ReceiverSpec{…}` | both gain `enabled: bool = True` | `protocols.yaml` ships an `enabled` leaf for every condition and `config.CONSUMERS` declares `plan` as its consumer; a registry that dropped the key could not load the shipped file. It is a planning knob and is **excluded from `identity_object()`**, so no condition hash changes. |
+| `parse_public_output(final_text, finish_reason, completion_ids, counter)` | `…, *, limits: contract.TokenContract` | the spec-6.1 limits (256-token rationale, 4 claims, 64-token claim) are *values* from `study.yaml`, and `contract.CONTRACT_FIELD_CONSUMERS` already names `schema` as the consumer of `rationale_cap` / `claims_max` / `claim_cap`. Hard-coding them in the parser would put experimental numbers in code. |
+| `unparsed_packet(pseudonym, counter)` | `…, *, counter_tokenizer_hash, content=PacketContent.FULL, original_content_hash=None` | `TransmittedPacket.counter_tokenizer_hash` is non-null by construction; a packet that cannot say which tokenizer counted it is exactly the cross-model replay defect the field exists to prevent. |
+| `inert_filler(n_tokens, seed, counter)` | `…, *, pseudonym, counter_tokenizer_hash` | same, plus `TransmittedPacket.pseudonym`: a filler occupies a *packet slot*, so it must look like one. |
+| `transmissions_for(plan, packets, receiver_decision_id, *, destination_round)` | `…, receiver_slot, episode_id, cell_kind, protocol_hash, receiver_token_counts=None` | `tables.TransmissionRow` declares `receiver_slot`, `episode_id`, `cell_kind`, `protocol_hash` and `transmitted_tokens_receiver` as columns and the frozen parameters supply none of them. `plan` stays the whole `PacketPlan`; `receiver_slot` selects the recipient the one `receiver_decision_id` belongs to. |
+| `rebuild_round_states(item_file, classify)` | `…, *, study_seed: bytes, episode_id=None` | pseudonyms are drawn from `blind(study_seed, ORDER_PSEUDONYM, pairing_id, slot)`, so a state cannot be rebuilt without the seed; `episode_id` disambiguates an item file holding more than one episode. |
+| `EpisodeSpec{cell_kind, source_item, roots, visibility, model, tokens, replicate, revisions, n, split_role}` | gains `study_id: str`, `root_round: int`, `top_logprobs: int`, `family=None` | `study_id` is `CompositeKey`'s first field; `root_round` is `study.protocol.root_round`, whose declared consumer in `config.CONSUMERS` **is** `episode`; `top_logprobs` is a field of `inference.DecisionRequest`; `family` supplies the spec-6.2 `{task_specific_answer_instruction}` that the root template (and therefore the FRESH arm) renders. None of them enters a condition hash. |
+| `run_episode(spec, generate, *, tokenizer, study_seed, on_event=None)` | `…, classify: Classifier \| None = None` | the gold-independent canonicalizer used for unanimity and coverage bookkeeping; when omitted the raw final answer is its own class, which keeps the loop free of family knowledge (R7). |
+
+**Two interface facts §2 did not state, settled by WP2 and needed by WP1/WP3/WP4:**
+
+1. *The typed context refusal is detected structurally, not by class.* `ard.client.ContextTooLong`
+   is **not** on the `ARD_IMPORTS` allowlist and `nextdyn.inference` may not be importable while
+   WP1 is in flight, so `episode.is_context_refusal(exc)` treats an exception as a build-time
+   context refusal when it is a `serving.context.ContextCapacityError` **or** when it carries a
+   `parse_status` whose value is `schema.ParseStatus.CONTEXT_FAILURE`. `inference.ContextTooLong`
+   satisfies the second clause by carrying that attribute (ARD36's does the same).
+2. *A root reference carries the bank draw's record.* `telemetry.decision_row` requires a
+   `DecisionRecord`, and a `root_ref` row is a reference to a bank draw: `run_episode` reads the
+   draw's record from the bundle slot (`RootSlot.record`, optional), so the reference row is built
+   from the same physical sample the bank wrote. A **context-failure** decision has no record at
+   all; until `telemetry.decision_row` admits `record=None`, `episode.episode_worker` refuses such
+   a row with a typed `ManifestError` rather than inventing one.
+
 
 ### 2.3 WP3 — data (`families`, `datasets`, `items`, `items_build`, `inventory`, `graders/`, `grading`, `banks`, `construct`, `bundles`)
 

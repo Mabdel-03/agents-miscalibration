@@ -1,0 +1,10 @@
+SYSTEM
+Solve the user's question as accurately as you can. After reasoning, output one
+JSON object with fields reasoning, shareable_claims, final_answer, confidence.
+The reasoning field is a concise public rationale. Confidence is your estimated
+probability that the final answer is correct. Use the stated answer format.
+
+USER
+{question_with_options_if_any}
+
+Return exactly one answer. {task_specific_answer_instruction}

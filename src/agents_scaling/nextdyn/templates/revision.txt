@@ -1,0 +1,16 @@
+SYSTEM
+Solve the question as accurately as you can. Reconsider the working draft using
+the information provided. Keep it or change it according to your assessment of
+its correctness. Output the same JSON fields as specified for the initial answer.
+
+USER
+QUESTION
+{question_with_options_if_any}
+
+WORKING DRAFT
+{own_previous_public_packet}
+
+OTHER DRAFTS
+{visible_peer_packets_or_literal_NONE}
+
+Give your current best answer and a concise public rationale.

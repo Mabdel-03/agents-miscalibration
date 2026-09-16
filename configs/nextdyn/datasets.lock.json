@@ -1,87 +1,149 @@
 {
   "datasets": {
-    "MATH": {
+    "BIGCODEBENCH": {
       "config_name": null,
-      "file_path": null,
-      "file_sha256": null,
-      "filters": null,
-      "n_overlap_removed": null,
-      "n_rows": null,
+      "file_path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4/data/raw/bigcodebench_v0.1.4.parquet",
+      "file_sha256": "e81cb88a13de26587654436222bf2ca19ee4beed0174acc15d3ce9f5a6b8c03c",
+      "filters": {
+        "status": "e0_only"
+      },
+      "n_overlap_removed": 0,
+      "n_rows": 1140,
       "option_count_histogram": null,
-      "repo_id": null,
+      "repo_id": "bigcode/bigcodebench",
       "revision": null,
-      "row_content_sha256": null,
-      "split": null
+      "row_content_sha256": "0d0e9fdfde9f2c4db66f7a3050bb4cd0a78fc3300a30b4c22c254a9bede2682d",
+      "split": "v0.1.4"
+    },
+    "MATH500": {
+      "config_name": null,
+      "file_path": "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface/datasets/HuggingFaceH4___math-500/default/0.0.0/6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be/math-500-test.arrow",
+      "file_sha256": "ff2663846092b986df3026f53904030cbaf8e061c9f978d319a7bd86b3a04ea4",
+      "filters": {
+        "duplicate_source_id": 0,
+        "missing_field": 0
+      },
+      "n_overlap_removed": 0,
+      "n_rows": 500,
+      "option_count_histogram": null,
+      "repo_id": "HuggingFaceH4/MATH-500",
+      "revision": "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be",
+      "row_content_sha256": "f10e37da3d63107fc2b7bc4aa0cf094c38111aec225b672447dacae960e0bd9b",
+      "split": "test"
     },
     "MATH_EXPANDED": {
       "config_name": null,
-      "file_path": null,
-      "file_sha256": null,
-      "filters": null,
-      "n_overlap_removed": null,
-      "n_rows": null,
+      "file_path": "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface/hub/datasets--EleutherAI--hendrycks_math/snapshots/21a5633873b6a120296cce3e2df9d5550074f4a3",
+      "file_sha256": "7298664d23f4e7acfbdfec4c7021b9e40aac8c426c17b47ecd52c155d9e1150a",
+      "filters": {
+        "duplicate_source_id": 0,
+        "math500_overlap": 500,
+        "missing_field": 0,
+        "no_boxed_answer": 0,
+        "subjects": [
+          "algebra",
+          "counting_and_probability",
+          "geometry",
+          "intermediate_algebra",
+          "number_theory",
+          "prealgebra",
+          "precalculus"
+        ]
+      },
+      "n_overlap_removed": 500,
+      "n_rows": 4500,
       "option_count_histogram": null,
-      "repo_id": null,
-      "revision": null,
-      "row_content_sha256": null,
-      "split": null
+      "repo_id": "EleutherAI/hendrycks_math",
+      "revision": "21a5633873b6a120296cce3e2df9d5550074f4a3",
+      "row_content_sha256": "4baf0efaef50b2ccf4f091f193d26b4f02f4a3a130b7c7e79e5d951f61424ee7",
+      "split": "test"
     },
     "MMLU_PRO": {
       "config_name": null,
-      "file_path": null,
-      "file_sha256": null,
-      "filters": null,
-      "n_overlap_removed": null,
-      "n_rows": null,
-      "option_count_histogram": null,
-      "repo_id": null,
-      "revision": null,
-      "row_content_sha256": null,
-      "split": null
+      "file_path": "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface/datasets/TIGER-Lab___mmlu-pro/default/0.0.0/b189ec765aa7ed75c8acfea42df31fdae71f97be/mmlu-pro-test.arrow",
+      "file_sha256": "4c741944e3b53719b433be6e7916e4ab9e8ff33f70e9c365614b4e317c0476bb",
+      "filters": {
+        "bad_answer_index": 0,
+        "duplicate_question": 239,
+        "missing_field": 0,
+        "option_count_outside_window": 2051,
+        "required_options": 10
+      },
+      "n_overlap_removed": 0,
+      "n_rows": 9742,
+      "option_count_histogram": {
+        "10": 9742
+      },
+      "repo_id": "TIGER-Lab/MMLU-Pro",
+      "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "row_content_sha256": "82b09156f5a83843f044c2712481b4b200e3dcb9b0cb15af342b20f3f0f75245",
+      "split": "test"
     },
     "MOD97": {
       "config_name": null,
       "file_path": null,
       "file_sha256": null,
-      "filters": null,
-      "n_overlap_removed": null,
+      "filters": {
+        "generator": "agents_scaling.nextdyn.mod97",
+        "status": "generated_at_dispatch"
+      },
+      "n_overlap_removed": 0,
       "n_rows": null,
       "option_count_histogram": null,
       "repo_id": null,
       "revision": null,
-      "row_content_sha256": null,
+      "row_content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "split": null
     },
     "TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE": {
-      "config_name": null,
-      "file_path": null,
-      "file_sha256": null,
-      "filters": null,
-      "n_overlap_removed": null,
-      "n_rows": null,
-      "option_count_histogram": null,
-      "repo_id": null,
-      "revision": null,
-      "row_content_sha256": null,
-      "split": null
+      "config_name": "multiple_choice",
+      "file_path": "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface/datasets/truthfulqa___truthful_qa/multiple_choice/0.0.0/741b8276f2d1982aa3d5b832d3ee81ed3b896490/truthful_qa-validation.arrow",
+      "file_sha256": "d8416ca73542259ac0a80d012e8c0af42f6f4035bbfe5b4a7f27a0365a744c13",
+      "filters": {
+        "bad_answer_index": 0,
+        "missing_field": 0,
+        "option_count_outside_window": 133,
+        "option_window": [
+          4,
+          13
+        ]
+      },
+      "n_overlap_removed": 0,
+      "n_rows": 684,
+      "option_count_histogram": {
+        "10": 9,
+        "11": 7,
+        "12": 3,
+        "13": 1,
+        "4": 219,
+        "5": 192,
+        "6": 135,
+        "7": 65,
+        "8": 36,
+        "9": 17
+      },
+      "repo_id": "truthfulqa/truthful_qa",
+      "revision": "741b8276f2d1982aa3d5b832d3ee81ed3b896490",
+      "row_content_sha256": "c27990e16d590925caf2165ef840d85cc47530173a351f1952efaa9f240000a5",
+      "split": "validation"
     }
   },
-  "hf_home": null,
+  "hf_home": "/orcd/data/tpoggio/001/mabdel03/.cache/huggingface",
   "legacy_roots": {
     "ard36": {
-      "manifest_sha256": null,
-      "path": null
+      "manifest_sha256": "710791799d55b88fe605ea4d3fca127ddb2a79939a5b16e77aafc19f250a97a8",
+      "path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/ard36"
     },
     "full_sweep_v1": {
-      "manifest_sha256": null,
-      "path": null
+      "manifest_sha256": "cf29c0149320e48ba995aa50ff9cbcddd9cd1af95899de24203a974ea780e742",
+      "path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/full_sweep_v1"
     },
     "study_v4": {
-      "manifest_sha256": null,
-      "path": null
+      "manifest_sha256": "8026835cd47e29c295bfba6d2adbee98684b03215eda170fa1cb0a81b80ff781",
+      "path": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4"
     }
   },
-  "locked_at": null,
+  "locked_at": "2026-09-16T04:52:17+00:00",
   "prior_use_inventory_hash": null,
   "schema_version": 1,
   "source_inventory_hash": null

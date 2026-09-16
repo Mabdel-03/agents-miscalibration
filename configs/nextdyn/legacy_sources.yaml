@@ -22,7 +22,7 @@ study_v4:
   root: /orcd/data/tpoggio/001/mabdel03/agents_scaling_results/study_v4
   tables: tables
   seals: seals
-  tasks: data/tasks.jsonl
+  tasks: data/public/tasks.jsonl        # WP7: the file lives under data/public/ (measured 2026-09-16)
   data_sha256: data/DATA_SHA256.json
   raw_bcb: data/raw/bigcodebench_v0.1.4.parquet
   eval_hle: eval/hle

@@ -51,6 +51,19 @@ class LockError(NextdynError):
     """A lock file is missing, null where a value is required, or drifted from disk."""
 
 
+
+
+class LockSourceMissing(LockError):
+    """A declared input is simply not on this filesystem yet.
+
+    Distinguished from every other :class:`LockError` because the two need different actions and
+    the spec (17.5) makes ``lock-inputs`` report them separately: a *missing* source is a launch
+    blocker ("fetch it, then re-run"), while a source that is present but wrong -- a revision
+    that drifted, a checksum that does not match, a corrupt file -- is a failure that must be
+    understood before anything is fetched.  Collapsing the two is how a run ends up fetching
+    over a real integrity problem.
+    """
+
 __all__ = [
     "ConfigError", "ContractViolation", "DependencyUnmet", "IdentityError", "LeakageError",
     "LockError", "ManifestError", "MaterializeError", "NextdynError",

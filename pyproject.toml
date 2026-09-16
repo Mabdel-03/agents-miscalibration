@@ -36,3 +36,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+markers = [
+    # nextdyn WP3: the test reads the pinned datasets out of the shared offline HF cache
+    # ($HF_HOME/hub, $HF_HOME/datasets).  Tests carrying it skip when the cache is absent,
+    # so the suite still runs on a machine that has never pulled a dataset.
+    "needs_hf_cache: requires the pinned datasets in the shared offline HF cache",
+]

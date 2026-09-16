@@ -78,10 +78,23 @@ def test_skeleton_locks_have_null_fields_and_fail_closed(tmp_path):
     assert prompts.templates == {} and prompts.continuation_prefill_sha256 is None
     with pytest.raises(LockError, match="skeleton"):
         L.verify_prompts_lock(prompts, tmp_path, "x")
+    # The datasets lock is no longer a skeleton: WP3 locked it against the offline cache.  What
+    # must hold is that every family sourced from the Hub carries an exact revision (a null one
+    # is a launch blocker), while the two families that have no Hub revision by construction --
+    # MOD97 is generated and BIGCODEBENCH is a pinned local parquet -- are declared without one.
     datasets = L.load_datasets_lock(CONFIG_DIR / "datasets.lock.json")
-    assert set(datasets.datasets) >= {"MATH", "MMLU_PRO", "TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE", "MATH_EXPANDED", "MOD97"}
+    assert set(datasets.datasets) >= {"MATH500", "MMLU_PRO", "TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE",
+                                      "MATH_EXPANDED", "MOD97"}
     assert set(datasets.legacy_roots) == {"ard36", "study_v4", "full_sweep_v1"}
-    assert all(e.revision is None for e in datasets.datasets.values())
+    hub_pinned = {"MATH500", "MATH_EXPANDED", "MMLU_PRO", "TRUTHFULQA_LEGACY_MC1_GENERATED_CHOICE"}
+    for name in hub_pinned:
+        entry = datasets.datasets[name]
+        assert entry.revision and len(entry.revision) == 40, name
+        assert entry.n_rows and entry.n_rows > 0, name
+    assert datasets.datasets["MOD97"].revision is None       # generated, not downloaded
+    # The expanded MATH panel is the seven hendrycks subjects minus every MATH-500 item: the
+    # disjointness rule of plan section 2.1, visible as a row count rather than asserted in prose.
+    assert datasets.datasets["MATH_EXPANDED"].n_rows == 5000 - datasets.datasets["MATH500"].n_rows
 
 
 def test_lock_models_reads_blob_names_and_verify_detects_drift(tmp_path):
@@ -166,10 +179,14 @@ def test_lock_inputs_verb_reports_models_prompts_and_datasets_separately(tmp_pat
     cfg_path = _fake_cfg(tmp_path)
     report = L.lock_inputs_main(["--config", str(cfg_path), "--hf-home", str(home)])
     assert isinstance(report, Report)
-    assert report.completed == 1                        # models locked
+    # models and prompts lock from the repo itself (templates and the continuation prefill are
+    # on disk); datasets are blocked because this fake HF home holds no snapshots.  The point of
+    # the verb is that the three report separately -- a partially locked study is a blocker, not
+    # a silent success.
+    assert report.completed == 2                        # models + prompts locked
     assert report.failed == 0
-    assert report.blocked == 2                          # prompts (WP2/WP1 pending) and datasets (WP3 pending)
-    assert "prompts blocked" in report.detail and "datasets blocked" in report.detail
+    assert report.blocked == 1                          # datasets: nothing in this HF home
+    assert "datasets blocked" in report.detail
     written = L.load_models_lock(tmp_path / "models.lock.json")
     assert written.models["primary"].status == L.MODEL_STATUS_LOCKED
     assert (tmp_path / "models.lock.json.sha256").exists()

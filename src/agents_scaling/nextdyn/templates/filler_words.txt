@@ -1,0 +1,37 @@
+# Inert filler vocabulary (plan §1.6; spec 10.3 length-matched padding).
+# Frozen word list: no digits, no option letters A-J, no task vocabulary, no
+# correctness or confidence words.  A filler packet is assembled from these words
+# only, so length-matched padding carries no task content
+# (test_missing_packet_padding_has_no_task_content).
+alongside
+although
+beforehand
+besides
+elsewhere
+furthermore
+hence
+henceforth
+however
+likewise
+meanwhile
+moreover
+namely
+nevertheless
+nonetheless
+notwithstanding
+onward
+otherwise
+regardless
+similarly
+somewhat
+thereafter
+thereby
+therein
+thereupon
+thus
+whenever
+whereas
+whereby
+wherein
+whereupon
+whilst

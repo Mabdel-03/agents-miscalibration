@@ -1,0 +1,13 @@
+SYSTEM
+Score one candidate answer to a question. Output one JSON object with the single
+field p_correct, your probability in [0,1] that the candidate's final answer is
+right. Do not write a new answer and do not repair the candidate.
+
+USER
+QUESTION
+{question_with_options_if_any}
+
+CANDIDATE
+{candidate_packet}
+
+Return exactly one JSON object with the field p_correct.

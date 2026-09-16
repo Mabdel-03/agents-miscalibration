@@ -49,7 +49,7 @@ from agents_scaling.nextdyn.config import (
     lock_paths,
 )
 from agents_scaling.nextdyn.deps import atomic_write_bytes
-from agents_scaling.nextdyn.errors import LockError
+from agents_scaling.nextdyn.errors import LockSourceMissing, LockError
 from agents_scaling.study import identity
 
 LOCK_SCHEMA_VERSION: Final[int] = 1
@@ -419,6 +419,8 @@ def lock_inputs_main(argv: Sequence[str]) -> Report:
         verify_models_lock(lock, home, required=[n for n, b in cfg.models.items() if b.enabled])
         write_models_lock(paths.models, lock)
         report = report + Report(completed=1, detail=f"models -> {paths.models}")
+    except LockSourceMissing as exc:
+        report = report + Report(blocked=1, detail=f"models blocked: {exc}")
     except LockError as exc:
         report = report + Report(failed=1, detail=f"models: {exc}")
 
@@ -443,7 +445,11 @@ def lock_inputs_main(argv: Sequence[str]) -> Report:
             dlock = lock_datasets(cfg, home)
             write_datasets_lock(paths.datasets, dlock)
             report = report + Report(completed=1, detail=f"datasets -> {paths.datasets}")
+        except LockSourceMissing as exc:
+            # Nothing to lock yet: fetch it on the login node and re-run (spec 17.5 blocker).
+            report = report + Report(blocked=1, detail=f"datasets blocked: {exc}")
         except LockError as exc:
+            # Present but wrong -- drift, a bad revision, a corrupt file.  Never a blocker.
             report = report + Report(failed=1, detail=f"datasets: {exc}")
     return report
 

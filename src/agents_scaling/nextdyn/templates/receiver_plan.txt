@@ -1,0 +1,22 @@
+SYSTEM
+Read the question, the working draft, and the supplied drafts. Decide which local
+steps, if any, you want checked before you answer. Output one JSON object with the
+field check_requests, a list of objects with fields packet_id and step_id.
+
+USER
+QUESTION
+{question_with_options_if_any}
+
+WORKING DRAFT
+{own_previous_public_packet}
+
+OTHER DRAFTS
+{visible_peer_packets_or_literal_NONE}
+
+SUPPORT
+{support_fields_or_literal_NONE}
+
+CHECK TOOL
+{check_tool_status}
+
+Return exactly one JSON object with the field check_requests.

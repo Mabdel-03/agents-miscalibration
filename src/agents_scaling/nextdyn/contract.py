@@ -437,7 +437,10 @@ CONTRACT_FIELD_CONSUMERS: Final[Mapping[tuple[str, str], str]] = {
     ("BankSpec", "natural_root_draws"): _M + "banks",
     ("TeamShape", "n_agents"): _M + "episode",
     ("TeamShape", "revision_rounds"): _M + "episode",
-    ("TeamShape", "score_rounds"): _M + "outcomes",
+    # analysis reads the contract and hands the set to outcomes.derive, which takes it as an
+    # argument: spec 11.2 generates to r=8 once and scores prefixes, so the scored set is a
+    # study-level fact, not something the estimator should re-derive from the data it sees.
+    ("TeamShape", "score_rounds"): _M + "analysis",
     ("ModelCell", "name"): _M + "kinds",
     ("ModelCell", "hf_id"): _M + "locks",
     ("ModelCell", "revision"): _M + "locks",

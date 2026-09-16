@@ -1146,3 +1146,379 @@ __all__ = [
     "protected_item_path", "read_table", "referential_violations", "row_from_dict", "row_to_dict",
     "run_checks", "schema", "schema_of", "write_parquet_rows", "write_table",
 ]
+
+
+# ============================================================================================
+# WP7 (plan §4.1, §4.2, §4.3) -- the derived analysis tables.
+#
+# ``DERIVED_PRIMARY_KEYS`` above declares the *keys* of the derived tables; this appended
+# section is the single declaration of their *columns* (R1), exactly as the module docstring
+# anticipates ("columns declared when WP7 appends their row dataclasses to this module").
+#
+# They are deliberately NOT in ``ROW_TYPES``/``TABLES``: those are the tables ``materialize``
+# publishes and ``check_keys`` demands on disk, and a derived table that has not been computed
+# yet would otherwise make every materialize run report an unverifiable key.  The derived set
+# gets its own registry (:data:`DERIVED_TABLES`), its own key check
+# (:func:`check_derived_keys`) and its own writer (:func:`write_derived_table`), all built from
+# the same ``dataclasses.fields`` machinery, so there is still exactly one place a derived
+# column is named.
+#
+# Only the derived tables WP7 *produces* are declared here.  ``episodes``, ``difficulty`` and
+# ``bank_summary`` are produced by ``materialize``/``banks`` and are declared by those WPs.
+# ============================================================================================
+
+
+@dataclass(frozen=True)
+class TeamRoundRow:
+    """One ``(episode, round)`` team state (plan §4.1; spec 4.2-4.6, 8.5, 10.2).
+
+    ``c_count + w_count + u_count == n_agents`` is asserted by ``outcomes.team_round``
+    (spec 18.3 ``test_c_w_u_counts_sum_to_n``).  Coverage is carried as a lo/hi pair
+    everywhere: ``*_lo`` counts only resolved ``C``, ``*_hi`` credits every ``U`` as possibly
+    correct, so the pair brackets every feasible labelling of the unresolved slots.
+    """
+
+    __table__: ClassVar[str] = "team_rounds"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    cell_kind: str = pk()
+    episode_id: str = pk()
+    round: int = pk()
+    source_item_id: str
+    item_variant_id: str
+    family: str
+    experiment: str
+    cohort: str
+    composition: str | None
+    protocol_hash: str
+    display_label: str | None
+    model_hash: str
+    budget_hash: str
+    replicate_id: int
+    n_agents: int
+    c_count: int
+    w_count: int
+    u_count: int
+    n_valid: int
+    fully_graded: bool
+    class_hist_json: str
+    slot_classes_json: str
+    # -- coverage and margin (spec 4.2) -----------------------------------------------
+    m_lo: float
+    m_hi: float
+    q_lo: float
+    q_hi: float
+    h_lo: float
+    h_hi: float
+    # -- winning rules (spec 4.5) -----------------------------------------------------
+    plurality_class: str | None
+    plurality_status: str
+    plurality_correct: float | None
+    strict_majority_correct: bool
+    unanimous_correct: bool
+    wrong_unanimity: bool
+    # -- concentration ----------------------------------------------------------------
+    max_class_share: float | None
+    class_entropy_norm: float | None
+    wrong_class_max_share: float | None
+    wrong_collision_prob: float | None
+    # -- minority definitions (spec 4.4) ----------------------------------------------
+    arithmetic_correct_minority: bool
+    outnumbered_correct: bool
+    all_singleton: bool
+    # -- focal / construction (spec 10.2) ---------------------------------------------
+    w_star_class: str | None
+    c0: int | None
+    focal_slot: int | None
+    focal_class: str | None
+    focal_retained_root_class: bool | None
+    focal_state: str | None
+    nonfocal_init_wrong_now_c: float | None
+    nonfocal_init_correct_now_wstar: float | None
+    n_nonfocal_init_wrong: int
+    n_nonfocal_init_correct: int
+    nonfocal_unknown: int
+    # -- hazards and preservation, both framings, never merged (plan §4.1) ------------
+    baseline_c0_positive: bool
+    continuous_preservation_lo: bool | None
+    terminal_preservation_lo: bool | None
+    at_risk_hazard: bool
+    hazard_event: bool | None
+    at_risk_discovery: bool
+    discovery_event: bool | None
+    recovered_lo: bool
+    # -- delivered accuracy and the failure decomposition (filled once selections are
+    #    graded; null before the label join, which is sealed after the predictions) ----
+    a_lo: float | None
+    fail_no_history: float | None
+    fail_lost: float | None
+    fail_selection: float | None
+
+
+@dataclass(frozen=True)
+class AgentRoundRow:
+    """One agent's state in one round (plan §4.1 derived ``agent_rounds``)."""
+
+    __table__: ClassVar[str] = "agent_rounds"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    cell_kind: str = pk()
+    episode_id: str = pk()
+    round: int = pk()
+    agent_slot: int = pk()
+    decision_id: str
+    generation_uid: str
+    source_item_id: str
+    item_variant_id: str
+    family: str
+    experiment: str
+    cohort: str
+    composition: str | None
+    protocol_hash: str
+    display_label: str | None
+    model_hash: str
+    budget_hash: str
+    replicate_id: int
+    state: str
+    cls: str | None
+    valid: bool
+    u_reason: str | None
+    confidence: float | None
+    answer_logprob_mean: float | None
+    retained_root_class: bool
+    is_focal: bool
+    received_slots_json: str
+
+
+@dataclass(frozen=True)
+class TransitionRow:
+    """One agent's move from ``round`` to ``round + 1`` (plan §4.1 derived ``transitions``).
+
+    ``round`` is the *from* round, which is what ``DERIVED_PRIMARY_KEYS['transitions']``
+    declares; ``round_to`` is carried beside it so a reader never has to assume ``+1``.
+    """
+
+    __table__: ClassVar[str] = "transitions"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    cell_kind: str = pk()
+    episode_id: str = pk()
+    round: int = pk()
+    agent_slot: int = pk()
+    round_to: int
+    source_item_id: str
+    state_from: str
+    state_to: str
+    kind: str
+    cls_from: str | None
+    cls_to: str | None
+    switched_class: bool
+    validity_change: bool
+    adopted_wstar: bool
+    adopted_visible_class: bool
+    copied_exact: bool
+    ngram_overlap_max: float | None
+    placebo_overlap_max: float | None
+    confidence_from: float | None
+    confidence_to: float | None
+
+
+@dataclass(frozen=True)
+class SelectionGradedRow:
+    """A sealed selection joined to its grade (spec 15.1; plan §4.5 seal-then-join)."""
+
+    __table__: ClassVar[str] = "selections_graded"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    selection_id: str = pk()
+    cell_kind: str
+    episode_id: str
+    source_item_id: str
+    round: int
+    selector: str
+    selector_version: str
+    pool_id: str
+    pool_scope: str
+    selected_decision_id: str | None
+    selected_class: str | None
+    selected_state: str | None
+    selected_correct: float | None
+    oracle_lo: float
+    oracle_hi: float
+    selection_gap_lo: float | None
+    fallback_status: str
+    n_candidates: int
+    valid_count: int
+
+
+@dataclass(frozen=True)
+class EfficiencyFrontierRow:
+    """One (protocol, budget level, family) point of the spec-16.1 frontier (plan §4.3)."""
+
+    __table__: ClassVar[str] = "efficiency_frontier"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    protocol_hash: str = pk()
+    budget_level: float = pk()
+    family: str = pk()
+    display_label: str | None
+    truncation_rule: str
+    truncation_round: int
+    reference_cost: float
+    allowance: float
+    measured_cost: float
+    unused_allowance: float
+    delivered_accuracy_lo: float | None
+    delivered_accuracy_hi: float | None
+    n_items: int
+
+
+@dataclass(frozen=True)
+class ToolUsagePanelRow:
+    """Per-E2b-episode ``check_step`` descriptives (spec 9.6; a post-treatment descriptive)."""
+
+    __table__: ClassVar[str] = "tool_usage_panel"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    cell_kind: str = pk()
+    episode_id: str = pk()
+    source_item_id: str
+    protocol_hash: str
+    model_hash: str
+    n_checks: int
+    n_over_budget: int
+    n_duplicate: int
+    step_distribution_json: str
+    detected_invalid: int
+    adhered_after_detection: bool | None
+    confidence: float | None
+    validity: bool
+
+
+@dataclass(frozen=True)
+class E2aE1LinkRow:
+    """Per-item E2a endorsement effect beside the E1 switch rates (spec 9.6, cross-fitted)."""
+
+    __table__: ClassVar[str] = "e2a_e1_link"
+    __unique__: ClassVar[tuple[tuple[str, ...], ...]] = ()
+
+    source_item_id: str = pk()
+    model_hash: str = pk()
+    family: str
+    fold: int
+    e2a_endorsement_effect: float | None
+    e1_w_to_c_rate: float | None
+    e1_c_to_w_rate: float | None
+    n_e2a_episodes: int
+    n_e1_transitions: int
+
+
+DERIVED_ROW_TYPES: Final[tuple[type, ...]] = (
+    TeamRoundRow, AgentRoundRow, TransitionRow, SelectionGradedRow, EfficiencyFrontierRow,
+    ToolUsagePanelRow, E2aE1LinkRow,
+)
+
+#: derived table -> (producer module, consumer modules); same contract as ``_PRODUCERS`` (R3).
+_DERIVED_PRODUCERS: Final[Mapping[str, tuple[str, tuple[str, ...]]]] = {
+    "team_rounds": (_P + "outcomes", (_P + "analysis", _P + "panels", _P + "figures")),
+    "agent_rounds": (_P + "outcomes", (_P + "analysis", _P + "calib")),
+    "transitions": (_P + "outcomes", (_P + "analysis", _P + "figures")),
+    "selections_graded": (_P + "analysis", (_P + "figures", _P + "release")),
+    "efficiency_frontier": (_P + "analysis", (_P + "figures",)),
+    "tool_usage_panel": (_P + "analysis", (_P + "figures",)),
+    "e2a_e1_link": (_P + "analysis", (_P + "figures",)),
+}
+
+
+def derived_schema_of(row_type: type) -> TableSchema:
+    """:class:`TableSchema` of a *derived* row dataclass (columns = ``dataclasses.fields``)."""
+    if not dataclasses.is_dataclass(row_type):
+        raise ManifestError(f"{row_type!r} is not a row dataclass")
+    name = getattr(row_type, "__table__", None)
+    if name not in _DERIVED_PRODUCERS:
+        raise ManifestError(f"{row_type!r} declares no derived table; declared: {sorted(_DERIVED_PRODUCERS)}")
+    hints = _type_hints(row_type)
+    columns: list[Column] = []
+    primary: list[str] = []
+    for f in dataclasses.fields(row_type):
+        type_name, nullable = _column_type(hints[f.name])
+        if f.metadata.get("pk"):
+            primary.append(f.name)
+            if nullable:
+                raise ManifestError(f"{name}.{f.name} is a primary-key column and cannot be nullable")
+        columns.append(Column(f.name, type_name, nullable))
+    if not primary:
+        raise ManifestError(f"{name} declares no primary key")
+    producer, consumers = _DERIVED_PRODUCERS[name]
+    return TableSchema(name=name, row_type=row_type, columns=tuple(columns), primary_key=tuple(primary),
+                       unique=tuple(tuple(u) for u in getattr(row_type, "__unique__", ())),
+                       producer=producer, consumers=tuple(consumers), private=False)
+
+
+DERIVED_TABLES: Final[Mapping[str, TableSchema]] = {
+    t.__table__: derived_schema_of(t) for t in DERIVED_ROW_TYPES
+}
+for _name, _spec in DERIVED_TABLES.items():  # pragma: no cover - import-time contract
+    _declared = DERIVED_PRIMARY_KEYS.get(_name)
+    if _declared is not None and tuple(_declared) != _spec.primary_key:
+        raise RuntimeError(f"derived table {_name}: row dataclass key {_spec.primary_key} != "
+                           f"DERIVED_PRIMARY_KEYS {tuple(_declared)}")
+del _name, _spec, _declared
+
+
+def derived_schema(name: str) -> TableSchema:
+    try:
+        return DERIVED_TABLES[name]
+    except KeyError as exc:
+        raise MaterializeError(f"unknown derived table {name!r}; declared: {sorted(DERIVED_TABLES)}") from exc
+
+
+def derived_row_to_dict(row: Any) -> dict[str, Any]:
+    if type(row) not in DERIVED_ROW_TYPES:
+        raise MaterializeError(f"{type(row).__name__} is not a declared derived row type")
+    return {f.name: (list(v) if isinstance(v, tuple) else v)
+            for f, v in ((f, getattr(row, f.name)) for f in dataclasses.fields(row))}
+
+
+def derived_project(table: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Strict whitelist projection for a derived table (same rule as :func:`project`)."""
+    spec = derived_schema(table)
+    unknown = sorted(set(row) - set(spec.column_names))
+    if unknown:
+        raise MaterializeError(f"{table}: undeclared column(s) {unknown}; declare them on "
+                               f"{spec.row_type.__name__} or drop them")
+    return {c.name: _check_scalar(table, c, row.get(c.name)) for c in spec.columns}
+
+
+def write_derived_table(rows: Sequence[Any], path: str | os.PathLike, *, table: str | None = None) -> None:
+    """Write derived row dataclasses in the declared column order (``.empty`` when no rows)."""
+    path = Path(path)
+    name = table or (path.name[: -len(path.suffix)] if path.suffix else path.name)
+    spec = derived_schema(name)
+    dicts = []
+    for row in rows:
+        if type(row) is not spec.row_type:
+            raise MaterializeError(f"{name}: row of type {type(row).__name__}, expected {spec.row_type.__name__}")
+        dicts.append(derived_project(name, derived_row_to_dict(row)))
+    write_parquet_rows(path, [{k: (list(v) if isinstance(v, tuple) else v) for k, v in d.items()}
+                              for d in dicts], spec.column_names)
+
+
+def check_derived_keys(derived_dir: str | os.PathLike, *, strict: bool = True) -> list[KeyViolation]:
+    """:func:`check_keys` over the derived registry instead of the published one."""
+    checks = run_checks(derived_dir, tables=DERIVED_TABLES)
+    violations = [
+        KeyViolation(c.table, c.key, c.constraint, c.n_rows, c.n_distinct, c.n_duplicate_groups, c.examples, c.note)
+        for c in checks
+        if c.status == STATUS_DUPLICATE or (strict and c.status == STATUS_UNVERIFIABLE)
+    ]
+    violations.sort(key=lambda v: (-v.n_duplicate_groups, v.table, v.constraint))
+    return violations
+
+
+__all__ += [
+    "AgentRoundRow", "DERIVED_ROW_TYPES", "DERIVED_TABLES", "E2aE1LinkRow",
+    "EfficiencyFrontierRow", "SelectionGradedRow", "TeamRoundRow", "ToolUsagePanelRow",
+    "TransitionRow", "check_derived_keys", "derived_project", "derived_row_to_dict",
+    "derived_schema", "derived_schema_of", "write_derived_table",
+]
