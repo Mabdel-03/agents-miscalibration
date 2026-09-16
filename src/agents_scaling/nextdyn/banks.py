@@ -301,7 +301,9 @@ def bank_worker(runner: Any, source_item_id: str) -> tables.ItemFile:
     ``decision_id`` and distinct ``generation_uid``, and the same content twice is still two
     samples (``test_same_content_does_not_imply_same_sample``).
     """
+    from agents_scaling.ard.episode import dispatch_batch      # allowlisted (plan §1.11)
     from agents_scaling.nextdyn import inference, telemetry
+    from agents_scaling.nextdyn.kinds import batch_width
 
     cell = runner.cell
     role = role_of(cell.kind)
@@ -315,14 +317,35 @@ def bank_worker(runner: Any, source_item_id: str) -> tables.ItemFile:
     counter = runner.tokenizer_for(model)
     rows: list[tables.DecisionRow] = []
     bank_rows: list[tables.BankRow] = []
+    # Render every draw first, then dispatch the whole batch -- the same shape the episode
+    # round uses, and for the same reason.  A bank cell's draws are exchangeable *by
+    # construction*: each is an independent sample with its own seed key, and none can observe
+    # another, so issuing them concurrently is result-identical rather than merely faster.
+    # Issued one at a time, a cell's wall clock was the **sum** of its draws rather than the
+    # max over them -- measured live at ~30 s per draw, so an ordinary 16-draw item took eight
+    # minutes with one request in flight and the replica otherwise idle.  Banks are the largest
+    # block in the campaign (~164k of ~455k 8B calls), so this is where it costs most.
+    planned = []
     for draw in draw_range(role, contract.banks, extension_stage=stage):
         key = bank_key(role, source_item_id, variant.item_variant_id, model, tokens, draw,
                        study_id=contract.study_id)
-        request = inference.DecisionRequest(
+        planned.append((draw, key, inference.DecisionRequest(
             messages=messages, model=model, adapter=model.adapter, tokens=tokens,
             seed_key=ID.seed_key_for(key, split_role=item.split_role), purpose=key.phase,
-            top_logprobs=runner.top_logprobs, key=key)
-        record = runner.generate(request)
+            top_logprobs=runner.top_logprobs, key=key)))
+    records = dispatch_batch([request for _, _, request in planned], runner.generate,
+                             max_workers=batch_width(runner, len(planned)))
+    for (draw, key, _), record in zip(planned, records):
+        if isinstance(record, BaseException):
+            # ``dispatch_batch`` returns ``ard.client.ContextTooLong`` in place of a record so
+            # that one refused slot of an episode round does not cancel its siblings.  A bank
+            # cell has no siblings to protect: every draw is rendered from the *same* root
+            # prompt, so a prompt that does not fit does not fit for any of them, and the
+            # honest outcome is the failure rather than a record-shaped object that would
+            # surface later as an attribute error.  Tested as any exception rather than that
+            # one class because nextdyn's own ``inference.ContextTooLong`` is a separate type
+            # that propagates instead -- a narrower check here would be dead code.
+            raise record
         out = schema.parse_public_output(record.final_text, record.finish_reason,
                                          record.completion_token_ids, counter, limits=tokens)
         decision = telemetry.decision_row(

@@ -308,3 +308,51 @@ def test_the_bank_view_row_names_the_draw_and_its_decision(study_cfg):
         assert view.generation_uid == decision.generation_uid
         assert view.cell_kind == CellKind.NATURAL_ROOT.value == decision.cell_kind
         assert view.request_hash == json.loads(decision.request_hashes_json)[0]
+
+
+def test_a_cells_draws_go_out_together_rather_than_one_at_a_time(study_cfg):
+    """``max_inflight`` has to govern the thing it names (D-03).
+
+    Measured live before this: ~30 s per draw with one request in flight and the replica
+    otherwise idle, so a 16-draw item took eight minutes and a cell's wall clock was the
+    **sum** of its draws rather than the max over them.  Banks are the largest block in the
+    campaign, so this is where a serial loop costs most.  The draws are exchangeable by
+    construction -- independent samples, distinct seed keys, none observing another -- which
+    is what makes dispatching them together result-identical and not merely faster.
+    """
+    import threading
+
+    runner = StubRunner(study_cfg, stub_item(), CellKind.DONOR_BANK)
+    runner.concurrency = type("C", (), {"max_inflight": 16})()
+    peak, live, lock = 0, 0, threading.Lock()
+    barrier = threading.Barrier(16, timeout=10)
+    inner = runner.generate
+
+    def counting(request):
+        nonlocal peak, live
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        barrier.wait()                      # every draw must be in flight at once, or time out
+        with lock:
+            live -= 1
+        return inner(request)
+
+    runner.generate = counting
+    item_file = BK.bank_worker(runner, ITEM)
+    assert peak == 16, f"only {peak} draws were ever in flight at once"
+    # and batching changed nothing about the result: order, count and identities all hold
+    views = item_file.rows["banks"]
+    assert [row.draw_index for row in views] == list(range(study_cfg.contract.banks.donor_initial))
+    assert len({row.generation_uid for row in views}) == len(views)
+
+
+def test_a_runner_that_declares_no_width_keeps_the_old_serial_behaviour(study_cfg):
+    """The fallback is 1, not a guessed width: a number nobody chose is how D-03 starts."""
+    from agents_scaling.nextdyn.kinds import batch_width
+
+    assert batch_width(object(), 16) == 1
+    assert batch_width(type("R", (), {"concurrency": None})(), 16) == 1
+    # and it never exceeds the work there is to do
+    runner = type("R", (), {"concurrency": type("C", (), {"max_inflight": 16})()})()
+    assert batch_width(runner, 3) == 3

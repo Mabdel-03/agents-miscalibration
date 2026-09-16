@@ -178,6 +178,25 @@ CELL_KIND_COMPAT: Final[Mapping[str, tuple[CellKind, str | None]]] = {
 }
 
 
+def batch_width(runner: Any, n_planned: int) -> int:
+    """How many of one item's exchangeable requests may be in flight at once.
+
+    Here rather than in :mod:`runner`, which is where ``Concurrency`` is compiled, because the
+    SELECTION_AUDIT worker needs this too and ``runner`` reaches ``construct``: importing it
+    from there widened the audit worker's import closure onto the gold-derived side and the R7
+    firewall refused it, correctly.  ``KIND_TABLE`` below is where ``max_inflight`` is
+    *declared*, so its reader belongs beside it (R1) and the module stays gold-free.
+
+    The fallback is deliberately 1 rather than a guessed width: a runner that cannot say what
+    it allows gets the old serial behaviour, visibly, instead of a number nobody chose.  That
+    is the D-03 shape -- a declared knob that does not govern its own subject -- and it had
+    already cost this package the bank and audit lanes once.
+    """
+    concurrency = getattr(runner, "concurrency", None)
+    width = int(getattr(concurrency, "max_inflight", 1) or 1)
+    return max(1, min(width, max(1, int(n_planned))))
+
+
 def phases_of(kind: CellKind | str) -> tuple[str, ...]:
     """The ``decisions.phase`` values cells of this kind write, read off ``CELL_KIND_COMPAT``.
 
@@ -318,5 +337,5 @@ def is_bank(kind: CellKind | str) -> bool:
 __all__ = [
     "CELL_KIND_COMPAT", "CellShape", "DEADLINE_BEARING", "GENERATION_LANES", "KIND_FIELD_CONSUMERS",
     "KIND_TABLE", "KindSpec", "Lane", "PRIORITY",
-    "Pool", "cell_shape", "is_bank", "items_per_cell", "lane_for", "pool_for", "phases_of", "priority_rank", "spec_for",
+    "Pool", "batch_width", "cell_shape", "is_bank", "items_per_cell", "lane_for", "pool_for", "phases_of", "priority_rank", "spec_for",
 ]

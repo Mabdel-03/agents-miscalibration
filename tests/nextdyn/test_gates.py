@@ -264,3 +264,34 @@ def test_the_measurement_counts_an_overshoot_against_the_phases_own_budget(tmp_r
     # with no budget supplied nothing is claimed either way -- an unmeasured thing is not a pass
     measured = G.smoke_measurements(tmp_run_root, rows=rows)
     assert measured[K.PHASE_REVISION].over_budget_draws == 0
+
+
+def test_a_cell_that_never_sealed_still_reports_the_calls_it_committed(tmp_run_root):
+    """Requiring ``meta.json`` dropped exactly the evidence a gate must not drop.
+
+    An item commits atomically on its own; ``meta.json`` seals the *cell*.  A cell killed by
+    preemption -- or by the very infrastructure failures ``http_error_rate`` measures -- leaves
+    real committed rows and no seal.  Reading only sealed cells reported the survivors' rate as
+    the fleet's, and on a preemptable pool routinely measured nothing at all.
+    """
+    from agents_scaling.nextdyn import deps, tables
+    from tests.nextdyn.test_materialize import decision_row
+
+    def write_cell(name: str, *, sealed: bool, infra: str | None) -> None:
+        row = decision_row(phase=K.PHASE_BANK, infrastructure_status=infra or "",
+                           thinking_tokens=128)
+        tables.ItemFile(
+            schema_version=tables.SCHEMA_VERSION, cell_id=name,
+            cell_kind=CellKind.DIFFICULTY_BANK, source_item_id="i1",
+            status=tables.ItemStatus.COMPLETE, bundle_export_hash=None,
+            rows={"decisions": (row,)}, private_rows={},
+        ).write(tables.item_path(tmp_run_root, name, "i1"))
+        if sealed:
+            (deps.cell_dir(tmp_run_root, name) / deps.META_FILE).write_text("{}")
+
+    write_cell("sealed_ok", sealed=True, infra=None)
+    write_cell("died_mid_cell", sealed=False, infra="http_error")
+    measured = G.smoke_measurements(tmp_run_root)
+    assert measured[K.PHASE_BANK].n_calls == 2
+    # and the failure the dead cell carried is in the rate, rather than excluded with it
+    assert measured[K.PHASE_BANK].http_error_rate == 0.5

@@ -284,7 +284,9 @@ def audit_worker(runner: Any, source_item_id: str) -> ItemFile:
     selector and knows nothing about ``p_correct`` beyond binding the pointwise pair.
     """
     try:
+        from agents_scaling.ard.episode import dispatch_batch   # allowlisted (plan §1.11)
         from agents_scaling.nextdyn import telemetry
+        from agents_scaling.nextdyn.kinds import batch_width
     except ImportError as exc:                              # pragma: no cover - WP1 pending
         raise ManifestError(f"the SELECTION_AUDIT worker needs nextdyn.telemetry (WP1): {exc}") from exc
 
@@ -331,8 +333,17 @@ def audit_worker(runner: Any, source_item_id: str) -> ItemFile:
         for pool in sealed:
             for packet_hash, request in selector.audit_requests(pool, ctx).items():
                 requests.setdefault(packet_hash, request)
-        for packet_hash, request in requests.items():
-            record = runner.generate(request)
+        # Rendered first, then dispatched together.  One request per unique packet hash, each
+        # an independent scoring call that reads nothing another writes, so they are
+        # exchangeable and running them concurrently is result-identical.  Issued one at a
+        # time, the audit block -- the largest single load on the 32B lane, which the plan
+        # already calls the critical path -- left its replicas idle between calls.
+        ordered = list(requests.items())
+        records = dispatch_batch([request for _, request in ordered], runner.generate,
+                                 max_workers=batch_width(runner, len(ordered)))
+        for (packet_hash, request), record in zip(ordered, records):
+            if isinstance(record, BaseException):
+                raise record
             spent[packet_hash] = (int(getattr(record, "thinking_tokens", 0))
                                   + int(getattr(record, "final_tokens", 0)))
             # the selector says *what* the score is; the cell says which packet it belongs to,

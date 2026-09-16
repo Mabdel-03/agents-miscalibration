@@ -176,14 +176,26 @@ def smoke_measurements(run_root: str | os.PathLike, cells: Sequence[Any] | None 
 
 
 def _decisions_of(run_root: Path, cells: Sequence[Any] | None) -> list[Any]:
-    """Decision rows of the named cells (or of every complete cell)."""
+    """Every **committed** decision row, from sealed and unsealed cells alike.
+
+    ``meta.json`` seals the *cell*; an item is committed atomically on its own (tmp + fsync +
+    rename) and in-progress work lives in a separate ``incomplete/`` directory that is never
+    read here.  So a row under ``items/`` is final evidence whether or not its cell went on to
+    seal, and requiring the seal discarded it.
+
+    That is not merely lossy, it is biased in the one direction a gate must not be.  These
+    rates include ``http_error_rate`` and, at the pilot, the per-arm infrastructure-failure
+    *differential* -- and a cell that died from infrastructure failures is precisely a cell
+    that never sealed.  Measuring only sealed cells therefore drops the worst-affected
+    evidence and reports the survivors' rate as the fleet's: silence reading as success, which
+    is the shape this gate exists to refuse.  On a preemptable pool it also routinely left
+    nothing to measure at all.
+    """
     wanted = None if cells is None else {getattr(c, "cell_id", str(c)) for c in cells}
     out: list[Any] = []
     cells_dir = run_root / deps.CELLS_DIR
     for directory in sorted(cells_dir.glob("*")) if cells_dir.exists() else []:
         if wanted is not None and directory.name not in wanted:
-            continue
-        if not (directory / deps.META_FILE).exists():
             continue
         for path in sorted((directory / tables.ITEMS_DIR).glob("*.json")):
             out.extend(tables.ItemFile.read(path).rows.get("decisions", ()))
