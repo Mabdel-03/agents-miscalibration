@@ -1,7 +1,14 @@
 {
-  "continuation_prefill_sha256": null,
-  "continuation_prefill_text": null,
-  "locked_at": null,
+  "continuation_prefill_sha256": "d81aee4b2755be17a2be6552643d7000fb91ada121ed89e9b849342d372fd9a8",
+  "continuation_prefill_text": "\n\n{\n  \"reasoning\": \"",
+  "locked_at": "2026-09-16T21:52:27+00:00",
   "schema_version": 1,
-  "templates": {}
+  "templates": {
+    "audit.txt": "829521e5fe68d7f476bdb15e50484d9199e94bd3c859a713794679f01cef9984",
+    "filler_words.txt": "9eb4691472d63b4a55fd67e6191e95e482e53632fd96cd8812b6194202b1ad3a",
+    "receiver_decision.txt": "b897ea3d5082584909c655282962e4be2d2a5f32de022b8c17d52d7fca291a7e",
+    "receiver_plan.txt": "30675ba277352d72f3455c916091983a4866fd2dc0ead96a5797fb850d2f000f",
+    "revision.txt": "b5cee0244b546fb8a4eca8a6904a93fe8ca92d20b08444640eabd8e0be0e1683",
+    "root.txt": "1faa2dcb9ff7a1df6b3e52b9b1124a2eb440624ea7a4b98ed646744e78504c60"
+  }
 }

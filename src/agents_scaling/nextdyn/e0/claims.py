@@ -19,6 +19,7 @@ rather than resolved in favour of whichever ran last.
 from __future__ import annotations
 
 import csv
+import json
 import os
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
@@ -26,6 +27,8 @@ from typing import Any, Final, Mapping, Sequence
 from agents_scaling.nextdyn.e0 import ard36, atlas, registry as R, run0
 
 CLAIM_FILE: Final[str] = "legacy_claim_reproduction.csv"
+#: The per-claim evidence that does not fit a CSV cell, one JSON object per line.
+DETAIL_FILE: Final[str] = "legacy_claim_detail.jsonl"
 
 #: The spec-7.1 columns, in order.
 CLAIM_HEADER: Final[tuple[str, ...]] = (
@@ -64,11 +67,23 @@ def write(out_dir: str | os.PathLike, rows: Sequence[Mapping[str, Any]]) -> Path
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in CLAIM_HEADER})
-    detail = folder / "legacy_claim_detail.jsonl"
+    detail = folder / DETAIL_FILE
     with detail.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(f'{{"claim_id": {row["claim_id"]!r}, "detail": {row.get("detail", "{}")!r}}}\n'
-                         .replace("'", '"'))
+            # json.dumps, never repr + quote-swapping: Python's repr quotes with apostrophes and
+            # escapes nothing JSON cares about, so a detail body that is itself JSON (every one
+            # of them is) produced a file that looked right and would not parse.  The body is
+            # nested as an OBJECT where it parses, and kept as a string where it does not, so a
+            # reader never has to guess which it got.
+            body: Any = row.get("detail", {})
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except ValueError:
+                    pass
+            handle.write(json.dumps({"claim_id": str(row["claim_id"]),
+                                     "status": str(row.get("status", "")),
+                                     "detail": body}, sort_keys=True) + "\n")
     return path
 
 

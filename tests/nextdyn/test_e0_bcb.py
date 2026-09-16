@@ -131,3 +131,32 @@ def test_a_crash_or_timeout_signature_never_merges_with_a_success():
     groups = bcb_repair.group_candidates({"a": ok, "b": list(ok), "c": crash_a, "d": timeout})
     by_size = sorted(len(members) for members in groups.values())
     assert by_size == [1, 1, 2], groups
+
+
+def test_claim_detail_lines_are_valid_json_with_the_body_nested(tmp_path):
+    """The evidence file must PARSE, not merely look like JSON.
+
+    It was first written with ``repr`` and a quote swap, which produced apostrophe-quoted keys
+    and embedded an already-JSON detail body unescaped: every line was invalid, and nothing
+    noticed because nobody had read the file back yet.  That is the artifact half of ARD36's
+    recurring shape -- a producer and a consumer that never met.
+    """
+    import json as _json
+
+    from agents_scaling.nextdyn.e0 import claims
+
+    rows = [
+        {"claim_id": "X-1", "status": "pass",
+         "detail": _json.dumps({"estimate": -0.0458, "note": 'quotes "inside" the body'})},
+        {"claim_id": "X-2", "status": "fail", "detail": "not json at all"},
+        {"claim_id": "X-3", "status": "ok"},
+    ]
+    claims.write(tmp_path, rows)
+    lines = (tmp_path / claims.DETAIL_FILE).read_text(encoding="utf-8").splitlines()
+    parsed = [_json.loads(line) for line in lines]          # the assertion is that this works
+    assert [p["claim_id"] for p in parsed] == ["X-1", "X-2", "X-3"]
+    assert parsed[0]["detail"]["estimate"] == pytest.approx(-0.0458)
+    assert parsed[0]["detail"]["note"] == 'quotes "inside" the body'
+    assert parsed[1]["detail"] == "not json at all"          # kept as a string, never guessed at
+    assert parsed[2]["detail"] == {}
+    assert [p["status"] for p in parsed] == ["pass", "fail", "ok"]
