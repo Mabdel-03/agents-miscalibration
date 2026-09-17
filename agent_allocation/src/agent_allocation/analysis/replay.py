@@ -6,8 +6,9 @@ round only if its *ex ante* reservation fits the remaining budget; after admissi
 charges (accepted + retried attempts). Deliver the last fully admitted checkpoint's sealed selection. If
 initialization does not fit, the item is kept and scored as an abstention (0), never dropped.
 
-Prefix-observable information only: the reservation of a step uses its rendered prompt size (from the stored
-request body) and its declared completion caps — never the step's realized length, correctness or candidates.
+Prefix-observable information only: the reservation of a step uses its rendered prompt size (the lead's
+``state/render_reports.jsonl`` ``rendered_chars``, else the stored request body) and its declared completion caps —
+never the step's realized length, correctness or candidates.
 Reservation per call (contract, agent 02 ``reservation_usd``): ``(ceil(chars/2) + 64) * input_price +
 max_completion_tokens * output_price``, times ``budget.reservation_multiplier``. When a call's request body is
 not stored, its realized ``prompt_tokens`` stand in for the rendered size (``basis=prompt_tokens``, an exact
@@ -64,10 +65,11 @@ def node_reservations(run: RunData) -> tuple[dict[str, Decimal | None], dict[str
     for part in run.jobs.values():
         for nid, spec in part.items():
             in_price, out_price = _per_token_prices(spec, locks, prices)
-            chars = _rendered_chars(run, nid)
+            logged = run.render_reports.get(nid, {}).get("rendered_chars")
+            chars = int(logged) if isinstance(logged, (int, float)) else _rendered_chars(run, nid)
             if chars is not None:
                 in_tokens = (Decimal(chars) / 2).to_integral_value(rounding=ROUND_CEILING) + 64
-                basis[nid] = "rendered_chars"
+                basis[nid] = "render_report" if isinstance(logged, (int, float)) else "rendered_chars"
             else:
                 usage = run.parsed[nid][0].usage if nid in run.parsed else None
                 if usage is None or usage.prompt_tokens is None:

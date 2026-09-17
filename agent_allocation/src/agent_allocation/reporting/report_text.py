@@ -81,8 +81,8 @@ def run_report(analysis: "Analysis") -> str:
     parts = [header(analysis, "Run report"), scope_notes(analysis), unfinished_section(analysis),
              seal_section(analysis), primary_section(analysis), accuracy_section(analysis),
              coverage_section(analysis), passk_section(analysis), cost_section(analysis), high_low_section(analysis), replay_section(analysis),
-             dynamics_section(analysis), operations_section(analysis), figures_section(analysis),
-             warnings_section(analysis)]
+             dynamics_section(analysis), operations_section(analysis), amendments_section(analysis),
+             figures_section(analysis), warnings_section(analysis)]
     return "\n".join(p for p in parts if p)
 
 
@@ -335,7 +335,8 @@ def operations_section(analysis: "Analysis") -> str:
         out.append(md_table(ops[["partition_id", "kind", "team_size", "update_round", "generations",
                                  "mean_prompt_tokens", "mean_requested_reasoning", "mean_reasoning_tokens",
                                  "mean_completion_over_cap", "share_finish_length", "share_parse_invalid",
-                                 "share_response_cache_hit", "mean_cached_prompt_share", "median_latency_seconds"]],
+                                 "share_response_cache_hit", "mean_cached_prompt_share", "share_packets_trimmed",
+                                 "mean_bytes_removed", "context_limit_events", "median_latency_seconds"]],
                             digits=3))
     retries = analysis.extras.get("retries")
     if isinstance(retries, pd.DataFrame) and not retries.empty:
@@ -344,6 +345,10 @@ def operations_section(analysis: "Analysis") -> str:
                    f"{charged:.6f} USD (details: `tables/billed_retries`).\n")
     else:
         out.append("Billed retries: none recorded.\n")
+    run = analysis.run
+    out.append(f"Context-limit events logged: {len(run.context_limit_events)} (`state/context_limit_events.jsonl`); "
+               f"superseded verdicts kept for audit: {run.superseded_grades} grades, "
+               f"{run.superseded_public_checks} public checks.\n")
     stops = analysis.extras.get("stop_reasons", [])
     out.append("Stop reasons and gate decisions:\n")
     out.append(md_table(pd.DataFrame(stops)) if stops else "- none recorded in state/status.json or gates/\n")
@@ -361,6 +366,15 @@ def figures_section(analysis: "Analysis") -> str:
         lines.append(f"![{fig.stem}]({rel})")
         lines.append("")
     return "\n".join(lines)
+
+
+def amendments_section(analysis: "Analysis") -> str:
+    amendments = analysis.run.amendments
+    if not amendments:
+        return "## Amendments\n\n- none recorded in `amendments.jsonl`\n"
+    cols = ["id", "recorded_at", "rule", "scope", "reason"]
+    rows = [{c: a.get(c) for c in cols} for a in amendments]
+    return "## Amendments\n\nRecorded rule changes (before/after values in `amendments.jsonl`).\n\n" + md_table(rows)
 
 
 def warnings_section(analysis: "Analysis") -> str:

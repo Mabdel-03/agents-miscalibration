@@ -114,6 +114,10 @@ class RunData:
     gates: list[GateResult] = field(default_factory=list)
     amendments: list[dict[str, Any]] = field(default_factory=list)
     provider_snapshots: list[dict[str, Any]] = field(default_factory=list)
+    render_reports: dict[str, dict[str, Any]] = field(default_factory=dict)   # node_id -> last render report line
+    context_limit_events: list[dict[str, Any]] = field(default_factory=list)
+    superseded_grades: int = 0
+    superseded_public_checks: int = 0
     problems: list[str] = field(default_factory=list)
     input_files: list[Path] = field(default_factory=list)
 
@@ -312,6 +316,25 @@ def load_run(paths: RunPaths, config: Mapping[str, Any] | None = None, *, config
         run.input_files.append(paths.amendments)
         run.amendments = [raw for _, raw in _jsonl(paths.amendments)]
     run.provider_snapshots = load_provider_snapshots(paths, run.input_files)
+    if paths.render_reports.is_file():
+        run.input_files.append(paths.render_reports)
+        for _, raw in _jsonl(paths.render_reports):
+            if raw.get("node_id"):
+                run.render_reports[str(raw["node_id"])] = raw
+    if paths.context_limit_events.is_file():
+        run.input_files.append(paths.context_limit_events)
+        run.context_limit_events = [raw for _, raw in _jsonl(paths.context_limit_events)]
+    for attr, dirname in (("superseded_grades", "grades_superseded"),
+                          ("superseded_public_checks", "public_checks_superseded")):
+        directory = paths.run_dir / dirname
+        if directory.is_dir():
+            setattr(run, attr, sum(1 for _ in directory.rglob("*.json")))
+    planned = {cp.policy_id for cps in run.policies.values() for cp in cps}
+    for partition, selections in sorted(run.selections.items()):
+        stray = sorted(set(selections) - planned)
+        if stray:
+            run.problems.append(f"selections/{partition}: {len(stray)} sealed selections for checkpoints absent "
+                                f"from the policy manifests (e.g. {stray[0]})")
     return run
 
 

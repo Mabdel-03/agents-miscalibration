@@ -131,6 +131,10 @@ def candidate_table(run: RunData) -> pd.DataFrame:
                 "public_pass_fraction": check.pass_fraction if check else None,
                 "public_check_cpu_seconds": check.cpu_seconds if check else None,
                 "grade_cpu_seconds": grade.cpu_seconds if grade else None,
+                "rendered_chars": run.render_reports.get(node_id, {}).get("rendered_chars"),
+                "trimmed_packets": run.render_reports.get(node_id, {}).get("trimmed_packets"),
+                "bytes_removed_total": run.render_reports.get(node_id, {}).get("bytes_removed_total"),
+                "context_limit": run.render_reports.get(node_id, {}).get("context_limit"),
             })
     frame = pd.DataFrame(rows)
     for col in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_prompt_tokens"):

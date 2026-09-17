@@ -117,7 +117,7 @@ def test_budget_replay_is_causal_and_never_drops_items(analysed):
     final = analysis.outcomes[(analysis.outcomes["name"] == "peer/4/4")
                               & (analysis.outcomes["view"] == "current")].set_index("item_id")["y"]
     assert (peer["y"] == final.reindex(peer.index)).all()
-    assert set(items["reservation_basis"]) == {"rendered_chars"}
+    assert set(items["reservation_basis"]) == {"render_report"}
     assert set(curves["label"]) == {"budgeted policy replay"}
 
 
@@ -127,10 +127,13 @@ def test_replay_falls_back_then_labels_descriptive(built_run, tmp_path):
     from agent_allocation.analysis.replay import replay
 
     paths = copy_run(built_run, tmp_path)
-    for raw in (paths.run_dir / "raw").rglob("*.json.gz"):
-        raw.unlink()
+    paths.render_reports.unlink()
     cfg, source = resolve_config(paths)
     run = load_run(paths, cfg, config_source=source)
+    items, curves, notes = replay(run, outcome_table(run), budgets={"main": [10.0]})
+    assert set(items["reservation_basis"]) == {"rendered_chars"}                  # raw request bodies
+    for raw in (paths.run_dir / "raw").rglob("*.json.gz"):
+        raw.unlink()
     items, curves, notes = replay(run, outcome_table(run), budgets={"main": [10.0]})
     assert set(items["reservation_basis"]) == {"prompt_tokens"}
     assert set(curves["label"]) == {"budgeted policy replay"}
@@ -264,7 +267,7 @@ def test_run_report_states_required_labels(analysed):
                    "Budgeted policy replay", "Billed retries", "Stop reasons", "share_finish_length",
                    "share_response_cache_hit", "median_latency_seconds", "Independent-item counts",
                    "Small-panel warnings", "Primary contrasts", "CP decomposition", "Coverage and selection gap",
-                   "archive coverage"):
+                   "archive coverage", "Context-limit events", "share_packets_trimmed", "Amendments"):
         assert needle in text, needle
     assert (paths.reports_dir / "RUN_REPORT.html").read_text().startswith("<!doctype html>")
     for table in ("policy_costs", "cost_summary", "frontier_descriptive", "pass_at_k_vs_readout",

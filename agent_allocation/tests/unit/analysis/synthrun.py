@@ -56,6 +56,7 @@ class SynthSpec:
     seal: bool = True
     grade: bool = True
     provider_snapshots: bool = True  # baseline + final /key usage consistent with the ledger (reconcilable run)
+    render_reports: bool = True      # state/render_reports.jsonl with rendered_chars per node (lead's render log)
 
 
 def default_correct(index: int, benchmark: str, spec: GenerationSpec) -> bool | None:
@@ -250,6 +251,16 @@ def build_run(root: Path, spec: SynthSpec | None = None) -> RunPaths:
         _write_lines(paths.policies(partition), policies)
         write_selection_batches(paths, partition, selections, n_batches=2, seal=spec.seal)
     _write_lines(paths.ledger_journal, [dump_record(e) for e in ledger])
+    if spec.render_reports:
+        reports = []
+        for part_jobs in sorted(paths.run_dir.joinpath("manifests", "jobs").glob("*.jsonl")):
+            for line in part_jobs.read_text().splitlines():
+                record = json.loads(line)
+                n_parents = len(record["record"]["parent_ids"])
+                reports.append({"node_id": record["node_id"], "context_limit": False, "trimmed_packets": 0,
+                                "bytes_removed_total": 0, "rendered_chars": (300 + 250 * n_parents) * 3,
+                                "recorded_at": "2026-09-17T07:00:00Z"})
+        _write_lines(paths.render_reports, reports)
     if spec.provider_snapshots:
         charged = sum((e.amount_usd for e in ledger if e.kind in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX)),
                       Decimal(0))

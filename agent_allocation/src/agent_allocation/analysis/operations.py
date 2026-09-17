@@ -53,6 +53,11 @@ def generation_operations(candidates: pd.DataFrame, keys: tuple[str, ...] = ("pa
             "mean_cached_prompt_share": _mean(cached / prompt),
             "median_latency_seconds": float(latency.median()) if latency.notna().any() else None,
             "p90_latency_seconds": float(latency.quantile(0.9)) if latency.notna().any() else None,
+            "share_packets_trimmed": (_share(pd.to_numeric(group["trimmed_packets"], errors="coerce").fillna(0) > 0)
+                                      if group["trimmed_packets"].notna().any() else None),
+            "mean_bytes_removed": _mean(pd.to_numeric(group["bytes_removed_total"], errors="coerce")),
+            "context_limit_events": (int(group["context_limit"].fillna(False).astype(bool).sum())
+                                     if group["context_limit"].notna().any() else None),
             "public_check_cpu_seconds": _sum(group["public_check_cpu_seconds"]),
             "private_grading_cpu_seconds": _sum(group["grade_cpu_seconds"]),
         })
