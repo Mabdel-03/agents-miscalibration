@@ -1,1 +1,80 @@
-[]
+[
+  {
+    "file": "src/agent_allocation/_vendor/extraction_tags.py",
+    "origin": "src/agents_scaling/ard/report.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "8b89df3b1c086b8c92449cacaa951ac62f7807ce008be59ee731aaeacaff47ee",
+    "functions": [
+      "_extract -> strict_single_pair (lines 147-173)"
+    ],
+    "changes": "text only (no span/token ids returned); an empty inner element returns (TAG_EMPTY, None) instead of (TAG_EMPTY, '')"
+  },
+  {
+    "file": "src/agent_allocation/_vendor/extraction_tags.py",
+    "origin": "src/agents_scaling/study/parse/candidate.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "fac97d55668ea99653b53cf68fa5c175e2db352f271a1a59ed24fbbcf4e8eb0d",
+    "functions": [
+      "strip_one_fence (line 127)",
+      "_OPEN_FENCE",
+      "_CLOSE_FENCE (lines 72-73)"
+    ],
+    "changes": "opening-fence info string captured and optionally restricted to an allowlist (case-insensitive)"
+  },
+  {
+    "file": "src/agent_allocation/_vendor/extraction_tags.py",
+    "origin": "src/agents_scaling/ard/graders/_boxed.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "f84171fb19bae616573eec4283493f305ed2561790c39b274d11623185dc80f5",
+    "functions": [
+      "extract_boxed"
+    ],
+    "changes": "none (verbatim)"
+  },
+  {
+    "file": "src/agent_allocation/_vendor/selection_keys.py",
+    "origin": "src/agents_scaling/study/selection/normalize.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "69f1f7967a98e8e64d587b64bcba06e4f58f092241815d77256fc5cc8e1338a9",
+    "functions": [
+      "_pre -> pre",
+      "_strip_one_wrapper -> strip_one_wrapper",
+      "_QUOTES",
+      "_ANSWER_PREFIX",
+      "_BOXED",
+      "_DOLLAR"
+    ],
+    "changes": "renamed to public names; behaviour unchanged"
+  },
+  {
+    "file": "src/agent_allocation/_vendor/selection_keys.py",
+    "origin": "src/agents_scaling/nextdyn/graders/mc.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "121b63c9b79feadd0fcc716666b9eb694f1a459e618bd637d9f52997587b480f",
+    "functions": [
+      "mc_key + _patterns -> mc_letter_key"
+    ],
+    "changes": "legal alphabet is an explicit uppercase letter set (from PublicTask.allowed_choices) instead of n_options; out-of-set letters return None"
+  },
+  {
+    "file": "src/agent_allocation/_vendor/metrics_reference.py",
+    "origin": "src/agents_scaling/study/metrics_reference.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "2eff2cc6c4196adf47b7f2b950867a76e4aa1f8be7f399d24d88d82714328694",
+    "functions": [
+      "_integer",
+      "pass_at_k"
+    ],
+    "changes": "returns the exact Fraction instead of float(Fraction)"
+  },
+  {
+    "file": "src/agent_allocation/_vendor/metrics_reference.py",
+    "origin": "src/agents_scaling/ard/reference_metrics.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "5409c84cac6d0ee5564af2e4ea8e83b16e5e975a27043f9afb9dd592ff222ab4",
+    "functions": [
+      "transition_counts (line 57)"
+    ],
+    "changes": "identity check raises ValueError instead of assert"
+  }
+]
