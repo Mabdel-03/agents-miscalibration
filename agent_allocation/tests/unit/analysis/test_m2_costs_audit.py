@@ -332,3 +332,35 @@ def test_exhausted_nodes_from_state_backup_are_terminal_no_output_not_unrun(buil
     assert set(rows["delivered_state"]) == {"missing_selection"} and rows["y"].isna().all()
     sample4 = outcomes.loc["main/mmlu_pro/w0/i2/sample/4/current"]
     assert sample4["n_required_no_output"] == 1 and sample4["n_required_terminal"] == 4
+
+
+def test_agent06_metric_tables_cross_check(built_run, tmp_path):
+    """Agent 06 tables that agree pass; a known-vs-known disagreement fails the audit."""
+    paths = copy_run(built_run, tmp_path)
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    outcomes = analysis.outcomes
+    rows = []
+    for rec in outcomes.to_dict("records"):
+        lo, hi = (0, 1) if pd.isna(rec["y"]) else (int(rec["y"]), int(rec["y"]))
+        clo, chi = (0, 1) if pd.isna(rec["coverage"]) else (int(rec["coverage"]), int(rec["coverage"]))
+        rows.append({"policy_id": rec["policy_id"], "delivered_lo": lo, "delivered_hi": hi, "coverage_lo": clo,
+                     "coverage_hi": chi})
+    bank = analysis.extras["item_metrics"]["sample_bank"]
+    bank_rows = [{"item_id": r["item_id"], "k": int(r["k"]), "bank_size": int(r["bank_size"]),
+                  "known": not pd.isna(r["oracle_pass_at_k"]),
+                  "pass_at_k_lo": None if pd.isna(r["oracle_pass_at_k"]) else r["oracle_pass_at_k"],
+                  "pass_at_k_hi": None if pd.isna(r["oracle_pass_at_k"]) else r["oracle_pass_at_k"]}
+                 for r in bank[bank["partition_id"] == "main"].to_dict("records")]
+    target = paths.metrics_table("main.checkpoints")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    paths.metrics_table("main.bank").write_text("".join(json.dumps(r) + "\n" for r in bank_rows))
+    assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES)]) == 0
+    checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
+    assert checks.loc["agent06_metric_tables_agree", "status"] == "pass"
+    known = next(i for i, r in enumerate(rows) if r["delivered_lo"] == r["delivered_hi"])
+    rows[known]["delivered_lo"] = rows[known]["delivered_hi"] = 1 - rows[known]["delivered_lo"]
+    target.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES)]) == 1
+    checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
+    assert checks.loc["agent06_metric_tables_agree", "status"] == "fail"

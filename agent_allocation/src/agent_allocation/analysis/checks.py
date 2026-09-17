@@ -391,6 +391,19 @@ def check_selector_legality(run: RunData) -> CheckResult:
                                      "family and checkpoint shape", "manifests/policies/, selections/")
 
 
+def check_agent06_tables(analysis: Any) -> CheckResult:
+    """Known-vs-known agreement with agent 06's per-item metric tables when they exist (bounds differences listed)."""
+    name = "agent06_metric_tables_agree"
+    result = analysis.extras.get("metrics06") if analysis is not None else None
+    if not result or not result.get("partitions"):
+        return CheckResult(name, "skip", "no agent 06 metric tables under tables/metrics/", "tables/metrics/")
+    detail = (f"{result['compared']} comparisons over {', '.join(result['partitions'])}; "
+              f"{len(result['differences'])} known-vs-bounds differences listed in the report")
+    if result["violations"]:
+        return CheckResult(name, "fail", detail, "tables/metrics/", tuple(result["violations"]))
+    return CheckResult(name, "pass", detail, "tables/metrics/")
+
+
 def run_checks(run: RunData, outcomes: pd.DataFrame, *, analysis: Any = None) -> list[CheckResult]:
     results = [check_fixed_population(run, outcomes), check_sealed_before_join(run, outcomes),
                check_selector_legality(run), check_unknown_not_coerced(outcomes),
@@ -403,5 +416,5 @@ def run_checks(run: RunData, outcomes: pd.DataFrame, *, analysis: Any = None) ->
                     check_nominal_generations(analysis.extras.get("policy_costs")),
                     check_cumulative_costs(analysis.extras.get("policy_costs")),
                     check_population_not_outcome_dependent(analysis), check_price_units(analysis),
-                    check_ledger(analysis)]
+                    check_ledger(analysis), check_agent06_tables(analysis)]
     return results

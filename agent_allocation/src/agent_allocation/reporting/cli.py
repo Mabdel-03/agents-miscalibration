@@ -108,6 +108,12 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
     trans = metrics["transitions"]
     trans_summary = _transition_summary(trans)
 
+    from agent_allocation.analysis import metrics06
+    tables06 = metrics06.load_metrics_tables(run)
+    metrics06_result = metrics06.compare(run, outcomes, bank, trans, tables06) if tables06 else None
+    if metrics06_result and metrics06_result["differences"]:
+        notes.append(f"agent 06 metric tables: {len(metrics06_result['differences'])} bound-level differences "
+                     f"(e.g. {metrics06_result['differences'][0]})")
     replay_items, replay_curves, replay_notes = replay(run, outcomes)
     notes += replay_notes
     rec = reconciliation(run)
@@ -119,6 +125,7 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
         "policy_costs": costs, "cost_summary": summary, "frontier": frontier, "price_checks": price_checks,
         "item_metrics": metrics, "passk_summary": passk, "transition_summary": trans_summary,
         "replay_items": replay_items, "replay_curves": replay_curves, "reconciliation": rec,
+        "metrics06": metrics06_result,
         "operations": generation_operations(candidates),
         "operations_condensed": generation_operations(candidates, ("partition_id", "kind", "team_size", "update_round")),
         "retries": retry_table(run, charges, attempts_by_node),
