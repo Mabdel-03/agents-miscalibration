@@ -9,7 +9,8 @@ Config keys consumed (via the ``sampling`` mapping, normally ``cfg["sampling"]``
 * ``sampling.n_per_request``    -> must be ``1``
 * ``sampling.stream``           -> optional; must be ``False``
 
-Any other key raises ``ValueError``: a knob we do not read must not look configurable (R9).
+Any other key raises ``RequestContractError`` (a ``ValueError``): a knob we do not read must not look configurable
+(R9). Every validation error here is raised before anything is sent.
 
 ``provider.allow_fallbacks``/``require_parameters`` are not read from config here: the body hard-codes the only values
 ``config.validate_config`` accepts (``False``/``True``). Budget comes from the node: ``reasoning.max_tokens`` is
@@ -39,6 +40,13 @@ REQUEST_EXTENSION_KEY = "agent_allocation.request"
 # endpoint lacking one, so we refuse to build the request instead of discovering it with a paid call.
 REQUIRED_ENDPOINT_PARAMETERS: tuple[str, ...] = ("max_tokens", "reasoning", "temperature", "top_p")
 
+class RequestContractError(ValueError):
+    """Raised before any byte is sent: the request would break the study contract (spec/lock model or cap, tier
+    variant, sampling knobs, message shape, attempt id). The attempt provably never left the process, so the
+    dispatcher may release its reservation; it is a configuration/programming blocker, so open the circuit and never
+    retry it as a transport failure."""
+
+
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 _KNOWN_SAMPLING_KEYS = frozenset({"temperature", "top_p", "api_seed_enabled", "response_cache", "n_per_request",
                                   "stream"})
@@ -47,43 +55,43 @@ _TIER_MARKERS = ("/flex", "/priority", "/batch", ":free")
 
 def _number(sampling: Mapping[str, Any], key: str, low: float, high: float) -> float:
     if key not in sampling:
-        raise ValueError(f"sampling.{key} is required")
+        raise RequestContractError(f"sampling.{key} is required")
     value = sampling[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"sampling.{key} must be a finite number, got {value!r}")
+        raise RequestContractError(f"sampling.{key} must be a finite number, got {value!r}")
     if not low <= value <= high:
-        raise ValueError(f"sampling.{key}={value!r} is outside [{low}, {high}]")
+        raise RequestContractError(f"sampling.{key}={value!r} is outside [{low}, {high}]")
     return float(value)
 
 
 def _check_sampling(sampling: Mapping[str, Any]) -> tuple[float, float]:
     unknown = set(sampling) - _KNOWN_SAMPLING_KEYS
     if unknown:
-        raise ValueError(f"unknown sampling keys {sorted(unknown)}: not part of the request contract")
+        raise RequestContractError(f"unknown sampling keys {sorted(unknown)}: not part of the request contract")
     if sampling.get("api_seed_enabled", False) is not False:
-        raise ValueError("sampling.api_seed_enabled must be False: no API seed is sent")
+        raise RequestContractError("sampling.api_seed_enabled must be False: no API seed is sent")
     if sampling.get("response_cache", False) is not False:
-        raise ValueError("sampling.response_cache must be False: independent draws cannot be cache hits")
+        raise RequestContractError("sampling.response_cache must be False: independent draws cannot be cache hits")
     if sampling.get("n_per_request", 1) != 1 or isinstance(sampling.get("n_per_request", 1), bool):
-        raise ValueError("sampling.n_per_request must be 1")
+        raise RequestContractError("sampling.n_per_request must be 1")
     if sampling.get("stream", False) is not False:
-        raise ValueError("streaming is disabled: sampling.stream must be False")
+        raise RequestContractError("streaming is disabled: sampling.stream must be False")
     return _number(sampling, "temperature", 0.0, 2.0), _number(sampling, "top_p", 0.0, 1.0)
 
 
 def check_lock_for_request(lock: EndpointLock) -> None:
-    """Raise ``ValueError`` when ``lock`` cannot carry a study request (never pick a tier variant by accident)."""
+    """Raise ``RequestContractError`` when ``lock`` cannot carry a study request (never a tier variant by accident)."""
     tag = lock.provider_tag
     if not tag or tag != tag.strip():
-        raise ValueError(f"endpoint lock has no usable provider tag: {tag!r}")
+        raise RequestContractError(f"endpoint lock has no usable provider tag: {tag!r}")
     lowered = tag.lower()
     if any(marker in lowered for marker in _TIER_MARKERS):
-        raise ValueError(f"endpoint lock tag {tag!r} is a non-standard tier variant")
+        raise RequestContractError(f"endpoint lock tag {tag!r} is a non-standard tier variant")
     if lock.service_tier != "standard":
-        raise ValueError(f"endpoint lock service tier {lock.service_tier!r} is not 'standard'")
+        raise RequestContractError(f"endpoint lock service tier {lock.service_tier!r} is not 'standard'")
     missing = [p for p in REQUIRED_ENDPOINT_PARAMETERS if p not in lock.supported_parameters]
     if missing:
-        raise ValueError(f"locked endpoint {tag!r} does not advertise required parameters {missing}")
+        raise RequestContractError(f"locked endpoint {tag!r} does not advertise required parameters {missing}")
 
 
 def spec_lock_problems(spec: GenerationSpec, lock: EndpointLock) -> list[str]:
@@ -107,19 +115,19 @@ def spec_lock_problems(spec: GenerationSpec, lock: EndpointLock) -> list[str]:
 
 def _check_messages(messages: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
     if isinstance(messages, (str, bytes)) or not messages:
-        raise ValueError("messages must be a non-empty sequence of {role, content} mappings")
+        raise RequestContractError("messages must be a non-empty sequence of {role, content} mappings")
     out: list[dict[str, str]] = []
     for index, message in enumerate(messages):
         if not isinstance(message, Mapping):
-            raise ValueError(f"message {index} is not a mapping")
+            raise RequestContractError(f"message {index} is not a mapping")
         extra = set(message) - {"role", "content"}
         if extra:
-            raise ValueError(f"message {index} has keys outside the contract: {sorted(extra)}")
+            raise RequestContractError(f"message {index} has keys outside the contract: {sorted(extra)}")
         role, content = message.get("role"), message.get("content")
         if role not in ALLOWED_ROLES:
-            raise ValueError(f"message {index} has role {role!r}")
+            raise RequestContractError(f"message {index} has role {role!r}")
         if not isinstance(content, str):
-            raise ValueError(f"message {index} content must be a string")
+            raise RequestContractError(f"message {index} content must be a string")
         out.append({"role": role, "content": content})
     return out
 
@@ -128,10 +136,10 @@ def build_request_body(spec: GenerationSpec, messages: Sequence[Mapping[str, str
                        sampling: Mapping[str, Any]) -> dict[str, Any]:
     """The exact JSON body for one generation node. No seed, no ``reasoning.effort``, no tools/plugins/transforms."""
     if spec.model != lock.model:
-        raise ValueError(f"spec model {spec.model!r} differs from the endpoint lock model {lock.model!r}")
+        raise RequestContractError(f"spec model {spec.model!r} differs from the endpoint lock model {lock.model!r}")
     check_lock_for_request(lock)
     if spec.max_completion_tokens > lock.max_completion_tokens:
-        raise ValueError(f"max_tokens {spec.max_completion_tokens} exceeds the locked endpoint cap "
+        raise RequestContractError(f"max_tokens {spec.max_completion_tokens} exceeds the locked endpoint cap "
                          f"{lock.max_completion_tokens}")
     temperature, top_p = _check_sampling(sampling)
     return {

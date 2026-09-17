@@ -5,6 +5,7 @@ import functools
 import inspect
 import itertools
 import typing
+from dataclasses import replace
 
 import pytest
 
@@ -30,14 +31,14 @@ def _select(t, cands, family="sample", name=None, checks=None, view=CheckpointVi
 
 def test_option_plurality_selects_the_largest_class_first_member():
     t = f.task(OutputKind.OPTION)
-    cands = f.pool(t, ["B", "(C)", "Answer: C", "c.", "B"])
+    cands = f.pool(t, ["B", "(C)", "C", " C\n", "B", "Answer: B", "b", "**B**", "B."])
     detail = _select(t, cands)
-    assert detail.result.status == SelectionStatus.SELECTED.value
+    assert detail.result.status is SelectionStatus.SELECTED
     assert detail.result.selected_candidate_id == "c1"
     assert detail.result.selector_name == "plurality_option"
-    assert detail.winning_support == 3 and detail.n_votes == 5
+    assert detail.winning_support == 3 and detail.n_votes == 5          # decorated letters are not option identities
     assert detail.result.public_evidence_hash is None
-    assert detail.result.policy_id == "main/item-1/sample/5/current"
+    assert detail.result.policy_id == "main/item-1/sample/9/current"
 
 
 def test_illegal_or_unreadable_options_cast_no_vote():
@@ -55,8 +56,9 @@ def test_parenthesized_allowed_choices_are_accepted():
 
 def test_boolean_plurality():
     t = f.task(OutputKind.BOOLEAN)
-    detail = _select(t, f.pool(t, ["true", "False", "FALSE.", "maybe"]))
+    detail = _select(t, f.pool(t, ["true", "False", "**FALSE.**", "maybe", "True or False"]))
     assert detail.result.selected_candidate_id == "c1" and detail.result.selector_name == "plurality_boolean"
+    assert detail.n_votes == 3
 
 
 def test_math_exact_normalization_groups_before_equivalence():
@@ -213,6 +215,28 @@ def test_code_ties_follow_frozen_priority_and_ignore_mapping_order():
     reversed_cands = dict(reversed(list(cands.items())))
     assert _select(t, reversed_cands, checks=reversed_checks, ids=("c0", "c1", "c2")).result.selected_candidate_id \
         == first
+
+
+def test_code_zero_public_cases_pause_rather_than_score_zero():
+    t = f.task(OutputKind.PYTHON)
+    cands = f.pool(t, ["p0", "p1"])
+    checks = {"c0": f.check("c0", t, 0, total=0), "c1": f.check("c1", t, 0, total=0)}
+    detail = _select(t, cands, checks=checks)
+    assert detail.result.status is SelectionStatus.PAUSED_CHECK_ERROR and detail.result.selected_candidate_id is None
+
+
+def test_declared_selector_family_must_admit_the_concrete_selector():
+    t = f.task(OutputKind.MATH)
+    cands = f.pool(t, ["1", "2"])
+    cp = replace(f.checkpoint(t, "sample/2", "sample", tuple(cands)), selector_name="public_tests_only",
+                 selector_version="v1")
+    with pytest.raises(ValueError):
+        select_checkpoint(cp, t, cands, {}, seed=SEED)
+    ok = select_checkpoint(replace(cp, selector_name="plurality"), t, cands, {}, seed=SEED)
+    assert readout.concrete_selector_is_legal("plurality", ok.selector_name)
+    assert readout.concrete_selector_is_legal("plurality", "archive_" + ok.selector_name)
+    assert not readout.concrete_selector_is_legal("public_tests_only", ok.selector_name)
+    assert readout.concrete_selector_is_legal("public_tests_only", "last_answer")
 
 
 def test_code_infrastructure_error_pauses():

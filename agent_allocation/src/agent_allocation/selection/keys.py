@@ -3,11 +3,14 @@
 Every function here reads only the candidate's own final answer and the public task. Nothing here sees a gold
 answer, a grade or another candidate.
 
-* OPTION (MMLU-Pro, BBH choice subtasks): the option letter, accepted in the vendored ``mc_key`` forms (``B``,
-  ``(B)``, ``B.``, ``**B**``, ``Answer: B``...), and only when it is one of ``PublicTask.allowed_choices``. An
-  illegal or unreadable letter has no key: it is not a vote (MMLU options keep their original order, so the letter
-  *is* the option identity).
-* BOOLEAN (BBH boolean_expressions): ``True``/``False`` after the same pre-treatment, case-insensitive.
+* OPTION (MMLU-Pro, BBH choice subtasks): after removing outer whitespace the final must be exactly ``X`` or ``(X)``
+  with ``X`` an uppercase letter listed in ``PublicTask.allowed_choices``; anything else casts no vote. MMLU options
+  keep their original order, so the letter *is* the option identity.
+* BOOLEAN (BBH boolean_expressions): after removing outer whitespace and the characters in
+  ``BOOLEAN_OUTER_CHARACTERS``, exactly ``true``/``false`` case-insensitively -> ``"True"``/``"False"``.
+* Both rules are byte-for-byte the grader's frozen identities (``grading.text.normalize``, ``text-normalize-v1``),
+  copied rather than imported so the selector's import closure never loads grading code; a parity test pins them.
+  Votes and grades therefore agree: a class representative is never graded ``INVALID_OUTPUT`` for its form.
 * MATH: ``math_text`` is what an equivalence check reads -- NFKC, outer whitespace, the content of the *last*
   ``\\boxed{...}`` when one is present, otherwise one outer ``$``/``$$``/``\\(..\\)``/``\\[..\\]`` wrapper removed.
   ``math_exact_key`` is the exact-equality key built from it: ``\\dfrac``/``\\tfrac`` -> ``\\frac``, sizing
@@ -23,15 +26,18 @@ import unicodedata
 from dataclasses import dataclass
 
 from agent_allocation._vendor.extraction_tags import extract_boxed
-from agent_allocation._vendor.selection_keys import mc_letter_key, pre, strip_one_wrapper
 from agent_allocation.contracts import Candidate, OutputKind, ParseStatus, PublicTask
 
 __all__ = [
-    "KEYS_VERSION", "VoteKey", "boolean_key", "math_exact_key", "math_text", "option_key", "option_letters",
-    "vote_key",
+    "BOOLEAN_OUTER_CHARACTERS", "KEYS_VERSION", "TEXT_NORMALIZER_PARITY", "VoteKey", "boolean_key", "math_exact_key",
+    "math_text", "option_key", "option_letters", "vote_key",
 ]
 
-KEYS_VERSION = "06-keys-v1"
+KEYS_VERSION = "06-keys-v2"
+#: The grader normalizer these option/boolean keys reproduce exactly (see tests/unit/selection/test_keys.py).
+TEXT_NORMALIZER_PARITY = "text-normalize-v1"
+BOOLEAN_OUTER_CHARACTERS = " \t\n\r\f\v.,;:!?\"'`*_()[]{}$"
+_OPTION = re.compile(r"([A-Z])|\(([A-Z])\)")
 
 _CHOICE = re.compile(r"^\(?([A-Za-z])\)?$")
 _MATH_WRAPPERS: tuple[tuple[str, str], ...] = (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$"))
@@ -62,15 +68,22 @@ def option_letters(task: PublicTask) -> frozenset[str]:
     return frozenset(letters)
 
 
-def option_key(final_answer: str, letters: frozenset[str]) -> str | None:
-    return mc_letter_key(final_answer, letters)
+def option_key(final_answer: str | None, letters: frozenset[str]) -> str | None:
+    """The legal option letter when the final is exactly ``X`` or ``(X)`` (outer whitespace removed), else ``None``."""
+    if final_answer is None:
+        return None
+    match = _OPTION.fullmatch(final_answer.strip())
+    if match is None:
+        return None
+    letter = match.group(1) or match.group(2)
+    return letter if letter in letters else None
 
 
-def boolean_key(final_answer: str) -> str | None:
-    text = pre(final_answer).casefold()
-    if text.endswith("."):
-        text = text[:-1].strip()
-    text = strip_one_wrapper(text).strip()
+def boolean_key(final_answer: str | None) -> str | None:
+    """``"True"``/``"False"`` for an explicit boolean final, else ``None``."""
+    if final_answer is None:
+        return None
+    text = final_answer.strip().strip(BOOLEAN_OUTER_CHARACTERS).casefold()
     return {"true": "True", "false": "False"}.get(text)
 
 

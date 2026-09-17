@@ -18,7 +18,7 @@ class EvaluatorTimeout(BaseException):
 
 
 class EvaluatorUnavailable(RuntimeError):
-    """SIGALRM bounds are unavailable here (not the main thread of the main interpreter)."""
+    """A bounded evaluation cannot run here: no SIGALRM on this thread, or the isolated evaluator is down."""
 
 
 def signal_bounds_available() -> bool:

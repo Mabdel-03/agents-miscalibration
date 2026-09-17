@@ -4,21 +4,30 @@ How a node runs (outbox ordering; every step durable before the next):
 
 1. *ready* - every parent is terminal (with or without a candidate); the node's wave is open.
 2. *admission* (coordinator, synchronous) - fair pick, render, conservative estimate, budget pre-check, rate token.
-3. ``ledger.reserve`` (journal fsync) -> ``store.try_lease`` -> ``Attempt(LEASED)`` -> ``ledger.mark_sent`` ->
-   ``Attempt(SENT)`` -> acquire the HTTP limiter -> ``client.generate`` -> release the limiter. The limiter covers
-   only the HTTP exchange: never rendering, journal waits, backoff sleeps, extraction or database work.
-4. ``write_raw_response`` (fsync, before any commit) -> settle / keep unresolved / release (CONNECT_FAILED only) ->
-   ``store.record_persisted_response`` -> ``extract`` (worker thread) -> ``store.record_result`` (parsed/ + DB) ->
-   children unlocked immediately.
+3. ``ledger.reserve`` (journal fsync) -> ``store.try_lease`` -> ``Attempt(LEASED)`` -> acquire the HTTP limiter ->
+   re-check stop/drain/circuit (withdraw with ``release_unsent`` if set) -> ``ledger.mark_sent`` (urgent fsync, so
+   ``SENT`` is durable before the request leaves) -> ``Attempt(SENT)`` -> ``client.generate`` -> release the limiter.
+   The limiter covers the HTTP exchange plus that one urgent fsync: never rendering, reservation waits, backoff
+   sleeps, extraction or database queues.
+4. ``write_raw_response`` (fsync, before any commit) -> settle (confirmed cost; CONNECT_FAILED settles 0) or keep
+   unresolved -> ``store.record_persisted_response`` -> ``extract`` (worker thread) -> ``store.record_result``
+   (parsed/ + DB) -> children unlocked immediately.
+
+Context limit (R03-1): when ``render`` raises ``prompts.render.ContextLimitEvent`` the node becomes terminal with
+outcome ``context_limit``: no reservation, no API call, no candidate; its children render the absent marker.
 
 Transport outcomes (``contracts``): OK -> candidate (every completion status is terminal, never redrawn);
 ``RETRYABLE_TRANSPORT`` -> new attempt after randomized backoff, at most ``max_transport_attempts`` attempts per node,
 then the node is terminal without a candidate and its children still run (absent-response marker);
-``CIRCUIT_BREAKING_TRANSPORT`` -> circuit opens: admissions stop, in-flight work drains, reason recorded; anything
-else (ERROR_ENVELOPE) -> terminal without candidate. AMBIGUOUS_TIMEOUT (and any exchange without a confirmed cost)
-keeps its full reservation as *unresolved* until generation metadata confirms the cost or the reconciliation horizon
-(``lease_stale_seconds``) passes, then ``charge_max``; admissions pause while unresolved exposure exceeds
+``CIRCUIT_BREAKING_TRANSPORT`` -> circuit opens: admissions stop, in-flight work drains, reason recorded; any other
+status -> terminal without candidate. AMBIGUOUS_TIMEOUT and ERROR_ENVELOPE (and any exchange without a confirmed
+cost) keep the full reservation as *unresolved* until generation metadata confirms the cost or the reconciliation
+horizon (``lease_stale_seconds``) passes, then ``charge_max``; admissions pause while unresolved exposure exceeds
 ``max_unresolved_spend_usd``.
+
+``RunSummary.stop_reason`` is one of ``STOP_REASONS`` (``completed``, ``budget_exhausted``, ``circuit_open``,
+``stop_sentinel``, ``drain``, ``control_sentinel_present``, ``stalled``); ``circuit_reason`` / ``stop_detail`` carry the
+specifics.
 
 Waves: waves open in plan order, at most ``max_active_waves`` incomplete at once, and a new one opens only when the
 ready work of open waves cannot fill the dispatcher. Pick order among ready nodes: older wave, then critical path
@@ -83,6 +92,19 @@ WATCHDOG_MARGIN_SECONDS = 30.0
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 60.0
 MIN_RPS = 0.25
+NOT_SENT = "not_sent"
+
+STOP_COMPLETED = "completed"
+STOP_BUDGET_EXHAUSTED = "budget_exhausted"
+STOP_CIRCUIT_OPEN = "circuit_open"
+STOP_SENTINEL = "stop_sentinel"
+STOP_DRAIN = "drain"
+STOP_CONTROL_SENTINEL_PRESENT = "control_sentinel_present"
+STOP_STALLED = "stalled"
+STOP_REASONS = frozenset({STOP_COMPLETED, STOP_BUDGET_EXHAUSTED, STOP_CIRCUIT_OPEN, STOP_SENTINEL, STOP_DRAIN,
+                          STOP_CONTROL_SENTINEL_PRESENT, STOP_STALLED})
+
+OUTCOME_CONTEXT_LIMIT = "context_limit"
 OPTIONAL_PARTITIONS = frozenset({Partition.REPLICATION.value})
 PILOT_PARTITIONS = frozenset({Partition.CANARY.value, Partition.PILOT.value})
 
@@ -134,6 +156,8 @@ class RunSummary:
     waves_completed: int
     circuit_reason: str | None
     duplicate_notifications: int
+    stop_detail: str | None = None
+    nodes_context_limited: int = 0
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -469,6 +493,14 @@ class _Unresolved:
     deadline: float
 
 
+def _is_context_limit(exc: BaseException) -> bool:
+    try:
+        from agent_allocation.prompts.render import ContextLimitEvent
+    except ImportError:  # pragma: no cover - agent 03's module not present
+        return type(exc).__name__ == "ContextLimitEvent"
+    return isinstance(exc, ContextLimitEvent)
+
+
 def critical_class(spec: GenerationSpec) -> int:
     if spec.kind is GenerationKind.ROOT and spec.root_slot == 0:
         return 0
@@ -512,16 +544,20 @@ class Dispatcher:
         self.bucket_served: dict[tuple[str, str], int] = defaultdict(int)
         self.unresolved: dict[str, _Unresolved] = {}
         self.tasks: set[asyncio.Task] = set()
-        self.pre_send = 0
+        self.admit_blocker = "empty"
+        self.pre_send = 0                          # admitted, not yet holding the HTTP limiter
+        self.pending_reservation = Decimal("0")    # admitted, reservation not yet journaled
         self.requests_sent = 0
         self.rate_limited = 0
         self.retries_scheduled = 0
         self.duplicate_notifications = 0
+        self.context_limited = 0
         self.attempt_statuses: dict[str, int] = defaultdict(int)
         self.circuit_reason: str | None = None
         self.stop_mode: str | None = None          # "stop" | "drain"
         self.budget_blocked_at: Decimal | None = None
         self.stop_reason: str | None = None
+        self.stop_detail: str | None = None
         self.events: list[tuple[float, str, str]] = []
         self.soft_ceiling = Decimal("0")
         self.run_ceiling = Decimal("0")
@@ -541,12 +577,11 @@ class Dispatcher:
         self.http = HttpLimiter(self.aimd.concurrency_limit)
         self.hard_stop: asyncio.Future = self._loop.create_future()
         self.wake = asyncio.Event()
-        self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
         if self.paths.stop_sentinel.exists() or self.paths.drain_sentinel.exists():
-            self.stop_reason = "control_sentinel_present"
-            self.cpu.shutdown(wait=False)
+            self._finish(STOP_CONTROL_SENTINEL_PRESENT, "STOP" if self.paths.stop_sentinel.exists() else "DRAIN")
             return self._summary(started, settled_before)
         self._claim_dispatcher()
+        self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
         background: list[asyncio.Task] = []
         try:
             await self._startup_reconcile()
@@ -712,13 +747,13 @@ class Dispatcher:
                 self.http.set_limit(self.aimd.concurrency_limit)
                 self._event("aimd_increase", f"{self.aimd.concurrency_limit}/{self.aimd.rps:.2f}")
             if self.stop_mode is not None:
-                self.stop_reason = "stopped" if self.stop_mode == "stop" else "drained"
+                self._finish(STOP_SENTINEL if self.stop_mode == "stop" else STOP_DRAIN, None)
                 return
             if self.circuit_reason is not None:
-                self.stop_reason = f"circuit_open:{self.circuit_reason}"
+                self._finish(STOP_CIRCUIT_OPEN, self.circuit_reason)
                 return
             if all(w.remaining == 0 for w in self.waves):
-                self.stop_reason = "complete"
+                self._finish(STOP_COMPLETED, None)
                 return
             self._maybe_open_waves()
             self._admit(now)
@@ -726,7 +761,7 @@ class Dispatcher:
             if idle:
                 verdict = self._idle_verdict(now)
                 if verdict is not None:
-                    self.stop_reason = verdict
+                    self._finish(*verdict)
                     return
             timeout = self._next_wakeup(now)
             self.wake.clear()
@@ -735,7 +770,13 @@ class Dispatcher:
             except asyncio.TimeoutError:
                 pass
 
-    def _idle_verdict(self, now: float) -> str | None:
+    def _finish(self, reason: str, detail: str | None) -> None:
+        if reason not in STOP_REASONS:
+            raise AssertionError(f"undeclared stop reason {reason!r}")
+        self.stop_reason = reason
+        self.stop_detail = detail
+
+    def _idle_verdict(self, now: float) -> tuple[str, str | None] | None:
         """Nothing is running. Return a stop reason if nothing can ever run again without outside help."""
         if self.aimd.pause_until > now or any(n.not_before > now for n in self.ready.values()):
             return None                                   # backoff / Retry-After: time will unblock it
@@ -744,22 +785,28 @@ class Dispatcher:
         if self.unresolved and self.ledger.unresolved_exceeded:
             return None                                   # the reconcile loop will settle or charge them
         if self.budget_blocked_at is not None and self.ready:
-            return "budget_exhausted"
+            if any(u.generation_id for u in self.unresolved.values()):
+                return None                               # a confirmed bill below the reservation may free budget
+            return STOP_BUDGET_EXHAUSTED, self.ledger.last_refusal
         if self.ready:
             return None                                   # admissible next iteration (rate token)
         unopened = [w for w in self.waves if not w.opened and w.remaining]
         if unopened:
             if self.ledger.snapshot().exposure >= self.soft_ceiling:
-                return "budget_exhausted"
+                return STOP_BUDGET_EXHAUSTED, "soft_admission_ceiling"
             if all(w.optional for w in unopened) and not self._core_complete():
-                return "stalled:core_incomplete"
+                return STOP_STALLED, "optional_block_waits_for_incomplete_core"
             return None
-        return "stalled"
+        parked = sum(1 for n in self.nodes.values() if n.status == "parked" and not n.terminal)
+        return STOP_STALLED, f"no_runnable_nodes:parked={parked}"
 
     def _next_wakeup(self, now: float) -> float:
+        # Completions, settlements and unlocks set ``wake``; timers only cover what time alone unblocks, so the
+        # coordinator never spins while capacity is exhausted.
         candidates = [CONTROL_POLL_SECONDS]
         if self.ready:
-            candidates.append(self.aimd.seconds_until_token(now))
+            if self.admit_blocker == "token":
+                candidates.append(self.aimd.seconds_until_token(now))
             future = [n.not_before - now for n in self.ready.values() if n.not_before > now]
             if future:
                 candidates.append(min(future))
@@ -826,28 +873,33 @@ class Dispatcher:
         return best
 
     def _admit(self, now: float) -> None:
-        if self.stop_mode or self.circuit_reason or not self.ready:
-            return
+        self.admit_blocker = self._admit_inner(now)
+
+    def _admit_inner(self, now: float) -> str:
+        if self.stop_mode or self.circuit_reason:
+            return "closed"
+        if not self.ready:
+            return "empty"
         if self.aimd.pause_until > now:
-            return
+            return "retry_after"
         if self.ledger.unresolved_exceeded:
             self._event_once("paused_unresolved_exposure")
-            return
+            return "unresolved_exposure"
         snap = self.ledger.snapshot()
         if self.budget_blocked_at is not None:
             if snap.exposure >= self.budget_blocked_at:
-                return
+                return "budget"
             self.budget_blocked_at = None
         while self.ready:
             if self._capacity() <= 0:
                 self.aimd.bound_in_window = True
-                return
+                return "capacity"
             if not self.aimd.token_available(now):
                 self.aimd.bound_in_window = True
-                return
+                return "token"
             node = self._pick(now)
             if node is None:
-                return
+                return "none_eligible"
             try:
                 parents = [(self.nodes[p].spec, self.store.candidate(p) if self.nodes[p].succeeded else None)
                            for p in node.parents]
@@ -855,13 +907,23 @@ class Dispatcher:
                 amount = reservation_usd(node.spec, rendered_chars(messages), self.lock,
                                          multiplier=self.budget.reservation_multiplier)
             except Exception as exc:  # noqa: BLE001 - a render/estimate defect must stop spending, loudly
+                if _is_context_limit(exc):
+                    # R03-1: terminal without an API call, a reservation or a candidate (the lead's render wrapper
+                    # logs the event); children render the absent-response marker.
+                    self.store.mark_terminal_without_candidate(node.node_id, OUTCOME_CONTEXT_LIMIT,
+                                                               f"context_limit:{exc}"[:500])
+                    self.context_limited += 1
+                    self._event("context_limit", node.node_id)
+                    self._on_terminal(node, succeeded=False)
+                    continue
                 self._open_circuit(f"render_failed:{type(exc).__name__}:{exc}")
-                return
+                return "closed"
             first_attempt = node.sends == 0
-            if not self.ledger.fits(amount, ceiling_usd=self.soft_ceiling if first_attempt else None):
+            if not self.ledger.fits(amount + self.pending_reservation,
+                                    ceiling_usd=self.soft_ceiling if first_attempt else None):
                 self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
                 self._event_once(f"budget_blocked:{self.ledger.last_refusal or 'ceiling'}")
-                return
+                return "budget"
             self.aimd.take_token()
             self.bucket_served[node.bucket] += 1
             del self.ready[node.node_id]
@@ -869,20 +931,25 @@ class Dispatcher:
             node.attempts_used += 1
             self.item_active[node.item_key] += 1
             self.pre_send += 1
+            self.pending_reservation += amount
             task = self._loop.create_task(self._attempt(node, node.attempts_used, messages, amount))
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
             snap = self.ledger.snapshot()
+        return "empty"
 
     # ---- one attempt ----------------------------------------------------------------------------------------
     async def _attempt(self, node: _Node, attempt_no: int, messages: list[dict[str, str]], amount: Decimal) -> None:
         spec = node.spec
         attempt_id = f"{node.node_id}:{attempt_no}"
         attempt = Attempt(attempt_id, node.node_id, attempt_no, AttemptState.PENDING, amount, _utc())
-        in_pre_send = True
+        phase = {"pre_send": True}
         try:
-            reserved = await self.ledger.reserve(attempt_id=attempt_id, node_id=node.node_id,
-                                                 partition_id=spec.partition_id, amount_usd=amount)
+            try:
+                reserved = await self.ledger.reserve(attempt_id=attempt_id, node_id=node.node_id,
+                                                     partition_id=spec.partition_id, amount_usd=amount)
+            finally:
+                self.pending_reservation -= amount
             if not reserved:
                 node.attempts_used -= 1          # a refused reservation is not journaled: the id is still free
                 snap = self.ledger.snapshot()
@@ -902,19 +969,13 @@ class Dispatcher:
                 return
             attempt = replace(attempt, state=AttemptState.LEASED)
             self.store.record_attempt(attempt)
-            if self.stop_mode is not None or self.circuit_reason is not None:
+            outcome, error, sent_at, attempt = await self._exchange(node, messages, attempt, phase)
+            if error == NOT_SENT:
+                # Stop/drain/circuit arrived while this attempt waited for the HTTP limiter: it never left.
                 await self.ledger.release_unsent(attempt_id)
-                self.store.record_attempt(replace(attempt, state=AttemptState.TERMINAL, completed_at=_utc(),
-                                                  error_detail="not_sent:stopping"))
+                self.store.record_unsent_attempt(attempt, detail="not_sent:stopping")
                 self._requeue(node, park=True)
                 return
-            await self.ledger.mark_sent(attempt_id)
-            node.sends += 1
-            attempt = replace(attempt, state=AttemptState.SENT, sent_at=_utc())
-            self.store.record_attempt(attempt)
-            self.pre_send -= 1
-            in_pre_send = False
-            outcome, error, sent_at = await self._exchange(spec, messages, attempt_id)
             await self._handle(node, attempt, outcome, error, sent_at)
         except Exception as exc:  # noqa: BLE001 - harness defect: stop spending, keep every reservation counted
             self._open_circuit(f"attempt_failed:{type(exc).__name__}:{exc}")
@@ -930,29 +991,38 @@ class Dispatcher:
                 pass
             node.status = "parked"
         finally:
-            if in_pre_send:
+            if phase["pre_send"]:
                 self.pre_send -= 1
             self.item_active[node.item_key] -= 1
             self.wake.set()
 
-    async def _exchange(self, spec: GenerationSpec, messages: list[dict[str, str]],
-                        attempt_id: str) -> tuple[GenerationOutcome | None, str | None, float]:
+    async def _exchange(self, node: _Node, messages: list[dict[str, str]], attempt: Attempt,
+                        phase: dict[str, bool]) -> tuple[GenerationOutcome | None, str | None, float, Attempt]:
         async with self.http:
+            phase["pre_send"] = False
+            self.pre_send -= 1
+            if self.stop_mode is not None or self.circuit_reason is not None:
+                return None, NOT_SENT, self.clock(), attempt
+            await self.ledger.mark_sent(attempt.attempt_id)       # urgent fsync: SENT is durable before sending
+            node.sends += 1
+            attempt = replace(attempt, state=AttemptState.SENT, sent_at=_utc())
+            self.store.record_attempt(attempt)
             sent_at = self.clock()
             self.requests_sent += 1
             self.meter.change(+1)
             generation = self._loop.create_task(self.client.generate(
-                spec, messages, attempt_id=attempt_id, lock=self.lock, sampling=self.sampling))
+                node.spec, messages, attempt_id=attempt.attempt_id, lock=self.lock, sampling=self.sampling))
             try:
                 done, _ = await asyncio.wait({generation, self.hard_stop}, timeout=self.settings.watchdog_seconds,
                                              return_when=asyncio.FIRST_COMPLETED)
                 if generation in done:
                     try:
-                        return generation.result(), None, sent_at
+                        return generation.result(), None, sent_at, attempt
                     except Exception as exc:  # noqa: BLE001 - the client must classify; an escape is ambiguous
-                        return None, f"client_exception:{type(exc).__name__}", sent_at
+                        return None, f"client_exception:{type(exc).__name__}", sent_at, attempt
                 generation.cancel()
-                return None, ("cancelled_by_stop" if self.hard_stop.done() else "watchdog_timeout"), sent_at
+                await asyncio.wait({generation}, timeout=5.0)
+                return None, ("cancelled_by_stop" if self.hard_stop.done() else "watchdog_timeout"), sent_at, attempt
             finally:
                 self.meter.change(-1)
 
@@ -985,10 +1055,8 @@ class Dispatcher:
             result = replace(result, raw_response_path=relative, raw_response_sha256=digest)
         except Exception as exc:  # noqa: BLE001
             raw_error = exc
-        cost = confirmed_cost(result)
-        if status is TransportStatus.CONNECT_FAILED and cost is None:
-            await self.ledger.release_unsent(attempt_id)
-        elif cost is not None:
+        cost = confirmed_cost(result)                   # CONNECT_FAILED without usage: provably unsent, 0
+        if cost is not None:
             await self.ledger.settle(attempt_id, cost)
         else:
             await self.ledger.mark_unresolved(attempt_id, detail=status.value)
@@ -1023,6 +1091,9 @@ class Dispatcher:
         self._on_terminal(node, succeeded=False)
 
     async def _finish_ok(self, node: _Node, attempt: Attempt, result: GenerationResult) -> None:
+        if node.terminal:
+            self.duplicate_notifications += 1
+            return
         self.store.record_persisted_response(attempt, result)
         try:
             candidate = await self._loop.run_in_executor(self.cpu, self.extract, result, node.spec)
@@ -1219,7 +1290,9 @@ class Dispatcher:
         succeeded = sum(1 for n in self.nodes.values() if n.terminal and n.succeeded)
         failed = sum(1 for n in self.nodes.values() if n.terminal and not n.succeeded)
         return RunSummary(
-            stop_reason=self.stop_reason or "unknown",
+            stop_reason=self.stop_reason or STOP_STALLED,
+            stop_detail=self.stop_detail,
+            nodes_context_limited=self.context_limited,
             nodes_planned=len(self.nodes),
             nodes_succeeded=succeeded,
             nodes_failed=failed,

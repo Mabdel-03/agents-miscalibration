@@ -66,7 +66,7 @@ def standard_price_ratio(row: CallRow, lock: EndpointLock) -> Decimal | None:
 
 
 def evaluate_gate1(rows: Sequence[CallRow], locks: Mapping[str, EndpointLock], *, key_usage_delta_usd: Decimal | None,
-                   ledger_settled_usd: Decimal, evidence: str = "state/canary_rows.jsonl") -> GateResult:
+                   ledger_settled_usd: Decimal, evidence: str = "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl") -> GateResult:
     criteria: list[GateCriterion] = []
     transport = [r.result.transport_status.value for r in rows]
     criteria.append(_crit("all_transport_ok", {"n": len(rows), "not_ok": [t for t in transport if t != "ok"]},
@@ -117,14 +117,14 @@ def evaluate_gate1(rows: Sequence[CallRow], locks: Mapping[str, EndpointLock], *
 
     if key_usage_delta_usd is None:
         criteria.append(_crit("ledger_reconciles_with_key_usage", None, "provider usage delta available", False,
-                              "state/provider_snapshots.jsonl"))
+                              "state/provider_usage.jsonl"))
     else:
         tolerance = max(G1_RECONCILE_TOLERANCE_USD, ledger_settled_usd * G1_RECONCILE_TOLERANCE_SHARE)
         diff = key_usage_delta_usd - ledger_settled_usd
         criteria.append(_crit("ledger_reconciles_with_key_usage",
                               {"key_delta": str(key_usage_delta_usd), "ledger_settled": str(ledger_settled_usd)},
                               f"ledger settled >= key delta - {tolerance}", diff <= tolerance,
-                              "state/provider_snapshots.jsonl"))
+                              "state/provider_usage.jsonl"))
     passed = all(c.passed for c in criteria)
     return GateResult(gate="gate1", stage="canary", passed=passed, decision="advance" if passed else "stop_notify",
                       criteria=tuple(criteria), evaluated_at=utcnow())

@@ -1,0 +1,734 @@
+{
+  "summary_checkpoints": [
+    "partition",
+    "benchmark",
+    "name",
+    "view",
+    "family",
+    "n_items",
+    "delivered_lo",
+    "delivered_hi",
+    "delivered",
+    "coverage_lo",
+    "coverage_hi",
+    "archive_coverage_lo",
+    "archive_coverage_hi",
+    "selection_gap_lo",
+    "selection_gap_hi",
+    "n_delivered_correct",
+    "n_delivered_wrong",
+    "n_delivered_invalid_output",
+    "n_delivered_unknown",
+    "n_delivered_abstained",
+    "n_delivered_paused",
+    "n_delivered_missing_selection",
+    "blocked"
+  ],
+  "tables": {
+    "bank": [
+      {
+        "name": "partition",
+        "type": "str"
+      },
+      {
+        "name": "benchmark",
+        "type": "str"
+      },
+      {
+        "name": "subtask",
+        "type": "str | None"
+      },
+      {
+        "name": "item_id",
+        "type": "str"
+      },
+      {
+        "name": "bank_size",
+        "type": "int"
+      },
+      {
+        "name": "k",
+        "type": "int"
+      },
+      {
+        "name": "c_lo",
+        "type": "int"
+      },
+      {
+        "name": "c_hi",
+        "type": "int"
+      },
+      {
+        "name": "n_invalid",
+        "type": "int"
+      },
+      {
+        "name": "n_unknown",
+        "type": "int"
+      },
+      {
+        "name": "n_missing",
+        "type": "int"
+      },
+      {
+        "name": "pass_at_k_lo",
+        "type": "float"
+      },
+      {
+        "name": "pass_at_k_hi",
+        "type": "float"
+      },
+      {
+        "name": "pass_at_k_lo_exact",
+        "type": "str"
+      },
+      {
+        "name": "pass_at_k_hi_exact",
+        "type": "str"
+      },
+      {
+        "name": "known",
+        "type": "bool"
+      }
+    ],
+    "checkpoints": [
+      {
+        "name": "partition",
+        "type": "str"
+      },
+      {
+        "name": "benchmark",
+        "type": "str"
+      },
+      {
+        "name": "subtask",
+        "type": "str | None"
+      },
+      {
+        "name": "item_id",
+        "type": "str"
+      },
+      {
+        "name": "policy_id",
+        "type": "str"
+      },
+      {
+        "name": "name",
+        "type": "str"
+      },
+      {
+        "name": "family",
+        "type": "str"
+      },
+      {
+        "name": "view",
+        "type": "str"
+      },
+      {
+        "name": "n",
+        "type": "int | None"
+      },
+      {
+        "name": "step",
+        "type": "int | None"
+      },
+      {
+        "name": "team_size",
+        "type": "int"
+      },
+      {
+        "name": "total_cycles",
+        "type": "int"
+      },
+      {
+        "name": "peer_rounds",
+        "type": "int"
+      },
+      {
+        "name": "reasoning_budget",
+        "type": "int"
+      },
+      {
+        "name": "nominal_generations",
+        "type": "int"
+      },
+      {
+        "name": "pool_size",
+        "type": "int"
+      },
+      {
+        "name": "pool_n_valid_parse",
+        "type": "int"
+      },
+      {
+        "name": "pool_n_votes",
+        "type": "int | None"
+      },
+      {
+        "name": "pool_n_distinct_answers",
+        "type": "int | None"
+      },
+      {
+        "name": "pool_top_answer_support",
+        "type": "int | None"
+      },
+      {
+        "name": "pool_unanimous",
+        "type": "bool | None"
+      },
+      {
+        "name": "pool_n_correct",
+        "type": "int"
+      },
+      {
+        "name": "pool_n_wrong",
+        "type": "int"
+      },
+      {
+        "name": "pool_n_invalid",
+        "type": "int"
+      },
+      {
+        "name": "pool_n_unknown",
+        "type": "int"
+      },
+      {
+        "name": "pool_n_missing",
+        "type": "int"
+      },
+      {
+        "name": "coverage_lo",
+        "type": "int"
+      },
+      {
+        "name": "coverage_hi",
+        "type": "int"
+      },
+      {
+        "name": "archive_size",
+        "type": "int"
+      },
+      {
+        "name": "archive_coverage_lo",
+        "type": "int"
+      },
+      {
+        "name": "archive_coverage_hi",
+        "type": "int"
+      },
+      {
+        "name": "input_bank_coverage_lo",
+        "type": "int | None"
+      },
+      {
+        "name": "input_bank_coverage_hi",
+        "type": "int | None"
+      },
+      {
+        "name": "required_n_missing_candidate",
+        "type": "int"
+      },
+      {
+        "name": "required_n_invalid_parse",
+        "type": "int"
+      },
+      {
+        "name": "required_n_transport_failed",
+        "type": "int | None"
+      },
+      {
+        "name": "required_n_truncated",
+        "type": "int | None"
+      },
+      {
+        "name": "selection_status",
+        "type": "str | None"
+      },
+      {
+        "name": "selector_name",
+        "type": "str | None"
+      },
+      {
+        "name": "declared_selector_name",
+        "type": "str"
+      },
+      {
+        "name": "selector_version",
+        "type": "str | None"
+      },
+      {
+        "name": "selection_cpu_seconds",
+        "type": "float | None"
+      },
+      {
+        "name": "pool_hash",
+        "type": "str | None"
+      },
+      {
+        "name": "public_evidence_hash",
+        "type": "str | None"
+      },
+      {
+        "name": "selected_candidate_id",
+        "type": "str | None"
+      },
+      {
+        "name": "selected_parse_status",
+        "type": "str | None"
+      },
+      {
+        "name": "selected_state",
+        "type": "str | None"
+      },
+      {
+        "name": "delivered_state",
+        "type": "str"
+      },
+      {
+        "name": "delivered_correct",
+        "type": "bool | None"
+      },
+      {
+        "name": "delivered_lo",
+        "type": "int"
+      },
+      {
+        "name": "delivered_hi",
+        "type": "int"
+      },
+      {
+        "name": "candidate_only",
+        "type": "bool"
+      },
+      {
+        "name": "selection_gap_lo",
+        "type": "int | None"
+      },
+      {
+        "name": "selection_gap_hi",
+        "type": "int | None"
+      }
+    ],
+    "failures": [
+      {
+        "name": "partition",
+        "type": "str"
+      },
+      {
+        "name": "benchmark",
+        "type": "str"
+      },
+      {
+        "name": "subtask",
+        "type": "str | None"
+      },
+      {
+        "name": "item_id",
+        "type": "str"
+      },
+      {
+        "name": "generation_kind",
+        "type": "str"
+      },
+      {
+        "name": "reasoning_budget",
+        "type": "int | None"
+      },
+      {
+        "name": "n_nodes",
+        "type": "int"
+      },
+      {
+        "name": "n_results",
+        "type": "int"
+      },
+      {
+        "name": "n_transport_ok",
+        "type": "int"
+      },
+      {
+        "name": "n_transport_failed",
+        "type": "int"
+      },
+      {
+        "name": "n_completion_length",
+        "type": "int"
+      },
+      {
+        "name": "n_completion_blocked",
+        "type": "int"
+      },
+      {
+        "name": "n_completion_empty",
+        "type": "int"
+      },
+      {
+        "name": "n_completion_other",
+        "type": "int"
+      },
+      {
+        "name": "n_candidates",
+        "type": "int"
+      },
+      {
+        "name": "n_parse_valid",
+        "type": "int"
+      },
+      {
+        "name": "n_parse_missing_final",
+        "type": "int"
+      },
+      {
+        "name": "n_parse_malformed_final",
+        "type": "int"
+      },
+      {
+        "name": "n_parse_empty_content",
+        "type": "int"
+      },
+      {
+        "name": "n_parse_refusal",
+        "type": "int"
+      }
+    ],
+    "root_strata": [
+      {
+        "name": "partition",
+        "type": "str"
+      },
+      {
+        "name": "benchmark",
+        "type": "str"
+      },
+      {
+        "name": "subtask",
+        "type": "str | None"
+      },
+      {
+        "name": "item_id",
+        "type": "str"
+      },
+      {
+        "name": "n",
+        "type": "int"
+      },
+      {
+        "name": "c0_lo",
+        "type": "int"
+      },
+      {
+        "name": "c0_hi",
+        "type": "int"
+      },
+      {
+        "name": "stratum",
+        "type": "str"
+      },
+      {
+        "name": "r0_policy_id",
+        "type": "str"
+      },
+      {
+        "name": "r0_delivered_state",
+        "type": "str"
+      },
+      {
+        "name": "reference_bank_size",
+        "type": "int | None"
+      },
+      {
+        "name": "reference_c_lo",
+        "type": "int | None"
+      },
+      {
+        "name": "reference_c_hi",
+        "type": "int | None"
+      }
+    ],
+    "slot_transitions": [
+      {
+        "name": "partition",
+        "type": "str"
+      },
+      {
+        "name": "benchmark",
+        "type": "str"
+      },
+      {
+        "name": "subtask",
+        "type": "str | None"
+      },
+      {
+        "name": "item_id",
+        "type": "str"
+      },
+      {
+        "name": "family",
+        "type": "str"
+      },
+      {
+        "name": "n",
+        "type": "int | None"
+      },
+      {
+        "name": "from_step",
+        "type": "int"
+      },
+      {
+        "name": "to_step",
+        "type": "int"
+      },
+      {
+        "name": "slot",
+        "type": "int"
+      },
+      {
+        "name": "from_candidate_id",
+        "type": "str"
+      },
+      {
+        "name": "to_candidate_id",
+        "type": "str"
+      },
+      {
+        "name": "state_from",
+        "type": "str"
+      },
+      {
+        "name": "state_to",
+        "type": "str"
+      },
+      {
+        "name": "kind",
+        "type": "str"
+      },
+      {
+        "name": "validity_change",
+        "type": "bool | None"
+      },
+      {
+        "name": "answer_changed",
+        "type": "bool | None"
+      }
+    ],
+    "team_transitions": [
+      {
+        "name": "partition",
+        "type": "str"
+      },
+      {
+        "name": "benchmark",
+        "type": "str"
+      },
+      {
+        "name": "subtask",
+        "type": "str | None"
+      },
+      {
+        "name": "item_id",
+        "type": "str"
+      },
+      {
+        "name": "family",
+        "type": "str"
+      },
+      {
+        "name": "n",
+        "type": "int | None"
+      },
+      {
+        "name": "from_step",
+        "type": "int"
+      },
+      {
+        "name": "to_step",
+        "type": "int"
+      },
+      {
+        "name": "n_slots",
+        "type": "int"
+      },
+      {
+        "name": "c_prev",
+        "type": "int"
+      },
+      {
+        "name": "c_next",
+        "type": "int"
+      },
+      {
+        "name": "u_prev",
+        "type": "int"
+      },
+      {
+        "name": "u_next",
+        "type": "int"
+      },
+      {
+        "name": "fully_known",
+        "type": "bool"
+      },
+      {
+        "name": "delta_c",
+        "type": "int"
+      },
+      {
+        "name": "n_w_to_c",
+        "type": "int"
+      },
+      {
+        "name": "n_c_to_w",
+        "type": "int"
+      },
+      {
+        "name": "n_CC",
+        "type": "int"
+      },
+      {
+        "name": "n_CW",
+        "type": "int"
+      },
+      {
+        "name": "n_CI",
+        "type": "int"
+      },
+      {
+        "name": "n_CU",
+        "type": "int"
+      },
+      {
+        "name": "n_WC",
+        "type": "int"
+      },
+      {
+        "name": "n_WW",
+        "type": "int"
+      },
+      {
+        "name": "n_WI",
+        "type": "int"
+      },
+      {
+        "name": "n_WU",
+        "type": "int"
+      },
+      {
+        "name": "n_IC",
+        "type": "int"
+      },
+      {
+        "name": "n_IW",
+        "type": "int"
+      },
+      {
+        "name": "n_II",
+        "type": "int"
+      },
+      {
+        "name": "n_IU",
+        "type": "int"
+      },
+      {
+        "name": "n_UC",
+        "type": "int"
+      },
+      {
+        "name": "n_UW",
+        "type": "int"
+      },
+      {
+        "name": "n_UI",
+        "type": "int"
+      },
+      {
+        "name": "n_UU",
+        "type": "int"
+      },
+      {
+        "name": "coverage_prev_lo",
+        "type": "int"
+      },
+      {
+        "name": "coverage_prev_hi",
+        "type": "int"
+      },
+      {
+        "name": "coverage_next_lo",
+        "type": "int"
+      },
+      {
+        "name": "coverage_next_hi",
+        "type": "int"
+      },
+      {
+        "name": "coverage_lost",
+        "type": "bool | None"
+      },
+      {
+        "name": "coverage_recovered",
+        "type": "bool | None"
+      },
+      {
+        "name": "delivered_prev_state",
+        "type": "str"
+      },
+      {
+        "name": "delivered_next_state",
+        "type": "str"
+      },
+      {
+        "name": "delivered_transition",
+        "type": "str | None"
+      }
+    ]
+  },
+  "vocabularies": {
+    "candidate_state": [
+      "C",
+      "W",
+      "I",
+      "U",
+      "M"
+    ],
+    "delivered_state": [
+      "correct",
+      "wrong",
+      "invalid_output",
+      "unknown",
+      "abstained",
+      "paused",
+      "missing_selection"
+    ],
+    "public_check_status": [
+      "ok",
+      "invalid_candidate",
+      "infrastructure_error"
+    ],
+    "root_stratum": [
+      "none_correct",
+      "correct_minority",
+      "correct_half",
+      "correct_majority",
+      "all_correct",
+      "unknown"
+    ],
+    "transition_kind": [
+      "CC",
+      "CW",
+      "CI",
+      "CU",
+      "WC",
+      "WW",
+      "WI",
+      "WU",
+      "IC",
+      "IW",
+      "II",
+      "IU",
+      "UC",
+      "UW",
+      "UI",
+      "UU"
+    ]
+  }
+}

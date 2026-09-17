@@ -11,21 +11,23 @@ Status rules (tri-state, ``text-grade-v1``):
 * A gradable final: ``GRADED`` with ``semantic_correct`` True/False and ``operational_success=True``.
   MATH uses ``math_equiv.verify_gold`` (Math-Verify ``verify(gold, prediction)``); options and booleans compare
   the ``normalize`` identity with the gold exactly.
-* Evaluator exception, timeout, or unusable gold: ``EVALUATOR_ERROR``, ``semantic_correct=None`` (never False),
-  ``operational_success=True`` (the model delivered a well-formed final; the failure is ours).
+* Evaluator exception, timeout, outage, or unusable gold: ``EVALUATOR_ERROR``, ``semantic_correct=None`` (never
+  False), ``operational_success=True`` (the model delivered a well-formed final; the failure is ours).
+* MATH grading is SIGALRM-bounded in-process on a main thread and runs in an isolated, killable child process
+  otherwise (see ``math_equiv``).
 
 Wiring errors (candidate and spec for different items, non-text eval kinds, output-kind mismatch) raise.
 
-Legal options: ``PrivateEvalSpec`` carries no option list yet (request 04-R1). Until it does, pass
-``allowed_choices`` from the item's ``PublicTask``; without it an option final is judged against the
-letters ``A``-``Z`` (format legality only) and graded against the gold letter.
+Legal answers come from ``PrivateEvalSpec.allowed_choices`` (contract v2): the item's option letters, or
+``("True", "False")`` for boolean items (an empty tuple on a boolean item means that implied pair). An option spec
+without letters, a boolean spec with a different set, or a gold outside the legal set is unusable:
+``EVALUATOR_ERROR`` rather than a guess.
 """
 from __future__ import annotations
 
-import string
+import re
 import time
 from functools import lru_cache
-from typing import Sequence
 
 from agent_allocation.contracts import (
     Candidate,
@@ -43,7 +45,7 @@ GRADE_RULES_VERSION = "text-grade-v1"
 BOOLEAN_CHOICES = ("True", "False")
 BOOLEAN_SUBTASK = "boolean_expressions"
 _TEXT_KINDS = {EvalKind.MATH_VERIFY: OutputKind.MATH, EvalKind.OPTION_EXACT: OutputKind.OPTION}
-_ANY_LETTER = tuple(string.ascii_uppercase)
+_LETTER = re.compile(r"[A-Z]")
 
 
 @lru_cache(maxsize=1)
@@ -62,7 +64,6 @@ def _expected_output_kind(private: PrivateEvalSpec) -> OutputKind:
 
 
 def grade_text(candidate: Candidate, private: PrivateEvalSpec, *,
-               allowed_choices: Sequence[str] | None = None,
                timeout_s: float = math_equiv.DEFAULT_TIMEOUT_S) -> GradeResult:
     started = time.process_time()
     if candidate.item_id != private.item_id:
@@ -96,7 +97,10 @@ def grade_text(candidate: Candidate, private: PrivateEvalSpec, *,
             return result(GradeStatus.INVALID_OUTPUT, None, False, verdict.code)
         return result(GradeStatus.EVALUATOR_ERROR, None, True, verdict.code)
 
+    legal = tuple(private.allowed_choices)
     if expected_kind is OutputKind.BOOLEAN:
+        if legal and legal != BOOLEAN_CHOICES:               # () is implied True/False; anything else conflicts
+            return result(GradeStatus.EVALUATOR_ERROR, None, True, "allowed_choices_not_boolean")
         if gold not in BOOLEAN_CHOICES:
             return result(GradeStatus.EVALUATOR_ERROR, None, True, "gold_not_boolean")
         answer = boolean_identity(final)
@@ -104,13 +108,11 @@ def grade_text(candidate: Candidate, private: PrivateEvalSpec, *,
             return result(GradeStatus.INVALID_OUTPUT, None, False, "not_an_explicit_boolean")
         return result(GradeStatus.GRADED, answer == gold, True, "boolean_exact")
 
-    legal = tuple(allowed_choices) if allowed_choices else tuple(getattr(private, "allowed_choices", ()) or ())
-    checked = bool(legal)
-    legal = legal or _ANY_LETTER
+    if not legal or any(not _LETTER.fullmatch(choice) for choice in legal):
+        return result(GradeStatus.EVALUATOR_ERROR, None, True, "allowed_choices_missing_or_malformed")
     if gold not in legal:
         return result(GradeStatus.EVALUATOR_ERROR, None, True, "gold_not_a_legal_option")
     answer = option_identity(final, legal)
     if answer is None:
-        return result(GradeStatus.INVALID_OUTPUT, None, False,
-                      "not_a_legal_option" if checked else "not_an_option_letter")
-    return result(GradeStatus.GRADED, answer == gold, True, "option_exact" if checked else "option_exact_unchecked")
+        return result(GradeStatus.INVALID_OUTPUT, None, False, "not_a_legal_option")
+    return result(GradeStatus.GRADED, answer == gold, True, "option_exact")

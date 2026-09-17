@@ -15,9 +15,9 @@ Config keys consumed: ``benchmarks[id=bbh_logic4].source`` (pinned repo) and ``.
 
 Preprocessing ``bbh_logic4-prompt-v1``: ``PublicTask.prompt`` is the example's ``input`` string exactly;
 ``item_id = "bbh_logic4/<subtask>/<index>"`` with the 0-based index in the file's ``examples`` list.
-Choice subtasks (``output_kind=OPTION``): ``allowed_choices`` are the option letters listed as ``(X) ...`` lines
-after the input's final ``Options:`` line (they must run A, B, C... in order); gold is ``target`` ``"(X)"``
-normalized to ``"X"``. ``boolean_expressions`` (``output_kind=BOOLEAN``): ``allowed_choices=("True", "False")``
+Choice subtasks (``output_kind=OPTION``): ``allowed_choices`` (public and private) are the option letters listed as ``(X) ...`` lines
+after the input's final ``Options:`` line (they must run A, B, C... in order, with distinct option texts); gold is
+``target`` ``"(X)"`` normalized to ``"X"``. ``boolean_expressions`` (``output_kind=BOOLEAN``): ``allowed_choices=("True", "False")``
 and gold is ``target`` exactly. A target that does not normalize to an allowed choice is an engineering exclusion.
 """
 from __future__ import annotations
@@ -165,10 +165,10 @@ def _read_dir(directory: Path) -> dict[str, bytes] | None:
 def materialize_sources(paths: RunPaths) -> dict[str, bytes]:
     """Verified source bytes; ensures a verified write-once copy exists in ``paths.bbh_sources_dir``."""
     run_dir = paths.bbh_sources_dir
-    existing = [run_dir / file_name(subtask) for subtask in BBH_SUBTASKS if (run_dir / file_name(subtask)).exists()]
-    if existing and len(existing) == len(BBH_SUBTASKS):
-        run_copy = _read_dir(run_dir)
-        assert run_copy is not None
+    run_copy = _read_dir(run_dir)                  # verified against the pins, or None when incomplete
+    if run_copy is not None:
+        if not (run_dir / MANIFEST_NAME).exists():
+            _atomic_write(run_dir / MANIFEST_NAME, json.dumps(manifest_payload(), indent=2, sort_keys=True).encode())
         return run_copy
     cache = _read_dir(shared_cache_dir())
     if cache is None:
@@ -203,6 +203,14 @@ def option_letters(prompt: str) -> tuple[str, ...]:
     return tuple(_OPTION_LINE.findall(prompt[marker + len("\nOptions:\n"):]))
 
 
+def _option_texts(prompt: str) -> list[str]:
+    marker = prompt.rfind("\nOptions:\n")
+    if marker < 0:
+        return []
+    return [line[len("(X) "):].strip() for line in prompt[marker + len("\nOptions:\n"):].split("\n")
+            if _OPTION_LINE.match(line)]
+
+
 def build_item(subtask: str, index: int, example: Mapping[str, Any], *,
                source_revision: str = SOURCE_COMMIT) -> InventoryItem:
     if subtask not in BBH_SUBTASKS:
@@ -225,8 +233,11 @@ def build_item(subtask: str, index: int, example: Mapping[str, Any], *,
         match = _TARGET_LETTER.fullmatch(target)
         gold = match.group(1) if match else None
         expected = tuple(chr(ord("A") + offset) for offset in range(len(allowed)))
+        texts = _option_texts(prompt)
         if len(allowed) < 2 or allowed != expected:
             reason = "option_letters_not_consecutive_from_A"
+        elif len(set(texts)) != len(texts):
+            reason = "duplicate_option_text"
         elif gold is None:
             reason = "target_not_an_option_label"
         elif gold not in allowed:
@@ -243,7 +254,8 @@ def build_item(subtask: str, index: int, example: Mapping[str, Any], *,
     }
     private = PrivateEvalSpec(item_id=item_id, benchmark=BENCHMARK, source_revision=source_revision,
                               eval_kind=eval_kind, gold_answer=gold, private_record_ref=None,
-                              private_hash=canonical_hash(private_record), subtask=subtask)
+                              private_hash=canonical_hash(private_record), subtask=subtask,
+                              allowed_choices=tuple(allowed))
     return InventoryItem(public=public, private=private, strata=(("subtask", subtask),),
                          eligible=reason is None, exclusion_reason=reason)
 
@@ -264,3 +276,7 @@ def load_inventory(cfg: Mapping[str, Any], paths: RunPaths) -> list[InventoryIte
     if tuple(entry.get("subtasks", ())) != BBH_SUBTASKS:
         raise ValueError(f"{BENCHMARK}: config subtasks {entry.get('subtasks')!r} != {BBH_SUBTASKS}")
     return items_from_bytes(materialize_sources(paths))
+
+
+#: Dataset-lock provenance read by ``manifest.dataset_lock_payload`` (plain dict so it serializes as JSON).
+SOURCE_PROVENANCE: dict[str, Any] = source_record()

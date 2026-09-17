@@ -275,20 +275,33 @@ class StateStore:
             return cur.rowcount == 1
 
     def mark_exhausted(self, node_id: str, reason: str) -> None:
+        self.mark_terminal_without_candidate(node_id, OUTCOME_EXHAUSTED, reason)
+
+    def mark_terminal_without_candidate(self, node_id: str, outcome: str, reason: str) -> None:
+        """Terminal with no accepted result (attempts exhausted, non-retryable status, context limit)."""
+        if outcome == OUTCOME_SUCCEEDED:
+            raise StateError("a node without a candidate cannot be 'succeeded'")
         with self._tx() as conn:
             conn.execute(
                 "UPDATE nodes SET state='terminal', outcome=?, terminal_reason=?, lease_owner=NULL,"
                 " lease_attempt_id=NULL, updated_at=? WHERE node_id=? AND state!='terminal'",
-                (OUTCOME_EXHAUSTED, reason, utc_now(), node_id))
+                (outcome, reason, utc_now(), node_id))
 
     # ---- attempts -----------------------------------------------------------------------------------------
     def record_attempt(self, attempt: Attempt) -> None:
         self._record_attempt(attempt, sent=None)
 
+    def record_unsent_attempt(self, attempt: Attempt, *, detail: str) -> None:
+        """Terminal record for an attempt that was marked sent but provably never left the process."""
+        self._record_attempt(replace(attempt, state=AttemptState.TERMINAL, sent_at=None, completed_at=utc_now(),
+                                     error_detail=detail), sent=False)
+
     def _record_attempt(self, attempt: Attempt, *, sent: bool | None) -> None:
-        """``sent=None`` derives the flag from the record (``sent_at`` set or state SENT/RESPONSE_PERSISTED)."""
+        """``sent=None`` derives the flag from the record (``sent_at`` set or state SENT/RESPONSE_PERSISTED) and never
+        lowers it; an explicit ``sent`` overrides it."""
         now = utc_now()
         state = attempt.state.value
+        sent_update = "MAX(attempts.sent, excluded.sent)" if sent is None else "excluded.sent"
         if sent is None:
             sent = attempt.sent_at is not None or attempt.state in (AttemptState.SENT, AttemptState.RESPONSE_PERSISTED)
         with self._tx() as conn:
@@ -298,7 +311,7 @@ class StateStore:
             conn.execute(
                 "INSERT INTO attempts(attempt_id, node_id, attempt_no, state, transport_status, sent, record_json,"
                 " updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(attempt_id) DO UPDATE SET state=excluded.state,"
-                " transport_status=excluded.transport_status, sent=MAX(attempts.sent, excluded.sent),"
+                f" transport_status=excluded.transport_status, sent={sent_update},"
                 " record_json=excluded.record_json, updated_at=excluded.updated_at",
                 (attempt.attempt_id, attempt.node_id, attempt.attempt_no, state,
                  None if attempt.transport_status is None else attempt.transport_status.value, int(sent),

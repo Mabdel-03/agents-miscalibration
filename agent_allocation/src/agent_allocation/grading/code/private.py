@@ -7,7 +7,8 @@ source. Expected outputs, reference code and inputs of other cases never enter t
 sandbox receives the program and one input at a time; comparison happens here, in the trusted process.
 
 Status mapping:
-* no parseable program -> ``INVALID_OUTPUT`` (semantic_correct False, operational_success False, "no_program");
+* no parseable program -> ``INVALID_OUTPUT`` (semantic_correct None, operational_success False, "no_program"; the
+  contract v2 tri-state rule D3);
 * any real verdict (pass, wrong output, exception, per-input timeout, batch timeout, CPU limit, memory error,
   crash reproduced after a healthy canary) -> ``GRADED`` with semantic_correct True/False;
 * evaluator fault (sandbox cannot start, trusted bootstrap fails, unexplained death with an unhealthy canary, or a
@@ -43,7 +44,7 @@ def load_private_record(private: PrivateEvalSpec, paths: RunPaths) -> dict[str, 
     if not private.private_record_ref:
         raise PrivateRecordError(f"{private.item_id}: no private_record_ref")
     directory = (paths.run_dir / private.private_record_ref).resolve()
-    if not str(directory).startswith(str(paths.code_oracles_dir.resolve())):
+    if not directory.is_relative_to(paths.code_oracles_dir.resolve()):
         raise PrivateRecordError(f"{private.item_id}: private record outside the oracle directory")
     key = str(directory)
     cached = _RECORD_CACHE.get(key)
@@ -98,13 +99,18 @@ def _canary_ok(profile: GradingProfile) -> bool:
 
 
 def _detail(grade: Grade) -> str:
-    if grade.success:
-        return "pass"
-    for split in ("base", "plus"):
-        batch = grade.details[split]
-        if not batch["success"]:
-            return f"{split}_{batch['failure_class'] or 'wrong_output'}"
-    return "fail"
+    """``pass`` | ``{split}_{failure}``; a seccomp denial seen in candidate errors is appended as
+    ``;sandbox_denied=thread|eperm`` (documented limitation: threads/processes/sockets are unavailable)."""
+    detail = "pass" if grade.success else "fail"
+    if not grade.success:
+        for split in ("base", "plus"):
+            batch = grade.details[split]
+            if not batch["success"]:
+                reason = batch["failure_class"] or ("input_timeout" if batch.get("input_timeouts") else "wrong_output")
+                detail = f"{split}_{reason}"
+                break
+    denied = grade.details.get("sandbox_denied") or []
+    return detail + (f";sandbox_denied={','.join(denied)}" if denied else "")
 
 
 def grade_code(candidate: Candidate, private: PrivateEvalSpec, paths: RunPaths) -> GradeResult:
@@ -124,7 +130,7 @@ def grade_code(candidate: Candidate, private: PrivateEvalSpec, paths: RunPaths) 
 
     program = candidate.final_answer
     if candidate.parse_status is not ParseStatus.VALID or program is None or not program.strip():
-        return result(GradeStatus.INVALID_OUTPUT, False, False, "no_program", 0.0)
+        return result(GradeStatus.INVALID_OUTPUT, None, False, "no_program", 0.0)
     try:
         record = load_private_record(private, paths)
     except PrivateRecordError:

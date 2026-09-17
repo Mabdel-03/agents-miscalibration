@@ -23,7 +23,7 @@ from agent_allocation.contracts import (
 )
 from agent_allocation.paths import RunPaths
 from agent_allocation.runtime.ledger import CollectionLedger
-from agent_allocation.runtime.scheduler import AdmissionPlan, Dispatcher
+from agent_allocation.runtime.scheduler import STOP_REASONS, AdmissionPlan, Dispatcher
 from agent_allocation.storage.journal import LedgerJournal
 from agent_allocation.storage.state import StateStore
 
@@ -229,5 +229,18 @@ class Env:
         self.open(recover=recover)
 
     def dispatcher(self, client: Any, *, extract=fake_extract) -> Dispatcher:
-        return Dispatcher(config=self.config, paths=self.paths, store=self.store, ledger=self.ledger, client=client,
-                          lock=LOCK, render=self.render, extract=extract)
+        dispatcher = Dispatcher(config=self.config, paths=self.paths, store=self.store, ledger=self.ledger,
+                                client=client, lock=LOCK, render=self.render, extract=extract)
+        original_run = dispatcher.run
+
+        async def checked_run(*args: Any, **kwargs: Any):
+            summary = await original_run(*args, **kwargs)
+            assert summary.stop_reason in STOP_REASONS, summary.stop_reason
+            if summary.stop_reason != "control_sentinel_present":
+                from tests.integration.reference_impl import LedgerChecker
+                violations = LedgerChecker(summary.ceiling_usd).replay(list(self.journal.replay())).violations
+                assert violations == [], violations          # QA's independent ledger rules hold after every run
+            return summary
+
+        dispatcher.run = checked_run
+        return dispatcher
