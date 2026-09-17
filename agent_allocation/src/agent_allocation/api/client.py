@@ -1,8 +1,9 @@
 """Async OpenRouter client: one persistent ``httpx.AsyncClient``, zero automatic retries, no disk, no ledger.
 
 ``generate`` sends exactly one HTTP attempt and returns a typed ``GenerationOutcome``; it never raises for transport
-or model failures (only for programming errors: a spec/lock/sampling/attempt-id mismatch raises ``ValueError``
-before anything is sent, and cancellation propagates). Retrying, backoff, reservation and persistence belong to the
+or model failures. It raises only ``api.request.RequestContractError`` (a ``ValueError``) for a spec/lock/sampling/
+message/attempt-id violation -- always before any byte is sent, so the reservation can be released and the circuit
+opened -- and lets ``asyncio.CancelledError`` propagate (a cancelled attempt may have been sent: treat it as ambiguous). Retrying, backoff, reservation and persistence belong to the
 scheduler (agent 02). httpx itself never retries requests; the default transport is built with ``retries=0``.
 
 Account endpoints (``key_info``, ``credits``, ``generation_metadata``, ``list_endpoints``) raise
@@ -30,8 +31,8 @@ from agent_allocation.api.normalize import (
     parse_completion,
     parse_retry_after,
 )
-from agent_allocation.api.request import REQUEST_EXTENSION_KEY, REQUEST_HEADERS, build_request_body, \
-    request_coordinates
+from agent_allocation.api.request import REQUEST_EXTENSION_KEY, REQUEST_HEADERS, RequestContractError, \
+    build_request_body, request_coordinates
 from agent_allocation.contracts import EndpointLock, GenerationOutcome, GenerationResult, GenerationSpec, \
     TransportStatus
 
@@ -111,7 +112,8 @@ class OpenRouterClient:
         node_id = spec.node_id
         if not isinstance(attempt_id, str) or not attempt_id.startswith(f"{node_id}:") or \
                 attempt_id == f"{node_id}:":
-            raise ValueError(f"attempt_id {attempt_id!r} must be f'{{node_id}}:{{attempt_no}}' for node {node_id}")
+            raise RequestContractError(
+                f"attempt_id {attempt_id!r} must be f'{{node_id}}:{{attempt_no}}' for node {node_id}")
         body = build_request_body(spec, messages, lock, sampling)
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         request = self._client.build_request(
