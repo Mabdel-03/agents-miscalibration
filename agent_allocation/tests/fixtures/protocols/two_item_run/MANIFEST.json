@@ -1,0 +1,39 @@
+{
+  "candidate_parse_status_counts": {
+    "empty_content": 16,
+    "missing_final": 18,
+    "valid": 229
+  },
+  "endpoint_lock_hash": "7be4781e088743dd5e9bf063e9b9e11811316409f98230ee13c8a4177683b6e6",
+  "files_sha256_decompressed": {
+    "candidates.jsonl.gz": "43e3519aa160c44a473046c3429eeef75ff0399dcf6d65e1cfce53ff02945127",
+    "graphs.jsonl.gz": "cc0af7ed5fdab108ed081ccefd18cddc4817cea5297b66018df3662b318bf95a",
+    "prompts.jsonl.gz": "90756260a82c65925bfdc3b3ece0041cdcc6c8ad34f50ea3487bcba0cb02b515",
+    "results.jsonl.gz": "36d6b418ae428e10e48c49cdff4cd1d40f784e84d15a300a5237278147879b7b",
+    "tasks.jsonl.gz": "d438ae8a1862a320ade566d8cd36790b1d960036fe0c8094e1c0cc25cb0198fc"
+  },
+  "generator": "agent_allocation.protocols.synthetic",
+  "items": [
+    {
+      "benchmark": "math500",
+      "checkpoints": 200,
+      "grid": "main_extension",
+      "item_id": "math500/synthetic/0001",
+      "nodes": 138
+    },
+    {
+      "benchmark": "mbpp_plus",
+      "checkpoints": 190,
+      "grid": "main",
+      "item_id": "mbpp_plus/synthetic/0002",
+      "nodes": 125
+    }
+  ],
+  "notes": "Synthetic, gold-free. Load records with contracts.load_record; prompts lines are plain JSON.",
+  "packet_envelope_chars": 12000,
+  "partition_id": "main",
+  "prompt_version": "prompts-v1-8eafd2a2bca2",
+  "seed": 20260917,
+  "study_id": "openrouter_agent_allocation_v1",
+  "trimmed_prompts": 27
+}

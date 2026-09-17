@@ -53,6 +53,32 @@ def validate_config(cfg: Mapping[str, Any]) -> list[str]:
     scheduler = cfg.get("scheduler", {})
     need(scheduler.get("single_paid_dispatcher") is True, "single paid dispatcher required")
     need(scheduler.get("api_sdk_automatic_retries") is False, "SDK automatic retries must be off")
+    # v2 (D7b, D7c, D6): budgets are validated, never clipped; safety knobs cannot be loosened; lock names match RunPaths
+    reasoning = cfg.get("reasoning", {})
+    protocols = cfg.get("protocols", {})
+    ceiling_tokens = reasoning.get("requested_reasoning_max", 0)
+    for a_key, mult_key in (("main_a", "deep_main_multipliers"), ("high_a", "deep_high_multipliers")):
+        top = reasoning.get(a_key, 0) * max(protocols.get(mult_key, [1]) or [1])
+        need(top <= ceiling_tokens, f"{a_key} x max({mult_key}) = {top} exceeds requested_reasoning_max {ceiling_tokens}")
+    rep_grid = cfg.get("replication_grid", {})
+    top = reasoning.get("main_a", 0) * max(rep_grid.get("deep_multipliers", [1]) or [1])
+    need(top <= ceiling_tokens, f"replication deep budget {top} exceeds requested_reasoning_max")
+    need(Decimal(str(budget.get("reservation_multiplier", 0))) >= 1, "reservation_multiplier must be >= 1")
+    need(Decimal(str(budget.get("max_unresolved_spend_usd", 99))) <= 2, "max_unresolved_spend_usd must be <= 2 (spec 7.1)")
+    need(Path(str(cfg.get("endpoint_lock_file", ""))).name == "openrouter_endpoints.json",
+         "endpoint_lock_file basename must be openrouter_endpoints.json (locks are run-scoped in RunPaths)")
+    need(Path(str(cfg.get("dataset_lock_file", ""))).name == "datasets.json",
+         "dataset_lock_file basename must be datasets.json (locks are run-scoped in RunPaths)")
+    # v2 (D7a, R03-3): CP/POOLED knobs must equal the builder's constants
+    try:
+        from agent_allocation.protocols.grid import check_config_constants
+    except ImportError:
+        check_config_constants = None
+    if check_config_constants is not None:
+        try:
+            check_config_constants(cfg)
+        except Exception as exc:  # noqa: BLE001 -- report every constant mismatch as a validation problem
+            problems.append(f"protocol constants: {exc}")
     return problems
 
 

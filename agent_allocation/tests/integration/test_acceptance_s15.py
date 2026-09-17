@@ -516,8 +516,6 @@ def test_s15_10_retry_classification_reference(cfg):
         assert "valid" not in case["acceptable_parse_statuses"], case["case"]
 
 
-@pytest.mark.xfail(strict=True, reason="D1: contracts.py:121-133 TransportStatus.ERROR_ENVELOPE is in neither "
-                                       "RETRYABLE_TRANSPORT nor CIRCUIT_BREAKING_TRANSPORT (see docs/requests/08.md)")
 def test_s15_10_every_non_ok_transport_status_has_a_declared_policy():
     undeclared = {s for s in TransportStatus if s is not TransportStatus.OK} - RETRYABLE_TRANSPORT - CIRCUIT_BREAKING_TRANSPORT
     assert not undeclared, undeclared
@@ -731,8 +729,6 @@ def test_s15_14_tri_state_reference():
     assert (t.w_to_c, t.invalid_involved, t.unknown_involved) == (1, 1, 1)
 
 
-@pytest.mark.xfail(strict=True, reason="D3: contracts.py:478-488 GradeResult accepts status/correctness combinations "
-                                       "that contradict the tri-state rule (see docs/requests/08.md)")
 def test_s15_14_grade_result_rejects_inconsistent_tri_state():
     with pytest.raises((ValueError, TypeError)):
         GradeResult("c", GradeStatus.EVALUATOR_ERROR, False, None, "v1", "h")
