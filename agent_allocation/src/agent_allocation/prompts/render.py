@@ -20,9 +20,11 @@ Packet rules:
 * Envelope: the relayed text of one packet is at most :data:`PACKET_ENVELOPE_CHARS` characters (the omission
   marker counts; the availability marker and the ``CANDIDATE i`` label are fixed overhead outside it). Longer text
   keeps every complete ``<final>...</final>`` element intact and in place and trims only the text outside the
-  final elements symmetrically: the first ceil(K/2) and last floor(K/2) of those K kept characters survive, the
-  middle is replaced by :data:`OMISSION_MARKER`. Characters and UTF-8 bytes removed are reported. If the final
-  element(s) alone cannot fit, :class:`ContextLimitEvent` is raised for the lead to record.
+  final elements symmetrically: of the K characters outside the finals that fit, the first ceil(K/2) and the last
+  floor(K/2) survive and the middle is replaced by :data:`OMISSION_MARKER` (one marker per contiguous cut).
+  Characters and UTF-8 bytes removed are reported. If a VALID candidate's final element plus the omission
+  marker(s) cannot fit, :class:`ContextLimitEvent` is raised for the lead to record. A raw relay (not VALID) is always bounded: it keeps
+  its complete final elements when they fit and otherwise trims the whole raw text symmetrically under the marker.
 * Peer and pooled order: sort source slots by ``canonical_hash([namespace, seed, item_id, n, round, receiver_slot,
   source_slot])`` -- a stable, correctness-blind function of (seed, item, n, round, receiver); never return order.
   Labels are neutral: ``CANDIDATE 1``, ``CANDIDATE 2``, ...
@@ -60,8 +62,11 @@ TEMPLATE_FILES: tuple[str, ...] = (
 )
 PROMPT_VERSION_PREFIX = "prompts-v1-"
 
-#: Characters of relayed candidate text per packet (see the module docstring for the trimming rule).
-PACKET_ENVELOPE_CHARS = 8000
+#: Characters of relayed candidate text per packet (see the module docstring for the trimming rule). 12,000 chars
+#: covers a whole completion at the main-A code cap (A + 2,048 = 3,072 tokens at <= ~4 chars/token), so at A=1,024 a
+#: VALID final can never raise ContextLimitEvent and trimming touches only runaway rationales; a five-agent PEER
+#: user message stays below ~60k chars (~15k tokens). Freeze (or tighten from pilot data) before main dispatch.
+PACKET_ENVELOPE_CHARS = 12000
 
 ABSENT_MARKER = "[No prior candidate response is available.]"
 RAW_MARKER = "[A prior candidate response is available as raw visible text.]"
@@ -217,32 +222,46 @@ def _cuts_for(text: str, spans: Sequence[tuple[int, int]], keep: int) -> list[tu
     return cuts
 
 
-def bound_packet_text(text: str, *, envelope: int = PACKET_ENVELOPE_CHARS,
-                      source_node_id: str | None = None) -> tuple[str, dict[str, Any]]:
-    """Fit ``text`` into ``envelope`` characters without cutting a complete ``<final>`` element.
-
-    Returns ``(bounded_text, trim_report)``; raises :class:`ContextLimitEvent` if the final element(s) alone
-    (plus the omission marker) do not fit.
-    """
-    report: dict[str, Any] = {"original_chars": len(text), "original_bytes": len(text.encode("utf-8")),
-                              "trimmed": False, "cuts": 0, "chars_removed": 0, "bytes_removed": 0,
-                              "final_elements": 0}
-    if len(text) <= envelope:
-        report["relayed_chars"] = len(text)
-        return text, report
-    spans = _final_spans(text)
+def _plan_cuts(text: str, spans: Sequence[tuple[int, int]], envelope: int) -> list[tuple[int, int]] | None:
+    """Cuts that fit ``text`` into ``envelope`` keeping ``spans`` intact, or None if the spans alone cannot fit."""
     protected = sum(b - a for a, b in spans)
-    report["final_elements"] = len(spans)
     n_cuts = 1
     while True:
         keep = envelope - protected - n_cuts * len(_OMISSION_INSERT)
         if keep < 0:
-            raise ContextLimitEvent(source_node_id=source_node_id, final_chars=protected, visible_chars=len(text),
-                                    envelope_chars=envelope)
+            return None
         cuts = _cuts_for(text, spans, keep)
         if len(cuts) <= n_cuts:
-            break
+            return cuts
         n_cuts = len(cuts)
+
+
+def bound_packet_text(text: str, *, envelope: int = PACKET_ENVELOPE_CHARS, source_node_id: str | None = None,
+                      strict_final: bool = True) -> tuple[str, dict[str, Any]]:
+    """Fit ``text`` into ``envelope`` characters without cutting a complete ``<final>`` element.
+
+    Returns ``(bounded_text, trim_report)``. If the final element(s) alone (plus the omission marker) do not fit:
+    ``strict_final`` (VALID candidates) raises :class:`ContextLimitEvent`; otherwise (raw relays) the whole text is
+    trimmed symmetrically and ``finals_protected`` is reported False.
+    """
+    if envelope <= 2 * len(_OMISSION_INSERT):
+        raise ValueError(f"envelope of {envelope} chars cannot hold an omission marker")
+    spans = _final_spans(text)     # counted for every packet, trimmed or not (the report is audit data)
+    report: dict[str, Any] = {"original_chars": len(text), "original_bytes": len(text.encode("utf-8")),
+                              "trimmed": False, "cuts": 0, "chars_removed": 0, "bytes_removed": 0,
+                              "final_elements": len(spans), "finals_protected": True}
+    if len(text) <= envelope:
+        report["relayed_chars"] = len(text)
+        return text, report
+    cuts = _plan_cuts(text, spans, envelope)
+    if cuts is None:
+        if strict_final:
+            raise ContextLimitEvent(source_node_id=source_node_id, final_chars=sum(b - a for a, b in spans),
+                                    visible_chars=len(text), envelope_chars=envelope)
+        spans = []
+        report["finals_protected"] = False
+        cuts = _plan_cuts(text, spans, envelope)
+        assert cuts is not None
     pieces: list[str] = []
     cursor = 0
     for a, b in cuts:
@@ -270,11 +289,12 @@ def render_packet(candidate: Candidate | None, *, source_node_id: str | None = N
     }
     if not content:
         entry.update(availability="absent", original_chars=0, original_bytes=0, relayed_chars=0, trimmed=False,
-                     cuts=0, chars_removed=0, bytes_removed=0, final_elements=0)
+                     cuts=0, chars_removed=0, bytes_removed=0, final_elements=0, finals_protected=True)
         return ABSENT_MARKER, entry
-    bounded, trim = bound_packet_text(content, envelope=envelope, source_node_id=source_node_id)
+    valid = candidate.parse_status is ParseStatus.VALID
+    bounded, trim = bound_packet_text(content, envelope=envelope, source_node_id=source_node_id, strict_final=valid)
     entry.update(trim)
-    if candidate.parse_status is ParseStatus.VALID:
+    if valid:
         entry["availability"] = "valid"
         return bounded, entry
     entry["availability"] = "raw"

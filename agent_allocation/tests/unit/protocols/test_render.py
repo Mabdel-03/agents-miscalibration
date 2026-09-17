@@ -270,3 +270,93 @@ def test_render_refuses_mismatched_requests():
     with pytest.raises(PromptError):
         render_messages(g.nodes[0], MATH_TASK, good, seed=SEED)                               # root with parents
     assert checkpoint_by_name(g, "sample/1", CheckpointView.ARCHIVE)
+
+
+LEAD_PACKET = "<rationale>\nAgent 0 says N2 is 78%.\n</rationale>\n<final>\nB\n</final>"
+
+
+def test_final_elements_counted_for_packets_inside_the_envelope():
+    """Lead regression: an in-envelope PEER packet with one closed <final> reported final_elements == 0."""
+    g = graph("main")
+    node, parents = _peer_request(g, 3, 1, 0, {s: LEAD_PACKET for s in range(5)})
+    messages, report = render_messages_with_report(node, MATH_TASK, parents, seed=SEED)
+    assert [p["final_elements"] for p in report["packets"]] == [1, 1, 1]
+    assert all(not p["trimmed"] and p["finals_protected"] for p in report["packets"])
+    assert messages[1]["content"].count("<final>\nB\n</final>") == 3
+    assert bound_packet_text(LEAD_PACKET)[1]["final_elements"] == 1
+    assert bound_packet_text("no tags at all")[1]["final_elements"] == 0
+
+
+MULTILINE_FINAL = "<final>\nThe answer is\n\n$x = \\frac{3}{4}$\n\nafter simplification.\n</final>"
+FENCED_FINAL = ("<final>\n```python\nimport math\n\ndef similar_elements(a, b):\n    if len(a) > 0 and len(b) > 0:\n"
+                "        return set(a) & set(b)\n    return {x for x in ()}\n```\n</final>")
+
+
+@pytest.mark.parametrize("final", [MULTILINE_FINAL, FENCED_FINAL], ids=["multiline", "fenced_python"])
+def test_over_envelope_packet_keeps_multiline_and_fenced_finals(final):
+    """Lead regression: packets over the envelope keep the whole <final>...</final> and count exactly one."""
+    rationale = "<rationale>\n" + "\n".join(f"Step {i}: Agent 0 says N2 is 78%." for i in range(900)) + "\n</rationale>\n"
+    text = rationale + final + "\n"
+    assert len(text) > PACKET_ENVELOPE_CHARS
+    bounded, rep = bound_packet_text(text)
+    assert final in bounded and bounded.count("<final>") == 1 and bounded.rstrip().endswith("</final>")
+    assert rep["final_elements"] == 1 and rep["trimmed"] and rep["finals_protected"]
+    assert len(bounded) <= PACKET_ENVELOPE_CHARS
+    # through the renderer, as a PEER packet (own and peer positions)
+    g = graph("main")
+    node, parents = _peer_request(g, 2, 1, 0, {0: text, 1: text})
+    messages, report = render_messages_with_report(node, MATH_TASK, parents, seed=SEED)
+    assert messages[1]["content"].count(final) == 2
+    assert [(p["role"], p["final_elements"], p["trimmed"]) for p in report["packets"]] == [("own", 1, True), ("peer", 1, True)]
+
+
+def test_raw_relay_is_always_bounded_even_when_its_final_cannot_fit():
+    huge = "<rationale>\nshort\n</rationale>\n<final>\n" + "y" * (2 * PACKET_ENVELOPE_CHARS) + "\n</final>"
+    with pytest.raises(ContextLimitEvent):
+        bound_packet_text(huge)                                    # VALID: never cut the final, record an event
+    bounded, rep = bound_packet_text(huge, strict_final=False)    # raw relay: bounded, marked, reported
+    assert len(bounded) <= PACKET_ENVELOPE_CHARS and not rep["finals_protected"] and rep["final_elements"] == 1
+    assert bounded.startswith("<rationale>") and bounded.endswith("</final>") and OMISSION_MARKER in bounded
+    g = graph("main")
+    index = node_index(g)
+    priv = next(n for n in g.nodes if n.kind is GenerationKind.PRIVATE)
+    parent = index[priv.parent_ids[0]]
+    messages, report = render_messages_with_report(
+        priv, MATH_TASK, [(parent, candidate(parent, huge, status=ParseStatus.MALFORMED))], seed=SEED)
+    assert f"{RAW_MARKER}\n<rationale>" in messages[1]["content"] and report["packets"][0]["availability"] == "raw"
+
+
+def test_symmetric_trim_property_over_random_texts():
+    import random
+    rng = random.Random(20260917)
+    marker = f"\n{OMISSION_MARKER}\n"
+    for _ in range(300):
+        parts = []
+        for _ in range(rng.randint(1, 4)):
+            parts.append("".join(rng.choice("ab é\n<>/") for _ in range(rng.randint(0, 400))))
+            if rng.random() < 0.6:
+                parts.append("<final>" + "".join(rng.choice("xyz\n{}") for _ in range(rng.randint(0, 60))) + "</final>")
+        text = "".join(parts)
+        envelope = rng.randint(2 * len(marker) + 1, 900)
+        spans = render._final_spans(text)
+        try:
+            bounded, rep = bound_packet_text(text, envelope=envelope)
+        except ContextLimitEvent:
+            # finals plus one marker per non-empty gap the symmetric cut must cross exceed the envelope
+            bounds = [0] + [x for span in spans for x in span] + [len(text)]
+            gaps = sum(1 for a, b in zip(bounds[::2], bounds[1::2]) if b > a)
+            assert sum(b - a for a, b in spans) + len(marker) * max(1, gaps) > envelope
+            continue
+        assert len(bounded) <= envelope and rep["final_elements"] == len(spans)
+        assert all(text[a:b] in bounded for a, b in spans)
+        if not rep["trimmed"]:
+            assert bounded == text
+            continue
+        # removing the markers leaves the original minus the cut ranges; kept outside text splits ceil/floor
+        pieces = bounded.split(marker)
+        assert len(pieces) == rep["cuts"] + 1
+        assert text.startswith(pieces[0]) and text.endswith(pieces[-1])
+        kept = sum(len(p) for p in pieces)
+        assert kept + rep["chars_removed"] == len(text)
+        assert rep["bytes_removed"] == len(text.encode()) - sum(len(p.encode()) for p in pieces)
+        assert len(bounded) == envelope                                  # K is exactly what fits
