@@ -3,8 +3,9 @@
 Sources, in order of authority:
 
 * Agent 03's ``protocols.policy_cost.policy_cost_rows(graph, results)`` when importable: its rows are used for
-  every column it provides under the names in :data:`POLICY_COST_COLUMNS`; the local recomputation below fills
-  any column it lacks and every overlap is cross-checked (a disagreement is a reported problem, never averaged).
+  every column in :data:`EXTERNAL_COLUMN_MAP` (agent 03 name -> local name); the local recomputation fills the rest
+  (retry charges, standardized price, CPU) and every overlapping column is cross-checked (a disagreement is a
+  reported problem, never averaged).
 * The local recomputation from ``PolicyCheckpoint.required_node_ids`` + accepted ``GenerationResult.usage`` +
   job specs + the ledger journal.
 
@@ -33,10 +34,21 @@ from agent_allocation.contracts import (
 )
 
 MILLION = Decimal(1_000_000)
-POLICY_COST_COLUMNS = (
-    "policy_id", "nominal_generations", "requested_reasoning_tokens", "requested_completion_cap_tokens",
-    "prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_prompt_tokens", "success_cost_usd",
-)
+EXTERNAL_COLUMN_MAP = {                     # agent 03 policy_cost_rows column -> local column
+    "nominal_generations": "nominal_generations",
+    "requested_reasoning_tokens": "requested_reasoning_tokens",
+    "requested_max_completion_tokens": "requested_completion_cap_tokens",
+    "prompt_tokens": "prompt_tokens",
+    "completion_tokens": "completion_tokens",
+    "reasoning_tokens": "reasoning_tokens",
+    "cached_prompt_tokens": "cached_prompt_tokens",
+    "actual_cost_usd": "success_cost_usd",
+    "latency_seconds_total": "total_latency_seconds",
+    "critical_path_latency_seconds": "critical_path_latency_seconds",
+}
+EXTERNAL_EXTRA_COLUMNS = ("upstream_inference_cost_usd", "critical_path_generations", "results_missing",
+                          "transport_ok_nodes", "pool_size")
+MONEY_COLUMNS = frozenset({"success_cost_usd"})
 COST_MEASURES = {
     "total_charged_usd": "Actual API dollars per item (successful + retry charges)",
     "success_cost_usd": "Successful-generation API dollars per item",
@@ -254,31 +266,54 @@ def _merge_external(local: pd.DataFrame, external: pd.DataFrame) -> tuple[pd.Dat
     problems: list[str] = []
     if "policy_id" not in external:
         return local, ["agent 03 policy_cost_rows lack policy_id; local costs used"]
-    overlap = [c for c in POLICY_COST_COLUMNS if c in external and c != "policy_id"]
-    ext = external[["policy_id", *overlap]].drop_duplicates("policy_id").set_index("policy_id")
+    ext = external.drop_duplicates("policy_id").set_index("policy_id")
     merged = local.set_index("policy_id")
-    for col in overlap:
-        joined = merged[col].to_frame("local").join(ext[col].rename("external"), how="left")
-        for pid, row in joined.iterrows():
-            a, b = row["local"], row["external"]
-            if _missing(a) and _missing(b):
-                continue
-            if _missing(a) != _missing(b) or not _close(a, b):
-                problems.append(f"policy cost mismatch {pid} {col}: local={a} agent03={b}")
-                break
-        merged[col] = joined["external"].where(joined["external"].notna(), joined["local"])
-    return merged.reset_index(), problems
+    missing_ids = merged.index.difference(ext.index)
+    if len(missing_ids):
+        problems.append(f"agent 03 policy_cost_rows omit {len(missing_ids)} planned checkpoints (e.g. {missing_ids[0]})")
+    for ext_col, col in EXTERNAL_COLUMN_MAP.items():
+        if ext_col not in ext:
+            problems.append(f"agent 03 policy_cost_rows lack column {ext_col}; local {col} used")
+            continue
+        theirs = ext[ext_col].reindex(merged.index)
+        ours = merged[col] if col in merged else pd.Series(None, index=merged.index, dtype=object)
+        a, b = _normalized(ours, col in MONEY_COLUMNS), _normalized(theirs, col in MONEY_COLUMNS)
+        differ = (a.isna() != b.isna()) | (a.notna() & b.notna() & (a != b))
+        if col.endswith("latency_seconds"):
+            fa, fb = pd.to_numeric(ours, errors="coerce"), pd.to_numeric(theirs, errors="coerce")
+            differ = (fa.isna() != fb.isna()) | ((fa - fb).abs() > 1e-6)
+        differ &= theirs.index.isin(ext.index)
+        if bool(differ.any()):
+            first = differ[differ].index[0]
+            problems.append(f"policy cost mismatch in {int(differ.sum())} checkpoint(s) for {col} (agent 03 "
+                            f"{ext_col}); first {first}: local={ours.loc[first]} agent03={theirs.loc[first]}")
+        merged[col] = [(str(v) if col in MONEY_COLUMNS else v) if not _missing(v) else None for v in theirs] \
+            if col in MONEY_COLUMNS else theirs.where(theirs.notna(), ours)
+    for extra in EXTERNAL_EXTRA_COLUMNS:
+        if extra in ext:
+            merged[extra] = [None if _missing(v) else (str(v) if isinstance(v, Decimal) else v)
+                             for v in ext[extra].reindex(merged.index)]
+    out = merged.reset_index()
+    success = out["success_cost_usd"]
+    retry = out["retry_cost_usd"]
+    out["total_charged_usd"] = [None if _missing(a) else str(Decimal(str(a)) + Decimal(str(r)))
+                                for a, r in zip(success, retry)]
+    return out, problems
+
+
+def _normalized(series: pd.Series, money: bool) -> pd.Series:
+    if money:
+        return series.map(lambda v: None if _missing(v) else str(Decimal(str(v)).normalize()))
+    return pd.to_numeric(series, errors="coerce")
 
 
 def _missing(v: Any) -> bool:
-    return v is None or (isinstance(v, float) and math.isnan(v))
-
-
-def _close(a: Any, b: Any) -> bool:
+    if v is None:
+        return True
     try:
-        return abs(Decimal(str(a)) - Decimal(str(b))) <= Decimal("1e-12")
-    except Exception:
-        return str(a) == str(b)
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
 
 
 def _critical_path_latency(run: RunData, specs: Mapping[str, GenerationSpec]) -> dict[str, float | None]:

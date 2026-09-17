@@ -336,22 +336,25 @@ def _write_node(paths: RunPaths, task: PublicTask, node: GenerationSpec, value: 
 
 def _select(cp: PolicyCheckpoint, task: PublicTask, outcome: dict[str, bool | None], paths: RunPaths
             ) -> SelectionResult:
+    """Toy stand-in for agent 06 with its concrete selector names: single pool -> that candidate; otherwise
+    plurality over valid final answers (pool-order tie-break), abstaining when every candidate is invalid."""
     pool = list(cp.candidate_ids)
     answers = {nid: _answer_from_disk(paths, nid) for nid in pool}
-    pool_hash = canonical_hash(pool)
-    if len(pool) == 1 or cp.family in ("private_single", "deep", "pooled"):
-        return SelectionResult(cp.policy_id, pool[-1], "last_answer", "synthetic-1", pool_hash, None, 0.0,
+    pool_hash = canonical_hash([[nid, answers[nid]] for nid in pool])
+    concrete = _concrete(cp, task)
+    if len(pool) == 1:
+        return SelectionResult(cp.policy_id, pool[0], concrete, "synthetic-1", pool_hash, None, 0.0,
                                SelectionStatus.SINGLE_CANDIDATE)
     valid = [nid for nid in pool if answers[nid] is not None]
     if not valid:
-        return SelectionResult(cp.policy_id, None, _concrete(cp, task), "synthetic-1", pool_hash, None, 0.0,
+        return SelectionResult(cp.policy_id, None, concrete, "synthetic-1", pool_hash, None, 0.0,
                                SelectionStatus.ABSTAINED_ALL_INVALID)
     counts: dict[str, int] = {}
     for nid in valid:
         counts[answers[nid]] = counts.get(answers[nid], 0) + 1
     best = max(counts.values())
     chosen = next(nid for nid in valid if counts[answers[nid]] == best)
-    return SelectionResult(cp.policy_id, chosen, _concrete(cp, task), "synthetic-1", pool_hash, None, 0.01,
+    return SelectionResult(cp.policy_id, chosen, concrete, "synthetic-1", pool_hash, None, 0.01,
                            SelectionStatus.SELECTED)
 
 
