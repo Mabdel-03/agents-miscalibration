@@ -7,14 +7,14 @@ Invariant, checked atomically on every reservation::
 Buckets per attempt:
 
 * ``in_flight``  - reserved (``RESERVE``) or sent (``SENT``) and not yet resolved;
-* ``unresolved`` - the HTTP exchange ended without a confirmed cost (ambiguous timeout, missing usage) or the
-  attempt was inherited from a previous process; kept at full reservation until ``settle`` (confirmed cost, e.g.
-  from generation metadata) or ``charge_max``;
+* ``unresolved`` - the HTTP exchange ended without a confirmed cost (ambiguous timeout, error envelope, missing usage;
+  journaled as ``UNRESOLVED`` with amount 0) or the attempt was inherited from a previous process; kept at full
+  reservation until ``settle`` (confirmed cost, e.g. from generation metadata) or ``charge_max``;
 * ``settled``    - confirmed cost (``SETTLE``) or conservative maximum (``CHARGE_MAX``).
 
-Only ``release_unsent`` returns a reservation without charge, and only for attempts that are reserved or sent but
-provably never left the process (CONNECT_FAILED, or stopped before the send). An unresolved attempt can never be
-released. Every transition is journaled (``LedgerJournal.append`` returns after fsync); the in-memory state is
+``SENT`` is journaled (urgent fsync) immediately before the request leaves, never earlier. Only ``release_unsent``
+returns a reservation without charge, and only for attempts that were reserved but never marked sent; after ``SENT``
+it raises (unknown money is never released - a provably unsent CONNECT_FAILED settles at 0 instead). Every transition is journaled (``LedgerJournal.append`` returns after fsync); the in-memory state is
 updated *before* the await so concurrent coroutines always see the reservation, and the constructor rebuilds the
 state by replaying the journal. Attempts reserved by an earlier process and never resolved come back as
 ``unresolved`` (``inherited_attempt_ids``); recovery settles them from a persisted response or charges the maximum.
@@ -160,10 +160,11 @@ class CollectionLedger:
                 if event.kind is not LedgerEventKind.RELEASE_UNSENT:
                     self._settled += event.amount_usd
                 self._resolved[aid] = (event.kind, event.amount_usd)
-            elif event.kind is LedgerEventKind.RECONCILE:
-                if aid in self._open and (event.detail or "").startswith("unresolved"):
+            elif event.kind is LedgerEventKind.UNRESOLVED:
+                if aid in self._open:
                     self._open[aid].state = _UNRESOLVED
-        # Nothing is in flight in a fresh process: every inherited open attempt is unresolved exposure.
+        # Nothing is in flight in a fresh process: every inherited open attempt (SENT or not) is unresolved exposure
+        # and feeds the unresolved-exposure pause until recovery settles or charges it.
         for opened in self._open.values():
             opened.state = _UNRESOLVED
             self._unresolved += opened.amount
@@ -267,15 +268,16 @@ class CollectionLedger:
         return True
 
     async def mark_sent(self, attempt_id: str) -> None:
+        """Journal ``SENT`` (urgent fsync) right before the request leaves; from here on it is never released."""
         with self._lock:
             opened = self._open.get(attempt_id)
             if opened is None:
                 raise LedgerError(f"mark_sent for unknown or resolved attempt {attempt_id}")
             if opened.state != _RESERVED:
                 return
-            opened.state = _SENT
             event = self._event_locked(LedgerEventKind.SENT, opened.amount, opened, attempt_id=attempt_id)
-            pending = self.journal.submit(event)
+            pending = self.journal.submit(event, urgent=True)   # raises (state unchanged) if the journal is broken
+            opened.state = _SENT
         await asyncio.shield(pending)
 
     async def mark_unresolved(self, attempt_id: str, *, detail: str = "") -> None:
@@ -289,8 +291,8 @@ class CollectionLedger:
             opened.state = _UNRESOLVED
             self._in_flight -= opened.amount
             self._unresolved += opened.amount
-            event = self._event_locked(LedgerEventKind.RECONCILE, ZERO, opened, attempt_id=attempt_id,
-                                       detail=f"unresolved:{detail}" if detail else "unresolved")
+            event = self._event_locked(LedgerEventKind.UNRESOLVED, ZERO, opened, attempt_id=attempt_id,
+                                       detail=detail or None)
             pending = self.journal.submit(event)
         await asyncio.shield(pending)
 
@@ -341,8 +343,9 @@ class CollectionLedger:
                     self.duplicate_resolutions += 1
                     return
                 raise LedgerError(f"release_unsent for unknown attempt {attempt_id}")
-            if opened.state == _UNRESOLVED:
-                raise LedgerError(f"attempt {attempt_id} is unresolved: its reservation can never be released")
+            if opened.state != _RESERVED:
+                raise LedgerError(f"attempt {attempt_id} is {opened.state}: a reservation that may have left the "
+                                  "process is never released (settle a provably unsent attempt at 0 instead)")
             self._remove_locked(opened)
             self._resolved[attempt_id] = (LedgerEventKind.RELEASE_UNSENT, opened.amount)
             event = self._event_locked(LedgerEventKind.RELEASE_UNSENT, opened.amount, opened, attempt_id=attempt_id)
@@ -390,16 +393,17 @@ NEVER_BILLED_WITHOUT_USAGE = frozenset({
 def confirmed_cost(result: GenerationResult | None) -> Decimal | None:
     """The cost a finished exchange provably incurred, or ``None`` when it is unknown (keep it unresolved).
 
-    ``usage.actual_cost_usd`` wins whenever present. Without it: refusals in ``NEVER_BILLED_WITHOUT_USAGE`` and
-    ``UPSTREAM_ERROR`` without a generation id cost 0; everything else (timeouts, 200 responses without usage,
-    error envelopes, cache hits, provider mismatches, 5xx with a generation id) is unknown.
+    ``usage.actual_cost_usd`` wins whenever present. Without it: refusals in ``NEVER_BILLED_WITHOUT_USAGE``,
+    CONNECT_FAILED (provably never sent) and ``UPSTREAM_ERROR`` without a generation id cost 0; everything else
+    (timeouts, 200 responses without usage, error envelopes, cache hits, provider mismatches, 5xx with a generation
+    id) is unknown and stays unresolved until generation metadata or ``charge_max``.
     """
     if result is None:
         return None
     if result.usage is not None and result.usage.actual_cost_usd is not None:
         return _dec(result.usage.actual_cost_usd, "actual_cost_usd")
     status = result.transport_status
-    if status in NEVER_BILLED_WITHOUT_USAGE:
+    if status in NEVER_BILLED_WITHOUT_USAGE or status is TransportStatus.CONNECT_FAILED:
         return ZERO
     if status is TransportStatus.UPSTREAM_ERROR and not result.generation_id:
         return ZERO

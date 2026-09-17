@@ -275,11 +275,17 @@ class StateStore:
             return cur.rowcount == 1
 
     def mark_exhausted(self, node_id: str, reason: str) -> None:
+        self.mark_terminal_without_candidate(node_id, OUTCOME_EXHAUSTED, reason)
+
+    def mark_terminal_without_candidate(self, node_id: str, outcome: str, reason: str) -> None:
+        """Terminal with no accepted result (attempts exhausted, non-retryable status, context limit)."""
+        if outcome == OUTCOME_SUCCEEDED:
+            raise StateError("a node without a candidate cannot be 'succeeded'")
         with self._tx() as conn:
             conn.execute(
                 "UPDATE nodes SET state='terminal', outcome=?, terminal_reason=?, lease_owner=NULL,"
                 " lease_attempt_id=NULL, updated_at=? WHERE node_id=? AND state!='terminal'",
-                (OUTCOME_EXHAUSTED, reason, utc_now(), node_id))
+                (outcome, reason, utc_now(), node_id))
 
     # ---- attempts -----------------------------------------------------------------------------------------
     def record_attempt(self, attempt: Attempt) -> None:

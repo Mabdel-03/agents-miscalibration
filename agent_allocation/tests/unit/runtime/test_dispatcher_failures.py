@@ -79,7 +79,7 @@ async def test_crash_after_provider_response_before_db_commit_resends_nothing(tm
     assert env.store.recovery_report["journal_settled_from_raw"] == 1
     second = FakeClient()
     summary = await env.dispatcher(second).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     assert second.sent_nodes() == [child.node_id]                    # the persisted root is never re-sent
     assert env.render.seen[child.node_id] == ["42"]
     assert summary.settled_usd == 2 * COST and summary.unresolved_usd == 0
@@ -119,15 +119,15 @@ async def test_timeout_with_later_bill_settles_from_generation_metadata(tmp_path
     client = FakeClient(script)
     client.metadata["gen-late"] = [None, {"total_cost": "0.00005"}]
     summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete" and summary.nodes_succeeded == 2
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 2
     assert [a for _, a in client.calls] == [f"{root.node_id}:1", f"{root.node_id}:2", f"{child.node_id}:1"]
     attempts = journal_attempts(env.paths.ledger_journal)
     late = attempts[f"{root.node_id}:1"]
     assert late.resolution is LedgerEventKind.SETTLE and late.resolved_usd == D("0.00005")
     assert summary.unresolved_usd == 0 and summary.settled_usd == D("0.00005") + 2 * COST
     assert client.metadata_calls.count("gen-late") >= 2
-    events = [e for e in env.journal.replay() if e.kind is LedgerEventKind.RECONCILE]
-    assert any((e.detail or "").startswith("unresolved") for e in events)
+    unresolved = [e for e in env.journal.replay() if e.kind is LedgerEventKind.UNRESOLVED]
+    assert [e.attempt_id for e in unresolved] == [f"{root.node_id}:1"] and unresolved[0].amount_usd == 0
 
 
 async def test_timeout_without_a_bill_is_charged_at_the_maximum(tmp_path):
@@ -167,7 +167,7 @@ async def test_stale_sent_lease_is_charged_and_retried_as_a_new_attempt(tmp_path
     assert env.ledger.snapshot().unresolved == D("0.002")
     client = FakeClient()
     summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     assert [a for _, a in client.calls] == [f"{root.node_id}:2", f"{child.node_id}:1"]
     assert _kinds(env)[aid] is LedgerEventKind.CHARGE_MAX
     assert summary.settled_usd == D("0.002") + 2 * COST
@@ -190,7 +190,7 @@ async def test_fresh_foreign_lease_is_never_sent_concurrently(tmp_path):
 
     client.script = script
     summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     assert sent_at[free.node_id] < 0.5
     assert sent_at[held.node_id] >= 0.8                              # waited for the lease to go stale
     assert [a for n, a in client.calls if n == held.node_id] == [f"{held.node_id}:2"]
@@ -210,7 +210,7 @@ async def test_429_burst_halves_once_honors_retry_after_and_bounds_attempts(tmp_
 
     client = FakeClient(script)
     summary = await env.dispatcher(client).run(plan_of(graphs), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete" and summary.nodes_succeeded == 12
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 12
     assert summary.rate_limited == 8
     assert summary.extra["aimd_decreases"] == 1 and summary.concurrency_final == 4 and summary.rps_final == 500
     first_429_done = min(t for t, _, a in times[:8]) + 0.05
@@ -233,7 +233,7 @@ async def test_exhausted_node_is_terminal_without_candidate_and_children_still_r
 
     client = FakeClient(script)
     summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     assert [a for n, a in client.calls if n == root.node_id] == [f"{root.node_id}:{i}" for i in (1, 2, 3)]
     assert summary.nodes_failed == 1 and summary.nodes_succeeded == 1
     assert env.render.seen[child.node_id] == [ABSENT]
@@ -258,7 +258,7 @@ async def test_slow_grader_does_not_hold_http_capacity(tmp_path):
     summary = await env.dispatcher(client, extract=slow_extract).run(plan_of(graphs), allow_paid=False,
                                                                     max_usd=D("5"))
     elapsed = time.monotonic() - started
-    assert summary.stop_reason == "complete" and summary.nodes_succeeded == 36
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 36
     assert summary.peak_in_flight == 16 == client.peak                 # extraction backlog never starved HTTP work
     assert elapsed < 36 * (0.1 + 0.05) / 2
 
@@ -269,7 +269,7 @@ async def test_duplicate_completion_notification_is_idempotent(tmp_path):
     root, child = graph.nodes
     dispatcher = env.dispatcher(FakeClient())
     summary = await dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     parsed_before = env.paths.parsed(root.node_id).read_bytes()
     snapshot_before = env.ledger.snapshot()
     node = dispatcher.nodes[root.node_id]
@@ -299,7 +299,7 @@ async def test_disk_failure_opens_circuit_keeps_cost_and_resends_only_unpersiste
     monkeypatch.setattr(scheduler_mod, "write_raw_response", failing_write)
     client = FakeClient(lambda spec, aid, i: Behavior(delay=0.05 if spec.node_id != victim.node_id else 0.0))
     summary = await env.dispatcher(client).run(plan_of(graphs), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason.startswith("circuit_open:disk_failure")
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("disk_failure")
     assert summary.in_flight_usd == 0 and summary.unresolved_usd == 0
     assert _kinds(env)[f"{victim.node_id}:1"] is LedgerEventKind.SETTLE   # money truth kept despite the disk
     assert not env.paths.parsed(victim.node_id).exists()
@@ -312,7 +312,7 @@ async def test_disk_failure_opens_circuit_keeps_cost_and_resends_only_unpersiste
     env.reopen(recover=True)
     again = FakeClient()
     summary2 = await env.dispatcher(again).run(plan_of(graphs), allow_paid=False, max_usd=D("5"))
-    assert summary2.stop_reason == "complete"
+    assert summary2.stop_reason == "completed"
     assert victim.node_id in again.sent_nodes()
     assert set(again.sent_nodes()).isdisjoint(set(client.completed) - {victim.node_id})
     assert (f"{victim.node_id}:2") in [a for _, a in again.calls]
@@ -328,7 +328,7 @@ async def test_graceful_drain_finishes_in_flight_and_sentinel_blocks_restart(tmp
     assert cmd_stop(["--run-dir", str(env.paths.run_dir), "--drain"]) == 0
     sent_at_drain = len(client.calls)
     summary = await run
-    assert summary.stop_reason == "drained"
+    assert summary.stop_reason == "drain"
     assert len(client.calls) <= sent_at_drain + 1 and len(client.completed) == len(client.calls)
     assert summary.in_flight_usd == 0 and summary.unresolved_usd == 0
     assert all(env.paths.parsed(n).exists() for n in client.completed)
@@ -338,7 +338,7 @@ async def test_graceful_drain_finishes_in_flight_and_sentinel_blocks_restart(tmp
     env.reopen(recover=True)
     resumed_client = FakeClient()
     resumed = await env.dispatcher(resumed_client).run(plan_of(graphs), allow_paid=False, max_usd=D("5"))
-    assert resumed.stop_reason == "complete"
+    assert resumed.stop_reason == "completed"
     assert set(resumed_client.sent_nodes()).isdisjoint(client.completed)
     assert len(resumed_client.calls) + len(client.completed) == 20
 
@@ -353,7 +353,7 @@ async def test_stop_abandons_in_flight_but_never_releases_their_reservations(tmp
     await asyncio.sleep(0.15)
     cmd_stop(["--run-dir", str(env.paths.run_dir)])
     summary = await asyncio.wait_for(run, timeout=10)
-    assert summary.stop_reason == "stopped" and len(client.calls) == 3
+    assert summary.stop_reason == "stop_sentinel" and len(client.calls) == 3
     kinds = list(journal_attempts(env.paths.ledger_journal).values())
     charged = [k for k in kinds if k.resolution is LedgerEventKind.CHARGE_MAX]
     released = [k for k in kinds if k.resolution is LedgerEventKind.RELEASE_UNSENT]
@@ -378,8 +378,7 @@ async def test_payment_required_opens_the_circuit_and_drains(tmp_path):
 
     client = FakeClient(script)
     summary = await env.dispatcher(client).run(plan_of(graphs), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason.startswith("circuit_open:payment_required")
-    assert summary.circuit_reason.startswith("payment_required")
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("payment_required")
     assert len(client.calls) <= 3 and len(client.completed) == len(client.calls)
     assert summary.in_flight_usd == 0 and summary.unresolved_usd == 0
     payment_node = client.calls[1][0]
@@ -401,7 +400,7 @@ async def test_unresolved_exposure_pauses_admissions_until_reconciled(tmp_path):
         return Behavior(delay=0.05)
 
     summary = await env.dispatcher(FakeClient(script)).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert summary.stop_reason == "complete" and summary.nodes_succeeded == 6
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 6
     events = [e for _, e, _ in summary.extra["events"]]
     assert "paused_unresolved_exposure" in events
     # the first burst (2 in flight + 2 prefetched, all reserved before any timeout) may send; nothing admitted
@@ -423,10 +422,88 @@ async def test_extract_failure_persists_response_and_restart_finishes_without_re
     client = FakeClient()
     summary = await env.dispatcher(client, extract=broken_extract).run(plan_of([graph]), allow_paid=False,
                                                                        max_usd=D("5"))
-    assert summary.stop_reason.startswith("circuit_open:extract_failed")
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("extract_failed")
     assert env.store.node(root.node_id).state == "response_persisted"
     env.reopen(recover=True)
     again = FakeClient()
     fixed = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
-    assert fixed.stop_reason == "complete" and again.sent_nodes() == [child.node_id]
+    assert fixed.stop_reason == "completed" and again.sent_nodes() == [child.node_id]
     assert fixed.settled_usd == 2 * COST
+
+
+async def test_context_limit_makes_the_node_terminal_without_a_call_or_reservation(tmp_path):
+    from agent_allocation.prompts.render import ContextLimitEvent
+
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=3)
+    root, middle, leaf = graph.nodes
+    inner = env.render
+
+    def render(spec, parents):
+        if spec.node_id == middle.node_id:
+            raise ContextLimitEvent(source_node_id=root.node_id, final_chars=9000, visible_chars=9100,
+                                    envelope_chars=4000, receiver_node_id=spec.node_id)
+        return inner(spec, parents)
+
+    client = FakeClient()
+    dispatcher = env.dispatcher(client)
+    dispatcher.render = render
+    summary = await dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and summary.nodes_context_limited == 1
+    assert client.sent_nodes() == [root.node_id, leaf.node_id]
+    assert not any(a.startswith(middle.node_id) for a in _kinds(env))       # no reservation, no API call
+    row = env.store.node(middle.node_id)
+    assert row.state == "terminal" and row.outcome == "context_limit" and env.store.candidate(middle.node_id) is None
+    assert env.render.seen[leaf.node_id] == [ABSENT]
+
+
+async def test_error_envelope_is_retried_and_its_reservation_kept_until_reconciled(tmp_path, monkeypatch):
+    monkeypatch.setattr(scheduler_mod, "BACKOFF_BASE_SECONDS", 0.01)
+    env = Env.create(tmp_path, lease_stale_seconds=0.3)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    def script(spec, attempt_id, index):
+        if index == 0:
+            return Behavior(status=TransportStatus.ERROR_ENVELOPE, cost=None)
+        return Behavior(delay=0.6)
+
+    client = FakeClient(script)
+    summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 1
+    assert [a for _, a in client.calls] == [f"{root.node_id}:1", f"{root.node_id}:2"]
+    envelope = journal_attempts(env.paths.ledger_journal)[f"{root.node_id}:1"]
+    assert envelope.sent and envelope.resolution is LedgerEventKind.CHARGE_MAX
+    assert env.paths.raw_response(f"{root.node_id}:1").exists()             # the error payload is preserved
+
+
+async def test_connect_failure_settles_at_zero_and_is_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr(scheduler_mod, "BACKOFF_BASE_SECONDS", 0.01)
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    def script(spec, attempt_id, index):
+        return Behavior(status=TransportStatus.CONNECT_FAILED, cost=None) if index == 0 else Behavior()
+
+    summary = await env.dispatcher(FakeClient(script)).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed"
+    failed = journal_attempts(env.paths.ledger_journal)[f"{root.node_id}:1"]
+    assert failed.sent and failed.resolution is LedgerEventKind.SETTLE and failed.resolved_usd == 0
+    from tests.integration.reference_impl import LedgerChecker
+    assert LedgerChecker(D("5")).replay(list(env.journal.replay())).violations == []
+
+
+async def test_urgent_sent_does_not_wait_out_the_group_commit_window(tmp_path):
+    from agent_allocation.runtime.ledger import CollectionLedger
+    from agent_allocation.storage.journal import LedgerJournal
+
+    journal = LedgerJournal(tmp_path / "j.jsonl", group_commit_ms=400)
+    ledger = CollectionLedger(journal, ceiling_usd=D("1"), max_unresolved_usd=D("2"))
+    started = time.monotonic()
+    assert await ledger.reserve(attempt_id="a:1", node_id="a", partition_id="main", amount_usd=D("0.1"))
+    reserve_latency = time.monotonic() - started
+    started = time.monotonic()
+    await ledger.mark_sent("a:1")
+    sent_latency = time.monotonic() - started
+    assert reserve_latency >= 0.35 and sent_latency < 0.2

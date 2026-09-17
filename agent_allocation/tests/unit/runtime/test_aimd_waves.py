@@ -60,7 +60,7 @@ async def test_waves_open_in_order_and_only_to_keep_the_dispatcher_busy(tmp_path
              for w in range(3)]
     client = FakeClient(delay=0.005)
     summary = await env.dispatcher(client).run(plan_of(*waves), allow_paid=False, max_usd=Decimal("5"))
-    assert summary.stop_reason == "complete" and summary.waves_completed == 3
+    assert summary.stop_reason == "completed" and summary.waves_completed == 3
     wave_of = {s.node_id: w for w, graphs in enumerate(waves) for g in graphs for s in g.nodes}
     sequence = [wave_of[n] for n in client.sent_nodes()]
     assert sequence == sorted(sequence)               # one active wave: strictly wave by wave
@@ -74,7 +74,7 @@ async def test_older_waves_first_and_optional_block_waits_for_core(tmp_path):
                 for i in range(2)]
     client = FakeClient(delay=0.003)
     summary = await env.dispatcher(client).run(plan_of(*core, optional), allow_paid=False, max_usd=Decimal("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     sent = client.sent_nodes()
     core_ids = {s.node_id for graphs in core for g in graphs for s in g.nodes}
     optional_ids = {s.node_id for g in optional for s in g.nodes}
@@ -88,7 +88,7 @@ async def test_critical_path_first_then_fair_buckets(tmp_path):
     graph = make_graph("solo", bank=7, chain=4, team_slots=3, team_rounds=1, peer_sizes=(2,), peer_rounds=1, deep=(2,))
     client = FakeClient()
     summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=Decimal("5"))
-    assert summary.stop_reason == "complete"
+    assert summary.stop_reason == "completed"
     by_id = {s.node_id: s for s in graph.nodes}
     sent = [by_id[n] for n in client.sent_nodes()]
     # root[0] and its whole private chain go first, then roots 1-4, then everything else
@@ -106,7 +106,7 @@ async def test_per_item_in_flight_cap(tmp_path):
     graph = make_graph("wide", bank=12, chain=1, team_slots=1, peer_sizes=(), deep=())
     client = FakeClient(delay=0.03)
     summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=Decimal("5"))
-    assert summary.stop_reason == "complete" and client.peak == 2 and summary.peak_in_flight == 2
+    assert summary.stop_reason == "completed" and client.peak == 2 and summary.peak_in_flight == 2
 
 
 async def test_tiny_budget_never_exceeded_and_pilot_allowance_caps_pilot_plans(tmp_path):
