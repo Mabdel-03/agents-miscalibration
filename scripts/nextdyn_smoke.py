@@ -133,10 +133,34 @@ def budget_reader(cfg: Any) -> Any:
     return lambda row: ceilings.get(str(getattr(row, "phase", "")), default)
 
 
-def drive(run_root: Path, manifest: Path, cfg_path: Path, *, wait_s: float) -> list[int]:
+def live_indices(run_root: Path, manifest: Path) -> list[int]:
+    """The positions in this manifest whose (pool, lane) currently has a live endpoint.
+
+    For the ordinary case this is every cell.  It matters when a fleet is only partly up: E2b
+    puts its 8B and 32B arms in one manifest, so with a live 8B and a queued 32B there are two
+    measurable phases sitting behind cells that cannot start.  Measuring what is reachable is
+    better than measuring nothing -- and it is not a way of passing the gate, because the
+    phases that go unmeasured are reported as failures either way.
+    """
+    from agents_scaling.nextdyn import fleet as FL
+
+    out: list[int] = []
+    for index, cell in enumerate(CE.load_manifest(manifest)):
+        if cell.pool is None:
+            out.append(index)
+            continue
+        pool = str(getattr(cell.pool, "value", cell.pool))
+        lane = str(getattr(cell.lane, "value", cell.lane))
+        if FL.live_endpoints_by_lane(run_root, pool).get(lane):
+            out.append(index)
+    return out
+
+
+def drive(run_root: Path, manifest: Path, cfg_path: Path, *, wait_s: float,
+          indices: Sequence[int] | None = None) -> list[int]:
     cells = CE.load_manifest(manifest)
     codes: list[int] = []
-    for index in range(len(cells)):
+    for index in (range(len(cells)) if indices is None else indices):
         code = run_one.main(["--run-root", str(run_root), "--config", str(cfg_path),
                              "--manifest", str(manifest), "--index", str(index),
                              "--wait-s", str(wait_s)])
@@ -161,6 +185,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                              % ",".join(PLAN.SMOKE_BLOCKS))
     parser.add_argument("--skip-audit", action="store_true",
                         help="do not emit the audit manifest (its phase then goes unmeasured)")
+    parser.add_argument("--only-live", action="store_true",
+                        help="dispatch only the cells whose (pool, lane) has a live endpoint, "
+                             "and say which were left out; their phases then measure as "
+                             "unmeasured, which the launch gate reports as a failure")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     cfg = C.load_study(args.config)
@@ -185,6 +213,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifests = smoke_manifests(run_root, cfg, inventory, blocks)
         wanted = endpoints_of(manifests)
         missing = missing_endpoints(run_root, wanted)
+        if missing and args.only_live:
+            print(f"[smoke] --only-live: no endpoint for {missing}; those cells are left out",
+                  file=sys.stderr)
+            missing = []
         if missing and not args.allow_empty_pools:
             need = ", ".join(f"{pool}/{lane}" for pool, lane in wanted)
             print(f"[smoke] no registered endpoint for {missing}; the smoke needs {need}.  "
@@ -193,8 +225,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         for path in manifests:
             n = len(CE.load_manifest(path))
-            print(f"[smoke] {path.stem}: {n} cells", flush=True)
-            codes += drive(run_root, path, args.config, wait_s=args.wait_s)
+            indices = live_indices(run_root, path) if args.only_live else None
+            if indices is not None and len(indices) < n:
+                print(f"[smoke] {path.stem}: {n - len(indices)} of {n} cells have no live "
+                      "endpoint and are being left out (--only-live)", file=sys.stderr)
+            if indices is not None and not indices:
+                print(f"[smoke] {path.stem}: nothing reachable, skipped", flush=True)
+                continue
+            print(f"[smoke] {path.stem}: {n if indices is None else len(indices)} cells",
+                  flush=True)
+            codes += drive(run_root, path, args.config, wait_s=args.wait_s, indices=indices)
         audit = None if args.skip_audit else audit_manifest(run_root, cfg)
         if args.skip_audit:
             print("[smoke] --skip-audit: the audit phase will be unmeasured", file=sys.stderr)

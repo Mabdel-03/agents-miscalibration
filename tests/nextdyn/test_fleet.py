@@ -13,10 +13,11 @@ import json
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 from agents_scaling.nextdyn import fleet as FL
 from agents_scaling.nextdyn.errors import ConfigError, ContractViolation, ManifestError
-from agents_scaling.nextdyn.kinds import Pool
+from agents_scaling.nextdyn.kinds import Lane, Pool
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -514,3 +515,32 @@ def test_the_scaler_still_accepts_a_bare_idle_count():
     # and a pool the spec does not name is left alone rather than scaled to nothing
     other = FL.scale_to_idle(targets, idle={}, gpus_per_replica={"nd1-32B": 2})
     assert sum(t.count for t in other) == 4
+
+
+def test_only_live_keeps_the_cells_whose_lane_has_an_endpoint(tmp_run_root, monkeypatch):
+    """A partly-up fleet should still measure what it can reach.
+
+    E2b puts its 8B and 32B arms in one manifest, so with a live 8B and a queued 32B two
+    measurable phases sit behind cells that cannot start.  This is not a way of passing the
+    launch gate: a phase with no calls is reported unmeasured, which is a failure either way.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("nd_smoke", REPO / "scripts" / "nextdyn_smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+
+    root = FL.pool_run_root(tmp_run_root, Pool.LOW)
+    (root / FL.SERVERS_DIR / "nd1-8B").mkdir(parents=True)
+    (root / FL.SERVERS_DIR / "nd1-32B").mkdir(parents=True)
+    monkeypatch.setattr(FL.REG, "list_live_servers",
+                        lambda r, name, **k: [object()] if name == "nd1-8B" else [])
+
+    cells = [
+        SimpleNamespace(pool=Pool.LOW, lane=Lane.SMALL),      # live
+        SimpleNamespace(pool=Pool.LOW, lane=Lane.LARGE),      # queued
+        SimpleNamespace(pool=Pool.LOW, lane=Lane.SMALL),      # live
+        SimpleNamespace(pool=None, lane=Lane.CPU),            # needs no endpoint at all
+    ]
+    monkeypatch.setattr(smoke.CE, "load_manifest", lambda path: cells)
+    assert smoke.live_indices(tmp_run_root, Path("ignored")) == [0, 2, 3]

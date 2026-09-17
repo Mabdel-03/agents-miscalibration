@@ -110,33 +110,35 @@ def test_agents_must_be_in_slot_order():
 
 
 def _decision_rows(rows_module, n=3, rounds=2):
-    from agents_scaling.nextdyn.tables import DecisionRow
+    """Rows built from the schema, so a new column does not make this a different fixture.
+
+    It used to spell out every ``decisions`` column, and so did two other modules; each time
+    ``tables.py`` gained one -- ``escape_repaired``, then ``trailing_chars`` and
+    ``plan_parsed`` -- all three broke at once.  ``conftest.placeholder`` fills the rest by
+    type, and this names only the fields the states test is actually about.
+    """
+    from agents_scaling.nextdyn import tables
+    from tests.nextdyn.conftest import placeholder
+
     rows = []
     for round_ in range(rounds + 1):
         for slot in range(n):
-            rows.append(DecisionRow(
+            row = placeholder("decisions") | dict(
                 decision_id=f"d:{round_}:{slot}", study_id="nd1", cell_kind="episode",
                 source_item_id="item-1", item_variant_id="item-1.v0", root_team_id="team:abc",
-                protocol_hash="ph", receiver_model_hash="0123456789abcdef", budget_hash="budget8",
-                replicate_id=0, round=round_, agent_slot=slot,
+                protocol_hash="ph", receiver_model_hash="0123456789abcdef",
+                budget_hash="budget8", replicate_id=0, round=round_, agent_slot=slot,
                 phase="root_ref" if round_ == 0 else "revision",
                 episode_id="episode|x", cell_id="cell", display_label="PEER",
                 generation_uid=f"g:{round_}:{slot}", content_hash="c:0",
-                request_hashes_json="[]", aliased=False, reuse_of=None,
-                is_reference=round_ == 0, first_decision_id=None, bundle_export_hash=None,
+                request_hashes_json="[]", aliased=False, is_reference=round_ == 0,
                 parent_decision_ids_json="[]", seen_transmission_ids_json="[]",
-                native_reasoning_ref=None, public_reasoning="r",
-                shareable_claims_json=json.dumps([]),
-                final_answer_raw="A" if slot == 0 else "B", canonical_class=None, confidence=None,
-                answer_logprob_sum=None, answer_logprob_mean=None, answer_token_count=None,
-                logprob_norm_scheme=None, parse_status="ok", escape_repaired=False,
-                field_order_violation=False,
-                validity=True, delivery_success=True, infrastructure_status="ok",
-                termination_reason="stop", boundary_injected=False, continuation_used=False,
-                discarded_span_tokens=0, thinking_tokens=1, final_tokens=1, prompt_tokens=1,
-                cached_prefill_tokens=0, token_offsets_json=None, endpoint_id=None,
-                latency_s=None, flops_prefill=None, flops_decode=None, flops_total=None,
-                linear_compute_proxy=None))
+                public_reasoning="r", shareable_claims_json=json.dumps([]),
+                final_answer_raw="A" if slot == 0 else "B",
+                parse_status="ok", validity=True, delivery_success=True,
+                infrastructure_status="ok", termination_reason="stop",
+                thinking_tokens=1, final_tokens=1, prompt_tokens=1)
+            rows.append(tables.row_from_dict(tables.DecisionRow, row))
     return tuple(rows)
 
 

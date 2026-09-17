@@ -121,7 +121,12 @@ budgets:
   receiver_decision_final_tokens: 512
   served_window_tokens: 32768
   context_reserve_tokens: 256
-  public_packet_token_cap: 512          # transmitted packet cap, sender's tokenizer (spec 6.1)
+  public_packet_token_cap: 512
+  # The receiver assays transmit a synthetic 25-line mod-97 trace, not an agent's JSON
+  # draft, and it renders to 559-570 tokens (packet 601-612).  Amendment A6: the receiver
+  # packet cap is its own knob so E1's 512 is untouched -- raising the shared cap would
+  # have enlarged every E1 packet, which is a change to the treatment H1/H3/H6-H8 rest on.
+  receiver_packet_token_cap: 640          # transmitted packet cap, sender's tokenizer (spec 6.1)
   public_rationale_token_cap: 256       # recorded as flags, never rewritten
   claims_max: 4
   claim_token_cap: 64

@@ -137,7 +137,7 @@ def decision_row(record: DecisionRecord, key: I.CompositeKey, out: "PublicOutput
                  cell: CellContext, parents: tuple[str, ...],
                  seen_transmissions: tuple[str, ...], aliased: bool, reuse_of: str | None,
                  is_reference: bool = False,
-                 native_reasoning_ref: str | None = None) -> T.DecisionRow:
+                 native_reasoning_ref: str | None = None, plan_parsed: bool | None = None) -> T.DecisionRow:
     """THE only ``DecisionRow`` constructor (R6).
 
     ``canonical_class`` is ``None`` here and always: grading is writer-side and joins on
@@ -204,6 +204,8 @@ def decision_row(record: DecisionRecord, key: I.CompositeKey, out: "PublicOutput
         logprob_norm_scheme=None if mean is None else LOGPROB_NORM_MEAN_FINAL_SPAN,
         parse_status=str(getattr(out.parse_status, "value", out.parse_status)),
         escape_repaired=bool(getattr(out, "escape_repaired", False)),
+        trailing_chars=int(getattr(out, "trailing_chars", 0) or 0),
+        plan_parsed=plan_parsed,
         field_order_violation=bool(out.order_violation),
         validity=valid,
         delivery_success=bool(valid and status == INFRA_OK),

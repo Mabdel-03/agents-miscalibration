@@ -175,10 +175,17 @@ def test_parse_salvage_rule_is_source_blind_on_adversarial_fixtures():
         assert [g.parse_status for g in got] == [ParseStatus.OK, ParseStatus.OK]
         assert [g.final_answer for g in got] == ["B", "A"]
 
+    # Prose *after* the object is accepted since A7 (salvage rule 3): the body is the first
+    # complete JSON value and what follows is not part of it.  Still source-blind -- the two
+    # answers are treated alike -- and still recorded, as ``trailing_chars``.
+    for body, expected in ((right, "B"), (wrong, "A")):
+        after = parse(body + "\nI hope that helps.")
+        assert after.parse_status is ParseStatus.OK and after.final_answer == expected
+        assert after.trailing_chars > 0
+
     # every non-salvageable shape is refused for both answers alike
     adversarial = (
-        "here is my answer: {body}",                 # prose before the object
-        "{body}\nI hope that helps.",                # prose after the object
+        "here is my answer: {body}",                 # prose before it: the body must start there
         "```json\n{body}\n```\n```json\n{body}\n```",  # two fences
         "text ```json\n{body}\n``` text",            # a fence that is not the whole text
     )
@@ -327,3 +334,30 @@ def test_a_repaired_draw_still_reports_its_spans_against_the_generated_text():
     raw = out.raw_text.encode("utf-8")
     start, end = out.final_answer_span
     assert raw[start:end].decode("utf-8").strip().strip('"') == "314"
+
+
+def test_the_body_is_the_first_complete_value_and_two_objects_are_still_refused():
+    """A7: trailing content is not part of the object; two objects are not one answer.
+
+    The continuation is why this exists.  When a draw hits the thinking cap, phase 2
+    regenerates the final from the frozen prefill and nothing stops it once the object closes:
+    ~22% of continued revision draws wrote a complete object and kept going, so `json.loads`
+    failed with "Extra data" and a real answer was discarded.  The loss landed only on draws
+    that hit the cap, so it tracked item difficulty and arm rather than being random.
+
+    But the rule selects a body, it does not choose between answers.  Two fenced objects stay
+    refused: picking the first would be a guess about intent, not a statement about shape.
+    """
+    body = _ok(final_answer="B")
+    after = parse(body + "\n\nWait, let me reconsider that.")
+    assert after.parse_status is ParseStatus.OK and after.final_answer == "B"
+    assert after.trailing_chars == len("\n\nWait, let me reconsider that.")
+    assert parse(body).trailing_chars == 0
+
+    # two objects, fenced or bare, are two answers and neither is picked
+    assert parse(f"```json\n{body}\n```\n```json\n{_ok(final_answer='A')}\n```").parse_status \
+        in (ParseStatus.NO_JSON, ParseStatus.INVALID_JSON)
+    # a fence whose body still holds a delimiter was never a single block
+    assert parse("```json\n" + body + "\n```\ntrailing\n```").parse_status is ParseStatus.NO_JSON
+    # and the wrong field name is still a failure, which is what makes the rule discriminating
+    assert parse(body.replace("final_answer", "answer")).parse_status is ParseStatus.MISSING_FINAL

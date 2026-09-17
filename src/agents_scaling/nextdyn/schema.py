@@ -67,6 +67,8 @@ FINISH_STOP: Final[str] = "stop"
 FINISH_LENGTH: Final[str] = "length"
 
 #: The one salvage shape: a single fenced block and nothing else outside it.
+#: The delimiter itself: a body that still contains one was never a single block.
+FENCE: Final[str] = "```"
 _SINGLE_FENCE = re.compile(r"\A```[^\n`]*\n(?P<body>.*?)\n?```\Z", re.DOTALL)
 
 THINK_OPEN: Final[str] = "<think>"
@@ -115,6 +117,9 @@ class PublicOutput:
     final_answer_span: tuple[int, int] | None
     confidence_span: tuple[int, int] | None
     confidence_emitted_before_answer: bool
+    #: How many characters followed the JSON object (salvage rule 3, A7).  Recorded so the
+    #: continuation's trailing-text rate is visible rather than absorbed by the parser.
+    trailing_chars: int = 0
     #: Did salvage rule 2 have to run?  Recorded rather than silent, so analysis can count the
     #: repaired draws and check they are not concentrated in one arm (they are expected to be
     #: concentrated in one *family*, which is why the rule exists).
@@ -238,6 +243,14 @@ def _json_body(final_text: str) -> tuple[str, int] | None:
     if match is None:
         return None
     body = match.group("body")
+    if FENCE in body:
+        # The rule is *exactly one* fenced block with nothing outside it.  The pattern is
+        # anchored at both ends, so against two fenced blocks it matches from the first opener
+        # to the last closer and the "body" swallows the delimiters in between.  That used to
+        # be caught downstream by the parse failing; since A7 takes the first complete value,
+        # it would instead silently answer with the first of two objects -- and two objects are
+        # two answers, where choosing one is a guess about intent rather than a shape rule.
+        return None
     return body, offset + match.start("body")
 
 
@@ -282,6 +295,34 @@ def repair_escapes(body: str) -> str:
         out.append("\\\\")
         i += 1
     return "".join(out)
+
+
+def _first_json_value(body: str) -> tuple[Any, int]:
+    r"""``(value, trailing characters)``: the leading JSON value, ignoring what follows it.
+
+    Salvage rule 3 (amendment A7), and a *body-selection* rule rather than a repair -- like the
+    fence rule it decides where the JSON is, and unlike a repair it rewrites nothing.
+
+    It exists for the two-phase continuation.  When a draw hits the thinking cap, phase 2
+    regenerates the final answer from the frozen prefill, and there is nothing to stop it once
+    the object closes: measured on the smoke, ~22% of continued *revision* draws wrote a
+    complete object and then carried on, so ``json.loads`` failed with "Extra data" and the
+    answer inside was thrown away.  Bank draws were unaffected, and the loss therefore landed
+    only on draws that hit the cap -- missingness tracking item difficulty and arm, which is
+    the kind the bounds are meant to bracket rather than absorb.
+
+    It discriminates rather than blanket-accepts: of the four failures measured, three held a
+    real ``final_answer`` and were recovered, while the fourth had written ``"answer"`` instead
+    of ``"final_answer"`` and stays a failure, as it should.
+
+    A stop sequence on ``}`` was the alternative and is unsafe: the declared shape has no
+    nested objects, but the reasoning field routinely contains LaTeX like ``\pmod{999}``, so
+    the first ``}`` is often mid-reasoning.
+    """
+    decoder = json.JSONDecoder()
+    value, end = decoder.raw_decode(body.lstrip())
+    consumed = len(body) - len(body.lstrip()) + end
+    return value, len(body) - consumed
 
 
 def _claims(value: Any) -> tuple[tuple[str, ...], bool]:
@@ -339,7 +380,8 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
     empty = dict(reasoning=None, shareable_claims=(), final_answer=None, confidence=None,
                  field_order=(), order_violation=False, raw_text=text, content_hash=content_hash,
                  over_limits={}, final_answer_span=None, confidence_span=None,
-                 confidence_emitted_before_answer=False, escape_repaired=False)
+                 confidence_emitted_before_answer=False, escape_repaired=False,
+                 trailing_chars=0)
 
     if not text.strip():
         status = (ParseStatus.MISSING_FINAL if finish_reason == FINISH_LENGTH
@@ -353,15 +395,16 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
         return PublicOutput(parse_status=ParseStatus.NO_JSON, **empty)
     body, offset = found
     escape_repaired = False
+    trailing_chars = 0
     try:
-        parsed = json.loads(body)
+        parsed, trailing_chars = _first_json_value(body)
     except ValueError:
         # Salvage rule 2 (:func:`repair_escapes`), reached only after strict parsing failed, so
         # a document that was already valid JSON is never touched.  Spans are still measured
         # against the *original* ``body`` below: the repair changes offsets, and the activation
         # anchors have to point into the token stream that was actually generated.
         try:
-            parsed = json.loads(repair_escapes(body))
+            parsed, trailing_chars = _first_json_value(repair_escapes(body))
         except ValueError:
             status = (ParseStatus.MISSING_FINAL if finish_reason == FINISH_LENGTH
                       else ParseStatus.INVALID_JSON)
@@ -414,6 +457,7 @@ def parse_public_output(final_text: str, finish_reason: str, completion_ids: Seq
         parse_status=status, raw_text=text, content_hash=content_hash, over_limits=over_limits,
         final_answer_span=final_answer_span, confidence_span=confidence_span,
         confidence_emitted_before_answer=emitted_before, escape_repaired=escape_repaired,
+        trailing_chars=int(trailing_chars),
     )
 
 

@@ -150,6 +150,7 @@ class BudgetsBlock:
     served_window_tokens: int
     context_reserve_tokens: int
     public_packet_token_cap: int
+    receiver_packet_token_cap: int
     public_rationale_token_cap: int
     claims_max: int
     claim_token_cap: int
@@ -902,11 +903,13 @@ def validate_compute(cfg: ComputeConfig) -> None:
 # --------------------------------------------------------------------------- contract
 
 
-def _token_contract(cfg: StudyConfig, *, thinking: int, final: int) -> K.TokenContract:
+def _token_contract(cfg: StudyConfig, *, thinking: int, final: int,
+                    packet_cap: int | None = None) -> K.TokenContract:
     b = cfg.budgets
     return K.TokenContract(
         thinking_cap=thinking, final_cap=final, served_window=b.served_window_tokens,
-        reserve=b.context_reserve_tokens, packet_cap=b.public_packet_token_cap,
+        reserve=b.context_reserve_tokens,
+        packet_cap=b.public_packet_token_cap if packet_cap is None else int(packet_cap),
         rationale_cap=b.public_rationale_token_cap, claims_max=b.claims_max, claim_cap=b.claim_token_cap,
     )
 
@@ -928,12 +931,19 @@ def contract_of(cfg: StudyConfig) -> K.StudyContract:
     for budget in cfg.budgets.receiver_thinking_tokens:
         if budget % 2:
             raise ContractViolation(f"receiver budget {budget} is not divisible into two B/2 phases")
+        # A6: the receiver packet cap is the receiver's own, not the study-wide one.  What a
+        # receiver is shown is a synthetic trace, a different artefact from an E1 agent's JSON
+        # draft, and at the spec's 24 displayed operations it does not fit 512.
+        cap = cfg.budgets.receiver_packet_token_cap
         receiver[f"{budget}/plan"] = _token_contract(cfg, thinking=budget // 2,
-                                                     final=cfg.budgets.receiver_plan_final_tokens)
+                                                     final=cfg.budgets.receiver_plan_final_tokens,
+                                                     packet_cap=cap)
         receiver[f"{budget}/decision"] = _token_contract(cfg, thinking=budget // 2,
-                                                         final=cfg.budgets.receiver_decision_final_tokens)
+                                                         final=cfg.budgets.receiver_decision_final_tokens,
+                                                         packet_cap=cap)
         receiver[f"{budget}/one_call"] = _token_contract(cfg, thinking=budget,
-                                                         final=cfg.budgets.receiver_decision_final_tokens)
+                                                         final=cfg.budgets.receiver_decision_final_tokens,
+                                                         packet_cap=cap)
     return K.StudyContract(
         study_id=cfg.study.id,
         study_seed_hex=cfg.seeds.study_seed_hex,
@@ -1205,6 +1215,7 @@ CONSUMERS: Final[Mapping[str, str]] = {
     "study.budgets.served_window_tokens": _MOD + "config",
     "study.budgets.context_reserve_tokens": _MOD + "config",
     "study.budgets.public_packet_token_cap": _MOD + "config",
+    "study.budgets.receiver_packet_token_cap": _MOD + "config",
     "study.budgets.public_rationale_token_cap": _MOD + "config",
     "study.budgets.claims_max": _MOD + "config",
     "study.budgets.claim_token_cap": _MOD + "config",

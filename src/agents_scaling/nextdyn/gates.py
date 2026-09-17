@@ -203,7 +203,15 @@ def _decisions_of(run_root: Path, cells: Sequence[Any] | None) -> list[Any]:
 
 
 def _valid(row: Any) -> bool:
-    """Is this row's answer gradeable?  ``schema.VALID_STATUSES`` decides, not this function.
+    """Is this row's output what its phase was asked for?
+
+    Phase-dependent, because the phases are not asked for the same thing.  A ``receiver_plan``
+    output is ``{"check_requests": [...]}`` -- it has no final answer by design, so the
+    public-output notion of validity reads 0.000 for it however well the model complies, which
+    is what the smoke measured before this.  Its validity is whether it parsed *as a plan*,
+    which ``run_receiver_episode`` already computes and now records as ``plan_parsed``.
+
+    For every other phase, ``schema.VALID_STATUSES`` decides, not this function.
 
     It used to ask ``str(parse_status).startswith("OK")``.  ``ParseStatus.OK`` is the *name*;
     its value -- what the row actually carries -- is ``"ok"``, so the test matched nothing and
@@ -213,8 +221,11 @@ def _valid(row: Any) -> bool:
     A second declaration of "which statuses are gradeable" is the R1 defect underneath that;
     ``VALID_STATUSES`` is the first one, so this defers to it.
     """
+    from agents_scaling.nextdyn import contract as NK
     from agents_scaling.nextdyn.schema import VALID_STATUSES
 
+    if str(getattr(row, "phase", "")) == NK.PHASE_RECEIVER_PLAN:
+        return bool(getattr(row, "plan_parsed", False))
     status = getattr(row, "parse_status", None)
     return any(status == ok or str(status) == ok.value for ok in VALID_STATUSES)
 

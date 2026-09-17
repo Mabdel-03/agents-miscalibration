@@ -11,6 +11,7 @@ from agents_scaling.nextdyn import grading as G
 from agents_scaling.nextdyn import items as I
 from agents_scaling.nextdyn import schema, tables
 from agents_scaling.nextdyn.errors import LeakageError, MaterializeError
+from tests.nextdyn.conftest import placeholder
 from agents_scaling.nextdyn.graders import GradeTarget
 from agents_scaling.nextdyn.graders import families as GF
 from tests.nextdyn.test_banks import ITEM, VARIANT, stub_item, tokens
@@ -35,7 +36,7 @@ def output(answer: str | None = "4", *, status: schema.ParseStatus = schema.Pars
 
 def decision(*, uid: str = "g:" + "0" * 64, delivery: bool = True, infra: str = "ok",
              parse: str = "ok", decision_id: str = "d:" + "0" * 40) -> tables.DecisionRow:
-    row = {name: None for name in tables.schema("decisions").column_names}
+    row = placeholder("decisions")
     row.update({
         "decision_id": decision_id, "study_id": "s", "cell_kind": "donor_bank",
         "source_item_id": ITEM, "item_variant_id": VARIANT, "root_team_id": "",
@@ -44,8 +45,7 @@ def decision(*, uid: str = "g:" + "0" * 64, delivery: bool = True, infra: str = 
         "episode_id": "donor_bank|x", "cell_id": "donor_bank/c", "generation_uid": uid,
         "request_hashes_json": "[]", "aliased": False, "is_reference": False,
         "parent_decision_ids_json": "[]", "seen_transmission_ids_json": "[]",
-        "parse_status": parse, "escape_repaired": False,
-        "field_order_violation": False, "validity": True,
+        "parse_status": parse, "field_order_violation": False, "validity": True,
         "delivery_success": delivery, "infrastructure_status": infra,
         "termination_reason": "stop", "boundary_injected": False, "continuation_used": False,
         "discarded_span_tokens": 0, "thinking_tokens": 1, "final_tokens": 1, "prompt_tokens": 1,

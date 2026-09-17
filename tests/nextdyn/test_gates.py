@@ -302,3 +302,27 @@ def test_a_cell_that_never_sealed_still_reports_the_calls_it_committed(tmp_run_r
     assert measured[K.PHASE_BANK].n_calls == 2
     # and the failure the dead cell carried is in the rate, rather than excluded with it
     assert measured[K.PHASE_BANK].http_error_rate == 0.5
+
+
+def test_the_plan_phase_is_judged_as_a_plan_not_as_an_answer():
+    """A ``receiver_plan`` output has no final answer, so asking for one always reads 0.000.
+
+    The plan template asks for ``{"check_requests": [...]}``.  Scoring it with the
+    public-output notion of validity measured 0.000 on the smoke's five plan calls -- not
+    because the model failed, but because the gate was asking a question the phase never
+    answers.  ``run_receiver_episode`` already computes the right answer; it just used to
+    discard it with the episode object.
+    """
+    plan_ok = Row(phase=K.PHASE_RECEIVER_PLAN, parse_status="missing_final")
+    plan_ok.plan_parsed = True
+    plan_bad = Row(phase=K.PHASE_RECEIVER_PLAN, parse_status="missing_final")
+    plan_bad.plan_parsed = False
+    assert G._valid(plan_ok) and not G._valid(plan_bad)
+
+    # every other phase keeps the public-output notion, plan_parsed or not
+    answer = Row(phase=K.PHASE_REVISION, parse_status="ok")
+    answer.plan_parsed = None
+    assert G._valid(answer)
+    unanswered = Row(phase=K.PHASE_REVISION, parse_status="missing_final")
+    unanswered.plan_parsed = True
+    assert not G._valid(unanswered), "plan_parsed must not rescue a phase that owes an answer"

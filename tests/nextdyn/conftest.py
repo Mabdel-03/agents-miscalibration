@@ -296,3 +296,24 @@ def _no_test_ever_reaches_the_scheduler(monkeypatch):
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(subprocess, "Popen", popen)
     monkeypatch.setattr(subprocess, "check_output", check_output)
+
+
+def placeholder(table: str) -> dict:
+    """A row of ``table`` with every non-nullable column filled by type.
+
+    Built from the schema rather than spelled out, so a column appended to ``tables.py`` does
+    not silently make a fixture a different row (R1: the dataclass is the declaration).
+
+    Shared because it was not: three test modules each hand-listed every ``decisions`` column,
+    and every schema change -- ``escape_repaired``, then ``trailing_chars`` and ``plan_parsed``
+    -- broke all three at once.  A fixture that has to be edited whenever the thing it models
+    changes is a second declaration of that thing.
+    """
+    from agents_scaling.nextdyn import tables
+
+    blank = {"str": "", "int": 0, "float": 0.0, "bool": False}
+    out = {}
+    for column in tables.schema(table).columns:
+        out[column.name] = None if column.nullable else (
+            () if column.type.startswith("list[") else blank[column.type])
+    return out

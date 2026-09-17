@@ -592,3 +592,23 @@ def test_the_endorsement_panel_size_comes_from_study_yaml(nd_contract, registry,
             **{**{f: getattr(condition(nd_contract, registry, "E2A_1_4_CORRECT"), f)
                   for f in RX.ReceiverCondition.__dataclass_fields__},
                "support_panel_size": 1})
+
+
+def test_the_receiver_packet_cap_is_the_receivers_own_and_fits_the_trace(study_cfg):
+    """A6: what a receiver is shown is a trace, not an agent's draft, and it needs more room.
+
+    E2b transmits a synthetic 25-line mod-97 trace that renders to 559-570 tokens (packet
+    601-612), so at the study-wide 512 cap the fixer refused every pair -- correctly, because a
+    checker able to answer about a clipped row would serve evidence the receiver never saw.
+    Raising the shared cap instead would have enlarged every E1 packet too, and what one agent
+    sees of another *is* the E1 treatment that H1, H3 and H6-H8 rest on.  So the receiver got
+    its own knob and E1's is untouched.
+    """
+    contract = study_cfg.contract
+    assert contract.tokens.packet_cap == study_cfg.budgets.public_packet_token_cap
+    assert contract.audit_tokens.packet_cap == study_cfg.budgets.public_packet_token_cap
+    receiver_caps = {t.packet_cap for t in contract.receiver_tokens.values()}
+    assert receiver_caps == {study_cfg.budgets.receiver_packet_token_cap}
+    assert receiver_caps != {contract.tokens.packet_cap}, "A6 exists because these differ"
+    # and the cap is actually large enough for the widest trace the panel generates
+    assert study_cfg.budgets.receiver_packet_token_cap >= 612

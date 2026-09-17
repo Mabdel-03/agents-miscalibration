@@ -204,32 +204,33 @@ def _decision_row(decision_id: str, out: SC.PublicOutput, *, request_ids: tuple[
     Field-for-field what ``telemetry.decision_row`` produces (R6 keeps the *producer* single;
     a fixture may still build the frozen dataclass, as ``test_states.py`` does).
     """
-    return T.DecisionRow(
+    from tests.nextdyn.conftest import placeholder
+
+    row = placeholder("decisions") | dict(
         decision_id=decision_id, study_id="task_conditioned_dynamics_v1",
         cell_kind=CellKind.EPISODE.value, source_item_id=source_item_id,
-        item_variant_id=f"{source_item_id}.v0", root_team_id="team:abc", protocol_hash=protocol_hash,
-        receiver_model_hash=MODEL_HASH, budget_hash="budget08", replicate_id=0, round=round_,
-        agent_slot=slot, phase="root_ref" if round_ == 0 else "revision", episode_id=episode_id,
-        cell_id=cell_id, display_label=None, generation_uid=generation_uid,
-        content_hash=out.content_hash, request_hashes_json=json.dumps(list(request_ids)),
-        aliased=False, reuse_of=None, is_reference=is_reference, first_decision_id=None,
-        bundle_export_hash=None, parent_decision_ids_json="[]", seen_transmission_ids_json="[]",
-        native_reasoning_ref=None, public_reasoning=out.reasoning,
+        item_variant_id=f"{source_item_id}.v0", root_team_id="team:abc",
+        protocol_hash=protocol_hash, receiver_model_hash=MODEL_HASH, budget_hash="budget08",
+        replicate_id=0, round=round_, agent_slot=slot,
+        phase="root_ref" if round_ == 0 else "revision", episode_id=episode_id,
+        cell_id=cell_id, generation_uid=generation_uid, content_hash=out.content_hash,
+        request_hashes_json=json.dumps(list(request_ids)), aliased=False,
+        is_reference=is_reference, parent_decision_ids_json="[]",
+        seen_transmission_ids_json="[]", public_reasoning=out.reasoning,
         shareable_claims_json=json.dumps(list(out.shareable_claims)),
-        final_answer_raw=out.final_answer, canonical_class=None, confidence=out.confidence,
-        answer_logprob_sum=None, answer_logprob_mean=None, answer_token_count=None,
-        logprob_norm_scheme=None, parse_status=out.parse_status.value,
+        final_answer_raw=out.final_answer, confidence=out.confidence,
+        parse_status=out.parse_status.value,
         escape_repaired=bool(getattr(out, "escape_repaired", False)),
+        trailing_chars=int(getattr(out, "trailing_chars", 0) or 0),
         field_order_violation=out.order_violation, validity=out.valid,
         delivery_success=out.valid, infrastructure_status="ok", termination_reason="stop",
-        boundary_injected=False, continuation_used=len(request_ids) > 1, discarded_span_tokens=0,
-        thinking_tokens=1, final_tokens=1, prompt_tokens=1, cached_prefill_tokens=0,
+        continuation_used=len(request_ids) > 1,
+        thinking_tokens=1, final_tokens=1, prompt_tokens=1,
         token_offsets_json=json.dumps({
             "final_answer_span": list(out.final_answer_span) if out.final_answer_span else None,
             "confidence_span": list(out.confidence_span) if out.confidence_span else None,
-            "confidence_emitted_before_answer": bool(out.confidence_emitted_before_answer)}),
-        endpoint_id=None, latency_s=None, flops_prefill=None, flops_decode=None,
-        flops_total=None, linear_compute_proxy=None)
+            "confidence_emitted_before_answer": bool(out.confidence_emitted_before_answer)}))
+    return T.row_from_dict(T.DecisionRow, row)
 
 
 def _write_cell(run_root: Path, cell_id: str, source_item_id: str,

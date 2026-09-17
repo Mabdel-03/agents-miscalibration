@@ -333,6 +333,16 @@ class DecisionRow:
     answer_token_count: int | None
     logprob_norm_scheme: str | None
     parse_status: str
+    #: Characters that followed the JSON object (salvage rule 3, A7).  The continuation's
+    #: trailing-text rate is a measurable property of the fleet, not something the parser
+    #: should absorb silently.
+    trailing_chars: int
+    #: For a ``receiver_plan`` row: did the output parse as a *plan*?  The plan phase emits
+    #: ``{"check_requests": [...]}`` and has no final answer, so the public-output notion of
+    #: validity is the wrong question for it and reads 0.000 however well the model complies.
+    #: ``run_receiver_episode`` computes this and it used to be discarded with the episode.
+    #: Null for every other phase, whose validity *is* the public-output one.
+    plan_parsed: bool | None
     #: Did the escape salvage rule have to run on this draw (schema.repair_escapes, A5)?
     #: Counted so analysis can show the repairs are not concentrated in one *arm*; they are
     #: expected to concentrate in one *family*, which is the reason the rule exists.

@@ -13,22 +13,9 @@ import pytest
 from agents_scaling.nextdyn import deps, materialize as MAT, tables
 from agents_scaling.nextdyn.errors import MaterializeError
 from agents_scaling.nextdyn.ids import CellKind
+from tests.nextdyn.conftest import placeholder
 
 ITEM = "nditem0000000001"
-
-
-def placeholder(table: str) -> dict:
-    """A row of ``table`` with every non-nullable column filled by type.
-
-    Built from the schema rather than spelled out so a column appended to ``tables.py`` does
-    not silently make this fixture a different row (R1: the dataclass is the declaration).
-    """
-    blank = {"str": "", "int": 0, "float": 0.0, "bool": False}
-    out = {}
-    for column in tables.schema(table).columns:
-        out[column.name] = None if column.nullable else (
-            () if column.type.startswith("list[") else blank[column.type])
-    return out
 
 
 def decision_row(**kwargs) -> tables.DecisionRow:

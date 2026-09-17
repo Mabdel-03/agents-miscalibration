@@ -838,7 +838,10 @@ def receiver_worker(runner: Any, source_item_id: str) -> ItemFile:
             decision_rows.append(telemetry.decision_row(
                 decision.record, decision.key, decision.output, cell=cell,
                 parents=(), seen_transmissions=seen if is_decision_phase else (),
-                aliased=decision.aliased, reuse_of=None, is_reference=False))
+                aliased=decision.aliased, reuse_of=None, is_reference=False,
+                # Only the plan row carries it: a plan is the one phase whose output is not a
+                # public answer, so it is the one phase whose validity is a different question.
+                plan_parsed=None if is_decision_phase else episode.plan_parsed))
     return ItemFile(schema_version=SCHEMA_VERSION, cell_id=runner.cell_id,
                     cell_kind=CellKind.RECEIVER, source_item_id=source_item_id,
                     status=ItemStatus.COMPLETE, bundle_export_hash=None,
