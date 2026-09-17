@@ -11,6 +11,8 @@ import asyncio
 import json
 import os
 import re
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -403,11 +405,303 @@ def cmd_canary(argv: list[str]) -> int:
 
 
 # ------------------------------------------------------------------------------------------------------------------
-# Pilot and main run are wired after the M1 merge (next lead commit).
+# Independent audit helpers (do not trust the ledger object's own view)
 # ------------------------------------------------------------------------------------------------------------------
 
+def journal_replay_overshoot(paths: RunPaths, ceiling: Decimal, since_seq: int = 0) -> Decimal:
+    """Max over the event sequence of (settled + outstanding reservations) - ceiling, replayed from the journal."""
+    from agent_allocation.contracts import LedgerEventKind
+    from agent_allocation.storage.journal import LedgerJournal
+    outstanding: dict[str, Decimal] = {}
+    settled = Decimal("0")
+    worst = Decimal("-Infinity")
+    for event in LedgerJournal(paths.ledger_journal).replay():
+        if event.kind == LedgerEventKind.RESERVE:
+            outstanding[event.attempt_id] = event.amount_usd
+        elif event.kind in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX):
+            outstanding.pop(event.attempt_id, None)
+            settled += event.amount_usd
+        elif event.kind == LedgerEventKind.RELEASE_UNSENT:
+            outstanding.pop(event.attempt_id, None)
+        if event.seq >= since_seq:
+            worst = max(worst, settled + sum(outstanding.values()) - ceiling)
+    return worst if worst != Decimal("-Infinity") else Decimal("0")
+
+
+def last_journal_seq(paths: RunPaths) -> int:
+    from agent_allocation.storage.journal import LedgerJournal
+    seq = 0
+    if paths.ledger_journal.exists():
+        for event in LedgerJournal(paths.ledger_journal).replay():
+            seq = max(seq, event.seq)
+    return seq
+
+
+def duplicate_successful_dispatches(paths: RunPaths, node_ids: set[str]) -> int:
+    """Nodes with two or more raw HTTP-200 completion bodies: a known-successful node was sent again."""
+    import gzip
+    counts: dict[str, int] = {}
+    raw_root = paths.run_dir / "raw"
+    if not raw_root.exists():
+        return 0
+    for path in raw_root.rglob("*.json.gz"):
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if payload.get("node_id") in node_ids and payload.get("response_status") == 200:
+            body = payload.get("response_body_text") or ""
+            if '"choices"' in body:
+                counts[payload["node_id"]] = counts.get(payload["node_id"], 0) + 1
+    return sum(1 for c in counts.values() if c > 1)
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Pilot (Gate 2)
+# ------------------------------------------------------------------------------------------------------------------
+
+def pilot_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[list[ItemGraph]], list[ItemGraph]]:
+    grids = grids_from_config(cfg)
+    primary = locks[cfg["primary_model"]]
+    dev = dev_ids(paths)
+    r2: set[str] = set()
+    deep_items: list[str] = []
+    high_items: list[str] = []
+    for benchmark in BENCHMARKS:
+        ids = list(dev[benchmark])
+        if benchmark == "bbh_logic4":
+            first = first_per_subtask(ids, tasks, 0)
+            second = first_per_subtask(ids, tasks, 1)
+            r2 |= set(first)
+            deep_items.append(first[0])
+            high_items += second[:2]
+        else:
+            r2 |= set(ids[:4])
+            deep_items.append(ids[0])
+            high_items += ids[4:6]
+    wave_r2, wave_r1 = [], []
+    all_graphs = []
+    for benchmark in BENCHMARKS:
+        for item in dev[benchmark]:
+            task = tasks[item]
+            grid = grids["pilot_r2"] if item in r2 else grids["pilot_r1"]
+            graph = graph_for(grid, cfg=cfg, partition="pilot", task=task, lock=primary,
+                              base_budget=int(cfg["reasoning"]["main_a"]), amendments=amendments)
+            extra = []
+            if item in deep_items:
+                extra.append(standalone_spec(cfg=cfg, partition="pilot", task=task, lock=primary,
+                                             kind=GenerationKind.DEEP, budget=int(cfg["reasoning"]["main_a"]) * 16,
+                                             amendments=amendments))
+            if item in high_items:
+                extra += [standalone_spec(cfg=cfg, partition="pilot", task=task, lock=primary, kind=GenerationKind.ROOT,
+                                          budget=int(cfg["reasoning"]["high_a"]), root_slot=j, amendments=amendments)
+                          for j in range(2)]
+            graph = merge_graphs(graph, extra)
+            (wave_r2 if item in r2 else wave_r1).append(graph)
+            all_graphs.append(graph)
+    return [wave_r2, wave_r1], all_graphs
+
+
+def render_report_violations(paths: RunPaths) -> int:
+    target = paths.state_dir / "render_reports.jsonl"
+    if not target.exists():
+        return 0
+    return sum(1 for line in target.read_text().splitlines() if line.strip() and json.loads(line).get("context_limit"))
+
+
+def select_and_seal(cfg, paths: RunPaths, partition: str, graphs: Sequence[ItemGraph], tasks) -> dict[str, int]:
+    from agent_allocation.contracts import Candidate, PublicCheckResult
+    from agent_allocation.grading.text.math_equiv import math_equivalent
+    from agent_allocation.selection.readout import select_checkpoint
+    from agent_allocation.selection.seal import seal_selections
+    results = []
+    missing = 0
+    for graph in graphs:
+        candidates: dict[str, Candidate] = {}
+        checks: dict[str, PublicCheckResult] = {}
+        for node in graph.nodes:
+            parsed = paths.parsed(node.node_id)
+            if parsed.exists():
+                payload = json.loads(parsed.read_text())
+                if payload.get("candidate"):
+                    candidates[node.node_id] = load_record(Candidate, payload["candidate"])
+            check = paths.public_check(node.node_id)
+            if check.exists():
+                checks[node.node_id] = load_record(PublicCheckResult, json.loads(check.read_text()))
+        for checkpoint in graph.checkpoints:
+            if not all(c in candidates for c in checkpoint.candidate_ids):
+                missing += 1
+                continue
+            results.append(select_checkpoint(checkpoint, tasks[graph.item_id], candidates, checks, seed=int(cfg["seed"]),
+                                             math_equivalent=math_equivalent))
+    seal = seal_selections(paths, partition, results)
+    return {"selections": len(results), "checkpoints_missing_candidates": missing, "seal": seal}
+
+
+def run_subprocess_kill_test(args_list: list[str], paths: RunPaths, kill_after_parsed: int, timeout_s: float = 900) -> dict:
+    import signal
+    import subprocess
+    import time
+    before = sum(1 for _ in (paths.run_dir / "parsed").rglob("*.json")) if (paths.run_dir / "parsed").exists() else 0
+    proc = subprocess.Popen(args_list, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started = time.monotonic()
+    killed = False
+    while proc.poll() is None and time.monotonic() - started < timeout_s:
+        now = sum(1 for _ in (paths.run_dir / "parsed").rglob("*.json")) if (paths.run_dir / "parsed").exists() else 0
+        if now - before >= kill_after_parsed:
+            proc.send_signal(signal.SIGKILL)
+            killed = True
+            break
+        time.sleep(0.5)
+    proc.wait(timeout=60)
+    return {"killed": killed, "returncode": proc.returncode}
+
+
+async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, phase: str) -> int:
+    from agent_allocation.apikey import load_api_key
+    tasks = load_tasks(paths)
+    amendments = load_amendments(paths)
+    locks = read_endpoint_locks(paths)
+    if cfg["primary_model"] not in locks:
+        raise RunRefused("no endpoint lock: the canary must pass first")
+    gate1 = paths.gate_result("gate1", "canary")
+    if not gate1.exists() or json.loads(gate1.read_text()).get("decision") != "advance":
+        raise RunRefused("Gate 1 has not advanced")
+    pilot_cap = min(max_usd, PILOT_CEILING_USD)
+    waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
+    write_jobs(paths, "pilot", graphs)
+    api_key = load_api_key()
+    lock = locks[cfg["primary_model"]]
+
+    if phase == "collect":          # subprocess entry used by the kill/resume test
+        snap = provider_snapshot(paths, "pilot_collect")
+        ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
+        await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True, max_usd=pilot_cap,
+                       ceiling=ceiling, api_key=api_key)
+        return 0
+
+    report: dict[str, Any] = {"started_at": utcnow()}
+    # 1) budget-stop test: a ceiling just above current spend must stop admissions without over-reserving
+    settled = ledger_settled(paths)
+    stop_ceiling = settled + BUDGET_STOP_TEST_CEILING_USD
+    seq0 = last_journal_seq(paths)
+    summary = await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True, max_usd=pilot_cap,
+                             ceiling=stop_ceiling, api_key=api_key)
+    report["budget_stop"] = {"ceiling": str(stop_ceiling), "summary": str(summary),
+                             "max_overshoot_usd": str(journal_replay_overshoot(paths, stop_ceiling, seq0))}
+    # 2) crash/resume test: a subprocess continues the pilot and is SIGKILLed mid-flight
+    cmd = [str(Path(sys.executable).parent / "allocation"), "pilot", "--config", config_path, "--run-dir",
+           str(paths.run_dir), "--allow-paid", "--max-usd", str(pilot_cap), "--phase", "collect"]
+    report["kill_test"] = run_subprocess_kill_test(cmd, paths, kill_after_parsed=40)
+    # 3) resume to completion under the full pilot ceiling
+    snap = provider_snapshot(paths, "pilot_resume")
+    ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
+    report["resume_summary"] = str(await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True,
+                                                  max_usd=pilot_cap, ceiling=ceiling, api_key=api_key))
+    report["collected_at"] = utcnow()
+    (paths.state_dir / "pilot_collection.json").write_text(json.dumps(report, indent=1, sort_keys=True))
+    print(json.dumps(report, indent=1))
+    return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
+def run_grader(paths: RunPaths, workers: int = 4) -> int:
+    cmd = [str(Path(sys.executable).parent / "allocation"), "grade", "--run-dir", str(paths.run_dir), "--resume",
+           "--workers", str(workers)]
+    return subprocess.run(cmd, check=False).returncode
+
+
+def pilot_gate_inputs(cfg, paths: RunPaths, graphs: Sequence[ItemGraph], rows, amendments_used) -> dict[str, Any]:
+    from agent_allocation.contracts import GradeResult, GradeStatus
+    node_ids = {n.node_id for g in graphs for n in g.nodes}
+    code_nodes = {n.node_id for g in graphs for n in g.nodes if n.benchmark == "mbpp_plus"}
+    code_candidates = [nid for nid in code_nodes if paths.parsed(nid).exists()
+                       and json.loads(paths.parsed(nid).read_text()).get("candidate")]
+    public_rows = sum(1 for nid in code_candidates if paths.public_check(nid).exists())
+    private_rows = sum(1 for nid in code_candidates if paths.grade(nid).exists())
+    graded = [load_record(GradeResult, json.loads(paths.grade(nid).read_text()))
+              for nid in node_ids if paths.grade(nid).exists()]
+    collection = json.loads((paths.state_dir / "pilot_collection.json").read_text())
+    return {
+        "duplicate_terminal_nodes": duplicate_successful_dispatches(paths, node_ids),
+        "budget_stop_max_overshoot_usd": Decimal(collection["budget_stop"]["max_overshoot_usd"]),
+        "code_candidates": len(code_candidates), "code_public_rows": public_rows,
+        "code_private_grades": private_rows,
+        "evaluator_errors": sum(1 for g in graded if g.status == GradeStatus.EVALUATOR_ERROR),
+        "graded_total": len(graded),
+        "packet_envelope_violations": render_report_violations(paths),
+        "amendments_used": amendments_used,
+    }
+
+
+def forecast_from_rows(cfg, paths: RunPaths, rows, locks, amendments) -> dict[str, Any]:
+    from agent_allocation.forecast import core_forecast, fit_models, observations_from_rows, per_item_costs, wave_admission
+    primary = locks[cfg["primary_model"]]
+    models = fit_models(observations_from_rows([r for r in rows if r.spec.model == primary.model]))
+    headroom = {b: headroom_for(cfg, b, amendments) for b in BENCHMARKS}
+    costs = per_item_costs(models, grids_from_config(cfg), lock=primary, headroom_by_benchmark=headroom,
+                           main_a=int(cfg["reasoning"]["main_a"]), high_a=int(cfg["reasoning"]["high_a"]))
+    per_benchmark = {name: count // len(BENCHMARKS) for name, count in cfg["panels"].items()}
+    core = core_forecast(costs, per_benchmark)
+    spent = ledger_settled(paths)
+    reserve = Decimal(str(cfg["budget"]["contingency_usd"]))
+    snap = provider_snapshot(paths, "pilot_forecast")
+    ceiling = active_ceiling(credit_ceiling(cfg), spent, snap)
+    available = min(ceiling, Decimal(str(cfg["budget"]["soft_admission_ceiling_usd"]))) - spent
+    admission = wave_admission(costs, n_waves=cfg["panels"]["main_items"] // 16,
+                               extension_waves=cfg["panels"]["extension_items"] // 16,
+                               high_waves=cfg["panels"]["high_items"] // 16, available_usd=available)
+    return {"per_item_costs": {b: {k: str(v) for k, v in c.items()} for b, c in costs.items()},
+            "core_forecast_usd": str(core), "spent_usd": str(spent), "reserve_usd": str(reserve),
+            "core_plus_spent_plus_reserve_usd": str(core + spent + reserve),
+            "active_ceiling_usd": str(ceiling), "available_for_core_usd": str(available),
+            "account_balance_usd": snap["account_balance_usd"], "admission": admission}
+
+
+def write_pilot_report(paths: RunPaths, gate, forecast: Mapping[str, Any], inputs: Mapping[str, Any],
+                       selection: Mapping[str, Any]) -> None:
+    lines = ["# PILOT_REPORT — openrouter_agent_allocation_v1", "",
+             f"Evaluated {gate.evaluated_at}. **Gate 2 decision: `{gate.decision}`.**", "",
+             "## Gate 2 criteria (frozen before the canary)", "", "| Criterion | Observed | Threshold | Pass |",
+             "|---|---|---|---|"]
+    for c in gate.criteria:
+        lines.append(f"| {c.name} | `{c.observed}` | {c.threshold} | {'yes' if c.passed else '**no**'} |")
+    lines += ["", "## Measured forecast and admission plan", "", "```json",
+              json.dumps(forecast, indent=1, sort_keys=True), "```", "",
+              "## Integrity checks", "", "```json", json.dumps({k: str(v) for k, v in inputs.items()}, indent=1,
+                                                                   sort_keys=True), "```", "",
+              "## Selection", "", "```json", json.dumps(selection, indent=1, sort_keys=True), "```", "",
+              "Floor/ceiling effects and per-benchmark pilot accuracy are informational and never block.", ""]
+    paths.reports_dir.mkdir(parents=True, exist_ok=True)
+    (paths.reports_dir / "PILOT_REPORT.md").write_text("\n".join(lines))
+
+
+async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -> int:
+    from agent_allocation.gates import evaluate_gate2, write_gate
+    grade_rc = run_grader(paths)
+    selection = select_and_seal(cfg, paths, "pilot", graphs, tasks)
+    rows = load_call_rows(paths, "pilot", {})
+    metadata = await fetch_metadata(paths, [r.result.generation_id for r in rows], attempts=6)
+    rows = load_call_rows(paths, "pilot", metadata)
+    used = [json.loads(l).get("id") for l in paths.amendments.read_text().splitlines() if l.strip()] \
+        if paths.amendments.exists() else []
+    inputs = pilot_gate_inputs(cfg, paths, graphs, rows, used)
+    forecast = forecast_from_rows(cfg, paths, rows, locks, amendments)
+    gate = evaluate_gate2(rows, selector_rows_missing=selection["checkpoints_missing_candidates"],
+                          core_forecast_usd=Decimal(forecast["core_plus_spent_plus_reserve_usd"]), **inputs)
+    write_gate(paths, gate)
+    (paths.state_dir / "pilot_forecast.json").write_text(json.dumps(forecast, indent=1, sort_keys=True))
+    write_pilot_report(paths, gate, forecast, {**inputs, "grader_returncode": grade_rc}, selection)
+    print(json.dumps({"gate2": gate.decision, "report": str(paths.reports_dir / "PILOT_REPORT.md")}))
+    return {"advance": 0, "amend_headroom_once": 4}.get(gate.decision, 3)
+
+
 def cmd_pilot(argv: list[str]) -> int:
-    raise RunRefused("pilot wiring lands after the M1 merge")
+    parser = argparse.ArgumentParser(prog="allocation pilot")
+    common_args(parser)
+    parser.add_argument("--phase", choices=["all", "collect"], default="all")
+    args = parser.parse_args(argv)
+    cfg = load_config(args.config)
+    paths, max_usd = preflight(cfg, args)
+    paths.ensure()
+    return asyncio.run(run_pilot(cfg, paths, max_usd, args.config, args.phase))
 
 
 def cmd_run(argv: list[str]) -> int:
