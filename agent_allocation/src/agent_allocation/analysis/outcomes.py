@@ -87,7 +87,11 @@ def candidate_table(run: RunData) -> pd.DataFrame:
             parsed = run.parsed.get(node_id)
             result, candidate = parsed if parsed else (None, None)
             grade = run.grades.get(node_id)
-            value, gstate = grade_value(grade) if parsed else (NAN, "not_generated")
+            no_output = run.terminal_without_output(node_id)
+            if no_output is not None:
+                value, gstate = 0.0, "op_no_output"
+            else:
+                value, gstate = grade_value(grade) if parsed else (NAN, "not_generated")
             usage = result.usage if result else None
             check = run.public_checks.get(node_id)
             rows.append({
@@ -106,7 +110,8 @@ def candidate_table(run: RunData) -> pd.DataFrame:
                 "completion_headroom": spec.completion_headroom,
                 "max_completion_tokens": spec.max_completion_tokens,
                 "n_parents": len(spec.parent_ids),
-                "terminal": parsed is not None,
+                "terminal": parsed is not None or no_output is not None,
+                "terminal_without_output": no_output,
                 "attempt_id": result.attempt_id if result else None,
                 "transport_status": result.transport_status.value if result else None,
                 "completion_status": (result.completion_status.value
@@ -155,17 +160,17 @@ def outcome_table(run: RunData) -> pd.DataFrame:
             benchmark = run.benchmark_of(cp.item_id) or _spec_benchmark(run, partition, cp)
             subtask = run.subtask_of(cp.item_id)
             required = cp.required_node_ids
-            n_terminal = sum(1 for nid in required if nid in run.parsed)
-            pool_values = [grade_value(run.grades.get(nid))[0] if nid in run.parsed else NAN
-                           for nid in cp.candidate_ids]
+            n_terminal = sum(1 for nid in required if run.is_terminal(nid))
+            n_no_output = sum(1 for nid in required if run.terminal_without_output(nid) is not None)
+            pool_values = [_candidate_value(run, nid) for nid in cp.candidate_ids]
             pool_valid = sum(1 for nid in cp.candidate_ids
-                             if nid in run.parsed and run.parsed[nid][1].parse_status.value == "valid")
+                             if nid in run.parsed and run.parsed[nid][1] is not None
+                             and run.parsed[nid][1].parse_status.value == "valid")
             coverage = _tri_any(pool_values)
             input_coverage = NAN
             if cp.family in SYNTHESIS_FAMILIES:
                 inputs = [nid for nid in required if nid not in cp.candidate_ids]
-                input_coverage = _tri_any([grade_value(run.grades.get(nid))[0] if nid in run.parsed else NAN
-                                           for nid in inputs])
+                input_coverage = _tri_any([_candidate_value(run, nid) for nid in inputs])
             sel = selections.get(cp.policy_id)
             state, y, selected = _delivered(run, cp, sel, sealed, n_terminal, len(required))
             rows.append({
@@ -189,6 +194,7 @@ def outcome_table(run: RunData) -> pd.DataFrame:
                 "n_pool": len(cp.candidate_ids),
                 "n_required": len(required),
                 "n_required_terminal": n_terminal,
+                "n_required_no_output": n_no_output,
                 "n_pool_valid": pool_valid,
                 "n_pool_correct": int(sum(1 for v in pool_values if v == 1.0)),
                 "n_pool_unknown": int(sum(1 for v in pool_values if v != v)),
@@ -204,6 +210,15 @@ def outcome_table(run: RunData) -> pd.DataFrame:
                 "y": y,
             })
     return pd.DataFrame(rows)
+
+
+def _candidate_value(run: RunData, node_id: str) -> float:
+    """Oracle correctness of one pool member: terminal-without-output is a known non-correct candidate."""
+    if run.terminal_without_output(node_id) is not None:
+        return 0.0
+    if node_id not in run.parsed:
+        return NAN
+    return grade_value(run.grades.get(node_id))[0]
 
 
 def _delivered(run: RunData, cp, sel, sealed: bool, n_terminal: int, n_required: int
@@ -228,7 +243,7 @@ def _delivered(run: RunData, cp, sel, sealed: bool, n_terminal: int, n_required:
         if status == SelectionStatus.SINGLE_CANDIDATE.value and n_terminal == n_required:
             return "op_no_output", 0.0, None
         return "unknown_selector_inconsistent", NAN, None
-    if selected not in run.parsed:
+    if selected not in run.parsed or run.parsed[selected][1] is None:
         return "unknown_selector_inconsistent", NAN, selected
     value, gstate = grade_value(run.grades.get(selected))
     if gstate == "graded_unknown":

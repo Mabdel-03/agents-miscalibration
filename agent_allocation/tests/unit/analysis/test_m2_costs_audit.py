@@ -284,3 +284,43 @@ def test_pass_at_k_is_separate_from_readouts(analysed):
     assert set(bank[bank["benchmark"] != "mbpp_plus"]["readout_label"]) == {"vote@k"}
     known = bank[bank["oracle_pass_at_k"].notna() & (bank["k"] == 1)]
     assert ((known["oracle_pass_at_k"] - known["mean_draw_correct"]).abs() < 1e-12).all()
+
+
+def test_exhausted_nodes_from_state_backup_are_terminal_no_output_not_unrun(built_run, tmp_path):
+    """Agent 02 marks transport-exhausted nodes terminal only in SQLite; the lead seals no selection for their
+    checkpoints. Such nodes are terminal operational failures (never 'not started'), and the checkpoints'
+    delivered outcome stays unknown (a missing selector row is a blocker, not zero)."""
+    import sqlite3
+
+    from agent_allocation.analysis.load import load_run, resolve_config
+    from agent_allocation.analysis.outcomes import candidate_table, outcome_table
+
+    paths = copy_run(built_run, tmp_path)
+    cfg, source = resolve_config(paths)
+    run = load_run(paths, cfg, config_source=source)
+    root = next(s for s in run.jobs["main"].values() if s.item_id == "mmlu_pro/w0/i2"
+                and s.kind == GenerationKind.ROOT and s.root_slot == 3)
+    paths.parsed(root.node_id).unlink()
+    paths.grade(root.node_id).unlink()
+    affected = {c.policy_id for c in run.policies["main"] if root.node_id in c.candidate_ids}
+    kept = [r for r in selection_lines(paths, "main") if r["policy_id"] not in affected]
+    write_selection_batches(paths, "main", kept, n_batches=2)
+    paths.state_db_backup.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(paths.state_db_backup)
+    conn.execute("CREATE TABLE nodes (node_id TEXT PRIMARY KEY, state TEXT, outcome TEXT, terminal_reason TEXT,"
+                 " attempts_used INTEGER)")
+    conn.executemany("INSERT INTO nodes VALUES (?, 'terminal', ?, ?, ?)",
+                     [(nid, "exhausted" if nid == root.node_id else "succeeded",
+                       "attempts_exhausted:upstream_error" if nid == root.node_id else None, 1)
+                      for nid in run.jobs["main"]])
+    conn.commit()
+    conn.close()
+    run = load_run(paths, cfg, config_source=source)
+    nodes = candidate_table(run).set_index("node_id")
+    assert nodes.loc[root.node_id, "terminal"] and nodes.loc[root.node_id, "grade_state"] == "op_no_output"
+    assert nodes.loc[root.node_id, "terminal_without_output"] == "attempts_exhausted:upstream_error"
+    outcomes = outcome_table(run).set_index("policy_id")
+    rows = outcomes.loc[sorted(affected)]
+    assert set(rows["delivered_state"]) == {"missing_selection"} and rows["y"].isna().all()
+    sample4 = outcomes.loc["main/mmlu_pro/w0/i2/sample/4/current"]
+    assert sample4["n_required_no_output"] == 1 and sample4["n_required_terminal"] == 4
