@@ -6,6 +6,8 @@ from dataclasses import asdict, replace
 
 import pytest
 
+pytestmark = pytest.mark.filterwarnings("ignore::agent_allocation.selection.seal.SealPendingWarning")
+
 from agent_allocation.contracts import dump_record
 from agent_allocation.metrics import io as metrics_io
 from agent_allocation.metrics.tables import build_partition_tables

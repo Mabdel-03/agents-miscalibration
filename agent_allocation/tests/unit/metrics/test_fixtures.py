@@ -19,6 +19,6 @@ def test_committed_fixtures_are_current(tmp_path):
 def test_fixture_tables_are_populated():
     rows = [json.loads(line) for line in (HERE / "tables" / "checkpoints.jsonl").read_text().splitlines()]
     states = {r["delivered_state"] for r in rows}
-    assert {"correct", "wrong", "invalid_output", "unknown", "abstained", "paused", "missing_selection"} <= states
+    assert {"correct", "wrong", "invalid_output", "unknown", "abstained", "missing_selection"} <= states
     assert all(Path(HERE / "tables" / f"{t}.jsonl").stat().st_size > 0
                for t in ("bank", "slot_transitions", "team_transitions", "root_strata", "failures"))

@@ -5,7 +5,7 @@ Reads, through ``RunPaths``: ``manifests/policies/{partition}.jsonl``, ``manifes
 ``grades/``. A checkpoint is *ready* when every pool candidate is parsed (a parsed record whose ``candidate`` is
 ``null`` -- a node made terminal without a response -- counts as an ``EMPTY`` candidate) and, for code, every validly
 parsed pool candidate has a public check; other checkpoints are reported as pending and selected on a later call (sealing
-merges, see ``selection.seal``). ``math_equivalent`` is memoized once per call (``memoized_equivalence``) and
+appends only unsealed checkpoints and never seals a paused selection, see ``selection.seal``). ``math_equivalent`` is memoized once per call (``memoized_equivalence``) and
 passed to MATH checkpoints only.
 
 Config keys consumed: none (``seed`` is the study's top-level ``seed``, passed by the caller).
