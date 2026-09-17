@@ -42,6 +42,24 @@ FROZEN_MANIFEST_SHA256 = "db575ea6a662837a260c596804ee1b96ca309329ce63552f9825eb
 CERTIFICATION = "manifests/evalplus_reference_certification_v4.json"
 CERTIFICATION_SHA256 = "ac3055f9a5218ea6625aedd84cfd2bce7ddcab78f06d65d60ff95479c4772889"
 PREPROCESSING_VERSION = "mbpp_plus-inventory-v1"
+# Verified against the pinned upstream LICENSE (sandbox/upstream/evalplus/26d6d00b…/LICENSE, sha256 fcc1f77f…):
+# Apache-2.0, with evalplus/eval/ additionally under MIT (built on OpenAI HumanEval). The frozen MbppPlus release
+# manifest records "apache-2.0". The underlying MBPP problems come from google-research/mbpp (CC-BY-4.0); that
+# licence is not restated inside the pinned EvalPlus files, so it is named here as the upstream dataset's licence.
+LICENSE = ("Apache-2.0 (EvalPlus 26d6d00b code and MbppPlus v0.2.0 release; evalplus/eval/ also MIT); "
+           "MBPP source problems CC-BY-4.0 (google-research/mbpp)")
+SOURCE_PROVENANCE = {
+    "repository": "evalplus/evalplus",
+    "revision": NATIVE_REVISION,
+    "release": "MbppPlus v0.2.0",
+    "frozen_copy": f"{SOURCE_ROOT}/{FROZEN_DIR}",
+    "frozen_manifest_sha256": FROZEN_MANIFEST_SHA256,
+    "reference_certification": f"{SOURCE_ROOT}/{CERTIFICATION}",
+    "reference_certification_sha256": CERTIFICATION_SHA256,
+    "upstream_license_sha256": "fcc1f77fe5443b21bfc4dfcc3d66f7654f599b91582df771850e5e876986a103",
+    "public_fields": "EvalPlus prompt verbatim; public_examples = its single assert (parsed from the prompt text)",
+    "private_fields": "restricted native record + certified oracle under private/evalplus_oracles/<task>/",
+}
 PANEL_PROCEDURE = ("mbpp_plus-uniform-v1: eligible item_ids ordered by sha256('{seed}|mbpp_plus|{item_id}') "
                    "(a seeded uniform permutation); dev = first n_dev, main = next n_main in that order, "
                    "reserve = next n_reserve")
