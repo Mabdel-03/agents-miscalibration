@@ -324,9 +324,10 @@ def _write_node(paths: RunPaths, task: PublicTask, node: GenerationSpec, value: 
     with gzip.open(raw_path, "wt") as handle:
         json.dump({"attempt_id": attempt, "node_id": node.node_id,
                    "request_body": {"messages": [{"role": "user", "content": "x" * (prompt * 3)}]}}, handle)
+    raw_sha256 = hashlib.sha256(raw_path.read_bytes()).hexdigest()   # W07-3: hash the bytes actually written
     result = GenerationResult(node.node_id, attempt, TransportStatus.OK, CompletionStatus.COMPLETED, "gen",
                               node.model, "Google AI Studio", "stop", "STOP", content, True, usage, "MISS",
-                              raw_rel, "0" * 64, 1.5 + len(node.parent_ids), 200)
+                              raw_rel, raw_sha256, 1.5 + len(node.parent_ids), 200)
     candidate = Candidate(node.node_id, node.node_id, node.item_id, content, answer, None,
                           ParseStatus.VALID if answer is not None else ParseStatus.MISSING, "stop", task.output_kind)
     parsed = paths.parsed(node.node_id)
