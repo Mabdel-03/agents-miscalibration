@@ -869,7 +869,29 @@ async def amend_and_rerun_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_p
                              allow_paid=not rehearsal(), max_usd=pilot_cap, ceiling=ceiling,
                              api_key=None if rehearsal() else __import__("agent_allocation.apikey", fromlist=["x"]).load_api_key())
     record_decision(paths, phase="pilot_amend_collect", summary=str(summary))
+    supersede_pilot_readouts(paths, reason="headroom amendment re-collected text pilot cells; checkpoint ids are "
+                                           "headroom-independent, so the earlier sealed pilot readouts are superseded")
     return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
+def supersede_pilot_readouts(paths: RunPaths, *, reason: str) -> None:
+    """Pilot selections and the Gate 2 record are gate evidence, not study results: move them aside (never rewrite a
+    sealed batch in place) before re-evaluating from the same or amended stored outputs."""
+    import shutil
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    moved = []
+    selections = paths.selections_dir("pilot")
+    if selections.exists():
+        target = paths.run_dir / "selections_superseded" / f"pilot_{stamp}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(selections), str(target))
+        moved.append(f"{paths.relative(selections)} -> {paths.relative(target)}")
+    gate = paths.gate_result("gate2", "pilot")
+    if gate.exists():
+        target = gate.with_name(f"gate2_pilot.superseded_{stamp}.json")
+        shutil.copy2(gate, target)
+        moved.append(f"{paths.relative(gate)} copied to {paths.relative(target)}")
+    record_decision(paths, phase="pilot_supersede", moved=moved, reason=reason)
 
 
 def cmd_pilot(argv: list[str]) -> int:
