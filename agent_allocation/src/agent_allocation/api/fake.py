@@ -26,8 +26,8 @@ answer is derived from the item id (``vary_final_by_node=True`` derives it from 
 math500 -> an integer, mmlu_pro / bbh multiple choice -> a letter A-C, bbh boolean_expressions -> True/False,
 mbpp_plus -> a stub function named after the first ``assert name(`` in the prompt.
 
-Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is used
-verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
+Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is
+used verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
 contract (streaming, seed, tools, fallbacks, unknown keys, ...) gets HTTP 400 and is appended to
 ``script.violations``. Omitting ``X-OpenRouter-Cache: false`` turns on response-cache emulation (identical bodies
 return the first response verbatim with ``x-openrouter-cache-status: HIT``).

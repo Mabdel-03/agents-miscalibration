@@ -3,8 +3,9 @@
 ``generate`` sends exactly one HTTP attempt and returns a typed ``GenerationOutcome``; it never raises for transport
 or model failures. It raises only ``api.request.RequestContractError`` (a ``ValueError``) for a spec/lock/sampling/
 message/attempt-id violation -- always before any byte is sent, so the reservation can be released and the circuit
-opened -- and lets ``asyncio.CancelledError`` propagate (a cancelled attempt may have been sent: treat it as ambiguous). Retrying, backoff, reservation and persistence belong to the
-scheduler (agent 02). httpx itself never retries requests; the default transport is built with ``retries=0``.
+opened -- and lets ``asyncio.CancelledError`` propagate (a cancelled attempt may have been sent: treat it as
+ambiguous). Retrying, backoff, reservation and persistence belong to the scheduler (agent 02). httpx itself never
+retries requests; the default transport is built with ``retries=0``.
 
 Account endpoints (``key_info``, ``credits``, ``generation_metadata``, ``list_endpoints``) raise
 ``OpenRouterAccountError`` on transport failures or unexpected statuses. In ``key_info``, ``credits`` and
