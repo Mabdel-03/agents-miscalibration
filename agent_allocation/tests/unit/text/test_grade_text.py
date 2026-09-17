@@ -213,15 +213,19 @@ def test_fixture_golds_round_trip(benchmark):
     assert _round_trip(fixture_inventory(benchmark), (lambda g: g,)) == []
 
 
-def test_option_and_boolean_specs_without_legal_choices_are_unusable_not_guessed():
+def test_specs_without_usable_legal_choices_are_unknown_not_guessed():
     bare = _spec("mmlu_pro/1", EvalKind.OPTION_EXACT, "C")
     result = grade_text(make_candidate("mmlu_pro/1", "C", OutputKind.OPTION), bare)
     assert (result.status, result.semantic_correct, result.detail_code) == (
         GradeStatus.EVALUATOR_ERROR, None, "allowed_choices_missing_or_malformed")
     outside = _spec("mmlu_pro/1", EvalKind.OPTION_EXACT, "E", allowed=tuple("ABCD"))
     assert grade_text(make_candidate("mmlu_pro/1", "E", OutputKind.OPTION), outside).status is GradeStatus.EVALUATOR_ERROR
-    no_bool = _spec(BOOL.item_id, EvalKind.TASK_EXACT, "False", subtask="boolean_expressions")
-    assert grade_text(make_candidate(BOOL.item_id, "False", OutputKind.BOOLEAN), no_bool).status is GradeStatus.EVALUATOR_ERROR
+    implied = _spec(BOOL.item_id, EvalKind.TASK_EXACT, "False", subtask="boolean_expressions")
+    graded = grade_text(make_candidate(BOOL.item_id, "False", OutputKind.BOOLEAN), implied)
+    assert (graded.status, graded.semantic_correct) == (GradeStatus.GRADED, True)
+    conflicting = _spec(BOOL.item_id, EvalKind.TASK_EXACT, "False", subtask="boolean_expressions", allowed=("A", "B"))
+    result = grade_text(make_candidate(BOOL.item_id, "False", OutputKind.BOOLEAN), conflicting)
+    assert (result.status, result.detail_code) == (GradeStatus.EVALUATOR_ERROR, "allowed_choices_not_boolean")
 
 
 def test_private_specs_carry_the_public_legal_choices(math_inventory, mmlu_inventory, bbh_inventory):

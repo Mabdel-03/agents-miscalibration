@@ -19,8 +19,9 @@ Status rules (tri-state, ``text-grade-v1``):
 Wiring errors (candidate and spec for different items, non-text eval kinds, output-kind mismatch) raise.
 
 Legal answers come from ``PrivateEvalSpec.allowed_choices`` (contract v2): the item's option letters, or
-``("True", "False")`` for boolean items. An option/boolean spec without them, or whose gold is not among them, is
-unusable: ``EVALUATOR_ERROR`` rather than a guess.
+``("True", "False")`` for boolean items (an empty tuple on a boolean item means that implied pair). An option spec
+without letters, a boolean spec with a different set, or a gold outside the legal set is unusable:
+``EVALUATOR_ERROR`` rather than a guess.
 """
 from __future__ import annotations
 
@@ -98,7 +99,7 @@ def grade_text(candidate: Candidate, private: PrivateEvalSpec, *,
 
     legal = tuple(private.allowed_choices)
     if expected_kind is OutputKind.BOOLEAN:
-        if legal != BOOLEAN_CHOICES:
+        if legal and legal != BOOLEAN_CHOICES:               # () is implied True/False; anything else conflicts
             return result(GradeStatus.EVALUATOR_ERROR, None, True, "allowed_choices_not_boolean")
         if gold not in BOOLEAN_CHOICES:
             return result(GradeStatus.EVALUATOR_ERROR, None, True, "gold_not_boolean")
