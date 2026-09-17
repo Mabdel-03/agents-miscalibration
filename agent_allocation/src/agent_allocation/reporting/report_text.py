@@ -71,7 +71,8 @@ def scope_notes(analysis: "Analysis") -> str:
         "optimal policy. Everything except the two primary contrasts is exploratory or descriptive.",
         "Oracle pass@k (an unavailable selector) is reported separately from achievable vote@k / public_select@k.",
         "Macro averages weight the four benchmarks equally; per-benchmark results are always shown.",
-        "High-allowance comparisons use shared item ids only (never the 96-item panel against all main items).",
+        "Panel variants (high allowance, second-model replication) are compared with main on shared item ids only "
+        "(never the 96-item panel against all main items).",
     ]
     return "## Scope and labels\n\n" + bullet_list(notes)
 
@@ -129,18 +130,25 @@ def primary_section(analysis: "Analysis") -> str:
         return "## Primary contrasts\n\n_(not estimable: checkpoints absent)_\n"
     out = ["## Primary contrasts (frozen, main allowance)", "",
            "Per-item contrast first, then equal-benchmark macro (BBH subtasks equal). Intervals: studentized item-"
-           "cluster bootstrap when complete, otherwise known-only percentile intervals labeled partial with "
+           "cluster bootstrap when complete (at small n it can extend past the parameter range; the percentile "
+           "interval is shown beside it), otherwise known-only percentile intervals labeled partial with "
            "fixed-population bounds. P-values (Holm over exactly these two) are reported only when both populations "
            "are fully known.", ""]
     rows = []
     for rec in frame[frame["role"] == "primary"].to_dict("records"):
+        series = pd.Series(rec)
+        macro = rec["benchmark"] == "macro"
+        p_value = rec.get("p_value")
+        p_text = (fmt(p_value) if macro and not _nan(p_value) else
+                  ("withheld (incomplete)" if macro else "not reported (per-benchmark)"))
+        holm_text = (fmt(rec.get("p_holm")) if macro and not _nan(rec.get("p_holm")) else
+                     ("withheld" if macro else "-"))
         rows.append({"contrast": rec["contrast"], "level": rec["benchmark"], "n_items": rec.get("n_items"),
                      "n_complete": rec.get("n_complete"), "status": rec.get("status"),
                      "estimate": rec.get("estimate"),
-                     "ci95": _ci(pd.Series(rec), "ci95_lo", "ci95_hi") if rec.get("status") == "complete"
-                     else _ci(pd.Series(rec), "ci95_percentile_lo", "ci95_percentile_hi"),
-                     "bounds": _ci(pd.Series(rec), "bound_lower", "bound_upper"),
-                     "p": rec.get("p_value"), "p_holm": rec.get("p_holm")})
+                     "ci95 studentized": _ci(series, "ci95_lo", "ci95_hi"),
+                     "ci95 percentile": _ci(series, "ci95_percentile_lo", "ci95_percentile_hi"),
+                     "bounds": _ci(series, "bound_lower", "bound_upper"), "p": p_text, "p_holm": holm_text})
     out.append(md_table(pd.DataFrame(rows)))
     out.append("### CP decomposition (descriptive)\n")
     out.append("`L = mean(Y_CP,h=0 - Y_PRIVATE_TEAM,r=1)`; `H(h) = mean[(Y_CP,h - Y_CP,0) - (Y_PRIVATE_TEAM,1+h - "
@@ -255,15 +263,19 @@ def cost_section(analysis: "Analysis") -> str:
         lambda s: pd.to_numeric(s, errors="coerce").mean()).rename("mean_retry_usd").reset_index() \
         if isinstance(costs, pd.DataFrame) and not costs.empty else pd.DataFrame()
     table = macro[cols].merge(retry, on=["partition_id", "name"], how="left") if not retry.empty else macro[cols]
+    precision = {"acc": 3, "mean_total_charged_usd": 6, "mean_success_cost_usd": 6,
+                 "mean_standardized_uncached_cost_usd": 6, "mean_requested_reasoning_tokens": 0,
+                 "mean_realized_tokens": 0, "mean_reasoning_tokens": 0, "mean_nominal_generations": 1,
+                 "mean_retry_usd": 6}
     out.append(md_table(table, headers=["partition", "checkpoint", "macro acc", "actual $", "success $",
                                         "standardized $", "requested reasoning", "realized tokens",
                                         "reasoning tokens", "nominal gens"] + (["retry $"] if not retry.empty else []),
-                        digits=6))
+                        digits=precision))
     frontier = analysis.extras.get("frontier")
     if isinstance(frontier, pd.DataFrame) and not frontier.empty:
         out += ["### Descriptive frontier (best among evaluated configurations on this sample; not validated)", "",
                 md_table(frontier[frontier["benchmark"] == "macro"][["partition_id", "measure", "name", "mean_cost",
-                                                                      "acc"]], digits=6)]
+                                                                      "acc"]], digits={"mean_cost": 6, "acc": 3})]
     checks = analysis.extras.get("price_checks", [])
     if checks:
         out += ["### Price units", "", md_table(pd.DataFrame(checks))]
@@ -409,7 +421,12 @@ def completeness_report(analysis: "Analysis") -> str:
 
 
 def _nan(v: Any) -> bool:
-    return v is None or (isinstance(v, float) and math.isnan(v))
+    if v is None:
+        return True
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
 
 
 __all__ = ["run_report", "cost_reconciliation_report", "completeness_report", "interim_reasons", "PRIMARY_I",
