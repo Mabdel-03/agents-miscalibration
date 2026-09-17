@@ -807,8 +807,16 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
     grade_rc = run_grader(paths)
     selection = select_and_seal(cfg, paths, "pilot", graphs, tasks)
     rows = load_call_rows(paths, "pilot", {})
-    metadata = await fetch_metadata(paths, [r.result.generation_id for r in rows], attempts=6)
-    rows = load_call_rows(paths, "pilot", metadata)
+    known: dict[str, Any] = {}
+    if paths.generation_metadata.exists():
+        for line in paths.generation_metadata.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                known[row["generation_id"]] = row["data"]
+    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    if missing:
+        known.update(await fetch_metadata(paths, missing, attempts=6))
+    rows = load_call_rows(paths, "pilot", known)
     used = [json.loads(l).get("id") for l in paths.amendments.read_text().splitlines() if l.strip()] \
         if paths.amendments.exists() else []
     inputs = pilot_gate_inputs(cfg, paths, graphs, rows, used)
