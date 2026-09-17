@@ -255,6 +255,9 @@ def test_failure_rows_count_truncation_and_parse_failures(standard):
         (6, 2, 2, 1)
     cp = next(r for r in rows if r.generation_kind == "communicate_then_private")
     assert cp.n_nodes == 12 and cp.n_candidates == 11
+    option_roots = next(r for r in tables.failures if r.item_id == "mmlu_pro/fixture-2" and r.generation_kind == "root")
+    assert (option_roots.n_parse_valid, option_roots.n_invalid_after_valid_parse) == (6, 1)     # "K" is illegal
+    assert option_roots.n_invalid_output == 1 and option_roots.n_graded_correct + option_roots.n_graded_wrong == 5
 
 
 # ------------------------------------------------------------------------------------------ the seal and gold

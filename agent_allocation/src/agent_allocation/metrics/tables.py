@@ -19,7 +19,8 @@ Tables (one row type each; columns are the dataclass fields, in order; ``TABLE_S
 * ``root_strata`` -- pre-communication root correctness among roots[0:n] for each team size n, plus the
   independent reference bank roots[max_n:bank].
 * ``failures`` -- per item and generation kind/budget, over every job node of the item: transport, completion and
-  parse status counts.
+  parse status counts, plus outcome-state counts, so invalid outputs the grader finds in *valid* extractions (an
+  illegal option letter, a boolean hedge, prose instead of a program) are counted with the parse failures.
 
 Invariants checked while building (each raises ``MetricsInvariantError``): sealed pool hash equals the pool the
 metrics see; the delivered candidate belongs to its pool; ``delivered <= coverage`` (lo and hi) for candidate-only
@@ -275,6 +276,11 @@ class FailureRow:
     n_parse_malformed_final: int
     n_parse_empty_content: int
     n_parse_refusal: int
+    n_invalid_output: int                   # state I: parse failures plus grader INVALID_OUTPUT on a valid parse
+    n_invalid_after_valid_parse: int        # VALID extraction the grader found to name no legal answer / program
+    n_graded_correct: int
+    n_graded_wrong: int
+    n_grade_unknown: int                    # state U (no grade, evaluator error, not evaluated); absent nodes excluded
 
 
 @dataclass(frozen=True)
@@ -355,7 +361,7 @@ class _Item:
         self.partition = partition
         self.item = item
         self.task = item.task
-        ids: set[str] = set()
+        ids: set[str] = set(item.specs)
         for cp in item.checkpoints:
             ids.update(cp.candidate_ids)
             ids.update(cp.required_node_ids)
@@ -606,6 +612,10 @@ def _failure_rows(it: _Item) -> list[FailureRow]:
         cands = [it.item.candidates[m] for m in members if m in it.item.candidates]
         completion = [r.completion_status for r in results if r.transport_status is TransportStatus.OK]
         parse = [c.parse_status for c in cands]
+        states = [it.states[m] for m in members if m in it.item.candidates]
+        invalid_after_valid = sum(1 for m in members if m in it.item.candidates
+                                  and it.item.candidates[m].parse_status is ParseStatus.VALID
+                                  and it.states[m] is CandidateState.INVALID)
         rows.append(FailureRow(
             **it.base(), generation_kind=kind, reasoning_budget=budget, n_nodes=len(members), n_results=len(results),
             n_transport_ok=sum(r.transport_status is TransportStatus.OK for r in results),
@@ -617,7 +627,10 @@ def _failure_rows(it: _Item) -> list[FailureRow]:
             n_candidates=len(cands), n_parse_valid=parse.count(ParseStatus.VALID),
             n_parse_missing_final=parse.count(ParseStatus.MISSING),
             n_parse_malformed_final=parse.count(ParseStatus.MALFORMED),
-            n_parse_empty_content=parse.count(ParseStatus.EMPTY), n_parse_refusal=parse.count(ParseStatus.REFUSAL)))
+            n_parse_empty_content=parse.count(ParseStatus.EMPTY), n_parse_refusal=parse.count(ParseStatus.REFUSAL),
+            n_invalid_output=states.count(CandidateState.INVALID), n_invalid_after_valid_parse=invalid_after_valid,
+            n_graded_correct=states.count(CandidateState.CORRECT), n_graded_wrong=states.count(CandidateState.WRONG),
+            n_grade_unknown=states.count(CandidateState.UNKNOWN)))
     return rows
 
 
