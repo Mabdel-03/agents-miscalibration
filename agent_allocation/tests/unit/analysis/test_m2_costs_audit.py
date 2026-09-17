@@ -382,3 +382,13 @@ def test_stub_grader_versions_are_labelled_and_block_final(built_run, tmp_path):
     assert not analysis.final and analysis.extras["non_production_graders"]
     text = (paths.reports_dir / "RUN_REPORT.md").read_text()
     assert "STUB GRADING" in text and "qa-stub-code-v1" in text
+
+
+def test_reconciliation_window_parses_mixed_timestamp_formats():
+    from agent_allocation.analysis.reconcile import parse_instant
+
+    a = parse_instant("2026-09-17T07:00:00Z")
+    b = parse_instant("2026-09-17T07:00:00.500000+00:00")
+    c = parse_instant("2026-09-17T03:00:00.250-04:00")
+    assert a < b and c == parse_instant("2026-09-17T07:00:00.250Z") and a < c < b
+    assert parse_instant("not a time") is None

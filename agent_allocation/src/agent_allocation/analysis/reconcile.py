@@ -16,6 +16,7 @@ The journal replay also checks the atomic admission invariant
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -142,24 +143,45 @@ def usage_vs_ledger(run: RunData) -> dict[str, Any]:
             "non_accepted_attempt_charges_usd": retry_total}
 
 
+def parse_instant(value: Any) -> datetime | None:
+    """ISO-8601 instant as an aware UTC datetime (``Z`` or offsets, any fractional precision); None if unparseable."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 def provider_reconciliation(run: RunData) -> dict[str, Any]:
     snaps = [s for s in run.provider_snapshots if str(s.get("endpoint", "key")) == "key"
-             and isinstance(s.get("data"), dict) and s["data"].get("usage") is not None]
+             and isinstance(s.get("data"), dict) and s["data"].get("usage") is not None
+             and parse_instant(s.get("fetched_at")) is not None]
+    snaps.sort(key=lambda s: parse_instant(s["fetched_at"]))
     if len(snaps) < 2:
-        return {"status": "unavailable", "detail": f"{len(snaps)} provider /key usage snapshot(s) under state/; "
-                                                    "need a baseline and a later snapshot"}
+        return {"status": "unavailable", "detail": f"{len(snaps)} timestamped provider /key usage snapshot(s) under "
+                                                    "state/; need a baseline and a later snapshot"}
     first, last = snaps[0], snaps[-1]
     provider_delta = Decimal(str(last["data"]["usage"])) - Decimal(str(first["data"]["usage"]))
-    lo, hi = str(first.get("fetched_at", "")), str(last.get("fetched_at", ""))
-    window = sum((e.amount_usd for e in run.ledger
-                  if e.kind in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX) and lo <= e.recorded_at <= hi),
-                 Decimal(0))
+    lo, hi = parse_instant(first["fetched_at"]), parse_instant(last["fetched_at"])
+    unparsed = 0
+    window = Decimal(0)
+    for e in run.ledger:
+        if e.kind not in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX):
+            continue
+        at = parse_instant(e.recorded_at)
+        if at is None:
+            unparsed += 1
+            continue
+        if lo <= at <= hi:
+            window += e.amount_usd
     diff = provider_delta - window
     tolerance = max(TOLERANCE_USD, abs(window) * TOLERANCE_FRACTION)
-    return {"status": "reconciled" if abs(diff) <= tolerance else "discrepancy",
-            "first_fetched_at": lo, "last_fetched_at": hi, "provider_usage_delta_usd": provider_delta,
-            "ledger_charges_in_window_usd": window, "difference_usd": diff, "tolerance_usd": tolerance,
-            "snapshots": len(snaps)}
+    status = "reconciled" if abs(diff) <= tolerance and not unparsed else "discrepancy"
+    return {"status": status, "first_fetched_at": first["fetched_at"], "last_fetched_at": last["fetched_at"],
+            "first_stage": first.get("stage"), "last_stage": last.get("stage"),
+            "provider_usage_delta_usd": provider_delta, "ledger_charges_in_window_usd": window,
+            "difference_usd": diff, "tolerance_usd": tolerance, "snapshots": len(snaps),
+            "ledger_charges_with_unparseable_time": unparsed}
 
 
 def reconciliation(run: RunData) -> dict[str, Any]:
