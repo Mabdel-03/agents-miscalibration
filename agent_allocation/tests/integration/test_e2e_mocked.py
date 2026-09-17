@@ -96,10 +96,21 @@ def stub_code_grader(candidate, private, paths) -> GradeResult:
                        "qa-stub-code-v1", private.private_hash, detail_code="stub_code_grader")
 
 
-def _snapshot(paths) -> dict[str, str]:
+def _snapshot(paths, subdirs=("raw", "parsed", "selections")) -> dict[str, str]:
     return {paths.relative(p): sha256(p.read_bytes()).hexdigest()
-            for sub in ("raw", "parsed", "selections", "grades")
-            for p in sorted((paths.run_dir / sub).rglob("*")) if p.is_file()}
+            for sub in subdirs for p in sorted((paths.run_dir / sub).rglob("*")) if p.is_file()}
+
+
+VERDICT_FIELDS = ("candidate_id", "status", "semantic_correct", "operational_success", "grader_version",
+                  "private_eval_hash", "detail_code")
+
+
+def _verdicts(paths) -> dict[str, tuple]:
+    out = {}
+    for p in sorted(paths.grades_dir.rglob("*.json")):
+        data = json.loads(p.read_text())
+        out[paths.relative(p)] = tuple(data.get(k) for k in VERDICT_FIELDS)
+    return out
 
 
 @pytest.fixture()
@@ -139,6 +150,8 @@ def test_mocked_four_benchmark_run_generates_selects_grades_exports_resumes_and_
     assert payload["contrasts"][ir.PRIMARY_I] == pytest.approx(-1.0, abs=1e-12)
     assert payload["contrasts"][ir.PRIMARY_II] == pytest.approx(1.0, abs=1e-12)
     assert (paths.reports_dir / "AUDIT.md").is_file() and any(paths.tables_dir.rglob("*")), "analysis exports missing"
+    assert summary.get("audit_rc") == 0, summary.get("audit_rc")
+    assert summary.get("stubbed_code_grader") is True
 
     # --- one full item per benchmark, traced by the separate script --------------------------------------------
     for item in ("math500/adv/1", "mmlu_pro/adv/1", "bbh_logic4/adv/1", "mbpp_plus/adv/1"):
@@ -162,10 +175,11 @@ def test_mocked_four_benchmark_run_generates_selects_grades_exports_resumes_and_
     assert all(canaries["fake_api_key"] not in json.dumps(body) for body in model.completions)
 
     # --- resume: zero new requests, artifacts byte-identical, same numbers -------------------------------------
-    before = _snapshot(paths)
+    before, verdicts = _snapshot(paths), _verdicts(paths)
     run()
     assert len(model.completions) == expected_nodes, "resume re-dispatched stored successful nodes"
-    assert _snapshot(paths) == before, "resume rewrote raw/parsed/selection/grade artifacts"
+    assert _snapshot(paths) == before, "resume rewrote raw/parsed/selection artifacts"
+    assert _verdicts(paths) == verdicts, "resume changed a private verdict"
     again = ir.independent_recompute(paths.run_dir)
     assert again["contrasts"] == payload["contrasts"]
 
@@ -205,3 +219,36 @@ def test_mocked_run_survives_a_crash_after_raw_write_and_resumes_without_redispa
     failing = {c["name"]: c["detail"] for c in ir.independent_recompute(paths.run_dir)["checks"] if c["passed"] is False}
     assert not failing, failing
     assert len(bodies) == expected_nodes
+
+
+@pytest.mark.xfail(strict=True, reason="L-1: live.run_offline resume re-grades every stored candidate and rewrites its "
+                                       "current grade file (only cpu_seconds changes); the spec 10.4 grade cache "
+                                       "(item, code hash, evaluator version, environment digest) is not consulted")
+def test_resume_reuses_stored_grades_byte_for_byte(run_paths, cfg):
+    live = optional_module("agent_allocation.live")
+    if not hasattr(live, "run_offline"):
+        pytest.skip("waiting on live.run_offline (Q1)")
+    items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
+    ids = ("math500/adv/1",)
+    inventory = [InventoryItem(public=items[i][0], private=items[i][1]) for i in ids]
+    model = PromptOnlyModel([items[i][0] for i in ids])
+    config = fast_config(cfg)
+    live.run_offline(run_paths, config, inventory, model.transport(), code_grader=stub_code_grader)
+    before = _snapshot(run_paths, ("grades",))
+    live.run_offline(run_paths, config, inventory, model.transport(), code_grader=stub_code_grader)
+    assert _snapshot(run_paths, ("grades",)) == before
+
+
+@pytest.mark.xfail(strict=True, reason="L-2: run_offline returns stubbed_code_grader=True but no report under reports/ "
+                                       "labels the code verdicts as stubbed (contract section 6, Q1 decision)")
+def test_stubbed_code_grader_is_labelled_in_reports(run_paths, cfg):
+    live = optional_module("agent_allocation.live")
+    if not hasattr(live, "run_offline"):
+        pytest.skip("waiting on live.run_offline (Q1)")
+    items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
+    ids = ("mbpp_plus/adv/1",)
+    inventory = [InventoryItem(public=items[i][0], private=items[i][1]) for i in ids]
+    model = PromptOnlyModel([items[i][0] for i in ids])
+    live.run_offline(run_paths, fast_config(cfg), inventory, model.transport(), code_grader=stub_code_grader)
+    text = "\n".join(p.read_text(errors="replace") for p in run_paths.reports_dir.rglob("*.md")).lower()
+    assert "stub" in text

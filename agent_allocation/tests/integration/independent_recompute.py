@@ -19,8 +19,8 @@ paused selections are unknown. A contrast is ``None`` while any required Y in it
 fixed-denominator lower/upper bounds reported beside it. Items weigh equally within a benchmark, except BBH, where
 subtasks weigh equally; the headline value is the equal-benchmark macro average.
 """
-from __future__ import annotations
-
+# No ``from __future__ import annotations``: agent 07 loads this file by path without registering it in sys.modules,
+# and dataclasses resolve string annotations through sys.modules (W07-2).
 import gzip
 import importlib.util
 import json
@@ -168,9 +168,10 @@ def load(run_dir: str | Path) -> Run:
             if seal.get("sha256") != sha256(body).hexdigest() or seal.get("count") != len(lines):
                 run.seal_problems.append(f"{rel}: seal mismatch (sha256/count); selections not joined")
                 continue
+            # previous_seal_sha256 = the ``sha256`` recorded by batch N-1 (agent 06's reading of contract section 6)
             if "previous_seal_sha256" in seal and seal["previous_seal_sha256"] != previous:
                 run.seal_problems.append(f"{rel}: broken seal chain")
-            previous = sha256(seal_path.read_bytes()).hexdigest()
+            previous = seal.get("sha256")
             for line in lines:
                 sel = load_record(SelectionResult, json.loads(line))
                 if sel.policy_id in by_policy:

@@ -134,9 +134,6 @@ def test_invalid_output_graded_as_wrong_is_flagged(synthetic):
     assert _checks(ir.independent_recompute(paths.run_dir))["invalid_not_graded"]["passed"] is False
 
 
-@pytest.mark.xfail(raises=TypeError, strict=True,
-                   reason="W07-1: analysis/load.py:247-249 still calls the v1 paths.selections(partition) / "
-                          "selection_seal(partition); under contract v2 every analyze/audit run raises TypeError")
 def test_agent07_audit_agrees_with_the_independent_recompute(synthetic, cfg):
     """Spec 08 brief: recompute two headline contrasts from raw per-item records and compare with the analysis module."""
     audit = optional_module("agent_allocation.reporting.audit")

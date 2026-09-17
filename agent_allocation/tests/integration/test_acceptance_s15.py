@@ -804,10 +804,20 @@ def test_s15_14_math_grader_exception_is_unknown_not_wrong_production(adv_items,
             for attr, value in list(vars(mod).items()):
                 if any(value is orig for orig in originals.values()):
                     monkeypatch.setattr(mod, attr, outage)
+    # Graders may memoize the Math-Verify entry points (lru_cache): clear every grading cache around the injection.
+    caches = [obj for name, mod in list(sys.modules.items()) if mod is not None and name.startswith("agent_allocation.grading")
+              for obj in list(vars(mod).values()) if callable(getattr(obj, "cache_clear", None))]
+    for cache in caches:
+        cache.cache_clear()
     task, private, _ = next((t, p, r) for t, p, r in adv_items if t.benchmark == "math500" and p.gold_answer == "4")
     node = next(iter(h.ref_graph(grids_from_config(adversarial_config())["pilot_r1"], task).nodes.values()))
     cand = h.valid_candidate(node, task, content="<final>4</final>", final="4")
-    grade = grade_mod.grade_text(cand, private)
+    try:
+        grade = grade_mod.grade_text(cand, private)
+    finally:
+        monkeypatch.undo()
+        for cache in caches:
+            cache.cache_clear()
     assert grade.status is GradeStatus.EVALUATOR_ERROR, grade
     assert grade.semantic_correct is None and grade.operational_success is not False, grade
 
