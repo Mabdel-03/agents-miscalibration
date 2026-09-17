@@ -704,5 +704,192 @@ def cmd_pilot(argv: list[str]) -> int:
     return asyncio.run(run_pilot(cfg, paths, max_usd, args.config, args.phase))
 
 
+# ------------------------------------------------------------------------------------------------------------------
+# Main collection (Gates 3-4)
+# ------------------------------------------------------------------------------------------------------------------
+
+FORECAST_CHECK_WAVES = 4
+
+
+def record_decision(paths: RunPaths, **fields: Any) -> None:
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    with open(paths.state_dir / "run_decisions.jsonl", "a") as handle:
+        handle.write(json.dumps({"recorded_at": utcnow(), **fields}, sort_keys=True, default=str) + "\n")
+
+
+def graphs_by_wave(cfg, paths: RunPaths, tasks, locks, amendments) -> dict[str, list[list[ItemGraph]]]:
+    from agent_allocation.manifest import load_waves
+    grids = grids_from_config(cfg)
+    primary, replication = locks[cfg["primary_model"]], locks[cfg["replication_model"]]
+    main_a, high_a = int(cfg["reasoning"]["main_a"]), int(cfg["reasoning"]["high_a"])
+    out: dict[str, list[list[ItemGraph]]] = {"main": [], "high": [], "replication": []}
+    for wave in load_waves(paths):
+        main, high, rep = [], [], []
+        for item in wave.item_ids:
+            task = tasks[item]
+            grid = grids["main_extension"] if "extension" in wave.panels else grids["main"]
+            main.append(graph_for(grid, cfg=cfg, partition="main", task=task, lock=primary, base_budget=main_a,
+                                  amendments=amendments))
+            if "high" in wave.panels:
+                high.append(graph_for(grids["high"], cfg=cfg, partition="high", task=task, lock=primary,
+                                      base_budget=high_a, amendments=amendments))
+            if "replication" in wave.panels:
+                rep.append(graph_for(grids["replication"], cfg=cfg, partition="replication", task=task,
+                                     lock=replication, base_budget=main_a, amendments=amendments))
+        out["main"].append(main)
+        if high:
+            out["high"].append(high)
+        if rep:
+            out["replication"].append(rep)
+    return out
+
+
+def verify_authorization(paths: RunPaths) -> dict[str, Any]:
+    if not paths.authorization.exists():
+        raise RunRefused("no state/authorization.json: main collection requires a passed pilot and `allocation freeze`")
+    auth = json.loads(paths.authorization.read_text())
+    for lock_path, key in ((paths.config_lock, "config_lock_sha256"), (paths.prompt_lock, "prompt_lock_sha256"),
+                           (paths.environment_lock, "environment_lock_sha256")):
+        if json.loads(lock_path.read_text()).get("lock_sha256") != auth[key]:
+            raise RunRefused(f"{lock_path.name} no longer matches the authorization")
+    from agent_allocation.prompts.render import prompt_hashes
+    if json.loads(paths.prompt_lock.read_text())["hashes"] != prompt_hashes():
+        raise RunRefused("prompt templates changed after freeze")
+    return auth
+
+
+def all_terminal(paths: RunPaths, waves: Sequence[Sequence[ItemGraph]]) -> bool:
+    return all(paths.parsed(n.node_id).exists() for wave in waves for g in wave for n in g.nodes)
+
+
+def stopped_early(summary: Any) -> str | None:
+    reason = getattr(summary, "stop_reason", None)
+    return None if reason in (None, "completed", "complete", "done") else str(reason)
+
+
+async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
+    from agent_allocation.api.client import OpenRouterClient
+    from agent_allocation.apikey import load_api_key
+    from agent_allocation.forecast import (
+        fit_models, item_cost, observations_from_rows, per_item_costs, wave_admission, SAFETY_MULTIPLIER,
+    )
+    auth = verify_authorization(paths)
+    api_key = load_api_key()
+    locks = read_endpoint_locks(paths)
+    client = OpenRouterClient(api_key=api_key)
+    try:
+        drift = await verify_endpoint_drift(client, locks)
+    finally:
+        await client.aclose()
+    if drift:
+        record_decision(paths, phase="preflight", decision="stop_notify", reason="endpoint drift", detail=drift)
+        raise RunRefused(f"endpoint drift: {drift}")
+    tasks = load_tasks(paths)
+    amendments = load_amendments(paths)
+    by_wave = graphs_by_wave(cfg, paths, tasks, locks, amendments)
+    primary = locks[cfg["primary_model"]]
+    soft = Decimal(str(cfg["budget"]["soft_admission_ceiling_usd"]))
+    reserve = Decimal(str(cfg["budget"]["contingency_usd"]))
+
+    # Phase A: the first waves establish a trustworthy forecast; extension CP/POOLED ride with their items.
+    snap = provider_snapshot(paths, "run_phase_a")
+    ceiling = min(active_ceiling(max_usd, ledger_settled(paths), snap), soft)
+    summary = await dispatch(cfg, paths, by_wave["main"][:FORECAST_CHECK_WAVES], lock=primary, tasks=tasks,
+                             allow_paid=True, max_usd=max_usd, ceiling=ceiling, api_key=api_key)
+    record_decision(paths, phase="A", summary=str(summary), ceiling=str(ceiling))
+    if stopped_early(summary):
+        record_decision(paths, phase="A", decision="stop_notify", reason=stopped_early(summary))
+        return 3
+
+    # Phase B: re-forecast from main rows; admit remaining main waves and high-A waves under the cut order.
+    rows = load_call_rows(paths, "main", {})
+    models = fit_models(observations_from_rows([r for r in rows if r.spec.model == primary.model]))
+    headroom = {b: headroom_for(cfg, b, amendments) for b in BENCHMARKS}
+    costs = per_item_costs(models, grids_from_config(cfg), lock=primary, headroom_by_benchmark=headroom,
+                           main_a=int(cfg["reasoning"]["main_a"]), high_a=int(cfg["reasoning"]["high_a"]))
+    spent = ledger_settled(paths)
+    snap = provider_snapshot(paths, "run_phase_b")
+    ceiling = min(active_ceiling(max_usd, spent, snap), soft)
+    n_waves = len(by_wave["main"])
+    ext_waves = cfg["panels"]["extension_items"] // 16
+    admission = wave_admission(costs, n_waves=n_waves - FORECAST_CHECK_WAVES,
+                               extension_waves=max(ext_waves - FORECAST_CHECK_WAVES, 0),
+                               high_waves=len(by_wave["high"]), available_usd=ceiling - spent)
+    record_decision(paths, phase="B", admission=admission, spent=str(spent), ceiling=str(ceiling),
+                    per_item_costs={b: {k: str(v) for k, v in c.items()} for b, c in costs.items()})
+    main_rest = by_wave["main"][FORECAST_CHECK_WAVES:FORECAST_CHECK_WAVES + admission["main_waves"]]
+    high = by_wave["high"][:admission["high_waves"]]
+    interleaved: list[list[ItemGraph]] = []
+    for index in range(max(len(main_rest), len(high))):
+        if index < len(high):
+            interleaved.append(high[index])
+        if index < len(main_rest):
+            interleaved.append(main_rest[index])
+    summary = await dispatch(cfg, paths, interleaved, lock=primary, tasks=tasks, allow_paid=True, max_usd=max_usd,
+                             ceiling=ceiling, api_key=api_key)
+    record_decision(paths, phase="B", summary=str(summary))
+    if stopped_early(summary):
+        record_decision(paths, phase="B", decision="stop_notify", reason=stopped_early(summary))
+        return 3
+
+    # Phase C: optional Flash check only after core completion, if core + forecast + reserve fit.
+    core_waves = by_wave["main"][:FORECAST_CHECK_WAVES] + main_rest + high
+    if not all_terminal(paths, core_waves):
+        record_decision(paths, phase="C", decision="skip_replication", reason="core incomplete")
+        return 0
+    replication_lock = locks[cfg["replication_model"]]
+    flash_rows = [r for r in load_call_rows(paths, "canary", {}) if r.spec.model == replication_lock.model]
+    flash_models = fit_models(observations_from_rows(flash_rows))
+    grids = grids_from_config(cfg)
+    flash_items = sum(len(w) for w in by_wave["replication"])
+    flash_forecast = Decimal("0")
+    for wave in by_wave["replication"]:
+        for graph in wave:
+            model = flash_models.get(graph.nodes[0].benchmark) or next(iter(flash_models.values()))
+            flash_forecast += item_cost(model, grids["replication"], int(cfg["reasoning"]["main_a"]),
+                                        headroom_for(cfg, graph.nodes[0].benchmark, amendments), replication_lock)
+    flash_forecast *= SAFETY_MULTIPLIER
+    spent = ledger_settled(paths)
+    snap = provider_snapshot(paths, "run_phase_c")
+    absolute = active_ceiling(max_usd, spent, snap)
+    fits = spent + flash_forecast + reserve <= absolute
+    record_decision(paths, phase="C", flash_items=flash_items, flash_forecast=str(flash_forecast), spent=str(spent),
+                    absolute_ceiling=str(absolute), reserve=str(reserve),
+                    decision="run_replication" if fits else "skip_replication")
+    if not fits:
+        return 0
+    summary = await dispatch(cfg, paths, by_wave["replication"], lock=replication_lock, tasks=tasks, allow_paid=True,
+                             max_usd=max_usd, ceiling=absolute - reserve, api_key=api_key)
+    record_decision(paths, phase="C", summary=str(summary))
+    return 3 if stopped_early(summary) else 0
+
+
 def cmd_run(argv: list[str]) -> int:
-    raise RunRefused("run wiring lands after the pilot passes")
+    parser = argparse.ArgumentParser(prog="allocation run")
+    common_args(parser)
+    parser.add_argument("--resume", action="store_true", help="accepted for the spec's command contract; runs always resume")
+    args = parser.parse_args(argv)
+    cfg = load_config(args.config)
+    paths, max_usd = preflight(cfg, args)
+    paths.ensure()
+    return asyncio.run(run_main(cfg, paths, max_usd))
+
+
+def cmd_seal(argv: list[str]) -> int:
+    """Select and seal every checkpoint of the frozen partitions (after grading's public checks exist)."""
+    parser = argparse.ArgumentParser(prog="allocation seal")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--partition", action="append", default=None)
+    args = parser.parse_args(argv)
+    cfg = load_config(args.config)
+    paths = RunPaths.for_run(args.run_dir)
+    tasks = load_tasks(paths)
+    locks = read_endpoint_locks(paths)
+    by_wave = graphs_by_wave(cfg, paths, tasks, locks, load_amendments(paths))
+    out = {}
+    for partition in args.partition or ["main", "high", "replication"]:
+        graphs = [g for wave in by_wave[partition] for g in wave]
+        out[partition] = select_and_seal(cfg, paths, partition, graphs, tasks)
+    print(json.dumps(out, indent=1, sort_keys=True))
+    return 0
