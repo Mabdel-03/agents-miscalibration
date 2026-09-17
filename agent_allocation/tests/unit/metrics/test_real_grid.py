@@ -106,14 +106,9 @@ def test_real_graphs_select_seal_and_join(run, tmp_path):
     assert sum(r.n_nodes for r in tables.failures) == 138 + 125
 
 
-def test_real_graphs_round_trip_through_run_paths(run, tmp_path):
-    """Manifests, jobs, parsed records, public checks and grades on disk -> select_partition -> sealed tables."""
+def _write_run(paths, tasks, graphs, candidates, results, *, skip=frozenset()):
+    """Public manifests, policies, jobs, parsed records (except ``skip``), grades and public checks under ``paths``."""
     from agent_allocation.contracts import dump_record
-    from agent_allocation.metrics.io import load_partition_tables, write_partition_tables
-    from agent_allocation.selection.partition import select_partition
-
-    tasks, graphs, candidates, results = run
-    paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
 
     def write(path, text):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +122,8 @@ def test_real_graphs_round_trip_through_run_paths(run, tmp_path):
     for graph in graphs:
         task = tasks[graph.item_id]
         for node in graph.nodes:
+            if node.node_id in skip:
+                continue
             candidate = candidates[node.node_id]
             write(paths.parsed(node.node_id), json.dumps({"result": dump_record(results[node.node_id]),
                                                           "candidate": dump_record(candidate)}))
@@ -134,8 +131,20 @@ def test_real_graphs_round_trip_through_run_paths(run, tmp_path):
             if task.output_kind is OutputKind.PYTHON and candidate.parse_status is ParseStatus.VALID:
                 write(paths.public_check(node.node_id), json.dumps(dump_record(_public_check(candidate, task))))
 
-    equivalent = lambda a, b: {a, b} <= {"1", "\\frac{2}{2}"} or a == b  # noqa: E731
-    selection = select_partition(paths, "main", seed=SEED, math_equivalent=equivalent)
+
+def _equivalent(a, b):
+    return {a, b} <= {"1", "\\frac{2}{2}"} or a == b
+
+
+def test_real_graphs_round_trip_through_run_paths(run, tmp_path):
+    """Manifests, jobs, parsed records, public checks and grades on disk -> select_partition -> sealed tables."""
+    from agent_allocation.metrics.io import load_partition_tables, write_partition_tables
+    from agent_allocation.selection.partition import select_partition
+
+    tasks, graphs, candidates, results = run
+    paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
+    _write_run(paths, tasks, graphs, candidates, results)
+    selection = select_partition(paths, "main", seed=SEED, math_equivalent=_equivalent)
     assert len(selection.results) == 390 and not selection.pending_policy_ids and selection.sealed_sha256
     tables = load_partition_tables(paths, "main")
     assert len(tables.checkpoints) == 390 and all(r.delivered_state != "missing_selection" for r in tables.checkpoints)
@@ -143,3 +152,50 @@ def test_real_graphs_round_trip_through_run_paths(run, tmp_path):
     assert sum(r.n_grade_unknown for r in tables.failures) == 0
     digests = write_partition_tables(paths, "main", tables)
     assert paths.metrics_table("main.checkpoints").exists() and len(digests) == 7
+
+
+def test_nodes_that_ended_without_a_response_are_read_from_the_state_backup(run, tmp_path):
+    """Transport-exhausted and context-limited nodes exist only in SQLite: they must not block their checkpoints."""
+    from agent_allocation.contracts import GenerationKind
+    from agent_allocation.metrics.io import load_partition_tables
+    from agent_allocation.selection.partition import select_partition
+    from agent_allocation.selection.terminal import load_terminal_without_output
+    from agent_allocation.storage.state import StateStore
+
+    tasks, graphs, candidates, results = run
+    paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
+    math = next(g for g in graphs if g.item_id == "math500/synthetic/0001")
+    root3 = next(n for n in math.nodes if n.kind is GenerationKind.ROOT and n.root_slot == 3)
+    peer = next(n for n in math.nodes if n.kind is GenerationKind.PEER and n.team_size == 5 and n.update_round == 3)
+    _write_run(paths, tasks, graphs, candidates, results, skip={root3.node_id, peer.node_id})
+    assert load_terminal_without_output(paths) == {}
+
+    pending = select_partition(paths, "main", seed=SEED, math_equivalent=_equivalent, seal=False)
+    assert pending.pending_policy_ids                                   # without the state they would wait forever
+
+    store = StateStore(paths)
+    try:
+        store.register_nodes([n for g in graphs for n in g.nodes], wave_index=0)
+        store.mark_exhausted(root3.node_id, "attempts_exhausted:upstream_error")
+        store.mark_terminal_without_candidate(peer.node_id, "context_limit", "context_limit:packet envelope")
+        store.backup()
+    finally:
+        store.close()
+    ended = load_terminal_without_output(paths)
+    assert set(ended) == {root3.node_id, peer.node_id}
+    assert ended[root3.node_id].transport_failure and ended[peer.node_id].context_limit
+
+    selection = select_partition(paths, "main", seed=SEED, math_equivalent=_equivalent)
+    assert not selection.pending_policy_ids and len(selection.results) == 390
+    tables = load_partition_tables(paths, "main")
+    assert all(r.delivered_state != "missing_selection" for r in tables.checkpoints)
+    roots = next(r for r in tables.failures if r.item_id == math.item_id and r.generation_kind == "root")
+    peers = next(r for r in tables.failures if r.item_id == math.item_id and r.generation_kind == "peer")
+    assert (roots.n_terminal_no_output, roots.n_transport_failed, roots.n_context_limit) == (1, 1, 0)
+    assert (peers.n_terminal_no_output, peers.n_transport_failed, peers.n_context_limit) == (1, 0, 1)
+    assert roots.n_candidates == 24 and roots.n_invalid_output >= 1
+    sample = next(r for r in tables.checkpoints if r.item_id == math.item_id and r.name == "sample/25"
+                  and r.view == "current")
+    assert (sample.required_n_no_output, sample.required_n_transport_failed, sample.required_n_missing_candidate) \
+        == (1, 1, 0)
+    assert sample.pool_n_missing == 0 and sample.pool_n_invalid >= 1

@@ -51,6 +51,7 @@ from agent_allocation.metrics.transitions import TRANSITION_KINDS, check_identit
 from agent_allocation.selection.keys import option_letters, vote_key
 from agent_allocation.selection.readout import FAMILIES, pool_hash
 from agent_allocation.selection.seal import SealedSelections, SealError
+from agent_allocation.selection.terminal import TerminalWithoutOutput
 
 __all__ = [
     "BankRow", "CheckpointRow", "FailureRow", "ItemRecords", "MetricsInvariantError", "PartitionRecords",
@@ -81,6 +82,8 @@ class ItemRecords:
     candidates: Mapping[str, Candidate]
     results: Mapping[str, GenerationResult] = field(default_factory=dict)   # node_id -> result (failure rates)
     specs: Mapping[str, GenerationSpec] = field(default_factory=dict)       # node_id -> spec (kind/budget)
+    # node_id -> terminal without output (selection.terminal); its candidate is the materialized EMPTY one
+    terminal: Mapping[str, TerminalWithoutOutput] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -114,7 +117,7 @@ class CheckpointRow:
     pool_n_votes: int | None                # text: candidates with a gold-blind vote key; None for code
     pool_n_distinct_answers: int | None     # text: distinct exact keys among votes
     pool_top_answer_support: int | None     # text: largest exact-key class
-    pool_unanimous: bool | None             # text: every pool member votes and all keys agree
+    pool_unanimous: bool | None             # text: every pool member votes and all keys agree; None if one is absent
     pool_n_correct: int
     pool_n_wrong: int
     pool_n_invalid: int
@@ -128,8 +131,9 @@ class CheckpointRow:
     input_bank_coverage_lo: int | None      # POOLED current view only: required ancestors outside the pool
     input_bank_coverage_hi: int | None
     required_n_missing_candidate: int
-    required_n_invalid_parse: int
-    required_n_transport_failed: int | None  # None when results were not supplied
+    required_n_no_output: int                # terminal without a response (transport exhausted, context limit)
+    required_n_invalid_parse: int            # real responses whose extraction was not VALID
+    required_n_transport_failed: int | None  # non-OK results + transport-exhausted terminals; None without either
     required_n_truncated: int | None
     selection_status: str | None
     selector_name: str | None
@@ -265,18 +269,20 @@ class FailureRow:
     n_nodes: int
     n_results: int
     n_transport_ok: int
-    n_transport_failed: int
+    n_transport_failed: int                 # non-OK accepted results + nodes that exhausted transport attempts
+    n_terminal_no_output: int               # terminal without a response (never a candidate from the model)
+    n_context_limit: int                    # of which: stopped by the context-limit policy before any call
     n_completion_length: int
     n_completion_blocked: int
     n_completion_empty: int
     n_completion_other: int
-    n_candidates: int
+    n_candidates: int                       # real responses with an extracted candidate
     n_parse_valid: int
     n_parse_missing_final: int
     n_parse_malformed_final: int
     n_parse_empty_content: int
     n_parse_refusal: int
-    n_invalid_output: int                   # state I: parse failures plus grader INVALID_OUTPUT on a valid parse
+    n_invalid_output: int                   # state I: no-output terminals, parse failures, grader INVALID_OUTPUT
     n_invalid_after_valid_parse: int        # VALID extraction the grader found to name no legal answer / program
     n_graded_correct: int
     n_graded_wrong: int
@@ -399,9 +405,9 @@ def _checkpoint_row(it: _Item, cp: PolicyCheckpoint, selection: SelectionResult 
 
     selected_state = None
     if selection is not None:
-        if not all(c in candidates for c in pool):
-            raise MetricsInvariantError(f"{cp.policy_id}: a sealed selection's pool candidate is no longer available")
-        if selection.pool_hash != pool_hash(pool, candidates):
+        # absent members (07-R12): no candidate record, or a materialized EMPTY stand-in for a terminal no-output node
+        absent = frozenset(c for c in pool if c not in candidates or c in it.item.terminal)
+        if selection.pool_hash != pool_hash(pool, candidates, absent):
             raise MetricsInvariantError(f"{cp.policy_id}: sealed pool hash differs from the pool being graded")
         chosen = selection.selected_candidate_id
         if chosen is not None:
@@ -425,6 +431,7 @@ def _checkpoint_row(it: _Item, cp: PolicyCheckpoint, selection: SelectionResult 
     votes = [k for k in keys if k is not None]
     support = max((votes.count(k) for k in set(votes)), default=0) if text else None
     results = it.item.results
+    terminal = it.item.terminal
     chosen_candidate = None if selection is None or selection.selected_candidate_id is None \
         else candidates.get(selection.selected_candidate_id)
     return CheckpointRow(
@@ -434,18 +441,21 @@ def _checkpoint_row(it: _Item, cp: PolicyCheckpoint, selection: SelectionResult 
         pool_n_valid_parse=sum(1 for c in pool if c in candidates and candidates[c].parse_status is ParseStatus.VALID),
         pool_n_votes=len(votes) if text else None, pool_n_distinct_answers=len(set(votes)) if text else None,
         pool_top_answer_support=support,
-        pool_unanimous=(len(votes) == len(pool) and len(set(votes)) == 1) if text else None,
+        pool_unanimous=None if not text or any(c not in candidates for c in pool)
+        else (len(votes) == len(pool) and len(set(votes)) == 1),
         pool_n_correct=counts[CandidateState.CORRECT], pool_n_wrong=counts[CandidateState.WRONG],
         pool_n_invalid=counts[CandidateState.INVALID], pool_n_unknown=counts[CandidateState.UNKNOWN],
         pool_n_missing=counts[CandidateState.MISSING], coverage_lo=cov[0], coverage_hi=cov[1],
         archive_size=len(required), archive_coverage_lo=arch[0], archive_coverage_hi=arch[1],
         input_bank_coverage_lo=input_bank[0], input_bank_coverage_hi=input_bank[1],
         required_n_missing_candidate=sum(1 for c in required if c not in candidates),
-        required_n_invalid_parse=sum(1 for c in required
-                                     if c in candidates and candidates[c].parse_status is not ParseStatus.VALID),
-        required_n_transport_failed=(sum(1 for c in required if c in results
+        required_n_no_output=sum(1 for c in required if c in terminal),
+        required_n_invalid_parse=sum(1 for c in required if c in candidates and c not in terminal
+                                     and candidates[c].parse_status is not ParseStatus.VALID),
+        required_n_transport_failed=(sum(1 for c in required if (c in results
                                          and results[c].transport_status is not TransportStatus.OK)
-                                     if results else None),
+                                         or (c in terminal and terminal[c].transport_failure))
+                                     if results or terminal else None),
         required_n_truncated=(sum(1 for c in required if c in results and _truncated(results[c]))
                               if results else None),
         selection_status=None if selection is None else SelectionStatus(selection.status).value,
@@ -609,7 +619,8 @@ def _failure_rows(it: _Item) -> list[FailureRow]:
     rows = []
     for (kind, budget), members in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
         results = [it.item.results[m] for m in members if m in it.item.results]
-        cands = [it.item.candidates[m] for m in members if m in it.item.candidates]
+        ended = [it.item.terminal[m] for m in members if m in it.item.terminal]
+        cands = [it.item.candidates[m] for m in members if m in it.item.candidates and m not in it.item.terminal]
         completion = [r.completion_status for r in results if r.transport_status is TransportStatus.OK]
         parse = [c.parse_status for c in cands]
         states = [it.states[m] for m in members if m in it.item.candidates]
@@ -619,7 +630,9 @@ def _failure_rows(it: _Item) -> list[FailureRow]:
         rows.append(FailureRow(
             **it.base(), generation_kind=kind, reasoning_budget=budget, n_nodes=len(members), n_results=len(results),
             n_transport_ok=sum(r.transport_status is TransportStatus.OK for r in results),
-            n_transport_failed=sum(r.transport_status is not TransportStatus.OK for r in results),
+            n_transport_failed=(sum(r.transport_status is not TransportStatus.OK for r in results)
+                                + sum(t.transport_failure for t in ended)),
+            n_terminal_no_output=len(ended), n_context_limit=sum(t.context_limit for t in ended),
             n_completion_length=sum(s is CompletionStatus.LENGTH for s in completion),
             n_completion_blocked=sum(s is CompletionStatus.BLOCKED for s in completion),
             n_completion_empty=sum(s is CompletionStatus.EMPTY for s in completion),

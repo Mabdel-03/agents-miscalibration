@@ -1,11 +1,14 @@
 """Select every ready checkpoint of a partition from disk and seal the results (public inputs only).
 
 Reads, through ``RunPaths``: ``manifests/policies/{partition}.jsonl``, ``manifests/public/*.jsonl``,
-``parsed/**/{node_id}.json`` and, for code, ``public_checks/**/{candidate_id}.json``. It never opens ``private/`` or
-``grades/``. A checkpoint is *ready* when every pool candidate is parsed (a parsed record whose ``candidate`` is
-``null`` -- a node made terminal without a response -- counts as an ``EMPTY`` candidate) and, for code, every
-validly parsed pool candidate has a public check; other checkpoints are reported as pending and selected on a later
-call (sealing appends only unsealed checkpoints and never seals a paused selection, see ``selection.seal``).
+``parsed/**/{node_id}.json``, for code ``public_checks/**/{candidate_id}.json``, and the coordinator's state backup
+(read-only) for nodes that ended without a response. It never opens ``private/`` or ``grades/``. A checkpoint is
+*ready* when every pool member is parsed or ended without output (a parsed record whose ``candidate`` is ``null``,
+or a state row with a non-succeeded terminal outcome -- see ``selection.terminal``); the latter are passed to the
+selector as ``absent_ids`` (07-R12: invalid members, marked absent in the pool hash). For code, every validly parsed
+pool candidate must also have a public check; other checkpoints are reported as
+pending and selected on a later call (sealing appends only unsealed checkpoints and never seals a paused selection,
+see ``selection.seal``).
 ``math_equivalent`` is memoized once per call (``memoized_equivalence``) and passed to MATH checkpoints only.
 
 Config keys consumed: none (``seed`` is the study's top-level ``seed``, passed by the caller).
@@ -20,11 +23,11 @@ from agent_allocation.contracts import (
     BENCHMARKS, Candidate, OutputKind, ParseStatus, PolicyCheckpoint, PublicCheckResult, PublicTask, SelectionResult,
     load_record,
 )
-from agent_allocation.extraction.final import empty_candidate
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.plurality import memoized_equivalence
 from agent_allocation.selection.readout import select_checkpoint
 from agent_allocation.selection.seal import seal_selections
+from agent_allocation.selection.terminal import load_terminal_without_output
 
 __all__ = ["PartitionSelection", "select_partition"]
 
@@ -60,7 +63,9 @@ def select_partition(paths: RunPaths, partition: str, *, seed: int,
                     task = load_record(PublicTask, json.loads(line))
                     tasks[task.item_id] = task
     equivalent = None if math_equivalent is None else memoized_equivalence(math_equivalent)
+    terminal = load_terminal_without_output(paths)
     candidates: dict[str, Candidate] = {}
+    absent: set[str] = set()                         # ended without any candidate (07-R12 absent members)
     checks: dict[str, PublicCheckResult] = {}
     results: list[SelectionResult] = []
     pending: list[str] = []
@@ -70,14 +75,18 @@ def select_partition(paths: RunPaths, partition: str, *, seed: int,
             raise ValueError(f"{cp.policy_id}: no public task for item {cp.item_id}")
         ready = True
         for cid in cp.candidate_ids:
-            if cid not in candidates:
+            if cid not in candidates and cid not in absent:
                 path = paths.parsed(cid)
-                if not path.exists():
+                record = _load_json(path).get("candidate") if path.exists() else None
+                if record is not None:
+                    candidates[cid] = load_record(Candidate, record)
+                elif path.exists() or cid in terminal:
+                    absent.add(cid)                  # a stored null candidate, or terminal in the coordinator state
+                else:
                     ready = False
                     break
-                record = _load_json(path).get("candidate")
-                # A node made terminal without any response (v2 R03-1) is an EMPTY candidate, not a pending one.
-                candidates[cid] = empty_candidate(cid, task) if record is None else load_record(Candidate, record)
+            if cid in absent:
+                continue
             if task.output_kind is OutputKind.PYTHON and cid not in checks:
                 check_path = paths.public_check(cid)
                 if check_path.exists():
@@ -88,11 +97,11 @@ def select_partition(paths: RunPaths, partition: str, *, seed: int,
         if not ready:
             pending.append(cp.policy_id)
             continue
-        pool = {cid: candidates[cid] for cid in cp.candidate_ids}
+        pool = {cid: candidates[cid] for cid in cp.candidate_ids if cid in candidates}
         pool_checks = {cid: checks[cid] for cid in cp.candidate_ids if cid in checks}
         results.append(select_checkpoint(cp, task, pool, pool_checks, seed=seed,
                                          math_equivalent=equivalent if task.output_kind is OutputKind.MATH
-                                         else None))
+                                         else None, absent_ids=frozenset(c for c in cp.candidate_ids if c in absent)))
     digest = seal_selections(paths, partition, results) if seal and results else None
     return PartitionSelection(partition=partition, results=tuple(results), pending_policy_ids=tuple(pending),
                               sealed_sha256=digest)

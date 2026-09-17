@@ -1,10 +1,12 @@
 """Disk side of the metrics join, through ``RunPaths`` only (docs/00_contract.md §3, R3/R4).
 
 ``load_partition_tables(paths, partition)`` verifies the partition's selection seal *before* it opens any grade file
-(``SealError`` otherwise), then reads the policies manifest, job specs, public tasks, parsed candidates/results and
-grades, and builds the per-item tables. ``write_tables`` writes one canonical-JSON-lines file per table plus
-``summary_checkpoints.jsonl`` into a directory the caller chooses; ``write_partition_tables`` writes the same files
-through ``RunPaths.metrics_table(metrics_table_name(partition, table))`` (contract v2, R06-3).
+(``SealError`` otherwise), then reads the policies manifest, job specs, public tasks, parsed candidates/results, the
+coordinator state backup's terminal-without-output nodes (``selection.terminal``; read as ``EMPTY`` candidates,
+exactly as selection reads them) and grades, and builds the per-item tables. ``write_tables`` writes one
+canonical-JSON-lines file per table plus ``summary_checkpoints.jsonl`` into a directory the caller chooses;
+``write_partition_tables`` writes the same files through ``RunPaths.metrics_table(metrics_table_name(partition,
+table))`` (contract v2, R06-3).
 
 Config keys consumed: none.
 """
@@ -25,6 +27,7 @@ from agent_allocation.metrics.tables import (
 )
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.seal import load_sealed_selections
+from agent_allocation.selection.terminal import TerminalWithoutOutput, load_terminal_without_output
 
 __all__ = [
     "TABLE_FILES", "load_grades", "load_partition_records", "load_partition_tables", "load_public_tasks",
@@ -81,6 +84,7 @@ def load_partition_records(paths: RunPaths, partition: str) -> PartitionRecords:
                 raise ValueError(f"{jobs_path}: node_id {data['node_id']} does not match its GenerationSpec")
             specs[spec.node_id] = spec
     tasks = load_public_tasks(paths)
+    ended = load_terminal_without_output(paths)
     by_item: dict[str, list[PolicyCheckpoint]] = {}
     for cp in checkpoints:
         by_item.setdefault(cp.item_id, []).append(cp)
@@ -92,9 +96,13 @@ def load_partition_records(paths: RunPaths, partition: str) -> PartitionRecords:
                      | {n for n, spec in specs.items() if spec.item_id == item_id})
         candidates: dict[str, Candidate] = {}
         results: dict[str, GenerationResult] = {}
+        terminal: dict[str, TerminalWithoutOutput] = {}
         for node_id in ids:
             path = paths.parsed(node_id)
             if not path.exists():
+                if node_id in ended:          # terminal in the coordinator state without any response -> EMPTY
+                    terminal[node_id] = ended[node_id]
+                    candidates[node_id] = empty_candidate(node_id, tasks[item_id])
                 continue
             data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("result") is not None:
@@ -102,14 +110,17 @@ def load_partition_records(paths: RunPaths, partition: str) -> PartitionRecords:
                 if result.node_id != node_id:
                     raise ValueError(f"{path}: parsed result does not belong to node {node_id}")
                 results[node_id] = result
-            # candidate null: terminal without a response (v2 R03-1) -> EMPTY, exactly as selection reads it
-            candidate = empty_candidate(node_id, tasks[item_id]) if data.get("candidate") is None \
-                else load_record(Candidate, data["candidate"])
+            if data.get("candidate") is None:  # a stored record without a candidate: ended without a response
+                terminal[node_id] = ended.get(node_id) or TerminalWithoutOutput(node_id, None,
+                                                                                "parsed:null_candidate", 0)
+                candidates[node_id] = empty_candidate(node_id, tasks[item_id])
+                continue
+            candidate = load_record(Candidate, data["candidate"])
             if candidate.candidate_id != node_id:
                 raise ValueError(f"{path}: parsed candidate does not belong to node {node_id}")
             candidates[node_id] = candidate
         items.append(ItemRecords(task=tasks[item_id], checkpoints=tuple(by_item[item_id]), candidates=candidates,
-                                 results=results, specs={n: specs[n] for n in ids if n in specs}))
+                                 results=results, specs={n: specs[n] for n in ids if n in specs}, terminal=terminal))
     return PartitionRecords(partition=partition, items=tuple(items))
 
 

@@ -22,6 +22,8 @@ once across all batches. In detail:
   authoritative) and emits a ``SealDriftWarning`` -- e.g. an equivalence timeout that resolved differently.
 
 A batch file without its seal (a crash between the two renames) was never sealed and is replaced by the next call.
+Sealing holds an exclusive ``flock`` on the partition's selections directory from reading the chain to writing the
+seal, so two concurrent passes cannot interleave a batch and a foreign seal.
 ``load_sealed_selections`` is the only way to obtain a ``SealedSelections``: it verifies every batch digest, count,
 chain link and contiguity, refuses a checkpoint sealed twice, and returns the sealed row per policy. ``metrics``
 joins grades only through a verified ``SealedSelections``.
@@ -30,16 +32,19 @@ Config keys consumed: none.
 """
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 import re
 import tempfile
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 from agent_allocation.contracts import SelectionResult, SelectionStatus, canonical_json, dump_record, load_record
 from agent_allocation.paths import RunPaths
@@ -51,7 +56,7 @@ __all__ = [
 
 _VERIFIED = object()
 _SEAL_KEYS = frozenset({"sha256", "count", "sealed_at", "previous_seal_sha256"})
-_BATCH_FILE = re.compile(r"^batch_(\d{4})\.(jsonl|seal\.json)$")
+_BATCH_FILE = re.compile(r"^batch_(\d{4,})\.(jsonl|seal\.json)$")
 
 
 class SealError(RuntimeError):
@@ -215,12 +220,34 @@ def read_seals(paths: RunPaths, partition: str) -> tuple[SealInfo, ...]:
     return tuple(info for info, _ in _verified_chain(paths, partition))
 
 
+@contextmanager
+def _partition_lock(paths: RunPaths, partition: str) -> Iterator[None]:
+    """Exclusive ``flock`` on the partition's selections directory while a batch is chosen, written and sealed."""
+    directory = paths.selections_dir(partition)
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:        # a filesystem without flock support: single-writer use stays safe
+            if exc.errno not in (errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL):
+                raise
+        yield
+    finally:
+        os.close(fd)                  # closing the descriptor releases the lock
+
+
 def seal_selections(paths: RunPaths, partition: str, results: Sequence[SelectionResult]) -> str:
     _check_partition(partition)
     new = _validate(partition, results)
     if not new:
         raise ValueError(f"refusing to seal an empty selection set for {partition!r}: empty selector output is a "
                          "blocker, not a result")
+    with _partition_lock(paths, partition):
+        return _seal_locked(paths, partition, new)
+
+
+def _seal_locked(paths: RunPaths, partition: str, new: Mapping[str, SelectionResult]) -> str:
     chain = _verified_chain(paths, partition)
     sealed = _effective(partition, chain)
     pending: dict[str, SelectionResult] = {}
@@ -247,7 +274,11 @@ def seal_selections(paths: RunPaths, partition: str, results: Sequence[Selection
     batch = len(chain)
     body = b"".join(_line(pending[policy]) for policy in sorted(pending))
     digest = sha256(body).hexdigest()
+    if paths.selection_seal(partition, batch).exists():
+        raise SealError(f"{partition}: batch {batch} was sealed concurrently; retry")
     _atomic_write(paths.selections(partition, batch), body)
+    if sha256(paths.selections(partition, batch).read_bytes()).hexdigest() != digest:
+        raise SealError(f"{partition}: batch {batch} changed while it was being sealed; retry")
     seal = {"sha256": digest, "count": len(pending),
             "sealed_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
             "previous_seal_sha256": chain[-1][0].sha256 if chain else None}

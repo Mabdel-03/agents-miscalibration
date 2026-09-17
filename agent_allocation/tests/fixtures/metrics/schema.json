@@ -229,6 +229,10 @@
         "type": "int"
       },
       {
+        "name": "required_n_no_output",
+        "type": "int"
+      },
+      {
         "name": "required_n_invalid_parse",
         "type": "int"
       },
@@ -348,6 +352,14 @@
       },
       {
         "name": "n_transport_failed",
+        "type": "int"
+      },
+      {
+        "name": "n_terminal_no_output",
+        "type": "int"
+      },
+      {
+        "name": "n_context_limit",
         "type": "int"
       },
       {

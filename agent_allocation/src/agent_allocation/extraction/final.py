@@ -14,6 +14,9 @@ Rules, applied in this order:
 6. Neither ``<final>`` nor ``</final>`` present -> ``MISSING``.
 7. Anything else -- two or more opening tags, a stray, reversed or missing closer -- -> ``MALFORMED``. A closed element
    whose inner text is blank (after the fence strip for Python) is also ``MALFORMED``: it holds no answer.
+8. ``OutputKind.PYTHON`` only (lead decision W06-2): a final whose text, after stripping at most one outer fence, is
+   not a Python program -- ``ast.parse`` raises (``SyntaxError``, a null byte, nesting too deep) -- is ``MALFORMED``:
+   no program, not a wrong program. Parsing never executes anything and reads no gold; warnings are suppressed.
 
 Tags are matched byte-exactly (no case folding). There is no text heuristic, no "Answer:" scraping, no LLM repair,
 and nothing is read from hidden reasoning (``GenerationResult`` does not carry it). ``final_answer`` is the inner text
@@ -26,6 +29,9 @@ Config keys consumed: none.
 """
 from __future__ import annotations
 
+import ast
+import warnings
+
 from agent_allocation._vendor.extraction_tags import TAG_EMPTY, TAG_MISSING, TAG_OK, strict_single_pair, strip_one_fence
 from agent_allocation.contracts import (
     Candidate, CompletionStatus, GenerationResult, GenerationSpec, OutputKind, ParseStatus, PublicTask, TransportStatus,
@@ -33,10 +39,10 @@ from agent_allocation.contracts import (
 
 __all__ = [
     "ALLOWED_FENCE_INFO", "EXTRACTOR_VERSION", "FINAL_CLOSE", "FINAL_OPEN", "empty_candidate", "extract_candidate",
-    "terminal_without_response",
+    "is_python_program", "terminal_without_response",
 ]
 
-EXTRACTOR_VERSION = "06-final-v1"
+EXTRACTOR_VERSION = "06-final-v2"
 FINAL_OPEN = "<final>"
 FINAL_CLOSE = "</final>"
 RATIONALE_OPEN = "<rationale>"
@@ -86,7 +92,20 @@ def extract_candidate(result: GenerationResult, spec: GenerationSpec, task: Publ
         final_answer = strip_one_fence(inner, ALLOWED_FENCE_INFO)
     if not final_answer.strip():
         return build(ParseStatus.MALFORMED, rationale=rationale)
+    if task.output_kind is OutputKind.PYTHON and not is_python_program(final_answer):
+        return build(ParseStatus.MALFORMED, rationale=rationale)
     return build(ParseStatus.VALID, final_answer=final_answer, rationale=rationale)
+
+
+def is_python_program(source: str) -> bool:
+    """Whether ``source`` parses as a Python module (``ast.parse``; nothing is compiled or executed)."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    return True
 
 
 def terminal_without_response(spec: GenerationSpec, task: PublicTask) -> Candidate:
@@ -103,7 +122,7 @@ def terminal_without_response(spec: GenerationSpec, task: PublicTask) -> Candida
 
 
 def empty_candidate(node_id: str, task: PublicTask) -> Candidate:
-    """``terminal_without_response`` for readers that hold only the node id (a parsed record with ``candidate: null``)."""
+    """``terminal_without_response`` for readers that hold only the node id (e.g. metrics' state-backup reader)."""
     if not isinstance(node_id, str) or not node_id or not isinstance(task, PublicTask):
         raise TypeError("empty_candidate expects (non-empty node_id, PublicTask)")
     return Candidate(candidate_id=node_id, node_id=node_id, item_id=task.item_id, visible_content="", final_answer=None,

@@ -142,3 +142,29 @@ def test_invalid_inputs(paths):
 def test_sealed_selections_cannot_be_forged():
     with pytest.raises(SealError):
         SealedSelections(partition="main", seals=(SealInfo(0, "x", 1, "t", None),), by_policy={})
+
+
+def test_concurrent_sealing_passes_keep_the_chain_valid(paths):
+    import threading
+    errors = []
+
+    def worker(tag):
+        try:
+            for i in range(6):
+                seal_selections(paths, "main", [_sel(f"main/{tag}{i}/x/current", cpu=float(i))])
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(tag,)) for tag in "abcd"]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    loaded = load_sealed_selections(paths, "main")
+    assert len(loaded.by_policy) == 24 and [s.batch for s in loaded.seals] == list(range(24))
+
+
+def test_batch_indices_beyond_four_digits_are_read(paths):
+    from agent_allocation.selection import seal as seal_module
+    assert seal_module._BATCH_FILE.match("batch_10000.seal.json") and seal_module._BATCH_FILE.match("batch_0001.jsonl")
