@@ -14,7 +14,7 @@ import pandas as pd
 
 import isocore as ic
 import isoframe
-import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap, fig_select, fig_law
+import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap, fig_select, fig_law, fig_theory
 import isogap, isoselect, isolaw
 
 DEFAULT_RUN = ("/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/"
@@ -155,9 +155,13 @@ def main():
                    ("axis_by_regime", axis), ("prescription", presc),
                    ("predictability", pauc), ("pred_obs", obs)]:
         df.to_parquet(f"{OUT}/cache/law_{nm}.parquet")
+    tcheck = isolaw.theory_check(RUN, "main", BANK)
+    tfit = isolaw.theory_fit(tcheck)
+    tcheck.to_parquet(f"{OUT}/cache/law_theory_check.parquet")
     fig_law.law(lstate, kstar, wfit, OUT)
     fig_law.prescribe(axis, obs, pauc, OUT)
-    print("figures: 19 written")
+    fig_theory.draw(tcheck, tfit, OUT)
+    print("figures: 20 written")
 
     # ---------------------------------------------------------------- numbers
     N: dict = {}
@@ -362,6 +366,11 @@ def main():
                           n=wfit["n"], corr=fmt(wfit["corr"], 3))
     L["kstar"] = {f"m{int(m*10)}": fmt(wfit["coef"] * m ** wfit["exponent"], 1)
                   for m in [0.2, 0.3, 0.5, 0.7, 0.9]}
+    L["theory"] = dict(corr=fmt(tfit["corr"], 3), mae=fmt(tfit["mae"], 3),
+                       bias=fmt(abs(tfit["bias"]), 3), n_points=tfit["n_points"],
+                       n_items=tfit["n_items"], step_vote=fmt(tfit["step_agreement"], 3))
+    L["kstar_closed"] = {f"m{int(m*10)}": fmt(isolaw.kstar_closed_form(m), 1)
+                         for m in [0.1, 0.2, 0.3, 0.5, 0.7, 0.9]}
     L["regime_mix"] = {r["benchmark"]: dict(decided=fmt(r["decided"]), outvoted=fmt(r["outvoted"]),
                                             dead=fmt(r["dead"]),
                                             predicted_gain=fmt(r["predicted_gain"]))

@@ -194,3 +194,82 @@ def prescription(state: pd.DataFrame, axis: pd.DataFrame, C: int = 8):
                          outvoted=float(sh.get("outvoted", 0.0)),
                          dead=float(sh.get("dead", 0.0)), predicted_gain=pred))
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------- the probability model
+
+VOTE_BENCHMARKS = ["math500", "mmlu_pro"]   # benchmarks whose delivered selector is a plurality
+
+
+def theory_check(run_dir: str, partition: str = "main", cache: str | None = None,
+                 ks=(2, 3, 4, 6, 8, 12, 16, 20, 25), draws: int = 6000,
+                 seed: int = ic.STUDY_SEED):
+    """Compare the parameter-free normal approximation against simulated plurality outcomes.
+
+    The model: k draws are multinomial over answer classes. Let the correct class hold probability
+    p and the largest wrong class q1. The plurality is correct when N_c > N_w, and
+
+        E[N_c - N_w] = k m,     Var[N_c - N_w] = k (p + q1 - m^2),      m = p - q1,
+
+    using Cov(N_c, N_w) = -k p q1. The central limit theorem then gives
+
+        P(plurality correct) = Phi( m sqrt(k) / sigma ),   sigma^2 = p + q1 - m^2,
+
+    with no free parameters. Restricted to benchmarks whose selector really is a vote; MBPP+
+    selects by public tests, so the model does not apply to it.
+    """
+    from scipy.stats import norm
+    rng = np.random.default_rng(seed)
+    rows = []
+    for item, bench, seq in _bank_rows(run_dir, partition, cache):
+        if bench not in VOTE_BENCHMARKS:
+            continue
+        v = [(a, c) for a, c, stt in seq if stt == "valid" and a is not None]
+        if not v:
+            continue
+        n = len(v)
+        cnt = collections.Counter(a for a, _ in v)
+        grp = {a: c for a, c in v}
+        keys = list(cnt)
+        cts = np.array([cnt[a] for a in keys])
+        isc = np.array([grp[a] for a in keys])
+        # The selector merges equivalent correct answers, so correctness is one class.
+        p = cts[isc].sum() / n
+        q1 = (cts[~isc].max() / n) if (~isc).any() else 0.0
+        m = p - q1
+        s2 = p + q1 - m ** 2
+        probs = np.concatenate([[p], cts[~isc] / n])
+        probs = probs / probs.sum()
+        lab = np.concatenate([[True], np.zeros((~isc).sum(), dtype=bool)])
+        for k in ks:
+            dr = rng.choice(len(probs), size=(draws, k), p=probs)
+            oh = (dr[:, :, None] == np.arange(len(probs))[None, None, :]).sum(axis=1)
+            obs = float(lab[oh.argmax(axis=1)].mean())
+            th = float(norm.cdf(m * np.sqrt(k) / np.sqrt(s2))) if s2 > 0 else float(m > 0)
+            rows.append(dict(item_id=item, benchmark=bench, k=int(k), p=p, q1=q1, m=m,
+                             sigma2=s2, obs=obs, theory=th))
+    return pd.DataFrame(rows)
+
+
+def theory_fit(tc: pd.DataFrame) -> dict:
+    d = tc[tc["k"] >= 2]
+    last = tc[tc["k"] == tc["k"].max()]
+    return dict(n_points=int(len(d)), n_items=int(d["item_id"].nunique()),
+                corr=float(np.corrcoef(d["obs"], d["theory"])[0, 1]),
+                mae=float(np.abs(d["obs"] - d["theory"]).mean()),
+                bias=float((d["theory"] - d["obs"]).mean()),
+                step_agreement=float(((last["m"] > 0).astype(float)
+                                      == (last["obs"] > 0.5).astype(float)).mean()))
+
+
+def kstar_closed_form(m: float, conf: float = 0.95, p_plus_q1: float = 1.0) -> float:
+    """Samples needed for the vote to be correct with probability *conf*, at margin m.
+
+    k* = (z sigma / m)^2 with sigma^2 = (p + q1) - m^2. With two live answers p + q1 = 1 this is
+    k* = z^2 (1 - m^2) / m^2, so k* grows as m^-2 for small margins.
+    """
+    from scipy.stats import norm
+    if m <= 0:
+        return float("inf")
+    z = norm.ppf(conf)
+    return float(max(1.0, (z ** 2) * (p_plus_q1 - m ** 2) / (m ** 2)))

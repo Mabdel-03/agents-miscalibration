@@ -4,6 +4,7 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{caption}
 \usepackage[hidelinks]{hyperref}
 \usepackage{times}
@@ -501,6 +502,7 @@ assertions finds programs that satisfy the visible evidence and fail the hidden 
 benchmark the run would have done better selecting at random, and better still doing nothing.
 
 \subsection{Does the allocation change how well a pool reads out?}
+\label{sec:tradeoff}
 
 Delivering a correct answer requires the pool to hold one, so for every configuration
 \emph{delivered} $=$ \emph{coverage} $\times S$ exactly, where $S$ is selection success, the chance
@@ -546,6 +548,7 @@ rather than the final round keeps both. That is a reason to prefer it, but this 
 have the power to prove it pays.
 
 \subsection{Repairing the selector}
+\label{sec:repair}
 
 If selection is the constraint, the structure of the answer space decides which repair is even
 available. Figure~\ref{fig:repair} shows that this structure differs enormously across benchmarks.
@@ -589,100 +592,262 @@ and it is the central difficulty this study surfaces.
 
 \subsection{A conditional scaling law}
 
-The preceding sections say what the gap is and what closes it on average. This section asks the
-sharper question: given a budget and a problem, which axis should take the budget?
+The sections above say what the gap is and what closes it on average. This one asks the sharper
+question: given a budget and a problem, which axis should take the budget? The answer turns out to
+follow from a small amount of probability, and the derivation is worth doing carefully because it
+says exactly when each axis stops working.
 
-Everything a vote can do is decided by two numbers per item: $p$, the chance a draw is correct, and
-$q_1$, the largest share held by any single wrong answer. Their difference $m = p - q_1$ is the
-plurality margin. As $k$ grows the vote converges to the correct answer exactly when $m > 0$, so
-the asymptotic readout is the step function $\mathbf{1}[m > 0]$. On the main panel that step
-predicts the realised vote at $k=25$ on 0.968 of items, with the disagreements sitting at margins
-near zero where 25 draws have not yet resolved the limit.
+\subsubsection*{Setup}
 
-That splits every item into three regimes, shown in Figure~\ref{fig:law}: \emph{decided}
-($m > 0$), where a vote will get there; \emph{outvoted} ($p > 0$, $m \leq 0$), where a correct
-answer exists and loses; and \emph{dead} ($p = 0$), where the bank never produced one.
+Fix an item. A single generation at allowance $A$ draws an answer from a distribution over answer
+classes, where a class is a set of answers the selector treats as the same. Write
+
+\begin{itemize}
+\itemsep2pt
+\item $p$ for the probability that a draw lands in the correct class,
+\item $q_1$ for the probability of the largest single \emph{incorrect} class,
+\item $m = p - q_1$ for the \textbf{plurality margin}.
+\end{itemize}
+
+The pair $(p, q_1)$ is the item's state. Both are properties of the model, the prompt and the
+allowance $A$; neither depends on how many samples we draw. Drawing $k$ independent samples and
+taking the plurality gives counts $(N_c, N_w, \dots)$ that are multinomial with $k$ trials.
+
+Two remarks on scope. The selector must actually be a vote, so this subsection covers MATH-500 and
+MMLU-Pro; MBPP+ selects by public tests and is treated separately below. And $p$ is the mass of the
+correct \emph{class}, which matters because this run's math selector merges semantically equivalent
+answers.
+
+\subsubsection*{The limit: what a vote can ever do}
+
+\textbf{Proposition 1.} \emph{As $k \to \infty$, the plurality is correct with probability
+$\mathbf{1}[m > 0]$.}
+
+By the law of large numbers $N_c/k \to p$ and $N_w/k \to q_1$ almost surely, so the correct class
+outnumbers every incorrect class eventually if and only if $p > q_1$. Sampling more is a consistent
+estimator of the model's own modal answer, and nothing more.
+
+This is the whole ceiling result in one line. Oracle pass@$k$ asks whether a correct answer appeared
+at all, which happens with probability $1 - (1-p)^k \to 1$ for any $p > 0$. A vote asks whether the
+correct answer appeared \emph{most often}, which converges to a hard zero or one. The gap between
+them, in the limit, is exactly the probability that $0 < p \leq q_1$: the item where the model can
+produce the right answer but not usually.
+
+On the two vote benchmarks, $\mathbf{1}[m>0]$ predicts the realised outcome at $k=25$ on 0.990 of
+items. Across all three informative benchmarks, including MBPP+ where the selector is not a vote,
+the agreement is 0.968.
+
+\subsubsection*{The rate: how fast a vote gets there}
+
+\textbf{Proposition 2.} \emph{For $k$ draws,}
+\[
+P(\text{plurality correct}) \;\approx\; \Phi\!\left(\frac{m\sqrt{k}}{\sigma}\right),
+\qquad \sigma^{2} \;=\; p + q_1 - m^{2}.
+\]
+
+Let $D_k = N_c - N_w$. Under the multinomial, $\mathbb{E}[D_k] = k(p - q_1) = km$, and since
+$\mathrm{Cov}(N_c, N_w) = -k\,p\,q_1$,
+\[
+\mathrm{Var}(D_k) = kp(1-p) + kq_1(1-q_1) + 2kpq_1 = k\big(p + q_1 - (p-q_1)^2\big) = k\sigma^{2}.
+\]
+The plurality is correct when $D_k > 0$, and the central limit theorem gives
+$P(D_k > 0) \approx \Phi(km/\sqrt{k\sigma^2}) = \Phi(m\sqrt{k}/\sigma)$.
+
+Note there is nothing to fit. Every quantity is read off the item's state. Figure~\ref{fig:theory}(a)
+tests it against simulated plurality outcomes on 1800 item-by-$k$ points across 200 items: the
+correlation is 0.996, the mean absolute error 0.007, and the bias $-0.004$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f19_theory_check.pdf}
+\caption{(a) The parameter-free prediction against simulated plurality accuracy, one point per item
+and $k$. (b) The curves the model implies: sub-linear gains, a hard ceiling, and a declining curve
+once $m<0$. (c) The closed form for $k^*$, with this study's bank size marked.}
+\label{fig:theory}
+\end{figure}
+
+Figure~\ref{fig:theory}(b) draws the resulting family. Three features matter. The curves are
+concave in $k$, so each extra sample is worth less than the last. They saturate, so past a point
+extra samples are worth nothing at all. And for $m < 0$ the curve \emph{declines}: sampling harder
+makes the answer worse, converging on the wrong class.
+
+\subsubsection*{How many samples a decided item needs}
+
+\textbf{Corollary.} \emph{To be correct with probability $1-\alpha$ requires}
+\[
+k^{*}(m) \;=\; \left(\frac{z_{1-\alpha}\,\sigma}{m}\right)^{2}
+\;=\; \frac{z_{1-\alpha}^{2}\,(p + q_1 - m^{2})}{m^{2}}.
+\]
+
+Inverting Proposition 2 gives $m\sqrt{k}/\sigma \geq z_{1-\alpha}$. When two classes carry the mass,
+$p + q_1 = 1$ and this simplifies to $k^* = z^2(1-m^2)/m^2$, which behaves as $z^2/m^2$ for small
+margins. \textbf{Width buys resolution at a rate quadratic in the inverse margin.} At $\alpha = 0.05$:
+
+\begin{center}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+margin $m$ & 0.1 & 0.2 & 0.3 & 0.5 & 0.7 & 0.9 \\
+$k^{*}$    & 268 & 65  & 27  & 8.1 & 2.8 & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+This is the mechanism behind the plateau in Figure~\ref{fig:ladder}. Most decided items have wide
+margins, so $k^*$ is one or two and every sample after that is spent re-answering a settled
+question. Meanwhile the items that would need many samples need more than the bank holds: a margin
+of 0.2 wants 65 draws and the study bought 25. Width is useful only in a narrow band of margins,
+roughly $0.3 \lesssim m \lesssim 0.8$ at this bank size, and few items live there. A direct
+log-log fit of the observed resolution point against margin across all three benchmarks gives
+$k^{*} = 1.04\,m^{-2.17}$ with $\mathrm{corr}(\log m, \log k^{*}) = -0.875$, consistent with the
+predicted exponent of $-2$; the fit is noisier than the theory because $k^*$ is floored at one
+sample and measured on a coarse grid.
+
+\subsubsection*{Three regimes, and what each axis does to them}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{figures/f17_state_law.pdf}
-\caption{(a) Every item in the state plane; the diagonal is $m=0$. (b) The regime mix is a stable
-property of the benchmark. (c) Samples needed to bring a decided item to within 5\% of its limit,
-against its margin, with the fitted law and the binomial prediction.}
+\caption{(a) Every item in the state plane; the dashed diagonal is $m = 0$, so points above it are
+outvoted and points on the left edge are dead. (b) The regime mix is a stable property of the
+benchmark. (c) Samples needed to bring a decided item within 5\% of its limit, against its margin,
+with the fitted law and the binomial prediction.}
 \label{fig:law}
 \end{figure}
 
-\textbf{The horizontal law.} For a decided item, width is a variance-reduction problem, so the
-number of samples needed to resolve it scales as the inverse square of its margin. Fitting the
-observed resolution point against margin over 251 items gives
-\[
-k^{*} \;=\; 1.04 \; m^{-2.17}, \qquad \mathrm{corr}(\log m, \log k^{*}) = -0.875,
-\]
-against a binomial prediction of exponent $-2$. The practical content is in the constant: a margin
-of 0.9 needs 1.3 samples, 0.7 needs 2.3, 0.5 needs 4.7, 0.3 needs 14.3 and 0.2 needs 34.4. Since
-most decided items have large margins, $k^{*}$ is 1 or 2 for the bulk of the panel, and every
-sample past $k^{*}$ is spent on a question already answered. This is the mechanism behind the
-plateau in Figure~\ref{fig:ladder}: width has a hard stopping point, and the design sat far past it.
+The sign of $m$ and whether $p$ is zero partition every item into three regimes, drawn in
+Figure~\ref{fig:law}:
 
-For outvoted items the law has the opposite sign. Width does not converge to the right answer, it
-converges to the wrong one, so accuracy \emph{falls} with $k$: for items with $m < -0.2$ it goes
-from 0.062 at one sample to 0.000 by sixteen.
+\begin{center}
+\small
+\begin{tabular}{llp{7.2cm}}
+\toprule
+Regime & Condition & What compute does \\
+\midrule
+Decided  & $m > 0$            & A vote converges to the right answer in $k^*(m)$ samples. Beyond that, every axis is equivalent and every extra token is waste. \\
+Outvoted & $p > 0,\; m \leq 0$ & A vote converges to the \emph{wrong} answer. Width is negative. Only a change to $(p, q_1)$ helps. \\
+Dead     & $p = 0$            & Nothing in the sampling distribution is correct. Only a change to the distribution helps. \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\textbf{The vertical law.} Raising the per-draw allowance is the only axis that moves $m$, because
-it changes $p$ rather than the number of draws. On the 72 shared informative items, going from
-$A = 1024$ to $A = 4096$ leaves all 60 decided items decided, and rescues 2 of the 6 outvoted ones.
-The axis is monotone in the useful direction: no item was pushed out of the decided regime.
+Now the axes. \textbf{Width} $B$ increases $k$ and leaves $(p, q_1)$ untouched, so by Proposition 1
+it cannot change which class wins; it only reduces the noise around a predetermined answer. This is
+why width is bounded by $k^*$ on decided items and actively harmful on outvoted ones.
+\textbf{Depth in one call}, raising $A$, changes the sampling distribution itself and is therefore
+the only axis in this study that can move an item between regimes. \textbf{Sequential revision}
+also changes the distribution but, as Section~\ref{sec:tradeoff} showed, mostly by concentrating it, raising the
+correct share of the pool from 0.795 to 0.843 without adding coverage.
+
+The empirical check is that raising $A$ moves items the right way and never the wrong way. On the
+72 shared informative items, going from $A = 1024$ to $A = 4096$ leaves all 60 decided items
+decided, and converts 2 of the 6 outvoted ones. The direction is what the theory demands; the
+magnitude rests on six items and should be read as such.
+
+\subsubsection*{The budget rule}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{figures/f18_axis_prescription.pdf}
-\caption{(a) At $C = 8A_0$, width against depth-in-one-call within each regime. (b) Gain predicted
-from the regime mix against the gain observed. (c) Whether a four-sample pilot can identify the
-regime; MATH-500 has only five non-decided items, so its bars are unstable.}
+\caption{(a) At $C = 8A_0$, width against depth-in-one-call within each regime, with the difference
+annotated. (b) The gain predicted from the regime mix against the gain observed, with item-bootstrap
+intervals. (c) Whether a four-sample pilot can identify the regime; MATH-500 has only five
+non-decided items, so its bars are unstable.}
 \label{fig:prescribe}
 \end{figure}
 
-\textbf{The prescription.} Figure~\ref{fig:prescribe}(a) makes the conditional choice directly. At
-$C = 8A_0$, spending the budget on one deep call rather than eight samples is worth $0.000$
-$[-0.024, 0.024]$ on decided items, $+0.250$ $[0.050, 0.450]$ on outvoted ones, and $+0.080$
-$[0.000, 0.200]$ on dead ones. The axis to scale is therefore fully determined by the regime: on a
-decided item the axes are interchangeable and the only thing that matters is not overspending past
-$k^{*}$; on everything else, depth is the only axis with any traction.
+Figure~\ref{fig:prescribe}(a) measures the conditional choice directly. At $C = 8A_0$, spending the
+budget on one deep call rather than eight samples is worth
 
-Because the regime mix is a benchmark property, that composes into a predictive rule. Writing
-$O$ and $Z$ for the outvoted and dead shares, the expected gain from moving a budget of $8A_0$ from
-width to depth is $0.250\,O + 0.080\,Z$. Across the three informative benchmarks this predicts
-0.013, 0.041 and 0.016 against observed values of $-0.010$, 0.050 and 0.030, and it matches the
-macro exactly at 0.023 predicted against 0.023 observed. It is wrong by 0.023 on MATH-500, whose
-outvoted mass is five items.
+\begin{center}
+\small
+\begin{tabular}{lrr}
+\toprule
+Regime & depth $-$ width & 95\% interval \\
+\midrule
+Decided ($n$=255)  & $0.000$ & $[-0.024,\; 0.024]$ \\
+Outvoted ($n$=20)  & $+0.250$ & $[0.050,\; 0.450]$ \\
+Dead ($n$=25)      & $+0.080$ & $[0.000,\; 0.200]$ \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\textbf{Why it cannot be conditioned on the prompt.} The law conditions on a state that must be
-measured. Figure~\ref{fig:prescribe}(c) asks whether a four-sample pilot can identify the regime
-before the budget is committed, and the answer is close to no. Within benchmark, the vote margin
-predicts not-decided with an AUC of 0.66 on MMLU-Pro and 0.62 on MBPP+, the number of distinct
-answers manages 0.64 and 0.54, and answer entropy 0.65 and 0.55. Pooled across benchmarks response
-length looks strong at 0.73, but that is benchmark confounding: within MMLU-Pro and MBPP+ it falls
-to 0.58 and 0.60.
+which is exactly the pattern the theory predicts: no difference where a vote already works, a large
+difference where it cannot. Taking expectations over an item population with outvoted share $O$ and
+dead share $Z$ gives a rule for a whole problem type,
+\[
+\Delta(\text{depth over width at } 8A_0) \;=\; 0.250\,O \;+\; 0.080\,Z .
+\]
+Across the three informative benchmarks this predicts 0.013, 0.041 and 0.016 against observed values
+of $-0.010$, 0.050 and 0.030, and it matches the macro exactly at 0.023 predicted against 0.023
+observed. Its largest error is 0.023, on MATH-500, whose outvoted mass is five items.
 
-The reason is the same one that defeated selective verification. An outvoted item and a decided
-item look alike from the inside, because in both the model agrees with itself. The mean plurality
-margin on MMLU-Pro is 0.813 even though a quarter of its items are not decided. Confident and
-wrong is indistinguishable from confident and right without an outside signal.
+\subsubsection*{Why the rule cannot be conditioned on the prompt}
 
-That has a concrete consequence, which we checked rather than assumed. An adaptive policy that
-draws four samples, keeps the vote when the margin is wide and escalates to a deep call otherwise,
-reaches 0.850 at an expected cost of $8.19A_0$. That equals the best configuration in the entire
-study, \texttt{private\_team/5/4} at $25A_0$, for a third of the compute, which is worth having.
-But it is only 0.003 above simply always spending the same budget on \texttt{deep/8}, which costs
-$8A_0$ and needs no gate at all. Conditioning bought the schedule, not the accuracy.
+The law conditions on $(p, q_1)$, which is not known before sampling. The natural hope is to
+estimate it cheaply, spend a few samples, and route the budget per item. There is a structural
+reason this fails.
 
-\textbf{The rule that follows.} Estimate the regime mix once per problem type with a 25-sample
-pilot on about a hundred items. Then, per unit of budget: give decided items $k^{*} \approx
-1.04\,m^{-2.17}$ samples and not one more, which is usually one or two; give everything else to
-depth, since it is the only axis that converts outvoted into decided; and never buy width past
-$k^{*}$, which on the outvoted mass is not merely wasted but actively harmful. Conditioning finer
-than the benchmark is not supported by anything measurable here, and would need an external signal
-of difficulty rather than the model's own agreement.
+\textbf{Observation.} \emph{The plurality margin measures consensus, not correctness.} Both $p$ and
+$q_1$ are features of the same sampling distribution, and $\hat{m}$ estimated from $k_0$ draws
+converges to $m$ at rate $k_0^{-1/2}$ regardless of whether the modal class is right. An item where
+the model is confidently correct and one where it is confidently wrong generate statistically
+similar samples: large $|\hat{m}|$, few distinct answers, low entropy. Nothing internal to the
+sampling distribution separates them, because the label is exactly what the distribution does not
+carry. Breaking the tie requires a signal from outside it: a verifier, an executable test, or a
+different model.
+
+The data agree. Within benchmark, a four-sample pilot predicts that an item is not decided with an
+AUC of 0.66 on MMLU-Pro and 0.62 on MBPP+ using the vote margin, 0.64 and 0.54 using the number of
+distinct answers, and 0.65 and 0.55 using entropy. Pooled across benchmarks, response length looks
+informative at 0.73, but that is benchmark confounding: within MMLU-Pro and MBPP+ it falls to 0.58
+and 0.60. The mean plurality margin on MMLU-Pro is 0.813 even though a quarter of its items are not
+decided.
+
+We checked the consequence rather than assuming it. An adaptive policy that draws four samples,
+keeps the vote when the margin is wide and escalates to a deep call otherwise, reaches 0.850 at an
+expected cost of $8.19A_0$. That equals the best configuration in the entire study,
+\texttt{private\_team/5/4} at $25A_0$, for a third of the compute, which is a real saving. But it
+sits only 0.003 above simply spending the same budget on \texttt{deep/8} with no gate at all.
+Conditioning bought the schedule, not the accuracy.
+
+\subsubsection*{A worked example}
+
+Take a budget of $8A_0$ per item on MMLU-Pro, whose regime mix is 0.74 decided, 0.12 outvoted, 0.14
+dead, and whose decided items have a mean margin near 0.9.
+
+Spending it all on width gives eight samples. The decided items needed $k^*(0.9) = 1$, so seven of
+the eight draws are wasted on them; the outvoted items get worse, from 0.100 at four samples to
+0.050 at eight; the dead items stay at zero. Delivered accuracy is 0.720.
+
+Spending it on one deep call at $8A_0$ leaves the decided items where they were, lifts the outvoted
+ones from 0.050 to 0.300, and rescues 0.080 of the dead ones. Delivered accuracy is 0.770. The
+predicted gain, $0.250 \times 0.12 + 0.080 \times 0.14 = 0.041$, is close to the observed 0.050.
+
+The reason the gain is not larger is that 0.74 of the budget is spent on items that were already
+settled after one sample. That is the deeper point: on this model and these benchmarks, most compute
+is spent on questions that were never in doubt.
+
+\subsubsection*{Assumptions, and where they break}
+
+The derivation assumes draws are independent and identically distributed, which holds for the
+\texttt{sample} family by construction (independent roots) but not for revision or peer families,
+whose draws are conditioned on earlier ones. For those, Proposition 1 still describes the limit of
+their final answer distribution, but the variance in Proposition 2 understates the true one, since
+correlated draws carry less information than independent ones. This is visible as the elevated
+selection success of peer configurations in Figure~\ref{fig:tradeoff}: their draws are so correlated
+that the vote resolves almost immediately, on whatever answer they converged to.
+
+The model assumes a plurality selector over answer classes, so it does not describe MBPP+, whose
+public-test selector scores candidates individually. That benchmark has 19.0 distinct answers among
+25 samples and a top class holding 0.170, so the plurality abstraction is not merely inaccurate
+there but inapplicable, which is why it is excluded from the validation above and analysed
+separately in Section~\ref{sec:repair}.
+
+Finally, the normal approximation degrades at small $k$ and near $m = 0$, where the discreteness of
+the counts and ties matter. The validation reports a mean absolute error of 0.007 overall but the
+error concentrates in the $|m| < 0.2$ band, which holds few items here and is exactly the band
+where the answer is that no feasible amount of width resolves the item anyway.
 
 \subsection{A design check}
 
