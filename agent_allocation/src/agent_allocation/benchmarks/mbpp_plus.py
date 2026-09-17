@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import shutil
+import warnings
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -83,7 +84,9 @@ def task_dir_name(task_id: str) -> str:
 
 def parse_public_assert(prompt: str) -> str:
     """Return the single ``assert`` statement shown in the official prompt; raise ValueError otherwise."""
-    module = ast.parse(prompt)
+    with warnings.catch_warnings():              # prompts quote regexes such as '\w'; not our syntax to police
+        warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
+        module = ast.parse(prompt)
     if len(module.body) != 1 or not isinstance(module.body[0], ast.Expr) \
             or not isinstance(module.body[0].value, ast.Constant) or not isinstance(module.body[0].value.value, str):
         raise ValueError("MBPP+ prompt is not a single docstring")
@@ -93,7 +96,9 @@ def parse_public_assert(prompt: str) -> str:
         raise ValueError(f"MBPP+ prompt shows {len(starts)} assert lines; expected exactly one")
     lines = text.splitlines()
     candidate = "\n".join(lines[starts[0]:]).strip()
-    statements = ast.parse(candidate).body
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", (DeprecationWarning, SyntaxWarning))
+        statements = ast.parse(candidate).body
     if len(statements) != 1 or not isinstance(statements[0], ast.Assert):
         raise ValueError("MBPP+ prompt example is not exactly one assert statement")
     return candidate
