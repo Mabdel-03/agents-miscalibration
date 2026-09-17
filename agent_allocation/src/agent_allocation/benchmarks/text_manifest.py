@@ -25,6 +25,7 @@ Dev, main and reserve are disjoint by construction; nested panels are prefixes o
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import os
 from fractions import Fraction
@@ -287,3 +288,77 @@ def exclusion_records(inventory: Iterable[InventoryItem]) -> list[dict[str, str]
         rows.append({"benchmark": item.public.benchmark, "item_id": item.public.item_id,
                      "source_revision": item.public.source_revision, "reason": item.exclusion_reason})
     return sorted(rows, key=lambda row: (row["benchmark"], row["item_id"]))
+
+
+def panel_audit(inventory: Sequence[InventoryItem], draw: PanelDraw) -> dict[str, Any]:
+    """Population and per-panel stratum counts for the dataset lock and the completeness report."""
+    items = _benchmark_items(inventory, draw.benchmark)
+    validate_panel_draw(draw, items)
+    by_id = {item.public.item_id: item for item in items}
+    eligible = [item for item in items if item.eligible]
+
+    def strata(ids: Iterable[str]) -> dict[str, int]:
+        return dict(sorted(collections.Counter(_stratum_name(by_id[item_id]) for item_id in ids).items()))
+
+    return {
+        "benchmark": draw.benchmark, "selection_seed": draw.selection_seed, "procedure": draw.procedure,
+        "population": {"items": len(items), "eligible": len(eligible), "excluded": len(items) - len(eligible),
+                       "strata": strata(item.public.item_id for item in eligible)},
+        "panels": {name: {"size": len(ids), "strata": strata(ids)}
+                   for name, ids in (("dev", draw.dev_item_ids), ("main", draw.main_item_ids),
+                                     ("reserve", draw.reserve_item_ids))},
+    }
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Typed synthetic fixture (for downstream agents' tests; never real benchmark items)
+# ---------------------------------------------------------------------------------------------------------
+
+FIXTURE_REVISION = "synthetic-fixture-v1"
+_FIXTURE_MATH_ANSWERS = ("\\frac{1}{2}", "3", "x=5", "\\sqrt{2}", "(1,2)", "\\text{east}")
+
+
+def fixture_inventory(benchmark: str) -> list[InventoryItem]:
+    """A small synthetic inventory built through the real adapter ``build_item`` functions.
+
+    ``math500``: 24 items over 3 levels x 2 subjects; ``mmlu_pro``: 24 items over 3 categories with 4-10 options;
+    ``bbh_logic4``: 6 items per subtask. ``source_revision`` is ``synthetic-fixture-v1``; prompts never contain the
+    gold answer, so leakage tests stay meaningful. Panels: e.g. ``n_dev=4, n_main=8, n_reserve=4``.
+    """
+    if benchmark == "math500":
+        from agent_allocation.benchmarks import math500
+
+        rows = [{"problem": f"Synthetic MATH fixture problem {chr(ord('a') + k)}.", "solution": "Synthetic.",
+                 "answer": _FIXTURE_MATH_ANSWERS[k % len(_FIXTURE_MATH_ANSWERS)],
+                 "subject": ("Algebra", "Geometry")[k % 2], "level": 1 + k % 3,
+                 "unique_id": f"test/synthetic/{k}.json"} for k in range(24)]
+        return [math500.build_item(row, source_revision=FIXTURE_REVISION) for row in rows]
+    if benchmark == "mmlu_pro":
+        from agent_allocation.benchmarks import mmlu_pro
+
+        rows = []
+        for k in range(24):
+            n_options = 4 + k % 7
+            rows.append({"question_id": 900000 + k, "question": f"Synthetic MMLU-Pro fixture question {k}?",
+                         "options": [f"fixture option {k}.{j}" for j in range(n_options)],
+                         "answer": mmlu_pro.LETTERS[k % n_options], "answer_index": k % n_options,
+                         "cot_content": "", "category": ("math", "law", "health")[k % 3], "src": "synthetic"})
+        items = [mmlu_pro.build_item(row, source_revision=FIXTURE_REVISION) for row in rows]
+        return mmlu_pro.apply_source_item_rule(items, [row["question"] for row in rows])
+    if benchmark == "bbh_logic4":
+        from agent_allocation.benchmarks import bbh_logic4
+
+        items = []
+        for subtask in BBH_SUBTASKS:
+            for index in range(6):
+                if subtask == bbh_logic4.BOOLEAN_SUBTASK:
+                    example = {"input": f"{'not ' * (index % 2)}( True and False ) or True is",
+                               "target": ("True", "False")[index % 2]}
+                else:
+                    letters = "ABCDEFG" if subtask != "temporal_sequences" else "ABCD"
+                    options = "\n".join(f"({letter}) fixture choice {letter}" for letter in letters)
+                    example = {"input": f"Synthetic {subtask} fixture {index}.\nOptions:\n{options}",
+                               "target": f"({letters[index % len(letters)]})"}
+                items.append(bbh_logic4.build_item(subtask, index, example, source_revision=FIXTURE_REVISION))
+        return items
+    raise ValueError(f"no text fixture for {benchmark!r}")

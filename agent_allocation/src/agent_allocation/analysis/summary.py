@@ -138,3 +138,37 @@ def accuracy_summary(outcomes: pd.DataFrame, *, by: Sequence[str] = ("partition_
     if "macro_benchmarks" not in frame:
         frame["macro_benchmarks"] = None
     return frame
+
+
+def weighted_means(frame: pd.DataFrame, group_cols: Sequence[str], value_cols: Sequence[str]) -> pd.DataFrame:
+    """Equal-benchmark / equal-BBH-subtask weighted means of item-level columns at benchmark and macro level.
+
+    Each value uses the items where it is known; ``n_<col>_unknown`` counts the rest and ``<col>_complete`` says
+    whether the fixed population was fully known.
+    """
+    rows: list[dict[str, Any]] = []
+    if frame.empty:
+        return pd.DataFrame(rows)
+    for keys, group in frame.groupby(list(group_cols), sort=True, dropna=False):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        base = dict(zip(group_cols, keys))
+        strata = strata_order(set(group["stratum"].dropna()))
+        levels = [("macro", stratum_weights(strata))] + [
+            (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
+                                                                   key=BENCHMARKS.index)]
+        by_stratum = {s: group[group["stratum"] == s] for s in strata}
+        for level, weights in levels:
+            row = {**base, "level": "macro" if level == "macro" else "benchmark", "benchmark": level,
+                   "n_items": int(sum(len(by_stratum[s]) for s in weights))}
+            for col in value_cols:
+                parts = []
+                unknown = 0
+                for s, w in weights.items():
+                    values = pd.to_numeric(by_stratum[s][col], errors="coerce").astype(float)
+                    unknown += int(values.isna().sum())
+                    parts.append((w, float(values.mean()) if values.notna().any() else math.nan))
+                row[col] = None if any(math.isnan(v) for _, v in parts) else math.fsum(w * v for w, v in parts)
+                row[f"n_{col}_unknown"] = unknown
+                row[f"{col}_complete"] = unknown == 0
+            rows.append(row)
+    return pd.DataFrame(rows)

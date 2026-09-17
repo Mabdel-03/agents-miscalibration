@@ -32,6 +32,10 @@ class Reconciliation:
     problems: tuple[str, ...] = ()
 
 
+# Observed live on 2026-09-17 (Gate 1 canary, 22/22 calls): /generation reports service_tier "default" for the
+# standard google-ai-studio endpoint; flex and priority report their own names. A standard-tier lock accepts both.
+SERVICE_TIER_ALIASES = {"standard": {"standard", "default"}}
+
 def metadata_identity_problems(metadata: Mapping[str, Any], lock: EndpointLock) -> list[str]:
     problems = []
     provider = metadata.get("provider_name")
@@ -45,7 +49,7 @@ def metadata_identity_problems(metadata: Mapping[str, Any], lock: EndpointLock) 
     tier = metadata.get("service_tier")
     if tier is None:
         problems.append("metadata service_tier unknown")
-    elif tier != lock.service_tier:
+    elif tier not in SERVICE_TIER_ALIASES.get(lock.service_tier, {lock.service_tier}):
         problems.append(f"metadata service_tier {tier!r} != locked {lock.service_tier!r}")
     if metadata.get("response_cache_source_id"):
         problems.append(f"served from the response cache (source {metadata.get('response_cache_source_id')!r})")

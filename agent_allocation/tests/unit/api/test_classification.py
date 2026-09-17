@@ -114,8 +114,10 @@ async def test_200_error_envelope_is_not_success(make_spec, lock):
     result = outcome.result
     assert outcome.result.http_status == 200
     assert result.transport_status is TransportStatus.ERROR_ENVELOPE
+    assert result.transport_status in RETRYABLE_TRANSPORT             # contract v2 (R01-1, option b)
+    assert result.transport_status not in CIRCUIT_BREAKING_TRANSPORT
     assert result.completion_status is None and result.visible_content is None
-    assert "Provider returned error" in result.error_detail
+    assert "Provider returned error" in result.error_detail and "code=502" in result.error_detail
     assert script.billed_usd == 0
 
 

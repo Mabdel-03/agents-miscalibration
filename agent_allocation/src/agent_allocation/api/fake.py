@@ -15,8 +15,10 @@ request extension ``api.request.REQUEST_EXTENSION_KEY``. Extensions reach the tr
 serialized onto the wire. Precedence per completion call: ``script.hook(call)`` (if it returns a reply) ->
 ``script.queue`` (FIFO, any node) -> ``script.by_node[node_id]`` -> the most specific ``script.replies`` key
 ``(item_id, kind, root_slot, update_round)`` where ``None`` is a wildcard (ties: first inserted) -> ``script.default``.
-A sequence value is indexed by the node's call number (1st call -> element 0, ...; the last element repeats), so
-``[FakeReply(fault=Fault.RATE_LIMITED), FakeReply()]`` fails attempt 1 and succeeds on the retry.
+A sequence value is indexed by the node's served-request number ``FakeCall.served_no`` (1st served request -> element
+0, ...; the last element repeats), so ``[FakeReply(fault=Fault.RATE_LIMITED), FakeReply()]`` fails attempt 1 and
+succeeds on the retry. Requests refused before the script is consulted -- contract-violation 400s, emulated cache HITs,
+account-limit 403/402s and capacity 429s -- never consume a scripted reply.
 
 Default reply: HTTP 200, ``x-openrouter-cache-status: MISS``, provider ``script.provider_name``, the request's model,
 ``finish_reason "stop"``/``native_finish_reason "STOP"``, a reasoning summary, full usage with ``cost``,
@@ -26,14 +28,20 @@ answer is derived from the item id (``vary_final_by_node=True`` derives it from 
 math500 -> an integer, mmlu_pro / bbh multiple choice -> a letter A-C, bbh boolean_expressions -> True/False,
 mbpp_plus -> a stub function named after the first ``assert name(`` in the prompt.
 
-Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is used
-verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
+Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is
+used verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
 contract (streaming, seed, tools, fallbacks, unknown keys, ...) gets HTTP 400 and is appended to
 ``script.violations``. Omitting ``X-OpenRouter-Cache: false`` turns on response-cache emulation (identical bodies
 return the first response verbatim with ``x-openrouter-cache-status: HIT``).
 
-Recorded state for assertions: ``script.calls`` (every request, credentials redacted), ``script.billed_usd`` (what the
-fake "charged", including requests whose response the client never saw), ``script.generations`` (metadata by id).
+Recorded state for assertions: ``script.calls`` (every request, credentials redacted; ``completion_calls(
+reached_server=True)`` excludes scripted connect failures), ``script.billed_usd`` (what the fake "charged", including
+requests whose response the client never saw: read timeouts, remote disconnects and client cancellations of a
+generation in progress), ``script.generations`` (metadata by id; a ``Fault.CACHE_HIT`` carries a
+``response_cache_source_id``, an emulated cache HIT replays the original body and id), ``script.peak_in_flight``
+(server-side concurrency actually reached). ``max_concurrent_requests`` emulates upstream capacity (HTTP 429 with
+``capacity_retry_after``); with ``enforce_account_limits`` (default) a request arriving when usage has reached
+``key_limit_usd`` gets 403 "Key limit exceeded", and when it has reached ``total_credits_usd`` 402.
 
 Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
 one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
@@ -141,7 +149,7 @@ class FakeReply:
     model: Any = AUTO                      # top-level "model" (AUTO echoes the request)
     headers: Mapping[str, str] = field(default_factory=dict)            # extra/overriding response headers
     status_code: int | None = None         # HTTP status for UPSTREAM_ERROR (default 502) or a raw ``body``
-    retry_after: str | None = "2"          # Retry-After value sent with RATE_LIMITED (seconds or HTTP-date)
+    retry_after: str | None = "1"          # Retry-After value sent with RATE_LIMITED (seconds or HTTP-date)
     error_message: str | None = None       # message inside error bodies/envelopes
     delay_seconds: float = 0.0             # server think time; beyond the client's read timeout -> ReadTimeout
     body: bytes | None = None              # raw response body override (status_code or 200)
@@ -161,9 +169,14 @@ class FakeCall:
     headers: Mapping[str, str]             # lowercase, credentials redacted
     coordinates: Mapping[str, Any]         # the request extension ({} when absent)
     sequence: int                          # 1-based order of arrival across all routes
-    node_call_no: int = 0                  # 1-based completion call number for this node (0 for other routes)
+    node_call_no: int = 0                  # 1-based arrival number of this node's completion requests (0: other routes)
+    served_no: int = 0                     # 1-based number of this node's requests that reached the script (0: refused
+                                           # before scripting -- contract 400, emulated cache HIT, account limit,
+                                           # capacity 429); sequences in replies/by_node are indexed by it
     status_code: int | None = None         # None when the fake raised a transport exception
-    outcome: str = ""                      # response | connect_error | read_timeout | remote_disconnect | ...
+    outcome: str = ""                      # response | connect_error | read_timeout | remote_disconnect | cancelled |
+                                           # contract_violation | account_limit | capacity_rate_limited
+    reached_server: bool = True            # False for scripted connect failures (nothing was sent)
     fault: str | None = None
     generation_id: str | None = None
     billed_usd: Decimal = Decimal("0")
@@ -363,12 +376,18 @@ class FakeScript:
     prior_usage_usd: Decimal = Decimal("0")       # account/key usage that predates this script (unrelated spend)
     key_label: str = "sk-or-v1-fak...e00"
     endpoints: dict[str, Any] = field(default_factory=dict)   # model -> listing dict or raw bytes override
+    max_concurrent_requests: int | None = None    # emulated upstream capacity: requests beyond it get HTTP 429
+    capacity_retry_after: str | None = "1"        # Retry-After sent with those capacity 429s
+    enforce_account_limits: bool = True           # usage >= key_limit_usd -> 403; usage >= total_credits_usd -> 402
     # ---- recorded state -----------------------------------------------------------------------------------------
     calls: list[FakeCall] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
     billed_usd: Decimal = Decimal("0")
     generations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    in_flight: int = 0                            # completion requests currently being "processed"
+    peak_in_flight: int = 0                       # measured server-side concurrency (for effective-concurrency tests)
     _node_calls: Counter = field(default_factory=Counter, repr=False)
+    _node_served: Counter = field(default_factory=Counter, repr=False)
     _metadata_polls: Counter = field(default_factory=Counter, repr=False)
     _response_cache: dict[str, tuple[int, dict[str, str], bytes]] = field(default_factory=dict, repr=False)
     _sequence: int = field(default=0, repr=False)
@@ -379,8 +398,11 @@ class FakeScript:
                   update_round: int | None = None, reply: ReplySpec | None = None) -> None:
         self.replies[_normalize_key((item_id, kind, root_slot, update_round))] = reply or FakeReply()
 
-    def completion_calls(self) -> list[FakeCall]:
-        return [c for c in self.calls if c.path.endswith("/chat/completions")]
+    def completion_calls(self, *, reached_server: bool | None = None) -> list[FakeCall]:
+        """Every completion request the client attempted, in arrival order; ``reached_server=True`` drops scripted
+        connect failures (the requests a provider could have billed), ``False`` keeps only those."""
+        return [c for c in self.calls if c.path.endswith("/chat/completions")
+                and (reached_server is None or c.reached_server is reached_server)]
 
     # ---- routing -------------------------------------------------------------------------------------------------
     def _next_sequence(self) -> int:
@@ -484,7 +506,7 @@ class FakeScript:
         coordinates = call.coordinates
         node_id = coordinates.get("node_id")
         if node_id is not None and node_id in self.by_node:
-            return _indexed(self.by_node[node_id], call.node_call_no)
+            return _indexed(self.by_node[node_id], call.served_no)
         wanted = _normalize_key((coordinates.get("item_id"), coordinates.get("kind"), coordinates.get("root_slot"),
                                  coordinates.get("update_round")))
         best: tuple[int, ReplySpec] | None = None
@@ -495,7 +517,7 @@ class FakeScript:
                 if best is None or specificity > best[0]:
                     best = (specificity, spec)
         if best is not None:
-            return _indexed(best[1], call.node_call_no)
+            return _indexed(best[1], call.served_no)
         return self.default
 
     async def _completion(self, request: httpx.Request) -> httpx.Response:
@@ -521,25 +543,88 @@ class FakeScript:
                 self._record(replace(call, status_code=status, outcome="response", fault="emulated_cache_hit"))
                 return httpx.Response(status, headers={**headers, "x-openrouter-cache-status": "HIT"},
                                       content=content)
+        refusal = self._account_refusal()
+        if refusal is not None:
+            status, message = refusal
+            self._record(replace(call, status_code=status, outcome="account_limit"))
+            return _json_response(status, {"error": {"code": status, "message": message}})
 
-        reply = self._pick_reply(call)
+        # Capacity is checked before the script is consulted, so a capacity 429 never consumes a scripted reply.
+        with self._mutex:
+            over_capacity = self.max_concurrent_requests is not None and \
+                self.in_flight >= self.max_concurrent_requests
+            if not over_capacity:
+                self.in_flight += 1
+        if over_capacity:
+            headers = {"content-type": "application/json"}
+            if self.capacity_retry_after is not None:
+                headers["retry-after"] = self.capacity_retry_after
+            self._record(replace(call, status_code=429, outcome="capacity_rate_limited"))
+            return httpx.Response(429, headers=headers, content=_json_bytes(
+                {"error": {"code": 429, "message": _HTTP_ERROR_MESSAGE[429],
+                           "metadata": {"provider_name": self.provider_name, "raw": "capacity"}}}))
+        try:
+            with self._mutex:
+                self._node_served[node_key] += 1
+                call = replace(call, served_no=self._node_served[node_key])
+            reply = self._pick_reply(call)
+            fault = reply.fault
+            call = replace(call, fault=None if fault is None else fault.value)
+            if fault in (Fault.CONNECT_ERROR, Fault.CONNECT_TIMEOUT):
+                self._record(replace(call, outcome=fault.value, reached_server=False))
+                exc = httpx.ConnectError if fault is Fault.CONNECT_ERROR else httpx.ConnectTimeout
+                raise exc(f"fake {fault.value}", request=request)
+            with self._mutex:
+                self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+            return await self._reply(request, call, reply, cache_enabled, cache_key)
+        finally:
+            with self._mutex:
+                self.in_flight -= 1
+
+    def _account_refusal(self) -> tuple[int, str] | None:
+        if not self.enforce_account_limits:
+            return None
+        with self._mutex:
+            usage = self.prior_usage_usd + self.billed_usd
+        if self.key_limit_usd is not None and usage >= self.key_limit_usd:
+            return 403, "Key limit exceeded"
+        if usage >= self.total_credits_usd:
+            return 402, _HTTP_ERROR_MESSAGE[402]
+        return None
+
+    @staticmethod
+    def _billable(reply: FakeReply) -> bool:
+        """Whether the server generated (and charged) something for this reply, even if the client never sees it."""
+        if reply.fault in _HTTP_ERROR_STATUS or reply.fault is Fault.ERROR_ENVELOPE:
+            return False
+        if reply.fault in (Fault.READ_TIMEOUT, Fault.REMOTE_DISCONNECT):
+            return True
+        return 200 <= (reply.status_code or 200) < 300
+
+    def _record_unseen(self, call: FakeCall, reply: FakeReply, request: httpx.Request, outcome: str) -> None:
+        """The client stopped waiting (read timeout or cancellation) after the request reached the server."""
+        if self._billable(reply):
+            generation_id, _, cost = self._generate(call, reply, request)
+            self._record(replace(call, outcome=outcome, generation_id=generation_id, billed_usd=cost))
+        else:
+            self._record(replace(call, outcome=outcome))
+
+    async def _reply(self, request: httpx.Request, call: FakeCall, reply: FakeReply, cache_enabled: bool,
+                     cache_key: str) -> httpx.Response:
         fault = reply.fault
-        call = replace(call, fault=None if fault is None else fault.value)
-
-        if fault in (Fault.CONNECT_ERROR, Fault.CONNECT_TIMEOUT):
-            self._record(replace(call, outcome=fault.value))
-            exc = httpx.ConnectError if fault is Fault.CONNECT_ERROR else httpx.ConnectTimeout
-            raise exc(f"fake {fault.value}", request=request)
-
         if reply.delay_seconds > 0:
             read_timeout = (request.extensions.get("timeout") or {}).get("read")
-            if read_timeout is not None and reply.delay_seconds > read_timeout:
-                await asyncio.sleep(read_timeout)
-                generation_id, _, cost = self._generate(call, reply, request)
-                self._record(replace(call, outcome="read_timeout", generation_id=generation_id, billed_usd=cost))
-                raise httpx.ReadTimeout("fake read timeout (delay beyond the client's read timeout)",
-                                        request=request)
-            await asyncio.sleep(reply.delay_seconds)
+            try:
+                if read_timeout is not None and reply.delay_seconds > read_timeout:
+                    await asyncio.sleep(read_timeout)
+                    self._record_unseen(call, reply, request, "read_timeout")
+                    raise httpx.ReadTimeout("fake read timeout (delay beyond the client's read timeout)",
+                                            request=request)
+                await asyncio.sleep(reply.delay_seconds)
+            except asyncio.CancelledError:
+                # A cancelled client does not cancel the provider: the generation still happens and is billed.
+                self._record_unseen(call, reply, request, "cancelled")
+                raise
 
         if fault in _HTTP_ERROR_STATUS:
             status = reply.status_code or _HTTP_ERROR_STATUS[fault]
@@ -566,8 +651,10 @@ class FakeScript:
             self._record(replace(call, status_code=200, outcome="response"))
             return httpx.Response(200, headers=headers, content=_json_bytes(envelope))
 
-        generation_id, payload, cost = self._generate(call, reply, request)
-        call = replace(call, generation_id=generation_id, billed_usd=cost)
+        billable = self._billable(reply)
+        generation_id, payload, cost = self._generate(call, reply, request, register=billable)
+        if billable:
+            call = replace(call, generation_id=generation_id, billed_usd=cost)
         if fault is Fault.READ_TIMEOUT:
             self._record(replace(call, outcome="read_timeout"))
             raise httpx.ReadTimeout("fake read timeout after the request was written", request=request)
@@ -592,9 +679,10 @@ class FakeScript:
         self._record(replace(call, status_code=status, outcome="response"))
         return httpx.Response(status, headers=headers, content=content)
 
-    def _generate(self, call: FakeCall, reply: FakeReply, request: httpx.Request) -> tuple[str, dict[str, Any],
-                                                                                          Decimal]:
-        """Build the completion payload, register its generation metadata, and return (id, payload, cost)."""
+    def _generate(self, call: FakeCall, reply: FakeReply, request: httpx.Request, *,
+                  register: bool = True) -> tuple[str, dict[str, Any], Decimal]:
+        """Build the completion payload and return (id, payload, cost); ``register`` stores its generation metadata
+        (only for replies the server actually generated -- never for a scripted non-2xx status)."""
         body = call.body
         coordinates = call.coordinates
         fault = reply.fault
@@ -719,10 +807,11 @@ class FakeScript:
             "usage": _money_json(cost),
             "is_byok": False,
             "service_tier": self.service_tier,
-            "response_cache_source_id": None,
+            "response_cache_source_id": f"gen-fake-cache-source-{call.sequence}" if fault is Fault.CACHE_HIT else None,
         }
-        with self._mutex:
-            self.generations[generation_id] = metadata
+        if register:
+            with self._mutex:
+                self.generations[generation_id] = metadata
         return generation_id, payload, cost
 
 

@@ -91,7 +91,8 @@ def _item(public: PublicTask, eval_kind: EvalKind, gold: str | None, private_rec
           ref: str | None = None) -> dict[str, Any]:
     private = PrivateEvalSpec(item_id=public.item_id, benchmark=public.benchmark, source_revision=REVISION,
                               eval_kind=eval_kind, gold_answer=gold, private_record_ref=ref,
-                              private_hash=canonical_hash(private_record), subtask=public.subtask)
+                              private_hash=canonical_hash(private_record), subtask=public.subtask,
+                              allowed_choices=public.allowed_choices)
     return {"public": dump_record(public), "private": dump_record(private), "private_record": private_record}
 
 
@@ -246,11 +247,11 @@ def build_selector_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     null_rows = [dump_record(SelectionResult(policy_id=f"main/math500/adv/1/{n}/current", selected_candidate_id=None,
                                              selector_name="plurality", selector_version="v1", pool_hash="",
                                              public_evidence_hash=None, cpu_seconds=0.0,
-                                             status=SelectionStatus.SELECTED.value)) for n in names]
+                                             status=SelectionStatus.SELECTED)) for n in names]
     abstained = [dump_record(SelectionResult(policy_id=f"main/math500/adv/1/{n}/current", selected_candidate_id=None,
                                              selector_name="plurality", selector_version="v1",
                                              pool_hash=canonical_hash([n]), public_evidence_hash=None,
-                                             cpu_seconds=0.001, status=SelectionStatus.ABSTAINED_ALL_INVALID.value))
+                                             cpu_seconds=0.001, status=SelectionStatus.ABSTAINED_ALL_INVALID))
                  for n in names]
     return null_rows, abstained
 
@@ -270,10 +271,19 @@ def build_grades() -> list[dict[str, Any]]:
          "unknown"),
         ("not evaluated yet is unknown", GradeResult("c-pending", GradeStatus.NOT_EVALUATED, None, None, "v1", "h"),
          "unknown"),
-        ("inconsistent: GRADED with null correctness must stay unknown",
-         GradeResult("c-inconsistent", GradeStatus.GRADED, None, True, "v1", "h"), "unknown"),
     ]
-    return [{"case": case, "expected_state": state, "record": dump_record(g)} for case, g, state in cases]
+    rows = [{"case": case, "expected_state": state, "record": dump_record(g)} for case, g, state in cases]
+    # Contradictory tri-state records (ARD36's grading defect), written as raw dicts: the v2 codec must refuse them.
+    base = dump_record(GradeResult("c-bad", GradeStatus.NOT_EVALUATED, None, None, "v1", "h"))
+    for case, status, correct, operational in (
+            ("GRADED with null correctness", "graded", None, True),
+            ("evaluator outage coerced to wrong", "evaluator_error", False, None),
+            ("not evaluated coerced to wrong", "not_evaluated", False, None),
+            ("invalid output counted as a wrong answer", "invalid_output", False, False),
+            ("invalid output marked operationally successful", "invalid_output", None, True)):
+        rows.append({"case": case, "expected_state": "load_error",
+                     "record": {**base, "status": status, "semantic_correct": correct, "operational_success": operational}})
+    return rows
 
 
 def build_malformed_finals() -> list[dict[str, Any]]:

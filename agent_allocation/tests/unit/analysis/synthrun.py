@@ -21,7 +21,7 @@ from agent_allocation.contracts import (
     BBH_SUBTASKS, BENCHMARKS, STUDY_ID, Candidate, CheckpointView, CheckStatus, CompletionStatus, EvalKind,
     GenerationKind, GenerationResult, GenerationSpec, GradeResult, GradeStatus, LedgerEvent, LedgerEventKind,
     OutputKind, PanelDraw, ParseStatus, PolicyCheckpoint, PublicCheckResult, PublicTask, SelectionResult,
-    SelectionStatus, TransportStatus, Usage, Wave, canonical_hash, dump_record, public_task_hash,
+    SelectionStatus, TransportStatus, Usage, Wave, canonical_hash, canonical_json, dump_record, public_task_hash,
 )
 from agent_allocation.paths import RunPaths
 
@@ -54,6 +54,7 @@ class SynthSpec:
     seed: int = 20260917
     seal: bool = True
     grade: bool = True
+    provider_snapshots: bool = True  # baseline + final /key usage consistent with the ledger (reconcilable run)
 
 
 def default_correct(index: int, benchmark: str, spec: GenerationSpec) -> bool | None:
@@ -115,7 +116,7 @@ def build_graph(task: PublicTask, partition: str, grid: Grid, base_budget: int, 
             policy_id=f"{partition}/{task.item_id}/{name}/{view.value}", item_id=task.item_id, family=family,
             team_size=n, total_cycles=cycles, peer_rounds=peer, candidate_ids=pool_ids,
             required_node_ids=ancestors(pool_ids), selector_name=selector or _selector(task, family, len(pool)),
-            selector_version="synthetic-1", partition_id=partition, name=name, view=view, reasoning_budget=budget))
+            selector_version="v1", partition_id=partition, name=name, view=view, reasoning_budget=budget))
 
     roots = [add(_spec(common, GenerationKind.ROOT, slot=j)) for j in range(grid.bank_size)]
     for s in roots:
@@ -190,15 +191,14 @@ def build_graph(task: PublicTask, partition: str, grid: Grid, base_budget: int, 
 
 
 def _selector(task: PublicTask, family: str, pool_size: int) -> str:
-    if family in ("private_single", "deep", "pooled") or pool_size == 1:
-        return "last_answer"
+    """Declared config family (contract v2 R03-5): plurality for text, public_tests_only for code."""
     return "public_tests_only" if task.benchmark == "mbpp_plus" else "plurality"
 
 
 def build_run(root: Path, spec: SynthSpec | None = None) -> RunPaths:
     spec = spec or SynthSpec()
     correct_fn = spec.correct_fn or default_correct
-    paths = RunPaths.for_run(root / "run", locks_dir=root / "locks", local_state_dir=root / "local")
+    paths = RunPaths.for_run(root / "run", local_state_dir=root / "local")
     paths.ensure()
     items = item_ids(spec.waves)
     tasks = {iid: PublicTask(iid, bench, "synthetic-rev", f"Question {iid}?", KIND_OF_BENCH[bench],
@@ -244,14 +244,19 @@ def build_run(root: Path, spec: SynthSpec | None = None) -> RunPaths:
                 selections.append(dump_record(_select(cp, task, outcome, paths)))
         _write_lines(paths.jobs(partition), jobs)
         _write_lines(paths.policies(partition), policies)
-        sel_path = paths.selections(partition)
-        _write_lines(sel_path, selections)
-        if spec.seal:
-            payload = sel_path.read_bytes()
-            paths.selection_seal(partition).write_text(json.dumps(
-                {"sha256": hashlib.sha256(payload).hexdigest(), "count": len(selections),
-                 "sealed_at": "2026-09-17T08:00:00Z"}))
+        write_selection_batches(paths, partition, selections, n_batches=2, seal=spec.seal)
     _write_lines(paths.ledger_journal, [dump_record(e) for e in ledger])
+    if spec.provider_snapshots:
+        charged = sum((e.amount_usd for e in ledger if e.kind in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX)),
+                      Decimal(0))
+        _write_lines(paths.provider_usage, [
+            {"fetched_at": "2026-09-17T06:00:00Z", "stage": "doctor", "endpoint": "key",
+             "data": {"usage": 12.5, "limit": 150}},
+            {"fetched_at": "2026-09-17T06:00:00Z", "stage": "doctor", "endpoint": "credits",
+             "data": {"total_credits": 150, "total_usage": 12.5}},
+            {"fetched_at": "2026-09-17T09:00:00Z", "stage": "run_phase_c", "endpoint": "key",
+             "data": {"usage": float(Decimal("12.5") + charged), "limit": 150}},
+        ])
     return paths
 
 
@@ -322,7 +327,7 @@ def _write_node(paths: RunPaths, task: PublicTask, node: GenerationSpec, value: 
         grade_path = paths.grade(node.node_id)
         grade_path.parent.mkdir(parents=True, exist_ok=True)
         if value is None:
-            grade = GradeResult(node.node_id, GradeStatus.INVALID_OUTPUT, False, False, "grader-1", "h")
+            grade = GradeResult(node.node_id, GradeStatus.INVALID_OUTPUT, None, False, "grader-1", "h")
         else:
             grade = GradeResult(node.node_id, GradeStatus.GRADED, bool(value), True, "grader-1", "h",
                                 cpu_seconds=0.5)
@@ -336,18 +341,24 @@ def _select(cp: PolicyCheckpoint, task: PublicTask, outcome: dict[str, bool | No
     pool_hash = canonical_hash(pool)
     if len(pool) == 1 or cp.family in ("private_single", "deep", "pooled"):
         return SelectionResult(cp.policy_id, pool[-1], "last_answer", "synthetic-1", pool_hash, None, 0.0,
-                               SelectionStatus.SINGLE_CANDIDATE.value)
+                               SelectionStatus.SINGLE_CANDIDATE)
     valid = [nid for nid in pool if answers[nid] is not None]
     if not valid:
-        return SelectionResult(cp.policy_id, None, cp.selector_name, "synthetic-1", pool_hash, None, 0.0,
-                               SelectionStatus.ABSTAINED_ALL_INVALID.value)
+        return SelectionResult(cp.policy_id, None, _concrete(cp, task), "synthetic-1", pool_hash, None, 0.0,
+                               SelectionStatus.ABSTAINED_ALL_INVALID)
     counts: dict[str, int] = {}
     for nid in valid:
         counts[answers[nid]] = counts.get(answers[nid], 0) + 1
     best = max(counts.values())
     chosen = next(nid for nid in valid if counts[answers[nid]] == best)
-    return SelectionResult(cp.policy_id, chosen, cp.selector_name, "synthetic-1", pool_hash, None, 0.01,
-                           SelectionStatus.SELECTED.value)
+    return SelectionResult(cp.policy_id, chosen, _concrete(cp, task), "synthetic-1", pool_hash, None, 0.01,
+                           SelectionStatus.SELECTED)
+
+
+def _concrete(cp: PolicyCheckpoint, task: PublicTask) -> str:
+    """The concrete selector name agent 06 would run for this checkpoint shape."""
+    from agent_allocation.selection.readout import selector_for
+    return selector_for(cp.family, cp.view, task.output_kind, len(cp.candidate_ids))
 
 
 def _answer_from_disk(paths: RunPaths, node_id: str) -> str | None:
@@ -363,11 +374,45 @@ def _write_jsonl(directory: Path, _a, _b) -> None:
     directory.mkdir(parents=True, exist_ok=True)
 
 
+def write_selection_batches(paths: RunPaths, partition: str, records: list[dict], *, n_batches: int = 2,
+                            seal: bool = True) -> None:
+    """Contract v2 layout: canonical lines sorted by policy_id, split into ``n_batches`` append-only sealed batches."""
+    directory = paths.selections_dir(partition)
+    if directory.is_dir():
+        for old in directory.iterdir():
+            old.unlink()
+    ordered = sorted(records, key=lambda r: r["policy_id"])
+    size = max(1, -(-len(ordered) // n_batches))
+    chunks = [ordered[i:i + size] for i in range(0, len(ordered), size)] or [[]]
+    for number, chunk in enumerate(chunks):
+        path = paths.selections(partition, number)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"".join(canonical_json(r).encode() + b"\n" for r in chunk))
+    if seal:
+        reseal(paths, partition)
+
+
 def reseal(paths: RunPaths, partition: str) -> None:
-    payload = paths.selections(partition).read_bytes()
-    count = sum(1 for line in payload.decode().splitlines() if line.strip())
-    paths.selection_seal(partition).write_text(json.dumps(
-        {"sha256": hashlib.sha256(payload).hexdigest(), "count": count, "sealed_at": "2026-09-17T08:00:00Z"}))
+    """(Re)write every batch seal of a partition in order, with the previous-seal chain."""
+    from agent_allocation.analysis.load import selection_batch_numbers
+    previous = None
+    for number in selection_batch_numbers(paths, partition):
+        payload = paths.selections(partition, number).read_bytes()
+        count = sum(1 for line in payload.decode().splitlines() if line.strip())
+        seal = {"sha256": hashlib.sha256(payload).hexdigest(), "count": count,
+                "sealed_at": f"2026-09-17T08:00:{number:02d}Z", "previous_seal_sha256": previous}
+        paths.selection_seal(partition, number).write_text(json.dumps(seal, sort_keys=True) + "\n")
+        previous = seal["sha256"]
 
 
-__all__ = ["Grid", "SynthSpec", "build_run", "build_graph", "default_correct", "item_ids", "reseal", "replace"]
+def selection_lines(paths: RunPaths, partition: str) -> list[dict]:
+    from agent_allocation.analysis.load import selection_batch_numbers
+    out = []
+    for number in selection_batch_numbers(paths, partition):
+        out.extend(json.loads(line) for line in paths.selections(partition, number).read_text().splitlines()
+                   if line.strip())
+    return out
+
+
+__all__ = ["Grid", "SynthSpec", "build_run", "build_graph", "default_correct", "item_ids", "reseal", "replace",
+           "selection_lines", "write_selection_batches"]

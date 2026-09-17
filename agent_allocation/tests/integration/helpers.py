@@ -42,11 +42,21 @@ def headroom_for(task: PublicTask) -> int:
     return 2048 if task.benchmark == "mbpp_plus" else 1024
 
 
+def real_prompt_version() -> str:
+    """The renderer refuses specs frozen under another template set, so nodes that will be rendered must carry the
+    on-disk prompt version; before 03 is merged the adversarial constant is used."""
+    try:
+        from agent_allocation.prompts.render import prompt_version
+    except ModuleNotFoundError:
+        return PROMPT_VERSION
+    return prompt_version()
+
+
 def graph_kwargs(task: PublicTask, *, partition: str = "main", budget: int = 1024,
-                 prompt_version: str = PROMPT_VERSION) -> dict[str, Any]:
+                 prompt_version: str | None = None) -> dict[str, Any]:
     return dict(run_id=STUDY_ID, partition_id=partition, task=task, model=MODEL, base_budget=budget,
                 headroom=headroom_for(task), endpoint_lock_hash=LOCK_HASH, decoding_config_hash=DECODING_HASH,
-                prompt_version=prompt_version)
+                prompt_version=prompt_version or real_prompt_version())
 
 
 def production_graph(grid_module, grid: GridSpec, task: PublicTask, **kw) -> ItemGraph:

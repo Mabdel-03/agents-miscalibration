@@ -90,8 +90,7 @@ def canaries() -> dict[str, str]:
 
 @pytest.fixture()
 def run_paths(tmp_path) -> RunPaths:
-    paths = RunPaths.for_run(tmp_path / "artifacts" / STUDY_ID, locks_dir=tmp_path / "artifacts" / "locks",
-                             local_state_dir=tmp_path / "local_state")
+    paths = RunPaths.for_run(tmp_path / "artifacts" / STUDY_ID, local_state_dir=tmp_path / "local_state")
     paths.ensure()
     return paths
 

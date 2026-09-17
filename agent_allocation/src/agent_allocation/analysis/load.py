@@ -4,9 +4,12 @@ This is the one place analysis touches on-disk formats; every path comes from :c
 record goes through ``contracts.load_record``. Nothing here joins grades onto selections: that happens in
 :mod:`agent_allocation.analysis.outcomes`, and only for partitions whose seal verifies (sealed-before-join).
 
-Seal verification accepts the seal's ``sha256`` when it equals either the sha256 of the selections file bytes
-(``basis="file_bytes"``) or the canonical hash of the loaded record list (``basis="canonical_records"``); the
-basis that matched is recorded. ``count`` must equal the number of records.
+Selections (contract v2, D8): append-only batches ``selections/{partition}/batch_NNNN.jsonl``, each with
+``batch_NNNN.seal.json`` = ``{sha256 of the batch file bytes, count, sealed_at, previous_seal_sha256}``. A batch is
+joinable only when its seal verifies: digest and line count match, ``sealed_at`` is present, numbering is contiguous
+from 0, and ``previous_seal_sha256`` chains to the previous batch (empty for batch 0; the previous seal's ``sha256``
+or the sha256 of its seal-file bytes, the matched basis is recorded). A policy sealed in two batches invalidates the
+later batch (a sealed selection is never rewritten).
 """
 from __future__ import annotations
 
@@ -31,8 +34,6 @@ from agent_allocation.contracts import (
     PublicTask,
     SelectionResult,
     Wave,
-    canonical_hash,
-    dump_record,
     load_record,
 )
 from agent_allocation.paths import PROJECT_ROOT, RunPaths
@@ -45,21 +46,52 @@ class RunLoadError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class SealStatus:
-    partition: str
-    selections_present: bool
+class BatchSeal:
+    batch: int
     seal_present: bool
     record_count: int
     seal_count: int | None
     sha256_ok: bool
-    basis: str | None                 # file_bytes | canonical_records | None
     sealed_at: str | None
+    chain_basis: str | None                 # genesis | seal_sha256 | seal_file_bytes | None
     problems: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
-        return (self.selections_present and self.seal_present and self.sha256_ok
-                and self.seal_count == self.record_count and not self.problems)
+        return self.seal_present and self.sha256_ok and self.seal_count == self.record_count and not self.problems
+
+
+@dataclass(frozen=True)
+class PartitionSeal:
+    partition: str
+    batches: tuple[BatchSeal, ...] = ()
+    problems: tuple[str, ...] = ()
+
+    @property
+    def selections_present(self) -> bool:
+        return bool(self.batches)
+
+    @property
+    def valid_batches(self) -> frozenset[int]:
+        return frozenset(b.batch for b in self.batches if b.valid)
+
+    @property
+    def valid(self) -> bool:
+        """Every batch present verifies (a partition with no batches is not valid: nothing is sealed)."""
+        return bool(self.batches) and all(b.valid for b in self.batches) and not self.problems
+
+    @property
+    def record_count(self) -> int:
+        return sum(b.record_count for b in self.batches)
+
+    @property
+    def sealed_at(self) -> str | None:
+        stamps = [b.sealed_at for b in self.batches if b.sealed_at]
+        return max(stamps) if stamps else None
+
+    @property
+    def all_problems(self) -> tuple[str, ...]:
+        return self.problems + tuple(f"batch {b.batch}: {p}" for b in self.batches for p in b.problems)
 
 
 @dataclass
@@ -76,7 +108,8 @@ class RunData:
     public_checks: dict[str, PublicCheckResult] = field(default_factory=dict)
     grades: dict[str, GradeResult] = field(default_factory=dict)
     selections: dict[str, dict[str, SelectionResult]] = field(default_factory=dict)  # partition -> policy_id -> sel
-    seals: dict[str, SealStatus] = field(default_factory=dict)
+    selection_batch: dict[str, dict[str, int]] = field(default_factory=dict)          # partition -> policy_id -> batch
+    seals: dict[str, PartitionSeal] = field(default_factory=dict)
     ledger: list[LedgerEvent] = field(default_factory=list)
     gates: list[GateResult] = field(default_factory=list)
     amendments: list[dict[str, Any]] = field(default_factory=list)
@@ -85,6 +118,12 @@ class RunData:
     input_files: list[Path] = field(default_factory=list)
 
     # ------------------------------------------------------------------------------------------------
+    def is_sealed(self, partition: str, policy_id: str) -> bool:
+        """True when the policy's selection sits in a verified batch (the only rows grades may join)."""
+        seal = self.seals.get(partition)
+        batch = self.selection_batch.get(partition, {}).get(policy_id)
+        return seal is not None and batch is not None and batch in seal.valid_batches
+
     @property
     def partitions(self) -> list[str]:
         names = set(self.jobs) | set(self.policies) | set(self.selections)
@@ -130,10 +169,11 @@ def resolve_config(paths: RunPaths, explicit: str | Path | None = None) -> tuple
     lock = paths.config_lock
     if lock.is_file():
         data = json.loads(lock.read_text())
-        if isinstance(data, dict) and "study_id" in data:
-            return data, paths.relative(lock) if _inside(lock, paths.run_dir) else str(lock)
+        label = paths.relative(lock) if _inside(lock, paths.run_dir) else str(lock)
         if isinstance(data, dict) and isinstance(data.get("config"), dict):
-            return data["config"], str(lock)
+            return data["config"], f"{label} (frozen config lock)"
+        if isinstance(data, dict) and "study_id" in data:
+            return data, f"{label} (raw config object)"
     default = PROJECT_ROOT / "configs" / "balanced150.json"
     return json.loads(default.read_text()), f"default preset {default.name} (no config lock found)"
 
@@ -240,24 +280,18 @@ def load_run(paths: RunPaths, config: Mapping[str, Any] | None = None, *, config
                     run.problems.append(f"grade file for {node_id} names candidate {grade.candidate_id}")
                 run.grades[node_id] = grade
 
-    # --- selections and seals ------------------------------------------------------------------------
-    sel_dir = paths.run_dir / "selections"
-    for partition in _partition_names(sel_dir, ".jsonl"):
-        records, status = read_sealed_selections(paths, partition)
-        run.input_files.append(paths.selections(partition))
-        if paths.selection_seal(partition).is_file():
-            run.input_files.append(paths.selection_seal(partition))
+    # --- selections and seals (v2 batches) ------------------------------------------------------------
+    sel_root = paths.run_dir / "selections"
+    partitions = sorted(p.name for p in sel_root.iterdir() if p.is_dir()) if sel_root.is_dir() else []
+    for partition in partitions:
+        by_policy, batch_of, status, files = read_sealed_selections(paths, partition)
+        run.input_files.extend(files)
         run.seals[partition] = status
-        by_policy: dict[str, SelectionResult] = {}
-        for rec in records:
-            if rec.policy_id in by_policy:
-                run.problems.append(f"selections/{partition}.jsonl: duplicate policy_id {rec.policy_id}")
-            by_policy[rec.policy_id] = rec
         run.selections[partition] = by_policy
+        run.selection_batch[partition] = batch_of
     for partition in run.policies:
         if partition not in run.seals:
-            run.seals[partition] = SealStatus(partition, False, paths.selection_seal(partition).is_file(), 0, None,
-                                              False, None, None, ("no selections file",))
+            run.seals[partition] = PartitionSeal(partition, (), ("no selection batches",))
 
     # --- ledger, gates, amendments, provider snapshots -----------------------------------------------
     if paths.ledger_journal.is_file():
@@ -275,35 +309,80 @@ def load_run(paths: RunPaths, config: Mapping[str, Any] | None = None, *, config
     return run
 
 
-def read_sealed_selections(paths: RunPaths, partition: str) -> tuple[list[SelectionResult], SealStatus]:
-    sel_path = paths.selections(partition)
-    seal_path = paths.selection_seal(partition)
-    problems: list[str] = []
-    if not sel_path.is_file():
-        return [], SealStatus(partition, False, seal_path.is_file(), 0, None, False, None, None,
-                              ("no selections file",))
-    payload = sel_path.read_bytes()
-    records = [load_record(SelectionResult, json.loads(line)) for line in payload.decode("utf-8").splitlines()
-               if line.strip()]
-    if not seal_path.is_file():
-        return records, SealStatus(partition, True, False, len(records), None, False, None, None,
-                                   ("selections are not sealed",))
-    seal = json.loads(seal_path.read_text())
-    declared = str(seal.get("sha256", ""))
-    basis = None
-    if declared and declared == sha256(payload).hexdigest():
-        basis = "file_bytes"
-    elif declared and declared == canonical_hash([dump_record(r) for r in records]):
-        basis = "canonical_records"
-    else:
-        problems.append("seal sha256 does not match the selections content")
-    count = seal.get("count")
-    if count != len(records):
-        problems.append(f"seal count {count} != {len(records)} selection records")
-    if not seal.get("sealed_at"):
-        problems.append("seal has no sealed_at")
-    return records, SealStatus(partition, True, True, len(records), count if isinstance(count, int) else None,
-                               basis is not None, basis, seal.get("sealed_at"), tuple(problems))
+def selection_batch_numbers(paths: RunPaths, partition: str) -> list[int]:
+    directory = paths.selections_dir(partition)
+    if not directory.is_dir():
+        return []
+    numbers = []
+    for path in directory.glob("batch_*.jsonl"):
+        stem = path.name[len("batch_"):-len(".jsonl")]
+        if stem.isdigit():
+            numbers.append(int(stem))
+    return sorted(numbers)
+
+
+def read_sealed_selections(paths: RunPaths, partition: str
+                           ) -> tuple[dict[str, SelectionResult], dict[str, int], PartitionSeal, list[Path]]:
+    """All batches of a partition with per-batch seal verification; records of every batch are returned (the
+    caller joins grades only for ``PartitionSeal.valid_batches``)."""
+    by_policy: dict[str, SelectionResult] = {}
+    batch_of: dict[str, int] = {}
+    batches: list[BatchSeal] = []
+    files: list[Path] = []
+    partition_problems: list[str] = []
+    numbers = selection_batch_numbers(paths, partition)
+    if numbers and numbers != list(range(len(numbers))):
+        partition_problems.append(f"batch numbering is not contiguous from 0: {numbers}")
+    previous: tuple[dict[str, Any], bytes] | None = None
+    for number in numbers:
+        path = paths.selections(partition, number)
+        seal_path = paths.selection_seal(partition, number)
+        files.append(path)
+        payload = path.read_bytes()
+        records = [load_record(SelectionResult, json.loads(line)) for line in payload.decode("utf-8").splitlines()
+                   if line.strip()]
+        problems: list[str] = []
+        for rec in records:
+            if rec.policy_id in by_policy:
+                problems.append(f"policy {rec.policy_id} already sealed in batch {batch_of[rec.policy_id]}")
+                continue
+            by_policy[rec.policy_id] = rec
+            batch_of[rec.policy_id] = number
+        if not seal_path.is_file():
+            batches.append(BatchSeal(number, False, len(records), None, False, None, None,
+                                     tuple(problems + ["batch is not sealed"])))
+            previous = None
+            continue
+        files.append(seal_path)
+        seal_bytes = seal_path.read_bytes()
+        seal = json.loads(seal_bytes)
+        sha_ok = str(seal.get("sha256", "")) == sha256(payload).hexdigest()
+        if not sha_ok:
+            problems.append("seal sha256 does not match the batch file bytes")
+        count = seal.get("count")
+        if count != len(records):
+            problems.append(f"seal count {count} != {len(records)} records")
+        if not seal.get("sealed_at"):
+            problems.append("seal has no sealed_at")
+        prev_declared = seal.get("previous_seal_sha256")
+        chain = None
+        if number == 0:
+            if prev_declared:
+                problems.append("batch 0 declares a previous seal")
+            else:
+                chain = "genesis"
+        elif previous is None:
+            problems.append("previous batch is unsealed; the seal chain is broken")
+        elif prev_declared == previous[0].get("sha256"):
+            chain = "seal_sha256"
+        elif prev_declared == sha256(previous[1]).hexdigest():
+            chain = "seal_file_bytes"
+        else:
+            problems.append("previous_seal_sha256 does not chain to the previous batch seal")
+        batches.append(BatchSeal(number, True, len(records), count if isinstance(count, int) else None, sha_ok,
+                                 seal.get("sealed_at"), chain, tuple(problems)))
+        previous = (seal, seal_bytes)
+    return by_policy, batch_of, PartitionSeal(partition, tuple(batches), tuple(partition_problems)), files
 
 
 def load_provider_snapshots(paths: RunPaths, input_files: list[Path] | None = None) -> list[dict[str, Any]]:

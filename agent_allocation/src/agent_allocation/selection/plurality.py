@@ -24,7 +24,10 @@ from typing import Callable, Sequence
 from agent_allocation.contracts import OutputKind, canonical_hash
 from agent_allocation.selection.keys import VoteKey
 
-__all__ = ["AnswerClass", "MathEquivalent", "PluralityOutcome", "build_classes", "class_tie_key", "plurality"]
+__all__ = [
+    "AnswerClass", "MathEquivalent", "PluralityOutcome", "build_classes", "class_tie_key", "memoized_equivalence",
+    "plurality",
+]
 
 MathEquivalent = Callable[[str, str], "bool | None"]
 
@@ -51,6 +54,26 @@ class PluralityOutcome:
     n_votes: int
     equivalence_calls: int
     equivalence_unknown: int
+
+
+def memoized_equivalence(fn: MathEquivalent) -> MathEquivalent:
+    """Wrap an equivalence callable so each ordered pair is evaluated once for the wrapper's lifetime.
+
+    Use one wrapper per partition run: overlapping checkpoints (``sample/k`` prefixes, archives) then see the same
+    verdict for the same pair, including a cached ``None`` from a timeout, so class construction is consistent
+    across checkpoints. Results must be ``bool | None``.
+    """
+    cache: dict[tuple[str, str], bool | None] = {}
+
+    def equivalent(a: str, b: str) -> bool | None:
+        if (a, b) not in cache:
+            value = fn(a, b)
+            if value is not None and not isinstance(value, bool):
+                raise TypeError(f"math_equivalent must return bool | None, got {type(value).__name__}")
+            cache[(a, b)] = value
+        return cache[(a, b)]
+
+    return equivalent
 
 
 def class_tie_key(seed: int, item_id: str, class_id: str) -> str:
