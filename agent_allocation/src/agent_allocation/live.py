@@ -214,66 +214,91 @@ def first_per_subtask(ids: Sequence[str], tasks: Mapping[str, PublicTask], occur
 # Dispatch
 # ------------------------------------------------------------------------------------------------------------------
 
+class Runtime:
+    """One client, ledger, state store and dispatcher reused across successive plans, so the admission-rate ramp and
+    any 429 back-off carry over between collection phases on the same endpoint lock."""
+
+    def __init__(self, cfg: Mapping[str, Any], paths: RunPaths, *, lock: EndpointLock,
+                 tasks: Mapping[str, PublicTask], ceiling: Decimal, transport=None, api_key: str | None = None):
+        from agent_allocation.api.client import OpenRouterClient
+        from agent_allocation.extraction.final import extract_candidate
+        from agent_allocation.prompts.render import render_messages_with_report
+        from agent_allocation.runtime.ledger import CollectionLedger
+        from agent_allocation.runtime.scheduler import Dispatcher
+        from agent_allocation.storage.journal import LedgerJournal
+        from agent_allocation.storage.state import StateStore
+
+        self.cfg, self.paths, self.lock = cfg, paths, lock
+        scheduler = cfg["scheduler"]
+        self.client = OpenRouterClient(api_key=api_key, transport=transport,
+                                       connect_timeout=float(scheduler["connect_timeout_seconds"]),
+                                       read_timeout=float(scheduler["read_timeout_seconds"]))
+        self.ledger = CollectionLedger(LedgerJournal(paths.ledger_journal), ceiling_usd=ceiling,
+                                       max_unresolved_usd=Decimal(str(cfg["budget"]["max_unresolved_spend_usd"])))
+        self.store = (StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists()
+                      else StateStore(paths))
+        seed = int(cfg["seed"])
+        render_log = paths.render_reports
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+
+        def render(spec, parents):
+            try:
+                messages, report = render_messages_with_report(spec, tasks[spec.item_id], parents, seed=seed)
+            except Exception as exc:
+                if "context" in type(exc).__name__.lower():
+                    record = getattr(exc, "record", None) or {}
+                    with open(paths.context_limit_events, "a") as handle:
+                        handle.write(json.dumps({"node_id": spec.node_id, "recorded_at": utcnow(), **record},
+                                                sort_keys=True, default=str) + "\n")
+                    with open(render_log, "a") as handle:
+                        handle.write(json.dumps({"node_id": spec.node_id, "context_limit": True,
+                                                 "error": type(exc).__name__, "recorded_at": utcnow()}) + "\n")
+                raise
+            with open(render_log, "a") as handle:
+                handle.write(json.dumps({"node_id": spec.node_id, "context_limit": False,
+                                         "trimmed_packets": report.get("trimmed_packets"),
+                                         "bytes_removed_total": report.get("bytes_removed_total"),
+                                         "rendered_chars": report.get("rendered_chars"),
+                                         "recorded_at": utcnow()}) + "\n")
+            return messages
+
+        def extract(result, spec):
+            return extract_candidate(result, spec, tasks[spec.item_id])
+
+        self.dispatcher = Dispatcher(config=cfg, paths=paths, store=self.store, ledger=self.ledger,
+                                     client=self.client, lock=lock, render=render, extract=extract)
+
+    async def run(self, waves: Sequence[Sequence[ItemGraph]], *, allow_paid: bool, max_usd: Decimal,
+                  ceiling: Decimal | None = None):
+        from agent_allocation.protocols.grid import check_budgets
+        from agent_allocation.runtime.scheduler import AdmissionPlan
+        if ceiling is not None:
+            self.ledger.set_active_ceiling(min(ceiling, max_usd))
+        for wave in waves:
+            for graph in wave:
+                check_budgets(graph, max_completion_tokens=self.lock.max_completion_tokens,
+                              requested_reasoning_max=int(self.cfg["reasoning"]["requested_reasoning_max"]))
+        summary = await self.dispatcher.run(AdmissionPlan(waves=tuple(tuple(w) for w in waves)),
+                                            allow_paid=allow_paid, max_usd=max_usd)
+        self.store.backup()
+        return summary
+
+    async def aclose(self) -> None:
+        try:
+            await self.client.aclose()
+        finally:
+            self.store.backup()
+
+
 async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequence[ItemGraph]], *,
                    lock: EndpointLock, tasks: Mapping[str, PublicTask], allow_paid: bool, max_usd: Decimal,
                    ceiling: Decimal, transport=None, api_key: str | None = None):
-    from agent_allocation.api.client import OpenRouterClient
-    from agent_allocation.extraction.final import extract_candidate
-    from agent_allocation.prompts.render import render_messages_with_report
-    from agent_allocation.runtime.ledger import CollectionLedger
-    from agent_allocation.runtime.scheduler import AdmissionPlan, Dispatcher
-    from agent_allocation.storage.journal import LedgerJournal
-    from agent_allocation.storage.state import StateStore
-
-    scheduler = cfg["scheduler"]
-    client = OpenRouterClient(api_key=api_key, transport=transport,
-                              connect_timeout=float(scheduler["connect_timeout_seconds"]),
-                              read_timeout=float(scheduler["read_timeout_seconds"]))
-    journal = LedgerJournal(paths.ledger_journal)
-    ledger = CollectionLedger(journal, ceiling_usd=min(ceiling, max_usd),
-                              max_unresolved_usd=Decimal(str(cfg["budget"]["max_unresolved_spend_usd"])))
-    store = StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists() else StateStore(paths)
-    seed = int(cfg["seed"])
-
-    render_log = paths.render_reports
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-
-    def render(spec, parents):
-        try:
-            messages, report = render_messages_with_report(spec, tasks[spec.item_id], parents, seed=seed)
-        except Exception as exc:
-            if "context" in type(exc).__name__.lower():
-                record = getattr(exc, "record", None) or {}
-                with open(paths.context_limit_events, "a") as handle:
-                    handle.write(json.dumps({"node_id": spec.node_id, "recorded_at": utcnow(), **record},
-                                            sort_keys=True, default=str) + "\n")
-                with open(render_log, "a") as handle:
-                    handle.write(json.dumps({"node_id": spec.node_id, "context_limit": True,
-                                             "error": type(exc).__name__, "recorded_at": utcnow()}) + "\n")
-            raise
-        with open(render_log, "a") as handle:
-            handle.write(json.dumps({"node_id": spec.node_id, "context_limit": False,
-                                     "trimmed_packets": report.get("trimmed_packets"),
-                                     "bytes_removed_total": report.get("bytes_removed_total"),
-                                     "rendered_chars": report.get("rendered_chars"), "recorded_at": utcnow()}) + "\n")
-        return messages
-
-    def extract(result, spec):
-        return extract_candidate(result, spec, tasks[spec.item_id])
-
-    from agent_allocation.protocols.grid import check_budgets
-    for wave in waves:
-        for graph in wave:
-            check_budgets(graph, max_completion_tokens=lock.max_completion_tokens,
-                          requested_reasoning_max=int(cfg["reasoning"]["requested_reasoning_max"]))
-    dispatcher = Dispatcher(config=cfg, paths=paths, store=store, ledger=ledger, client=client, lock=lock,
-                            render=render, extract=extract)
+    runtime = Runtime(cfg, paths, lock=lock, tasks=tasks, ceiling=min(ceiling, max_usd), transport=transport,
+                      api_key=api_key)
     try:
-        return await dispatcher.run(AdmissionPlan(waves=tuple(tuple(w) for w in waves)), allow_paid=allow_paid,
-                                    max_usd=max_usd)
+        return await runtime.run(waves, allow_paid=allow_paid, max_usd=max_usd)
     finally:
-        await client.aclose()
-        store.backup()
+        await runtime.aclose()
 
 
 def checked_max_usd(cfg: Mapping[str, Any], requested: str) -> Decimal:
@@ -865,8 +890,23 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     # Phase A: the first waves establish a trustworthy forecast; extension CP/POOLED ride with their items.
     snap = provider_snapshot(paths, "run_phase_a")
     ceiling = min(active_ceiling(max_usd, ledger_settled(paths), snap), soft)
-    summary = await dispatch(cfg, paths, by_wave["main"][:FORECAST_CHECK_WAVES], lock=primary, tasks=tasks,
-                             allow_paid=True, max_usd=max_usd, ceiling=ceiling, api_key=api_key)
+    runtime = Runtime(cfg, paths, lock=primary, tasks=tasks, ceiling=ceiling, api_key=api_key)
+    try:
+        return await _run_main_phases(cfg, paths, max_usd, runtime=runtime, by_wave=by_wave, tasks=tasks,
+                                      locks=locks, amendments=amendments, api_key=api_key, soft=soft,
+                                      reserve=reserve, ceiling=ceiling)
+    finally:
+        await runtime.aclose()
+
+
+async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "Runtime", by_wave, tasks, locks,
+                           amendments, api_key, soft: Decimal, reserve: Decimal, ceiling: Decimal) -> int:
+    from agent_allocation.forecast import (
+        fit_models, item_cost, observations_from_rows, per_item_costs, wave_admission, SAFETY_MULTIPLIER,
+    )
+    primary = locks[cfg["primary_model"]]
+    summary = await runtime.run(by_wave["main"][:FORECAST_CHECK_WAVES], allow_paid=True, max_usd=max_usd,
+                                ceiling=ceiling)
     record_decision(paths, phase="A", summary=str(summary), ceiling=str(ceiling))
     if stopped_early(summary):
         record_decision(paths, phase="A", decision="stop_notify", reason=stopped_early(summary))
@@ -896,8 +936,7 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
             interleaved.append(high[index])
         if index < len(main_rest):
             interleaved.append(main_rest[index])
-    summary = await dispatch(cfg, paths, interleaved, lock=primary, tasks=tasks, allow_paid=True, max_usd=max_usd,
-                             ceiling=ceiling, api_key=api_key)
+    summary = await runtime.run(interleaved, allow_paid=True, max_usd=max_usd, ceiling=ceiling)
     record_decision(paths, phase="B", summary=str(summary))
     if stopped_early(summary):
         record_decision(paths, phase="B", decision="stop_notify", reason=stopped_early(summary))
