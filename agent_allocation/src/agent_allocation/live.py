@@ -922,3 +922,100 @@ def cmd_seal(argv: list[str]) -> int:
         out[partition] = select_and_seal(cfg, paths, partition, graphs, tasks)
     print(json.dumps(out, indent=1, sort_keys=True))
     return 0
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Offline end-to-end (Q1 from agent 08; also the lead's seam test). Never paid: the transport must be a mock.
+# ------------------------------------------------------------------------------------------------------------------
+
+def _write_offline_manifests(paths: RunPaths, items: Sequence[Any], extension_ids: set[str]) -> None:
+    from agent_allocation.contracts import PanelDraw, Wave
+    from agent_allocation.manifest import write_atomic, write_jsonl
+    paths.ensure()
+    for benchmark in BENCHMARKS:
+        chosen = [i for i in items if i.public.benchmark == benchmark]
+        write_jsonl(paths.public_manifest(benchmark), [i.public for i in chosen])
+        write_jsonl(paths.private_manifest(benchmark), [i.private for i in chosen], mode=0o600)
+    draws = {b: PanelDraw(benchmark=b, dev_item_ids=(),
+                          main_item_ids=tuple(i.public.item_id for i in items if i.public.benchmark == b),
+                          reserve_item_ids=(), selection_seed=0, procedure="offline_given_items")
+             for b in BENCHMARKS}
+    write_atomic(paths.panels, json.dumps({b: dump_record(d) for b, d in draws.items()}, indent=1, sort_keys=True))
+    ext = tuple(i.public.item_id for i in items if i.public.item_id in extension_ids)
+    rest = tuple(i.public.item_id for i in items if i.public.item_id not in extension_ids)
+    waves = [w for w in (Wave(0, ext, ("main", "extension")) if ext else None,
+                         Wave(1 if ext else 0, rest, ("main",)) if rest else None) if w is not None]
+    write_atomic(paths.waves, json.dumps([dump_record(w) for w in waves], indent=1, sort_keys=True))
+
+
+def _grade_offline(paths: RunPaths, graphs: Sequence[ItemGraph], tasks, privates, code_grader, public_checker) -> dict:
+    from agent_allocation.contracts import Candidate
+    from agent_allocation.grading.text.grade import grade_text
+    counts = {"public_checks": 0, "grades": 0}
+    for graph in graphs:
+        for node in graph.nodes:
+            parsed = paths.parsed(node.node_id)
+            if not parsed.exists():
+                continue
+            payload = json.loads(parsed.read_text())
+            if not payload.get("candidate"):
+                continue
+            candidate = load_record(Candidate, payload["candidate"])
+            private = privates[node.item_id]
+            if node.benchmark == "mbpp_plus":
+                if public_checker is None:
+                    from agent_allocation.grading.code.public import run_public_checks as public_checker
+                check = public_checker(candidate, tasks[node.item_id])
+                target = paths.public_check(node.node_id)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(dump_record(check), sort_keys=True))
+                counts["public_checks"] += 1
+                if code_grader is None:
+                    from agent_allocation.grading.code.private import grade_code as code_grader
+                grade = code_grader(candidate, private, paths)
+            else:
+                grade = grade_text(candidate, private)
+            target = paths.grade(node.node_id)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(dump_record(grade), sort_keys=True))
+            counts["grades"] += 1
+    return counts
+
+
+async def run_offline_async(paths: RunPaths, config: Mapping[str, Any], items: Sequence[Any], transport, *,
+                            extension_item_ids: Sequence[str] = (), code_grader=None, public_checker=None) -> dict:
+    import httpx
+    from agent_allocation.api.fake import fake_endpoint_lock
+    if not isinstance(transport, httpx.MockTransport):
+        raise RunRefused("run_offline only accepts a mock transport")
+    extension_ids = set(extension_item_ids)
+    _write_offline_manifests(paths, items, extension_ids)
+    tasks = {i.public.item_id: i.public for i in items}
+    privates = {i.public.item_id: i.private for i in items}
+    lock = fake_endpoint_lock(config["primary_model"])
+    grids = grids_from_config(config)
+    graphs = [graph_for(grids["main_extension"] if i.public.item_id in extension_ids else grids["main"], cfg=config,
+                        partition="main", task=i.public, lock=lock, base_budget=int(config["reasoning"]["main_a"]),
+                        amendments={}) for i in items]
+    write_jobs(paths, "main", graphs)
+    ceiling = credit_ceiling(config)
+    waves = [graphs[k:k + 16] for k in range(0, len(graphs), 16)]
+    summary = await dispatch(config, paths, waves, lock=lock, tasks=tasks, allow_paid=False, max_usd=ceiling,
+                             ceiling=ceiling, transport=transport, api_key=None)
+    grading = _grade_offline(paths, graphs, tasks, privates, code_grader, public_checker)
+    selection = select_and_seal(config, paths, "main", graphs, tasks)
+    from agent_allocation.reporting.audit import cmd_audit
+    from agent_allocation.reporting.cli import cmd_analyze
+    analyze_rc = cmd_analyze(["--run-dir", str(paths.run_dir)])
+    audit_rc = cmd_audit(["--run-dir", str(paths.run_dir)])
+    return {"summary": summary, "grading": grading, "selection": selection, "analyze_rc": analyze_rc,
+            "audit_rc": audit_rc, "stubbed_code_grader": code_grader is not None,
+            "stubbed_public_checker": public_checker is not None,
+            "nodes": sum(len(g.nodes) for g in graphs)}
+
+
+def run_offline(paths: RunPaths, config: Mapping[str, Any], items: Sequence[Any], transport, *,
+                extension_item_ids: Sequence[str] = (), code_grader=None, public_checker=None) -> dict:
+    """Mocked four-benchmark pipeline for tests. Calling it again on the same ``paths`` is the resume path."""
+    return asyncio.run(run_offline_async(paths, config, items, transport, extension_item_ids=extension_item_ids,
+                                         code_grader=code_grader, public_checker=public_checker))
