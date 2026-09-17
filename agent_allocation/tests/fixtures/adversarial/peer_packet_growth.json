@@ -1,0 +1,14 @@
+{
+ "final_markers": [
+  "PACKET-FINAL-0-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "PACKET-FINAL-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "PACKET-FINAL-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "PACKET-FINAL-3-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "PACKET-FINAL-4-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+ ],
+ "oversized_final_filler": "y",
+ "oversized_final_marker": "PACKET-OVERSIZED-FINAL",
+ "oversized_final_repeats": 2000000,
+ "rationale_repeats": 40000,
+ "rationale_unit": "step "
+}

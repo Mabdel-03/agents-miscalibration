@@ -1,0 +1,275 @@
+{
+ "item": {
+  "__record__": "PublicTask",
+  "allowed_choices": [],
+  "benchmark": "math500",
+  "item_id": "math500/adv/1",
+  "output_kind": "math",
+  "prompt": "Compute $2+2$.",
+  "public_examples": [],
+  "source_revision": "adversarial-rev-0",
+  "subtask": null
+ },
+ "legacy_rows": [
+  {
+   "answer": "7",
+   "episode_id": "math500/adv/1/ep0/r0",
+   "record_kind": "root_bank"
+  },
+  {
+   "answer": "9",
+   "episode_id": "math500/adv/1/ep0/r0",
+   "record_kind": "private_baseline"
+  }
+ ],
+ "specs": [
+  {
+   "decision": {
+    "visible_content": "<rationale>root slot 0</rationale><final>root-0</final>"
+   },
+   "episode_label": "math500/adv/1/ep0/r0",
+   "group": "slot0_round0",
+   "node_id": "49f0996dc3b3a8b9e9fe74cf13c3648b8105c387348b51401a15bb2dbf0e8bb5",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 0,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>deep slot 0</rationale><final>deep-0</final>"
+   },
+   "episode_label": "math500/adv/1/ep0/r0",
+   "group": "slot0_round0",
+   "node_id": "9445a20587775becba7f3116ba85bd92e82b98394e491b46694d2cbdf29421b0",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "deep",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 2048,
+    "repetition_id": 0,
+    "root_slot": 0,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>pooled slot 0</rationale><final>pooled-0</final>"
+   },
+   "episode_label": "math500/adv/1/ep0/r0",
+   "group": "slot0_round0",
+   "node_id": "61bd882bb04e60ce5b18ac56c42343558f9f570c27ece0f9051f4d5974ffd239",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "pooled",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [
+     "49f0996dc3b3a8b9e9fe74cf13c3648b8105c387348b51401a15bb2dbf0e8bb5",
+     "895acebdf42a685f09c3c31a35f6d4e083dda56167d529d00f094a723b69745a",
+     "13ed0e8ef0cdd770717f40f7c1416ef67237e5f5b5c922ed0697b0f73285475d",
+     "ea1fb4ddf40ae415630ccc914b1cad9466e738ab00803ed7941809464786bed0"
+    ],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 0,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 4,
+    "update_round": 0
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>root slot 0</rationale><final>root-0</final>"
+   },
+   "episode_label": "math500/adv/1/ep0/r0",
+   "group": "slot0_round0",
+   "node_id": "8c59e78641f2d9b42a6b3a18324791b0f2461cbb613e2c809fc044b8bd4698f4",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "high",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 4096,
+    "repetition_id": 0,
+    "root_slot": 0,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>private slot 1</rationale><final>private-1</final>"
+   },
+   "episode_label": "math500/adv/1/ep1/r1",
+   "group": "slot1_round1",
+   "node_id": "1e2a1718102b2aaaea3be0e49c70c8a84534d41216803de4911d12fe4fc8ae6e",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "private",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [
+     "895acebdf42a685f09c3c31a35f6d4e083dda56167d529d00f094a723b69745a"
+    ],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 1,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 0,
+    "update_round": 1
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>peer slot 1</rationale><final>peer-1</final>"
+   },
+   "episode_label": "math500/adv/1/ep1/r1",
+   "group": "slot1_round1",
+   "node_id": "d112d0709ba7cd6c9824494a3de1b7255115433fdb29c6a1e8bca90838f377dc",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "peer",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [
+     "49f0996dc3b3a8b9e9fe74cf13c3648b8105c387348b51401a15bb2dbf0e8bb5",
+     "895acebdf42a685f09c3c31a35f6d4e083dda56167d529d00f094a723b69745a"
+    ],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 1,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 2,
+    "update_round": 1
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>peer slot 1</rationale><final>peer-1</final>"
+   },
+   "episode_label": "math500/adv/1/ep1/r1",
+   "group": "slot1_round1",
+   "node_id": "8068c42e8fce77eaeeff4cda5a5103bd9f4e17c424514cc8e0883be61e824258",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "peer",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [
+     "49f0996dc3b3a8b9e9fe74cf13c3648b8105c387348b51401a15bb2dbf0e8bb5",
+     "895acebdf42a685f09c3c31a35f6d4e083dda56167d529d00f094a723b69745a",
+     "13ed0e8ef0cdd770717f40f7c1416ef67237e5f5b5c922ed0697b0f73285475d"
+    ],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 1,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 3,
+    "update_round": 1
+   }
+  },
+  {
+   "decision": {
+    "visible_content": "<rationale>private slot 0</rationale><final>private-0</final>"
+   },
+   "episode_label": "math500/adv/1/ep0/r1",
+   "group": "slot0_round1",
+   "node_id": "73df8a8ca570404223df1466df7ddb7c42c614c8f826464f9a7cc43d7097e418",
+   "record": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "adversarial-decoding",
+    "draw_id": 0,
+    "endpoint_lock_hash": "adversarial-endpoint-lock",
+    "input_manifest_hash": "cb2fbc2bad9f8839b82018529b4dac2113bf6f43f5bba8406a203a23346b17fc",
+    "item_id": "math500/adv/1",
+    "kind": "private",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [
+     "49f0996dc3b3a8b9e9fe74cf13c3648b8105c387348b51401a15bb2dbf0e8bb5"
+    ],
+    "partition_id": "main",
+    "prompt_version": "prompts-v1-adversarial",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 0,
+    "run_id": "openrouter_agent_allocation_v1",
+    "team_size": 0,
+    "update_round": 1
+   }
+  }
+ ]
+}

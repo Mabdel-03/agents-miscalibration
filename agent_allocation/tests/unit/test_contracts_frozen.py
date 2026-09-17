@@ -3,7 +3,7 @@ request in docs/requests/. The lead updates this hash together with any contract
 from hashlib import sha256
 from pathlib import Path
 
-CONTRACTS_SHA256 = "1698c45934e20a635f5265a4f16faec15d89795c9291843c9b43376e2ef5a340"
+CONTRACTS_SHA256 = "dbbdccabc01dce1f52fc425e624b43691b96758a394a908a5ad8ccf9d3019609"
 
 
 def test_contracts_file_is_the_frozen_version():
