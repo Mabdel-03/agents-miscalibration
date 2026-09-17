@@ -152,7 +152,7 @@ def outcome_table(run: RunData) -> pd.DataFrame:
         selections = run.selections.get(partition, {})
         for cp in run.policies.get(partition, []):
             sealed = run.is_sealed(partition, cp.policy_id)
-            benchmark = run.benchmark_of(cp.item_id)
+            benchmark = run.benchmark_of(cp.item_id) or _spec_benchmark(run, partition, cp)
             subtask = run.subtask_of(cp.item_id)
             required = cp.required_node_ids
             n_terminal = sum(1 for nid in required if nid in run.parsed)
@@ -234,6 +234,18 @@ def _delivered(run: RunData, cp, sel, sealed: bool, n_terminal: int, n_required:
     if gstate == "graded_unknown":
         return "unknown_evaluator_error", NAN, selected
     return gstate, value, selected
+
+
+def _spec_benchmark(run: RunData, partition: str, cp) -> str | None:
+    """Benchmark from the job specs when the public manifest lacks the item (recorded as a load problem)."""
+    specs = run.jobs.get(partition, {})
+    for nid in cp.required_node_ids:
+        if nid in specs:
+            message = f"public manifest lacks item {cp.item_id}; benchmark taken from its job specs"
+            if message not in run.problems:
+                run.problems.append(message)
+            return specs[nid].benchmark
+    return None
 
 
 def current_view(frame: pd.DataFrame) -> pd.DataFrame:

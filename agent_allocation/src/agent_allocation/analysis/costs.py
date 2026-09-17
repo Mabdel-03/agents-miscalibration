@@ -58,6 +58,11 @@ COST_MEASURES = {
     "reasoning_tokens": "Realized reasoning tokens per item",
     "nominal_generations": "Nominal generations per item",
 }
+CPU_MEASURES = {
+    "public_check_cpu_seconds": "Local public-check CPU seconds per item (deployable selection work)",
+    "selection_cpu_seconds": "Selector CPU seconds per item",
+    "private_grading_cpu_seconds": "Private research grading CPU seconds per item (not a deployment cost)",
+}
 PRICE_SANITY_PER_MILLION = (Decimal("0.001"), Decimal("1000"))
 
 
@@ -408,8 +413,9 @@ def cost_summary(costs: pd.DataFrame, accuracy: pd.DataFrame) -> pd.DataFrame:
     if costs.empty:
         return pd.DataFrame()
     current = costs[costs["view"] == "current"]
-    summary = weighted_means(current, ["partition_id", "name"], list(COST_MEASURES))
-    summary = summary.rename(columns={m: f"mean_{m}" for m in COST_MEASURES})
+    measures = list(COST_MEASURES) + list(CPU_MEASURES)
+    summary = weighted_means(current, ["partition_id", "name"], measures)
+    summary = summary.rename(columns={m: f"mean_{m}" for m in measures})
     summary = summary.drop(columns=[c for c in summary.columns if c.endswith("_complete")])
     acc = accuracy[(accuracy["view"] == "current") & (accuracy["level"] != "stratum")][
         ["partition_id", "name", "benchmark", "acc", "acc_lower", "acc_upper"]]

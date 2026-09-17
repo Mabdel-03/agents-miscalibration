@@ -276,6 +276,14 @@ def cost_section(analysis: "Analysis") -> str:
         out += ["### Descriptive frontier (best among evaluated configurations on this sample; not validated)", "",
                 md_table(frontier[frontier["benchmark"] == "macro"][["partition_id", "measure", "name", "mean_cost",
                                                                       "acc"]], digits={"mean_cost": 6, "acc": 3})]
+    cpu_cols = ["partition_id", "name", "mean_public_check_cpu_seconds", "mean_selection_cpu_seconds",
+                "mean_private_grading_cpu_seconds"]
+    if all(c in macro for c in cpu_cols):
+        out += ["### Local CPU (separate from API dollars)", "",
+                "Public-check and selector CPU are deployable selection work; private grading CPU is research "
+                "evaluation and is never charged to a policy.", "",
+                md_table(macro[cpu_cols], headers=["partition", "checkpoint", "public-check CPU s", "selector CPU s",
+                                                   "private grading CPU s"], digits=3)]
     checks = analysis.extras.get("price_checks", [])
     if checks:
         out += ["### Price units", "", md_table(pd.DataFrame(checks))]
