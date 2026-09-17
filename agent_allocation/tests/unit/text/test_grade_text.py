@@ -229,3 +229,23 @@ def test_private_specs_carry_the_public_legal_choices(math_inventory, mmlu_inven
         for item in inventory:
             assert item.private.allowed_choices == item.public.allowed_choices
     assert all(item.private.allowed_choices == () for item in math_inventory)
+
+
+@pytest.mark.parametrize("gold, final, expected", [
+    ("5", "5.", True),                                  # one trailing period is format noise
+    ("4", "**4**", True),                               # one markdown bold pair
+    ("4", "Final answer: $4$", True),                   # delimited inline math is read as written
+    ("\\frac{1}{2}", "$\\frac12$", True),
+    ("\\$32,\\!348", "\\$32,348", True),                 # escaped dollar is not a math delimiter
+    ("2", "2\\sqrt{2}", False),                         # bare expressions are read whole, never as a fragment
+    ("1", "x^2 + 1", False),
+    ("5", "6 - 5i", False),
+    ("3", "1, 2, 3", False),
+    ("6-5i", "6 - 5i", True),
+    ("5", "The answer is 5", False),                    # undelimited prose is a format violation, not rescued
+])
+def test_math_parse_rule_v2_fixtures(gold, final, expected):
+    spec = _spec("math500/fixture", EvalKind.MATH_VERIFY, gold)
+    result = grade_text(make_candidate("math500/fixture", final, OutputKind.MATH), spec)
+    assert result.status is GradeStatus.GRADED and result.semantic_correct is expected
+    assert "math-parse-v2" in result.grader_version

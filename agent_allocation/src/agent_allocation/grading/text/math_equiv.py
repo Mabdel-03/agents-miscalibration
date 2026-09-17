@@ -1,10 +1,17 @@
 """Pinned Math-Verify evaluation: gold grading (one direction, documented order) and the gold-blind symmetric
 equivalence helper exported to agent 06 for MATH voting classes.
 
-Parse rule ``math-parse-v1`` (applied identically to gold answers and candidate finals):
-strip outer whitespace; if the text already carries a ``\\boxed`` expression or starts with ``$``, ``\\(`` or
-``\\[``, parse it as written first; otherwise (or if that yields nothing) parse ``\\boxed{<text>}``. Parsing uses
-``math_verify.parse`` with its default extraction targets (LaTeX, then plain expression), ``raise_on_error=True``.
+Parse rule ``math-parse-v2`` (applied identically to gold answers and candidate finals; gold-blind):
+
+1. strip outer whitespace; remove one enclosing markdown bold pair ``**...**``; drop one trailing ``.``;
+2. if the text carries a ``\\boxed`` expression, an unescaped ``$``, or starts with ``\\(`` / ``\\[``, parse it as
+   written first (Math-Verify extracts the delimited math);
+3. otherwise, or if that yields nothing, parse ``\\boxed{<text>}``, so a bare expression such as ``2\\sqrt{2}`` or
+   ``x^2 + 1`` is read whole (parsing bare text as written extracts fragments like ``2`` or ``1``).
+
+Parsing uses ``math_verify.parse`` with its default extraction targets (LaTeX, then plain expression),
+``raise_on_error=True``. Prose finals without delimiters ("The answer is 5") violate the output requirement and
+are not rescued: they parse as a product of symbols and grade as not equal.
 
 Comparison: ``math_verify.verify(gold, prediction)`` exactly in that argument order (Math-Verify documents that
 ``verify`` is not symmetric), ``raise_on_error=True``, default float rounding/precision/strictness.
@@ -20,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
@@ -33,7 +41,7 @@ from agent_allocation.grading.text._limits import (
     wall_clock_limit,
 )
 
-MATH_PARSE_VERSION = "math-parse-v1"
+MATH_PARSE_VERSION = "math-parse-v2"
 DEFAULT_TIMEOUT_S = 5.0
 _DISTRIBUTIONS = ("math-verify", "latex2sympy2_extended", "sympy", "antlr4-python3-runtime")
 
@@ -77,19 +85,26 @@ def _math_verify() -> tuple[Any, Any]:
     return mv_parser.parse, mv_grader.verify
 
 
+_UNESCAPED_DOLLAR = re.compile(r"(?<!\\)\$")
+
+
 def _documents(answer: str) -> list[str]:
     text = answer.strip()
+    if len(text) > 4 and text.startswith("**") and text.endswith("**"):
+        text = text[2:-2].strip()
+    if text.endswith(".") and len(text) > 1:
+        text = text[:-1].rstrip()
     if not text:
         return []
     documents = []
-    if "\\boxed" in text or text.startswith(("$", "\\(", "\\[")):
+    if "\\boxed" in text or _UNESCAPED_DOLLAR.search(text) or text.startswith(("\\(", "\\[")):
         documents.append(text)
     documents.append("\\boxed{" + text + "}")
     return documents
 
 
 def parse_answer(answer: str) -> list[Any]:
-    """Math-Verify parse of one answer under ``math-parse-v1``; must run inside a wall-clock limit."""
+    """Math-Verify parse of one answer under ``math-parse-v2``; must run inside a wall-clock limit."""
     parse, _ = _math_verify()
     for document in _documents(answer):
         parsed = parse(document, parsing_timeout=None, raise_on_error=True)
