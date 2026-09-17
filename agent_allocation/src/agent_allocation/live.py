@@ -347,7 +347,8 @@ async def fetch_metadata(paths: RunPaths, generation_ids: Sequence[str], *, atte
         await client.aclose()
     with open(paths.generation_metadata, "a") as handle:
         for gid, data in found.items():
-            handle.write(json.dumps({"generation_id": gid, "data": data, "fetched_at": utcnow()}, sort_keys=True) + "\n")
+            handle.write(json.dumps({"generation_id": gid, "data": data, "fetched_at": utcnow()}, sort_keys=True,
+                                    default=str) + "\n")
     return found
 
 
@@ -379,10 +380,58 @@ def ledger_settled(paths: RunPaths) -> Decimal:
     return total
 
 
+def _before_snapshot(paths: RunPaths, stage: str) -> tuple[Decimal, Decimal]:
+    """(key usage, account balance) from the latest provider_usage lines of ``stage``."""
+    key_usage, balance = None, None
+    for line in paths.provider_usage.read_text().splitlines():
+        row = json.loads(line)
+        if row.get("stage") != stage:
+            continue
+        if row["endpoint"] == "key":
+            key_usage = Decimal(str(row["data"].get("usage", 0)))
+        elif row["endpoint"] == "credits":
+            balance = Decimal(str(row["data"]["total_credits"])) - Decimal(str(row["data"]["total_usage"]))
+    if key_usage is None:
+        raise RunRefused(f"no provider snapshot for stage {stage}")
+    return key_usage, balance
+
+
+async def evaluate_canary(cfg, paths: RunPaths) -> int:
+    from agent_allocation.api.canary import canary_report
+    from agent_allocation.gates import evaluate_gate1, write_gate
+    locks = read_endpoint_locks(paths)
+    before = json.loads((paths.state_dir / "canary_before.json").read_text()) \
+        if (paths.state_dir / "canary_before.json").exists() else None
+    key_before = Decimal(before["key_usage_before"]) if before else _before_snapshot(paths, "canary_before")[0]
+    settled_before = Decimal(before["settled_before"]) if before else Decimal("0")
+    rows = load_call_rows(paths, "canary", {})
+    known = {}
+    if paths.generation_metadata.exists():
+        for line in paths.generation_metadata.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                known[row["generation_id"]] = row["data"]
+    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    if missing:
+        known.update(await fetch_metadata(paths, missing))
+    rows = load_call_rows(paths, "canary", known)
+    await asyncio.sleep(20)
+    after = provider_snapshot(paths, "canary_after")
+    key_delta = Decimal(str(after["key"].get("usage", 0))) - key_before
+    settled_delta = ledger_settled(paths) - settled_before
+    result = evaluate_gate1(rows, locks, key_usage_delta_usd=key_delta, ledger_settled_usd=settled_delta)
+    write_gate(paths, result)
+    report = canary_report([(r.spec, r.result, r.metadata) for r in rows])
+    paths.reports_dir.mkdir(parents=True, exist_ok=True)
+    (paths.reports_dir / "CANARY_REPORT.json").write_text(json.dumps(report, indent=1, sort_keys=True, default=str))
+    print(json.dumps({"gate": dump_record(result), "calls": len(rows), "key_delta": str(key_delta),
+                      "ledger_settled_delta": str(settled_delta)}, indent=1, default=str))
+    return 0 if result.decision == "advance" else 3
+
+
 async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     from agent_allocation.api.client import OpenRouterClient
     from agent_allocation.apikey import load_api_key
-    from agent_allocation.gates import evaluate_gate1, write_gate
     api_key = load_api_key()
     tasks = load_tasks(paths)
     amendments = load_amendments(paths)
@@ -394,37 +443,30 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
         await client.aclose()
     before = provider_snapshot(paths, "canary_before")
     settled_before = ledger_settled(paths)
+    (paths.state_dir / "canary_before.json").write_text(json.dumps(
+        {"key_usage_before": str(before["key"].get("usage", 0)), "settled_before": str(settled_before),
+         "recorded_at": utcnow()}, sort_keys=True))
     lite, flash = canary_graphs(cfg, paths, tasks, locks, amendments)
     write_jobs(paths, "canary", [*lite, *flash])
     ceiling = min(active_ceiling(max_usd, settled_before, before), settled_before + Decimal("0.50"))
-    summaries = []
     for graphs, model in ((lite, cfg["primary_model"]), (flash, cfg["replication_model"])):
-        summaries.append(await dispatch(cfg, paths, [graphs], lock=locks[model], tasks=tasks, allow_paid=True,
-                                        max_usd=max_usd, ceiling=ceiling, api_key=api_key))
-    rows = load_call_rows(paths, "canary", {})
-    metadata = await fetch_metadata(paths, [r.result.generation_id for r in rows])
-    rows = load_call_rows(paths, "canary", metadata)
-    await asyncio.sleep(30)
-    after = provider_snapshot(paths, "canary_after")
-    key_delta = Decimal(str(after["key"].get("usage", 0))) - Decimal(str(before["key"].get("usage", 0)))
-    settled_delta = ledger_settled(paths) - settled_before
-    result = evaluate_gate1(rows, locks, key_usage_delta_usd=key_delta, ledger_settled_usd=settled_delta)
-    write_gate(paths, result)
-    from agent_allocation.api.canary import canary_report
-    report = canary_report([(r.spec, r.result, r.metadata) for r in rows])
-    (paths.reports_dir / "CANARY_REPORT.json").parent.mkdir(parents=True, exist_ok=True)
-    (paths.reports_dir / "CANARY_REPORT.json").write_text(json.dumps(report, indent=1, sort_keys=True, default=str))
-    print(json.dumps({"gate": dump_record(result), "summaries": [str(s) for s in summaries]}, indent=1, default=str))
-    return 0 if result.decision == "advance" else 3
+        summary = await dispatch(cfg, paths, [graphs], lock=locks[model], tasks=tasks, allow_paid=True,
+                                 max_usd=max_usd, ceiling=ceiling, api_key=api_key)
+        print(json.dumps({"model": model, "summary": str(summary)}, default=str))
+    return await evaluate_canary(cfg, paths)
 
 
 def cmd_canary(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation canary")
     common_args(parser)
+    parser.add_argument("--evaluate-only", action="store_true",
+                        help="re-evaluate Gate 1 from stored canary artifacts without dispatching")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     paths, max_usd = preflight(cfg, args)
     paths.ensure()
+    if args.evaluate_only:
+        return asyncio.run(evaluate_canary(cfg, paths))
     return asyncio.run(run_canary(cfg, paths, max_usd))
 
 
