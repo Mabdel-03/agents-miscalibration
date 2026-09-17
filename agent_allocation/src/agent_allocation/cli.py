@@ -18,6 +18,7 @@ VERBS: dict[str, str] = {
     "status": "agent_allocation.runtime.status:cmd_status",
     "stop": "agent_allocation.runtime.control:cmd_stop",
     "grade": "agent_allocation.grading.worker:cmd_grade",
+    "seal": "agent_allocation.live:cmd_seal",
     "analyze": "agent_allocation.reporting.cli:cmd_analyze",
     "audit": "agent_allocation.reporting.audit:cmd_audit",
 }
