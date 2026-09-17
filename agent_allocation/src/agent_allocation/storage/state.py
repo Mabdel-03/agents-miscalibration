@@ -320,7 +320,7 @@ class StateStore:
                          (attempt.attempt_no, attempt.node_id))
             if attempt.state in (AttemptState.LEASED, AttemptState.SENT):
                 conn.execute(
-                    "UPDATE nodes SET state=?, lease_attempt_id=?, lease_owner=COALESCE(?, lease_owner),"
+                    "UPDATE nodes SET state=?, lease_attempt_id=?, lease_owner=COALESCE(lease_owner, ?),"
                     " heartbeat_at=?, updated_at=? WHERE node_id=? AND state NOT IN ('terminal', 'response_persisted')",
                     (state, attempt.attempt_id, self.owner, time.time(), now, attempt.node_id))
             elif attempt.state is AttemptState.TERMINAL:
@@ -494,6 +494,13 @@ class StateStore:
             if paths.state_db_backup.exists() and cls._db_ok(paths.state_db_backup):
                 replace_atomic(local, paths.state_db_backup.read_bytes())
         store = cls(paths)
+        from agent_allocation.runtime.owner import owner_host, owner_is_dead
+        import socket
+        owner = store.get_meta("dispatcher_owner")
+        if owner and owner_host(owner) == socket.gethostname() and not owner_is_dead(owner):
+            store.close()
+            raise StateError(f"dispatcher {owner} is alive on this host: recovery would charge its in-flight "
+                             "reservations; stop it first")
         store.recovery_report = store._reingest_and_reconcile()
         return store
 

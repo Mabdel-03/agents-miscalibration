@@ -9,7 +9,6 @@ from contextlib import suppress
 from dataclasses import replace
 from decimal import Decimal
 
-import pytest
 
 import agent_allocation.runtime.scheduler as scheduler_mod
 from agent_allocation.contracts import (

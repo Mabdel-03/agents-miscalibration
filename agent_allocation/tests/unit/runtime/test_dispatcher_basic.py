@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from agent_allocation.runtime.scheduler import DispatchRefused, PlanError, client_is_offline_mock
-from tests.unit.runtime.fakes import ABSENT, Behavior, Env, FakeClient, make_graph, plan_of
+from tests.unit.runtime.fakes import ABSENT, Env, FakeClient, make_graph, plan_of
 
 
 async def test_runs_dag_unlocking_children_and_settling_costs(tmp_path):

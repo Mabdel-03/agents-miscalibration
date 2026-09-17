@@ -58,11 +58,8 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 import random
-import socket
 import time
-import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -76,7 +73,8 @@ from agent_allocation.contracts import (
 )
 from agent_allocation.paths import RunPaths
 from agent_allocation.runtime.estimate import rendered_chars, reservation_usd
-from agent_allocation.runtime.ledger import CollectionLedger, LedgerError, confirmed_cost
+from agent_allocation.runtime.ledger import CollectionLedger, confirmed_cost
+from agent_allocation.runtime.owner import make_owner_id, owner_is_dead
 from agent_allocation.storage.raw import read_raw_response, result_from_raw, sha256_file, write_raw_response
 from agent_allocation.storage.state import OUTCOME_SUCCEEDED, StateStore
 
@@ -105,6 +103,9 @@ STOP_REASONS = frozenset({STOP_COMPLETED, STOP_BUDGET_EXHAUSTED, STOP_CIRCUIT_OP
                           STOP_CONTROL_SENTINEL_PRESENT, STOP_STALLED})
 
 OUTCOME_CONTEXT_LIMIT = "context_limit"
+FORECAST_DEFAULT_RENDERED_CHARS = 6000       # until prompts have been rendered in this run
+FORECAST_MIN_SAMPLES = 20                    # settled OK attempts before the realized cost ratio replaces 1.0
+FORECAST_REFRESH_SECONDS = 30.0
 OPTIONAL_PARTITIONS = frozenset({Partition.REPLICATION.value})
 PILOT_PARTITIONS = frozenset({Partition.CANARY.value, Partition.PILOT.value})
 
@@ -294,35 +295,6 @@ def client_is_offline_mock(client: Any) -> bool:
     leaves = [t for t in leaves if not any(isinstance(getattr(t, n, None), httpx.AsyncBaseTransport)
                                            for n in ("_transport", "transport", "_wrapped", "wrapped"))]
     return bool(leaves) and all(isinstance(t, httpx.MockTransport) for t in leaves)
-
-
-def _proc_start_time(pid: int) -> str | None:
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as handle:
-            fields = handle.read().rsplit(b")", 1)[1].split()
-        return fields[19].decode()
-    except (OSError, IndexError):
-        return None
-
-
-def make_owner_id() -> str:
-    pid = os.getpid()
-    return f"{socket.gethostname()}|{pid}|{_proc_start_time(pid)}|{uuid.uuid4().hex[:12]}"
-
-
-def owner_is_dead(owner: str | None) -> bool:
-    """Provably dead: recorded on this host and the pid is gone or belongs to a different process now."""
-    if not owner:
-        return True
-    try:
-        host, pid_s, start, _ = owner.split("|", 3)
-        pid = int(pid_s)
-    except ValueError:
-        return False
-    if host != socket.gethostname():
-        return False
-    current = _proc_start_time(pid)
-    return current is None or current != start
 
 
 class HttpLimiter:
@@ -560,6 +532,14 @@ class Dispatcher:
         self.unresolved: dict[str, _Unresolved] = {}
         self.tasks: set[asyncio.Task] = set()
         self.admit_blocker = "empty"
+        self.first_attempts_blocked_at: Decimal | None = None   # soft ceiling reached: only retries may use reserve
+        self.reserve_admissions = 0
+        self.rendered_chars_total = 0
+        self.rendered_count = 0
+        self.ok_reserved_total = Decimal("0")
+        self.ok_cost_total = Decimal("0")
+        self.ok_cost_samples = 0
+        self.wave_forecasts: dict[int, tuple[float, Decimal]] = {}
         self.pre_send = 0                          # admitted, not yet holding the HTTP limiter
         self.pending_reservation = Decimal("0")    # admitted, reservation not yet journaled
         self.requests_sent = 0
@@ -586,7 +566,6 @@ class Dispatcher:
             raise DispatchRefused("allow_paid=False but the client transport is not an httpx.MockTransport")
         self._configure_budget(plan, Decimal(str(max_usd)))
         settled_before = self.ledger.snapshot().settled
-        self.store.owner = self.owner
         self._build(plan)
         self._loop = asyncio.get_running_loop()
         self.http = HttpLimiter(self.aimd.concurrency_limit)
@@ -596,6 +575,7 @@ class Dispatcher:
             self._finish(STOP_CONTROL_SENTINEL_PRESENT, "STOP" if self.paths.stop_sentinel.exists() else "DRAIN")
             return self._summary(started, settled_before)
         self._claim_dispatcher()
+        self.store.owner = self.owner
         self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
         background: list[asyncio.Task] = []
         try:
@@ -799,16 +779,24 @@ class Dispatcher:
             return None                                   # the heartbeat loop re-checks foreign leases
         if self.unresolved and self.ledger.unresolved_exceeded:
             return None                                   # the reconcile loop will settle or charge them
-        if self.budget_blocked_at is not None and self.ready:
+        if (self.budget_blocked_at is not None or self.first_attempts_blocked_at is not None) and self.ready:
             if any(u.generation_id for u in self.unresolved.values()):
                 return None                               # a confirmed bill below the reservation may free budget
-            return STOP_BUDGET_EXHAUSTED, self.ledger.last_refusal
+            if self.budget_blocked_at is None and any(n.sends > 0 for n in self.ready.values()):
+                return None                               # retries can still use the reserve
+            return STOP_BUDGET_EXHAUSTED, ("hard_ceiling" if self.budget_blocked_at is not None
+                                           else "soft_admission_ceiling")
         if self.ready:
             return None                                   # admissible next iteration (rate token)
         unopened = [w for w in self.waves if not w.opened and w.remaining]
         if unopened:
             if self.ledger.snapshot().exposure >= self.soft_ceiling:
                 return STOP_BUDGET_EXHAUSTED, "soft_admission_ceiling"
+            nxt = next((w for w in self.waves if not w.opened), None)
+            if nxt is not None and not (nxt.optional and self.budget.optional_requires_core_completion
+                                        and not self._core_complete()):
+                if self.ledger.snapshot().exposure + self._wave_forecast(nxt) > self.soft_ceiling:
+                    return STOP_BUDGET_EXHAUSTED, f"wave_forecast_exceeds_soft_ceiling:{nxt.index}"
             if all(w.optional for w in unopened) and not self._core_complete():
                 return STOP_STALLED, "optional_block_waits_for_incomplete_core"
             return None
@@ -854,12 +842,37 @@ class Dispatcher:
                 continue
             if wave.optional and self.budget.optional_requires_core_completion and not self._core_complete():
                 return
+            forecast = self._wave_forecast(wave)
+            if snap.exposure + self.pending_reservation + forecast > self.soft_ceiling:
+                self._event_once(f"wave_forecast_exceeds_soft_ceiling:{wave.index}")
+                return                       # reduce future waves rather than abandon items halfway
             wave.opened = True
-            self._event("wave_opened", str(wave.index))
+            self._event("wave_opened", f"{wave.index}:forecast={forecast:.6f}")
             for node in wave.nodes:
                 if not node.terminal and node.waiting_parents == 0 and node.status == "blocked":
                     self._make_ready(node)
             return
+
+    def _cost_ratio(self) -> Decimal:
+        """Realized cost / reservation over settled OK attempts (1 until enough samples; never above 1)."""
+        if self.ok_cost_samples < FORECAST_MIN_SAMPLES or self.ok_reserved_total <= 0:
+            return Decimal("1")
+        return min(Decimal("1"), self.ok_cost_total / self.ok_reserved_total)
+
+    def _wave_forecast(self, wave: _Wave) -> Decimal:
+        """Expected cost of a wave's unfinished nodes: reservation at the mean rendered size x realized ratio."""
+        now = self.clock()
+        cached = self.wave_forecasts.get(wave.index)
+        if cached is not None and now - cached[0] < FORECAST_REFRESH_SECONDS:
+            return cached[1]
+        chars = (self.rendered_chars_total // self.rendered_count) if self.rendered_count else \
+            FORECAST_DEFAULT_RENDERED_CHARS
+        multiplier = self.budget.reservation_multiplier
+        total = sum((reservation_usd(n.spec, chars, self.lock, multiplier=multiplier)
+                     for n in wave.nodes if not n.terminal), Decimal("0"))
+        forecast = total * self._cost_ratio()
+        self.wave_forecasts[wave.index] = (now, forecast)
+        return forecast
 
     def _capacity(self) -> int:
         limit = self.aimd.concurrency_limit
@@ -875,12 +888,14 @@ class Dispatcher:
         node.status = "ready"
         self.ready[node.node_id] = node
 
-    def _pick(self, now: float) -> _Node | None:
+    def _pick(self, now: float, *, retries_only: bool = False) -> _Node | None:
         best: _Node | None = None
         best_key: tuple | None = None
         cap = self.settings.max_calls_per_item_in_flight
         for node in self.ready.values():
             if node.not_before > now or node.foreign_lease or self.item_active[node.item_key] >= cap:
+                continue
+            if retries_only and node.sends == 0:
                 continue
             key = (node.wave, node.crit, self.bucket_served[node.bucket], node.seq)
             if best_key is None or key < best_key:
@@ -905,6 +920,8 @@ class Dispatcher:
             if snap.exposure >= self.budget_blocked_at:
                 return "budget"
             self.budget_blocked_at = None
+        if self.first_attempts_blocked_at is not None and snap.exposure < self.first_attempts_blocked_at:
+            self.first_attempts_blocked_at = None
         while self.ready:
             if self._capacity() <= 0:
                 self.aimd.bound_in_window = True
@@ -912,9 +929,9 @@ class Dispatcher:
             if not self.aimd.token_available(now):
                 self.aimd.bound_in_window = True
                 return "token"
-            node = self._pick(now)
+            node = self._pick(now, retries_only=self.first_attempts_blocked_at is not None)
             if node is None:
-                return "none_eligible"
+                return "budget" if self.first_attempts_blocked_at is not None else "none_eligible"
             try:
                 parents = [(self.nodes[p].spec, self.store.candidate(p) if self.nodes[p].succeeded else None)
                            for p in node.parents]
@@ -933,12 +950,21 @@ class Dispatcher:
                     continue
                 self._open_circuit(f"render_failed:{type(exc).__name__}:{exc}")
                 return "closed"
+            self.rendered_chars_total += rendered_chars(messages)
+            self.rendered_count += 1
             first_attempt = node.sends == 0
-            if not self.ledger.fits(amount + self.pending_reservation,
-                                    ceiling_usd=self.soft_ceiling if first_attempt else None):
+            if first_attempt and not self.ledger.fits(amount + self.pending_reservation, ceiling_usd=self.soft_ceiling):
+                # The soft admission ceiling binds new work; the reserve above it is only for retries of admitted work.
+                self.first_attempts_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                self._event_once(f"soft_ceiling_blocks_first_attempts:{self.ledger.last_refusal or 'ceiling'}")
+                continue
+            if not self.ledger.fits(amount + self.pending_reservation):
                 self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
                 self._event_once(f"budget_blocked:{self.ledger.last_refusal or 'ceiling'}")
                 return "budget"
+            if not first_attempt and snap.exposure + self.pending_reservation + amount > self.soft_ceiling:
+                self.reserve_admissions += 1
+                self._event("reserve_used_by_retry", node.node_id)
             self.aimd.take_token()
             self.bucket_served[node.bucket] += 1
             del self.ready[node.node_id]
@@ -1073,6 +1099,10 @@ class Dispatcher:
         cost = confirmed_cost(result)                   # CONNECT_FAILED without usage: provably unsent, 0
         if cost is not None:
             await self.ledger.settle(attempt_id, cost)
+            if status is TransportStatus.OK:
+                self.ok_cost_samples += 1
+                self.ok_cost_total += cost
+                self.ok_reserved_total += attempt.reservation_usd
         else:
             await self.ledger.mark_unresolved(attempt_id, detail=status.value)
             self.unresolved[attempt_id] = _Unresolved(attempt_id, node.node_id, result.generation_id,
@@ -1339,7 +1369,8 @@ class Dispatcher:
             extra={"events": list(self.events[-200:]),
                    "aimd_increases": self.aimd.increases - self.aimd.increases_at_run_start,
                    "aimd_decreases": self.aimd.decreases - self.aimd.decreases_at_run_start,
-                   "rps_start": self.run_start_rps, "configured_concurrency_start": self.settings.concurrency_start,
+                   "rps_start": self.run_start_rps, "reserve_admissions": self.reserve_admissions,
+                   "realized_cost_ratio": str(self._cost_ratio()), "configured_concurrency_start": self.settings.concurrency_start,
                    "configured_rps_start": self.settings.rps_start, "ledger_overruns": len(self.ledger.overruns),
                    "journal_batches": self.ledger.journal.batches_written,
                    "journal_max_batch": self.ledger.journal.max_batch},
