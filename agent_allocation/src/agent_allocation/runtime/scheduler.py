@@ -57,6 +57,7 @@ Not consumed: scheduler.checkpoint_after_every_response (always true here), sche
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import random
 import time
@@ -630,6 +631,17 @@ class Dispatcher:
             return self._summary(started, settled_before)
         finally:
             self.ledger.set_run_cap(None)
+            await self._release_journal_writer()
+
+    async def _release_journal_writer(self) -> None:
+        """Hand the single-writer role back when run() ends, so another Runtime/process can take it (and this one
+        catches up on anything written meanwhile before its next transition)."""
+        journal = self.ledger.journal
+        try:
+            await journal.flush()
+            journal.release_writer()
+        except Exception as exc:  # noqa: BLE001 - never mask the run's own outcome; the role dies with the process
+            self._event("journal_release_failed", repr(exc))
 
     # ---- setup ----------------------------------------------------------------------------------------------
     def _configure_budget(self, plan: AdmissionPlan, max_usd: Decimal) -> None:
@@ -710,10 +722,11 @@ class Dispatcher:
         self.store.set_meta("dispatcher_heartbeat", repr(time.time()))
 
     async def _startup_reconcile(self) -> None:
-        # (a) reservations an earlier process left open: settle from a persisted response or charge the maximum.
-        for attempt in self.ledger.open_attempts():
-            if attempt.attempt_id in self.ledger.inherited_attempt_ids:
-                await self._resolve_inherited(attempt.attempt_id)
+        # (a) reservations an earlier process left open: the ledger (sole owner of recovery charging) settles them from
+        #     a persisted response or charges the maximum.
+        report = await self.ledger.resolve_inherited(self.paths)
+        if any(report.values()):
+            self._event("inherited_reservations_resolved", json.dumps(report, sort_keys=True))
         # (b) leases held by other owners: take over only when provably dead or stale.
         for row in self.store.leased_nodes():
             node = self.nodes.get(row.node_id)
@@ -726,19 +739,6 @@ class Dispatcher:
             if node is None or node.terminal:
                 continue
             await self._finish_ok(node, attempt, result)
-
-    async def _resolve_inherited(self, attempt_id: str) -> None:
-        raw_path = self.paths.raw_response(attempt_id)
-        cost = None
-        if raw_path.exists():
-            relative = self.paths.relative(raw_path)
-            result = result_from_raw(read_raw_response(self.paths, relative), relative_path=relative,
-                                     sha256=sha256_file(raw_path))
-            cost = confirmed_cost(result)
-        if cost is not None:
-            await self.ledger.settle(attempt_id, cost)
-        else:
-            await self.ledger.charge_max(attempt_id)
 
     async def _finish_from_raw(self, node: _Node, attempt_id: str) -> bool:
         """A dead owner's attempt whose OK response reached disk is finished from the artifact, never re-sent

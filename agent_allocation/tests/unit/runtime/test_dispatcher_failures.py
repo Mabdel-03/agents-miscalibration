@@ -75,9 +75,10 @@ async def test_crash_after_provider_response_before_db_commit_resends_nothing(tm
     assert not env.paths.parsed(root.node_id).exists()
     assert _kinds(env) == {f"{root.node_id}:1": None}               # reserved + sent, never settled
 
-    env.reopen(recover=True)                                         # restore -> re-ingest raw -> reconcile journal
+    env.reopen(recover=True)                                         # restore -> re-ingest raw (journal untouched)
     assert env.store.recovery_report["raw_persisted"] == 1
-    assert env.store.recovery_report["journal_settled_from_raw"] == 1
+    assert env.store.recovery_report["journal_open_reservations"] == 1
+    assert _kinds(env) == {f"{root.node_id}:1": None}               # recovery never charges: the ledger does
     second = FakeClient()
     summary = await env.dispatcher(second).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
     assert summary.stop_reason == "completed"
@@ -100,7 +101,11 @@ async def test_crash_while_request_in_flight_charges_the_full_reservation(tmp_pa
     await _crash_run(env, FakeClient(script), plan_of([graph]), monkeypatch, crashed)
     [aid] = _kinds(env)
     env.reopen(recover=True)
-    assert env.store.recovery_report["journal_charged_max"] == 1
+    assert env.store.recovery_report["journal_open_reservations"] == 1
+    assert await env.ledger.resolve_inherited(env.paths) == {"settled_from_raw": 0, "charged_max": 1,
+                                                             "released_unsent": 0}
+    assert await env.ledger.resolve_inherited(env.paths) == {"settled_from_raw": 0, "charged_max": 0,
+                                                             "released_unsent": 0}
     kinds = _kinds(env)
     assert kinds[aid] is LedgerEventKind.CHARGE_MAX
     charged = journal_attempts(env.paths.ledger_journal)[aid].resolved_usd
