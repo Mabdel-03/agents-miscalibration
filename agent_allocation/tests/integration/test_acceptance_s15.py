@@ -734,6 +734,50 @@ def test_s15_13_selection_independent_of_candidate_mapping_order_production(adv_
     assert len(chosen) == 1, "tie-break depends on dict/completion order"
 
 
+OPTION_FINALS = ["A", "(A)", " A ", "\nB\n", "B\u00a0", "a", "(a)", "A.", "A)", "(A", "**A**", "Answer: A", "A or B",
+                 "E", "AB", "(A) option a", "\uff21", "\u0410", "\u200bA", "[A]", "'A'", "C", "(C)", "D"]
+BOOLEAN_FINALS = ["True", "False", "true", "FALSE", "True.", "(True)", "**False**", "'True'", "True!", "Tru e", "Yes",
+                  "1", "not True", "True or False", "TrUe", "\u200bTrue", "True\u00a0", "\uff34rue", "False;", "`false`"]
+
+
+def test_s15_13_vote_classes_agree_with_grade_identity_production(adv_items, cfg):
+    """Voting classes (06) and grading identities (04) must be the same partition of final answers: a vote key exists
+    exactly when the grader accepts the answer, and two finals share a class exactly when they grade alike for every
+    possible gold. Otherwise plurality can crown a class the grader scores differently from its members."""
+    keys = optional_module("agent_allocation.selection.keys")
+    extraction = optional_module("agent_allocation.extraction.final")
+    grader = optional_module("agent_allocation.grading.text.grade")
+    grid = grids_from_config(cfg)["pilot_r1"]
+    cases = [(t, p) for t, p, _ in adv_items if t.item_id in ("mmlu_pro/adv/1", "bbh_logic4/adv/1", "bbh_logic4/adv/2")]
+    assert len(cases) == 3
+    problems = []
+    for task, private in cases:
+        node = next(iter(h.ref_graph(grid, task).nodes.values()))
+        finals = BOOLEAN_FINALS if task.output_kind.value == "boolean" else OPTION_FINALS
+        golds = list(private.allowed_choices)
+        rows = []
+        for text in finals:
+            cand = extraction.extract_candidate(h.ok_result(node, f"<rationale>r</rationale>\n<final>{text}</final>"),
+                                                node, task)
+            key = keys.vote_key(cand, task)
+            verdicts = []
+            for gold in golds:
+                g = grader.grade_text(cand, dataclasses.replace(private, gold_answer=gold))
+                verdicts.append((g.status.value, g.semantic_correct))
+            rows.append((text, key, tuple(verdicts)))
+            invalid = all(v[0] == GradeStatus.INVALID_OUTPUT.value for v in verdicts)
+            graded = all(v[0] == GradeStatus.GRADED.value for v in verdicts)
+            if (key is None) != invalid or (key is not None and not graded):
+                problems.append(f"{task.item_id} {text!r}: vote key {key!r} but verdicts {set(verdicts)}")
+        for i, (t1, k1, v1) in enumerate(rows):
+            for t2, k2, v2 in rows[i + 1:]:
+                if k1 is None or k2 is None:
+                    continue
+                if (k1 == k2) != (v1 == v2):
+                    problems.append(f"{task.item_id} {t1!r} vs {t2!r}: same class={k1 == k2} but same verdicts={v1 == v2}")
+    assert not problems, "\n".join(problems[:20])
+
+
 # =========================================================================================================
 # 15.14 Unknown grader status stays unknown; parser failure and valid wrong answer distinguishable.
 # =========================================================================================================

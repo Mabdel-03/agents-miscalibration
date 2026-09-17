@@ -252,3 +252,49 @@ def test_stubbed_code_grader_is_labelled_in_reports(run_paths, cfg):
     live.run_offline(run_paths, fast_config(cfg), inventory, model.transport(), code_grader=stub_code_grader)
     text = "\n".join(p.read_text(errors="replace") for p in run_paths.reports_dir.rglob("*.md")).lower()
     assert "stub" in text
+
+
+class PeerOutageModel(PromptOnlyModel):
+    """Every PEER request for ``outage_item`` is rate-limited forever: those nodes exhaust their transport attempts."""
+
+    def __init__(self, tasks, outage_item: str):
+        super().__init__(tasks)
+        self.outage_item = outage_item
+        self.rate_limited = 0
+
+    def transport(self) -> httpx.MockTransport:
+        base = super().transport()
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/chat/completions"):
+                body = json.loads(request.content)
+                user = "\n".join(m.get("content", "") for m in body["messages"] if m.get("role") == "user")
+                if "OTHER CANDIDATE SOLUTIONS" in user and self._item(user) == self.outage_item:
+                    self.rate_limited += 1
+                    return httpx.Response(429, json={"error": {"code": 429, "message": "mock outage"}},
+                                          headers={"retry-after": "0"})
+            return base.handler(request)
+        return httpx.MockTransport(handle)
+
+
+def test_failed_nodes_stay_in_the_population_and_analysis_agrees_with_the_independent_hook(run_paths, cfg):
+    """15.9: unrun or failed jobs are not silently dropped. The analysis module and the independent hook must return
+    the same primary estimate (a number, or None when the population is not fully known), and the audit must pass."""
+    live = optional_module("agent_allocation.live")
+    if not hasattr(live, "run_offline"):
+        pytest.skip("waiting on live.run_offline (Q1)")
+    items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
+    ids = ("math500/adv/1", "mmlu_pro/adv/1")
+    inventory = [InventoryItem(public=items[i][0], private=items[i][1]) for i in ids]
+    model = PeerOutageModel([items[i][0] for i in ids], outage_item="mmlu_pro/adv/1")
+    summary = live.run_offline(run_paths, fast_config(cfg), inventory, model.transport(), code_grader=stub_code_grader)
+    assert model.rate_limited > 0
+    run = ir.load(run_paths.run_dir)
+    planned = {nid for nodes in run.jobs.values() for nid in nodes}
+    assert len(planned) == 250 and len(run.parsed) < 250, "failed nodes must remain planned, not vanish from manifests"
+    payload = ir.independent_recompute(run_paths.run_dir)
+    failing = {c["name"]: c["detail"] for c in payload["checks"] if c["passed"] is False}
+    assert not failing, failing
+    trace = ir.recompute_item(run_paths.run_dir, "mmlu_pro/adv/1")["partitions"]["main"]
+    assert trace["checkpoints"]["peer/4/4/current"]["delivered_correct"] in (0, None)
+    assert summary.get("audit_rc") == 0, "agent 07's audit disagrees with the independent hook or failed a check"
