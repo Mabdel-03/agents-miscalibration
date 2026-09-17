@@ -138,6 +138,7 @@ def test_mmlu_inventory_legal_choices_and_no_label_fields(mmlu_inventory):
             assert int(kept.split("/")[1]) < int(record["item_id"].split("/")[1])
             assert (mmlu_pro.trim_outer(rows[kept]["question"])
                     == mmlu_pro.trim_outer(rows[record["item_id"]]["question"]))
+    assert {item.public.source_revision for item in mmlu_inventory} == {mmlu_pro.SOURCE_REVISION}
     for item in mmlu_inventory:
         public = item.public
         row = rows[public.item_id]
@@ -177,6 +178,7 @@ def test_bbh_four_formats_have_correct_labels(bbh_inventory):
         assert raw["target"] in (gold, f"({gold})")
     for item in bbh_inventory:
         assert item.private.gold_answer in item.public.allowed_choices
+        assert item.public.source_revision == item.private.source_revision == bbh_logic4.SOURCE_COMMIT
     assert "target" not in _public_manifest_text(bbh_inventory)
 
 
@@ -271,3 +273,22 @@ def test_fixture_inventories_are_typed_drawable_and_leak_free(benchmark):
             assert item.private.gold_answer not in item.public.prompt.split("\nOptions:\n")[0]
     draw = select_panels(items, benchmark=benchmark, seed=7, n_dev=4, n_main=8, n_reserve=4)
     assert len(draw.main_item_ids) == 8
+
+
+def test_bbh_structural_exclusions_have_reasons():
+    choice = {"input": "Q?\nOptions:\n(A) same\n(B) same\n(C) other", "target": "(A)"}
+    assert bbh_logic4.build_item("temporal_sequences", 0, choice).exclusion_reason == "duplicate_option_text"
+    gap = {"input": "Q?\nOptions:\n(A) one\n(C) two", "target": "(A)"}
+    assert bbh_logic4.build_item("temporal_sequences", 1, gap).exclusion_reason == "option_letters_not_consecutive_from_A"
+    missing = {"input": "Q?\nOptions:\n(A) one\n(B) two", "target": "(D)"}
+    assert bbh_logic4.build_item("temporal_sequences", 2, missing).exclusion_reason == "target_letter_not_among_options"
+    boolean = {"input": "True and False is", "target": "false"}
+    assert bbh_logic4.build_item("boolean_expressions", 3, boolean).exclusion_reason == "boolean_target_not_true_false"
+    with pytest.raises(SourceIntegrityError):
+        bbh_logic4.build_item("temporal_sequences", 4, {"input": "x", "target": "(A)", "rationale": "leak"})
+
+
+def test_every_ineligible_item_carries_a_reason(math_inventory, mmlu_inventory, bbh_inventory):
+    for inventory in (math_inventory, mmlu_inventory, bbh_inventory):
+        records = exclusion_records(inventory)             # raises if any ineligible item lacks a reason
+        assert len(records) == sum(not item.eligible for item in inventory)

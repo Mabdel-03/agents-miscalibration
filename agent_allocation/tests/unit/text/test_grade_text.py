@@ -169,10 +169,10 @@ def test_missing_gold_is_evaluator_error():
 # Reference round trips on the pinned inventories
 # ---------------------------------------------------------------------------------------------------------
 
-def _round_trip(inventory, forms):
+def _round_trip(inventory, forms, *, include_ineligible=False):
     failures = []
     for item in inventory:
-        if not item.eligible:
+        if not (item.eligible or include_ineligible):
             continue
         for form in forms:
             final = form(item.private.gold_answer)
@@ -197,8 +197,8 @@ def test_every_math_gold_grades_correct_against_itself(math_inventory):
 
 def test_frozen_math_exclusions_match_the_recomputed_audit(math_inventory):
     from agent_allocation.benchmarks import math500
-    failing = {item_id for item_id, *_ in _round_trip([i for i in math_inventory], (lambda g: g,))}
-    assert failing == set() and set(math500.ENGINEERING_EXCLUSIONS) == failing
+    failing = {item_id for item_id, *_ in _round_trip(math_inventory, (lambda g: g,), include_ineligible=True)}
+    assert set(math500.ENGINEERING_EXCLUSIONS) == failing == set()
 
 
 def test_grade_module_exports_versions():

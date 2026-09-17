@@ -8,6 +8,7 @@ per parent process; a killed or dead child is restarted on the next call.
 from __future__ import annotations
 
 import multiprocessing
+import os
 import signal
 import threading
 import time
@@ -112,12 +113,15 @@ class IsolatedEvaluator:
 
 
 _SHARED: IsolatedEvaluator | None = None
+_SHARED_PID: int | None = None
 _SHARED_LOCK = threading.Lock()
 
 
 def shared_evaluator() -> IsolatedEvaluator:
-    global _SHARED
+    """The per-process evaluator. A forked child never reuses its parent's pipe: it starts its own evaluator."""
+    global _SHARED, _SHARED_PID
     with _SHARED_LOCK:
-        if _SHARED is None:
+        if _SHARED is None or _SHARED_PID != os.getpid():
             _SHARED = IsolatedEvaluator()
+            _SHARED_PID = os.getpid()
         return _SHARED

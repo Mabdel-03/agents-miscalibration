@@ -59,13 +59,21 @@ def environment_digest() -> str:
     return hashlib.sha256(json.dumps(dependency_versions(), sort_keys=True).encode()).hexdigest()
 
 
+@lru_cache(maxsize=1)
 def _math_verify() -> tuple[Any, Any]:
+    """Import Math-Verify and warm up its LaTeX parser once, outside any alarm window.
+
+    Called before a wall-clock limit is armed, so a short limit can never interrupt a module import or the lazy
+    construction of the ANTLR parser and leave half-initialized global state behind.
+    """
     import math_verify.grader as mv_grader
     import math_verify.parser as mv_parser
 
     # We pass timeout None (our single SIGALRM limit replaces theirs); silence their one-time warning about it.
     mv_parser.TIMEOUT_WARNING_SHOWN = True
     mv_grader.TIMEOUT_WARNING_SHOWN = True
+    warm = mv_parser.parse("\\boxed{\\frac{1}{2}}", parsing_timeout=None, raise_on_error=True)
+    mv_grader.verify(warm, warm, timeout_seconds=None, raise_on_error=True)
     return mv_parser.parse, mv_grader.verify
 
 
@@ -119,6 +127,10 @@ def verify_gold(gold_answer: str, candidate_answer: str, *, timeout_s: float = D
         except EvaluatorUnavailable:
             return MathVerdict(None, "evaluator_unavailable")
     try:
+        _math_verify()
+    except Exception as exc:  # noqa: BLE001 - an unimportable evaluator is an outage, not a wrong answer
+        return MathVerdict(None, f"evaluator_exception:{type(exc).__name__}")
+    try:
         with wall_clock_limit(timeout_s):
             gold = parse_answer(gold_answer)
             if not gold:
@@ -149,6 +161,10 @@ def math_equivalent(a: str, b: str, *, timeout_s: float = 5.0) -> bool | None:
             return shared_evaluator().call("math_equivalent", (a, b), {"timeout_s": timeout_s}, timeout_s)
         except (EvaluatorTimeout, EvaluatorUnavailable):
             return None
+    try:
+        _math_verify()
+    except Exception:  # noqa: BLE001
+        return None
     try:
         with wall_clock_limit(timeout_s):
             parsed_a = parse_answer(a)
