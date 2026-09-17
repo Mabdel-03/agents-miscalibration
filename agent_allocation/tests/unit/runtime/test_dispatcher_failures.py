@@ -409,9 +409,9 @@ async def test_unresolved_exposure_pauses_admissions_until_reconciled(tmp_path):
     assert summary.stop_reason == "completed" and summary.nodes_succeeded == 6
     events = [e for _, e, _ in summary.extra["events"]]
     assert "paused_unresolved_exposure" in events
-    # the first burst (2 in flight + 2 prefetched, all reserved before any timeout) may send; nothing admitted
-    # after the timeouts pushed unresolved exposure over the limit is sent before the horizon charges them
-    assert len(sends) == 8 and all(t >= 0.5 for t, _ in sends[4:]), sends
+    # only the two exchanges already on the wire go out; the prefetched attempts waiting for the HTTP limiter are
+    # deferred too (review item 4), and nothing is sent before the horizon charges the timeouts
+    assert len(sends) == 8 and all(t >= 0.5 for t, _ in sends[2:]), sends
     charged = [k for k in journal_attempts(env.paths.ledger_journal).values()
                if k.resolution is LedgerEventKind.CHARGE_MAX]
     assert len(charged) == 2

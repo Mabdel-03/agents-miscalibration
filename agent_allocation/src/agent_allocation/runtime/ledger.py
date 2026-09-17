@@ -146,6 +146,7 @@ class CollectionLedger:
         self.overruns: list[tuple[str, Decimal, Decimal]] = []
         self.peak_exposure = ZERO
         self._inherited: set[str] = set()
+        self._pending_unresolved: dict[str, asyncio.Future] = {}
         with self._lock:
             self._replay()
             journal.listener = self._on_external_events
@@ -337,22 +338,31 @@ class CollectionLedger:
             opened.state = _SENT
         await asyncio.shield(pending)
 
-    async def mark_unresolved(self, attempt_id: str, *, detail: str = "") -> None:
-        """Sent attempt whose exchange ended without a confirmed cost: keep the full reservation as unresolved."""
+    def mark_unresolved_nowait(self, attempt_id: str, *, detail: str = "") -> "asyncio.Future | None":
+        """Synchronous part of ``mark_unresolved``: the exposure moves to *unresolved* immediately (so the $2 pause
+        sees it before any other coroutine runs); returns the journal future (None if already unresolved)."""
         with self._lock:
             self._sync()
             opened = self._open.get(attempt_id)
             if opened is None:
                 raise LedgerError(f"mark_unresolved for unknown or resolved attempt {attempt_id}")
             if opened.state == _UNRESOLVED:
-                return
+                return self._pending_unresolved.get(attempt_id)
             opened.state = _UNRESOLVED
             self._in_flight -= opened.amount
             self._unresolved += opened.amount
             event = self._event_locked(LedgerEventKind.UNRESOLVED, ZERO, opened, attempt_id=attempt_id,
                                        detail=detail or None)
             pending = self.journal.submit(event)
-        await asyncio.shield(pending)
+            self._pending_unresolved[attempt_id] = pending
+            pending.add_done_callback(lambda _f, aid=attempt_id: self._pending_unresolved.pop(aid, None))
+            return pending
+
+    async def mark_unresolved(self, attempt_id: str, *, detail: str = "") -> None:
+        """Sent attempt whose exchange ended without a confirmed cost: keep the full reservation as unresolved."""
+        pending = self.mark_unresolved_nowait(attempt_id, detail=detail)
+        if pending is not None:
+            await asyncio.shield(pending)
 
     def _remove_locked(self, opened: _Open) -> None:
         del self._open[opened.attempt_id]
