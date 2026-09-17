@@ -18,7 +18,8 @@ Tables (one row type each; columns are the dataclass fields, in order; ``TABLE_S
   design: rows for different n repeat the same slot trajectories and must not be summed across n.
 * ``root_strata`` -- pre-communication root correctness among roots[0:n] for each team size n, plus the
   independent reference bank roots[max_n:bank].
-* ``failures`` -- per item and generation kind/budget: transport, completion and parse status counts.
+* ``failures`` -- per item and generation kind/budget, over every job node of the item: transport, completion and
+  parse status counts.
 
 Invariants checked while building (each raises ``MetricsInvariantError``): sealed pool hash equals the pool the
 metrics see; the delivered candidate belongs to its pool; ``delivered <= coverage`` (lo and hi) for candidate-only
@@ -539,7 +540,8 @@ def _transitions(it: _Item, trajectory: Sequence[PolicyCheckpoint],
         known_outcomes = {"correct", "wrong", "invalid_output", "abstained"}
         team_rows.append(TeamTransitionRow(
             **it.base(), family=b.family, n=n, from_step=s0, to_step=s1, n_slots=len(before),
-            c_prev=sum(s is CandidateState.CORRECT for s in before), c_next=sum(s is CandidateState.CORRECT for s in after),
+            c_prev=sum(s is CandidateState.CORRECT for s in before),
+            c_next=sum(s is CandidateState.CORRECT for s in after),
             u_prev=unknown(before), u_next=unknown(after), fully_known=unknown(before) + unknown(after) == 0,
             delta_c=delta, n_w_to_c=counts["WC"] + counts["IC"], n_c_to_w=counts["CW"] + counts["CI"],
             **{f"n_{kind}": counts[kind] for kind in TRANSITION_KINDS},
@@ -591,7 +593,7 @@ def _strata_rows(it: _Item, current: Sequence[PolicyCheckpoint], rows_by_policy:
 
 
 def _failure_rows(it: _Item) -> list[FailureRow]:
-    nodes: set[str] = set()
+    nodes: set[str] = set(it.item.specs)          # every job node, including nodes no checkpoint reads (pilot extras)
     for cp in it.item.checkpoints:
         nodes.update(cp.required_node_ids)
     groups: dict[tuple[str, int | None], list[str]] = defaultdict(list)
@@ -653,7 +655,8 @@ def build_partition_tables(sealed: SealedSelections, records: PartitionRecords, 
             row = _checkpoint_row(it, cp, sealed.by_policy.get(cp.policy_id))
             rows_by_policy[cp.policy_id] = row
             tables["checkpoints"].append(row)
-        current = [cp for cp in sorted(item.checkpoints, key=_order) if CheckpointView(cp.view) is CheckpointView.CURRENT]
+        current = [cp for cp in sorted(item.checkpoints, key=_order)
+                   if CheckpointView(cp.view) is CheckpointView.CURRENT]
         bank_rows, bank = _bank_rows(it, [cp for cp in current if cp.family == "sample"])
         tables["bank"].extend(bank_rows)
         sample_steps = [cp for cp in current if cp.family == "sample"]

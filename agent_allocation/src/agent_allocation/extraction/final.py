@@ -31,7 +31,10 @@ from agent_allocation.contracts import (
     Candidate, CompletionStatus, GenerationResult, GenerationSpec, OutputKind, ParseStatus, PublicTask, TransportStatus,
 )
 
-__all__ = ["ALLOWED_FENCE_INFO", "EXTRACTOR_VERSION", "FINAL_CLOSE", "FINAL_OPEN", "extract_candidate"]
+__all__ = [
+    "ALLOWED_FENCE_INFO", "EXTRACTOR_VERSION", "FINAL_CLOSE", "FINAL_OPEN", "extract_candidate",
+    "terminal_without_response",
+]
 
 EXTRACTOR_VERSION = "06-final-v1"
 FINAL_OPEN = "<final>"
@@ -84,3 +87,18 @@ def extract_candidate(result: GenerationResult, spec: GenerationSpec, task: Publ
     if not final_answer.strip():
         return build(ParseStatus.MALFORMED, rationale=rationale)
     return build(ParseStatus.VALID, final_answer=final_answer, rationale=rationale)
+
+
+def terminal_without_response(spec: GenerationSpec, task: PublicTask) -> Candidate:
+    """The candidate of a node made terminal without any API response (contract v2 R03-1 context-limit policy).
+
+    It holds no visible content, so it is ``EMPTY``: it casts no vote, is graded ``INVALID_OUTPUT`` and renders as
+    absent to children, and a checkpoint containing it can still be selected and sealed instead of waiting forever.
+    """
+    if not isinstance(spec, GenerationSpec) or not isinstance(task, PublicTask):
+        raise TypeError("terminal_without_response expects (GenerationSpec, PublicTask)")
+    if task.item_id != spec.item_id or task.benchmark != spec.benchmark:
+        raise ValueError(f"task {task.benchmark}/{task.item_id} does not match spec {spec.benchmark}/{spec.item_id}")
+    node_id = spec.node_id
+    return Candidate(candidate_id=node_id, node_id=node_id, item_id=spec.item_id, visible_content="", final_answer=None,
+                     rationale=None, parse_status=ParseStatus.EMPTY, finish_reason=None, output_kind=task.output_kind)

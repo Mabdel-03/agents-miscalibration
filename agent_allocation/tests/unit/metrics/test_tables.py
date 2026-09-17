@@ -14,7 +14,7 @@ from agent_allocation.metrics.transitions import check_identity, kind_counts
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.seal import SealError, load_sealed_selections, seal_selections
 from tests.fixtures.metrics.synthetic_panel import (
-    MISSING_FINAL, ItemSpec, MiniGrid, build_panel, fixture_math_equivalent, select_panel, standard_items,
+    MISSING_FINAL, MiniGrid, build_panel, fixture_math_equivalent, select_panel, standard_items,
 )
 
 

@@ -139,7 +139,7 @@ def _write(path: Path, body: bytes) -> str:
 
 
 def write_tables(tables: PartitionTables, directory: Path) -> dict[str, str]:
-    """Write ``{table}.jsonl`` for every table in ``TABLE_FILES`` into ``directory``; returns ``{file name: sha256}``."""
+    """Write ``{table}.jsonl`` for each table in ``TABLE_FILES`` into ``directory``; returns ``{file: sha256}``."""
     return {f"{name}.jsonl": _write(Path(directory) / f"{name}.jsonl", body)
             for name, body in _payload(tables).items()}
 

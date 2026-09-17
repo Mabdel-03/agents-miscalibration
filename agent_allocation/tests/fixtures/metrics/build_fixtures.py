@@ -45,7 +45,8 @@ def build(out_dir: Path) -> dict[str, str]:
     (out_dir / "selections.jsonl").write_bytes(selections)
     digests["selections.jsonl"] = sha256(selections).hexdigest()
     schema = {
-        "tables": {name: [{"name": col, "type": typ} for col, typ in columns] for name, columns in TABLE_SCHEMAS.items()},
+        "tables": {name: [{"name": col, "type": typ} for col, typ in columns]
+                   for name, columns in TABLE_SCHEMAS.items()},
         "summary_checkpoints": list(SUMMARY_COLUMNS),
         "vocabularies": {
             "candidate_state": [s.value for s in CandidateState],
