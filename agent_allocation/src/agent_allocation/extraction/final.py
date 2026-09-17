@@ -4,13 +4,15 @@ Rules, applied in this order:
 
 1. ``candidate_id == node_id == spec.node_id``; ``result.node_id`` and ``task.item_id``/``task.benchmark`` must agree
    with ``spec`` (a mismatch raises: it is a harness error, never a model outcome).
-2. ``CompletionStatus.BLOCKED`` -> ``REFUSAL`` (a filtered response is not a parse failure).
-3. ``visible_content`` ``None`` or whitespace-only -> ``EMPTY``. A transport failure carries no content and lands
-   here; transport status stays on ``GenerationResult`` and is reported separately by ``metrics``.
-4. Exactly one ``<final>`` followed by exactly one ``</final>`` -> ``VALID``, *whatever* ``finish_reason`` says:
+2. ``transport_status`` other than ``OK`` -> ``EMPTY``: no accepted completion exists, even when a body carried text
+   (a cache HIT or provider mismatch is never a fresh valid draw). ``visible_content`` is retained for audit and the
+   transport status stays on ``GenerationResult``, reported separately by ``metrics``.
+3. ``CompletionStatus.BLOCKED`` -> ``REFUSAL`` (a filtered response is not a parse failure).
+4. ``visible_content`` ``None`` or whitespace-only -> ``EMPTY``.
+5. Exactly one ``<final>`` followed by exactly one ``</final>`` -> ``VALID``, *whatever* ``finish_reason`` says:
    validity is a property of the closed final element, and truncation is reported from ``finish_reason``.
-5. Neither ``<final>`` nor ``</final>`` present -> ``MISSING``.
-6. Anything else -- two or more opening tags, a stray, reversed or missing closer -- -> ``MALFORMED``. A closed element
+6. Neither ``<final>`` nor ``</final>`` present -> ``MISSING``.
+7. Anything else -- two or more opening tags, a stray, reversed or missing closer -- -> ``MALFORMED``. A closed element
    whose inner text is blank (after the fence strip for Python) is also ``MALFORMED``: it holds no answer.
 
 Tags are matched byte-exactly (no case folding). There is no text heuristic, no "Answer:" scraping, no LLM repair,
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 from agent_allocation._vendor.extraction_tags import TAG_EMPTY, TAG_MISSING, TAG_OK, strict_single_pair, strip_one_fence
 from agent_allocation.contracts import (
-    Candidate, CompletionStatus, GenerationResult, GenerationSpec, OutputKind, ParseStatus, PublicTask,
+    Candidate, CompletionStatus, GenerationResult, GenerationSpec, OutputKind, ParseStatus, PublicTask, TransportStatus,
 )
 
 __all__ = ["ALLOWED_FENCE_INFO", "EXTRACTOR_VERSION", "FINAL_CLOSE", "FINAL_OPEN", "extract_candidate"]
@@ -61,6 +63,8 @@ def extract_candidate(result: GenerationResult, spec: GenerationSpec, task: Publ
                          final_answer=final_answer, rationale=rationale, parse_status=status,
                          finish_reason=result.finish_reason, output_kind=task.output_kind)
 
+    if result.transport_status is not TransportStatus.OK:
+        return build(ParseStatus.EMPTY)
     if result.completion_status is CompletionStatus.BLOCKED:
         return build(ParseStatus.REFUSAL)
     if not visible.strip():

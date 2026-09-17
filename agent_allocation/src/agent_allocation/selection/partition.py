@@ -4,7 +4,8 @@ Reads, through ``RunPaths``: ``manifests/policies/{partition}.jsonl``, ``manifes
 ``parsed/**/{node_id}.json`` and, for code, ``public_checks/**/{candidate_id}.json``. It never opens ``private/`` or
 ``grades/``. A checkpoint is *ready* when every pool candidate is parsed and, for code, every validly parsed pool
 candidate has a public check; other checkpoints are reported as pending and selected on a later call (sealing
-merges, see ``selection.seal``). ``math_equivalent`` is passed to MATH checkpoints only.
+merges, see ``selection.seal``). ``math_equivalent`` is memoized once per call (``memoized_equivalence``) and
+passed to MATH checkpoints only.
 
 Config keys consumed: none (``seed`` is the study's top-level ``seed``, passed by the caller).
 """
@@ -15,9 +16,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 from agent_allocation.contracts import (
-    BENCHMARKS, Candidate, OutputKind, ParseStatus, PolicyCheckpoint, PublicCheckResult, PublicTask, SelectionResult, load_record,
+    BENCHMARKS, Candidate, OutputKind, ParseStatus, PolicyCheckpoint, PublicCheckResult, PublicTask, SelectionResult,
+    load_record,
 )
 from agent_allocation.paths import RunPaths
+from agent_allocation.selection.plurality import memoized_equivalence
 from agent_allocation.selection.readout import select_checkpoint
 from agent_allocation.selection.seal import seal_selections
 
@@ -54,6 +57,7 @@ def select_partition(paths: RunPaths, partition: str, *, seed: int,
                 if line.strip():
                     task = load_record(PublicTask, json.loads(line))
                     tasks[task.item_id] = task
+    equivalent = None if math_equivalent is None else memoized_equivalence(math_equivalent)
     candidates: dict[str, Candidate] = {}
     checks: dict[str, PublicCheckResult] = {}
     results: list[SelectionResult] = []
@@ -83,7 +87,7 @@ def select_partition(paths: RunPaths, partition: str, *, seed: int,
         pool = {cid: candidates[cid] for cid in cp.candidate_ids}
         pool_checks = {cid: checks[cid] for cid in cp.candidate_ids if cid in checks}
         results.append(select_checkpoint(cp, task, pool, pool_checks, seed=seed,
-                                         math_equivalent=math_equivalent if task.output_kind is OutputKind.MATH
+                                         math_equivalent=equivalent if task.output_kind is OutputKind.MATH
                                          else None))
     digest = seal_selections(paths, partition, results) if seal and results else None
     return PartitionSelection(partition=partition, results=tuple(results), pending_policy_ids=tuple(pending),

@@ -360,13 +360,16 @@ class _Item:
             ids.update(cp.required_node_ids)
         self.states = {cid: candidate_state(item.candidates.get(cid), grades.get(cid)) for cid in sorted(ids)}
         self._letters = option_letters(self.task) if self.task.output_kind is OutputKind.OPTION else None
+        self._keys: dict[str, str | None] = {}
 
     def key(self, cid: str) -> str | None:
-        candidate = self.item.candidates.get(cid)
-        if candidate is None or self.task.output_kind is OutputKind.PYTHON:
-            return None
-        found = vote_key(candidate, self.task, letters=self._letters)
-        return None if found is None else found.exact
+        """Exact gold-blind vote key of a text candidate (``None`` for code, invalid or absent candidates)."""
+        if cid not in self._keys:
+            candidate = self.item.candidates.get(cid)
+            found = None if candidate is None or self.task.output_kind is OutputKind.PYTHON \
+                else vote_key(candidate, self.task, letters=self._letters)
+            self._keys[cid] = None if found is None else found.exact
+        return self._keys[cid]
 
     def base(self) -> dict[str, Any]:
         return {"partition": self.partition, "benchmark": self.task.benchmark, "subtask": self.task.subtask,
@@ -389,7 +392,9 @@ def _checkpoint_row(it: _Item, cp: PolicyCheckpoint, selection: SelectionResult 
 
     selected_state = None
     if selection is not None:
-        if all(c in candidates for c in pool) and selection.pool_hash != pool_hash(pool, candidates):
+        if not all(c in candidates for c in pool):
+            raise MetricsInvariantError(f"{cp.policy_id}: a sealed selection's pool candidate is no longer available")
+        if selection.pool_hash != pool_hash(pool, candidates):
             raise MetricsInvariantError(f"{cp.policy_id}: sealed pool hash differs from the pool being graded")
         chosen = selection.selected_candidate_id
         if chosen is not None:
