@@ -517,6 +517,12 @@ class Dispatcher:
         # AIMD allowances belong to the instance, not to one run(): a later run() on the same Dispatcher continues
         # from the previous run's concurrency/rps (halvings, Retry-After pause) instead of re-ramping from the start.
         self.aimd = Aimd(self.settings, self.clock)
+        # Forecast inputs are learned per instance too (mean rendered size, realized cost / reservation).
+        self.rendered_chars_total = 0
+        self.rendered_count = 0
+        self.ok_reserved_total = Decimal("0")
+        self.ok_cost_total = Decimal("0")
+        self.ok_cost_samples = 0
         self._reset_run_state()
 
     def _reset_run_state(self) -> None:
@@ -534,11 +540,6 @@ class Dispatcher:
         self.admit_blocker = "empty"
         self.first_attempts_blocked_at: Decimal | None = None   # soft ceiling reached: only retries may use reserve
         self.reserve_admissions = 0
-        self.rendered_chars_total = 0
-        self.rendered_count = 0
-        self.ok_reserved_total = Decimal("0")
-        self.ok_cost_total = Decimal("0")
-        self.ok_cost_samples = 0
         self.wave_forecasts: dict[int, tuple[float, Decimal]] = {}
         self.pre_send = 0                          # admitted, not yet holding the HTTP limiter
         self.pending_reservation = Decimal("0")    # admitted, reservation not yet journaled
@@ -573,7 +574,9 @@ class Dispatcher:
         self.wake = asyncio.Event()
         if self.paths.stop_sentinel.exists() or self.paths.drain_sentinel.exists():
             self._finish(STOP_CONTROL_SENTINEL_PRESENT, "STOP" if self.paths.stop_sentinel.exists() else "DRAIN")
-            return self._summary(started, settled_before)
+            summary = self._summary(started, settled_before)
+            self.ledger.set_run_cap(None)
+            return summary
         self._claim_dispatcher()
         self.store.owner = self.owner
         self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
@@ -596,7 +599,9 @@ class Dispatcher:
             await self._final_persist()
             if self.store.get_meta("dispatcher_owner") == self.owner:
                 self.store.delete_meta("dispatcher_owner")
-        return self._summary(started, settled_before)
+        summary = self._summary(started, settled_before)
+        self.ledger.set_run_cap(None)
+        return summary
 
     # ---- setup ----------------------------------------------------------------------------------------------
     def _configure_budget(self, plan: AdmissionPlan, max_usd: Decimal) -> None:
@@ -607,13 +612,14 @@ class Dispatcher:
             raise DispatchRefused("ledger max_unresolved_usd differs from budget.max_unresolved_spend_usd")
         if self.ledger.study_cap > b.credit_ceiling_usd:
             raise DispatchRefused("ledger ceiling exceeds budget.credit_ceiling_usd")
-        ceiling = min(max_usd, b.credit_ceiling_usd)
-        soft = min(b.soft_admission_ceiling_usd, ceiling)
+        run_cap = min(max_usd, b.credit_ceiling_usd)
+        soft = min(b.soft_admission_ceiling_usd, run_cap)
         partitions = {g.partition_id for wave in plan.waves for g in wave}
         if partitions and partitions <= PILOT_PARTITIONS:
-            ceiling = min(ceiling, b.pilot_allowance_usd)
+            run_cap = min(run_cap, b.pilot_allowance_usd)
             soft = min(soft, b.pilot_allowance_usd)
-        self.ledger.set_active_ceiling(min(self.ledger.snapshot().ceiling, ceiling))
+        # Per-run cap, not a permanent change: a later run() with a larger --max-usd is not held at this one's cap.
+        self.ledger.set_run_cap(run_cap)
         self.run_ceiling = self.ledger.snapshot().ceiling
         self.soft_ceiling = min(soft, self.run_ceiling)
 
@@ -706,12 +712,37 @@ class Dispatcher:
         else:
             await self.ledger.charge_max(attempt_id)
 
+    async def _finish_from_raw(self, node: _Node, attempt_id: str) -> bool:
+        """A dead owner's attempt whose OK response reached disk is finished from the artifact, never re-sent
+        (covers a restart that skipped ``StateStore.recover``)."""
+        raw_path = self.paths.raw_response(attempt_id)
+        if node.terminal or not raw_path.exists():
+            return False
+        relative = self.paths.relative(raw_path)
+        result = result_from_raw(read_raw_response(self.paths, relative), relative_path=relative,
+                                 sha256=sha256_file(raw_path))
+        if result is None or result.node_id != node.node_id or result.transport_status is not TransportStatus.OK:
+            return False
+        cost = confirmed_cost(result)
+        if self.ledger.state_of(attempt_id) in ("reserved", "sent", "unresolved"):
+            await (self.ledger.settle(attempt_id, cost) if cost is not None else self.ledger.charge_max(attempt_id))
+        prior = {a.attempt_id: a for a in self.store.attempts_for(node.node_id)}.get(attempt_id)
+        if prior is None:
+            prior = Attempt(attempt_id, node.node_id, int(attempt_id.rsplit(":", 1)[1]), AttemptState.SENT,
+                            Decimal("0"), _utc(), transport_status=result.transport_status)
+        await self._finish_ok(node, prior, result)
+        return node.terminal
+
     async def _maybe_take_over(self, node: _Node, owner: str | None, attempt_id: str | None,
                                heartbeat_at: float | None) -> bool:
         stale = heartbeat_at is None or time.time() - heartbeat_at >= self.settings.lease_stale_seconds
         if not (stale or owner_is_dead(owner)):
             node.foreign_lease = owner or "unknown"
             return False
+        if attempt_id is not None and await self._finish_from_raw(node, attempt_id):
+            node.foreign_lease = None
+            self._event("lease_finished_from_raw", node.node_id)
+            return True
         if attempt_id is not None:
             if self.ledger.state_of(attempt_id) in ("reserved", "sent", "unresolved"):
                 await self.ledger.charge_max(attempt_id)
@@ -1099,6 +1130,11 @@ class Dispatcher:
         cost = confirmed_cost(result)                   # CONNECT_FAILED without usage: provably unsent, 0
         if cost is not None:
             await self.ledger.settle(attempt_id, cost)
+            if cost > attempt.reservation_usd:
+                self._event("cost_exceeds_reservation", f"{attempt_id}:{cost}>{attempt.reservation_usd}")
+            snap = self.ledger.snapshot()
+            if snap.settled > snap.ceiling:
+                self._open_circuit(f"ceiling_breached:settled={snap.settled}>ceiling={snap.ceiling}")
             if status is TransportStatus.OK:
                 self.ok_cost_samples += 1
                 self.ok_cost_total += cost
@@ -1369,6 +1405,8 @@ class Dispatcher:
                       "active": sum(1 for w in self.waves if w.opened and w.remaining > 0)},
             "ready": len(self.ready),
             "unresolved_attempts": len(self.unresolved),
+            "cost_overruns": len(self.ledger.overruns),
+            "reserve_admissions": self.reserve_admissions,
             "duplicate_notifications": self.duplicate_notifications,
         }
 

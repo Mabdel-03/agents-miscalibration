@@ -525,3 +525,32 @@ async def test_client_identity_mismatch_opens_circuit_and_releases_its_lease_at_
     again = FakeClient()
     fixed = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
     assert fixed.stop_reason == "completed" and [a for _, a in again.calls] == [f"{root.node_id}:2"]
+
+
+async def test_restart_without_recover_still_finishes_a_persisted_response(tmp_path, monkeypatch):
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=2)
+    root, child = graph.nodes
+    crashed = asyncio.Event()
+
+    def crash_after_raw(paths, attempt_id, outcome):
+        out = real_write_raw(paths, attempt_id, outcome)
+        crashed.set()
+        raise Crash()
+
+    monkeypatch.setattr(scheduler_mod, "write_raw_response", crash_after_raw)
+    # a dead process leaves its lease and claim behind: emulate by skipping the exit path entirely
+    monkeypatch.setattr(Dispatcher, "_release_own_leases", lambda self: asyncio.sleep(0))
+    first = env.dispatcher(FakeClient())
+    first_owner = first.owner
+    await _crash_run(env, FakeClient(), plan_of([graph]), monkeypatch, crashed)
+    row = env.store.node(root.node_id)
+    assert row.state in ("leased", "sent") and row.lease_owner != first_owner
+    dead = "|".join([row.lease_owner.split("|")[0], "999999999", "0", "dead"])     # same host, pid gone
+    env.store._conn.execute("UPDATE nodes SET lease_owner=? WHERE node_id=?", (dead, root.node_id))
+    env.reopen(recover=False)                                        # the lead forgot StateStore.recover
+    second = FakeClient()
+    summary = await env.dispatcher(second).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed"
+    assert second.sent_nodes() == [child.node_id]                    # root finished from its raw artifact
+    assert summary.settled_usd == 2 * COST and summary.unresolved_usd == 0

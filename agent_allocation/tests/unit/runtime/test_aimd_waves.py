@@ -202,3 +202,19 @@ async def test_aimd_allowances_carry_over_between_runs_on_one_instance(tmp_path)
     assert second.extra["aimd_decreases"] == 0 and client.peak <= 4
     fresh = env.dispatcher(FakeClient())
     assert (fresh.aimd.concurrency_limit, fresh.aimd.rps) == (8, 1000)          # a new instance starts over
+
+
+async def test_run_caps_do_not_stick_to_the_ledger_between_runs(tmp_path):
+    env = Env.create(tmp_path)
+    env.ledger.set_active_ceiling(Decimal("100"))                   # the lead's provider-derived ceiling
+    dispatcher = env.dispatcher(FakeClient())
+    pilot = [make_graph("p", partition="pilot", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())]
+    main = [make_graph("m", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())]
+    first = await dispatcher.run(plan_of(pilot), allow_paid=False, max_usd=Decimal("135"))
+    assert first.ceiling_usd == Decimal("5")                         # pilot allowance for a pilot-only plan
+    assert env.ledger.snapshot().ceiling == Decimal("100")           # cleared after the run
+    second = await dispatcher.run(plan_of(main), allow_paid=False, max_usd=Decimal("60"))
+    assert second.ceiling_usd == Decimal("60") and second.soft_ceiling_usd == Decimal("60")
+    third = await dispatcher.run(plan_of(main), allow_paid=False, max_usd=Decimal("135"))
+    assert third.ceiling_usd == Decimal("100") and third.soft_ceiling_usd == Decimal("100")
+    assert env.ledger.active_ceiling == Decimal("100")
