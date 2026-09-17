@@ -102,6 +102,20 @@ def test_logical_deduction_structure(bbh_inventory):
         assert len(set(options.values())) == 7                  # distinct statements: letter identity is answer identity
 
 
-def test_bbh_canary_string_never_reaches_model_input(bbh_inventory):
-    for item in bbh_inventory:
-        assert "canary GUID" not in item.public.prompt and "BENCHMARK DATA SHOULD NEVER" not in item.public.prompt
+def test_planted_canaries_in_the_source_document_never_reach_public_records():
+    import json
+
+    from agent_allocation.benchmarks import bbh_logic4
+    from agent_allocation.contracts import BBH_SUBTASKS, dump_record
+    canary = "CANARY-BBH-4f1d9e"
+    sources = {}
+    for subtask in BBH_SUBTASKS:
+        if subtask == "boolean_expressions":
+            example = {"input": "True and not False is", "target": "True"}
+        else:
+            example = {"input": "Which?\nOptions:\n(A) one\n(B) two", "target": "(B)"}
+        document = {"canary": canary, "rationale": canary, "examples": [dict(example) for _ in range(250)]}
+        sources[subtask] = json.dumps(document).encode()
+    items = bbh_logic4.items_from_bytes(sources)
+    assert len(items) == 1000 and all(item.eligible for item in items)
+    assert canary not in json.dumps([dump_record(item.public) for item in items])

@@ -6,13 +6,15 @@ Status rules (tri-state, ``text-grade-v1``):
   ``semantic_correct=None``, ``operational_success=False``. Not a semantic answer; downstream counts it as not
   delivered-correct.
 * A valid final that names no legal answer (MMLU/BBH choice: not exactly ``X``/``(X)`` for a listed option;
-  boolean: not an explicit True/False; MATH: no expression extractable): ``INVALID_OUTPUT`` as above, with a
-  ``detail_code`` saying why.
+  boolean: not an explicit True/False; MATH: no mathematical object parses, e.g. malformed LaTeX):
+  ``INVALID_OUTPUT`` as above, with a ``detail_code`` saying why.
 * A gradable final: ``GRADED`` with ``semantic_correct`` True/False and ``operational_success=True``.
   MATH uses ``math_equiv.verify_gold`` (Math-Verify ``verify(gold, prediction)``); options and booleans compare
   the ``normalize`` identity with the gold exactly.
 * Evaluator exception, timeout, outage, or unusable gold: ``EVALUATOR_ERROR``, ``semantic_correct=None`` (never
-  False), ``operational_success=True`` (the model delivered a well-formed final; the failure is ours).
+  False), ``operational_success=True`` (the model delivered a well-formed final; the failure is ours). Errors that
+  Math-Verify itself absorbs inside one comparison strategy are part of its pinned design and read as not equal
+  (see ``math_equiv``).
 * MATH grading is SIGALRM-bounded in-process on a main thread and runs in an isolated, killable child process
   otherwise (see ``math_equiv``).
 

@@ -199,8 +199,22 @@ def test_every_math_gold_grades_correct_against_itself(math_inventory):
 
 def test_frozen_math_exclusions_match_the_recomputed_audit(math_inventory):
     from agent_allocation.benchmarks import math500
+    from agent_allocation.grading.text._limits import wall_clock_limit
     failing = {item_id for item_id, *_ in _round_trip(math_inventory, (lambda g: g,), include_ineligible=True)}
+    math_equiv._math_verify()
+    for item in math_inventory:                          # every gold parses to a mathematical object, not a string
+        with wall_clock_limit(10.0):
+            parsed = math_equiv.parse_answer(item.private.gold_answer)
+        if not parsed or any(isinstance(value, str) for value in parsed):
+            failing.add(item.public.item_id)
     assert set(math500.ENGINEERING_EXCLUSIONS) == failing == set()
+
+
+def test_malformed_math_final_is_invalid_output_not_wrong():
+    for final in ("\\frac{1}{", "???", "(1,2"):
+        result = grade_text(make_candidate(MATH.item_id, final, OutputKind.MATH), MATH)
+        assert (result.status, result.semantic_correct, result.operational_success, result.detail_code) == (
+            GradeStatus.INVALID_OUTPUT, None, False, "candidate_unparseable"), final
 
 
 def test_grade_module_exports_versions():
@@ -248,8 +262,8 @@ def test_private_specs_carry_the_public_legal_choices(math_inventory, mmlu_inven
     ("6-5i", "6 - 5i", True),
     ("5", "The answer is 5", False),                    # undelimited prose is a format violation, not rescued
 ])
-def test_math_parse_rule_v2_fixtures(gold, final, expected):
+def test_math_parse_rule_fixtures(gold, final, expected):
     spec = _spec("math500/fixture", EvalKind.MATH_VERIFY, gold)
     result = grade_text(make_candidate("math500/fixture", final, OutputKind.MATH), spec)
     assert result.status is GradeStatus.GRADED and result.semantic_correct is expected
-    assert "math-parse-v2" in result.grader_version
+    assert "math-parse-v3" in result.grader_version
