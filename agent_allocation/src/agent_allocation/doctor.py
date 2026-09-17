@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from agent_allocation.config import credit_ceiling, load_config, validate_config
 from agent_allocation.paths import RunPaths
@@ -56,6 +56,15 @@ def provider_snapshot(api_key: str) -> dict[str, Any]:
     balance = Decimal(str(credit_data.get("total_credits", 0))) - Decimal(str(credit_data.get("total_usage", 0)))
     return {"recorded_at": datetime.now(timezone.utc).isoformat(), "key": key_data,
             "credits": credit_data, "account_balance_usd": str(balance)}
+
+
+def write_provider_usage(paths: RunPaths, stage: str, snap: Mapping[str, Any]) -> None:
+    """``state/provider_usage.jsonl``: one line per endpoint per snapshot (agent 07's COST_RECONCILIATION schema)."""
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    with open(paths.provider_usage, "a") as handle:
+        for endpoint in ("key", "credits"):
+            handle.write(json.dumps({"fetched_at": snap["recorded_at"], "stage": stage, "endpoint": endpoint,
+                                     "data": snap[endpoint]}, sort_keys=True) + "\n")
 
 
 def run_checks(cfg: dict[str, Any], paths: RunPaths, *, online: bool) -> list[dict[str, Any]]:
@@ -123,9 +132,7 @@ def run_checks(cfg: dict[str, Any], paths: RunPaths, *, online: bool) -> list[di
                 add("account_balance_covers_ceiling", Decimal(snap["account_balance_usd"]) >= ceiling,
                     {"account_balance_usd": snap["account_balance_usd"], "study_ceiling": str(ceiling)},
                     blocking=False)
-                paths.state_dir.mkdir(parents=True, exist_ok=True)
-                with open(paths.state_dir / "provider_snapshots.jsonl", "a") as handle:
-                    handle.write(json.dumps({"source": "doctor", **snap}, sort_keys=True) + "\n")
+                write_provider_usage(paths, "doctor", snap)
             except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
                 add("provider_snapshot", False, type(exc).__name__)
     return checks

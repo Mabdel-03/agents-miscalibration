@@ -55,7 +55,7 @@ def freeze(cfg: Mapping[str, Any], config_path: str, paths: RunPaths) -> dict[st
     from agent_allocation.live import (
         graph_for, load_amendments, load_tasks, read_endpoint_locks, write_jobs,
     )
-    from agent_allocation.prompts.render import prompt_hashes, prompt_version
+    from agent_allocation.prompts.render import prompt_lock_record
     problems = validate_config(cfg)
     if problems:
         raise FreezeRefused(f"config invalid: {problems}")
@@ -94,11 +94,11 @@ def freeze(cfg: Mapping[str, Any], config_path: str, paths: RunPaths) -> dict[st
     counts = {name: sum(len(g.nodes) for g in graphs) for name, graphs in partitions.items()}
 
     try:
-        prompt_digest = write_once_json(paths.prompt_lock, {"prompt_version": prompt_version(),
-                                                            "hashes": prompt_hashes()})
+        prompt_digest = write_once_json(paths.prompt_lock, prompt_lock_record())
         env_digest = write_once_json(paths.environment_lock, environment_payload())
         config_digest = write_once_json(paths.config_lock, {
-            "config_path": config_path, "config_sha256": config_hash(cfg), "amendments": amendments,
+            "config": dict(cfg), "config_path": config_path, "config_sha256": config_hash(cfg),
+            "amendments": amendments,
             "amendments_sha256": file_sha256(paths.amendments) if paths.amendments.exists() else None,
             "endpoint_lock_sha256": file_sha256(paths.endpoint_lock),
             "dataset_lock_sha256": file_sha256(paths.dataset_lock), "gate2_sha256": file_sha256(gate2),

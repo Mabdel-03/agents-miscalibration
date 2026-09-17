@@ -127,10 +127,9 @@ async def verify_endpoint_drift(client, locks: Mapping[str, EndpointLock]) -> li
 def provider_snapshot(paths: RunPaths, source: str) -> dict[str, Any]:
     from agent_allocation.apikey import load_api_key
     from agent_allocation.doctor import provider_snapshot as fetch
+    from agent_allocation.doctor import write_provider_usage
     snap = fetch(load_api_key())
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    with open(paths.state_dir / "provider_snapshots.jsonl", "a") as handle:
-        handle.write(json.dumps({"source": source, **snap}, sort_keys=True) + "\n")
+    write_provider_usage(paths, source, snap)
     return snap
 
 
@@ -236,7 +235,7 @@ async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequ
     store = StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists() else StateStore(paths)
     seed = int(cfg["seed"])
 
-    render_log = paths.state_dir / "render_reports.jsonl"
+    render_log = paths.render_reports
     paths.state_dir.mkdir(parents=True, exist_ok=True)
 
     def render(spec, parents):
@@ -244,6 +243,10 @@ async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequ
             messages, report = render_messages_with_report(spec, tasks[spec.item_id], parents, seed=seed)
         except Exception as exc:
             if "context" in type(exc).__name__.lower():
+                record = getattr(exc, "record", None) or {}
+                with open(paths.context_limit_events, "a") as handle:
+                    handle.write(json.dumps({"node_id": spec.node_id, "recorded_at": utcnow(), **record},
+                                            sort_keys=True, default=str) + "\n")
                 with open(render_log, "a") as handle:
                     handle.write(json.dumps({"node_id": spec.node_id, "context_limit": True,
                                              "error": type(exc).__name__, "recorded_at": utcnow()}) + "\n")
@@ -258,6 +261,11 @@ async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequ
     def extract(result, spec):
         return extract_candidate(result, spec, tasks[spec.item_id])
 
+    from agent_allocation.protocols.grid import check_budgets
+    for wave in waves:
+        for graph in wave:
+            check_budgets(graph, max_completion_tokens=lock.max_completion_tokens,
+                          requested_reasoning_max=int(cfg["reasoning"]["requested_reasoning_max"]))
     dispatcher = Dispatcher(config=cfg, paths=paths, store=store, ledger=ledger, client=client, lock=lock,
                             render=render, extract=extract)
     try:
@@ -337,7 +345,7 @@ async def fetch_metadata(paths: RunPaths, generation_ids: Sequence[str], *, atte
                 await asyncio.sleep(delay_s)
     finally:
         await client.aclose()
-    with open(paths.state_dir / "generation_metadata.jsonl", "a") as handle:
+    with open(paths.generation_metadata, "a") as handle:
         for gid, data in found.items():
             handle.write(json.dumps({"generation_id": gid, "data": data, "fetched_at": utcnow()}, sort_keys=True) + "\n")
     return found
@@ -517,10 +525,10 @@ def pilot_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[list[ItemGr
 
 
 def render_report_violations(paths: RunPaths) -> int:
-    target = paths.state_dir / "render_reports.jsonl"
+    target = paths.context_limit_events
     if not target.exists():
         return 0
-    return sum(1 for line in target.read_text().splitlines() if line.strip() and json.loads(line).get("context_limit"))
+    return len({json.loads(line)["node_id"] for line in target.read_text().splitlines() if line.strip()})
 
 
 def select_and_seal(cfg, paths: RunPaths, partition: str, graphs: Sequence[ItemGraph], tasks) -> dict[str, int]:
@@ -546,8 +554,10 @@ def select_and_seal(cfg, paths: RunPaths, partition: str, graphs: Sequence[ItemG
             if not all(c in candidates for c in checkpoint.candidate_ids):
                 missing += 1
                 continue
-            results.append(select_checkpoint(checkpoint, tasks[graph.item_id], candidates, checks, seed=int(cfg["seed"]),
-                                             math_equivalent=math_equivalent))
+            task = tasks[graph.item_id]
+            equivalence = math_equivalent if task.output_kind.value == "math" else None
+            results.append(select_checkpoint(checkpoint, task, candidates, checks, seed=int(cfg["seed"]),
+                                             math_equivalent=equivalence))
     seal = seal_selections(paths, partition, results)
     return {"selections": len(results), "checkpoints_missing_candidates": missing, "seal": seal}
 
@@ -729,7 +739,7 @@ FORECAST_CHECK_WAVES = 4
 
 def record_decision(paths: RunPaths, **fields: Any) -> None:
     paths.state_dir.mkdir(parents=True, exist_ok=True)
-    with open(paths.state_dir / "run_decisions.jsonl", "a") as handle:
+    with open(paths.run_decisions, "a") as handle:
         handle.write(json.dumps({"recorded_at": utcnow(), **fields}, sort_keys=True, default=str) + "\n")
 
 
@@ -768,9 +778,12 @@ def verify_authorization(paths: RunPaths) -> dict[str, Any]:
                            (paths.environment_lock, "environment_lock_sha256")):
         if json.loads(lock_path.read_text()).get("lock_sha256") != auth[key]:
             raise RunRefused(f"{lock_path.name} no longer matches the authorization")
-    from agent_allocation.prompts.render import prompt_hashes
-    if json.loads(paths.prompt_lock.read_text())["hashes"] != prompt_hashes():
-        raise RunRefused("prompt templates changed after freeze")
+    from agent_allocation.prompts.render import verify_prompt_lock
+    record = {k: v for k, v in json.loads(paths.prompt_lock.read_text()).items() if k not in ("lock_sha256", "written_at")}
+    try:
+        verify_prompt_lock(record)
+    except Exception as exc:  # noqa: BLE001
+        raise RunRefused(f"prompt lock verification failed after freeze: {exc}") from exc
     return auth
 
 

@@ -271,3 +271,51 @@ dataset lock), `plan.py` (dry-run counts), `live.py` (canary/pilot/run wiring 01
 `config.grids_from_config` returns `main`, `main_extension`, `high`, `replication`, `pilot_r1`, `pilot_r2`.
 Counts (acceptance): main 125, high 123, replication 57, main_extension 138 per item; pilot_r1 12, pilot_r2 15.
 Pilot (lead): 32 dev items × `pilot_r1`, 16 of them `pilot_r2`, plus 4 DEEP 16A calls and 16 A=4,096 roots.
+
+## 6. Contract v2 (2026-09-17 03:45 EDT) — resolves docs/requests; merge `allocation-v1` into your branch
+
+**contracts.py**
+- `ERROR_ENVELOPE` is in `RETRYABLE_TRANSPORT`; its reservation is kept exactly like `AMBIGUOUS_TIMEOUT` (settle from
+  generation metadata or `charge_max`). (D1, R01-1)
+- `LedgerEventKind.UNRESOLVED` (amount 0). Replay rule: every SENT reservation without SETTLE/CHARGE_MAX/RELEASE_UNSENT
+  counts as unresolved and feeds the $2 pause. (D2)
+- `GradeResult.__post_init__`: GRADED ⇒ `semantic_correct` is a bool; EVALUATOR_ERROR/NOT_EVALUATED ⇒ None;
+  INVALID_OUTPUT ⇒ `semantic_correct=None` and `operational_success=False`. (D3)
+- `PublicCheckResult.pass_fraction` is None when `cases_total == 0`; the checker reports INFRASTRUCTURE_ERROR then. (D4)
+- `PrivateEvalSpec.allowed_choices: tuple[str, ...] = ()` — agent 04 fills it for option/boolean items. (R04-1)
+- `SelectionResult.status: SelectionStatus` (typed). (D10)
+- `load_record(cls, data, *, strict=True)`: every field must be present. Regenerate fixtures rather than using
+  `strict=False` (reserved for hand-written fixtures). (D11)
+- `Generator` Protocol now matches `OpenRouterClient.generate`. (R01-2)
+
+**paths.py**
+- Locks are run-scoped: `<run_dir>/locks/` (spec §14 tree). Node-local state dir = `<base>/<user>/agent_allocation/<name>-<sha12 of resolved run dir>`. (D5, D6)
+- Selections are append-only batches: `selections(partition, batch)` / `selection_seal(partition, batch)`; seal =
+  `{sha256: sha256 of the batch .jsonl file bytes, count, sealed_at, previous_seal_sha256}`; a sealed batch is never
+  rewritten and later batches hold only unsealed checkpoints. (D8, R07-1)
+- Grades and public checks keep one current file; a different grader/checker version first moves the old file to
+  `superseded_grade(cid, old_version)` / `superseded_public_check(cid, old_version)`. (D9)
+- New: `grade_cache_dir` (0700), `metrics_table(name)`, `render_reports`, `context_limit_events`, `provider_usage`,
+  `generation_metadata`, `run_decisions`. (R05-1, R06-3, R03-1/2, R07-2)
+
+**config.py** validates deep budgets against `requested_reasoning_max`, `reservation_multiplier >= 1`,
+`max_unresolved_spend_usd <= 2`, lock-file basenames, and calls `protocols.grid.check_config_constants`. (D7, R03-3)
+
+**Decisions**
+- R02-1: the raw artifact's additive `result` key is part of the format. R02-2: sentinels persist until `stop --clear`.
+- R03-1 context-limit policy: when `render` raises `prompts.render.ContextLimitEvent`, the dispatcher (02) makes the
+  receiver terminal with no API call and no reservation, candidate None (children render the absent marker). The lead's
+  render wrapper logs `context_limit_events` and `render_reports`.
+- R03-5 / R06-1: `PolicyCheckpoint.selector_name` stays the declared config family (`plurality` | `public_tests_only`,
+  version `v1`); `SelectionResult.selector_name` is 06's concrete selector. 07's audit checks the concrete name is legal
+  for the declared family via `selection.readout.selector_for`.
+- R06-4: the lead passes `math_equivalent` for MATH checkpoints only.
+- R07-2: provider usage lines `{fetched_at, stage, endpoint: key|credits, data}` in `paths.provider_usage` (lead).
+- R07-3: 08 provides `tests/integration/independent_recompute.py::independent_recompute(run_dir) -> {"contrasts": {...},
+  "checks": [...]}` with contrast names `primary_i_peer_vs_private_team_n4_r4`, `primary_ii_cp_minus_private_team_gain_h3`.
+- R07-4: `locks/config.json` contains `"config": {...}`. R07-5: wave labels are `main|extension|high|replication`.
+- R01-3: served model must match exactly; the canary confirms; any alias becomes an explicit recorded lock amendment.
+- Q1 (08): lead provides `live.run_offline(paths, config, items, transport, *, extension_item_ids=(), code_grader=None)`
+  (writes manifests from `items`, generate → extract → grade → select → seal → analyze → audit; rerun = resume; a
+  stubbed code grader is labelled in reports). Q2: `Dispatcher` keeps injectable store/client/ledger; 02 defines
+  `RunSummary.stop_reason` from a fixed set of constants.
