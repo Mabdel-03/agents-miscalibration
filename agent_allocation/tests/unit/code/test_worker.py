@@ -276,3 +276,17 @@ def test_unexpected_grader_exception_is_unknown_not_wrong(run_paths, monkeypatch
     assert grade.detail_code == "grader_exception:OSError"
     assert check.status is CheckStatus.INFRASTRUCTURE_ERROR and check.cases_passed == 0
     assert counts["infrastructure_errors"] == 1 and counts["evaluator_errors"] == 1
+
+
+def exploding_grade_text(candidate, private):
+    raise RuntimeError("injected text grader crash")
+
+
+def test_text_grader_exception_is_unknown_and_does_not_stop_the_pass(run_paths):
+    _synthetic_run(run_paths, [GOOD_PROGRAM])
+    text_candidate = _text_item(run_paths)
+    counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0,
+                               text_grader="tests.unit.code.test_worker:exploding_grade_text")
+    record = load_record(GradeResult, json.loads(run_paths.grade(text_candidate.candidate_id).read_text()))
+    assert record.status is GradeStatus.EVALUATOR_ERROR and record.semantic_correct is None
+    assert counts["grades_written"] == 2 and counts["evaluator_errors"] == 1

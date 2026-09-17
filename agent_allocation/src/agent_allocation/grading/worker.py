@@ -214,8 +214,17 @@ def _job_code_grade(candidate_data: dict, private_data: dict, run_dir: str, lock
 
 
 def _job_text_grade(candidate_data: dict, private_data: dict, grader_spec: str) -> dict:
-    grader = _resolve_callable(grader_spec)
-    return dump_record(grader(load_record(Candidate, candidate_data), load_record(PrivateEvalSpec, private_data)))
+    """Agent 04's grader owns text semantics; an exception escaping it is recorded as unknown, never as wrong."""
+    candidate = load_record(Candidate, candidate_data)
+    private = load_record(PrivateEvalSpec, private_data)
+    try:
+        return dump_record(_resolve_callable(grader_spec)(candidate, private))
+    except Exception as exc:
+        return dump_record(GradeResult(
+            candidate_id=candidate.candidate_id, status=GradeStatus.EVALUATOR_ERROR, semantic_correct=None,
+            operational_success=None, grader_version=f"{grader_spec}#uncaught-exception",
+            private_eval_hash=private.private_hash, detail_code=f"grader_exception:{type(exc).__name__}",
+            environment_digest=None, cpu_seconds=None))
 
 
 # ---------------------------------------------------------------------------------------------------------------

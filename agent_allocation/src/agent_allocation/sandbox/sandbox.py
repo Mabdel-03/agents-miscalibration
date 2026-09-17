@@ -268,13 +268,15 @@ class Sandbox:
                         if len(chunk) > max(room, 0):
                             self.stderr_truncated = True   # drained and discarded, never a failure
                 if self.process.poll() is not None and b"\n" not in self.buffer:
-                    # Drain anything still readable before declaring the exit.
+                    # Drain whatever the exited process left in its pipes before declaring the exit.
                     for key in list(self.selector.get_map().values()):
-                        try:
-                            chunk = os.read(key.fileobj.fileno(), 65536)
-                        except (BlockingIOError, OSError):
-                            chunk = b""
-                        if chunk and key.data == "stdout":
+                        while key.data == "stdout" and len(self.buffer) <= self.limits.max_protocol_bytes:
+                            try:
+                                chunk = os.read(key.fileobj.fileno(), 65536)
+                            except (BlockingIOError, OSError):
+                                break
+                            if not chunk:
+                                break
                             self.buffer += chunk
                     if b"\n" in self.buffer:
                         continue
