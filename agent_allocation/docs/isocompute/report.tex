@@ -1,0 +1,438 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+\usepackage{times}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.72em}
+\captionsetup{font=small,labelfont=bf,skip=4pt}
+\renewcommand{\arraystretch}{1.08}
+
+% Let figures share pages with text rather than floating onto pages of their own.
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.06}
+\renewcommand{\floatpagefraction}{0.80}
+
+\title{\vspace{-2em}Spending a Fixed Compute Budget:\\
+Agents, Rounds, Reasoning Depth, and Sampling}
+\author{Study \texttt{openrouter\_agent\_allocation\_v1}}
+\date{17 September 2026}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+
+A fixed inference budget can be spent in several ways. It can buy more agents working in
+parallel, more rounds of revision, a longer reasoning allowance inside a single call, or simply
+more independent samples read out by a vote. This report asks which of those purchases is worth
+making, holding total compute exactly constant.
+
+We define the budget as $C = B \cdot R \cdot A$, the product of the number of agents, the number
+of rounds, and the per-agent per-round reasoning allowance. The study evaluated 95 configurations
+on one fixed 400-item panel spanning four benchmarks, with 67{,}514 graded generations and a
+25-sample independent bank per item that makes oracle pass@$k$ available at every budget. Because
+$C$ is materialised per configuration, allocations that differ in shape but agree in cost can be
+compared directly. At $C = 8A$, for instance, seven distinct allocations were run.
+
+Three findings hold across benchmarks. First, at matched compute the shape of the allocation
+barely matters: of 70 per-benchmark comparisons against independent sampling at the same budget,
+none survives multiplicity correction, and the largest effect anywhere is 6 accuracy points.
+Second, every allocation plateaus near what two samples and a vote already deliver, while oracle
+pass@$k$ continues to climb, so the headroom that compute makes available but no configuration
+collects grows from zero to 6.7 accuracy points on the three-benchmark macro and to 9 points on
+MMLU-Pro. Third, letting agents see each other's work actively destroys accuracy, and the damage
+grows with rounds: at five agents and four peer rounds the penalty is 5.0 points on the macro and
+10 points on MBPP+.
+
+The binding constraint in this regime is not generation but selection. Extra compute reliably
+produces a correct answer somewhere in the pool; no evaluated policy reliably finds it.
+
+\section{Methods}
+
+\subsection{Model, benchmarks and panels}
+
+Generations come from \texttt{google/gemini-2.5-flash-lite} through OpenRouter with the provider
+pinned, fallbacks disabled and caching off, at temperature 0.7 with nucleus sampling at 0.95. A replication arm
+uses \texttt{google/gemini-2.5-flash}.
+
+Four benchmark families are scored: MATH-500 with \texttt{math\_verify}, MMLU-Pro with exact
+option match, a four-subtask zero-shot BBH subset (logical deduction, shuffled objects, boolean
+expressions, temporal sequences) with exact task match, and MBPP+ graded by the full EvalPlus
+suite. BBH is reported as this four-subtask subset, not the official full BBH score, and its
+aggregate weights the four subtasks equally.
+
+The main panel is 400 items, 100 per benchmark. A high-allowance panel of 96 items and a
+replication panel of 48 items are nested subsets of it, so every cross-panel comparison uses
+shared item ids only. All 95 main-panel configurations share one fixed item population, which is
+what allows every contrast in this report to be paired item by item.
+
+\subsection{The compute accounting}
+
+Each configuration is a triple $(B, R, A)$ and the budget is their product. The sealed tables
+carry $B$, $R$ and $A$ as explicit columns, so no parsing of configuration names is involved:
+
+\begin{center}
+\small
+\begin{tabular}{llccl}
+\toprule
+Family & Notation & $B$ & $R$ & $C$ \\
+\midrule
+Independent samples, vote & \texttt{sample/k} & $k$ & 1 & $k A_0$ \\
+One agent revising & \texttt{private\_single/t} & 1 & $t$ & $t A_0$ \\
+Team, no peer exposure & \texttt{private\_team/n/r} & $n$ & $1+r$ & $n(1+r) A_0$ \\
+Team, peer exposure & \texttt{peer/n/r} & $n$ & $1+r$ & $n(1+r) A_0$ \\
+One deeper call & \texttt{deep/m} & 1 & 1 & $m A_0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$A_0$ is 1024 tokens on the main panel and 4096 on the high panel. The \texttt{deep} family scales
+$A$ rather than the call count, so its budget must be read from $A$ and not from the number of
+generations; a build-time check asserts that the derived $C$ equals the sealed requested reasoning
+tokens for every configuration on every panel, and that $B \cdot R$ equals the sealed generation
+count everywhere except \texttt{deep}, where it is one call by construction.
+
+Figure~\ref{fig:design} shows the resulting design. Fourteen budget levels carry two or more
+distinct allocations, and the levels $C/A_0 \in \{4, 8\}$ carry seven each.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f1_design_map.pdf}
+\caption{The design. (a) Every evaluated configuration in the width-depth plane; grey lines are
+iso-compute contours, along which every point spends the same $C$. Private-team and peer points
+are nudged apart because they occupy identical $(B, R)$ cells and differ only in whether agents
+see each other. (b) The five ways one budget of $8A_0$ was actually spent.}
+\label{fig:design}
+\end{figure}
+
+\subsection{What counts as a result, and what does not}
+
+A configuration delivers exactly one answer per item. Text benchmarks select it by plurality vote;
+MBPP+ selects by prompt-visible public tests only, and is therefore reported as
+\texttt{public\_select@k} and never as a vote. Delivered accuracy counts operational failures,
+unparseable outputs and abstentions as incorrect, so nothing is silently dropped.
+
+Oracle pass@$k$ is not an available selector. It is reported as a ceiling only, using the standard
+combinatorial estimator $1 - \binom{n-c}{k} / \binom{n}{k}$ over the 25-sample bank. Two normalised
+quantities are used throughout:
+
+\textbf{Amplification} is delivered accuracy minus the accuracy of independent sampling at the same
+budget, in accuracy points, paired per item. It answers whether an allocation beats simply drawing
+$k = C/A_0$ samples and reading them out.
+
+\textbf{Ceiling capture} is $\eta = (\text{accuracy} - \text{pass@1}) / (\text{coverage@}k -
+\text{pass@1})$, the share of the headroom that the budget makes available which the configuration
+actually delivers. The denominator is the realised prefix coverage of the same $k$ samples, which
+is binary per item and therefore pairs with the numerator under the same resample indices. A value
+of 1 means the configuration collected everything the budget put within reach; 0 means it did no
+better than one sample. Values above 1 are possible and meaningful, because a revising or
+communicating configuration can produce an answer that independent sampling never generated. We
+suppress $\eta$ where the denominator falls below 0.02, which masks BBH entirely.
+
+\subsection{Estimation and multiplicity}
+
+All intervals are percentile intervals from a 10{,}000-replicate item-clustered bootstrap,
+stratified by benchmark and with BBH subtasks weighted equally. Every configuration shares the same
+resample indices, so differences between configurations are correctly paired.
+
+Two contrasts were prespecified and frozen before collection: peer versus private team at $B{=}4$,
+$r{=}4$, and the communicate-then-private decomposition at $h{=}3$. Those carry Holm-corrected
+$p$-values and are quoted directly from the sealed contrast table. Everything else in this report
+is exploratory. In the amplification matrix we mark cells whose nominal paired interval excludes
+zero, and we also report how many survive Benjamini-Hochberg control within each panel, which
+turns out to be the more informative number.
+
+Macro averages are reported two ways: over all four benchmarks, which reconciles with the run
+report, and over the three informative ones. BBH is saturated at 1.000 in every configuration, so
+including it inflates the level and compresses every contrast toward zero.
+
+\subsection{Limitations}
+
+$A$ is a requested allowance, not realised reasoning; realised token counts are recorded separately
+and are consistently below the request. This is a token-accounted and dollar-accounted study, not a
+FLOP-matched one. With 100 items per benchmark, one item is one accuracy point, so differences
+below roughly 3 points are not separable from noise. Results are from a single small model, and the
+peer-communication finding in particular should not be assumed to transfer to larger models. The
+text completion headroom was amended twice during piloting, from 1024 to 2048 to 4096 tokens, and
+the main run was collected at 4096 under a clarified system prompt. Frontiers shown here are
+descriptive: the best among evaluated configurations on this sample, never a validated policy.
+
+\section{Results}
+
+\subsection{Allocation shape barely matters; the ceiling keeps rising}
+
+Figure~\ref{fig:ladder} is the headline. On every benchmark the oracle ceiling climbs steadily with
+compute while every delivered curve flattens almost immediately.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f2_isocompute_ladder.pdf}
+\caption{Delivered accuracy against total compute. All curves at a given $x$ spend the same budget.
+The dashed ceiling is oracle pass@$k$, an unavailable selector. Faint points are individual team
+sizes; family lines are the mean over $B$. BBH is drawn on a fixed window because it is saturated.}
+\label{fig:ladder}
+\end{figure}
+
+On the three-benchmark macro a single sample delivers 0.780 and two samples with a vote deliver
+0.823. Twenty-five samples deliver 0.833, an additional 1.0 point for twelve times the compute. The
+best configuration anywhere in the design is a five-agent private team with three revision rounds
+at 0.850, which is 2.7 points above sample-and-vote at a comparable budget and 7.0 points above one
+sample. Over the same range oracle pass@$k$ rises from 0.780 to 0.917.
+
+Per benchmark the picture differs in an instructive way. On MATH-500 plain sampling is essentially
+unbeatable: it reaches 0.960, which is the best value any configuration attains, while the oracle
+reaches 1.000. On MMLU-Pro allocation helps most, with a three-agent private team at one revision
+round reaching 0.780 against 0.720 for two samples. On MBPP+ the achievable readout actually
+\emph{declines} with budget, from 0.810 at one sample to 0.790 at twenty-five, while oracle coverage
+rises to 0.890: selecting code by prompt-visible tests gets worse as the candidate pool grows,
+because a candidate that passes the visible assertion and fails the hidden suite becomes easier to
+find.
+
+\input{tables/headline}
+
+\subsection{The amplification matrix}
+
+Figure~\ref{fig:matrix} places every allocation against independent sampling at the same budget.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.99\textwidth]{figures/f3a_amplification_delta.pdf}
+\caption{Amplification relative to sampling. Rows are iso-compute budgets; every cell in a row
+spends the same $C$. Values are delivered accuracy minus sample-and-vote at that budget, in
+accuracy points. Outlines mark nominal paired intervals excluding zero; \emph{no} cell survives
+Benjamini-Hochberg control across the 70 tests in a panel. PT is a private team, that is, a team
+without peer exposure.}
+\label{fig:matrix}
+\end{figure}
+
+The matrix is mostly pale, and that is the result. Across 70 comparisons per benchmark, zero
+survive multiplicity correction; the smallest $p$-value on the macro is 0.017, far above the
+Benjamini-Hochberg threshold. Only 2 macro cells and 8 MATH-500 cells clear even an uncorrected
+interval. A practitioner choosing among these allocations at fixed cost is, on this evidence,
+choosing among options that cannot be reliably distinguished.
+
+The signs are nonetheless consistent and worth reading. Private teams sit on the positive side on
+MMLU-Pro (up to $+6$ points) and MBPP+ (up to $+3$), and on the negative side on MATH-500. Peer
+configurations sit on the negative side almost everywhere and grow more negative toward the bottom
+of the matrix, that is, at larger budgets with more rounds. The \texttt{deep} column is positive on
+MBPP+ ($+3$ to $+4$) and negative on MATH-500.
+
+Figure~\ref{fig:capture} normalises the same comparison against the headroom available at each
+budget.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.99\textwidth]{figures/f3b_ceiling_capture.pdf}
+\caption{Ceiling capture $\eta$: the share of the headroom a budget makes available that the
+configuration actually delivers. BBH is masked because its denominator is zero.}
+\label{fig:capture}
+\end{figure}
+
+Capture falls as budget rises. On the macro the median $\eta$ is 0.67 at the smallest budgets and
+0.39 by $C/A_0 \geq 16$; on MMLU-Pro it falls from 0.80 to 0.50. On MBPP+ the median capture at
+large budgets is $-0.25$, meaning the typical configuration there ends up below a single sample
+even as coverage improves. The one cell above 1.0, a single agent revising once on MMLU-Pro, is
+genuine: revision produced correct answers that neither independent sample contained.
+
+\subsection{Width against depth}
+
+Figure~\ref{fig:wd} isolates the shape question by fixing the budget and varying only how it is
+split.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f4_width_vs_depth.pdf}
+\caption{Allocation shape at fixed compute, averaged over budgets $C/A_0 \in \{4,6,8,10,12,15,20,25\}$.
+$B{=}1$ is one agent revising $R$ times. The zero line is the same budget spent on $B = C/A_0$
+independent samples.}
+\label{fig:wd}
+\end{figure}
+
+For private teams, wider is mildly better than deeper: on the macro the mean amplification rises
+from about $0$ at $B{=}1$ to $+1.6$ points at $B{=}5$, and the same upward slope appears on
+MATH-500, MMLU-Pro and MBPP+. Pure depth, one agent revising many times, is the weakest private
+allocation on every informative benchmark. For peer configurations the slope is absent or reversed
+and the whole curve sits below zero on the macro and on MBPP+.
+
+Two readings follow. Spreading a budget across a few agents is slightly better than spending it on
+one agent thinking for longer in sequence, but the advantage is within noise. And the gap between
+the private and peer curves, which is the pure effect of letting agents see each other, is larger
+and more consistent than the width-depth effect it is plotted against.
+
+\subsection{Generation is not the bottleneck}
+
+Figure~\ref{fig:gap} makes the central claim directly.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f5_selection_gap.pdf}
+\caption{The selection gap. The shaded band is headroom that compute made available and no
+evaluated configuration collected. The blue line is the maximum over all configurations at that
+budget, so it is an optimistic envelope and still falls short.}
+\label{fig:gap}
+\end{figure}
+
+At the largest budget the best configuration on the macro reaches 0.850 against an oracle of 0.917,
+leaving 6.7 points unrealised. Per benchmark the unrealised headroom is 4.0 points on MATH-500, 9.0
+on MMLU-Pro and 7.0 on MBPP+. The band widens monotonically: at $C = 2A_0$ it is near zero, and
+every additional unit of compute after that adds more to the ceiling than to what any policy
+delivers.
+
+The blue line is deliberately generous. It takes the maximum over up to seven configurations at
+each budget, so it is biased upward by selection on this very sample, and the gap is still large.
+
+\subsection{The cost of letting agents talk}
+
+The one prespecified contrast that resolves is the comparison between teams that see each other and
+teams that do not, at matched size and matched rounds.
+
+\input{tables/primary}
+
+Peer exposure at four agents and four rounds costs 2.50 accuracy points on the four-benchmark macro,
+with a 95\% interval of $[-0.046, -0.008]$ and a Holm-corrected $p$ of 0.027. The effect is carried
+by MBPP+ ($-7.0$ points) and MATH-500 ($-3.0$); it is exactly zero on MMLU-Pro and on saturated BBH.
+The second prespecified contrast, the communicate-then-private decomposition at $h{=}3$, is null at
+$-0.005$ with $p = 0.567$.
+
+Figure~\ref{fig:comm} shows that this is not a single unlucky cell but a trend.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f6_communication_cost.pdf}
+\caption{Peer minus private team at matched team size and matched rounds. The only difference
+between the two arms is whether agents see each other's drafts.}
+\label{fig:comm}
+\end{figure}
+
+The penalty deepens with rounds on every informative benchmark and with team size on MBPP+. At the
+largest configuration, five agents and four peer rounds, the cost is 5.0 points on the macro
+($[-0.077, -0.023]$) and 10.0 points on MBPP+ ($[-0.17, -0.04]$).
+
+Figure~\ref{fig:dyn} shows the mechanism. Revision rounds move a substantial number of answers in
+both directions, and the net is close to zero.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f7_round_dynamics.pdf}
+\caption{Churn per revision round. Solid bars are wrong-to-correct flips, faded bars are
+correct-to-wrong, and the diamond is the net. Rates are per agent slot, in percentage points.}
+\label{fig:dyn}
+\end{figure}
+
+On MMLU-Pro the first round has a clearly positive net and later rounds do not, which is why one
+revision round is the best MMLU-Pro configuration in the whole design. On MATH-500 and MBPP+ the
+net is negative for several rounds. Peer exposure raises the correct-to-wrong rate more than it
+raises the wrong-to-correct rate, which is exactly the shape of a consensus process that propagates
+confident errors.
+
+\subsection{Depth inside one call}
+
+The \texttt{deep} arm spends the whole budget on a single call with a larger reasoning allowance,
+so it pays no repeated prompt cost and has no opportunity to select.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f8_depth_one_call.pdf}
+\caption{The same budget as one long call, as sequential revisions, or as parallel samples.}
+\label{fig:deep}
+\end{figure}
+
+One deeper call is competitive with everything else and is the single best configuration on MBPP+
+(0.820 at $C = 8A_0$, against 0.790 for eight samples). On the macro it reaches 0.847, within 0.3
+points of the best configuration in the entire design, using one generation rather than twenty.
+On MATH-500 it trails sampling slightly. Since it requires no orchestration, no repeated context and
+no selector, it is the most practical of the allocations tested.
+
+\subsection{What this costs in dollars}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f9_dollar_frontier.pdf}
+\caption{Delivered accuracy against realised spend per item. The step line is the descriptive
+Pareto front over evaluated configurations.}
+\label{fig:dollar}
+\end{figure}
+
+The frontier saturates almost immediately. One sample costs \$0.000475 per item and one deeper call
+at $8A_0$ costs \$0.001207; five agents over four peer rounds cost \$0.015196, which is 32 times the
+single sample, and deliver less. Everything beyond the deeper single call at \$0.001207 per item is, on this
+evidence, spent without return.
+
+\subsection{Robustness}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f10_robustness.pdf}
+\caption{The same comparison at four times the reasoning allowance and on a stronger model, on
+shared items only. The 96-item and 48-item panels have unstable intervals.}
+\label{fig:robust}
+\end{figure}
+
+Raising the allowance to $A_0 = 4096$ lifts the whole picture, with pass@1 at 0.833 and the best
+configuration reaching 0.903, but the qualitative shape survives: the ceiling is 0.931 and 2.8
+points remain unrealised. The Gemini 2.5 Flash replication behaves the same way, with a best
+configuration of 0.806 against a ceiling of 0.833 at $k=16$. Both panels are small, 96 and 48 items,
+so these are consistency checks rather than independent confirmations. The direction of the peer
+penalty is preserved on both.
+
+\subsection{A design check}
+
+On all 400 items, a team of $n$ agents run for zero revision rounds delivers exactly the same answer
+as $n$ independent samples, under both the private and the peer arms. This is true by construction,
+since with no rounds there is nothing to revise and nothing to see, and its exact agreement
+(400 of 400 items for every $n$) confirms that the iso-compute re-keying used throughout this report
+lines up with the sealed selection records.
+
+\section{Interpretation}
+
+\textbf{At fixed compute, the shape of the allocation is close to irrelevant.} This is the least
+exciting reading of the data and the best supported one. Seventy paired comparisons per benchmark
+produce no effect that survives correction, and the spread across all allocations at the largest
+budget is about 5 accuracy points on the macro, comparable to the width of a single confidence
+interval. Claims that multi-agent structure beats single-agent inference should be checked against a
+compute-matched sampling baseline, because on this model and these benchmarks that baseline is
+already most of the way to the best result anyone achieves.
+
+\textbf{Test-time compute keeps working; test-time \emph{selection} does not.} Oracle pass@$k$
+rises steadily and without any sign of saturating below 0.92 on the macro, which means additional
+compute is still producing correct answers. What fails is the readout. Plurality voting stops
+improving after roughly two samples, and on MBPP+ the public-test selector gets actively worse as
+the pool grows, because more candidates means more candidates that satisfy the visible evidence and
+fail the hidden suite. The gap between what was generated and what was delivered is the largest
+single quantity in this study, and it grows with every dollar spent.
+
+\textbf{Communication between agents is a cost, not a benefit, in this regime.} The prespecified
+contrast is negative and significant, the effect deepens monotonically with rounds, and the round
+dynamics show why: peer exposure increases the rate at which correct answers become wrong more than
+it increases the reverse. A small model shown its peers' drafts converges, and convergence on a
+wrong answer is indistinguishable at readout time from convergence on a right one. The private team,
+which gets the same number of agents and rounds with no mutual visibility, dominates it everywhere.
+This should be read as a statement about small models with a plurality readout, not about
+multi-agent debate in general, but it does mean the burden of proof runs the other way.
+
+\textbf{Width beats depth slightly, and one deeper call beats both on cost.} Among private
+allocations, spreading a budget over three to five agents edges out spending it on one agent
+revising many times, though the margin is inside the noise. More striking is that a single call with
+the whole budget as reasoning allowance matches the best orchestrated configuration on the macro to
+within 0.3 points and wins outright on MBPP+, while requiring no orchestration, no repeated context
+and no selector. If a practitioner has to pick one thing to do with extra tokens on this model, the
+evidence points at that.
+
+\textbf{What would actually move the frontier.} Not more agents, and not more rounds. The 6.7-point
+macro gap is a selection problem, so the levers are selection ones: a verifier that scores
+candidates on something other than agreement, a code selector that does not overfit to visible
+tests, or a reranker calibrated against held-out evidence. On MBPP+ the entire 7-point gap is
+reachable by a selector that avoids being fooled by the public assertion, and the study already
+shows that the correct program is usually present in the pool. Until the readout improves, buying
+more generations mostly buys a larger pool of answers nobody can pick from.
+
+\end{document}

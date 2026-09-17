@@ -1,0 +1,364 @@
+{
+ "bbh_logic4": {
+  "best_acc": 1.0,
+  "best_at_25": 1.0,
+  "best_name": "deep/1",
+  "best_rung": 1,
+  "deep16": 1.0,
+  "deep8": 1.0,
+  "gap25": 0.0,
+  "headroom_best25": 0.0,
+  "max_delta": 0.0,
+  "min_delta": -0.02,
+  "min_p": 0.1822,
+  "n_bh_sig": 0,
+  "n_nominal_sig": 0,
+  "n_tests": 70,
+  "oracle2": 1.0,
+  "oracle25": 1.0,
+  "pass1": 1.0,
+  "peer54": 1.0,
+  "ps25": 0.98,
+  "pt54": 1.0,
+  "vote2": 1.0,
+  "vote25": 1.0
+ },
+ "cost": {
+  "deep8": 0.001207,
+  "peer54": 0.015196,
+  "ratio_peer54_sample1": 32.0,
+  "sample1": 0.000475,
+  "sample25": 0.011746
+ },
+ "high": {
+  "best_at_max": 0.903,
+  "headroom": 0.028,
+  "kmax": 25,
+  "n_items": 96,
+  "oracle_max": 0.931,
+  "pass1": 0.833
+ },
+ "identity_items": 400,
+ "macro3": {
+  "best_acc": 0.85,
+  "best_at_25": 0.85,
+  "best_name": "private_team/5/3",
+  "best_rung": 20,
+  "deep16": 0.84,
+  "deep8": 0.847,
+  "eta_hi_rung": 0.39,
+  "eta_lo_rung": 0.667,
+  "gap25": 0.083,
+  "headroom_best25": 0.067,
+  "max_delta": 0.023,
+  "min_delta": -0.033,
+  "min_p": 0.0167,
+  "n_bh_sig": 0,
+  "n_nominal_sig": 2,
+  "n_tests": 70,
+  "oracle2": 0.839,
+  "oracle25": 0.917,
+  "pass1": 0.78,
+  "peer54": 0.8,
+  "ps25": 0.837,
+  "pt54": 0.85,
+  "vote2": 0.823,
+  "vote25": 0.833
+ },
+ "macro4": {
+  "best_acc": 0.888,
+  "best_at_25": 0.887,
+  "best_name": "private_team/5/3",
+  "best_rung": 20,
+  "deep16": 0.88,
+  "deep8": 0.885,
+  "gap25": 0.062,
+  "headroom_best25": 0.05,
+  "max_delta": 0.017,
+  "min_delta": -0.025,
+  "min_p": 0.0167,
+  "n_bh_sig": 0,
+  "n_nominal_sig": 2,
+  "n_tests": 70,
+  "oracle2": 0.879,
+  "oracle25": 0.938,
+  "pass1": 0.835,
+  "peer54": 0.85,
+  "ps25": 0.873,
+  "pt54": 0.887,
+  "vote2": 0.868,
+  "vote25": 0.875
+ },
+ "math500": {
+  "best_acc": 0.96,
+  "best_at_25": 0.96,
+  "best_name": "sample/6",
+  "best_rung": 6,
+  "deep16": 0.96,
+  "deep8": 0.95,
+  "eta_hi_rung": 0.636,
+  "eta_lo_rung": 0.667,
+  "gap25": 0.04,
+  "headroom_best25": 0.04,
+  "max_delta": 0.01,
+  "min_delta": -0.06,
+  "min_p": 0.0175,
+  "n_bh_sig": 0,
+  "n_nominal_sig": 8,
+  "n_tests": 70,
+  "oracle2": 0.93,
+  "oracle25": 1.0,
+  "pass1": 0.89,
+  "peer54": 0.93,
+  "ps25": 0.95,
+  "pt54": 0.96,
+  "vote2": 0.94,
+  "vote25": 0.96
+ },
+ "mbpp_plus": {
+  "best_acc": 0.82,
+  "best_at_25": 0.82,
+  "best_name": "deep/8",
+  "best_rung": 8,
+  "deep16": 0.82,
+  "deep8": 0.82,
+  "eta_hi_rung": -0.25,
+  "eta_lo_rung": null,
+  "gap25": 0.1,
+  "headroom_best25": 0.07,
+  "max_delta": 0.04,
+  "min_delta": -0.07,
+  "min_p": 0.0335,
+  "n_bh_sig": 0,
+  "n_nominal_sig": 2,
+  "n_tests": 70,
+  "oracle2": 0.831,
+  "oracle25": 0.89,
+  "pass1": 0.81,
+  "peer54": 0.72,
+  "ps25": 0.79,
+  "pt54": 0.82,
+  "vote2": 0.81,
+  "vote25": 0.79
+ },
+ "mmlu_pro": {
+  "best_acc": 0.78,
+  "best_at_25": 0.77,
+  "best_name": "private_team/3/1",
+  "best_rung": 6,
+  "deep16": 0.74,
+  "deep8": 0.77,
+  "eta_hi_rung": 0.5,
+  "eta_lo_rung": 0.8,
+  "gap25": 0.11,
+  "headroom_best25": 0.09,
+  "max_delta": 0.06,
+  "min_delta": -0.01,
+  "min_p": 0.0266,
+  "n_bh_sig": 0,
+  "n_nominal_sig": 4,
+  "n_tests": 70,
+  "oracle2": 0.755,
+  "oracle25": 0.86,
+  "pass1": 0.64,
+  "peer54": 0.75,
+  "ps25": 0.77,
+  "pt54": 0.77,
+  "vote2": 0.72,
+  "vote25": 0.75
+ },
+ "peer_cost": {
+  "macro3": {
+   "estimate": -0.05,
+   "hi": -0.023,
+   "lo": -0.077,
+   "p": 0.001
+  },
+  "math500": {
+   "estimate": -0.03,
+   "hi": 0.0,
+   "lo": -0.07,
+   "p": 0.0773
+  },
+  "mbpp_plus": {
+   "estimate": -0.1,
+   "hi": -0.04,
+   "lo": -0.17,
+   "p": 0.0026
+  },
+  "mmlu_pro": {
+   "estimate": -0.02,
+   "hi": 0.02,
+   "lo": -0.06,
+   "p": 0.3279
+  }
+ },
+ "primary": {
+  "i_bbh_logic4": {
+   "estimate": 0.0,
+   "hi": 0.0,
+   "lo": 0.0,
+   "n": 100,
+   "p": null,
+   "p_holm": null
+  },
+  "i_macro": {
+   "estimate": -0.025,
+   "hi": -0.0084,
+   "lo": -0.0464,
+   "n": 400,
+   "p": 0.0135,
+   "p_holm": 0.027
+  },
+  "i_math500": {
+   "estimate": -0.03,
+   "hi": -0.0033,
+   "lo": -0.0643,
+   "n": 100,
+   "p": null,
+   "p_holm": null
+  },
+  "i_mbpp_plus": {
+   "estimate": -0.07,
+   "hi": -0.0101,
+   "lo": -0.1436,
+   "n": 100,
+   "p": null,
+   "p_holm": null
+  },
+  "i_mmlu_pro": {
+   "estimate": 0.0,
+   "hi": 0.0,
+   "lo": 0.0,
+   "n": 100,
+   "p": null,
+   "p_holm": null
+  },
+  "ii_bbh_logic4": {
+   "estimate": 0.0,
+   "hi": 0.0,
+   "lo": 0.0,
+   "n": 48,
+   "p": null,
+   "p_holm": null
+  },
+  "ii_macro": {
+   "estimate": -0.0052,
+   "hi": 0.0089,
+   "lo": -0.0247,
+   "n": 192,
+   "p": 0.5669,
+   "p_holm": 0.5669
+  },
+  "ii_math500": {
+   "estimate": -0.0208,
+   "hi": 0.0038,
+   "lo": -0.0208,
+   "n": 48,
+   "p": null,
+   "p_holm": null
+  },
+  "ii_mbpp_plus": {
+   "estimate": 0.0,
+   "hi": 0.0527,
+   "lo": -0.0527,
+   "n": 48,
+   "p": null,
+   "p_holm": null
+  },
+  "ii_mmlu_pro": {
+   "estimate": 0.0,
+   "hi": 0.0,
+   "lo": 0.0,
+   "n": 48,
+   "p": null,
+   "p_holm": null
+  }
+ },
+ "replication": {
+  "best_at_max": 0.806,
+  "headroom": 0.027,
+  "kmax": 16,
+  "n_items": 48,
+  "oracle_max": 0.833,
+  "pass1": 0.639
+ },
+ "run": {
+  "a0_high": 4096,
+  "a0_main": 1024,
+  "audit_fail": 0,
+  "audit_pass": 29,
+  "bank": 25,
+  "ceiling_usd": 135,
+  "checkpoints": 101088,
+  "generations": 67514,
+  "items_main": 400,
+  "model": "google/gemini-2.5-flash-lite",
+  "replicates": 10000,
+  "replication_model": "google/gemini-2.5-flash",
+  "run_id": "openrouter_agent_allocation_v1",
+  "spend_usd": 47.64
+ },
+ "width_depth": {
+  "macro3": {
+   "peer": {
+    "2": 0.0,
+    "3": -1.6,
+    "4": -0.4,
+    "5": -1.4
+   },
+   "private_team": {
+    "1": -0.1,
+    "2": 0.4,
+    "3": 1.1,
+    "4": 0.8,
+    "5": 1.6
+   }
+  },
+  "math500": {
+   "peer": {
+    "2": -1.2,
+    "3": -2.0,
+    "4": -2.2,
+    "5": -2.7
+   },
+   "private_team": {
+    "1": -2.4,
+    "2": -2.5,
+    "3": -1.7,
+    "4": -1.0,
+    "5": -0.3
+   }
+  },
+  "mbpp_plus": {
+   "peer": {
+    "2": -0.5,
+    "3": -3.0,
+    "4": -0.8,
+    "5": -2.0
+   },
+   "private_team": {
+    "1": 0.5,
+    "2": 1.5,
+    "3": 1.7,
+    "4": 1.5,
+    "5": 2.0
+   }
+  },
+  "mmlu_pro": {
+   "peer": {
+    "2": 1.8,
+    "3": 0.3,
+    "4": 1.8,
+    "5": 0.5
+   },
+   "private_team": {
+    "1": 1.6,
+    "2": 2.3,
+    "3": 3.3,
+    "4": 2.0,
+    "5": 3.0
+   }
+  }
+ }
+}
