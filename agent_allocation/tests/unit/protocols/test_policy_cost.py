@@ -81,3 +81,18 @@ def test_declared_ancestry_mismatch_is_refused():
     broken = replace(g, checkpoints=(replace(cp, required_node_ids=cp.required_node_ids[:-1]),))
     with pytest.raises(PolicyCostError):
         policy_cost_rows(broken, {})
+
+
+def test_result_keyed_under_the_wrong_node_is_refused():
+    g = graph("main")
+    a, b = g.nodes[0].node_id, g.nodes[1].node_id
+    with pytest.raises(PolicyCostError):
+        policy_cost_rows(g, {a: _result(b)})
+
+
+def test_index_cache_follows_graph_identity():
+    g = graph("main")
+    cp = checkpoint_by_name(g, "peer/2/1")
+    assert len(policy_ancestors(g, cp)) == 4
+    other = graph("main", partition_id="high")       # same shape, different node ids
+    assert set(policy_ancestors(other, checkpoint_by_name(other, "peer/2/1"))).isdisjoint(policy_ancestors(g, cp))
