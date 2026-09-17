@@ -402,6 +402,9 @@ class CollectionLedger:
 
 # Statuses whose response itself proves no generation was billed when it carries no usage: the request was refused
 # before any model ran (rate limit, auth, payment, bad request).
+# agent 01 (R01-4): HTTP 504/524 are UPSTREAM_ERROR but the upstream may have finished and charged the generation.
+GATEWAY_TIMEOUT_MAY_BE_BILLED = "gateway_timeout_may_be_billed"
+
 NEVER_BILLED_WITHOUT_USAGE = frozenset({
     TransportStatus.RATE_LIMITED,
     TransportStatus.AUTH_FAILED,
@@ -414,7 +417,8 @@ def confirmed_cost(result: GenerationResult | None) -> Decimal | None:
     """The cost a finished exchange provably incurred, or ``None`` when it is unknown (keep it unresolved).
 
     ``usage.actual_cost_usd`` wins whenever present. Without it: refusals in ``NEVER_BILLED_WITHOUT_USAGE``,
-    CONNECT_FAILED (provably never sent) and ``UPSTREAM_ERROR`` without a generation id cost 0; everything else
+    CONNECT_FAILED (provably never sent) and ``UPSTREAM_ERROR`` without a generation id cost 0 - except gateway
+    timeouts (``error_detail`` starts with ``gateway_timeout_may_be_billed``, HTTP 504/524); everything else
     (timeouts, 200 responses without usage, error envelopes, cache hits, provider mismatches, 5xx with a generation
     id) is unknown and stays unresolved until generation metadata or ``charge_max``.
     """
@@ -425,8 +429,9 @@ def confirmed_cost(result: GenerationResult | None) -> Decimal | None:
     status = result.transport_status
     if status in NEVER_BILLED_WITHOUT_USAGE or status is TransportStatus.CONNECT_FAILED:
         return ZERO
-    if status is TransportStatus.UPSTREAM_ERROR and not result.generation_id:
-        return ZERO
+    if status is TransportStatus.UPSTREAM_ERROR and not result.generation_id \
+            and not (result.error_detail or "").startswith(GATEWAY_TIMEOUT_MAY_BE_BILLED):
+        return ZERO                     # 502/503 before processing; 504/524 gateway timeouts may have been billed
     return None
 
 

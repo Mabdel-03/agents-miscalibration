@@ -60,7 +60,7 @@ import asyncio
 import math
 import random
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -84,6 +84,8 @@ ExtractFn = Callable[[GenerationResult, GenerationSpec], Candidate]
 STATUS_INTERVAL_SECONDS = 10.0
 BACKUP_INTERVAL_SECONDS = 120.0
 RECONCILE_POLL_SECONDS = 30.0
+METADATA_TIMEOUT_SECONDS = 30.0
+MAX_EVENTS = 10_000
 CONTROL_POLL_SECONDS = 1.0
 STOP_GRACE_SECONDS = 30.0
 WATCHDOG_MARGIN_SECONDS = 30.0
@@ -91,6 +93,8 @@ BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 60.0
 MIN_RPS = 0.25
 NOT_SENT = "not_sent"
+WITHDRAWN_AFTER_SENT = "withdrawn_after_sent_journal"
+REQUEST_CONTRACT_ERROR = "request_contract_error"
 
 STOP_COMPLETED = "completed"
 STOP_BUDGET_EXHAUSTED = "budget_exhausted"
@@ -483,6 +487,22 @@ def _is_context_limit(exc: BaseException) -> bool:
     return isinstance(exc, ContextLimitEvent)
 
 
+def _request_validator() -> Callable[..., Any] | None:
+    try:
+        from agent_allocation.api.request import build_request_body
+    except ImportError:  # pragma: no cover - agent 01's module not present
+        return None
+    return build_request_body
+
+
+def _is_request_contract_error(exc: BaseException) -> bool:
+    try:
+        from agent_allocation.api.request import RequestContractError
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(exc, RequestContractError)
+
+
 def critical_class(spec: GenerationSpec) -> int:
     if spec.kind is GenerationKind.ROOT and spec.root_slot == 0:
         return 0
@@ -554,7 +574,7 @@ class Dispatcher:
         self.budget_blocked_at: Decimal | None = None
         self.stop_reason: str | None = None
         self.stop_detail: str | None = None
-        self.events: list[tuple[float, str, str]] = []
+        self.events: deque[tuple[float, str, str]] = deque(maxlen=MAX_EVENTS)
         self.soft_ceiling = Decimal("0")
         self.run_ceiling = Decimal("0")
         self._seq = 0
@@ -565,43 +585,50 @@ class Dispatcher:
         started = self.clock()
         if not allow_paid and not client_is_offline_mock(self.client):
             raise DispatchRefused("allow_paid=False but the client transport is not an httpx.MockTransport")
-        self._configure_budget(plan, Decimal(str(max_usd)))
-        settled_before = self.ledger.snapshot().settled
-        self._build(plan)
-        self._loop = asyncio.get_running_loop()
-        self.http = HttpLimiter(self.aimd.concurrency_limit)
-        self.hard_stop: asyncio.Future = self._loop.create_future()
-        self.wake = asyncio.Event()
-        if self.paths.stop_sentinel.exists() or self.paths.drain_sentinel.exists():
-            self._finish(STOP_CONTROL_SENTINEL_PRESENT, "STOP" if self.paths.stop_sentinel.exists() else "DRAIN")
-            summary = self._summary(started, settled_before)
-            self.ledger.set_run_cap(None)
-            return summary
-        self._claim_dispatcher()
-        self.store.owner = self.owner
-        self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
-        background: list[asyncio.Task] = []
         try:
-            await self._startup_reconcile()
-            background = [self._loop.create_task(coro) for coro in (
-                self._status_loop(), self._backup_loop(), self._heartbeat_loop(), self._reconcile_loop())]
-            await self._main_loop()
-            await self._drain()
+            self._configure_budget(plan, Decimal(str(max_usd)))
+            settled_before = self.ledger.snapshot().settled
+            self._build(plan)
+            self._loop = asyncio.get_running_loop()
+            self.http = HttpLimiter(self.aimd.concurrency_limit)
+            self.hard_stop: asyncio.Future = self._loop.create_future()
+            self.wake = asyncio.Event()
+            if self.paths.stop_sentinel.exists() or self.paths.drain_sentinel.exists():
+                self._finish(STOP_CONTROL_SENTINEL_PRESENT, "STOP" if self.paths.stop_sentinel.exists() else "DRAIN")
+                return self._summary(started, settled_before)
+            self._claim_dispatcher()
+            self.store.owner = self.owner
+            self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
+            background: list[asyncio.Task] = []
+            try:
+                await self._startup_reconcile()
+                background = [self._loop.create_task(coro) for coro in (
+                    self._status_loop(), self._backup_loop(), self._heartbeat_loop(), self._reconcile_loop())]
+                await self._main_loop()
+                await self._drain()
+            finally:
+                for task in background:
+                    task.cancel()
+                for task in background:
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
+                live = self._live_tasks()
+                if live:
+                    # run() itself was cancelled or failed: stop our attempts before touching their leases.
+                    if not self.hard_stop.done():
+                        self.hard_stop.set_result(True)
+                    for task in live:
+                        task.cancel()
+                    await asyncio.wait(live, timeout=10.0)
+                self.cpu.shutdown(wait=True)
+                await self._final_persist()
+                if self.store.get_meta("dispatcher_owner") == self.owner:
+                    self.store.delete_meta("dispatcher_owner")
+            return self._summary(started, settled_before)
         finally:
-            for task in background:
-                task.cancel()
-            for task in background:
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            self.cpu.shutdown(wait=True)
-            await self._final_persist()
-            if self.store.get_meta("dispatcher_owner") == self.owner:
-                self.store.delete_meta("dispatcher_owner")
-        summary = self._summary(started, settled_before)
-        self.ledger.set_run_cap(None)
-        return summary
+            self.ledger.set_run_cap(None)
 
     # ---- setup ----------------------------------------------------------------------------------------------
     def _configure_budget(self, plan: AdmissionPlan, max_usd: Decimal) -> None:
@@ -981,6 +1008,13 @@ class Dispatcher:
                     continue
                 self._open_circuit(f"render_failed:{type(exc).__name__}:{exc}")
                 return "closed"
+            validate = _request_validator()
+            if validate is not None:
+                try:
+                    validate(node.spec, messages, self.lock, self.sampling)
+                except Exception as exc:  # noqa: BLE001 - RequestContractError or any body defect: nothing reserved
+                    self._open_circuit(f"request_contract_error:{type(exc).__name__}:{exc}"[:500])
+                    return "closed"
             self.rendered_chars_total += rendered_chars(messages)
             self.rendered_count += 1
             first_attempt = node.sends == 0
@@ -1024,9 +1058,10 @@ class Dispatcher:
                 self.pending_reservation -= amount
             if not reserved:
                 node.attempts_used -= 1          # a refused reservation is not journaled: the id is still free
-                snap = self.ledger.snapshot()
-                self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
-                self._requeue(node)
+                if self.ledger.last_refusal == "ceiling":
+                    snap = self.ledger.snapshot()
+                    self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                self._requeue(node)              # unresolved_exposure: the pause lifts when reconciliation runs
                 return
             if not self.store.try_lease(node.node_id, attempt_id, owner=self.owner):
                 await self.ledger.release_unsent(attempt_id)
@@ -1046,6 +1081,15 @@ class Dispatcher:
                 # Stop/drain/circuit arrived while this attempt waited for the HTTP limiter: it never left.
                 await self.ledger.release_unsent(attempt_id)
                 self.store.record_unsent_attempt(attempt, detail="not_sent:stopping")
+                self._requeue(node, park=True)
+                return
+            if error is not None and (error == WITHDRAWN_AFTER_SENT or error.startswith(REQUEST_CONTRACT_ERROR)):
+                # SENT is already journaled, so the reservation is never released (QA s15.08); the request provably
+                # did not leave the process, so it settles at 0 and the attempt is recorded as unsent.
+                await self.ledger.settle(attempt_id, Decimal("0"))
+                self.store.record_unsent_attempt(attempt, detail=error)
+                if error.startswith(REQUEST_CONTRACT_ERROR):
+                    self._open_circuit(error)
                 self._requeue(node, park=True)
                 return
             await self._handle(node, attempt, outcome, error, sent_at)
@@ -1076,6 +1120,8 @@ class Dispatcher:
             if self.stop_mode is not None or self.circuit_reason is not None:
                 return None, NOT_SENT, self.clock(), attempt
             await self.ledger.mark_sent(attempt.attempt_id)       # urgent fsync: SENT is durable before sending
+            if self.stop_mode is not None or self.circuit_reason is not None:
+                return None, WITHDRAWN_AFTER_SENT, self.clock(), attempt  # decided during the fsync: still unsent
             node.sends += 1
             attempt = replace(attempt, state=AttemptState.SENT, sent_at=_utc())
             self.store.record_attempt(attempt)
@@ -1091,6 +1137,9 @@ class Dispatcher:
                     try:
                         return generation.result(), None, sent_at, attempt
                     except Exception as exc:  # noqa: BLE001 - the client must classify; an escape is ambiguous
+                        if _is_request_contract_error(exc):
+                            node.sends -= 1                            # raised before any byte was sent
+                            return None, f"{REQUEST_CONTRACT_ERROR}:{exc}"[:500], sent_at, attempt
                         return None, f"client_exception:{type(exc).__name__}", sent_at, attempt
                 generation.cancel()
                 await asyncio.wait({generation}, timeout=5.0)
@@ -1121,6 +1170,8 @@ class Dispatcher:
             return
         status = result.transport_status
         self.attempt_statuses[status.value] += 1
+        if status in CIRCUIT_BREAKING_TRANSPORT:
+            self._open_circuit(f"{status.value}:{node.node_id}")   # before the raw-write/fsync awaits (W02-3)
         raw_error: BaseException | None = None
         try:
             relative, digest = await asyncio.to_thread(write_raw_response, self.paths, attempt_id, outcome)
@@ -1265,8 +1316,9 @@ class Dispatcher:
             cost: Decimal | None = None
             if item.generation_id and hasattr(self.client, "generation_metadata"):
                 try:
-                    meta = await self.client.generation_metadata(item.generation_id)
-                except Exception:  # noqa: BLE001 - metadata lag or outage: try again later
+                    meta = await asyncio.wait_for(self.client.generation_metadata(item.generation_id),
+                                                  timeout=METADATA_TIMEOUT_SECONDS)
+                except Exception:  # noqa: BLE001 - metadata lag, outage or timeout: try again later
                     meta = None
                 if meta:
                     raw_cost = meta.get("total_cost", meta.get("cost"))
@@ -1446,7 +1498,7 @@ class Dispatcher:
             waves_completed=sum(1 for w in self.waves if w.remaining == 0),
             circuit_reason=self.circuit_reason,
             duplicate_notifications=self.duplicate_notifications,
-            extra={"events": list(self.events[-200:]),
+            extra={"events": list(self.events)[-200:],
                    "aimd_increases": self.aimd.increases - self.aimd.increases_at_run_start,
                    "aimd_decreases": self.aimd.decreases - self.aimd.decreases_at_run_start,
                    "rps_start": self.run_start_rps, "reserve_admissions": self.reserve_admissions,

@@ -10,6 +10,8 @@ from dataclasses import replace
 from decimal import Decimal
 
 
+import pytest
+
 import agent_allocation.runtime.scheduler as scheduler_mod
 from agent_allocation.contracts import (
     Attempt, AttemptState, GenerationKind, LedgerEventKind, TransportStatus,
@@ -554,3 +556,34 @@ async def test_restart_without_recover_still_finishes_a_persisted_response(tmp_p
     assert summary.stop_reason == "completed"
     assert second.sent_nodes() == [child.node_id]                    # root finished from its raw artifact
     assert summary.settled_usd == 2 * COST and summary.unresolved_usd == 0
+
+
+async def test_plan_error_or_refusal_leaves_no_run_cap_on_the_ledger(tmp_path):
+    from agent_allocation.runtime.scheduler import PlanError
+
+    env = Env.create(tmp_path)
+    env.ledger.set_active_ceiling(D("50"))
+    graph = make_graph("x")
+    broken = replace(graph, nodes=graph.nodes[1:])
+    with pytest.raises(PlanError):
+        await env.dispatcher(FakeClient()).run(plan_of([broken]), allow_paid=False, max_usd=D("1"))
+    assert env.ledger.snapshot().ceiling == D("50")
+
+
+async def test_cancelled_run_stops_its_attempts_before_releasing_leases(tmp_path):
+    env = Env.create(tmp_path, concurrency_start=2)
+    graph = make_graph("cancel", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(delay=30)
+    run = asyncio.create_task(env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5")))
+    await asyncio.sleep(0.2)
+    assert len(client.calls) == 2
+    run.cancel()
+    with suppress(asyncio.CancelledError):
+        await run
+    kinds = journal_attempts(env.paths.ledger_journal)
+    assert len(kinds) == 2 and all(k.resolution is LedgerEventKind.CHARGE_MAX for k in kinds.values())
+    assert {env.store.node(s.node_id).state for s in graph.nodes} == {"pending"}
+    assert env.ledger.snapshot().in_flight == 0 and env.ledger.snapshot().unresolved == 0
+    again = FakeClient()
+    summary = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and sorted(a[-1] for _, a in again.calls) == ["2", "2"]
