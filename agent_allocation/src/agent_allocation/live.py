@@ -220,7 +220,7 @@ async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequ
                    ceiling: Decimal, transport=None, api_key: str | None = None):
     from agent_allocation.api.client import OpenRouterClient
     from agent_allocation.extraction.final import extract_candidate
-    from agent_allocation.prompts.render import render_messages
+    from agent_allocation.prompts.render import render_messages_with_report
     from agent_allocation.runtime.ledger import CollectionLedger
     from agent_allocation.runtime.scheduler import AdmissionPlan, Dispatcher
     from agent_allocation.storage.journal import LedgerJournal
@@ -236,8 +236,24 @@ async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequ
     store = StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists() else StateStore(paths)
     seed = int(cfg["seed"])
 
+    render_log = paths.state_dir / "render_reports.jsonl"
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+
     def render(spec, parents):
-        return render_messages(spec, tasks[spec.item_id], parents, seed=seed)
+        try:
+            messages, report = render_messages_with_report(spec, tasks[spec.item_id], parents, seed=seed)
+        except Exception as exc:
+            if "context" in type(exc).__name__.lower():
+                with open(render_log, "a") as handle:
+                    handle.write(json.dumps({"node_id": spec.node_id, "context_limit": True,
+                                             "error": type(exc).__name__, "recorded_at": utcnow()}) + "\n")
+            raise
+        with open(render_log, "a") as handle:
+            handle.write(json.dumps({"node_id": spec.node_id, "context_limit": False,
+                                     "trimmed_packets": report.get("trimmed_packets"),
+                                     "bytes_removed_total": report.get("bytes_removed_total"),
+                                     "rendered_chars": report.get("rendered_chars"), "recorded_at": utcnow()}) + "\n")
+        return messages
 
     def extract(result, spec):
         return extract_candidate(result, spec, tasks[spec.item_id])
