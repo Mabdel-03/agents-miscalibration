@@ -71,6 +71,7 @@ def reference_program(plan: dict, item_id: str) -> str:
     return native["prompt"] + native["canonical_solution"]
 
 
+GOOD_PROGRAM = "def f(x):\n    return x + 1\n"
 SYNTHETIC_PROMPT = '"""\nWrite a function f that returns its argument plus one.\nassert f(1) == 2\n"""\n'
 EXPECTED_CANARY = "EXPECTED-OUTPUT-CANARY-7f3a91"
 

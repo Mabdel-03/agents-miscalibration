@@ -29,7 +29,7 @@ import json
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, Mapping
@@ -350,7 +350,24 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     return counts
 
 
-def _pool(workers: int, profile: profile_mod.GradingProfile) -> ProcessPoolExecutor:
+class _InlineExecutor:
+    """``workers=0``: run jobs in this process (debugging and tests); same submit/shutdown surface."""
+
+    def submit(self, fn, *args):
+        future: Future = Future()
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:            # surfaced by future.result(), as with a process pool
+            future.set_exception(exc)
+        return future
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        return None
+
+
+def _pool(workers: int, profile: profile_mod.GradingProfile):
+    if workers == 0:
+        return _InlineExecutor()
     return ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"), initializer=_init_worker,
                                initargs=(profile,))
 

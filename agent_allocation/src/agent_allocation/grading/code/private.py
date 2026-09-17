@@ -44,7 +44,7 @@ def load_private_record(private: PrivateEvalSpec, paths: RunPaths) -> dict[str, 
     if not private.private_record_ref:
         raise PrivateRecordError(f"{private.item_id}: no private_record_ref")
     directory = (paths.run_dir / private.private_record_ref).resolve()
-    if not str(directory).startswith(str(paths.code_oracles_dir.resolve())):
+    if not directory.is_relative_to(paths.code_oracles_dir.resolve()):
         raise PrivateRecordError(f"{private.item_id}: private record outside the oracle directory")
     key = str(directory)
     cached = _RECORD_CACHE.get(key)
