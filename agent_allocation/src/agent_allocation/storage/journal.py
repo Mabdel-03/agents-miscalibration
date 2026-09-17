@@ -3,7 +3,8 @@
 * ``append`` returns only after the line is on disk (``os.fsync``). Appends are group-committed: the first pending
   event starts a batch that lingers ``group_commit_ms`` (so one fsync covers every event that arrives in the
   window), then the batch is written and fsync'd off the event loop. ``group_commit_ms=0`` flushes as soon as the
-  previous batch is done.
+  previous batch is done. An *urgent* submit (the ledger's ``SENT``, written while the HTTP slot is held) ends the
+  linger at once: it still shares an fsync with whatever is pending, but never waits out the window.
 * ``seq`` must strictly increase in append order (a second writer on the same file is detected, not interleaved).
 * A torn final line (crash mid-write; its ``append`` never returned, so nothing acted on it) is truncated when the
   journal is opened; a malformed line anywhere else is a :class:`JournalError` - the journal is never silently
@@ -68,6 +69,7 @@ class LedgerJournal:
         self._io_lock = threading.Lock()
         self._pending: list[tuple[str, asyncio.Future]] = []
         self._flusher: asyncio.Task | None = None
+        self._urgent: asyncio.Event | None = None
         self._broken: BaseException | None = None
         self.torn_tail_bytes = self._repair_torn_tail()
         self._last_seq = 0
@@ -105,16 +107,21 @@ class LedgerJournal:
         self._last_seq = event.seq
         return line
 
-    def submit(self, event: LedgerEvent) -> asyncio.Future:
+    def submit(self, event: LedgerEvent, *, urgent: bool = False) -> asyncio.Future:
         """Synchronously accept ``event`` (seq check, queue position) and return the future of its fsync.
 
         Callers that must keep "check state, assign seq, enqueue" atomic (the ledger) use this and then await the
-        future; ``append`` is ``await submit(event)``. Must be called from the running event loop.
+        future; ``append`` is ``await submit(event)``. ``urgent`` skips the rest of the linger window. Must be called
+        from the running event loop.
         """
         loop = asyncio.get_running_loop()
         line = self._accept(event)
         future: asyncio.Future = loop.create_future()
         self._pending.append((line, future))
+        if self._urgent is None:
+            self._urgent = asyncio.Event()
+        if urgent:
+            self._urgent.set()
         if self._flusher is None or self._flusher.done():
             self._flusher = loop.create_task(self._flush_loop())
         return future
@@ -141,8 +148,12 @@ class LedgerJournal:
 
     async def _flush_loop(self) -> None:
         while self._pending:
-            if self.group_commit_ms:
-                await asyncio.sleep(self.group_commit_ms / 1000.0)
+            if self.group_commit_ms and not self._urgent.is_set():
+                try:
+                    await asyncio.wait_for(self._urgent.wait(), timeout=self.group_commit_ms / 1000.0)
+                except asyncio.TimeoutError:
+                    pass
+            self._urgent.clear()
             batch, self._pending = self._pending, []
             data = "".join(line for line, _ in batch).encode("utf-8")
             try:

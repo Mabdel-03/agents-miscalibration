@@ -93,6 +93,27 @@ async def test_transitions_and_outstanding_costs_cannot_disappear(tmp_path):
                      "n:4": LedgerEventKind.CHARGE_MAX, "n:5": None}
 
 
+async def test_sent_money_is_never_released_and_replays_as_unresolved(tmp_path):
+    ledger = _ledger(tmp_path, ceiling="1")
+    assert await ledger.reserve(attempt_id="s:1", node_id="s", partition_id="main", amount_usd=D("0.3"))
+    await ledger.mark_sent("s:1")
+    with pytest.raises(LedgerError):
+        await ledger.release_unsent("s:1")                      # QA s15.08: sent money is never released
+    snap = ledger.snapshot()
+    assert snap.in_flight == D("0.3") and snap.settled == 0
+    await ledger.mark_sent("s:1")                               # idempotent: no duplicate SENT line
+    assert await ledger.reserve(attempt_id="t:1", node_id="t", partition_id="main", amount_usd=D("0.2"))
+    await ledger.mark_sent("t:1")
+    await ledger.mark_unresolved("t:1", detail="error_envelope")
+    kinds = [e.kind for e in ledger.journal.replay()]
+    assert kinds == [LedgerEventKind.RESERVE, LedgerEventKind.SENT, LedgerEventKind.RESERVE, LedgerEventKind.SENT,
+                     LedgerEventKind.UNRESOLVED]
+    restarted = _ledger(tmp_path, ceiling="1", unresolved="0.4")
+    assert restarted.snapshot().unresolved == D("0.5") and restarted.unresolved_exceeded
+    assert not await restarted.reserve(attempt_id="u:1", node_id="u", partition_id="main", amount_usd=D("0.01"))
+    assert restarted.last_refusal == "unresolved_exposure"
+
+
 async def test_unresolved_exposure_pauses_reservations(tmp_path):
     ledger = _ledger(tmp_path, ceiling="100", unresolved="1")
     for i in range(3):
