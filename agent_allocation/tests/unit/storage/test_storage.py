@@ -76,8 +76,11 @@ async def test_journal_repairs_torn_tail_but_not_a_corrupt_middle(paths):
     lines = paths.ledger_journal.read_bytes().split(b"\n")
     lines[1] = b"not json"
     paths.ledger_journal.write_bytes(b"\n".join(lines))
+    corrupt = LedgerJournal(paths.ledger_journal)            # constructing is free; any use fails loudly
     with pytest.raises(JournalError):
-        LedgerJournal(paths.ledger_journal)
+        list(corrupt.replay())
+    with pytest.raises(JournalError):
+        corrupt.next_seq()
 
 
 async def test_journal_failure_breaks_the_journal(paths, monkeypatch):

@@ -101,7 +101,7 @@ class LedgerJournal:
         self.torn_tail_bytes = 0
         self.external_events_applied = 0
         self.revocations = 0
-        self._read_new()
+        self._scanned = False                 # read-only users (``LedgerJournal(path).replay()``) never pay a scan
         self.batches_written = 0
         self.events_written = 0
         self.max_batch = 0
@@ -120,8 +120,14 @@ class LedgerJournal:
             self._last_seq = 0
             self._reserved.clear()
             self._terminal.clear()
+            self._scanned = True
             events = self._read_new()
         yield from events
+
+    def _ensure_scanned(self) -> None:
+        if not self._scanned:
+            self._scanned = True
+            self._read_new()
 
     def _read_new(self) -> list[LedgerEvent]:
         """Parse complete lines appended after ``_offset`` and fold them into the seq/attempt indexes."""
@@ -155,13 +161,16 @@ class LedgerJournal:
 
     @property
     def last_seq(self) -> int:
+        self._ensure_scanned()
         return self._last_seq
 
     def next_seq(self) -> int:
         """The seq the next appended event must carry (callers assign it synchronously before ``append``)."""
+        self._ensure_scanned()
         return self._last_seq + 1
 
     def is_terminal(self, attempt_id: str) -> bool:
+        self._ensure_scanned()
         return attempt_id in self._terminal
 
     @property
@@ -203,7 +212,11 @@ class LedgerJournal:
                                    maybe_written=False) from exc
             try:
                 self.torn_tail_bytes += self._repair_torn_tail()
+                first_scan = not self._scanned
+                self._scanned = True
                 new_events = self._read_new()
+                if first_scan:
+                    new_events = []           # a first full scan is this instance's baseline, not news for a listener
                 writer_fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
             except BaseException:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
