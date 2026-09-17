@@ -29,16 +29,37 @@ HOOK_RELATIVE = Path("tests") / "integration" / "independent_recompute.py"
 TOLERANCE = 1e-9
 
 
+HOOK_MODULE = "agent_allocation_independent_recompute"
+
+
+class HookLoadError(RuntimeError):
+    """The independent recompute hook exists but could not be imported."""
+
+
 def load_hook(path: Path | None = None) -> Callable[[Path], Mapping[str, Any]] | None:
+    """Import the hook by file path, registered in ``sys.modules`` before execution (dataclasses with postponed
+    annotations resolve through it). Import failures raise :class:`HookLoadError` for the caller to report."""
     target = path or (PROJECT_ROOT / HOOK_RELATIVE)
     if not target.is_file():
         return None
-    spec = importlib.util.spec_from_file_location("agent_allocation_independent_recompute", target)
+    spec = importlib.util.spec_from_file_location(HOOK_MODULE, target)
     if spec is None or spec.loader is None:
-        return None
+        raise HookLoadError(f"cannot build an import spec for {target}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, "independent_recompute", None)
+    previous = sys.modules.get(HOOK_MODULE)
+    sys.modules[HOOK_MODULE] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        if previous is not None:
+            sys.modules[HOOK_MODULE] = previous
+        else:
+            sys.modules.pop(HOOK_MODULE, None)
+        raise HookLoadError(f"{type(exc).__name__}: {exc}") from exc
+    hook = getattr(module, "independent_recompute", None)
+    if hook is None:
+        raise HookLoadError(f"{target} defines no independent_recompute(run_dir)")
+    return hook
 
 
 def hook_checks(hook: Callable[[Path], Mapping[str, Any]] | None, run_dir: Path,
@@ -82,8 +103,13 @@ def audit_run(run_dir: str | Path, *, config_path: str | None = None, hook_path:
     run = load_run(paths, cfg, config_source=source)
     analysis = build_analysis(run, replicates=replicates)
     results = C.run_checks(run, analysis.outcomes, analysis=analysis)
-    hook = load_hook(Path(hook_path) if hook_path else None)
-    results.extend(hook_checks(hook, paths.run_dir, analysis.extras.get("primary_estimates", {})))
+    try:
+        hook = load_hook(Path(hook_path) if hook_path else None)
+    except HookLoadError as exc:
+        results.append(C.CheckResult("independent_recompute", "fail", f"hook import failed: {exc}",
+                                     str(hook_path or HOOK_RELATIVE), (str(exc),)))
+    else:
+        results.extend(hook_checks(hook, paths.run_dir, analysis.extras.get("primary_estimates", {})))
     frame = pd.DataFrame([r.as_row() for r in results])
     write_table(frame, paths.tables_dir, "audit_checks")
     text = audit_markdown(analysis, results)

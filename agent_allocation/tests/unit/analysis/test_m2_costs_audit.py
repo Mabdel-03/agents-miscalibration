@@ -229,9 +229,17 @@ def test_independent_recompute_hook_contract(tmp_path, analysed):
         raise RuntimeError("independent code failed")
     assert hook_checks(boom, paths.run_dir, own)[0].status == "fail"
     hook = tmp_path / "hook.py"
-    hook.write_text("def independent_recompute(run_dir):\n    return {'contrasts': {}, 'checks': []}\n")
+    hook.write_text("from __future__ import annotations\nfrom dataclasses import dataclass\n\n@dataclass\n"
+                    "class Row:\n    name: str\n    value: float | None = None\n\n"
+                    "def independent_recompute(run_dir):\n    Row('x')\n    return {'contrasts': {}, 'checks': []}\n")
     assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES),
-                      "--recompute-hook", str(hook)]) == 0
+                      "--recompute-hook", str(hook)]) == 0             # postponed annotations import fine (W07-2)
+    broken = tmp_path / "broken_hook.py"
+    broken.write_text("raise ImportError('hook module is broken')\n")
+    assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES),
+                      "--recompute-hook", str(broken)]) == 1             # reported as a failing check, no crash
+    checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
+    assert checks.loc["independent_recompute", "status"] == "fail"
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -324,3 +332,53 @@ def test_exhausted_nodes_from_state_backup_are_terminal_no_output_not_unrun(buil
     assert set(rows["delivered_state"]) == {"missing_selection"} and rows["y"].isna().all()
     sample4 = outcomes.loc["main/mmlu_pro/w0/i2/sample/4/current"]
     assert sample4["n_required_no_output"] == 1 and sample4["n_required_terminal"] == 4
+
+
+def test_agent06_metric_tables_cross_check(built_run, tmp_path):
+    """Agent 06 tables that agree pass; a known-vs-known disagreement fails the audit."""
+    paths = copy_run(built_run, tmp_path)
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    outcomes = analysis.outcomes
+    rows = []
+    for rec in outcomes.to_dict("records"):
+        lo, hi = (0, 1) if pd.isna(rec["y"]) else (int(rec["y"]), int(rec["y"]))
+        clo, chi = (0, 1) if pd.isna(rec["coverage"]) else (int(rec["coverage"]), int(rec["coverage"]))
+        rows.append({"policy_id": rec["policy_id"], "delivered_lo": lo, "delivered_hi": hi, "coverage_lo": clo,
+                     "coverage_hi": chi})
+    bank = analysis.extras["item_metrics"]["sample_bank"]
+    bank_rows = [{"item_id": r["item_id"], "k": int(r["k"]), "bank_size": int(r["bank_size"]),
+                  "known": not pd.isna(r["oracle_pass_at_k"]),
+                  "pass_at_k_lo": None if pd.isna(r["oracle_pass_at_k"]) else r["oracle_pass_at_k"],
+                  "pass_at_k_hi": None if pd.isna(r["oracle_pass_at_k"]) else r["oracle_pass_at_k"]}
+                 for r in bank[bank["partition_id"] == "main"].to_dict("records")]
+    target = paths.metrics_table("main.checkpoints")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    paths.metrics_table("main.bank").write_text("".join(json.dumps(r) + "\n" for r in bank_rows))
+    assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES)]) == 0
+    checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
+    assert checks.loc["agent06_metric_tables_agree", "status"] == "pass"
+    known = next(i for i, r in enumerate(rows) if r["delivered_lo"] == r["delivered_hi"])
+    rows[known]["delivered_lo"] = rows[known]["delivered_hi"] = 1 - rows[known]["delivered_lo"]
+    target.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES)]) == 1
+    checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
+    assert checks.loc["agent06_metric_tables_agree", "status"] == "fail"
+
+
+def test_stub_grader_versions_are_labelled_and_block_final(built_run, tmp_path):
+    from agent_allocation.contracts import GradeResult, GradeStatus
+
+    paths = copy_run(built_run, tmp_path)
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    assert analysis.final and not analysis.extras["non_production_graders"]
+    code_nodes = [nid for nid, spec in analysis.run.jobs["main"].items() if spec.benchmark == "mbpp_plus"]
+    for nid in code_nodes:
+        grade = analysis.run.grades[nid]
+        stub = GradeResult(grade.candidate_id, grade.status, grade.semantic_correct, grade.operational_success,
+                           "qa-stub-code-v1", grade.private_eval_hash, detail_code="stub_code_grader")
+        paths.grade(nid).write_text(json.dumps(dump_record(stub)))
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    assert not analysis.final and analysis.extras["non_production_graders"]
+    text = (paths.reports_dir / "RUN_REPORT.md").read_text()
+    assert "STUB GRADING" in text and "qa-stub-code-v1" in text

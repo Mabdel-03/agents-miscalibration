@@ -34,6 +34,8 @@ def interim_reasons(analysis: "Analysis") -> list[str]:
     rec = analysis.extras.get("reconciliation")
     if rec is not None and not rec["reconciled"]:
         reasons.append("costs are not reconciled against provider usage (see COST_RECONCILIATION.md)")
+    for flag in analysis.extras.get("non_production_graders", []):
+        reasons.append(f"STUB GRADING: {flag}")
     return reasons
 
 
@@ -42,7 +44,8 @@ def header(analysis: "Analysis", title: str) -> str:
     lines = [f"# {title}: `{run.config.get('study_id')}`", ""]
     reasons = interim_reasons(analysis)
     if reasons:
-        kind = "PARTIAL COLLECTION" if not analysis.status["complete"] else "COSTS NOT RECONCILED"
+        kind = ("PARTIAL COLLECTION" if not analysis.status["complete"]
+                else "STUB GRADING" if analysis.extras.get("non_production_graders") else "COSTS NOT RECONCILED")
         lines += [f"**INTERIM REPORT: {kind}.** This report is partial and not a final result:", "",
                   bullet_list(reasons)]
     else:
@@ -81,7 +84,8 @@ def run_report(analysis: "Analysis") -> str:
     parts = [header(analysis, "Run report"), scope_notes(analysis), unfinished_section(analysis),
              seal_section(analysis), primary_section(analysis), accuracy_section(analysis),
              coverage_section(analysis), passk_section(analysis), cost_section(analysis), high_low_section(analysis), replay_section(analysis),
-             dynamics_section(analysis), operations_section(analysis), amendments_section(analysis),
+             dynamics_section(analysis), operations_section(analysis), provenance_section(analysis),
+             amendments_section(analysis),
              figures_section(analysis), warnings_section(analysis)]
     return "\n".join(p for p in parts if p)
 
@@ -374,6 +378,19 @@ def figures_section(analysis: "Analysis") -> str:
         lines.append(f"![{fig.stem}]({rel})")
         lines.append("")
     return "\n".join(lines)
+
+
+def provenance_section(analysis: "Analysis") -> str:
+    frame = analysis.extras.get("grader_provenance")
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return "## Grader and checker provenance\n\n- no grades or public checks stored yet\n"
+    text = ("## Grader and checker provenance\n\nVersions of the private graders and public checkers behind every "
+            "verdict. A non-production (stub) version is labelled and keeps the report interim.\n\n"
+            + md_table(frame))
+    flags = analysis.extras.get("non_production_graders", [])
+    if flags:
+        text += "\n**Stubbed verdicts present:**\n\n" + bullet_list(flags)
+    return text
 
 
 def amendments_section(analysis: "Analysis") -> str:
