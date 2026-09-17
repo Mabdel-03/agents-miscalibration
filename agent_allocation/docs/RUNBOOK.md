@@ -49,3 +49,12 @@ A STOP/DRAIN sentinel persists: clear with `allocation stop --run-dir ... --clea
 Provider/tier drift, cache hits on independent draws, missing budget support, widespread extraction failure, faulty
 grading, ledger discrepancy (journal refuses to replay), leaked gold, or source-version change: stop, preserve raw data,
 tell the owner. Never raise ceilings, switch providers/models, edit prompts, or buy credits.
+
+## State at 11:35 EDT (session ending 11:41)
+Prompt amendment `prompt_system_v2` (owner-approved) fixed MMLU-Pro (97.2% valid). Text headroom is 4,096 (owner-approved).
+Gate 2 re-pilot stops only on MATH: truncation 9.3% on two items (`intermediate_algebra/2022` x8, `/362` x2), valid 90.7%.
+Everything else passes; forecast $69.75; spend $1.02. **Owner decision pending: accept the MATH truncation?**
+If accepted, one command does acceptance + freeze + launch as a batch job:
+```bash
+sbatch --export=APPROVAL="<owner quote + timestamp>" slurm/accept_freeze_launch.sbatch
+```
