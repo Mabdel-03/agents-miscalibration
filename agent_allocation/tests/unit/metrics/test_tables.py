@@ -235,7 +235,7 @@ def test_root_strata(standard):
     option = {r.n: r for r in tables.root_strata if r.item_id == "mmlu_pro/fixture-2"}
     assert (option[2].c0_lo, option[2].stratum) == (1, "correct_half")
     assert (option[4].c0_lo, option[4].stratum) == (2, "correct_half")
-    assert option[4].reference_bank_size == 2 and option[4].reference_c_lo == 1       # roots 4..5: "K", "Answer: C"
+    assert option[4].reference_bank_size == 2 and option[4].reference_c_lo == 1       # roots 4..5: "K" (illegal), "(C)"
 
 
 def test_failure_rows_count_truncation_and_parse_failures(standard):

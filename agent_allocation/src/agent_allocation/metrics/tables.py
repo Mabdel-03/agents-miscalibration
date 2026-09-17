@@ -39,7 +39,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from agent_allocation.contracts import (
     Candidate, CheckpointView, CompletionStatus, GenerationResult, GenerationSpec, GradeResult, OutputKind,
-    ParseStatus, PolicyCheckpoint, PublicTask, SelectionResult, TransportStatus,
+    ParseStatus, PolicyCheckpoint, PublicTask, SelectionResult, SelectionStatus, TransportStatus,
 )
 from agent_allocation.metrics.outcomes import (
     CandidateState, DeliveredState, candidate_state, coverage_bounds, delivered_bounds, delivered_state,
@@ -441,7 +441,7 @@ def _checkpoint_row(it: _Item, cp: PolicyCheckpoint, selection: SelectionResult 
                                      if results else None),
         required_n_truncated=(sum(1 for c in required if c in results and _truncated(results[c]))
                               if results else None),
-        selection_status=None if selection is None else selection.status,
+        selection_status=None if selection is None else SelectionStatus(selection.status).value,
         selector_name=None if selection is None else selection.selector_name,
         declared_selector_name=cp.selector_name,
         selector_version=None if selection is None else selection.selector_version,

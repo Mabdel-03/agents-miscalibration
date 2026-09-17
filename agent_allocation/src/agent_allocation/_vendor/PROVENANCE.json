@@ -1,240 +1,215 @@
 [
- {
-  "changes": "text only (no span/token ids returned); an empty inner element returns (TAG_EMPTY, None) instead of (TAG_EMPTY, '')",
-  "file": "src/agent_allocation/_vendor/extraction_tags.py",
-  "functions": [
-   "_extract -> strict_single_pair (lines 147-173)"
-  ],
-  "origin": "src/agents_scaling/ard/report.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "8b89df3b1c086b8c92449cacaa951ac62f7807ce008be59ee731aaeacaff47ee"
- },
- {
-  "changes": "opening-fence info string captured and optionally restricted to an allowlist (case-insensitive)",
-  "file": "src/agent_allocation/_vendor/extraction_tags.py",
-  "functions": [
-   "strip_one_fence (line 127)",
-   "_OPEN_FENCE",
-   "_CLOSE_FENCE (lines 72-73)"
-  ],
-  "origin": "src/agents_scaling/study/parse/candidate.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "fac97d55668ea99653b53cf68fa5c175e2db352f271a1a59ed24fbbcf4e8eb0d"
- },
- {
-  "changes": "none (verbatim)",
-  "file": "src/agent_allocation/_vendor/extraction_tags.py",
-  "functions": [
-   "extract_boxed"
-  ],
-  "origin": "src/agents_scaling/ard/graders/_boxed.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "f84171fb19bae616573eec4283493f305ed2561790c39b274d11623185dc80f5"
- },
- {
-  "changes": "renamed to public names; behaviour unchanged",
-  "file": "src/agent_allocation/_vendor/selection_keys.py",
-  "functions": [
-   "_pre -> pre",
-   "_strip_one_wrapper -> strip_one_wrapper",
-   "_QUOTES",
-   "_ANSWER_PREFIX",
-   "_BOXED",
-   "_DOLLAR"
-  ],
-  "origin": "src/agents_scaling/study/selection/normalize.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "69f1f7967a98e8e64d587b64bcba06e4f58f092241815d77256fc5cc8e1338a9"
- },
- {
-  "changes": "legal alphabet is an explicit uppercase letter set (from PublicTask.allowed_choices) instead of n_options; out-of-set letters return None",
-  "file": "src/agent_allocation/_vendor/selection_keys.py",
-  "functions": [
-   "mc_key + _patterns -> mc_letter_key"
-  ],
-  "origin": "src/agents_scaling/nextdyn/graders/mc.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "121b63c9b79feadd0fcc716666b9eb694f1a459e618bd637d9f52997587b480f"
- },
- {
-  "changes": "returns the exact Fraction instead of float(Fraction)",
-  "file": "src/agent_allocation/_vendor/metrics_reference.py",
-  "functions": [
-   "_integer",
-   "pass_at_k"
-  ],
-  "origin": "src/agents_scaling/study/metrics_reference.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "2eff2cc6c4196adf47b7f2b950867a76e4aa1f8be7f399d24d88d82714328694"
- },
- {
-  "changes": "identity check raises ValueError instead of assert",
-  "file": "src/agent_allocation/_vendor/metrics_reference.py",
-  "functions": [
-   "transition_counts (line 57)"
-  ],
-  "origin": "src/agents_scaling/ard/reference_metrics.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "5409c84cac6d0ee5564af2e4ea8e83b16e5e975a27043f9afb9dd592ff222ab4"
- },
- {
-  "changes": "python_prefix defaults to CERTIFIED_PYTHON_PREFIX (not sys.prefix); explicit RLIMIT_STACK via prlimit --stack; OMP_NUM_THREADS=1 in the scrubbed env; SandboxError carries kind/phase/returncode; stdout over output_bytes is truncated and stderr overflow drained+discarded instead of raising; execute/invoke take a phase ('trusted'|'candidate'); init sends output_limit; drains readable stdout before declaring an exit; isolation flags and seccomp deny-list unchanged",
-  "file": "src/agent_allocation/sandbox/sandbox.py",
-  "functions": [
-   "SandboxError",
-   "SandboxLimits",
-   "seccomp_fd",
-   "Sandbox"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/runtime/sandbox.py",
-  "origin_commit": "2af2879",
-  "origin_sha256": "67c5c4b9d7bd537206c3c805d708056dff10b44db72bbf833ad722f40bc51ef3"
- },
- {
-  "changes": "RPC moved to dup'd fds with fds 0/1 pointed at /dev/null (raw fd writes cannot corrupt the protocol; stdin reads see EOF); BoundedCapture replaces unbounded StringIO for stdout/stderr (truncation flag); surrogatepass I/O; error results carry error_type and are length-bounded",
-  "file": "src/agent_allocation/sandbox/sandbox_worker.py",
-  "functions": [
-   "emit",
-   "rpc",
-   "Finalized",
-   "finalize",
-   "call_tool",
-   "lm_call",
-   "request loop"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/runtime/sandbox_worker.py",
-  "origin_commit": "2af2879",
-  "origin_sha256": "d052fbf4684b03c1746c61a58a5875f37bc2eee596a22c69be4384e05da2a6ad"
- },
- {
-  "changes": "ROOT points at the packaged upstream copy; local Grade dataclass; prepare_oracle dropped (certified oracles are reused, never regenerated); grade_evalplus takes memory/stdout/stack/suite-ceiling/interpreter and an optional pre-decoded row; SandboxError outside candidate code raises EvaluatorOutage, inside candidate code is classified timeout/cpu_limit/candidate_crash (crash flag for canary+retry) instead of one failure class; transport functions entering the sandbox are byte-identical",
-  "file": "src/agent_allocation/sandbox/evalplus_scorer.py",
-  "functions": [
-   "native_functions",
-   "StringTupleRows",
-   "pack_native",
-   "unpack_native",
-   "_invoke_native",
-   "_load_native",
-   "TRANSPORT",
-   "load_program",
-   "native_record",
-   "grade_evalplus"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/data/evalplus_scorer.py",
-  "origin_commit": "2af2879",
-  "origin_sha256": "d13aa077c873702b4899102e5da76f6a32dbc39d9f373eabd17a29e17868c20c"
- },
- {
-  "changes": "subset only; canonical_json/content_hash byte-for-byte so certified oracle hashes match",
-  "file": "src/agent_allocation/_vendor/learnagents_io.py",
-  "functions": [
-   "canonical_json",
-   "content_hash",
-   "file_hash",
-   "read_json",
-   "write_json"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/io.py",
-  "origin_commit": "2af2879",
-  "origin_sha256": "bd487aa895d342944459ca0b39353691ac020a146cf13053857d01c1a32ffae3"
- },
- {
-  "changes": "subset only, unchanged",
-  "file": "src/agent_allocation/_vendor/evalplus_external.py",
-  "functions": [
-   "decode_evalplus_record"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/data/external.py",
-  "origin_commit": "2af2879",
-  "origin_sha256": "dbaf7a92d3750aca733e16fa2006e37a925cff1d796cad74ed20c8449e4ed46d"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "3c833c39b842e33f251c83db4347e0a95191909f23b390c12d73ab29a28a4daf"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "92b126b907ee493121b55de06f6a34058b6e18adc8cf1c48737eedcd83f24cdd"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "186e09b7b14dcf12ed259dfca1d6644a1c266c1bbac41c917fd3c0449a734b24"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "d27099cc275ae6e64fb2c440643fc3b5d0952d1633db646e206b538517ffe6f2"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "fcc1f77fe5443b21bfc4dfcc3d66f7654f599b91582df771850e5e876986a103"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/provenance.json",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/provenance.json (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/provenance.json, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "9f49ac1151c77d4cfb0abca480742a72ede7d56c9cac0aa4b6992088c039b8d8"
- },
- {
-  "changes": "none (byte copy)",
-  "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/native_runtime_acquisition.json",
-  "functions": [
-   "read as pinned source text; never imported"
-  ],
-  "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/native_runtime_acquisition.json (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/native_runtime_acquisition.json, Apache-2.0)",
-  "origin_commit": "2af2879",
-  "origin_sha256": "276d3d717fe46e6e757b585b62bdff54ae12b13742e398c04146a5b1059b22e1"
- },
- {
-  "changes": "agent 07: removed ARD36 module constants (DOMAINS, WEIGHTS, N_RESAMPLES, N_PRIMARY) and the agents_scaling.ard.contract import; domains, weights and n_primary are required keyword arguments with no default; alpha default 0.05; noninferiority_bound and max_t_family not copied; bodies otherwise verbatim",
-  "file": "ard_stats.py",
-  "functions": [
-   "analysis_seed",
-   "Resampler",
-   "_norm_weights",
-   "_check_axis",
-   "paired_contrast",
-   "mean_ci",
-   "holm",
-   "StatsError",
-   "StatsAxisError"
-  ],
-  "origin": "src/agents_scaling/ard/stats.py",
-  "origin_commit": "e4b4037",
-  "origin_sha256": "e27ad9ae7ee63e2657c702960047ac9d95068341a722b9d754eae213f6548ab0"
- }
+  {
+    "changes": "text only (no span/token ids returned); an empty inner element returns (TAG_EMPTY, None) instead of (TAG_EMPTY, '')",
+    "file": "src/agent_allocation/_vendor/extraction_tags.py",
+    "functions": [
+      "_extract -> strict_single_pair (lines 147-173)"
+    ],
+    "origin": "src/agents_scaling/ard/report.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "8b89df3b1c086b8c92449cacaa951ac62f7807ce008be59ee731aaeacaff47ee"
+  },
+  {
+    "changes": "opening-fence info string captured and optionally restricted to an allowlist (case-insensitive)",
+    "file": "src/agent_allocation/_vendor/extraction_tags.py",
+    "functions": [
+      "strip_one_fence (line 127)",
+      "_OPEN_FENCE",
+      "_CLOSE_FENCE (lines 72-73)"
+    ],
+    "origin": "src/agents_scaling/study/parse/candidate.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "fac97d55668ea99653b53cf68fa5c175e2db352f271a1a59ed24fbbcf4e8eb0d"
+  },
+  {
+    "changes": "none (verbatim)",
+    "file": "src/agent_allocation/_vendor/extraction_tags.py",
+    "functions": [
+      "extract_boxed"
+    ],
+    "origin": "src/agents_scaling/ard/graders/_boxed.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "f84171fb19bae616573eec4283493f305ed2561790c39b274d11623185dc80f5"
+  },
+  {
+    "changes": "returns the exact Fraction instead of float(Fraction)",
+    "file": "src/agent_allocation/_vendor/metrics_reference.py",
+    "functions": [
+      "_integer",
+      "pass_at_k"
+    ],
+    "origin": "src/agents_scaling/study/metrics_reference.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "2eff2cc6c4196adf47b7f2b950867a76e4aa1f8be7f399d24d88d82714328694"
+  },
+  {
+    "changes": "identity check raises ValueError instead of assert",
+    "file": "src/agent_allocation/_vendor/metrics_reference.py",
+    "functions": [
+      "transition_counts (line 57)"
+    ],
+    "origin": "src/agents_scaling/ard/reference_metrics.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "5409c84cac6d0ee5564af2e4ea8e83b16e5e975a27043f9afb9dd592ff222ab4"
+  },
+  {
+    "changes": "python_prefix defaults to CERTIFIED_PYTHON_PREFIX (not sys.prefix); explicit RLIMIT_STACK via prlimit --stack; OMP_NUM_THREADS=1 in the scrubbed env; SandboxError carries kind/phase/returncode; stdout over output_bytes is truncated and stderr overflow drained+discarded instead of raising; execute/invoke take a phase ('trusted'|'candidate'); init sends output_limit; drains readable stdout before declaring an exit; isolation flags and seccomp deny-list unchanged",
+    "file": "src/agent_allocation/sandbox/sandbox.py",
+    "functions": [
+      "SandboxError",
+      "SandboxLimits",
+      "seccomp_fd",
+      "Sandbox"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/runtime/sandbox.py",
+    "origin_commit": "2af2879",
+    "origin_sha256": "67c5c4b9d7bd537206c3c805d708056dff10b44db72bbf833ad722f40bc51ef3"
+  },
+  {
+    "changes": "RPC moved to dup'd fds with fds 0/1 pointed at /dev/null (raw fd writes cannot corrupt the protocol; stdin reads see EOF); BoundedCapture replaces unbounded StringIO for stdout/stderr (truncation flag); surrogatepass I/O; error results carry error_type and are length-bounded",
+    "file": "src/agent_allocation/sandbox/sandbox_worker.py",
+    "functions": [
+      "emit",
+      "rpc",
+      "Finalized",
+      "finalize",
+      "call_tool",
+      "lm_call",
+      "request loop"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/runtime/sandbox_worker.py",
+    "origin_commit": "2af2879",
+    "origin_sha256": "d052fbf4684b03c1746c61a58a5875f37bc2eee596a22c69be4384e05da2a6ad"
+  },
+  {
+    "changes": "ROOT points at the packaged upstream copy; local Grade dataclass; prepare_oracle dropped (certified oracles are reused, never regenerated); grade_evalplus takes memory/stdout/stack/suite-ceiling/interpreter and an optional pre-decoded row; SandboxError outside candidate code raises EvaluatorOutage, inside candidate code is classified timeout/cpu_limit/candidate_crash (crash flag for canary+retry) instead of one failure class; transport functions entering the sandbox are byte-identical",
+    "file": "src/agent_allocation/sandbox/evalplus_scorer.py",
+    "functions": [
+      "native_functions",
+      "StringTupleRows",
+      "pack_native",
+      "unpack_native",
+      "_invoke_native",
+      "_load_native",
+      "TRANSPORT",
+      "load_program",
+      "native_record",
+      "grade_evalplus"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/data/evalplus_scorer.py",
+    "origin_commit": "2af2879",
+    "origin_sha256": "d13aa077c873702b4899102e5da76f6a32dbc39d9f373eabd17a29e17868c20c"
+  },
+  {
+    "changes": "subset only; canonical_json/content_hash byte-for-byte so certified oracle hashes match",
+    "file": "src/agent_allocation/_vendor/learnagents_io.py",
+    "functions": [
+      "canonical_json",
+      "content_hash",
+      "file_hash",
+      "read_json",
+      "write_json"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/io.py",
+    "origin_commit": "2af2879",
+    "origin_sha256": "bd487aa895d342944459ca0b39353691ac020a146cf13053857d01c1a32ffae3"
+  },
+  {
+    "changes": "subset only, unchanged",
+    "file": "src/agent_allocation/_vendor/evalplus_external.py",
+    "functions": [
+      "decode_evalplus_record"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/data/external.py",
+    "origin_commit": "2af2879",
+    "origin_sha256": "dbaf7a92d3750aca733e16fa2006e37a925cff1d796cad74ed20c8449e4ed46d"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "3c833c39b842e33f251c83db4347e0a95191909f23b390c12d73ab29a28a4daf"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "92b126b907ee493121b55de06f6a34058b6e18adc8cf1c48737eedcd83f24cdd"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "186e09b7b14dcf12ed259dfca1d6644a1c266c1bbac41c917fd3c0449a734b24"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "d27099cc275ae6e64fb2c440643fc3b5d0952d1633db646e206b538517ffe6f2"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "fcc1f77fe5443b21bfc4dfcc3d66f7654f599b91582df771850e5e876986a103"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/provenance.json",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/provenance.json (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/provenance.json, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "9f49ac1151c77d4cfb0abca480742a72ede7d56c9cac0aa4b6992088c039b8d8"
+  },
+  {
+    "changes": "none (byte copy)",
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/native_runtime_acquisition.json",
+    "functions": [
+      "read as pinned source text; never imported"
+    ],
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/native_runtime_acquisition.json (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/native_runtime_acquisition.json, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "276d3d717fe46e6e757b585b62bdff54ae12b13742e398c04146a5b1059b22e1"
+  },
+  {
+    "changes": "agent 07: removed ARD36 module constants (DOMAINS, WEIGHTS, N_RESAMPLES, N_PRIMARY) and the agents_scaling.ard.contract import; domains, weights and n_primary are required keyword arguments with no default; alpha default 0.05; noninferiority_bound and max_t_family not copied; bodies otherwise verbatim",
+    "file": "ard_stats.py",
+    "functions": [
+      "analysis_seed",
+      "Resampler",
+      "_norm_weights",
+      "_check_axis",
+      "paired_contrast",
+      "mean_ci",
+      "holm",
+      "StatsError",
+      "StatsAxisError"
+    ],
+    "origin": "src/agents_scaling/ard/stats.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "e27ad9ae7ee63e2657c702960047ac9d95068341a722b9d754eae213f6548ab0"
+  }
 ]

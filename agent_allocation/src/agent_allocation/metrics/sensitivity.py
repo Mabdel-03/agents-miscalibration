@@ -63,8 +63,8 @@ def math_class_sensitivity(sealed: SealedSelections, records: PartitionRecords, 
             continue
         for cp in item.checkpoints:
             selection = sealed.by_policy.get(cp.policy_id)
-            if selection is None or len(cp.candidate_ids) < 2 or selection.status not in (
-                    SelectionStatus.SELECTED.value, SelectionStatus.ABSTAINED_ALL_INVALID.value):
+            if selection is None or len(cp.candidate_ids) < 2 or SelectionStatus(selection.status) not in (
+                    SelectionStatus.SELECTED, SelectionStatus.ABSTAINED_ALL_INVALID):
                 continue
             detail = select_checkpoint_detail(cp, task, item.candidates, {}, seed=seed, math_equivalent=equivalent)
             votes = [(cid, key) for cid in cp.candidate_ids

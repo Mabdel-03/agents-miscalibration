@@ -20,7 +20,7 @@ from agent_allocation.contracts import (
 )
 from agent_allocation.metrics.tables import ItemRecords, PartitionRecords
 from agent_allocation.selection.keys import vote_key
-from agent_allocation.selection.readout import SELECTOR_VERSION, select_checkpoint, selector_for
+from agent_allocation.selection.readout import DECLARED_SELECTOR_VERSION, select_checkpoint
 
 SEED = 20260917
 MISSING_FINAL = "<missing-final>"       # answer marker: the response has no <final> element
@@ -196,8 +196,8 @@ def build_panel(items: Sequence[ItemSpec], grid: MiniGrid = MiniGrid(), *, parti
                 checkpoints.append(PolicyCheckpoint(
                     policy_id=f"{partition}/{task.item_id}/{cp_name}/{view.value}", item_id=task.item_id,
                     family=_family(cp_name), candidate_ids=candidate_ids, required_node_ids=required,
-                    selector_name=selector_for(_family(cp_name), view, task.output_kind, len(candidate_ids)),
-                    selector_version=SELECTOR_VERSION, partition_id=partition, name=cp_name, view=view,
+                    selector_name="public_tests_only" if task.output_kind is OutputKind.PYTHON else "plurality",
+                    selector_version=DECLARED_SELECTOR_VERSION, partition_id=partition, name=cp_name, view=view,
                     reasoning_budget=grid.base_budget * (int(cp_name.split("/")[1]) if cp_name.startswith("deep")
                                                          else 1),
                     **_coords(cp_name)))
@@ -223,17 +223,23 @@ def _grade(item: ItemSpec, name: str, candidate: Candidate) -> GradeResult:
     task = item.task
     base = dict(candidate_id=candidate.candidate_id, grader_version="fixture-grader-1", private_eval_hash="fixture")
     if name in item.unknown_grades:
-        return GradeResult(status=GradeStatus.EVALUATOR_ERROR, semantic_correct=None, operational_success=None,
+        return GradeResult(status=GradeStatus.EVALUATOR_ERROR, semantic_correct=None, operational_success=True,
                            detail_code="fixture_evaluator_outage", **base)
     if candidate.parse_status is not ParseStatus.VALID:
-        return GradeResult(status=GradeStatus.INVALID_OUTPUT, semantic_correct=False, operational_success=False,
+        return GradeResult(status=GradeStatus.INVALID_OUTPUT, semantic_correct=None, operational_success=False,
                            detail_code=candidate.parse_status.value, **base)
     if task.output_kind is OutputKind.PYTHON:
+        if name in item.public and item.public[name][1] is CheckStatus.INVALID_CANDIDATE:
+            return GradeResult(status=GradeStatus.INVALID_OUTPUT, semantic_correct=None, operational_success=False,
+                               detail_code="unparseable_program", **base)
         correct = name in item.code_correct
     else:
         key = vote_key(candidate, task)
-        correct = key is not None and key.exact in item.gold
-    return GradeResult(status=GradeStatus.GRADED, semantic_correct=correct, operational_success=correct, **base)
+        if key is None:                             # like grading.text: a final naming no legal answer
+            return GradeResult(status=GradeStatus.INVALID_OUTPUT, semantic_correct=None, operational_success=False,
+                               detail_code="not_a_legal_answer", **base)
+        correct = key.exact in item.gold
+    return GradeResult(status=GradeStatus.GRADED, semantic_correct=correct, operational_success=True, **base)
 
 
 def select_panel(panel: Panel, *, seed: int = SEED, math_equivalent: Callable[[str, str], bool | None] | None = None,
@@ -281,7 +287,7 @@ def standard_items() -> list[ItemSpec]:
     option = ItemSpec(
         task=task("mmlu_pro/fixture-2", "mmlu_pro", OutputKind.OPTION, tuple("ABCDEFGHIJ")), default_answer="C",
         gold=frozenset({"C"}),
-        answers={"root/0": "B", "root/1": "C", "root/2": "B", "root/3": "(C)", "root/4": "K", "root/5": "Answer: C",
+        answers={"root/0": "B", "root/1": "C", "root/2": "B", "root/3": "(C)", "root/4": "K", "root/5": "(C)",
                  "private/0/1": "C", "private/0/2": "B", "private/0/3": "C", "private/0/4": TRUNCATED,
                  "peer/2/1/0": "B", "peer/2/1/1": "B", "peer/4/1/0": "B", "peer/4/1/1": "B", "peer/4/1/2": "B", "peer/4/1/3": "B",
                  "peer/4/2/2": "B", "peer/4/2/3": "B", "cp/2/0": MISSING_FINAL, "cp/3/0": "B", "cp/3/1": "B",

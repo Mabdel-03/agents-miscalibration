@@ -1,7 +1,7 @@
 """Regenerate agent 06's metric-table fixtures for agent 07: ``python -m tests.fixtures.metrics.build_fixtures``.
 
 Output (this directory): ``tables/*.jsonl`` (one canonical JSON object per row, keys sorted), ``selections.jsonl``
-(the sealed ``SelectionResult`` lines), ``schema.json`` (columns, declared types and value vocabularies) and
+(the sealed batch-0 ``SelectionResult`` lines), ``schema.json`` (columns, declared types and value vocabularies) and
 ``manifest.json`` (versions, seed and sha256 of every file). ``tests/unit/metrics/test_fixtures.py`` fails when the
 committed files drift from the code.
 """
@@ -39,7 +39,7 @@ def build(out_dir: Path) -> dict[str, str]:
         paths = RunPaths.for_run(Path(tmp) / "run", locks_dir=Path(tmp) / "locks", local_state_dir=Path(tmp) / "local")
         seal_selections(paths, panel.partition, select_panel(panel, math_equivalent=fixture_math_equivalent))
         sealed = load_sealed_selections(paths, panel.partition)
-        selections = paths.selections(panel.partition).read_bytes()
+        selections = paths.selections(panel.partition, 0).read_bytes()
     tables = build_partition_tables(sealed, panel.records, panel.grades)
     digests = {f"tables/{name}": digest for name, digest in write_tables(tables, out_dir / "tables").items()}
     (out_dir / "selections.jsonl").write_bytes(selections)

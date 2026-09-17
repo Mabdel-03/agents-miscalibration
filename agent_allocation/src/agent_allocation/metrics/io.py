@@ -3,7 +3,8 @@
 ``load_partition_tables(paths, partition)`` verifies the partition's selection seal *before* it opens any grade file
 (``SealError`` otherwise), then reads the policies manifest, job specs, public tasks, parsed candidates/results and
 grades, and builds the per-item tables. ``write_tables`` writes one canonical-JSON-lines file per table plus
-``summary_checkpoints.jsonl`` into a directory the caller chooses (see docs/requests/06.md R06-3).
+``summary_checkpoints.jsonl`` into a directory the caller chooses; ``write_partition_tables`` writes the same files
+through ``RunPaths.metrics_table(metrics_table_name(partition, table))`` (contract v2, R06-3).
 
 Config keys consumed: none.
 """
@@ -24,7 +25,21 @@ from agent_allocation.metrics.tables import (
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.seal import load_sealed_selections
 
-__all__ = ["load_grades", "load_partition_records", "load_partition_tables", "load_public_tasks", "write_tables"]
+__all__ = [
+    "TABLE_FILES", "load_grades", "load_partition_records", "load_partition_tables", "load_public_tasks",
+    "metrics_table_name", "write_partition_tables", "write_tables",
+]
+
+#: Every table ``write_tables`` emits, in order (``summary_checkpoints`` is ``summarize_checkpoints``).
+TABLE_FILES: tuple[str, ...] = ("checkpoints", "bank", "slot_transitions", "team_transitions", "root_strata",
+                                "failures", "summary_checkpoints")
+
+
+def metrics_table_name(partition: str, table: str) -> str:
+    """The ``RunPaths.metrics_table`` name of one partition's table, e.g. ``"main.checkpoints"``."""
+    if table not in TABLE_FILES:
+        raise ValueError(f"unknown metrics table {table!r}")
+    return f"{partition}.{table}"
 
 
 def _jsonl(path: Path) -> Iterable[dict[str, Any]]:
@@ -109,18 +124,27 @@ def load_partition_tables(paths: RunPaths, partition: str, *, strict_populations
     return build_partition_tables(sealed, records, load_grades(paths, ids), strict_populations=strict_populations)
 
 
+def _payload(tables: PartitionTables) -> dict[str, bytes]:
+    rows: Mapping[str, list[dict[str, Any]]] = {**tables.as_dicts(),
+                                                "summary_checkpoints": summarize_checkpoints(tables.checkpoints)}
+    return {name: "".join(canonical_json(row) + "\n" for row in rows[name]).encode("utf-8") for name in TABLE_FILES}
+
+
+def _write(path: Path, body: bytes) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_bytes(body)
+    tmp.replace(path)
+    return sha256(body).hexdigest()
+
+
 def write_tables(tables: PartitionTables, directory: Path) -> dict[str, str]:
-    """Write ``{table}.jsonl`` (+ ``summary_checkpoints.jsonl``); returns ``{file name: sha256}``."""
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    payload: Mapping[str, list[dict[str, Any]]] = {**tables.as_dicts(),
-                                                   "summary_checkpoints": summarize_checkpoints(tables.checkpoints)}
-    digests = {}
-    for name, rows in payload.items():
-        body = "".join(canonical_json(row) + "\n" for row in rows).encode("utf-8")
-        path = directory / f"{name}.jsonl"
-        tmp = path.with_suffix(".jsonl.tmp")
-        tmp.write_bytes(body)
-        tmp.replace(path)
-        digests[path.name] = sha256(body).hexdigest()
-    return digests
+    """Write ``{table}.jsonl`` for every table in ``TABLE_FILES`` into ``directory``; returns ``{file name: sha256}``."""
+    return {f"{name}.jsonl": _write(Path(directory) / f"{name}.jsonl", body)
+            for name, body in _payload(tables).items()}
+
+
+def write_partition_tables(paths: RunPaths, partition: str, tables: PartitionTables) -> dict[str, str]:
+    """Write every table to ``paths.metrics_table(metrics_table_name(partition, table))``; returns name -> sha256."""
+    return {metrics_table_name(partition, name): _write(paths.metrics_table(metrics_table_name(partition, name)), body)
+            for name, body in _payload(tables).items()}
