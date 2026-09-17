@@ -179,9 +179,6 @@ async def test_timeout_after_dispatch_never_releases_the_reservation(run_paths, 
     assert len(hx.stub.requests_for(victim)) <= 3
 
 
-@pytest.mark.xfail(strict=False, reason="W02-4 (race, ~2 of 3 runs): runtime/scheduler.py:905 re-checks stop/circuit "
-                                        "before mark_sent but not the unresolved-exposure pause, so attempts reserved "
-                                        "before a timeout was processed are still sent after the limit is exceeded")
 async def test_unresolved_exposure_above_limit_pauses_admission(run_paths, cfg):
     """While an ambiguous attempt's reservation is unresolved and above ``max_unresolved_usd``, no other attempt may
     be sent. Resolution may come from reconciliation or a conservative CHARGE_MAX; either ends the window."""
