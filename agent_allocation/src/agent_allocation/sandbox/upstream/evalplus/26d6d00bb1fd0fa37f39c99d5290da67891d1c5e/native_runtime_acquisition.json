@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "bytes": 292,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py",
+      "sha256": "d27099cc275ae6e64fb2c440643fc3b5d0952d1633db646e206b538517ffe6f2",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/config.py"
+    },
+    {
+      "bytes": 5467,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/utils.py",
+      "sha256": "5bf8925c8dd7c8f06b05c0ff4f28672e8e3b61d1b567b6a86b90e80bd8b780a4",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/utils.py"
+    },
+    {
+      "bytes": 1900,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py",
+      "sha256": "92b126b907ee493121b55de06f6a34058b6e18adc8cf1c48737eedcd83f24cdd",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/_special_oracle.py"
+    },
+    {
+      "bytes": 953,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/gen/util/__init__.py",
+      "sha256": "81a7f0ee32dda4b5794f9645cc1199dc4b5ad8f187c6bd36fca32892ac2b8eef",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/gen/util/__init__.py"
+    }
+  ],
+  "revision": "26d6d00bb1fd0fa37f39c99d5290da67891d1c5e"
+}
