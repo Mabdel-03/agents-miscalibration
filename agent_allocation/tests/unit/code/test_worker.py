@@ -290,3 +290,29 @@ def test_text_grader_exception_is_unknown_and_does_not_stop_the_pass(run_paths):
     record = load_record(GradeResult, json.loads(run_paths.grade(text_candidate.candidate_id).read_text()))
     assert record.status is GradeStatus.EVALUATOR_ERROR and record.semantic_correct is None
     assert counts["grades_written"] == 2 and counts["evaluator_errors"] == 1
+
+
+def test_allocation_cli_grade_verb_reaches_cmd_grade(run_paths):
+    from agent_allocation.cli import main
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    assert main(["grade", "--run-dir", str(run_paths.run_dir), "--workers", "1"]) == 0
+    record = load_record(GradeResult, json.loads(run_paths.grade(candidates[0].candidate_id).read_text()))
+    assert record.semantic_correct is True
+
+
+def test_cache_entries_are_self_describing_and_tamper_evident(run_paths):
+    from agent_allocation.contracts import canonical_hash
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0)
+    entries = sorted((run_paths.grade_cache_dir / "private").rglob("*.json"))
+    assert len(entries) == 1
+    payload = json.loads(entries[0].read_text())
+    assert payload["key"] == entries[0].stem == canonical_hash(payload["material"])
+    assert set(payload["material"]) == {"revision", "item_id", "code_sha256", "test_kind", "evaluator_version",
+                                        "environment_digest", "private_hash"}
+    payload["material"]["code_sha256"] = "0" * 64                       # tampered material no longer matches
+    entries[0].write_text(json.dumps(payload))
+    extra = make_candidate(candidates[0].item_id, GOOD_PROGRAM, node="dd" * 32)
+    _write_parsed(run_paths, extra)
+    counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=True, workers=0)
+    assert counts["grades_cached"] == 0 and counts["grades_written"] == 1

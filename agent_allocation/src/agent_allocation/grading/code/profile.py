@@ -107,10 +107,17 @@ def vendored_source_hashes() -> dict[str, str]:
     return out
 
 
+def environment_manifest(profile: GradingProfile | None = None) -> dict[str, Any]:
+    """What the environment digest hashes: interpreter identity, vendored sandbox/EvalPlus source hashes, limits.
+    Suitable for the lead's environment lock."""
+    profile = profile or active_profile()
+    return {"interpreter": _interpreter_identity(profile.python_prefix), "sources": vendored_source_hashes(),
+            "limits": {k: v for k, v in asdict(profile).items() if k not in {"workers_max", "cache_by_code_hash"}}}
+
+
 @lru_cache(maxsize=8)
 def _digest(profile: GradingProfile) -> str:
-    payload = {"interpreter": _interpreter_identity(profile.python_prefix), "sources": vendored_source_hashes(),
-               "limits": {k: v for k, v in asdict(profile).items() if k not in {"workers_max", "cache_by_code_hash"}}}
+    payload = environment_manifest(profile)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

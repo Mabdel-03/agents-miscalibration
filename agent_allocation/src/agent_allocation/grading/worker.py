@@ -144,22 +144,37 @@ def scan_candidates(paths: RunPaths, skip: set[str] | frozenset[str] = frozenset
 # Cache keys
 # ---------------------------------------------------------------------------------------------------------------
 
-def public_cache_key(task: PublicTask, code_sha: str, env: str) -> str:
+def public_cache_material(task: PublicTask, code_sha: str, env: str) -> dict[str, str]:
     from agent_allocation.grading.code.public import CHECKER_VERSION, public_inputs_sha256
-    return canonical_hash({"revision": task.source_revision, "item_id": task.item_id, "code_sha256": code_sha,
-                           "test_kind": "public_examples", "evaluator_version": CHECKER_VERSION,
-                           "environment_digest": env, "public_inputs_sha256": public_inputs_sha256(task)})
+    return {"revision": task.source_revision, "item_id": task.item_id, "code_sha256": code_sha,
+            "test_kind": "public_examples", "evaluator_version": CHECKER_VERSION, "environment_digest": env,
+            "public_inputs_sha256": public_inputs_sha256(task)}
+
+
+def private_cache_material(private: PrivateEvalSpec, code_sha: str, env: str) -> dict[str, str]:
+    from agent_allocation.grading.code.private import GRADER_VERSION
+    return {"revision": private.source_revision, "item_id": private.item_id, "code_sha256": code_sha,
+            "test_kind": private.eval_kind.value, "evaluator_version": GRADER_VERSION, "environment_digest": env,
+            "private_hash": private.private_hash}
+
+
+def public_cache_key(task: PublicTask, code_sha: str, env: str) -> str:
+    return canonical_hash(public_cache_material(task, code_sha, env))
 
 
 def private_cache_key(private: PrivateEvalSpec, code_sha: str, env: str) -> str:
-    from agent_allocation.grading.code.private import GRADER_VERSION
-    return canonical_hash({"revision": private.source_revision, "item_id": private.item_id, "code_sha256": code_sha,
-                           "test_kind": private.eval_kind.value, "evaluator_version": GRADER_VERSION,
-                           "environment_digest": env, "private_hash": private.private_hash})
+    return canonical_hash(private_cache_material(private, code_sha, env))
 
 
 def _cache_path(paths: RunPaths, kind: str, key: str) -> Path:
     return paths.grade_cache_dir / kind / key[:2] / f"{key}.json"
+
+
+def _write_cache(paths: RunPaths, kind: str, key: str, material: Mapping[str, str], record: Any) -> None:
+    """Cache schema: ``grade_cache/{public|private}/{key[:2]}/{key}.json`` =
+    ``{"key": sha256(canonical material), "material": {...}, "record": dump_record(verdict)}`` (0700 tree)."""
+    _atomic_write(_cache_path(paths, kind, key), {"key": key, "material": dict(material), "record": dump_record(record)},
+                  private=True)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -257,7 +272,13 @@ def worker_count(profile: profile_mod.GradingProfile, requested: int | None) -> 
 def _read_cached(paths: RunPaths, kind: str, key: str | None, cls: type) -> Any | None:
     if not key:
         return None
-    return _read_record(_cache_path(paths, kind, key), cls)
+    try:
+        payload = json.loads(_cache_path(paths, kind, key).read_text())
+        if payload.get("key") != key or canonical_hash(payload["material"]) != key:
+            return None
+        return load_record(cls, payload["record"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: bool, workers: int,
@@ -289,6 +310,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     public_groups: dict[str, list[tuple[Candidate, PublicTask]]] = {}
     code_groups: dict[str, list[tuple[Candidate, PrivateEvalSpec]]] = {}
     text_jobs: list[tuple[Candidate, PrivateEvalSpec]] = []
+    materials: dict[str, dict[str, str]] = {}
     for candidate in candidates:
         task = public_tasks.get(candidate.item_id)
         private = private_specs.get(candidate.item_id)
@@ -304,6 +326,8 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             else:
                 key = public_cache_key(task, sha, env) if sha else "nocache:" + candidate.candidate_id
                 public_groups.setdefault(key, []).append((candidate, task))
+                if sha:
+                    materials[key] = public_cache_material(task, sha, env)
         existing_grade = _read_record(paths.grade(candidate.candidate_id), GradeResult)
         if existing_grade is not None and existing_grade.status in TERMINAL_GRADE \
                 and (not is_code or existing_grade.grader_version == GRADER_VERSION):
@@ -311,6 +335,8 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
         elif is_code:
             key = private_cache_key(private, sha, env) if sha else "nocache:" + candidate.candidate_id
             code_groups.setdefault(key, []).append((candidate, private))
+            if sha:
+                materials[key] = private_cache_material(private, sha, env)
         else:
             text_jobs.append((candidate, private))
 
@@ -353,7 +379,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
                 counts["public_written"] += 1
                 counts["infrastructure_errors"] += record.status is CheckStatus.INFRASTRUCTURE_ERROR
             if cacheable(key) and result.status is CheckStatus.OK:
-                _atomic_write(_cache_path(paths, "public", key), dump_record(result), private=True)
+                _write_cache(paths, "public", key, materials[key], result)
         # ---- private grades ---------------------------------------------------------------------------------
         if counts["pool_failures"] and pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -391,7 +417,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
                 counts["evaluator_errors"] += record.status is GradeStatus.EVALUATOR_ERROR
                 counts["sandbox_denied"] += "sandbox_denied=" in (record.detail_code or "")
             if kind == "code" and cacheable(ref) and result.status is GradeStatus.GRADED:
-                _atomic_write(_cache_path(paths, "private", ref), dump_record(result), private=True)
+                _write_cache(paths, "private", ref, materials[ref], result)
     finally:
         if pool is not None:
             pool.shutdown(wait=True, cancel_futures=True)
