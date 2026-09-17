@@ -41,6 +41,192 @@
   "pass1": 0.833
  },
  "identity_items": 400,
+ "law": {
+  "allowance_transition": {
+   "dead_to_dead": 5,
+   "dead_to_decided": 0,
+   "dead_to_outvoted": 1,
+   "decided_to_dead": 0,
+   "decided_to_decided": 60,
+   "decided_to_outvoted": 0,
+   "outvoted_n": 6,
+   "outvoted_rescued": 0.333,
+   "outvoted_to_dead": 0,
+   "outvoted_to_decided": 2,
+   "outvoted_to_outvoted": 4
+  },
+  "axis": {
+   "C16_dead": {
+    "depth": 0.04,
+    "diff": 0.04,
+    "hi": 0.12,
+    "lo": 0.0,
+    "n": 25,
+    "width": 0.0
+   },
+   "C16_decided": {
+    "depth": 0.961,
+    "diff": -0.008,
+    "hi": 0.012,
+    "lo": -0.031,
+    "n": 255,
+    "width": 0.969
+   },
+   "C16_outvoted": {
+    "depth": 0.3,
+    "diff": 0.2,
+    "hi": 0.4,
+    "lo": 0.05,
+    "n": 20,
+    "width": 0.1
+   },
+   "C4_dead": {
+    "depth": 0.0,
+    "diff": 0.0,
+    "hi": 0.0,
+    "lo": 0.0,
+    "n": 25,
+    "width": 0.0
+   },
+   "C4_decided": {
+    "depth": 0.945,
+    "diff": -0.016,
+    "hi": 0.016,
+    "lo": -0.047,
+    "n": 255,
+    "width": 0.961
+   },
+   "C4_outvoted": {
+    "depth": 0.2,
+    "diff": 0.1,
+    "hi": 0.35,
+    "lo": -0.15,
+    "n": 20,
+    "width": 0.1
+   },
+   "C8_dead": {
+    "depth": 0.08,
+    "diff": 0.08,
+    "hi": 0.2,
+    "lo": 0.0,
+    "n": 25,
+    "width": 0.0
+   },
+   "C8_decided": {
+    "depth": 0.965,
+    "diff": 0.0,
+    "hi": 0.024,
+    "lo": -0.024,
+    "n": 255,
+    "width": 0.965
+   },
+   "C8_outvoted": {
+    "depth": 0.3,
+    "diff": 0.25,
+    "hi": 0.45,
+    "lo": 0.05,
+    "n": 20,
+    "width": 0.05
+   }
+  },
+  "kstar": {
+   "m2": 34.4,
+   "m3": 14.3,
+   "m5": 4.7,
+   "m7": 2.3,
+   "m9": 1.3
+  },
+  "pred_obs": {
+   "macro3_observed": 0.023,
+   "macro3_predicted": 0.023,
+   "math500": {
+    "error": 0.022,
+    "hi": 0.0,
+    "lo": -0.03,
+    "observed": -0.01,
+    "predicted": 0.013
+   },
+   "mbpp_plus": {
+    "error": 0.014,
+    "hi": 0.07,
+    "lo": 0.0,
+    "observed": 0.03,
+    "predicted": 0.016
+   },
+   "mmlu_pro": {
+    "error": 0.009,
+    "hi": 0.12,
+    "lo": -0.01,
+    "observed": 0.05,
+    "predicted": 0.041
+   }
+  },
+  "predictability": {
+   "math500": {
+    "base": 0.05,
+    "entropy": 0.67,
+    "margin": 0.79,
+    "mean_chars": 0.95,
+    "mean_reason": 0.57,
+    "n": 100,
+    "n_distinct": 0.59
+   },
+   "mbpp_plus": {
+    "base": 0.14,
+    "entropy": 0.55,
+    "margin": 0.62,
+    "mean_chars": 0.59,
+    "mean_reason": 0.67,
+    "n": 100,
+    "n_distinct": 0.54
+   },
+   "mmlu_pro": {
+    "base": 0.26,
+    "entropy": 0.65,
+    "margin": 0.66,
+    "mean_chars": 0.58,
+    "mean_reason": 0.55,
+    "n": 100,
+    "n_distinct": 0.64
+   },
+   "pooled": {
+    "base": 0.15,
+    "entropy": 0.54,
+    "margin": 0.58,
+    "mean_chars": 0.73,
+    "mean_reason": 0.56,
+    "n": 300,
+    "n_distinct": 0.53
+   }
+  },
+  "regime_mix": {
+   "math500": {
+    "dead": 0.0,
+    "decided": 0.95,
+    "outvoted": 0.05,
+    "predicted_gain": 0.013
+   },
+   "mbpp_plus": {
+    "dead": 0.11,
+    "decided": 0.86,
+    "outvoted": 0.03,
+    "predicted_gain": 0.016
+   },
+   "mmlu_pro": {
+    "dead": 0.14,
+    "decided": 0.74,
+    "outvoted": 0.12,
+    "predicted_gain": 0.041
+   }
+  },
+  "step_law_agreement": 0.968,
+  "width_law": {
+   "coef": 1.04,
+   "corr": -0.875,
+   "exponent": -2.17,
+   "n": 251
+  }
+ },
  "macro3": {
   "best_acc": 0.85,
   "best_arc": 0.861,

@@ -14,8 +14,8 @@ import pandas as pd
 
 import isocore as ic
 import isoframe
-import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap, fig_select
-import isogap, isoselect
+import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap, fig_select, fig_law
+import isogap, isoselect, isolaw
 
 DEFAULT_RUN = ("/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/"
                "openrouter_agent_allocation_v1/artifacts/openrouter_agent_allocation_v1")
@@ -128,7 +128,36 @@ def main():
         df.to_parquet(f"{OUT}/cache/{nm}.parquet")
     fig_select.tradeoff(ss, sconc, matched, OUT)
     fig_select.adjudication(struct, topm, selv, OUT)
-    print("figures: 17 written")
+
+    # ---- the conditional scaling law
+    BANK = f"{OUT}/cache/bank_answers.pkl"
+    lstate = isolaw.item_state(RUN, "main", BANK)
+    vcurve = isolaw.vote_curve(RUN, "main", BANK)
+    kstar, wfit = isolaw.width_law(vcurve)
+    axis = isolaw.axis_by_regime(RUN, lstate)
+    presc = isolaw.prescription(lstate, axis, 8)
+    hstate = isolaw.item_state(RUN, "high", f"{OUT}/cache/bank_answers_high.pkl")
+    trans_j, trans_x = isolaw.allowance_transition(lstate, hstate)
+    predf, pauc = isolaw.predictability(RUN, lstate, cache=BANK)
+    yv = po_y = ic.load(RUN, "policy_outcomes")
+    po_y = po_y[(po_y["partition_id"] == "main") & (po_y["view"] == "current")]
+    yv = po_y.pivot_table(index="item_id", columns="name", values="y", aggfunc="first")
+    dj = lstate.set_index("item_id").join(yv)
+    rng2 = np.random.default_rng(ic.STUDY_SEED)
+    orows = []
+    for b, g in dj[dj["benchmark"].isin(ic.INFORMATIVE)].groupby("benchmark"):
+        df = (g["deep/8"] - g["sample/8"]).to_numpy(float)
+        bs = df[rng2.integers(0, len(df), (10000, len(df)))].mean(axis=1)
+        orows.append(dict(benchmark=b, observed=float(df.mean()),
+                          lo=float(np.quantile(bs, 0.025)), hi=float(np.quantile(bs, 0.975))))
+    obs = pd.DataFrame(orows).merge(presc[["benchmark", "predicted_gain"]], on="benchmark")
+    for nm, df in [("item_state", lstate), ("vote_curve", vcurve), ("kstar", kstar),
+                   ("axis_by_regime", axis), ("prescription", presc),
+                   ("predictability", pauc), ("pred_obs", obs)]:
+        df.to_parquet(f"{OUT}/cache/law_{nm}.parquet")
+    fig_law.law(lstate, kstar, wfit, OUT)
+    fig_law.prescribe(axis, obs, pauc, OUT)
+    print("figures: 19 written")
 
     # ---------------------------------------------------------------- numbers
     N: dict = {}
@@ -327,6 +356,48 @@ def main():
     Q["failing_items"] = {b: dict(n=int(len(g)), mean_rank=fmt(g["correct_rank"].mean(), 2),
                                   rank2_share=fmt((g["correct_rank"] == 2).mean()))
                           for b, g in fail.groupby("benchmark") if len(g)}
+    # ---- conditional scaling law numbers
+    L: dict = {}
+    L["width_law"] = dict(coef=fmt(wfit["coef"], 2), exponent=fmt(wfit["exponent"], 2),
+                          n=wfit["n"], corr=fmt(wfit["corr"], 3))
+    L["kstar"] = {f"m{int(m*10)}": fmt(wfit["coef"] * m ** wfit["exponent"], 1)
+                  for m in [0.2, 0.3, 0.5, 0.7, 0.9]}
+    L["regime_mix"] = {r["benchmark"]: dict(decided=fmt(r["decided"]), outvoted=fmt(r["outvoted"]),
+                                            dead=fmt(r["dead"]),
+                                            predicted_gain=fmt(r["predicted_gain"]))
+                       for _, r in presc.iterrows()}
+    L["axis"] = {f"C{int(r['C'])}_{r['regime']}": dict(width=fmt(r["width"]), depth=fmt(r["depth"]),
+                                                       diff=fmt(r["diff"]), lo=fmt(r["ci_lo"]),
+                                                       hi=fmt(r["ci_hi"]), n=int(r["n"]))
+                 for _, r in axis.iterrows()}
+    L["pred_obs"] = {r["benchmark"]: dict(predicted=fmt(r["predicted_gain"]),
+                                          observed=fmt(r["observed"]), lo=fmt(r["lo"]),
+                                          hi=fmt(r["hi"]),
+                                          error=fmt(abs(r["observed"] - r["predicted_gain"])))
+                     for _, r in obs.iterrows()}
+    L["pred_obs"]["macro3_predicted"] = fmt(float(obs["predicted_gain"].mean()))
+    L["pred_obs"]["macro3_observed"] = fmt(float(obs["observed"].mean()))
+    L["predictability"] = {r["scope"]: {c: fmt(r[c], 2) for c in
+                                        ["margin", "n_distinct", "entropy", "mean_chars",
+                                         "mean_reason"]}
+                           for _, r in pauc.iterrows()}
+    for _, r in pauc.iterrows():
+        L["predictability"][r["scope"]]["base"] = fmt(r["base"])
+        L["predictability"][r["scope"]]["n"] = int(r["n"])
+    tx = trans_x.reindex(index=isolaw.REGIMES, columns=isolaw.REGIMES).fillna(0).astype(int)
+    L["allowance_transition"] = {f"{a}_to_{b}": int(tx.loc[a, b])
+                                 for a in isolaw.REGIMES for b in isolaw.REGIMES}
+    ov = trans_j[trans_j["regime_lo"] == "outvoted"]
+    L["allowance_transition"]["outvoted_n"] = int(len(ov))
+    L["allowance_transition"]["outvoted_rescued"] = fmt((ov["regime_hi"] == "decided").mean())
+    # Does the step law hold: is vote@25 the sign of the margin?
+    sbm = ic.load(RUN, "sample_bank_items")
+    sbm = sbm[(sbm["partition_id"] == "main") & (sbm["k"] == 25)].set_index("item_id")
+    ls = lstate.set_index("item_id")
+    L["step_law_agreement"] = fmt(float(((ls["m"] > 0).astype(float)
+                                         == sbm["readout"].reindex(ls.index)).mean()), 3)
+    N["law"] = L
+
     N["selection"] = Q
 
     N["prescription"] = P

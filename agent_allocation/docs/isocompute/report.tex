@@ -587,6 +587,103 @@ calls. They are items where the model is confidently and consistently wrong, and
 to be willing to overrule a large majority. That is a harder verifier to build than a tie-breaker,
 and it is the central difficulty this study surfaces.
 
+\subsection{A conditional scaling law}
+
+The preceding sections say what the gap is and what closes it on average. This section asks the
+sharper question: given a budget and a problem, which axis should take the budget?
+
+Everything a vote can do is decided by two numbers per item: $p$, the chance a draw is correct, and
+$q_1$, the largest share held by any single wrong answer. Their difference $m = p - q_1$ is the
+plurality margin. As $k$ grows the vote converges to the correct answer exactly when $m > 0$, so
+the asymptotic readout is the step function $\mathbf{1}[m > 0]$. On the main panel that step
+predicts the realised vote at $k=25$ on 0.968 of items, with the disagreements sitting at margins
+near zero where 25 draws have not yet resolved the limit.
+
+That splits every item into three regimes, shown in Figure~\ref{fig:law}: \emph{decided}
+($m > 0$), where a vote will get there; \emph{outvoted} ($p > 0$, $m \leq 0$), where a correct
+answer exists and loses; and \emph{dead} ($p = 0$), where the bank never produced one.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f17_state_law.pdf}
+\caption{(a) Every item in the state plane; the diagonal is $m=0$. (b) The regime mix is a stable
+property of the benchmark. (c) Samples needed to bring a decided item to within 5\% of its limit,
+against its margin, with the fitted law and the binomial prediction.}
+\label{fig:law}
+\end{figure}
+
+\textbf{The horizontal law.} For a decided item, width is a variance-reduction problem, so the
+number of samples needed to resolve it scales as the inverse square of its margin. Fitting the
+observed resolution point against margin over 251 items gives
+\[
+k^{*} \;=\; 1.04 \; m^{-2.17}, \qquad \mathrm{corr}(\log m, \log k^{*}) = -0.875,
+\]
+against a binomial prediction of exponent $-2$. The practical content is in the constant: a margin
+of 0.9 needs 1.3 samples, 0.7 needs 2.3, 0.5 needs 4.7, 0.3 needs 14.3 and 0.2 needs 34.4. Since
+most decided items have large margins, $k^{*}$ is 1 or 2 for the bulk of the panel, and every
+sample past $k^{*}$ is spent on a question already answered. This is the mechanism behind the
+plateau in Figure~\ref{fig:ladder}: width has a hard stopping point, and the design sat far past it.
+
+For outvoted items the law has the opposite sign. Width does not converge to the right answer, it
+converges to the wrong one, so accuracy \emph{falls} with $k$: for items with $m < -0.2$ it goes
+from 0.062 at one sample to 0.000 by sixteen.
+
+\textbf{The vertical law.} Raising the per-draw allowance is the only axis that moves $m$, because
+it changes $p$ rather than the number of draws. On the 72 shared informative items, going from
+$A = 1024$ to $A = 4096$ leaves all 60 decided items decided, and rescues 2 of the 6 outvoted ones.
+The axis is monotone in the useful direction: no item was pushed out of the decided regime.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f18_axis_prescription.pdf}
+\caption{(a) At $C = 8A_0$, width against depth-in-one-call within each regime. (b) Gain predicted
+from the regime mix against the gain observed. (c) Whether a four-sample pilot can identify the
+regime; MATH-500 has only five non-decided items, so its bars are unstable.}
+\label{fig:prescribe}
+\end{figure}
+
+\textbf{The prescription.} Figure~\ref{fig:prescribe}(a) makes the conditional choice directly. At
+$C = 8A_0$, spending the budget on one deep call rather than eight samples is worth $0.000$
+$[-0.024, 0.024]$ on decided items, $+0.250$ $[0.050, 0.450]$ on outvoted ones, and $+0.080$
+$[0.000, 0.200]$ on dead ones. The axis to scale is therefore fully determined by the regime: on a
+decided item the axes are interchangeable and the only thing that matters is not overspending past
+$k^{*}$; on everything else, depth is the only axis with any traction.
+
+Because the regime mix is a benchmark property, that composes into a predictive rule. Writing
+$O$ and $Z$ for the outvoted and dead shares, the expected gain from moving a budget of $8A_0$ from
+width to depth is $0.250\,O + 0.080\,Z$. Across the three informative benchmarks this predicts
+0.013, 0.041 and 0.016 against observed values of $-0.010$, 0.050 and 0.030, and it matches the
+macro exactly at 0.023 predicted against 0.023 observed. It is wrong by 0.023 on MATH-500, whose
+outvoted mass is five items.
+
+\textbf{Why it cannot be conditioned on the prompt.} The law conditions on a state that must be
+measured. Figure~\ref{fig:prescribe}(c) asks whether a four-sample pilot can identify the regime
+before the budget is committed, and the answer is close to no. Within benchmark, the vote margin
+predicts not-decided with an AUC of 0.66 on MMLU-Pro and 0.62 on MBPP+, the number of distinct
+answers manages 0.64 and 0.54, and answer entropy 0.65 and 0.55. Pooled across benchmarks response
+length looks strong at 0.73, but that is benchmark confounding: within MMLU-Pro and MBPP+ it falls
+to 0.58 and 0.60.
+
+The reason is the same one that defeated selective verification. An outvoted item and a decided
+item look alike from the inside, because in both the model agrees with itself. The mean plurality
+margin on MMLU-Pro is 0.813 even though a quarter of its items are not decided. Confident and
+wrong is indistinguishable from confident and right without an outside signal.
+
+That has a concrete consequence, which we checked rather than assumed. An adaptive policy that
+draws four samples, keeps the vote when the margin is wide and escalates to a deep call otherwise,
+reaches 0.850 at an expected cost of $8.19A_0$. That equals the best configuration in the entire
+study, \texttt{private\_team/5/4} at $25A_0$, for a third of the compute, which is worth having.
+But it is only 0.003 above simply always spending the same budget on \texttt{deep/8}, which costs
+$8A_0$ and needs no gate at all. Conditioning bought the schedule, not the accuracy.
+
+\textbf{The rule that follows.} Estimate the regime mix once per problem type with a 25-sample
+pilot on about a hundred items. Then, per unit of budget: give decided items $k^{*} \approx
+1.04\,m^{-2.17}$ samples and not one more, which is usually one or two; give everything else to
+depth, since it is the only axis that converts outvoted into decided; and never buy width past
+$k^{*}$, which on the outvoted mass is not merely wasted but actively harmful. Conditioning finer
+than the benchmark is not supported by anything measurable here, and would need an external signal
+of difficulty rather than the model's own agreement.
+
 \subsection{A design check}
 
 On all 400 items, a team of $n$ agents run for zero revision rounds delivers exactly the same answer
@@ -656,6 +753,12 @@ correct program ranks 7.43 among failures and no shortlist is short enough.
 raise the correct share of the pool. Private teams do this and are worth 1.7 points over sampling;
 peer exposure does the opposite. Read out over the archive rather than the last round, which is free
 and recovers 3.7 points of the damage peer exposure causes.
+
+\emph{Fifth, stop buying width past $k^{*}$.} Width resolves a decided item in
+$k^{*} \approx 1.04\,m^{-2.17}$ samples, which is one or two for most of the panel, and does nothing
+after that. On outvoted items it is worse than nothing, since the vote converges on the wrong
+answer. Depth is the only axis that changes the regime, and at $C = 8A_0$ it is worth $+0.250$
+$[0.050, 0.450]$ there.
 
 \emph{Last, and close to worthless, more draws.} At fixed $A$ with a vote as the readout, additional
 agents or rounds move delivered accuracy by about nothing. They raise the ceiling and leave the
