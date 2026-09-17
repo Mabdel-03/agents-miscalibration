@@ -506,3 +506,22 @@ async def test_urgent_sent_does_not_wait_out_the_group_commit_window(tmp_path):
     await ledger.mark_sent("a:1")
     sent_latency = time.monotonic() - started
     assert reserve_latency >= 0.35 and sent_latency < 0.2
+
+
+async def test_client_identity_mismatch_opens_circuit_and_releases_its_lease_at_exit(tmp_path):
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    class WrongAttemptClient(FakeClient):
+        async def generate(self, spec, messages, *, attempt_id, lock, sampling):
+            outcome = await super().generate(spec, messages, attempt_id=attempt_id, lock=lock, sampling=sampling)
+            return replace(outcome, result=replace(outcome.result, attempt_id=f"{spec.node_id}:99"))
+
+    summary = await env.dispatcher(WrongAttemptClient()).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("client_identity_mismatch")
+    assert _kinds(env)[f"{root.node_id}:1"] is LedgerEventKind.CHARGE_MAX          # unknown money charged
+    assert env.store.node(root.node_id).state == "pending"                           # lease released at exit
+    again = FakeClient()
+    fixed = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert fixed.stop_reason == "completed" and [a for _, a in again.calls] == [f"{root.node_id}:2"]

@@ -1244,30 +1244,49 @@ class Dispatcher:
                 self.unresolved.pop(item.attempt_id, None)
         self.wake.set()
 
+    async def _guarded(self, name: str, step: Callable[[], Any], *, failures: dict[str, int]) -> None:
+        """One background iteration; three consecutive failures open the circuit (never die silently)."""
+        try:
+            await step()
+            failures[name] = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            failures[name] = failures.get(name, 0) + 1
+            self._event(f"{name}_failed", f"{type(exc).__name__}:{exc}")
+            if failures[name] >= 3:
+                self._open_circuit(f"{name}_failed:{type(exc).__name__}:{exc}")
+
     async def _reconcile_loop(self) -> None:
         interval = min(RECONCILE_POLL_SECONDS, max(0.05, self.settings.lease_stale_seconds / 4))
+        failures: dict[str, int] = {}
         while True:
             await asyncio.sleep(interval)
-            await self._reconcile_unresolved()
+            await self._guarded("reconcile", self._reconcile_unresolved, failures=failures)
+
+    async def _heartbeat_once(self) -> None:
+        self.store.heartbeat(self.owner)
+        self.store.set_meta("dispatcher_heartbeat", repr(time.time()))
+        for row in self.store.leased_nodes():
+            node = self.nodes.get(row.node_id)
+            if node is not None and node.foreign_lease and row.lease_owner != self.owner:
+                await self._maybe_take_over(node, row.lease_owner, row.lease_attempt_id, row.heartbeat_at)
+        self.wake.set()
 
     async def _heartbeat_loop(self) -> None:
+        failures: dict[str, int] = {}
         while True:
             await asyncio.sleep(self.settings.lease_heartbeat_seconds)
-            self.store.heartbeat(self.owner)
-            self.store.set_meta("dispatcher_heartbeat", repr(time.time()))
-            for row in self.store.leased_nodes():
-                node = self.nodes.get(row.node_id)
-                if node is not None and node.foreign_lease and row.lease_owner != self.owner:
-                    await self._maybe_take_over(node, row.lease_owner, row.lease_attempt_id, row.heartbeat_at)
-            self.wake.set()
+            await self._guarded("heartbeat", self._heartbeat_once, failures=failures)
+
+    async def _backup_once(self) -> None:
+        await asyncio.to_thread(self.store.backup)
 
     async def _backup_loop(self) -> None:
+        failures: dict[str, int] = {}
         while True:
             await asyncio.sleep(BACKUP_INTERVAL_SECONDS)
-            try:
-                await asyncio.to_thread(self.store.backup)
-            except Exception as exc:  # noqa: BLE001
-                self._open_circuit(f"backup_failed:{type(exc).__name__}:{exc}")
+            await self._guarded("backup", self._backup_once, failures=failures)
 
     async def _status_loop(self) -> None:
         while True:
@@ -1283,7 +1302,30 @@ class Dispatcher:
         except Exception:  # noqa: BLE001 - status is advisory; never stop spending accounting for it
             pass
 
+    async def _release_own_leases(self) -> None:
+        """After drain nothing of ours is on the wire: resolve and release any lease a defect path left behind, so a
+        restart in this same process does not wait ``lease_stale_seconds`` for our own dead attempts."""
+        for row in self.store.leased_nodes():
+            if row.lease_owner != self.owner or row.lease_attempt_id is None:
+                continue
+            attempt_id = row.lease_attempt_id
+            state = self.ledger.state_of(attempt_id)
+            if state == "reserved":
+                await self.ledger.release_unsent(attempt_id)
+            elif state in ("sent", "unresolved"):
+                await self.ledger.charge_max(attempt_id)
+            prior = {a.attempt_id: a for a in self.store.attempts_for(row.node_id)}.get(attempt_id)
+            if prior is not None and prior.state is not AttemptState.TERMINAL:
+                self.store.record_attempt(replace(prior, state=AttemptState.TERMINAL, completed_at=_utc(),
+                                                  error_detail="lease_released_at_exit"))
+            self.store.take_over_lease(row.node_id, attempt_id)
+            self._event("lease_released_at_exit", row.node_id)
+
     async def _final_persist(self) -> None:
+        try:
+            await self._release_own_leases()
+        except Exception as exc:  # noqa: BLE001
+            self._event("lease_release_failed", repr(exc))
         try:
             await self.ledger.journal.flush()
         except Exception:  # noqa: BLE001

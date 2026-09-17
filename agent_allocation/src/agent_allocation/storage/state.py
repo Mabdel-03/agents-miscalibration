@@ -32,7 +32,7 @@ from agent_allocation.contracts import (
     TransportStatus, dump_record, load_record,
 )
 from agent_allocation.paths import RunPaths
-from agent_allocation.storage._atomic import replace_atomic, write_once
+from agent_allocation.storage._atomic import copy_atomic, write_once
 from agent_allocation.storage.journal import LedgerJournal
 from agent_allocation.storage.raw import iter_raw_files, read_raw_response, result_from_raw, sha256_file
 
@@ -193,17 +193,23 @@ class StateStore:
     # ---- nodes --------------------------------------------------------------------------------------------
     def register_nodes(self, specs: Iterable[GenerationSpec], *, wave_index: int | None) -> None:
         now = utc_now()
-        rows = []
-        for spec in specs:
-            rows.append((spec.node_id, spec.partition_id, spec.item_id, spec.benchmark, spec.kind.value, wave_index,
-                         _json(spec), AttemptState.PENDING.value, now))
+        by_id = {spec.node_id: spec for spec in specs}
+        existing: set[str] = set()
+        wanted = list(by_id)
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            existing.update(r["node_id"] for r in self._query(f"SELECT node_id FROM nodes WHERE node_id IN ({marks})",
+                                                               chunk))
+        rows = [(node_id, spec.partition_id, spec.item_id, spec.benchmark, spec.kind.value, wave_index, _json(spec),
+                 AttemptState.PENDING.value, now) for node_id, spec in by_id.items() if node_id not in existing]
         with self._tx() as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO nodes(node_id, partition_id, item_id, benchmark, kind, wave_index, spec_json,"
                 " state, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
-            if wave_index is not None:
+            if wave_index is not None and existing:
                 conn.executemany("UPDATE nodes SET wave_index=? WHERE node_id=? AND wave_index IS NULL",
-                                 [(wave_index, r[0]) for r in rows])
+                                 [(wave_index, node_id) for node_id in existing])
             ids = [(r[0],) for r in rows]
             # Facts recorded before registration (recovery re-ingest) win over the fresh 'pending' row.
             conn.executemany(
@@ -406,8 +412,8 @@ class StateStore:
             row = conn.execute("SELECT record_json FROM attempts WHERE attempt_id=?", (result.attempt_id,)).fetchone()
             if row is not None:
                 attempt = replace(load_record(Attempt, json.loads(row["record_json"])), state=AttemptState.TERMINAL)
-                conn.execute("UPDATE attempts SET state='terminal', record_json=?, result_json=?, updated_at=?"
-                             " WHERE attempt_id=?", (_json(attempt), _json(result), now, result.attempt_id))
+                conn.execute("UPDATE attempts SET state='terminal', record_json=?, result_json=NULL, updated_at=?"
+                             " WHERE attempt_id=?", (_json(attempt), now, result.attempt_id))
             else:
                 from agent_allocation.runtime.ledger import attempt_number
                 attempt = Attempt(result.attempt_id, result.node_id, attempt_number(result.attempt_id),
@@ -416,9 +422,9 @@ class StateStore:
                                   generation_id=result.generation_id)
                 conn.execute(
                     "INSERT INTO attempts(attempt_id, node_id, attempt_no, state, transport_status, sent, record_json,"
-                    " result_json, updated_at) VALUES(?, ?, ?, 'terminal', ?, 1, ?, ?, ?)",
+                    " updated_at) VALUES(?, ?, ?, 'terminal', ?, 1, ?, ?)",
                     (attempt.attempt_id, attempt.node_id, attempt.attempt_no, result.transport_status.value,
-                     _json(attempt), _json(result), now))
+                     _json(attempt), now))
             conn.execute(
                 "UPDATE nodes SET state='terminal', outcome='succeeded', terminal_reason=NULL, lease_owner=NULL,"
                 " lease_attempt_id=NULL, attempts_used=MAX(attempts_used, (SELECT MAX(attempt_no) FROM attempts"
@@ -458,7 +464,7 @@ class StateStore:
             finally:
                 dest.close()
                 source.close()
-            replace_atomic(final, local_tmp.read_bytes())
+            copy_atomic(local_tmp, final)
         finally:
             try:
                 local_tmp.unlink()
@@ -492,7 +498,7 @@ class StateStore:
                 if stale.exists():
                     stale.rename(stale.with_name(f"{stale.name}.corrupt-{int(time.time())}"))
             if paths.state_db_backup.exists() and cls._db_ok(paths.state_db_backup):
-                replace_atomic(local, paths.state_db_backup.read_bytes())
+                copy_atomic(paths.state_db_backup, local)
         store = cls(paths)
         from agent_allocation.runtime.owner import owner_host, owner_is_dead
         import socket
