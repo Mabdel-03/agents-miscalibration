@@ -30,6 +30,16 @@ from agent_allocation.contracts import (
 from agent_allocation.paths import RunPaths
 
 SAFETY_MARGIN_USD = Decimal("1.00")
+REHEARSAL_ENV = "ALLOCATION_REHEARSAL"   # set by `--rehearsal`: fake transport end to end, never sends a request
+
+
+def rehearsal() -> bool:
+    return os.environ.get(REHEARSAL_ENV) == "1"
+
+
+def rehearsal_transport():
+    from agent_allocation.api.fake import fake_openrouter_transport
+    return fake_openrouter_transport()
 CANARY_BUDGETS = (512, 1024, 2048, 4096, 8192, 16384)
 CANARY_CODE_BUDGETS = (1024, 4096)
 PILOT_CEILING_USD = Decimal("5")
@@ -128,6 +138,14 @@ def provider_snapshot(paths: RunPaths, source: str) -> dict[str, Any]:
     from agent_allocation.apikey import load_api_key
     from agent_allocation.doctor import provider_snapshot as fetch
     from agent_allocation.doctor import write_provider_usage
+    if rehearsal():
+        spent = ledger_settled(paths)
+        snap = {"recorded_at": datetime.now(timezone.utc).isoformat(),
+                "key": {"usage": float(spent), "limit": 200, "limit_remaining": float(200 - spent), "is_free_tier": False},
+                "credits": {"total_credits": 100, "total_usage": float(spent)},
+                "account_balance_usd": str(Decimal("100") - spent)}
+        write_provider_usage(paths, source, snap)
+        return snap
     snap = fetch(load_api_key())
     write_provider_usage(paths, source, snap)
     return snap
@@ -229,6 +247,8 @@ class Runtime:
         from agent_allocation.storage.state import StateStore
 
         self.cfg, self.paths, self.lock = cfg, paths, lock
+        if rehearsal():
+            transport, api_key = rehearsal_transport(), None
         scheduler = cfg["scheduler"]
         self.client = OpenRouterClient(api_key=api_key, transport=transport,
                                        connect_timeout=float(scheduler["connect_timeout_seconds"]),
@@ -355,6 +375,8 @@ def canary_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[ItemGraph]
 async def fetch_metadata(paths: RunPaths, generation_ids: Sequence[str], *, attempts: int = 12, delay_s: float = 10.0):
     from agent_allocation.api.client import OpenRouterClient
     from agent_allocation.apikey import load_api_key
+    if rehearsal():
+        return {}
     client = OpenRouterClient(api_key=load_api_key())
     found: dict[str, Any] = {}
     try:
@@ -652,22 +674,31 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     from agent_allocation.apikey import load_api_key
     tasks = load_tasks(paths)
     amendments = load_amendments(paths)
+    if rehearsal() and not paths.endpoint_lock.exists():
+        from agent_allocation.api.fake import fake_endpoint_lock
+        fake = {m: fake_endpoint_lock(m) for m in (cfg["primary_model"], cfg["replication_model"])}
+        paths.endpoint_lock.parent.mkdir(parents=True, exist_ok=True)
+        paths.endpoint_lock.write_text(json.dumps({"locks": {m: dump_record(l) for m, l in fake.items()},
+                                                   "rehearsal": True}, indent=1, sort_keys=True))
     locks = read_endpoint_locks(paths)
     if cfg["primary_model"] not in locks:
         raise RunRefused("no endpoint lock: the canary must pass first")
     gate1 = paths.gate_result("gate1", "canary")
-    if not gate1.exists() or json.loads(gate1.read_text()).get("decision") != "advance":
+    if not rehearsal() and (not gate1.exists() or json.loads(gate1.read_text()).get("decision") != "advance"):
         raise RunRefused("Gate 1 has not advanced")
     pilot_cap = min(max_usd, PILOT_CEILING_USD)
     waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
     write_jobs(paths, "pilot", graphs)
-    api_key = load_api_key()
+    api_key = None if rehearsal() else load_api_key()
+    paid = not rehearsal()
     lock = locks[cfg["primary_model"]]
 
+    if phase == "finish":           # re-evaluate Gate 2 from stored pilot artifacts without dispatching
+        return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
     if phase == "collect":          # subprocess entry used by the kill/resume test
         snap = provider_snapshot(paths, "pilot_collect")
         ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
-        await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True, max_usd=pilot_cap,
+        await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid, max_usd=pilot_cap,
                        ceiling=ceiling, api_key=api_key)
         return 0
 
@@ -676,18 +707,20 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     settled = ledger_settled(paths)
     stop_ceiling = settled + BUDGET_STOP_TEST_CEILING_USD
     seq0 = last_journal_seq(paths)
-    summary = await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True, max_usd=pilot_cap,
+    summary = await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid, max_usd=pilot_cap,
                              ceiling=stop_ceiling, api_key=api_key)
     report["budget_stop"] = {"ceiling": str(stop_ceiling), "summary": str(summary),
                              "max_overshoot_usd": str(journal_replay_overshoot(paths, stop_ceiling, seq0))}
     # 2) crash/resume test: a subprocess continues the pilot and is SIGKILLed mid-flight
     cmd = [str(Path(sys.executable).parent / "allocation"), "pilot", "--config", config_path, "--run-dir",
            str(paths.run_dir), "--allow-paid", "--max-usd", str(pilot_cap), "--phase", "collect"]
+    if rehearsal():
+        cmd.append("--rehearsal")
     report["kill_test"] = run_subprocess_kill_test(cmd, paths, kill_after_parsed=40)
     # 3) resume to completion under the full pilot ceiling
     snap = provider_snapshot(paths, "pilot_resume")
     ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
-    report["resume_summary"] = str(await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True,
+    report["resume_summary"] = str(await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid,
                                                   max_usd=pilot_cap, ceiling=ceiling, api_key=api_key))
     report["collected_at"] = utcnow()
     (paths.state_dir / "pilot_collection.json").write_text(json.dumps(report, indent=1, sort_keys=True))
@@ -789,9 +822,15 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
 def cmd_pilot(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation pilot")
     common_args(parser)
-    parser.add_argument("--phase", choices=["all", "collect"], default="all")
+    parser.add_argument("--phase", choices=["all", "collect", "finish"], default="all")
+    parser.add_argument("--rehearsal", action="store_true",
+                        help="run the whole pilot flow on the fake transport in a scratch run dir; sends nothing")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
+    if args.rehearsal:
+        if RunPaths.for_run(args.run_dir).run_dir.resolve() == RunPaths.for_run(None).run_dir.resolve():
+            raise RunRefused("--rehearsal must use a scratch --run-dir, never the study run dir")
+        os.environ[REHEARSAL_ENV] = "1"
     paths, max_usd = preflight(cfg, args)
     paths.ensure()
     return asyncio.run(run_pilot(cfg, paths, max_usd, args.config, args.phase))
