@@ -6,6 +6,7 @@ import ast
 import json
 import subprocess
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -32,7 +33,7 @@ def test_sandbox_transport_and_comparison_code_match_the_certified_wrapper():
     origin = subprocess.run(["git", "-C", str(mp.source_root()), "show",
                              f"{ORIGIN_COMMIT}:learnagents/data/evalplus_scorer.py"],
                             capture_output=True, text=True, check=True).stdout
-    ours = open(evalplus_scorer.__file__).read()
+    ours = Path(evalplus_scorer.__file__).read_text()
     assert _definitions(ours) == _definitions(origin)
     assert set(_definitions(ours)) == set(UNCHANGED)
 

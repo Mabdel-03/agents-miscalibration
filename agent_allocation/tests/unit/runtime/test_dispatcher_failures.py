@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import replace
 from decimal import Decimal
 
+
 import pytest
 
 import agent_allocation.runtime.scheduler as scheduler_mod
@@ -507,3 +508,152 @@ async def test_urgent_sent_does_not_wait_out_the_group_commit_window(tmp_path):
     await ledger.mark_sent("a:1")
     sent_latency = time.monotonic() - started
     assert reserve_latency >= 0.35 and sent_latency < 0.2
+
+
+async def test_client_identity_mismatch_opens_circuit_and_releases_its_lease_at_exit(tmp_path):
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    class WrongAttemptClient(FakeClient):
+        async def generate(self, spec, messages, *, attempt_id, lock, sampling):
+            outcome = await super().generate(spec, messages, attempt_id=attempt_id, lock=lock, sampling=sampling)
+            return replace(outcome, result=replace(outcome.result, attempt_id=f"{spec.node_id}:99"))
+
+    summary = await env.dispatcher(WrongAttemptClient()).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("client_identity_mismatch")
+    assert _kinds(env)[f"{root.node_id}:1"] is LedgerEventKind.CHARGE_MAX          # unknown money charged
+    assert env.store.node(root.node_id).state == "pending"                           # lease released at exit
+    again = FakeClient()
+    fixed = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert fixed.stop_reason == "completed" and [a for _, a in again.calls] == [f"{root.node_id}:2"]
+
+
+async def test_restart_without_recover_still_finishes_a_persisted_response(tmp_path, monkeypatch):
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=2)
+    root, child = graph.nodes
+    crashed = asyncio.Event()
+
+    def crash_after_raw(paths, attempt_id, outcome):
+        out = real_write_raw(paths, attempt_id, outcome)
+        crashed.set()
+        raise Crash()
+
+    monkeypatch.setattr(scheduler_mod, "write_raw_response", crash_after_raw)
+    # a dead process leaves its lease and claim behind: emulate by skipping the exit path entirely
+    monkeypatch.setattr(Dispatcher, "_release_own_leases", lambda self: asyncio.sleep(0))
+    first = env.dispatcher(FakeClient())
+    first_owner = first.owner
+    await _crash_run(env, FakeClient(), plan_of([graph]), monkeypatch, crashed)
+    row = env.store.node(root.node_id)
+    assert row.state in ("leased", "sent") and row.lease_owner != first_owner
+    dead = "|".join([row.lease_owner.split("|")[0], "999999999", "0", "dead"])     # same host, pid gone
+    env.store._conn.execute("UPDATE nodes SET lease_owner=? WHERE node_id=?", (dead, root.node_id))
+    env.reopen(recover=False)                                        # the lead forgot StateStore.recover
+    second = FakeClient()
+    summary = await env.dispatcher(second).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed"
+    assert second.sent_nodes() == [child.node_id]                    # root finished from its raw artifact
+    assert summary.settled_usd == 2 * COST and summary.unresolved_usd == 0
+
+
+async def test_plan_error_or_refusal_leaves_no_run_cap_on_the_ledger(tmp_path):
+    from agent_allocation.runtime.scheduler import PlanError
+
+    env = Env.create(tmp_path)
+    env.ledger.set_active_ceiling(D("50"))
+    graph = make_graph("x")
+    broken = replace(graph, nodes=graph.nodes[1:])
+    with pytest.raises(PlanError):
+        await env.dispatcher(FakeClient()).run(plan_of([broken]), allow_paid=False, max_usd=D("1"))
+    assert env.ledger.snapshot().ceiling == D("50")
+
+
+async def test_cancelled_run_stops_its_attempts_before_releasing_leases(tmp_path):
+    env = Env.create(tmp_path, concurrency_start=2)
+    graph = make_graph("cancel", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(delay=30)
+    run = asyncio.create_task(env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5")))
+    await asyncio.sleep(0.2)
+    assert len(client.calls) == 2
+    run.cancel()
+    with suppress(asyncio.CancelledError):
+        await run
+    kinds = journal_attempts(env.paths.ledger_journal)
+    assert len(kinds) == 2 and all(k.resolution is LedgerEventKind.CHARGE_MAX for k in kinds.values())
+    assert {env.store.node(s.node_id).state for s in graph.nodes} == {"pending"}
+    assert env.ledger.snapshot().in_flight == 0 and env.ledger.snapshot().unresolved == 0
+    again = FakeClient()
+    summary = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and sorted(a[-1] for _, a in again.calls) == ["2", "2"]
+
+
+async def test_gateway_timeout_is_kept_unresolved_not_free(tmp_path, monkeypatch):
+    from agent_allocation.runtime.ledger import confirmed_cost
+
+    monkeypatch.setattr(scheduler_mod, "BACKOFF_BASE_SECONDS", 0.01)
+    env = Env.create(tmp_path, lease_stale_seconds=0.3)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    class GatewayClient(FakeClient):
+        async def generate(self, spec, messages, *, attempt_id, lock, sampling):
+            outcome = await super().generate(spec, messages, attempt_id=attempt_id, lock=lock, sampling=sampling)
+            if attempt_id.endswith(":1"):
+                result = replace(outcome.result, http_status=504,
+                                 error_detail="gateway_timeout_may_be_billed http 504: upstream timed out")
+                return replace(outcome, result=result)
+            return outcome
+
+    client = GatewayClient(lambda spec, aid, i: Behavior(status=TransportStatus.UPSTREAM_ERROR, cost=None)
+                           if i == 0 else Behavior(delay=0.5))
+    summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed"
+    gateway = journal_attempts(env.paths.ledger_journal)[f"{root.node_id}:1"]
+    assert gateway.resolution is LedgerEventKind.CHARGE_MAX and gateway.resolved_usd == gateway.reserved_usd
+    plain = env.store.attempts_for(root.node_id)[0]
+    assert plain.transport_status is TransportStatus.UPSTREAM_ERROR
+    from tests.unit.runtime.fakes import make_outcome
+    ordinary = make_outcome(root, f"{root.node_id}:7", [], Behavior(status=TransportStatus.UPSTREAM_ERROR, cost=None))
+    assert confirmed_cost(ordinary.result) == 0                                  # 502 before processing: free
+    assert confirmed_cost(replace(ordinary.result, error_detail="gateway_timeout_may_be_billed http 524")) is None
+
+
+async def test_request_contract_violation_reserves_nothing_and_opens_the_circuit(tmp_path):
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    client = FakeClient()
+    dispatcher = env.dispatcher(client)
+    dispatcher.lock = replace(dispatcher.lock, provider_tag="google-ai-studio/flex")     # a tier variant: forbidden
+    summary = await dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("request_contract_error")
+    assert client.calls == [] and journal_attempts(env.paths.ledger_journal) == {}
+
+
+async def test_contract_error_raised_by_generate_after_sent_settles_zero_never_releases(tmp_path):
+    from agent_allocation.api.request import RequestContractError
+
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    class RefusingClient(FakeClient):
+        async def generate(self, spec, messages, *, attempt_id, lock, sampling):
+            self.calls.append((spec.node_id, attempt_id))
+            raise RequestContractError("sampling knob outside the contract")
+
+    summary = await env.dispatcher(RefusingClient()).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("request_contract_error")
+    attempt = journal_attempts(env.paths.ledger_journal)[f"{root.node_id}:1"]
+    assert attempt.sent and attempt.resolution is LedgerEventKind.SETTLE and attempt.resolved_usd == 0
+    assert env.store.sends_by_node() == {} and env.store.node(root.node_id).state == "pending"
+
+
+async def test_circuit_opens_at_classification_before_more_requests_leave(tmp_path):
+    env = Env.create(tmp_path, concurrency_start=1, max_calls_per_item_in_flight=8)
+    graph = make_graph("cb", bank=6, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(lambda spec, aid, i: Behavior(status=TransportStatus.CACHE_HIT) if i == 0 else Behavior())
+    summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("cache_hit")
+    assert len(client.calls) == 1                                  # the prefetched attempts never left

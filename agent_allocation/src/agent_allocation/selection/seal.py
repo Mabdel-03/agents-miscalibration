@@ -7,22 +7,24 @@ bytes and ``previous_seal_sha256`` is the ``sha256`` recorded by batch ``N-1`` (
 are written atomically (tmp + fsync + rename), the batch first.
 
 ``seal_selections(paths, partition, results)`` writes the *next* batch with only the results whose checkpoints are
-not sealed yet, and returns that batch's ``sha256``; when every result is already sealed it writes nothing and
-returns the latest seal's ``sha256`` (idempotent resume). A sealed batch is never rewritten. For a checkpoint that
-is already sealed:
+not sealed yet, and returns that batch's ``sha256``; when nothing new is sealable it writes nothing and returns the
+latest seal's ``sha256`` (idempotent resume). A sealed batch is never rewritten and a checkpoint is sealed at most
+once across all batches. In detail:
 
-* the same selection (all fields but ``cpu_seconds``) is skipped;
-* a sealed ``PAUSED_CHECK_ERROR`` row may be *resumed*: a non-paused selection over the same pool (equal
-  ``pool_hash``, selector name and version) goes into the next batch and supersedes the pause -- a pause is the
-  absence of a selection, repaired by fixing the public checker;
-* a different pool (``pool_hash``) raises ``SealError``: the candidates changed after sealing;
-* a different selection over the same pool is not re-sealed (the sealed row stays authoritative) and emits a
-  ``SealDriftWarning`` -- e.g. an equivalence timeout that resolved differently on a re-run.
+* ``PAUSED_CHECK_ERROR`` rows are never sealed (``SealPendingWarning``): a pause is the absence of a selection, and
+  the resumed selection after the public checker is repaired must still be sealable. Until then the checkpoint has
+  no sealed row, which every reader reports as a blocker. Results that are all paused, with nothing sealed yet,
+  raise ``SealError``.
+* an already sealed checkpoint with the same selection (all fields but ``cpu_seconds``) is skipped;
+* an already sealed checkpoint with a different pool (``pool_hash``) raises ``SealError``: the candidates changed
+  after sealing;
+* an already sealed checkpoint with a different selection over the same pool is not re-sealed (the sealed row stays
+  authoritative) and emits a ``SealDriftWarning`` -- e.g. an equivalence timeout that resolved differently.
 
 A batch file without its seal (a crash between the two renames) was never sealed and is replaced by the next call.
 ``load_sealed_selections`` is the only way to obtain a ``SealedSelections``: it verifies every batch digest, count,
-chain link and the no-duplicate rule, and returns the effective row per policy (a resumed selection supersedes its
-pause). ``metrics`` joins grades only through a verified ``SealedSelections``.
+chain link and contiguity, refuses a checkpoint sealed twice, and returns the sealed row per policy. ``metrics``
+joins grades only through a verified ``SealedSelections``.
 
 Config keys consumed: none.
 """
@@ -43,8 +45,8 @@ from agent_allocation.contracts import SelectionResult, SelectionStatus, canonic
 from agent_allocation.paths import RunPaths
 
 __all__ = [
-    "SealDriftWarning", "SealError", "SealInfo", "SealedSelections", "load_sealed_selections", "read_seals",
-    "seal_selections",
+    "SealDriftWarning", "SealError", "SealInfo", "SealPendingWarning", "SealedSelections", "load_sealed_selections",
+    "read_seals", "seal_selections",
 ]
 
 _VERIFIED = object()
@@ -58,6 +60,10 @@ class SealError(RuntimeError):
 
 class SealDriftWarning(UserWarning):
     """A re-run produced a different selection for an already sealed checkpoint; the sealed row stays."""
+
+
+class SealPendingWarning(UserWarning):
+    """Paused selections were left unsealed: their checkpoints stay blockers until the public checker is repaired."""
 
 
 @dataclass(frozen=True)
@@ -111,12 +117,6 @@ def _line(result: SelectionResult) -> bytes:
 
 def _semantic(result: SelectionResult) -> dict[str, object]:
     return {f.name: getattr(result, f.name) for f in fields(result) if f.name != "cpu_seconds"}
-
-
-def _resumes_pause(old: SelectionResult, new: SelectionResult) -> bool:
-    return (old.status is SelectionStatus.PAUSED_CHECK_ERROR and new.status is not SelectionStatus.PAUSED_CHECK_ERROR
-            and old.pool_hash == new.pool_hash and old.selector_name == new.selector_name
-            and old.selector_version == new.selector_version)
 
 
 def _check_partition(partition: str) -> None:
@@ -204,8 +204,7 @@ def _effective(partition: str, chain: Sequence[tuple[SealInfo, list[SelectionRes
             if not row.policy_id.startswith(f"{partition}/") or row.policy_id in seen:
                 raise SealError(f"{partition} batch {info.batch}: foreign or duplicate policy {row.policy_id}")
             seen.add(row.policy_id)
-            earlier = effective.get(row.policy_id)
-            if earlier is not None and not _resumes_pause(earlier, row):
+            if row.policy_id in effective:
                 raise SealError(f"{partition} batch {info.batch}: policy {row.policy_id} was already sealed")
             effective[row.policy_id] = row
     return effective
@@ -225,16 +224,25 @@ def seal_selections(paths: RunPaths, partition: str, results: Sequence[Selection
     chain = _verified_chain(paths, partition)
     sealed = _effective(partition, chain)
     pending: dict[str, SelectionResult] = {}
+    paused: list[str] = []
     for policy, result in new.items():
         old = sealed.get(policy)
-        if old is None or _resumes_pause(old, result):
+        if old is not None:
+            if old.pool_hash != result.pool_hash:
+                raise SealError(f"{policy}: pool changed after sealing ({old.pool_hash} -> {result.pool_hash})")
+            if _semantic(old) != _semantic(result):
+                warnings.warn(f"{policy}: re-run selection differs from the sealed row; the sealed row stays",
+                              SealDriftWarning, stacklevel=2)
+        elif result.status is SelectionStatus.PAUSED_CHECK_ERROR:
+            paused.append(policy)
+        else:
             pending[policy] = result
-        elif old.pool_hash != result.pool_hash:
-            raise SealError(f"{policy}: pool changed after sealing ({old.pool_hash} -> {result.pool_hash})")
-        elif _semantic(old) != _semantic(result):
-            warnings.warn(f"{policy}: re-run selection differs from the sealed row; the sealed row stays",
-                          SealDriftWarning, stacklevel=2)
+    if paused:
+        warnings.warn(f"{len(paused)} paused selection(s) left unsealed (blockers), e.g. {paused[0]}",
+                      SealPendingWarning, stacklevel=2)
     if not pending:
+        if not chain:
+            raise SealError(f"nothing sealable for {partition!r}: every selector row is paused (a blocker)")
         return chain[-1][0].sha256
     batch = len(chain)
     body = b"".join(_line(pending[policy]) for policy in sorted(pending))

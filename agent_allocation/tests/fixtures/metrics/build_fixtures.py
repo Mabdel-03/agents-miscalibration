@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import warnings
 from hashlib import sha256
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from agent_allocation.metrics.tables import METRICS_VERSION, TABLE_SCHEMAS, buil
 from agent_allocation.metrics.transitions import TRANSITION_KINDS
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.readout import SELECTOR_VERSION
-from agent_allocation.selection.seal import load_sealed_selections, seal_selections
+from agent_allocation.selection.seal import SealPendingWarning, load_sealed_selections, seal_selections
 from tests.fixtures.metrics.synthetic_panel import (
     SEED, MiniGrid, build_panel, fixture_math_equivalent, select_panel, standard_items,
 )
@@ -37,7 +38,9 @@ def build(out_dir: Path) -> dict[str, str]:
     panel = build_panel(standard_items(), MiniGrid())
     with tempfile.TemporaryDirectory() as tmp:
         paths = RunPaths.for_run(Path(tmp) / "run", locks_dir=Path(tmp) / "locks", local_state_dir=Path(tmp) / "local")
-        seal_selections(paths, panel.partition, select_panel(panel, math_equivalent=fixture_math_equivalent))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SealPendingWarning)   # paused code selections stay unsealed by design
+            seal_selections(paths, panel.partition, select_panel(panel, math_equivalent=fixture_math_equivalent))
         sealed = load_sealed_selections(paths, panel.partition)
         selections = paths.selections(panel.partition, 0).read_bytes()
     tables = build_partition_tables(sealed, panel.records, panel.grades)
@@ -45,7 +48,8 @@ def build(out_dir: Path) -> dict[str, str]:
     (out_dir / "selections.jsonl").write_bytes(selections)
     digests["selections.jsonl"] = sha256(selections).hexdigest()
     schema = {
-        "tables": {name: [{"name": col, "type": typ} for col, typ in columns] for name, columns in TABLE_SCHEMAS.items()},
+        "tables": {name: [{"name": col, "type": typ} for col, typ in columns]
+                   for name, columns in TABLE_SCHEMAS.items()},
         "summary_checkpoints": list(SUMMARY_COLUMNS),
         "vocabularies": {
             "candidate_state": [s.value for s in CandidateState],

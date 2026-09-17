@@ -1,6 +1,7 @@
 """metrics/tables.py: the sealed grade join, bounds, invariants, transitions and fixed populations."""
 from __future__ import annotations
 
+import warnings
 from dataclasses import replace
 from fractions import Fraction
 
@@ -12,9 +13,9 @@ from agent_allocation.metrics.outcomes import CandidateState
 from agent_allocation.metrics.passk import pass_at_k
 from agent_allocation.metrics.transitions import check_identity, kind_counts
 from agent_allocation.paths import RunPaths
-from agent_allocation.selection.seal import SealError, load_sealed_selections, seal_selections
+from agent_allocation.selection.seal import SealError, SealPendingWarning, load_sealed_selections, seal_selections
 from tests.fixtures.metrics.synthetic_panel import (
-    MISSING_FINAL, ItemSpec, MiniGrid, build_panel, fixture_math_equivalent, select_panel, standard_items,
+    MISSING_FINAL, MiniGrid, build_panel, fixture_math_equivalent, select_panel, standard_items,
 )
 
 
@@ -24,7 +25,9 @@ def paths(tmp_path):
 
 
 def _tables(paths, panel, *, strict=True, math_equivalent=fixture_math_equivalent, grades=None):
-    seal_selections(paths, panel.partition, select_panel(panel, math_equivalent=math_equivalent))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SealPendingWarning)       # the code item's paused sample/5, sample/6
+        seal_selections(paths, panel.partition, select_panel(panel, math_equivalent=math_equivalent))
     sealed = load_sealed_selections(paths, panel.partition)
     return T.build_partition_tables(sealed, panel.records, panel.grades if grades is None else grades,
                                     strict_populations=strict)
@@ -159,10 +162,16 @@ def test_abstention_and_invalid_output_are_distinct_not_correct_states(standard)
 
 
 def test_paused_and_missing_selections_are_blockers_not_zeros(standard):
-    _, tables = standard
-    paused = _rows(tables, "mbpp_plus/fixture-5", "sample/5")
-    assert paused.delivered_state == "paused" and paused.delivered_correct is None
-    assert (paused.delivered_lo, paused.delivered_hi) == (0, 1)
+    panel, tables = standard
+    code = next(i for i in panel.records.items if i.task.item_id == "mbpp_plus/fixture-5")
+    cp = next(c for c in code.checkpoints if c.name == "sample/5" and c.view.value == "current")
+    checks = {cid: c for cid, c in panel.public_checks.items() if c.item_id == code.task.item_id}
+    from agent_allocation.selection.readout import select_checkpoint
+    assert select_checkpoint(cp, code.task, code.candidates, checks, seed=20260917).status is \
+        SelectionStatus.PAUSED_CHECK_ERROR
+    paused = _rows(tables, "mbpp_plus/fixture-5", "sample/5")      # a pause is never sealed: the row is a blocker
+    assert paused.delivered_state == "missing_selection" and paused.delivered_correct is None
+    assert (paused.delivered_lo, paused.delivered_hi) == (0, 1) and paused.selection_gap_lo == 0
     missing = _rows(tables, "bbh_logic4/fixture-4", "cp/3")
     assert missing.delivered_state == "missing_selection" and missing.pool_n_missing == 1
     summary = [s for s in T.summarize_checkpoints(tables.checkpoints) if s["name"] == "cp/3"]
@@ -246,6 +255,9 @@ def test_failure_rows_count_truncation_and_parse_failures(standard):
         (6, 2, 2, 1)
     cp = next(r for r in rows if r.generation_kind == "communicate_then_private")
     assert cp.n_nodes == 12 and cp.n_candidates == 11
+    option_roots = next(r for r in tables.failures if r.item_id == "mmlu_pro/fixture-2" and r.generation_kind == "root")
+    assert (option_roots.n_parse_valid, option_roots.n_invalid_after_valid_parse) == (6, 1)     # "K" is illegal
+    assert option_roots.n_invalid_output == 1 and option_roots.n_graded_correct + option_roots.n_graded_wrong == 5
 
 
 # ------------------------------------------------------------------------------------------ the seal and gold

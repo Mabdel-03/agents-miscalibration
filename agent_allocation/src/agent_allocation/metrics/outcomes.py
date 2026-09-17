@@ -15,9 +15,10 @@ different candidate) raise.
 
 Delivered states (``DeliveredState``) for a sealed selection: ``correct``, ``wrong``, ``invalid_output`` (the delivered
 candidate has no valid answer), ``unknown`` (its grade is unknown or it is absent), ``abstained`` (all-invalid pool),
-``paused`` (public-check infrastructure error), ``missing_selection`` (no sealed row: a blocker, never zero).
-Bounds: ``lo`` counts only known-correct, ``hi`` credits every unknown as possibly correct, so ``[lo, hi]`` brackets every
-feasible labelling on a fixed denominator.
+``paused`` (a sealed public-check pause; ``selection.seal`` never seals one, so a paused checkpoint normally reads
+as ``missing_selection``), ``missing_selection`` (no sealed row: a blocker, never zero).
+Bounds: ``lo`` counts only known-correct, ``hi`` credits every unknown as possibly correct, so ``[lo, hi]`` brackets
+every feasible labelling on a fixed denominator.
 
 Config keys consumed: none.
 """
@@ -26,7 +27,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Iterable
 
-from agent_allocation.contracts import Candidate, GradeResult, GradeStatus, ParseStatus, SelectionResult, SelectionStatus
+from agent_allocation.contracts import (
+    Candidate, GradeResult, GradeStatus, ParseStatus, SelectionResult, SelectionStatus,
+)
 
 __all__ = [
     "CandidateState", "DeliveredState", "candidate_state", "coverage_bounds", "delivered_bounds", "delivered_correct",

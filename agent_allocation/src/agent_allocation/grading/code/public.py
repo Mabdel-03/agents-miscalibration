@@ -23,7 +23,7 @@ from agent_allocation.contracts import (CheckStatus, OutputKind, ParseStatus, Pu
 from agent_allocation.grading.code.profile import GradingProfile, active_profile, environment_digest
 from agent_allocation.sandbox.evalplus_scorer import SIGXCPU_EXIT, EvaluatorOutage
 from agent_allocation.sandbox.public_runner import PUBLIC_TRANSPORT
-from agent_allocation.sandbox.sandbox import (PROCESS_EXITED, WALL_TIMEOUT, Sandbox, SandboxError,
+from agent_allocation.sandbox.sandbox import (PROCESS_EXITED, SCRATCH_LIMIT, WALL_TIMEOUT, Sandbox, SandboxError,
                                               SandboxLimits)
 
 CHECKER_VERSION = "mbpp_plus-public-assert-v1"
@@ -47,7 +47,7 @@ def _limits(profile: GradingProfile, n_cases: int) -> SandboxLimits:
     return SandboxLimits(cpu_seconds=math.ceil(total) + 1, wall_seconds=profile.public_case_wall_seconds + 2.0,
                          memory_bytes=profile.memory_bytes, output_bytes=profile.stdout_bytes,
                          file_bytes=profile.file_bytes, stack_bytes=profile.stack_bytes,
-                         max_protocol_bytes=1024 * 1024)
+                         scratch_bytes=profile.scratch_bytes, max_protocol_bytes=1024 * 1024)
 
 
 def _run_once(program: str, examples: Sequence[str], profile: GradingProfile) -> tuple[list[str], float, bool]:
@@ -77,6 +77,8 @@ def _run_once(program: str, examples: Sequence[str], profile: GradingProfile) ->
                                   phase=error.phase, returncode=error.returncode) from error
         if error.kind == WALL_TIMEOUT or (error.kind == PROCESS_EXITED and error.returncode == SIGXCPU_EXIT):
             fill = "timeout"
+        elif error.kind == SCRATCH_LIMIT:
+            fill = "error"                                   # a limit hit: a verdict, never a crash retry
         else:
             fill, crashed = "error", True
         outcomes.extend([fill] * (len(examples) - len(outcomes)))

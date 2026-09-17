@@ -6,8 +6,9 @@ round only if its *ex ante* reservation fits the remaining budget; after admissi
 charges (accepted + retried attempts). Deliver the last fully admitted checkpoint's sealed selection. If
 initialization does not fit, the item is kept and scored as an abstention (0), never dropped.
 
-Prefix-observable information only: the reservation of a step uses its rendered prompt size (from the stored
-request body) and its declared completion caps — never the step's realized length, correctness or candidates.
+Prefix-observable information only: the reservation of a step uses its rendered prompt size (the lead's
+``state/render_reports.jsonl`` ``rendered_chars``, else the stored request body) and its declared completion caps —
+never the step's realized length, correctness or candidates.
 Reservation per call (contract, agent 02 ``reservation_usd``): ``(ceil(chars/2) + 64) * input_price +
 max_completion_tokens * output_price``, times ``budget.reservation_multiplier``. When a call's request body is
 not stored, its realized ``prompt_tokens`` stand in for the rendered size (``basis=prompt_tokens``, an exact
@@ -64,10 +65,11 @@ def node_reservations(run: RunData) -> tuple[dict[str, Decimal | None], dict[str
     for part in run.jobs.values():
         for nid, spec in part.items():
             in_price, out_price = _per_token_prices(spec, locks, prices)
-            chars = _rendered_chars(run, nid)
+            logged = run.render_reports.get(nid, {}).get("rendered_chars")
+            chars = int(logged) if isinstance(logged, (int, float)) else _rendered_chars(run, nid)
             if chars is not None:
                 in_tokens = (Decimal(chars) / 2).to_integral_value(rounding=ROUND_CEILING) + 64
-                basis[nid] = "rendered_chars"
+                basis[nid] = "render_report" if isinstance(logged, (int, float)) else "rendered_chars"
             else:
                 usage = run.parsed[nid][0].usage if nid in run.parsed else None
                 if usage is None or usage.prompt_tokens is None:
@@ -259,40 +261,24 @@ def _budget_grid(trajs, reservations) -> dict[str, list[float]]:
 
 
 def _aggregate(items: pd.DataFrame) -> pd.DataFrame:
+    from agent_allocation.analysis.summary import weighted_means
+
     if items.empty:
         return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
-    for (partition, label, budget), group in items.groupby(["partition_id", "trajectory", "budget_usd"], sort=True):
-        strata = strata_order(set(group["stratum"].dropna()))
-        levels = [("macro", stratum_weights(strata))] + [
-            (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
-                                                                   key=BENCHMARKS.index)]
-        available = bool(group["replay_available"].all())
-        for level, weights in levels:
-            parts = {s: group[group["stratum"] == s] for s in weights}
-            known = all(parts[s]["y"].notna().all() for s in weights)
-            acc = math.fsum(w * float(parts[s]["y"].mean()) for s, w in weights.items()) if known else None
-            rows.append({
-                "partition_id": partition, "trajectory": label, "budget_usd": budget,
-                "level": "macro" if level == "macro" else "benchmark", "benchmark": level,
-                "n_items": int(sum(len(parts[s]) for s in weights)),
-                "label": "budgeted policy replay" if available else "descriptive (replay unavailable)",
-                "accuracy": acc,
-                "n_unknown": int(sum(parts[s]["y"].isna().sum() for s in weights)),
-                "abstention_rate": _wmean(parts, weights, lambda g: (g["status"] == "abstain_initialization_does_not_fit").mean()),
-                "binding_cap_rate": _wmean(parts, weights, lambda g: g["binding_cap"].astype(float).mean()
-                                           if "binding_cap" in g and g["binding_cap"].notna().all() else math.nan),
-                "mean_spend_usd": _wmean(parts, weights, lambda g: g["spend_usd"].mean() if "spend_usd" in g else math.nan),
-                "mean_slack_usd": _wmean(parts, weights, lambda g: g["slack_usd"].mean() if "slack_usd" in g else math.nan),
-            })
-    return pd.DataFrame(rows)
-
-
-def _wmean(parts, weights, fn) -> float | None:
-    vals = []
-    for s, w in weights.items():
-        v = fn(parts[s])
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return None
-        vals.append(w * float(v))
-    return math.fsum(vals)
+    work = items.assign(
+        accuracy=items["y"],
+        abstention_rate=(items["status"] == "abstain_initialization_does_not_fit").astype(float),
+        binding_cap_rate=pd.to_numeric(items.get("binding_cap"), errors="coerce").astype(float),
+        mean_spend_usd=pd.to_numeric(items.get("spend_usd"), errors="coerce"),
+        mean_slack_usd=pd.to_numeric(items.get("slack_usd"), errors="coerce"),
+    )
+    curves = weighted_means(work, ["partition_id", "trajectory", "budget_usd"],
+                            ["accuracy", "abstention_rate", "binding_cap_rate", "mean_spend_usd", "mean_slack_usd"])
+    available = items.groupby(["partition_id", "trajectory", "budget_usd"])["replay_available"].all()
+    curves["label"] = [("budgeted policy replay" if available.loc[(p, t, b)] else "descriptive (replay unavailable)")
+                       for p, t, b in zip(curves["partition_id"], curves["trajectory"], curves["budget_usd"])]
+    curves["accuracy"] = [a if complete else None for a, complete in zip(curves["accuracy"], curves["accuracy_complete"])]
+    curves["n_unknown"] = curves["n_accuracy_unknown"]
+    keep = ["partition_id", "trajectory", "budget_usd", "level", "benchmark", "n_items", "label", "accuracy",
+            "n_unknown", "abstention_rate", "binding_cap_rate", "mean_spend_usd", "mean_slack_usd"]
+    return curves[keep]

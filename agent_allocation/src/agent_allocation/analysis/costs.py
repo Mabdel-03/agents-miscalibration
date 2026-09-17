@@ -3,8 +3,9 @@
 Sources, in order of authority:
 
 * Agent 03's ``protocols.policy_cost.policy_cost_rows(graph, results)`` when importable: its rows are used for
-  every column it provides under the names in :data:`POLICY_COST_COLUMNS`; the local recomputation below fills
-  any column it lacks and every overlap is cross-checked (a disagreement is a reported problem, never averaged).
+  every column in :data:`EXTERNAL_COLUMN_MAP` (agent 03 name -> local name); the local recomputation fills the rest
+  (retry charges, standardized price, CPU) and every overlapping column is cross-checked (a disagreement is a
+  reported problem, never averaged).
 * The local recomputation from ``PolicyCheckpoint.required_node_ids`` + accepted ``GenerationResult.usage`` +
   job specs + the ledger journal.
 
@@ -33,10 +34,21 @@ from agent_allocation.contracts import (
 )
 
 MILLION = Decimal(1_000_000)
-POLICY_COST_COLUMNS = (
-    "policy_id", "nominal_generations", "requested_reasoning_tokens", "requested_completion_cap_tokens",
-    "prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_prompt_tokens", "success_cost_usd",
-)
+EXTERNAL_COLUMN_MAP = {                     # agent 03 policy_cost_rows column -> local column
+    "nominal_generations": "nominal_generations",
+    "requested_reasoning_tokens": "requested_reasoning_tokens",
+    "requested_max_completion_tokens": "requested_completion_cap_tokens",
+    "prompt_tokens": "prompt_tokens",
+    "completion_tokens": "completion_tokens",
+    "reasoning_tokens": "reasoning_tokens",
+    "cached_prompt_tokens": "cached_prompt_tokens",
+    "actual_cost_usd": "success_cost_usd",
+    "latency_seconds_total": "total_latency_seconds",
+    "critical_path_latency_seconds": "critical_path_latency_seconds",
+}
+EXTERNAL_EXTRA_COLUMNS = ("upstream_inference_cost_usd", "critical_path_generations", "results_missing",
+                          "transport_ok_nodes", "pool_size")
+MONEY_COLUMNS = frozenset({"success_cost_usd"})
 COST_MEASURES = {
     "total_charged_usd": "Actual API dollars per item (successful + retry charges)",
     "success_cost_usd": "Successful-generation API dollars per item",
@@ -45,6 +57,11 @@ COST_MEASURES = {
     "realized_tokens": "Realized prompt + completion tokens per item",
     "reasoning_tokens": "Realized reasoning tokens per item",
     "nominal_generations": "Nominal generations per item",
+}
+CPU_MEASURES = {
+    "public_check_cpu_seconds": "Local public-check CPU seconds per item (deployable selection work)",
+    "selection_cpu_seconds": "Selector CPU seconds per item",
+    "private_grading_cpu_seconds": "Private research grading CPU seconds per item (not a deployment cost)",
 }
 PRICE_SANITY_PER_MILLION = (Decimal("0.001"), Decimal("1000"))
 
@@ -254,31 +271,54 @@ def _merge_external(local: pd.DataFrame, external: pd.DataFrame) -> tuple[pd.Dat
     problems: list[str] = []
     if "policy_id" not in external:
         return local, ["agent 03 policy_cost_rows lack policy_id; local costs used"]
-    overlap = [c for c in POLICY_COST_COLUMNS if c in external and c != "policy_id"]
-    ext = external[["policy_id", *overlap]].drop_duplicates("policy_id").set_index("policy_id")
+    ext = external.drop_duplicates("policy_id").set_index("policy_id")
     merged = local.set_index("policy_id")
-    for col in overlap:
-        joined = merged[col].to_frame("local").join(ext[col].rename("external"), how="left")
-        for pid, row in joined.iterrows():
-            a, b = row["local"], row["external"]
-            if _missing(a) and _missing(b):
-                continue
-            if _missing(a) != _missing(b) or not _close(a, b):
-                problems.append(f"policy cost mismatch {pid} {col}: local={a} agent03={b}")
-                break
-        merged[col] = joined["external"].where(joined["external"].notna(), joined["local"])
-    return merged.reset_index(), problems
+    missing_ids = merged.index.difference(ext.index)
+    if len(missing_ids):
+        problems.append(f"agent 03 policy_cost_rows omit {len(missing_ids)} planned checkpoints (e.g. {missing_ids[0]})")
+    for ext_col, col in EXTERNAL_COLUMN_MAP.items():
+        if ext_col not in ext:
+            problems.append(f"agent 03 policy_cost_rows lack column {ext_col}; local {col} used")
+            continue
+        theirs = ext[ext_col].reindex(merged.index)
+        ours = merged[col] if col in merged else pd.Series(None, index=merged.index, dtype=object)
+        a, b = _normalized(ours, col in MONEY_COLUMNS), _normalized(theirs, col in MONEY_COLUMNS)
+        differ = (a.isna() != b.isna()) | (a.notna() & b.notna() & (a != b))
+        if col.endswith("latency_seconds"):
+            fa, fb = pd.to_numeric(ours, errors="coerce"), pd.to_numeric(theirs, errors="coerce")
+            differ = (fa.isna() != fb.isna()) | ((fa - fb).abs() > 1e-6)
+        differ &= theirs.index.isin(ext.index)
+        if bool(differ.any()):
+            first = differ[differ].index[0]
+            problems.append(f"policy cost mismatch in {int(differ.sum())} checkpoint(s) for {col} (agent 03 "
+                            f"{ext_col}); first {first}: local={ours.loc[first]} agent03={theirs.loc[first]}")
+        merged[col] = [(str(v) if col in MONEY_COLUMNS else v) if not _missing(v) else None for v in theirs] \
+            if col in MONEY_COLUMNS else theirs.where(theirs.notna(), ours)
+    for extra in EXTERNAL_EXTRA_COLUMNS:
+        if extra in ext:
+            merged[extra] = [None if _missing(v) else (str(v) if isinstance(v, Decimal) else v)
+                             for v in ext[extra].reindex(merged.index)]
+    out = merged.reset_index()
+    success = out["success_cost_usd"]
+    retry = out["retry_cost_usd"]
+    out["total_charged_usd"] = [None if _missing(a) else str(Decimal(str(a)) + Decimal(str(r)))
+                                for a, r in zip(success, retry)]
+    return out, problems
+
+
+def _normalized(series: pd.Series, money: bool) -> pd.Series:
+    if money:
+        return series.map(lambda v: None if _missing(v) else str(Decimal(str(v)).normalize()))
+    return pd.to_numeric(series, errors="coerce")
 
 
 def _missing(v: Any) -> bool:
-    return v is None or (isinstance(v, float) and math.isnan(v))
-
-
-def _close(a: Any, b: Any) -> bool:
+    if v is None:
+        return True
     try:
-        return abs(Decimal(str(a)) - Decimal(str(b))) <= Decimal("1e-12")
-    except Exception:
-        return str(a) == str(b)
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
 
 
 def _critical_path_latency(run: RunData, specs: Mapping[str, GenerationSpec]) -> dict[str, float | None]:
@@ -367,45 +407,25 @@ def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, pric
 
 def cost_summary(costs: pd.DataFrame, accuracy: pd.DataFrame) -> pd.DataFrame:
     """Mean per-item cost measures per (partition, checkpoint) at benchmark and macro level (equal weights),
-    joined with delivered accuracy. Cost means use items whose cost is known; ``n_cost_unknown`` counts the rest."""
+    joined with delivered accuracy. Cost means use items whose cost is known; ``n_<measure>_unknown`` counts the rest."""
+    from agent_allocation.analysis.summary import weighted_means
+
     if costs.empty:
         return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
     current = costs[costs["view"] == "current"]
-    numeric = {m: pd.to_numeric(current[m], errors="coerce") for m in COST_MEASURES}
-    frame = current.assign(**{m: v.astype(float) for m, v in numeric.items()})
-    for (partition, name), group in frame.groupby(["partition_id", "name"], sort=False):
-        strata = strata_order(set(group["stratum"].dropna()))
-        stratum_means = {s: group[group["stratum"] == s] for s in strata}
-        levels = [("macro", stratum_weights(strata))] + [
-            (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
-                                                                   key=BENCHMARKS.index)]
-        for level, weights in levels:
-            row: dict[str, Any] = {"partition_id": partition, "name": name,
-                                   "level": "macro" if level == "macro" else "benchmark", "benchmark": level}
-            for measure in COST_MEASURES:
-                vals = []
-                unknown = 0
-                for s, w in weights.items():
-                    col = stratum_means[s][measure]
-                    unknown += int(col.isna().sum())
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", category=RuntimeWarning)
-                        vals.append((w, float(np.nanmean(col)) if col.notna().any() else math.nan))
-                row[f"mean_{measure}"] = (None if any(math.isnan(v) for _, v in vals)
-                                          else math.fsum(w * v for w, v in vals))
-                row[f"n_{measure}_unknown"] = unknown
-            rows.append(row)
-    summary = pd.DataFrame(rows)
+    measures = list(COST_MEASURES) + list(CPU_MEASURES)
+    summary = weighted_means(current, ["partition_id", "name"], measures)
+    summary = summary.rename(columns={m: f"mean_{m}" for m in measures})
+    summary = summary.drop(columns=[c for c in summary.columns if c.endswith("_complete")])
     acc = accuracy[(accuracy["view"] == "current") & (accuracy["level"] != "stratum")][
         ["partition_id", "name", "benchmark", "acc", "acc_lower", "acc_upper"]]
     summary = summary.merge(acc, on=["partition_id", "name", "benchmark"], how="left")
     summary["family"] = summary["name"].map(lambda n: str(n).split("/", 1)[0])
-    summary = summary.iloc[sorted(range(len(summary)), key=lambda i: (
-        str(summary.iloc[i]["partition_id"]), name_sort_key(summary.iloc[i]["name"]),
-        (BENCHMARKS + ("macro",)).index(summary.iloc[i]["benchmark"])
-        if summary.iloc[i]["benchmark"] in BENCHMARKS + ("macro",) else 99))].reset_index(drop=True)
-    return summary
+    level_rank = {b: i for i, b in enumerate(("macro",) + BENCHMARKS)}
+    order = sorted(range(len(summary)), key=lambda i: (str(summary.at[i, "partition_id"]),
+                                                       name_sort_key(summary.at[i, "name"]),
+                                                       level_rank.get(summary.at[i, "benchmark"], 99)))
+    return summary.iloc[order].reset_index(drop=True)
 
 
 def descriptive_frontier(summary: pd.DataFrame, measure: str) -> pd.DataFrame:

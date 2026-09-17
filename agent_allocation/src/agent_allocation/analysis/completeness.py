@@ -28,6 +28,8 @@ def completeness_matrix(outcomes: pd.DataFrame) -> pd.DataFrame:
             "planned": int(len(group)),
             "started": started,
             "generated": generated,
+            "with_no_output_ancestor": int((group["n_required_no_output"] > 0).sum())
+            if "n_required_no_output" in group else 0,
             "selected_sealed": int((group["selection_status"].notna() & group["sealed"]).sum()),
             "graded_known": int(sum(states.get(s, 0) for s in KNOWN_STATES)),
             "correct": int(states.get("correct", 0)),
@@ -52,10 +54,13 @@ def node_completeness(candidates: pd.DataFrame) -> pd.DataFrame:
             **dict(zip(keys, group_keys)),
             "planned": int(len(group)),
             "terminal": int(group["terminal"].sum()),
+            "terminal_without_output": int(group["terminal_without_output"].notna().sum())
+            if "terminal_without_output" in group else 0,
             "transport_not_ok": int((group["terminal"] & (group["transport_status"] != "ok")).sum()),
             "graded_correct": int(gstates.get("correct", 0)),
             "graded_wrong": int(gstates.get("wrong", 0)),
             "invalid_output": int(gstates.get("op_invalid_output", 0)),
+            "no_output": int(gstates.get("op_no_output", 0)),
             "evaluator_error": int(gstates.get("unknown_evaluator_error", 0) + gstates.get("graded_unknown", 0)),
             "pending_grade": int(gstates.get("pending_grade", 0)),
             "not_generated": int(gstates.get("not_generated", 0)),

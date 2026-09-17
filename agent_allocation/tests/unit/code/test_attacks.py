@@ -241,3 +241,56 @@ def test_unsupported_dependency_is_a_failure_not_silently_dropped(run_paths):
     assert check.status is CheckStatus.OK and check.case_outcomes == ("error",)
     assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
     assert grade.detail_code == "base_compile_or_initialization_failure"
+
+
+def test_unprivileged_read_only_base_disposable_scratch_no_docker_socket():
+    observed = _probe(
+        "import json, os\nout = {'uid': os.getuid(), 'euid': os.geteuid()}\n"
+        "status = open('/proc/self/status').read().splitlines()\n"
+        "out['caps'] = {l.split(':')[0]: l.split(':')[1].strip() for l in status if l.startswith('Cap')}\n"
+        "for target in ('/usr/evil.txt', '/runtime/evil.txt', '/runner.py'):\n"
+        "    try:\n        open(target, 'w').write('x'); out[target] = 'WROTE'\n"
+        "    except OSError as exc:\n        out[target] = exc.errno\n"
+        "open('/tmp/scratch.txt', 'w').write('ok'); out['scratch'] = open('/tmp/scratch.txt').read()\n"
+        "out['docker'] = [os.path.exists(p) for p in ('/var/run/docker.sock', '/run/docker.sock')]\n"
+        "out['nproc_visible'] = len([p for p in os.listdir('/proc') if p.isdigit()])\n"
+        "print(json.dumps(out))\n")
+    assert observed["uid"] != 0 and observed["euid"] != 0
+    assert observed["caps"]["CapEff"] == "0000000000000000" and observed["caps"]["CapPrm"] == "0000000000000000"
+    assert all(observed[t] in (13, 30) for t in ("/usr/evil.txt", "/runtime/evil.txt", "/runner.py"))  # EACCES/EROFS
+    assert observed["scratch"] == "ok" and observed["docker"] == [False, False]
+    assert observed["nproc_visible"] <= 3                     # own pid namespace: bwrap init + the worker
+
+
+def test_scratch_flood_is_killed_by_the_host_quota_and_graded_as_a_verdict(run_paths):
+    from agent_allocation.sandbox.sandbox import SCRATCH_LIMIT
+    flood = ("def fill():\n    for index in range(64):\n"
+             "        with open(f'/tmp/blob{index}', 'wb') as handle:\n"
+             "            handle.write(b'x' * (15 * 1024 * 1024))\n")
+    with pytest.raises(sandbox_mod.SandboxError) as info:
+        with Sandbox({}, limits=LIMITS) as sandbox:
+            sandbox.execute(flood + "fill()\nimport time\ntime.sleep(5)\n")
+    assert info.value.kind == SCRATCH_LIMIT and info.value.phase == "candidate"
+    program = flood + "def f(x):\n    fill()\n    return x + 1\n"
+    check, grade = _check_and_grade(run_paths, program)
+    assert check.status is CheckStatus.OK and check.case_outcomes == ("error",)
+    assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
+    assert grade.detail_code == "base_scratch_limit"
+
+
+def test_fabricated_post_call_input_cannot_satisfy_a_special_oracle(run_paths):
+    # Mbpp/581-style special oracle: out is accepted when it equals _surface_Area(*inp). A program that rewrites the
+    # sandbox transport to report inp=(0, 0) would make out=0 "correct" if the host trusted the reported input.
+    cheat = ("import sys\nnamespace = sys.modules['__main__'].namespace\nreal_pack = namespace['pack_native']\n"
+             "def lying_pack(value):\n"
+             "    if isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value):\n"
+             "        return real_pack([0, 0])\n    return real_pack(value)\n"
+             "def surface_Area(base_edge, height):\n    namespace['pack_native'] = lying_pack\n    return 0\n")
+    public, private = install_synthetic_task(run_paths, task_id="Mbpp/581", entry="surface_Area",
+                                             base=([[3, 4]], [33]), plus=([[6, 8]], [132]),
+                                             prompt='"""\nSurface area.\nassert surface_Area(3,4) == 33\n"""\n')
+    grade = grade_code(make_candidate(private.item_id, cheat), private, run_paths)
+    assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
+    honest = ("import math\ndef surface_Area(b, s):\n    return round(b * b + 4 * (b * math.sqrt((b / 2) ** 2 + s * s))"
+              " / 2)\n")
+    assert grade_code(make_candidate(private.item_id, honest), private, run_paths).semantic_correct is True

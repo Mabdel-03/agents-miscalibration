@@ -19,6 +19,7 @@ from agent_allocation.contracts import (
     BENCHMARKS, Candidate, GenerationResult, GenerationSpec, GradeResult, PolicyCheckpoint, PublicTask, canonical_json,
     load_record,
 )
+from agent_allocation.extraction.final import empty_candidate
 from agent_allocation.metrics.tables import (
     ItemRecords, PartitionRecords, PartitionTables, build_partition_tables, summarize_checkpoints,
 )
@@ -87,7 +88,8 @@ def load_partition_records(paths: RunPaths, partition: str) -> PartitionRecords:
     for item_id in sorted(by_item):
         if item_id not in tasks:
             raise ValueError(f"item {item_id} has checkpoints but no public task")
-        ids = sorted({c for cp in by_item[item_id] for c in (*cp.candidate_ids, *cp.required_node_ids)})
+        ids = sorted({c for cp in by_item[item_id] for c in (*cp.candidate_ids, *cp.required_node_ids)}
+                     | {n for n, spec in specs.items() if spec.item_id == item_id})
         candidates: dict[str, Candidate] = {}
         results: dict[str, GenerationResult] = {}
         for node_id in ids:
@@ -95,11 +97,17 @@ def load_partition_records(paths: RunPaths, partition: str) -> PartitionRecords:
             if not path.exists():
                 continue
             data = json.loads(path.read_text(encoding="utf-8"))
-            result = load_record(GenerationResult, data["result"])
-            candidate = load_record(Candidate, data["candidate"])
-            if result.node_id != node_id or candidate.candidate_id != node_id:
-                raise ValueError(f"{path}: parsed record does not belong to node {node_id}")
-            candidates[node_id], results[node_id] = candidate, result
+            if data.get("result") is not None:
+                result = load_record(GenerationResult, data["result"])
+                if result.node_id != node_id:
+                    raise ValueError(f"{path}: parsed result does not belong to node {node_id}")
+                results[node_id] = result
+            # candidate null: terminal without a response (v2 R03-1) -> EMPTY, exactly as selection reads it
+            candidate = empty_candidate(node_id, tasks[item_id]) if data.get("candidate") is None \
+                else load_record(Candidate, data["candidate"])
+            if candidate.candidate_id != node_id:
+                raise ValueError(f"{path}: parsed candidate does not belong to node {node_id}")
+            candidates[node_id] = candidate
         items.append(ItemRecords(task=tasks[item_id], checkpoints=tuple(by_item[item_id]), candidates=candidates,
                                  results=results, specs={n: specs[n] for n in ids if n in specs}))
     return PartitionRecords(partition=partition, items=tuple(items))
@@ -121,6 +129,7 @@ def load_partition_tables(paths: RunPaths, partition: str, *, strict_populations
     sealed = load_sealed_selections(paths, partition)          # refuses an unsealed partition before any grade read
     records = load_partition_records(paths, partition)
     ids = {c for item in records.items for cp in item.checkpoints for c in (*cp.candidate_ids, *cp.required_node_ids)}
+    ids |= {n for item in records.items for n in item.specs}
     return build_partition_tables(sealed, records, load_grades(paths, ids), strict_populations=strict_populations)
 
 
@@ -139,7 +148,7 @@ def _write(path: Path, body: bytes) -> str:
 
 
 def write_tables(tables: PartitionTables, directory: Path) -> dict[str, str]:
-    """Write ``{table}.jsonl`` for every table in ``TABLE_FILES`` into ``directory``; returns ``{file name: sha256}``."""
+    """Write ``{table}.jsonl`` for each table in ``TABLE_FILES`` into ``directory``; returns ``{file: sha256}``."""
     return {f"{name}.jsonl": _write(Path(directory) / f"{name}.jsonl", body)
             for name, body in _payload(tables).items()}
 

@@ -696,6 +696,8 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
 
     if phase == "finish":           # re-evaluate Gate 2 from stored pilot artifacts without dispatching
         return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+    if phase == "amend":            # the single pre-authorized headroom amendment, then re-collect and re-evaluate
+        return await amend_and_rerun_pilot(cfg, paths, max_usd, config_path)
     if phase == "collect":          # subprocess entry used by the kill/resume test
         snap = provider_snapshot(paths, "pilot_collect")
         ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
@@ -805,8 +807,16 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
     grade_rc = run_grader(paths)
     selection = select_and_seal(cfg, paths, "pilot", graphs, tasks)
     rows = load_call_rows(paths, "pilot", {})
-    metadata = await fetch_metadata(paths, [r.result.generation_id for r in rows], attempts=6)
-    rows = load_call_rows(paths, "pilot", metadata)
+    known: dict[str, Any] = {}
+    if paths.generation_metadata.exists():
+        for line in paths.generation_metadata.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                known[row["generation_id"]] = row["data"]
+    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    if missing:
+        known.update(await fetch_metadata(paths, missing, attempts=6))
+    rows = load_call_rows(paths, "pilot", known)
     used = [json.loads(l).get("id") for l in paths.amendments.read_text().splitlines() if l.strip()] \
         if paths.amendments.exists() else []
     inputs = pilot_gate_inputs(cfg, paths, graphs, rows, used)
@@ -820,10 +830,52 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
     return {"advance": 0, "amend_headroom_once": 4}.get(gate.decision, 3)
 
 
+async def amend_and_rerun_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str) -> int:
+    from agent_allocation.config import CODE_BENCHMARKS
+    from agent_allocation.contracts import GateResult
+    from agent_allocation.gates import HEADROOM_AMENDMENT, family_of
+    gate2 = load_record(GateResult, json.loads(paths.gate_result("gate2", "pilot").read_text()))
+    if gate2.decision != "amend_headroom_once":
+        raise RunRefused(f"Gate 2 decision is {gate2.decision!r}, not amend_headroom_once")
+    failing = {c.name.rsplit("_truncated_without_final", 1)[0] for c in gate2.criteria
+               if not c.passed and c.name.endswith("_truncated_without_final")}
+    families = {family_of(b) for b in failing}
+    used = set()
+    if paths.amendments.exists():
+        used = {json.loads(l).get("id") for l in paths.amendments.read_text().splitlines() if l.strip()}
+    with open(paths.amendments, "a") as handle:
+        for family in sorted(families):
+            amendment_id = f"headroom_{family}"
+            if amendment_id in used:
+                raise RunRefused(f"{amendment_id} was already used; a second amendment needs the owner")
+            before, after = HEADROOM_AMENDMENT[family]
+            scope = sorted(b for b in BENCHMARKS if (b in CODE_BENCHMARKS) == (family == "code"))
+            handle.write(json.dumps({
+                "id": amendment_id, "recorded_at": utcnow(), "rule": "headroom_once", "scope": scope,
+                "before": before, "after": after, "trigger_benchmarks": sorted(failing),
+                "reason": "Gate 2 truncation-without-final above 3%; pre-authorized single headroom doubling "
+                          "(approved plan, frozen before the canary)",
+                "gate2_evaluated_at": gate2.evaluated_at}, sort_keys=True) + "\n")
+    record_decision(paths, phase="pilot_amend", families=sorted(families), trigger=sorted(failing))
+    tasks = load_tasks(paths)
+    amendments = load_amendments(paths)
+    locks = read_endpoint_locks(paths)
+    waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
+    write_jobs(paths, "pilot", graphs)
+    pilot_cap = min(max_usd, PILOT_CEILING_USD)
+    snap = provider_snapshot(paths, "pilot_amend")
+    ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
+    summary = await dispatch(cfg, paths, waves, lock=locks[cfg["primary_model"]], tasks=tasks,
+                             allow_paid=not rehearsal(), max_usd=pilot_cap, ceiling=ceiling,
+                             api_key=None if rehearsal() else __import__("agent_allocation.apikey", fromlist=["x"]).load_api_key())
+    record_decision(paths, phase="pilot_amend_collect", summary=str(summary))
+    return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
 def cmd_pilot(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation pilot")
     common_args(parser)
-    parser.add_argument("--phase", choices=["all", "collect", "finish"], default="all")
+    parser.add_argument("--phase", choices=["all", "collect", "finish", "amend"], default="all")
     parser.add_argument("--rehearsal", action="store_true",
                         help="run the whole pilot flow on the fake transport in a scratch run dir; sends nothing")
     args = parser.parse_args(argv)

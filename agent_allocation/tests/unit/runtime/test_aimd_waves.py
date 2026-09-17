@@ -109,15 +109,28 @@ async def test_per_item_in_flight_cap(tmp_path):
     assert summary.stop_reason == "completed" and client.peak == 2 and summary.peak_in_flight == 2
 
 
+def _big_render(inner, chars: int):
+    def render(spec, parents):
+        messages = inner(spec, parents)
+        messages[-1]["content"] += "x" * chars
+        return messages
+    return render
+
+
 async def test_tiny_budget_never_exceeded_and_pilot_allowance_caps_pilot_plans(tmp_path):
-    env = Env.create(tmp_path, concurrency_start=16)
+    env = Env.create(tmp_path, concurrency_start=32)
+    from tests.unit.runtime.fakes import Behavior
+
     graphs = [make_graph(f"b{i}", bank=6, chain=1, team_slots=1, peer_sizes=(), deep=()) for i in range(4)]
-    client = FakeClient(delay=0.01)
-    # each root reserves ~0.00092 USD: a 0.004 ceiling admits at most four concurrently
-    summary = await env.dispatcher(client).run(plan_of(graphs), allow_paid=False, max_usd=Decimal("0.004"))
+    client = FakeClient(lambda spec, aid, i: Behavior(delay=0.01, cost=Decimal("0.0019")))
+    dispatcher = env.dispatcher(client)
+    # 20k-char prompts reserve ~0.0020 USD each while the wave forecast (default prompt size) is ~0.0297: the wave
+    # opens under a 0.03 ceiling and the ceiling then binds concurrent reservations
+    dispatcher.render = _big_render(env.render, 20000)
+    summary = await dispatcher.run(plan_of(graphs), allow_paid=False, max_usd=Decimal("0.03"))
     assert summary.stop_reason == "budget_exhausted"
-    assert env.ledger.peak_exposure <= Decimal("0.004")
-    assert summary.settled_usd + summary.in_flight_usd + summary.unresolved_usd <= Decimal("0.004")
+    assert env.ledger.peak_exposure <= Decimal("0.03")
+    assert summary.settled_usd + summary.in_flight_usd + summary.unresolved_usd <= Decimal("0.03")
     assert 0 < summary.requests_sent < 24
 
     pilot_env = Env.create(tmp_path / "pilot")
@@ -125,3 +138,95 @@ async def test_tiny_budget_never_exceeded_and_pilot_allowance_caps_pilot_plans(t
     pilot_summary = await pilot_env.dispatcher(FakeClient()).run(plan_of(pilot), allow_paid=False,
                                                                  max_usd=Decimal("135"))
     assert pilot_summary.ceiling_usd == Decimal("5") and pilot_summary.soft_ceiling_usd == Decimal("5")
+
+
+async def test_future_waves_are_not_opened_when_their_forecast_does_not_fit(tmp_path):
+    env = Env.create(tmp_path, max_active_waves=1, wave_items=1)
+    waves = [[make_graph(f"f{w}", bank=8, chain=1, team_slots=1, peer_sizes=(), deep=())] for w in range(3)]
+    from tests.unit.runtime.fakes import Behavior
+
+    client = FakeClient(lambda spec, aid, i: Behavior(cost=Decimal("0.0008")))
+    # forecast per wave ~ 8 x 0.00124 = 0.0099; after two waves (~0.0128 settled) the third no longer fits 0.02
+    summary = await env.dispatcher(client).run(plan_of(*waves), allow_paid=False, max_usd=Decimal("0.02"))
+    assert summary.stop_reason == "budget_exhausted"
+    assert summary.stop_detail.startswith("wave_forecast_exceeds_soft_ceiling")
+    assert summary.waves_opened == 2 and summary.waves_completed == 2 and summary.nodes_pending == 8
+    assert {n for n, _ in client.calls}.isdisjoint({s.node_id for s in waves[2][0].nodes})   # no half-started wave
+
+
+async def test_retries_may_use_the_reserve_above_the_soft_ceiling(tmp_path, monkeypatch):
+    import agent_allocation.runtime.scheduler as scheduler_mod
+    from agent_allocation.contracts import TransportStatus
+    from tests.unit.runtime.fakes import Behavior
+
+    monkeypatch.setattr(scheduler_mod, "BACKOFF_BASE_SECONDS", 0.05)
+    env = Env.create(tmp_path, concurrency_start=16)
+    env.config["budget"]["soft_admission_ceiling_usd"] = 0.0125
+    graph = make_graph("r", bank=10, chain=1, team_slots=1, peer_sizes=(), deep=())
+    first_root = graph.nodes[0].node_id
+
+    def script(spec, attempt_id, index):
+        if attempt_id == f"{first_root}:1":
+            return Behavior(status=TransportStatus.UPSTREAM_ERROR, cost=None, delay=0.05)
+        return Behavior(cost=Decimal("0.0013"))
+
+    dispatcher = env.dispatcher(FakeClient(script))
+    summary = await dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=Decimal("0.02"))
+    assert summary.soft_ceiling_usd == Decimal("0.0125") and summary.ceiling_usd == Decimal("0.02")
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 10
+    assert summary.extra["reserve_admissions"] == 1                 # the retry used the contingency, logged
+    assert summary.settled_usd > summary.soft_ceiling_usd
+
+
+async def test_aimd_allowances_carry_over_between_runs_on_one_instance(tmp_path):
+    from agent_allocation.contracts import TransportStatus
+    from tests.unit.runtime.fakes import Behavior
+
+    env = Env.create(tmp_path, concurrency_start=8, requests_per_second_start=1000, aimd_window_seconds=3600)
+    first_graph = make_graph("first", bank=3, chain=1, team_slots=1, peer_sizes=(), deep=())
+    second_graph = make_graph("second", bank=3, chain=1, team_slots=1, peer_sizes=(), deep=())
+
+    def script(spec, attempt_id, index):
+        if index == 0:
+            return Behavior(status=TransportStatus.RATE_LIMITED, cost=None, retry_after=0.05)
+        return Behavior(delay=0.01)
+
+    client = FakeClient(script)
+    dispatcher = env.dispatcher(client)
+    first = await dispatcher.run(plan_of([first_graph]), allow_paid=False, max_usd=Decimal("5"))
+    assert first.stop_reason == "completed" and first.extra["aimd_decreases"] == 1
+    assert (first.concurrency_start, first.concurrency_final, first.rps_final) == (8, 4, 500)
+    second = await dispatcher.run(plan_of([second_graph]), allow_paid=False, max_usd=Decimal("5"))
+    assert second.stop_reason == "completed"
+    assert (second.concurrency_start, second.extra["rps_start"]) == (4, 500)    # no re-ramp from the start
+    assert second.extra["aimd_decreases"] == 0 and client.peak <= 4
+    fresh = env.dispatcher(FakeClient())
+    assert (fresh.aimd.concurrency_limit, fresh.aimd.rps) == (8, 1000)          # a new instance starts over
+
+
+async def test_run_caps_do_not_stick_to_the_ledger_between_runs(tmp_path):
+    env = Env.create(tmp_path)
+    env.ledger.set_active_ceiling(Decimal("100"))                   # the lead's provider-derived ceiling
+    dispatcher = env.dispatcher(FakeClient())
+    pilot = [make_graph("p", partition="pilot", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())]
+    main = [make_graph("m", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())]
+    first = await dispatcher.run(plan_of(pilot), allow_paid=False, max_usd=Decimal("135"))
+    assert first.ceiling_usd == Decimal("5")                         # pilot allowance for a pilot-only plan
+    assert env.ledger.snapshot().ceiling == Decimal("100")           # cleared after the run
+    second = await dispatcher.run(plan_of(main), allow_paid=False, max_usd=Decimal("60"))
+    assert second.ceiling_usd == Decimal("60") and second.soft_ceiling_usd == Decimal("60")
+    third = await dispatcher.run(plan_of(main), allow_paid=False, max_usd=Decimal("135"))
+    assert third.ceiling_usd == Decimal("100") and third.soft_ceiling_usd == Decimal("100")
+    assert env.ledger.active_ceiling == Decimal("100")
+
+
+async def test_forecast_ratio_is_seeded_from_stored_history(tmp_path):
+    from tests.unit.runtime.fakes import Behavior
+
+    env = Env.create(tmp_path)
+    graph = make_graph("hist", bank=25, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(lambda spec, aid, i: Behavior(cost=Decimal("0.0003")))
+    await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=Decimal("5"))
+    fresh = env.dispatcher(FakeClient())                               # a new process would start here
+    assert fresh.ok_cost_samples == 25
+    assert Decimal("0.3") < fresh._cost_ratio() < Decimal("0.4")       # 0.0003 / ~0.00091 reserved

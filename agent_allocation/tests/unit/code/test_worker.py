@@ -244,3 +244,96 @@ def test_parsed_record_identity_is_verified(run_paths):
     wrong.write_text(run_paths.parsed(candidates[0].node_id).read_text())
     with pytest.raises(ValueError):
         worker.scan_candidates(run_paths)
+
+
+def test_follow_mode_skips_finished_candidates_on_later_passes(run_paths, monkeypatch):
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    finished: set[str] = set()
+    profile = profile_mod.active_profile()
+    worker.grade_pass(run_paths, profile, resume=False, workers=0, finished=finished)
+    assert finished == {candidates[0].candidate_id}
+    loads = []
+    real_loads = worker.json.loads
+    monkeypatch.setattr(worker.json, "loads", lambda text: loads.append(1) or real_loads(text))
+    again = worker.grade_pass(run_paths, profile, resume=True, workers=0, finished=finished)
+    assert again["candidates"] == 0
+
+
+def test_unexpected_grader_exception_is_unknown_not_wrong(run_paths, monkeypatch):
+    from agent_allocation.grading.code import private as private_mod, public as public_mod
+
+    def explode(*_args):
+        raise OSError("injected: too many open files")
+
+    monkeypatch.setattr(public_mod, "run_public_checks", explode)
+    monkeypatch.setattr(private_mod, "grade_code", explode)
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0)
+    cid = candidates[0].candidate_id
+    grade = load_record(GradeResult, json.loads(run_paths.grade(cid).read_text()))
+    check = load_record(PublicCheckResult, json.loads(run_paths.public_check(cid).read_text()))
+    assert grade.status is GradeStatus.EVALUATOR_ERROR and grade.semantic_correct is None
+    assert grade.detail_code == "grader_exception:OSError"
+    assert check.status is CheckStatus.INFRASTRUCTURE_ERROR and check.cases_passed == 0
+    assert counts["infrastructure_errors"] == 1 and counts["evaluator_errors"] == 1
+
+
+def exploding_grade_text(candidate, private):
+    raise RuntimeError("injected text grader crash")
+
+
+def test_text_grader_exception_is_unknown_and_does_not_stop_the_pass(run_paths):
+    _synthetic_run(run_paths, [GOOD_PROGRAM])
+    text_candidate = _text_item(run_paths)
+    counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0,
+                               text_grader="tests.unit.code.test_worker:exploding_grade_text")
+    record = load_record(GradeResult, json.loads(run_paths.grade(text_candidate.candidate_id).read_text()))
+    assert record.status is GradeStatus.EVALUATOR_ERROR and record.semantic_correct is None
+    assert counts["grades_written"] == 2 and counts["evaluator_errors"] == 1
+
+
+def test_allocation_cli_grade_verb_reaches_cmd_grade(run_paths):
+    from agent_allocation.cli import main
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    assert main(["grade", "--run-dir", str(run_paths.run_dir), "--workers", "1"]) == 0
+    record = load_record(GradeResult, json.loads(run_paths.grade(candidates[0].candidate_id).read_text()))
+    assert record.semantic_correct is True
+
+
+def test_cache_entries_are_self_describing_and_tamper_evident(run_paths):
+    from agent_allocation.contracts import canonical_hash
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0)
+    entries = sorted((run_paths.grade_cache_dir / "private").rglob("*.json"))
+    assert len(entries) == 1
+    payload = json.loads(entries[0].read_text())
+    assert payload["key"] == entries[0].stem == canonical_hash(payload["material"])
+    assert set(payload["material"]) == {"revision", "item_id", "code_sha256", "test_kind", "evaluator_version",
+                                        "environment_digest", "private_hash"}
+    payload["material"]["code_sha256"] = "0" * 64                       # tampered material no longer matches
+    entries[0].write_text(json.dumps(payload))
+    extra = make_candidate(candidates[0].item_id, GOOD_PROGRAM, node="dd" * 32)
+    _write_parsed(run_paths, extra)
+    counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=True, workers=0)
+    assert counts["grades_cached"] == 0 and counts["grades_written"] == 1
+
+
+def test_a_second_grader_on_the_same_run_dir_is_refused(run_paths):
+    import subprocess
+    import sys
+    _synthetic_run(run_paths, [GOOD_PROGRAM])
+    lock = run_paths.grade_cache_dir / ".grader.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c",
+                               "import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n"
+                               "fcntl.lockf(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(30)\n", str(lock)],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(worker.GradeRefused):
+            worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0)
+        assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"]) == worker.EXIT_BLOCKED
+    finally:
+        holder.kill()
+        holder.wait()
+    assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"]) == 0

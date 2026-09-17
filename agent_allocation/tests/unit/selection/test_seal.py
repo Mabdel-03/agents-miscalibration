@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import warnings
 from dataclasses import replace
 from hashlib import sha256
 
@@ -11,7 +10,8 @@ import pytest
 from agent_allocation.contracts import SelectionResult, SelectionStatus
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.seal import (
-    SealDriftWarning, SealedSelections, SealError, SealInfo, load_sealed_selections, read_seals, seal_selections,
+    SealDriftWarning, SealedSelections, SealError, SealInfo, SealPendingWarning, load_sealed_selections, read_seals,
+    seal_selections,
 )
 
 
@@ -66,18 +66,29 @@ def test_changed_pools_raise_and_changed_selections_warn(paths):
     assert load_sealed_selections(paths, "main").by_policy["main/a/x/current"].selected_candidate_id == "c0"
 
 
-def test_a_paused_selection_resumes_in_a_later_batch(paths):
+def test_paused_selections_stay_unsealed_until_resumed(paths):
     paused = _sel("main/a/x/current", selected=None, status=SelectionStatus.PAUSED_CHECK_ERROR)
-    seal_selections(paths, "main", [paused])
-    with pytest.raises(SealError):
-        seal_selections(paths, "main", [_sel("main/a/x/current", pool="other-pool")])
-    seal_selections(paths, "main", [_sel("main/a/x/current")])
+    with pytest.warns(SealPendingWarning), pytest.raises(SealError):
+        seal_selections(paths, "main", [paused])                      # nothing sealable at all: a blocker
+    with pytest.warns(SealPendingWarning):
+        first = seal_selections(paths, "main", [paused, _sel("main/b/x/current")])
+    assert set(load_sealed_selections(paths, "main").by_policy) == {"main/b/x/current"}
+    resumed = seal_selections(paths, "main", [_sel("main/a/x/current"), _sel("main/b/x/current")])
     loaded = load_sealed_selections(paths, "main")
-    assert loaded.by_policy["main/a/x/current"].status is SelectionStatus.SELECTED and len(loaded.seals) == 2
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        with pytest.raises(SealDriftWarning):
-            seal_selections(paths, "main", [paused])                  # a resumed selection is never re-paused
+    assert resumed != first and len(loaded.seals) == 2
+    assert loaded.by_policy["main/a/x/current"].status is SelectionStatus.SELECTED
+
+
+def test_a_checkpoint_sealed_in_two_batches_is_refused(paths):
+    seal_selections(paths, "main", [_sel("main/a/x/current")])
+    seal_selections(paths, "main", [_sel("main/b/x/current")])
+    first_line = paths.selections("main", 0).read_bytes()
+    body = first_line + paths.selections("main", 1).read_bytes()
+    seal = json.loads(paths.selection_seal("main", 1).read_text())
+    paths.selections("main", 1).write_bytes(body)
+    paths.selection_seal("main", 1).write_text(json.dumps({**seal, "sha256": sha256(body).hexdigest(), "count": 2}))
+    with pytest.raises(SealError):
+        load_sealed_selections(paths, "main")
 
 
 def test_tampering_gaps_and_missing_seals_refuse_to_load(paths):

@@ -6,6 +6,8 @@ from dataclasses import asdict, replace
 
 import pytest
 
+pytestmark = pytest.mark.filterwarnings("ignore::agent_allocation.selection.seal.SealPendingWarning")
+
 from agent_allocation.contracts import dump_record
 from agent_allocation.metrics import io as metrics_io
 from agent_allocation.metrics.tables import build_partition_tables
@@ -40,6 +42,23 @@ def run(tmp_path):
     for cid, grade in panel.grades.items():
         _write(paths.grade(cid), json.dumps(dump_record(grade)))
     return paths, panel
+
+
+def test_a_parsed_record_without_candidate_is_an_empty_candidate(run):
+    paths, panel = run
+    item = panel.records.items[1]                                  # mmlu_pro/fixture-2
+    nid = panel.node_ids[(item.task.item_id, "root/5")]
+    paths.parsed(nid).write_text(json.dumps({"result": None, "candidate": None}))
+    select_partition(paths, "main", seed=SEED, math_equivalent=fixture_math_equivalent)
+    records = metrics_io.load_partition_records(paths, "main")
+    loaded = next(i for i in records.items if i.task.item_id == item.task.item_id)
+    assert loaded.candidates[nid].parse_status.value == "empty_content" and nid not in loaded.results
+    grades = dict(panel.grades)
+    grades.pop(nid)
+    tables = build_partition_tables(load_sealed_selections(paths, "main"), records, grades)
+    row = next(r for r in tables.checkpoints if r.item_id == item.task.item_id and r.name == "sample/6"
+               and r.view == "current")
+    assert row.pool_n_invalid == 2 and row.delivered_state != "missing_selection"
 
 
 def test_unsealed_partition_refuses_before_reading_any_grade(run, monkeypatch):
@@ -100,3 +119,21 @@ def test_disk_round_trip_matches_the_in_memory_join(run, tmp_path):
                             "root_strata.jsonl", "failures.jsonl", "summary_checkpoints.jsonl"}
     first = json.loads((tmp_path / "tables" / "checkpoints.jsonl").read_text().splitlines()[0])
     assert list(first) == sorted(asdict(from_disk.checkpoints[0]))
+
+
+def test_code_checkpoints_wait_for_public_checks(run):
+    paths, panel = run
+    code = next(i for i in panel.records.items if i.task.item_id == "mbpp_plus/fixture-5")
+    missing = panel.node_ids[(code.task.item_id, "root/1")]
+    paths.public_check(missing).unlink()
+    selection = select_partition(paths, "main", seed=SEED, math_equivalent=fixture_math_equivalent)
+    pending = set(selection.pending_policy_ids)
+    assert "main/mbpp_plus/fixture-5/sample/2/current" in pending
+    assert "main/mbpp_plus/fixture-5/sample/1/current" not in pending               # root/0 alone needs no check
+    assert "main/mbpp_plus/fixture-5/private_single/1/current" not in pending
+
+
+def test_metrics_table_names():
+    assert metrics_io.metrics_table_name("main", "checkpoints") == "main.checkpoints"
+    with pytest.raises(ValueError):
+        metrics_io.metrics_table_name("main", "grades")

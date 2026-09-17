@@ -12,7 +12,8 @@ import pandas as pd
 
 from agent_allocation.analysis.load import RunData
 
-PARTITION_PANEL = {"main": "main", "high": "high", "replication": "replication", "pilot": "pilot"}
+PARTITION_PANEL = {"main": "main", "high": "high", "replication": "replication"}
+CLAIM_PARTITIONS = frozenset(PARTITION_PANEL)   # canary/pilot are development samples with nested sub-grids
 EXTENSION_FAMILIES = frozenset({"cp", "pooled"})
 
 
@@ -47,11 +48,12 @@ def check_fixed_population(run: RunData, outcomes: pd.DataFrame) -> CheckResult:
     wave order (no outcome-dependent removal at the manifest level).
     """
     violations: list[str] = []
-    if outcomes.empty:
-        return CheckResult("fixed_population", "skip", "no planned checkpoints in the policy manifests",
-                           "manifests/policies/")
-    for (partition, benchmark, view), group in outcomes.groupby(["partition_id", "benchmark", "view"],
-                                                               sort=True, dropna=False):
+    scoped = outcomes[outcomes["partition_id"].isin(CLAIM_PARTITIONS)] if not outcomes.empty else outcomes
+    if scoped.empty:
+        return CheckResult("fixed_population", "skip", "no planned checkpoints in claim partitions "
+                           f"({', '.join(sorted(CLAIM_PARTITIONS))})", "manifests/policies/")
+    for (partition, benchmark, view), group in scoped.groupby(["partition_id", "benchmark", "view"],
+                                                             sort=True, dropna=False):
         sets = {name: frozenset(g["item_id"]) for name, g in group.groupby("name", sort=True)}
         dup = group.groupby("name")["item_id"].apply(lambda s: s.duplicated().any())
         for name in dup[dup].index:
@@ -76,9 +78,9 @@ def check_fixed_population(run: RunData, outcomes: pd.DataFrame) -> CheckResult:
                 violations.append(f"{partition}/{benchmark}/{view}: extension population is not nested in the "
                                   f"base population")
     if run.waves:
-        violations.extend(_wave_prefix_violations(run, outcomes))
+        violations.extend(_wave_prefix_violations(run, scoped))
     return _result("fixed_population", violations,
-                   "every checkpoint in each partition x benchmark x view covers the same planned items"
+                   "every checkpoint in each claim partition x benchmark x view covers the same planned items"
                    + ("" if run.waves else " (waves.json absent: wave-prefix check not run)"),
                    "manifests/policies/*.jsonl, manifests/waves.json")
 
@@ -351,10 +353,48 @@ def check_ledger(analysis: Any) -> CheckResult:
                    f"<= ceiling {rec['ledger']['ceiling_usd']}", "state/ledger_journal.jsonl")
 
 
+def check_selector_legality(run: RunData) -> CheckResult:
+    """Declared ``PolicyCheckpoint.selector_name`` equals the config family for its benchmark (``plurality`` |
+    ``public_tests_only``), and every sealed ``SelectionResult.selector_name`` is a concrete selector that
+    ``selection.readout.selector_for`` allows for that checkpoint shape (contract v2 R03-5 / R06-1)."""
+    name = "selector_legality"
+    try:
+        from agent_allocation.selection.readout import selector_for
+    except ImportError:
+        return CheckResult(name, "skip", "selection.readout not importable (agent 06)", "selections/")
+    declared_by_bench = {b.get("id"): b.get("selector") for b in run.config.get("benchmarks", [])}
+    violations: list[str] = []
+    checked = 0
+    for partition in run.partitions:
+        selections = run.selections.get(partition, {})
+        for cp in run.policies.get(partition, []):
+            task = run.tasks.get(cp.item_id)
+            if task is None:
+                violations.append(f"{cp.policy_id}: no public task for the item")
+                continue
+            expected = declared_by_bench.get(task.benchmark)
+            if expected is not None and cp.selector_name != expected:
+                violations.append(f"{cp.policy_id}: declared selector {cp.selector_name!r}, config says {expected!r}")
+            sel = selections.get(cp.policy_id)
+            if sel is None:
+                continue
+            try:
+                legal = {selector_for(cp.family, cp.view, task.output_kind, len(cp.candidate_ids),
+                                      math_equivalence=flag) for flag in (True, False)}
+            except ValueError as exc:
+                violations.append(f"{cp.policy_id}: checkpoint shape has no legal selector ({exc})")
+                continue
+            checked += 1
+            if sel.selector_name not in legal:
+                violations.append(f"{cp.policy_id}: concrete selector {sel.selector_name!r} not in {sorted(legal)}")
+    return _result(name, violations, f"{checked} sealed selections use a legal concrete selector for their declared "
+                                     "family and checkpoint shape", "manifests/policies/, selections/")
+
+
 def run_checks(run: RunData, outcomes: pd.DataFrame, *, analysis: Any = None) -> list[CheckResult]:
     results = [check_fixed_population(run, outcomes), check_sealed_before_join(run, outcomes),
-               check_unknown_not_coerced(outcomes), check_delivered_within_coverage(outcomes),
-               check_archive_monotone(outcomes)]
+               check_selector_legality(run), check_unknown_not_coerced(outcomes),
+               check_delivered_within_coverage(outcomes), check_archive_monotone(outcomes)]
     if analysis is not None:
         metrics = analysis.extras.get("item_metrics", {})
         bank = metrics.get("sample_bank", pd.DataFrame())

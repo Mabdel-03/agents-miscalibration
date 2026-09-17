@@ -21,10 +21,12 @@ import time
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
+import anyio
 import httpx
 
 from agent_allocation.apikey import redact, redact_headers
 from agent_allocation.api.normalize import (
+    GATEWAY_TIMEOUT_STATUSES,
     MAX_ERROR_DETAIL_CHARS,
     classify_exception,
     classify_http_status,
@@ -38,6 +40,12 @@ from agent_allocation.contracts import EndpointLock, GenerationOutcome, Generati
     TransportStatus
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+# What a send can raise besides httpx's own errors: httpcore maps only some low-level errors, so a TLS error after the
+# handshake (``ssl.SSLError``, an ``OSError``) or an unmapped anyio stream error can escape. All of them may happen
+# after bytes were written, so they classify as AMBIGUOUS_TIMEOUT rather than crashing the dispatcher.
+TRANSPORT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.RequestError, OSError, anyio.BrokenResourceError, anyio.ClosedResourceError, anyio.EndOfStream,
+)
 WRITE_TIMEOUT_SECONDS = 60.0
 _MODEL_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*/[A-Za-z0-9][A-Za-z0-9._\-:]*$")
 
@@ -123,7 +131,7 @@ class OpenRouterClient:
         started = time.monotonic()
         try:
             response = await self._client.send(request)
-        except httpx.RequestError as exc:
+        except TRANSPORT_EXCEPTIONS as exc:
             latency = time.monotonic() - started
             status = classify_exception(exc)
             detail = self._scrub_text(f"{status.value}: {type(exc).__name__}: {exc}")
@@ -150,6 +158,8 @@ class OpenRouterClient:
             except (ValueError, UnicodeDecodeError):
                 payload = {"error": {"message": raw[:500].decode("utf-8", errors="replace")}} if raw else None
             detail = self._scrub_text(error_summary(payload, prefix=f"http {http_status}"))
+            if http_status in GATEWAY_TIMEOUT_STATUSES:
+                detail = self._scrub_text(f"gateway_timeout_may_be_billed {detail}")
             result = GenerationResult(
                 node_id=spec.node_id, attempt_id=attempt_id, transport_status=non_success, completion_status=None,
                 generation_id=None, observed_model=None, observed_provider=None, finish_reason=None,
@@ -175,7 +185,7 @@ class OpenRouterClient:
         try:
             return await self._client.get(f"{self._base_url}/{path}", params=params,
                                           headers=self._headers(json_body=False))
-        except httpx.RequestError as exc:
+        except TRANSPORT_EXCEPTIONS as exc:
             status = classify_exception(exc)
             raise OpenRouterAccountError(self._scrub_text(f"GET /{path}: {type(exc).__name__}: {exc}"),
                                          transport_status=status) from None

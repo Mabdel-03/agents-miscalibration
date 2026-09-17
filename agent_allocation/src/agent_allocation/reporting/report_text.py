@@ -71,7 +71,8 @@ def scope_notes(analysis: "Analysis") -> str:
         "optimal policy. Everything except the two primary contrasts is exploratory or descriptive.",
         "Oracle pass@k (an unavailable selector) is reported separately from achievable vote@k / public_select@k.",
         "Macro averages weight the four benchmarks equally; per-benchmark results are always shown.",
-        "High-allowance comparisons use shared item ids only (never the 96-item panel against all main items).",
+        "Panel variants (high allowance, second-model replication) are compared with main on shared item ids only "
+        "(never the 96-item panel against all main items).",
     ]
     return "## Scope and labels\n\n" + bullet_list(notes)
 
@@ -79,9 +80,9 @@ def scope_notes(analysis: "Analysis") -> str:
 def run_report(analysis: "Analysis") -> str:
     parts = [header(analysis, "Run report"), scope_notes(analysis), unfinished_section(analysis),
              seal_section(analysis), primary_section(analysis), accuracy_section(analysis),
-             passk_section(analysis), cost_section(analysis), high_low_section(analysis), replay_section(analysis),
-             dynamics_section(analysis), operations_section(analysis), figures_section(analysis),
-             warnings_section(analysis)]
+             coverage_section(analysis), passk_section(analysis), cost_section(analysis), high_low_section(analysis), replay_section(analysis),
+             dynamics_section(analysis), operations_section(analysis), amendments_section(analysis),
+             figures_section(analysis), warnings_section(analysis)]
     return "\n".join(p for p in parts if p)
 
 
@@ -129,18 +130,25 @@ def primary_section(analysis: "Analysis") -> str:
         return "## Primary contrasts\n\n_(not estimable: checkpoints absent)_\n"
     out = ["## Primary contrasts (frozen, main allowance)", "",
            "Per-item contrast first, then equal-benchmark macro (BBH subtasks equal). Intervals: studentized item-"
-           "cluster bootstrap when complete, otherwise known-only percentile intervals labeled partial with "
+           "cluster bootstrap when complete (at small n it can extend past the parameter range; the percentile "
+           "interval is shown beside it), otherwise known-only percentile intervals labeled partial with "
            "fixed-population bounds. P-values (Holm over exactly these two) are reported only when both populations "
            "are fully known.", ""]
     rows = []
     for rec in frame[frame["role"] == "primary"].to_dict("records"):
+        series = pd.Series(rec)
+        macro = rec["benchmark"] == "macro"
+        p_value = rec.get("p_value")
+        p_text = (fmt(p_value) if macro and not _nan(p_value) else
+                  ("withheld (incomplete)" if macro else "not reported (per-benchmark)"))
+        holm_text = (fmt(rec.get("p_holm")) if macro and not _nan(rec.get("p_holm")) else
+                     ("withheld" if macro else "-"))
         rows.append({"contrast": rec["contrast"], "level": rec["benchmark"], "n_items": rec.get("n_items"),
                      "n_complete": rec.get("n_complete"), "status": rec.get("status"),
                      "estimate": rec.get("estimate"),
-                     "ci95": _ci(pd.Series(rec), "ci95_lo", "ci95_hi") if rec.get("status") == "complete"
-                     else _ci(pd.Series(rec), "ci95_percentile_lo", "ci95_percentile_hi"),
-                     "bounds": _ci(pd.Series(rec), "bound_lower", "bound_upper"),
-                     "p": rec.get("p_value"), "p_holm": rec.get("p_holm")})
+                     "ci95 studentized": _ci(series, "ci95_lo", "ci95_hi"),
+                     "ci95 percentile": _ci(series, "ci95_percentile_lo", "ci95_percentile_hi"),
+                     "bounds": _ci(series, "bound_lower", "bound_upper"), "p": p_text, "p_holm": holm_text})
     out.append(md_table(pd.DataFrame(rows)))
     out.append("### CP decomposition (descriptive)\n")
     out.append("`L = mean(Y_CP,h=0 - Y_PRIVATE_TEAM,r=1)`; `H(h) = mean[(Y_CP,h - Y_CP,0) - (Y_PRIVATE_TEAM,1+h - "
@@ -178,6 +186,23 @@ def _wide_accuracy(acc: pd.DataFrame, partition: str) -> pd.DataFrame:
             row[level] = value
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def coverage_section(analysis: "Analysis") -> str:
+    acc = analysis.accuracy
+    if acc.empty or "coverage" not in acc:
+        return ""
+    macro = acc[(acc["level"] == "macro")].copy()
+    macro = macro.iloc[sorted(range(len(macro)), key=lambda i: (str(macro.iloc[i]["partition_id"]),
+                                                                  name_sort_key(macro.iloc[i]["name"]),
+                                                                  str(macro.iloc[i]["view"])))]
+    return ("## Coverage and selection gap (macro)\n\nOracle coverage of each checkpoint's own declared pool: the "
+            "current view gives current coverage, the archive view archive coverage over candidates that policy "
+            "really generated. `selection_gap = coverage - delivered` for candidate-only selectors on the same pool; "
+            "empty for POOLED synthesis and whenever coverage or delivery is unknown. Per-benchmark rows: "
+            "`tables/accuracy_summary`.\n\n"
+            + md_table(macro[["partition_id", "name", "view", "acc", "coverage", "selection_gap",
+                              "n_coverage_unknown"]], digits=3))
 
 
 def accuracy_section(analysis: "Analysis") -> str:
@@ -238,15 +263,27 @@ def cost_section(analysis: "Analysis") -> str:
         lambda s: pd.to_numeric(s, errors="coerce").mean()).rename("mean_retry_usd").reset_index() \
         if isinstance(costs, pd.DataFrame) and not costs.empty else pd.DataFrame()
     table = macro[cols].merge(retry, on=["partition_id", "name"], how="left") if not retry.empty else macro[cols]
+    precision = {"acc": 3, "mean_total_charged_usd": 6, "mean_success_cost_usd": 6,
+                 "mean_standardized_uncached_cost_usd": 6, "mean_requested_reasoning_tokens": 0,
+                 "mean_realized_tokens": 0, "mean_reasoning_tokens": 0, "mean_nominal_generations": 1,
+                 "mean_retry_usd": 6}
     out.append(md_table(table, headers=["partition", "checkpoint", "macro acc", "actual $", "success $",
                                         "standardized $", "requested reasoning", "realized tokens",
                                         "reasoning tokens", "nominal gens"] + (["retry $"] if not retry.empty else []),
-                        digits=6))
+                        digits=precision))
     frontier = analysis.extras.get("frontier")
     if isinstance(frontier, pd.DataFrame) and not frontier.empty:
         out += ["### Descriptive frontier (best among evaluated configurations on this sample; not validated)", "",
                 md_table(frontier[frontier["benchmark"] == "macro"][["partition_id", "measure", "name", "mean_cost",
-                                                                      "acc"]], digits=6)]
+                                                                      "acc"]], digits={"mean_cost": 6, "acc": 3})]
+    cpu_cols = ["partition_id", "name", "mean_public_check_cpu_seconds", "mean_selection_cpu_seconds",
+                "mean_private_grading_cpu_seconds"]
+    if all(c in macro for c in cpu_cols):
+        out += ["### Local CPU (separate from API dollars)", "",
+                "Public-check and selector CPU are deployable selection work; private grading CPU is research "
+                "evaluation and is never charged to a policy.", "",
+                md_table(macro[cpu_cols], headers=["partition", "checkpoint", "public-check CPU s", "selector CPU s",
+                                                   "private grading CPU s"], digits=3)]
     checks = analysis.extras.get("price_checks", [])
     if checks:
         out += ["### Price units", "", md_table(pd.DataFrame(checks))]
@@ -258,10 +295,13 @@ def high_low_section(analysis: "Analysis") -> str:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return ""
     macro = frame[frame["level"] == "macro"]
-    rows = [{"contrast": r["contrast"], "shared_items": r.get("n_items"), "status": r.get("status"),
-             "estimate": r.get("estimate"), "ci95": _ci(pd.Series(r), "ci95_percentile_lo", "ci95_percentile_hi")}
+    rows = [{"variant": r.get("variant"), "contrast": r["contrast"], "shared_items": r.get("n_items"),
+             "status": r.get("status"), "estimate": r.get("estimate"),
+             "ci95": _ci(pd.Series(r), "ci95_percentile_lo", "ci95_percentile_hi")}
             for r in macro.to_dict("records")]
-    return ("## Higher allowance versus main allowance (shared item ids only, exploratory)\n\n"
+    return ("## Panel variants versus main (shared item ids only, exploratory)\n\nHigher allowance (`high`) and the "
+            "optional second-model panel (`replication`) are compared with `main` only on the item ids both "
+            "planned; within-Gemini replication does not establish cross-family transfer.\n\n"
             + md_table(pd.DataFrame(rows)) + "\nPer-benchmark rows: `tables/high_vs_main_shared_items`.\n")
 
 
@@ -293,13 +333,18 @@ def dynamics_section(analysis: "Analysis") -> str:
 
 
 def operations_section(analysis: "Analysis") -> str:
-    ops = analysis.extras.get("operations")
-    out = ["## Operations: realized versus requested budgets, headroom, truncation, cache, latency, retries", ""]
+    ops = analysis.extras.get("operations_condensed")
+    out = ["## Operations: realized versus requested budgets, headroom, truncation, cache, latency, retries", "",
+           "Per partition x generation kind x round (all benchmarks; per-benchmark rows in `tables/operations`). "
+           "Prompt growth shows in `mean_prompt_tokens` across rounds; `mean_completion_over_cap` and "
+           "`share_finish_length` show headroom use and truncation; a response-cache HIT on an independent draw "
+           "is a blocker.", ""]
     if isinstance(ops, pd.DataFrame) and not ops.empty:
-        out.append(md_table(ops[["partition_id", "benchmark", "kind", "team_size", "update_round", "generations",
+        out.append(md_table(ops[["partition_id", "kind", "team_size", "update_round", "generations",
                                  "mean_prompt_tokens", "mean_requested_reasoning", "mean_reasoning_tokens",
                                  "mean_completion_over_cap", "share_finish_length", "share_parse_invalid",
-                                 "share_response_cache_hit", "mean_cached_prompt_share", "median_latency_seconds"]],
+                                 "share_response_cache_hit", "mean_cached_prompt_share", "share_packets_trimmed",
+                                 "mean_bytes_removed", "context_limit_events", "median_latency_seconds"]],
                             digits=3))
     retries = analysis.extras.get("retries")
     if isinstance(retries, pd.DataFrame) and not retries.empty:
@@ -308,6 +353,10 @@ def operations_section(analysis: "Analysis") -> str:
                    f"{charged:.6f} USD (details: `tables/billed_retries`).\n")
     else:
         out.append("Billed retries: none recorded.\n")
+    run = analysis.run
+    out.append(f"Context-limit events logged: {len(run.context_limit_events)} (`state/context_limit_events.jsonl`); "
+               f"superseded verdicts kept for audit: {run.superseded_grades} grades, "
+               f"{run.superseded_public_checks} public checks.\n")
     stops = analysis.extras.get("stop_reasons", [])
     out.append("Stop reasons and gate decisions:\n")
     out.append(md_table(pd.DataFrame(stops)) if stops else "- none recorded in state/status.json or gates/\n")
@@ -325,6 +374,15 @@ def figures_section(analysis: "Analysis") -> str:
         lines.append(f"![{fig.stem}]({rel})")
         lines.append("")
     return "\n".join(lines)
+
+
+def amendments_section(analysis: "Analysis") -> str:
+    amendments = analysis.run.amendments
+    if not amendments:
+        return "## Amendments\n\n- none recorded in `amendments.jsonl`\n"
+    cols = ["id", "recorded_at", "rule", "scope", "reason"]
+    rows = [{c: a.get(c) for c in cols} for a in amendments]
+    return "## Amendments\n\nRecorded rule changes (before/after values in `amendments.jsonl`).\n\n" + md_table(rows)
 
 
 def warnings_section(analysis: "Analysis") -> str:
@@ -385,7 +443,12 @@ def completeness_report(analysis: "Analysis") -> str:
 
 
 def _nan(v: Any) -> bool:
-    return v is None or (isinstance(v, float) and math.isnan(v))
+    if v is None:
+        return True
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
 
 
 __all__ = ["run_report", "cost_reconciliation_report", "completeness_report", "interim_reasons", "PRIMARY_I",

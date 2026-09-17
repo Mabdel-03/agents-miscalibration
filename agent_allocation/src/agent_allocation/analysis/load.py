@@ -14,6 +14,7 @@ later batch (a sealed selection is never rewritten).
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -114,10 +115,30 @@ class RunData:
     gates: list[GateResult] = field(default_factory=list)
     amendments: list[dict[str, Any]] = field(default_factory=list)
     provider_snapshots: list[dict[str, Any]] = field(default_factory=list)
+    render_reports: dict[str, dict[str, Any]] = field(default_factory=dict)   # node_id -> last render report line
+    node_states: dict[str, dict[str, Any]] = field(default_factory=dict)      # SQLite backup: state/outcome/reason
+    context_limit_events: list[dict[str, Any]] = field(default_factory=list)
+    superseded_grades: int = 0
+    superseded_public_checks: int = 0
     problems: list[str] = field(default_factory=list)
     input_files: list[Path] = field(default_factory=list)
 
     # ------------------------------------------------------------------------------------------------
+    def terminal_without_output(self, node_id: str) -> str | None:
+        """Terminal outcome label for a node that ended without a parsed result (exhausted transport attempts,
+        non-retryable errors, context-limit receivers), from the coordinator's SQLite backup; else ``None``."""
+        if node_id in self.parsed and self.parsed[node_id][1] is not None:
+            return None
+        state = self.node_states.get(node_id)
+        if state and state.get("state") == "terminal" and state.get("outcome") != "succeeded":
+            return str(state.get("terminal_reason") or state.get("outcome") or "terminal_without_output")
+        if node_id in self.parsed:
+            return "terminal_without_candidate"
+        return None
+
+    def is_terminal(self, node_id: str) -> bool:
+        return node_id in self.parsed or self.terminal_without_output(node_id) is not None
+
     def is_sealed(self, partition: str, policy_id: str) -> bool:
         """True when the policy's selection sits in a verified batch (the only rows grades may join)."""
         seal = self.seals.get(partition)
@@ -148,14 +169,20 @@ class RunData:
         return task.subtask if task else None
 
     def input_digest(self) -> str:
-        """Order-independent digest of every input file's bytes (report provenance, deterministic)."""
+        """Order-independent digest of every input file's run-relative path and bytes (computed once)."""
+        cached = getattr(self, "_input_digest", None)
+        if cached is not None:
+            return cached
+        root = str(self.paths.run_dir)
         h = sha256()
-        for path in sorted(set(self.input_files)):
-            h.update(self.paths.relative(path).encode())
+        for path in sorted({str(p) for p in self.input_files}):
+            rel = path[len(root) + 1:] if path.startswith(root + "/") else self.paths.relative(Path(path))
+            h.update(rel.encode())
             h.update(b"\0")
-            h.update(sha256(path.read_bytes()).hexdigest().encode())
+            h.update(sha256(Path(path).read_bytes()).hexdigest().encode())
             h.update(b"\n")
-        return h.hexdigest()
+        self._input_digest = h.hexdigest()
+        return self._input_digest
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -263,8 +290,9 @@ def load_run(paths: RunPaths, config: Mapping[str, Any] | None = None, *, config
             run.input_files.append(path)
             raw = json.loads(path.read_text())
             result = load_record(GenerationResult, raw["result"])
-            candidate = load_record(Candidate, raw["candidate"])
-            if result.node_id != node_id or candidate.node_id != node_id or candidate.candidate_id != node_id:
+            candidate = load_record(Candidate, raw["candidate"]) if raw.get("candidate") else None
+            if result.node_id != node_id or (candidate is not None and (candidate.node_id != node_id
+                                                                        or candidate.candidate_id != node_id)):
                 run.problems.append(f"parsed record for {node_id} carries a different node/candidate id")
             run.parsed[node_id] = (result, candidate)
         check_path = paths.public_check(node_id)
@@ -306,6 +334,28 @@ def load_run(paths: RunPaths, config: Mapping[str, Any] | None = None, *, config
         run.input_files.append(paths.amendments)
         run.amendments = [raw for _, raw in _jsonl(paths.amendments)]
     run.provider_snapshots = load_provider_snapshots(paths, run.input_files)
+    run.node_states = load_node_states(paths, run.problems)
+    if run.node_states:
+        run.input_files.append(paths.state_db_backup)
+    if paths.render_reports.is_file():
+        run.input_files.append(paths.render_reports)
+        for _, raw in _jsonl(paths.render_reports):
+            if raw.get("node_id"):
+                run.render_reports[str(raw["node_id"])] = raw
+    if paths.context_limit_events.is_file():
+        run.input_files.append(paths.context_limit_events)
+        run.context_limit_events = [raw for _, raw in _jsonl(paths.context_limit_events)]
+    for attr, dirname in (("superseded_grades", "grades_superseded"),
+                          ("superseded_public_checks", "public_checks_superseded")):
+        directory = paths.run_dir / dirname
+        if directory.is_dir():
+            setattr(run, attr, sum(1 for _ in directory.rglob("*.json")))
+    planned = {cp.policy_id for cps in run.policies.values() for cp in cps}
+    for partition, selections in sorted(run.selections.items()):
+        stray = sorted(set(selections) - planned)
+        if stray:
+            run.problems.append(f"selections/{partition}: {len(stray)} sealed selections for checkpoints absent "
+                                f"from the policy manifests (e.g. {stray[0]})")
     return run
 
 
@@ -383,6 +433,24 @@ def read_sealed_selections(paths: RunPaths, partition: str
                                  seal.get("sealed_at"), chain, tuple(problems)))
         previous = (seal, seal_bytes)
     return by_policy, batch_of, PartitionSeal(partition, tuple(batches), tuple(partition_problems)), files
+
+
+def load_node_states(paths: RunPaths, problems: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Terminal outcomes from the coordinator's SQLite backup (read-only, immutable snapshot)."""
+    path = paths.state_db_backup
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        try:
+            rows = conn.execute("SELECT node_id, state, outcome, terminal_reason, attempts_used FROM nodes").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        if problems is not None:
+            problems.append(f"state backup {paths.relative(path)} unreadable: {exc}")
+        return {}
+    return {r[0]: {"state": r[1], "outcome": r[2], "terminal_reason": r[3], "attempts_used": r[4]} for r in rows}
 
 
 def load_provider_snapshots(paths: RunPaths, input_files: list[Path] | None = None) -> list[dict[str, Any]]:
