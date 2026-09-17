@@ -17,14 +17,20 @@ Preprocessing ``mmlu_pro-prompt-v1`` (frozen):
 * Public fields: question and options. Never ``answer``, ``answer_index``, ``cot_content`` (they live in the
   hashed private record together with ``category`` and ``src``). ``item_id = "mmlu_pro/<question_id>"``.
 * Strata: ``category``.
-* Engineering exclusions (pre-generation, content-blind to models): ``answer`` letter disagreeing with
+* Engineering exclusions (pre-generation, never outcome-based), per row: ``answer`` letter disagreeing with
   ``answer_index``, fewer than two or more than ten options, an empty question/option after trimming, or two
   options with identical trimmed text (option identity would no longer be answer identity for voting).
+* Source-item rule, across rows: rows whose trimmed question text is identical are one source item (the pinned
+  test split has 357 such groups, 391 extra rows, mostly one source question with regenerated distractors). Among
+  a group's rows without a per-row exclusion, the lowest ``question_id`` stays eligible and every other row is
+  excluded as ``duplicate_question_stem:mmlu_pro/<kept question_id>``. Panels drawn from the eligible inventory are
+  therefore source-item disjoint and never hold two variants of one question.
 """
 from __future__ import annotations
 
 import string
-from typing import Any, Mapping, Sequence
+from dataclasses import replace
+from typing import Any, Iterable, Mapping, Sequence
 
 from agent_allocation.benchmarks.text_manifest import (
     SourceIntegrityError,
@@ -147,8 +153,30 @@ def load_inventory(cfg: Mapping[str, Any], paths: RunPaths) -> list[InventoryIte
     entry = benchmark_config(cfg, BENCHMARK, source=SOURCE_REPO)
     if entry.get("split") != SOURCE_SPLIT:
         raise ValueError(f"{BENCHMARK}: config split {entry.get('split')!r} != pinned {SOURCE_SPLIT!r}")
-    items = [build_item(row) for row in read_rows()]
+    rows = read_rows()
+    items = [build_item(row) for row in rows]
     ids = [item.public.item_id for item in items]
     if len(set(ids)) != len(ids):
         raise SourceIntegrityError("MMLU-Pro: duplicate question_id")
-    return items
+    return apply_source_item_rule(items, (row["question"] for row in rows))
+
+
+def apply_source_item_rule(items: Sequence[InventoryItem], questions: Iterable[str]) -> list[InventoryItem]:
+    """Exclude all but the lowest ``question_id`` among eligible rows sharing a trimmed question text."""
+    questions = list(questions)
+    if len(questions) != len(items):
+        raise ValueError("one question text per item is required")
+    groups: dict[str, list[int]] = {}
+    for position, (item, question) in enumerate(zip(items, questions)):
+        if item.eligible:
+            groups.setdefault(trim_outer(question), []).append(position)
+    out = list(items)
+    for positions in groups.values():
+        if len(positions) < 2:
+            continue
+        ordered = sorted(positions, key=lambda position: int(items[position].public.item_id.split("/", 1)[1]))
+        kept = items[ordered[0]].public.item_id
+        for position in ordered[1:]:
+            out[position] = replace(items[position], eligible=False,
+                                    exclusion_reason=f"duplicate_question_stem:{kept}")
+    return out

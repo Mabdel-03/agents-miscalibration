@@ -1,6 +1,7 @@
 """Adapters: allowlisted public records, private gold, pinned sources, four BBH formats, legal MMLU choices."""
 from __future__ import annotations
 
+import collections
 import json
 import os
 import shutil
@@ -83,6 +84,19 @@ def test_mmlu_engineering_exclusions_have_reasons(over, reason):
     assert not item.eligible and item.exclusion_reason == reason
 
 
+def test_mmlu_duplicate_stems_keep_the_lowest_eligible_question_id():
+    rows = [_mmlu_row(question_id=30, question="Same stem?"),
+            _mmlu_row(question_id=12, question=" Same stem?\n", options=["x", "x", "y", "z"]),   # per-row exclusion
+            _mmlu_row(question_id=20, question="Same stem?", options=["p", "q", "r", "s"]),
+            _mmlu_row(question_id=5, question="Other stem?")]
+    items = mmlu_pro.apply_source_item_rule([mmlu_pro.build_item(row) for row in rows],
+                                            [row["question"] for row in rows])
+    by_id = {item.public.item_id: item for item in items}
+    assert by_id["mmlu_pro/20"].eligible and by_id["mmlu_pro/5"].eligible
+    assert by_id["mmlu_pro/30"].exclusion_reason == "duplicate_question_stem:mmlu_pro/20"
+    assert by_id["mmlu_pro/12"].exclusion_reason == "duplicate_option_text:A,B"
+
+
 def test_public_record_round_trips_through_the_codec():
     item = mmlu_pro.build_item(_mmlu_row())
     assert load_record(PublicTask, dump_record(item.public)) == item.public
@@ -107,10 +121,23 @@ def test_math500_inventory(math_inventory):
 @needs_mmlu_pro
 def test_mmlu_inventory_legal_choices_and_no_label_fields(mmlu_inventory):
     assert len(mmlu_inventory) == mmlu_pro.SOURCE_ROWS
-    assert exclusion_records(mmlu_inventory) == [{
-        "benchmark": "mmlu_pro", "item_id": "mmlu_pro/8584", "source_revision": mmlu_pro.SOURCE_REVISION,
-        "reason": "duplicate_option_text:A,D"}]
+    records = exclusion_records(mmlu_inventory)
+    reasons = collections.Counter(record["reason"].split(":")[0] for record in records)
+    assert reasons == {"duplicate_question_stem": 391, "duplicate_option_text": 1}
+    assert {"benchmark": "mmlu_pro", "item_id": "mmlu_pro/8584", "source_revision": mmlu_pro.SOURCE_REVISION,
+            "reason": "duplicate_option_text:A,D"} in records
     rows = {f"mmlu_pro/{row['question_id']}": row for row in mmlu_pro.read_rows()}
+    by_id = {item.public.item_id: item for item in mmlu_inventory}
+    stems = collections.Counter(mmlu_pro.trim_outer(rows[item.public.item_id]["question"])
+                                for item in mmlu_inventory if item.eligible)
+    assert max(stems.values()) == 1                                       # eligible items are source-item unique
+    for record in records:
+        if record["reason"].startswith("duplicate_question_stem:"):
+            kept = record["reason"].split(":", 1)[1]
+            assert by_id[kept].eligible
+            assert int(kept.split("/")[1]) < int(record["item_id"].split("/")[1])
+            assert (mmlu_pro.trim_outer(rows[kept]["question"])
+                    == mmlu_pro.trim_outer(rows[record["item_id"]]["question"]))
     for item in mmlu_inventory:
         public = item.public
         row = rows[public.item_id]
