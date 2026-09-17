@@ -31,7 +31,7 @@ from agent_allocation.analysis.costs import (
 from agent_allocation.analysis.itemmetrics import load_item_metrics
 from agent_allocation.analysis.load import RunData, load_run, resolve_config
 from agent_allocation.analysis.names import name_sort_key
-from agent_allocation.analysis.operations import generation_operations, retry_table, stop_reasons
+from agent_allocation.analysis.operations import generation_operations, grader_provenance, retry_table, stop_reasons
 from agent_allocation.analysis.outcomes import candidate_table, outcome_table
 from agent_allocation.analysis.reconcile import reconciliation, reconciliation_frame
 from agent_allocation.analysis.replay import replay
@@ -57,7 +57,8 @@ class Analysis:
     @property
     def final(self) -> bool:
         rec = self.extras.get("reconciliation")
-        return bool(self.status["complete"] and rec and rec["reconciled"])
+        return bool(self.status["complete"] and rec and rec["reconciled"]
+                    and not self.extras.get("non_production_graders"))
 
 
 def run_paths(run_dir: str | Path) -> RunPaths:
@@ -118,6 +119,7 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
     notes += replay_notes
     rec = reconciliation(run)
     charges, attempts_by_node, _ = attempt_charges(run)
+    provenance, stub_flags = grader_provenance(candidates)
 
     analysis.extras.update({
         "populations": populations, "primary": primary, "primary_estimates": estimates,
@@ -130,6 +132,7 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
         "operations_condensed": generation_operations(candidates, ("partition_id", "kind", "team_size", "update_round")),
         "retries": retry_table(run, charges, attempts_by_node),
         "stop_reasons": stop_reasons(run),
+        "grader_provenance": provenance, "non_production_graders": stub_flags,
         "notes": sorted(set(notes)), "warnings": _compact_warnings(warnings), "problems": sorted(set(problems)),
     })
     return analysis
@@ -267,7 +270,7 @@ TABLES = (
     ("policy_costs", "policy_costs"), ("cost_summary", "cost_summary"), ("frontier", "frontier_descriptive"),
     ("passk_summary", "pass_at_k_vs_readout"), ("transition_summary", "transitions_summary"),
     ("replay_items", "budget_replay_items"), ("replay_curves", "budget_replay_curves"),
-    ("operations", "operations"), ("retries", "billed_retries"),
+    ("operations", "operations"), ("retries", "billed_retries"), ("grader_provenance", "grader_provenance"),
 )
 
 

@@ -364,3 +364,21 @@ def test_agent06_metric_tables_cross_check(built_run, tmp_path):
     assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES)]) == 1
     checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
     assert checks.loc["agent06_metric_tables_agree", "status"] == "fail"
+
+
+def test_stub_grader_versions_are_labelled_and_block_final(built_run, tmp_path):
+    from agent_allocation.contracts import GradeResult, GradeStatus
+
+    paths = copy_run(built_run, tmp_path)
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    assert analysis.final and not analysis.extras["non_production_graders"]
+    code_nodes = [nid for nid, spec in analysis.run.jobs["main"].items() if spec.benchmark == "mbpp_plus"]
+    for nid in code_nodes:
+        grade = analysis.run.grades[nid]
+        stub = GradeResult(grade.candidate_id, grade.status, grade.semantic_correct, grade.operational_success,
+                           "qa-stub-code-v1", grade.private_eval_hash, detail_code="stub_code_grader")
+        paths.grade(nid).write_text(json.dumps(dump_record(stub)))
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    assert not analysis.final and analysis.extras["non_production_graders"]
+    text = (paths.reports_dir / "RUN_REPORT.md").read_text()
+    assert "STUB GRADING" in text and "qa-stub-code-v1" in text

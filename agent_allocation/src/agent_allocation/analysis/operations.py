@@ -7,6 +7,7 @@ Missing usage fields stay unknown and are counted, never read as zero.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import numpy as np
@@ -105,3 +106,27 @@ def stop_reasons(run: RunData) -> list[dict[str, Any]]:
         out.append({"source": f"gates/{gate.gate}_{gate.stage}.json", "field": "decision",
                     "value": f"{gate.decision} (passed={gate.passed})"})
     return out
+
+
+NON_PRODUCTION = re.compile(r"stub|fake|mock|synthetic|dummy", re.IGNORECASE)
+
+
+def grader_provenance(candidates: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Grader and public-checker versions per partition x benchmark, flagging non-production (stubbed) verdicts."""
+    if candidates.empty:
+        return pd.DataFrame(), []
+    rows: list[dict[str, Any]] = []
+    flagged: list[str] = []
+    for source, version_col, detail_col in (("private_grader", "grader_version", "grade_detail_code"),
+                                            ("public_checker", "checker_version", None)):
+        present = candidates[candidates[version_col].notna()]
+        for (partition, benchmark, version), group in present.groupby(["partition_id", "benchmark", version_col],
+                                                                       sort=True):
+            details = sorted({str(d) for d in group[detail_col].dropna()}) if detail_col else []
+            stub = bool(NON_PRODUCTION.search(str(version)) or any(NON_PRODUCTION.search(d) for d in details))
+            rows.append({"partition_id": partition, "benchmark": benchmark, "source": source, "version": version,
+                         "verdicts": int(len(group)), "non_production": stub})
+            if stub:
+                flagged.append(f"{source} {version!r} on {partition}/{benchmark} ({len(group)} verdicts) is a "
+                               "non-production (stub) grader: these verdicts are not study results")
+    return pd.DataFrame(rows), flagged

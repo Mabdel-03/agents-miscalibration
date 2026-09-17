@@ -129,6 +129,9 @@ def candidate_table(run: RunData) -> pd.DataFrame:
                 "actual_cost_usd": (str(usage.actual_cost_usd)
                                     if usage and usage.actual_cost_usd is not None else None),
                 "grade_status": grade.status.value if grade else None,
+                "grader_version": grade.grader_version if grade else None,
+                "grade_detail_code": grade.detail_code if grade else None,
+                "checker_version": check.checker_version if check else None,
                 "grade_state": gstate,
                 "correct": value,
                 "operational_success": (grade.operational_success if grade else None),
