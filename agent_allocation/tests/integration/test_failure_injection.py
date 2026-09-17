@@ -408,3 +408,48 @@ async def test_settling_one_attempt_twice_never_double_charges(run_paths):
     except Exception:
         pass
     assert ledger.snapshot().settled == Decimal("0.05")
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Grading outage (code): the sandbox is unavailable
+# --------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.sandbox
+def test_sandbox_outage_is_infrastructure_error_not_a_failed_program(run_paths, cfg, tmp_path, monkeypatch):
+    public = optional_module("agent_allocation.grading.code.public")
+    from agent_allocation.contracts import CheckStatus
+    items = {t.item_id: t for t, _, _ in adversarial.load_items()}
+    task = items["mbpp_plus/adv/1"]
+    node = next(iter(h.ref_graph(grids_from_config(cfg)["pilot_r1"], task).nodes.values()))
+    code = "def add_two(a, b):\n    return a + b"
+    cand = h.valid_candidate(node, task, content=f"<final>{code}</final>", final=code)
+    assert public.run_public_checks(cand, task).cases_passed == 1, "sanity: the sandbox works before the outage"
+    empty = tmp_path / "no_tools"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))                      # bwrap/prlimit can no longer be found
+    result = public.run_public_checks(cand, task)
+    assert result.status is CheckStatus.INFRASTRUCTURE_ERROR, (result.status, result.case_outcomes)
+    assert result.pass_fraction is None or result.cases_passed == 0
+
+
+def test_public_check_outage_pauses_the_code_selector(cfg):
+    readout = optional_module("agent_allocation.selection.readout")
+    from agent_allocation.contracts import (CheckStatus, CheckpointView, PolicyCheckpoint, PublicCheckResult,
+                                            SelectionStatus)
+    items = {t.item_id: t for t, _, _ in adversarial.load_items()}
+    task = items["mbpp_plus/adv/1"]
+    graph = h.ref_graph(grids_from_config(cfg)["main"], task)
+    ids = graph.checkpoints["peer/3/0"].candidate_ids
+    code = "def add_two(a, b):\n    return a + b"
+    cands = {i: h.valid_candidate(graph.nodes[i], task, content=f"<final>{code}</final>", final=code) for i in ids}
+    checks = {i: PublicCheckResult(i, task.item_id, "c" * 64, CheckStatus.OK, 1, 1, ("pass",), "v1", "p", "env", 0.1)
+              for i in ids}
+    broken = dict(checks)
+    broken[ids[1]] = PublicCheckResult(ids[1], task.item_id, "c" * 64, CheckStatus.INFRASTRUCTURE_ERROR, 1, 0,
+                                       ("error",), "v1", "p", "env", 0.0)
+    cp = PolicyCheckpoint(f"main/{task.item_id}/peer/3/0/current", task.item_id, "peer", 3, 3, 0, tuple(ids),
+                          tuple(ids), "public_tests_only", "v1", "main", "peer/3/0", CheckpointView.CURRENT, 1024)
+    ok_result = readout.select_checkpoint(cp, task, cands, checks, seed=cfg["seed"])
+    assert ok_result.status is SelectionStatus.SELECTED and ok_result.selected_candidate_id in ids
+    paused = readout.select_checkpoint(cp, task, cands, broken, seed=cfg["seed"])
+    assert paused.status is SelectionStatus.PAUSED_CHECK_ERROR and paused.selected_candidate_id is None, paused
