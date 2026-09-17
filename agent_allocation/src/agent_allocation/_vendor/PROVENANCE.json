@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "file": "ard_stats.py",
+    "origin": "src/agents_scaling/ard/stats.py",
+    "origin_commit": "e4b4037",
+    "origin_sha256": "e27ad9ae7ee63e2657c702960047ac9d95068341a722b9d754eae213f6548ab0",
+    "functions": [
+      "analysis_seed",
+      "Resampler",
+      "_norm_weights",
+      "_check_axis",
+      "paired_contrast",
+      "mean_ci",
+      "holm",
+      "StatsError",
+      "StatsAxisError"
+    ],
+    "changes": "agent 07: removed ARD36 module constants (DOMAINS, WEIGHTS, N_RESAMPLES, N_PRIMARY) and the agents_scaling.ard.contract import; domains, weights and n_primary are required keyword arguments with no default; alpha default 0.05; noninferiority_bound and max_t_family not copied; bodies otherwise verbatim"
+  }
+]
