@@ -151,17 +151,23 @@ def build_item_graph(grid: GridSpec, *, run_id: str, partition_id: str, task: Pu
     )
     nodes: list[GenerationSpec] = []
     by_id: dict[str, GenerationSpec] = {}
+    ids: dict[int, str] = {}          # id(spec) -> node_id; node_id re-hashes the whole spec on every access
+
+    def nid(node: GenerationSpec) -> str:
+        return ids[id(node)]
 
     def add(kind: GenerationKind, *, root_slot: int = 0, team_size: int = 0, update_round: int = 0,
             parents: Sequence[GenerationSpec] = (), budget: int = base_budget) -> GenerationSpec:
         node = GenerationSpec(kind=kind, reasoning_budget=budget, root_slot=root_slot, team_size=team_size,
-                              update_round=update_round, parent_ids=tuple(p.node_id for p in parents), **common)
-        if node.node_id in by_id:
+                              update_round=update_round, parent_ids=tuple(nid(p) for p in parents), **common)
+        node_id = node.node_id
+        if node_id in by_id:
             raise GridError(f"duplicate generation node {kind.value} slot={root_slot} n={team_size} r={update_round}")
         missing = [p for p in node.parent_ids if p not in by_id]
         if missing:
             raise GridError(f"parent emitted after child: {missing}")
-        by_id[node.node_id] = node
+        by_id[node_id] = node
+        ids[id(node)] = node_id
         nodes.append(node)
         return node
 
@@ -201,13 +207,13 @@ def build_item_graph(grid: GridSpec, *, run_id: str, partition_id: str, task: Pu
     if len(nodes) != expected_node_count(grid):
         raise GridError(f"grid {grid.name!r}: built {len(nodes)} nodes, expected {expected_node_count(grid)}")
 
-    position = {node.node_id: i for i, node in enumerate(nodes)}
+    position = {nid(node): i for i, node in enumerate(nodes)}
     selector = selector_for(task)
     checkpoints: list[PolicyCheckpoint] = []
 
     def ancestors_of(pool: Sequence[GenerationSpec]) -> tuple[str, ...]:
         found: set[str] = set()
-        todo = [p.node_id for p in pool]
+        todo = [nid(p) for p in pool]
         while todo:
             key = todo.pop()
             if key not in found:
@@ -218,7 +224,7 @@ def build_item_graph(grid: GridSpec, *, run_id: str, partition_id: str, task: Pu
     def checkpoint(name: str, family: str, pool: Sequence[GenerationSpec], *, team_size: int, total_cycles: int,
                    peer_rounds: int, budget: int = base_budget) -> None:
         required = ancestors_of(pool)
-        current = tuple(p.node_id for p in pool)
+        current = tuple(nid(p) for p in pool)
         if len(set(current)) != len(current):
             raise GridError(f"checkpoint {name}: duplicate candidate in pool")
         for view, candidates in ((CheckpointView.CURRENT, current), (CheckpointView.ARCHIVE, required)):

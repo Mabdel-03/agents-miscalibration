@@ -15,10 +15,11 @@ Config keys consumed (R9): none.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping
 
-from agent_allocation.contracts import GenerationResult, ItemGraph, PolicyCheckpoint, TransportStatus
+from agent_allocation.contracts import GenerationResult, GenerationSpec, ItemGraph, PolicyCheckpoint, TransportStatus
 
 _USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_prompt_tokens")
 
@@ -27,22 +28,45 @@ class PolicyCostError(ValueError):
     """A checkpoint that references nodes its graph does not contain, or whose declared ancestry is wrong."""
 
 
+@dataclass(frozen=True)
+class _GraphIndex:
+    nodes: dict[str, GenerationSpec]
+    position: dict[str, int]
+    parents: dict[str, tuple[str, ...]]
+
+
+_INDEX_CACHE: list[tuple[ItemGraph, _GraphIndex]] = []
+_INDEX_CACHE_SIZE = 8
+
+
+def _index(graph: ItemGraph) -> _GraphIndex:
+    """Node lookup for one graph, built once: ``GenerationSpec.node_id`` re-hashes the spec on every access."""
+    for cached, index in _INDEX_CACHE:
+        if cached is graph:
+            return index
+    ids = [node.node_id for node in graph.nodes]
+    index = _GraphIndex(nodes=dict(zip(ids, graph.nodes)), position={node_id: i for i, node_id in enumerate(ids)},
+                        parents={node_id: node.parent_ids for node_id, node in zip(ids, graph.nodes)})
+    _INDEX_CACHE.insert(0, (graph, index))
+    del _INDEX_CACHE[_INDEX_CACHE_SIZE:]
+    return index
+
+
 def policy_ancestors(graph: ItemGraph, checkpoint: PolicyCheckpoint) -> tuple[str, ...]:
     """Every node needed to deploy ``checkpoint`` from scratch: its candidates and their ancestors, deduplicated,
     in the graph's topological order."""
-    position = {node.node_id: i for i, node in enumerate(graph.nodes)}
-    parents = {node.node_id: node.parent_ids for node in graph.nodes}
+    index = _index(graph)
     found: set[str] = set()
     todo = list(checkpoint.candidate_ids)
     while todo:
         key = todo.pop()
         if key in found:
             continue
-        if key not in parents:
+        if key not in index.parents:
             raise PolicyCostError(f"{checkpoint.policy_id}: node {key} is not in graph {graph.item_id}")
         found.add(key)
-        todo.extend(parents[key])
-    return tuple(sorted(found, key=position.__getitem__))
+        todo.extend(index.parents[key])
+    return tuple(sorted(found, key=index.position.__getitem__))
 
 
 def _sum_optional(values: list[Any]) -> Any:
@@ -53,7 +77,7 @@ def _sum_optional(values: list[Any]) -> Any:
 def _critical_path(graph: ItemGraph, required: tuple[str, ...],
                    results: Mapping[str, GenerationResult]) -> tuple[int, float | None]:
     """Longest parent chain inside the ancestor set (nodes) and its summed latency (None if any latency unknown)."""
-    parents = {node.node_id: node.parent_ids for node in graph.nodes}
+    parents = _index(graph).parents
     depth: dict[str, int] = {}
     latency: dict[str, float | None] = {}
     for node_id in required:  # topological order
@@ -73,16 +97,16 @@ def _critical_path(graph: ItemGraph, required: tuple[str, ...],
 
 def policy_cost_rows(graph: ItemGraph, results: Mapping[str, GenerationResult]) -> list[dict[str, Any]]:
     """One row per checkpoint (both views): nominal generations/allowances and realized usage/cost of ancestors."""
-    nodes = {node.node_id: node for node in graph.nodes}
+    nodes = _index(graph).nodes
     rows: list[dict[str, Any]] = []
     for checkpoint in graph.checkpoints:
         required = policy_ancestors(graph, checkpoint)
         if set(required) != set(checkpoint.required_node_ids) or len(required) != len(checkpoint.required_node_ids):
             raise PolicyCostError(f"{checkpoint.policy_id}: declared required_node_ids differ from recomputed ancestry")
         present = [results[n] for n in required if n in results]
-        for result in present:
-            if result.node_id not in nodes:
-                raise PolicyCostError(f"result for unknown node {result.node_id}")
+        for node_id in required:
+            if node_id in results and results[node_id].node_id != node_id:
+                raise PolicyCostError(f"result keyed {node_id} belongs to node {results[node_id].node_id}")
         row: dict[str, Any] = {
             "policy_id": checkpoint.policy_id,
             "partition_id": checkpoint.partition_id,
