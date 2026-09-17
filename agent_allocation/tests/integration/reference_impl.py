@@ -430,3 +430,62 @@ def scan_tree_for_canaries(root: Path, canaries: Mapping[str, str], *,
 
 def text_contains_canary(text: str, canaries: Mapping[str, str]) -> list[str]:
     return [name for name, value in canaries.items() if value in text]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Collection vs policy accounting (spec 7.1 / 7.2, acceptance 15.7)
+# ---------------------------------------------------------------------------------------------------------
+
+def _sum_or_none(values: Sequence[Any]) -> Any:
+    if any(v is None for v in values):
+        return None
+    return sum(values[1:], values[0]) if values else 0
+
+
+def policy_cost_reference(graph: RefGraph, usage_by_node: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per checkpoint: each ancestor charged exactly once; reasoning is a subset of completion (never added);
+    any missing field makes the total unknown (None) instead of silently smaller."""
+    out: dict[str, dict[str, Any]] = {}
+    for name in graph.checkpoints:
+        anc = sorted(graph.ancestors_of(name))
+        us = [usage_by_node[n] for n in anc]
+        out[name] = {
+            "nominal_generations": len(anc),
+            "requested_reasoning": sum(graph.nodes[n].reasoning_budget for n in anc),
+            "cost_usd": _sum_or_none([u.actual_cost_usd for u in us]),
+            "prompt_tokens": _sum_or_none([u.prompt_tokens for u in us]),
+            "completion_tokens": _sum_or_none([u.completion_tokens for u in us]),
+            "reasoning_tokens": _sum_or_none([u.reasoning_tokens for u in us]),
+        }
+    return out
+
+
+def collection_cost_reference(usage_by_node: Mapping[str, Any]) -> Decimal:
+    return sum((u.actual_cost_usd for u in usage_by_node.values()), Decimal(0))
+
+
+def binding_cap(reasoning_budget: int, reasoning_tokens: int | None, finish_reason: str | None) -> bool | None:
+    """Was the requested allowance binding? Unknown reasoning usage without a length stop is unknown."""
+    if finish_reason == "length":
+        return True
+    if reasoning_tokens is None:
+        return None
+    return reasoning_tokens >= reasoning_budget
+
+
+def delivered_accuracy_reference(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """rows: {policy_id, status, selected_candidate_id, correct: bool|None}. All-null 'selected' rows block."""
+    rows = list(rows)
+    if not rows:
+        raise ValueError("no selector rows: blocker, not zero accuracy")
+    broken = [r["policy_id"] for r in rows if r["status"] == "selected" and r["selected_candidate_id"] is None]
+    if broken:
+        raise ValueError(f"selector rows claim a selection but carry none: {broken[:3]}")
+    known = [r for r in rows if r["status"] != "paused_public_check_error"]
+    if not known:
+        raise ValueError("every selector row is paused: blocker")
+    correct = sum(1 for r in known if r.get("correct") is True)
+    unknown = sum(1 for r in known if r["status"] in {"selected", "single_candidate"} and r.get("correct") is None)
+    n = len(known)
+    return {"n": n, "lower": Fraction(correct, n), "upper": Fraction(correct + unknown, n),
+            "abstained": sum(1 for r in known if r["status"] == "abstained_all_invalid")}
