@@ -143,32 +143,43 @@ def accuracy_summary(outcomes: pd.DataFrame, *, by: Sequence[str] = ("partition_
 def weighted_means(frame: pd.DataFrame, group_cols: Sequence[str], value_cols: Sequence[str]) -> pd.DataFrame:
     """Equal-benchmark / equal-BBH-subtask weighted means of item-level columns at benchmark and macro level.
 
-    Each value uses the items where it is known; ``n_<col>_unknown`` counts the rest and ``<col>_complete`` says
-    whether the fixed population was fully known.
+    Each stratum mean uses the items where the value is known; ``n_<col>_unknown`` counts the rest and
+    ``<col>_complete`` says whether the fixed population was fully known. A level whose stratum has no known value
+    for a column reports ``None`` for that column. One vectorized groupby; weights combine per outer group.
     """
-    rows: list[dict[str, Any]] = []
     if frame.empty:
-        return pd.DataFrame(rows)
-    for keys, group in frame.groupby(list(group_cols), sort=True, dropna=False):
-        keys = keys if isinstance(keys, tuple) else (keys,)
-        base = dict(zip(group_cols, keys))
-        strata = strata_order(set(group["stratum"].dropna()))
+        return pd.DataFrame()
+    group_cols = list(group_cols)
+    value_cols = list(value_cols)
+    values = frame[value_cols].apply(pd.to_numeric, errors="coerce").astype(float)
+    keys = group_cols + ["stratum"]
+    work = pd.concat([frame[keys].reset_index(drop=True), values.reset_index(drop=True)], axis=1)
+    known = values.notna().reset_index(drop=True).add_prefix("__known_")
+    work = pd.concat([work, known], axis=1)
+    grouped = work.groupby(keys, sort=True, dropna=False)
+    means = grouped[value_cols].mean()
+    known_counts = grouped[[f"__known_{c}" for c in value_cols]].sum()
+    sizes = grouped.size()
+    by_outer: dict[tuple, dict[str, tuple[dict, dict, int]]] = {}
+    for key, mean_row, known_row, size in zip(means.index, means.to_dict("records"),
+                                              known_counts.to_dict("records"), sizes.to_numpy()):
+        key = key if isinstance(key, tuple) else (key,)
+        by_outer.setdefault(key[:-1], {})[key[-1]] = (mean_row, known_row, int(size))
+    rows: list[dict[str, Any]] = []
+    for outer, strata_map in by_outer.items():
+        strata = strata_order(strata_map)
         levels = [("macro", stratum_weights(strata))] + [
             (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
                                                                    key=BENCHMARKS.index)]
-        by_stratum = {s: group[group["stratum"] == s] for s in strata}
+        base = dict(zip(group_cols, outer))
         for level, weights in levels:
             row = {**base, "level": "macro" if level == "macro" else "benchmark", "benchmark": level,
-                   "n_items": int(sum(len(by_stratum[s]) for s in weights))}
+                   "n_items": int(sum(strata_map[s][2] for s in weights))}
             for col in value_cols:
-                parts = []
-                unknown = 0
-                for s, w in weights.items():
-                    values = pd.to_numeric(by_stratum[s][col], errors="coerce").astype(float)
-                    unknown += int(values.isna().sum())
-                    parts.append((w, float(values.mean()) if values.notna().any() else math.nan))
+                parts = [(w, float(strata_map[s][0][col])) for s, w in weights.items()]
+                n_unknown = int(sum(strata_map[s][2] - int(strata_map[s][1][f"__known_{col}"]) for s in weights))
                 row[col] = None if any(math.isnan(v) for _, v in parts) else math.fsum(w * v for w, v in parts)
-                row[f"n_{col}_unknown"] = unknown
-                row[f"{col}_complete"] = unknown == 0
+                row[f"n_{col}_unknown"] = n_unknown
+                row[f"{col}_complete"] = n_unknown == 0
             rows.append(row)
     return pd.DataFrame(rows)

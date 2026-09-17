@@ -41,6 +41,8 @@ def readout_label(benchmark: str) -> str:
 
 
 def _candidate_state(run: RunData, node_id: str) -> str:
+    if run.terminal_without_output(node_id) is not None:
+        return "invalid"                      # no output: an operational failure, never a semantic answer
     if node_id not in run.parsed:
         return "unknown"
     value, state = grade_value(run.grades.get(node_id))

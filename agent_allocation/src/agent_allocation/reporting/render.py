@@ -6,7 +6,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -29,7 +29,9 @@ def fmt(value: Any, digits: int = 4) -> str:
 
 
 def md_table(frame: pd.DataFrame | Sequence[dict[str, Any]], columns: Sequence[str] | None = None,
-             headers: Sequence[str] | None = None, digits: int = 4, max_rows: int | None = None) -> str:
+             headers: Sequence[str] | None = None, digits: int | Mapping[str, int] = 4,
+             max_rows: int | None = None) -> str:
+    """``digits`` is one precision for every float cell or a ``{column: precision}`` map (default 4)."""
     if not isinstance(frame, pd.DataFrame):
         frame = pd.DataFrame(list(frame))
     if frame.empty:
@@ -39,7 +41,8 @@ def md_table(frame: pd.DataFrame | Sequence[dict[str, Any]], columns: Sequence[s
     lines = ["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]
     shown = frame if max_rows is None else frame.head(max_rows)
     for _, row in shown.iterrows():
-        cells = [fmt(row[c], digits).replace("|", "\\|") if c in row else "" for c in columns]
+        cells = [fmt(row[c], digits.get(c, 4) if isinstance(digits, Mapping) else digits).replace("|", "\\|")
+                 if c in row else "" for c in columns]
         lines.append("| " + " | ".join(cells) + " |")
     if max_rows is not None and len(frame) > max_rows:
         lines.append(f"\n_{len(frame) - max_rows} more rows in the exported table._")
@@ -71,7 +74,7 @@ def write_table(frame: pd.DataFrame, tables_dir: Path, name: str) -> list[Path]:
 def _parquet_safe(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     for col in out.columns:
-        if out[col].dtype == "object":
+        if pd.api.types.is_object_dtype(out[col]):
             values = [v for v in out[col] if v is not None and not (isinstance(v, float) and math.isnan(v))]
             kinds = {type(v) for v in values}
             if kinds and not kinds <= {bool} and not kinds <= {int, float} and not kinds <= {str}:
