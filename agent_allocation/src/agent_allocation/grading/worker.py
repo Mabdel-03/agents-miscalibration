@@ -23,7 +23,9 @@ present, else ``--config``, else ``configs/balanced150.json``).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
+import fcntl
 import importlib
 import json
 import os
@@ -250,6 +252,23 @@ class GradeRefused(RuntimeError):
     pass
 
 
+@contextlib.contextmanager
+def single_grader_lock(paths: RunPaths):
+    """One grader per run dir: supersede moves and cache writes assume a single writer. POSIX lock, fail closed."""
+    paths.grade_cache_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(paths.grade_cache_dir, PRIVATE_DIR_MODE)
+    fd = os.open(paths.grade_cache_dir / ".grader.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise GradeRefused(f"another grader holds {paths.grade_cache_dir / '.grader.lock'} "
+                               f"(or locking is unsupported: errno {exc.errno})") from exc
+        yield
+    finally:
+        os.close(fd)
+
+
 def _resolve_profile(paths: RunPaths, config: str | None) -> profile_mod.GradingProfile:
     if config:
         source = Path(config)
@@ -288,6 +307,13 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     Identical code for the same item shares one sandbox run within a pass and across passes (cache); every
     candidate still gets its own record. The parent process is the only writer.
     """
+    with single_grader_lock(paths):
+        return _grade_pass_locked(paths, profile, resume=resume, workers=workers, text_grader=text_grader, log=log,
+                                  finished=finished)
+
+
+def _grade_pass_locked(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: bool, workers: int,
+                       text_grader: str, log, finished: set[str] | None) -> dict[str, int]:
     from agent_allocation.grading.code.private import GRADER_VERSION
     from agent_allocation.grading.code.public import CHECKER_VERSION, code_sha256
 

@@ -316,3 +316,24 @@ def test_cache_entries_are_self_describing_and_tamper_evident(run_paths):
     _write_parsed(run_paths, extra)
     counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=True, workers=0)
     assert counts["grades_cached"] == 0 and counts["grades_written"] == 1
+
+
+def test_a_second_grader_on_the_same_run_dir_is_refused(run_paths):
+    import subprocess
+    import sys
+    _synthetic_run(run_paths, [GOOD_PROGRAM])
+    lock = run_paths.grade_cache_dir / ".grader.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c",
+                               "import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n"
+                               "fcntl.lockf(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(30)\n", str(lock)],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(worker.GradeRefused):
+            worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0)
+        assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"]) == worker.EXIT_BLOCKED
+    finally:
+        holder.kill()
+        holder.wait()
+    assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"]) == 0
