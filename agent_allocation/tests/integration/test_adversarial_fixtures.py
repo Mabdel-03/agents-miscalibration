@@ -73,13 +73,20 @@ def test_duplicate_completion_fixture_contains_duplicates():
 def test_selector_fixtures_load_and_are_null():
     null_rows = [load_record(SelectionResult, r) for r in adversarial.load_jsonl("selector_all_null.jsonl")]
     assert null_rows and all(r.selected_candidate_id is None for r in null_rows)
-    assert all(r.status == SelectionStatus.SELECTED.value for r in null_rows)
+    assert all(r.status is SelectionStatus.SELECTED for r in null_rows)
     abstained = [load_record(SelectionResult, r) for r in adversarial.load_jsonl("selector_abstained.jsonl")]
-    assert all(r.status == SelectionStatus.ABSTAINED_ALL_INVALID.value for r in abstained)
+    assert all(r.status is SelectionStatus.ABSTAINED_ALL_INVALID for r in abstained)
 
 
 def test_grade_fixture_states():
-    for row in adversarial.load_jsonl("grades_unknown.jsonl"):
+    import pytest
+    rows = adversarial.load_jsonl("grades_unknown.jsonl")
+    assert sum(r["expected_state"] == "load_error" for r in rows) >= 5
+    for row in rows:
+        if row["expected_state"] == "load_error":
+            with pytest.raises((ValueError, TypeError)):
+                load_record(GradeResult, row["record"])
+            continue
         grade = load_record(GradeResult, row["record"])
         assert tri_state(grade) == row["expected_state"], row["case"]
 

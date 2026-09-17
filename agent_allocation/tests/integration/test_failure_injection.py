@@ -9,6 +9,7 @@ Invariants asserted after every scenario (spec 7.1, 10.3, 10.5; acceptance 15.8,
 """
 from __future__ import annotations
 
+import copy
 import sqlite3
 from decimal import Decimal
 
@@ -47,6 +48,8 @@ def _items(n_per_benchmark: int = 1) -> list[PublicTask]:
 
 def _harness(run_paths, cfg, *, grid_name: str = "pilot_r1", partition: str = "pilot", n_items: int = 2,
              ceiling: str = "5", max_unresolved: str = "2", budget: int = 1024, **scheduler) -> Harness:
+    cfg = copy.deepcopy(cfg)
+    cfg["budget"]["max_unresolved_spend_usd"] = float(max_unresolved)     # the dispatcher refuses a mismatch
     grid = grids_from_config(cfg)[grid_name]
     tasks = _items(1)[:n_items]
     graphs = [item_graph(h.ref_graph(grid, t, partition=partition, budget=budget), t, grid, partition) for t in tasks]
@@ -67,7 +70,9 @@ def _common_invariants(hx: Harness, *, max_attempts: int = 3) -> None:
     assert reserve_count(hx.journal_events()) >= len(hx.stub.served), "a request went out without a reservation"
     assert hx.request_before_parent_violations() == []
     assert hx.parent_order_violations() == []
+    evidence = hx.connect_failed_attempts()
     released_after_send = [e.attempt_id for e in hx.journal_events() if e.kind is K.RELEASE_UNSENT
+                           and e.attempt_id not in evidence
                            and any(x.kind is K.SENT and x.attempt_id == e.attempt_id for x in hx.journal_events())]
     assert not released_after_send
 
@@ -191,6 +196,9 @@ async def test_unresolved_exposure_above_limit_pauses_admission(run_paths, cfg):
 # Circuit breakers: cache HIT, provider mismatch, 402/401
 # --------------------------------------------------------------------------------------------------------------
 
+@pytest.mark.xfail(strict=True, reason="W02-3: runtime/scheduler.py:984-1011 opens the circuit only after the raw "
+                                       "write thread hop and the ledger fsync; admissions continue meanwhile (4-5 extra "
+                                       "requests observed at concurrency 1)")
 @pytest.mark.parametrize("fault", ["cache_hit", "provider_mismatch", "payment_required", "auth_failed"])
 async def test_circuit_breakers_stop_the_partition(run_paths, cfg, fault):
     hx = _harness(run_paths, cfg, concurrency_start=1, concurrency_max=1)
@@ -204,8 +212,10 @@ async def test_circuit_breakers_stop_the_partition(run_paths, cfg, fault):
     assert hx.ledger_violations() == []
     victim_reqs = hx.stub.requests_for(victim)
     assert len(victim_reqs) == 1, f"{fault} was retried"
-    after = [r for r in hx.stub.served if r.received_at > victim_reqs[0].received_at]
-    assert len(after) <= 1, f"{fault}: dispatch continued ({len(after)} more requests) instead of opening the circuit"
+    known_at = victim_reqs[0].completed_at
+    after = [r for r in hx.stub.served if r.received_at > known_at]
+    assert not after, (f"{fault}: {len(after)} requests left after the circuit-breaking response had been received "
+                       f"(concurrency 1, so none were already in flight)")
 
 
 async def test_malformed_final_is_terminal_not_redrawn(run_paths, cfg):

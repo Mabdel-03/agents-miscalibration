@@ -128,8 +128,22 @@ class Harness:
         journal_mod = optional_module("agent_allocation.storage.journal")
         return list(journal_mod.LedgerJournal(self.paths.ledger_journal, group_commit_ms=1).replay())
 
+    def connect_failed_attempts(self) -> set[str]:
+        """Independent evidence from the wire log: the k-th SENT attempt of a node is its k-th served request."""
+        sent: dict[str, list[str]] = {}
+        for ev in self.journal_events():
+            if ev.kind is LedgerEventKind.SENT and ev.attempt_id:
+                sent.setdefault(ev.attempt_id.rsplit(":", 1)[0], []).append(ev.attempt_id)
+        out = set()
+        for node, attempts in sent.items():
+            for attempt, req in zip(attempts, self.stub.requests_for(node)):
+                if req.outcome == "connect":
+                    out.add(attempt)
+        return out
+
     def ledger_violations(self, ceiling: Decimal | None = None) -> list[str]:
-        return LedgerChecker(ceiling or self.ceiling).replay(self.journal_events()).violations
+        return LedgerChecker(ceiling or self.ceiling, connect_failed=self.connect_failed_attempts()) \
+            .replay(self.journal_events()).violations
 
     def events_for(self, attempt_prefix: str):
         return [e for e in self.journal_events() if (e.attempt_id or "").startswith(attempt_prefix)]
