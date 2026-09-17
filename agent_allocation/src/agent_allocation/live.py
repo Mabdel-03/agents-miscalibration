@@ -43,7 +43,8 @@ def rehearsal_transport():
 CANARY_BUDGETS = (512, 1024, 2048, 4096, 8192, 16384)
 CANARY_CODE_BUDGETS = (1024, 4096)
 PILOT_CEILING_USD = Decimal("5")
-BUDGET_STOP_TEST_CEILING_USD = Decimal("0.25")
+BUDGET_STOP_TEST_CEILING_USD = Decimal("0.10")     # ~150 real pilot calls, leaving ~300 for the kill/resume test
+REHEARSAL_BUDGET_STOP_CEILING_USD = Decimal("0.03")
 
 
 class RunRefused(RuntimeError):
@@ -705,7 +706,7 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     report: dict[str, Any] = {"started_at": utcnow()}
     # 1) budget-stop test: a ceiling just above current spend must stop admissions without over-reserving
     settled = ledger_settled(paths)
-    stop_ceiling = settled + BUDGET_STOP_TEST_CEILING_USD
+    stop_ceiling = settled + (REHEARSAL_BUDGET_STOP_CEILING_USD if rehearsal() else BUDGET_STOP_TEST_CEILING_USD)
     seq0 = last_journal_seq(paths)
     summary = await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid, max_usd=pilot_cap,
                              ceiling=stop_ceiling, api_key=api_key)
