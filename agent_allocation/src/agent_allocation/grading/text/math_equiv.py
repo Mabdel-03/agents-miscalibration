@@ -1,32 +1,47 @@
 """Pinned Math-Verify evaluation: gold grading (one direction, documented order) and the gold-blind symmetric
 equivalence helper exported to agent 06 for MATH voting classes.
 
-Parse rule ``math-parse-v1`` (applied identically to gold answers and candidate finals):
-strip outer whitespace; if the text already carries a ``\\boxed`` expression or starts with ``$``, ``\\(`` or
-``\\[``, parse it as written first; otherwise (or if that yields nothing) parse ``\\boxed{<text>}``. Parsing uses
-``math_verify.parse`` with its default extraction targets (LaTeX, then plain expression), ``raise_on_error=True``.
+Parse rule ``math-parse-v2`` (applied identically to gold answers and candidate finals; gold-blind):
+
+1. strip outer whitespace; remove one enclosing markdown bold pair ``**...**``; drop one trailing ``.``;
+2. if the text carries a ``\\boxed`` expression, an unescaped ``$``, or starts with ``\\(`` / ``\\[``, parse it as
+   written first (Math-Verify extracts the delimited math);
+3. otherwise, or if that yields nothing, parse ``\\boxed{<text>}``, so a bare expression such as ``2\\sqrt{2}`` or
+   ``x^2 + 1`` is read whole (parsing bare text as written extracts fragments like ``2`` or ``1``).
+
+Parsing uses ``math_verify.parse`` with its default extraction targets (LaTeX, then plain expression),
+``raise_on_error=True``. Prose finals without delimiters ("The answer is 5") violate the output requirement and
+are not rescued: they parse as a product of symbols and grade as not equal.
 
 Comparison: ``math_verify.verify(gold, prediction)`` exactly in that argument order (Math-Verify documents that
 ``verify`` is not symmetric), ``raise_on_error=True``, default float rounding/precision/strictness.
 
 Time bound: one SIGALRM wall-clock limit (``_limits.wall_clock_limit``) covers every parse and comparison of a
-call. Math-Verify's own per-operation alarms are disabled so they cannot re-arm or cancel that limit. Calls must
-therefore run on the main thread of a (worker) process; elsewhere they raise ``EvaluatorUnavailable`` rather
-than running unbounded. Any exception or timeout is reported as unknown, never as a mismatch.
+call. Math-Verify's own per-operation alarms are disabled so they cannot re-arm or cancel that limit. On the main
+thread of a (worker) process the work runs in-process. Off the main thread, where SIGALRM is unavailable, the call
+is delegated to a persistent isolated child process (``_isolated``) that applies the same limit on its main thread
+and is hard-killed if it overruns ``timeout_s + grace``. Any exception, timeout or evaluator outage is reported as
+unknown, never as a mismatch.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import metadata
 from typing import Any
 
-from agent_allocation.grading.text._limits import EvaluatorTimeout, EvaluatorUnavailable, wall_clock_limit
+from agent_allocation.grading.text._limits import (
+    EvaluatorTimeout,
+    EvaluatorUnavailable,
+    signal_bounds_available,
+    wall_clock_limit,
+)
 
-MATH_PARSE_VERSION = "math-parse-v1"
+MATH_PARSE_VERSION = "math-parse-v2"
 DEFAULT_TIMEOUT_S = 5.0
 _DISTRIBUTIONS = ("math-verify", "latex2sympy2_extended", "sympy", "antlr4-python3-runtime")
 
@@ -52,29 +67,44 @@ def environment_digest() -> str:
     return hashlib.sha256(json.dumps(dependency_versions(), sort_keys=True).encode()).hexdigest()
 
 
+@lru_cache(maxsize=1)
 def _math_verify() -> tuple[Any, Any]:
+    """Import Math-Verify and warm up its LaTeX parser once, outside any alarm window.
+
+    Called before a wall-clock limit is armed, so a short limit can never interrupt a module import or the lazy
+    construction of the ANTLR parser and leave half-initialized global state behind.
+    """
     import math_verify.grader as mv_grader
     import math_verify.parser as mv_parser
 
     # We pass timeout None (our single SIGALRM limit replaces theirs); silence their one-time warning about it.
     mv_parser.TIMEOUT_WARNING_SHOWN = True
     mv_grader.TIMEOUT_WARNING_SHOWN = True
+    warm = mv_parser.parse("\\boxed{\\frac{1}{2}}", parsing_timeout=None, raise_on_error=True)
+    mv_grader.verify(warm, warm, timeout_seconds=None, raise_on_error=True)
     return mv_parser.parse, mv_grader.verify
+
+
+_UNESCAPED_DOLLAR = re.compile(r"(?<!\\)\$")
 
 
 def _documents(answer: str) -> list[str]:
     text = answer.strip()
+    if len(text) > 4 and text.startswith("**") and text.endswith("**"):
+        text = text[2:-2].strip()
+    if text.endswith(".") and len(text) > 1:
+        text = text[:-1].rstrip()
     if not text:
         return []
     documents = []
-    if "\\boxed" in text or text.startswith(("$", "\\(", "\\[")):
+    if "\\boxed" in text or _UNESCAPED_DOLLAR.search(text) or text.startswith(("\\(", "\\[")):
         documents.append(text)
     documents.append("\\boxed{" + text + "}")
     return documents
 
 
 def parse_answer(answer: str) -> list[Any]:
-    """Math-Verify parse of one answer under ``math-parse-v1``; must run inside a wall-clock limit."""
+    """Math-Verify parse of one answer under ``math-parse-v2``; must run inside a wall-clock limit."""
     parse, _ = _math_verify()
     for document in _documents(answer):
         parsed = parse(document, parsing_timeout=None, raise_on_error=True)
@@ -100,8 +130,21 @@ def verify_gold(gold_answer: str, candidate_answer: str, *, timeout_s: float = D
 
     Codes: ``math_verify_equal`` / ``math_verify_not_equal`` (known), ``candidate_unparseable`` (no expression
     could be extracted from the candidate final: an output problem, not a wrong answer), ``gold_unparseable``,
-    ``timeout``, ``evaluator_exception:<Type>`` (unknown).
+    ``timeout``, ``evaluator_exception:<Type>``, ``evaluator_unavailable`` (unknown).
     """
+    if not signal_bounds_available():
+        from agent_allocation.grading.text._isolated import shared_evaluator
+        try:
+            return shared_evaluator().call("verify_gold", (gold_answer, candidate_answer),
+                                           {"timeout_s": timeout_s}, timeout_s)
+        except EvaluatorTimeout:
+            return MathVerdict(None, "timeout")
+        except EvaluatorUnavailable:
+            return MathVerdict(None, "evaluator_unavailable")
+    try:
+        _math_verify()
+    except Exception as exc:  # noqa: BLE001 - an unimportable evaluator is an outage, not a wrong answer
+        return MathVerdict(None, f"evaluator_exception:{type(exc).__name__}")
     try:
         with wall_clock_limit(timeout_s):
             gold = parse_answer(gold_answer)
@@ -125,8 +168,18 @@ def math_equivalent(a: str, b: str, *, timeout_s: float = 5.0) -> bool | None:
 
     ``True`` only when ``verify(parse(a), parse(b))`` and ``verify(parse(b), parse(a))`` both hold; ``False``
     when both answers parse and at least one direction fails; ``None`` when either answer does not parse, on
-    timeout, or on any evaluator exception. Raises ``EvaluatorUnavailable`` off the main thread.
+    timeout, or on any evaluator exception or outage. Off the main thread it runs in the isolated child process.
     """
+    if not signal_bounds_available():
+        from agent_allocation.grading.text._isolated import shared_evaluator
+        try:
+            return shared_evaluator().call("math_equivalent", (a, b), {"timeout_s": timeout_s}, timeout_s)
+        except (EvaluatorTimeout, EvaluatorUnavailable):
+            return None
+    try:
+        _math_verify()
+    except Exception:  # noqa: BLE001
+        return None
     try:
         with wall_clock_limit(timeout_s):
             parsed_a = parse_answer(a)

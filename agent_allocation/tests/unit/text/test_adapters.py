@@ -1,6 +1,7 @@
 """Adapters: allowlisted public records, private gold, pinned sources, four BBH formats, legal MMLU choices."""
 from __future__ import annotations
 
+import collections
 import json
 import os
 import shutil
@@ -83,6 +84,19 @@ def test_mmlu_engineering_exclusions_have_reasons(over, reason):
     assert not item.eligible and item.exclusion_reason == reason
 
 
+def test_mmlu_duplicate_stems_keep_the_lowest_eligible_question_id():
+    rows = [_mmlu_row(question_id=30, question="Same stem?"),
+            _mmlu_row(question_id=12, question=" Same stem?\n", options=["x", "x", "y", "z"]),   # per-row exclusion
+            _mmlu_row(question_id=20, question="Same stem?", options=["p", "q", "r", "s"]),
+            _mmlu_row(question_id=5, question="Other stem?")]
+    items = mmlu_pro.apply_source_item_rule([mmlu_pro.build_item(row) for row in rows],
+                                            [row["question"] for row in rows])
+    by_id = {item.public.item_id: item for item in items}
+    assert by_id["mmlu_pro/20"].eligible and by_id["mmlu_pro/5"].eligible
+    assert by_id["mmlu_pro/30"].exclusion_reason == "duplicate_question_stem:mmlu_pro/20"
+    assert by_id["mmlu_pro/12"].exclusion_reason == "duplicate_option_text:A,B"
+
+
 def test_public_record_round_trips_through_the_codec():
     item = mmlu_pro.build_item(_mmlu_row())
     assert load_record(PublicTask, dump_record(item.public)) == item.public
@@ -107,10 +121,24 @@ def test_math500_inventory(math_inventory):
 @needs_mmlu_pro
 def test_mmlu_inventory_legal_choices_and_no_label_fields(mmlu_inventory):
     assert len(mmlu_inventory) == mmlu_pro.SOURCE_ROWS
-    assert exclusion_records(mmlu_inventory) == [{
-        "benchmark": "mmlu_pro", "item_id": "mmlu_pro/8584", "source_revision": mmlu_pro.SOURCE_REVISION,
-        "reason": "duplicate_option_text:A,D"}]
+    records = exclusion_records(mmlu_inventory)
+    reasons = collections.Counter(record["reason"].split(":")[0] for record in records)
+    assert reasons == {"duplicate_question_stem": 391, "duplicate_option_text": 1}
+    assert {"benchmark": "mmlu_pro", "item_id": "mmlu_pro/8584", "source_revision": mmlu_pro.SOURCE_REVISION,
+            "reason": "duplicate_option_text:A,D"} in records
     rows = {f"mmlu_pro/{row['question_id']}": row for row in mmlu_pro.read_rows()}
+    by_id = {item.public.item_id: item for item in mmlu_inventory}
+    stems = collections.Counter(mmlu_pro.trim_outer(rows[item.public.item_id]["question"])
+                                for item in mmlu_inventory if item.eligible)
+    assert max(stems.values()) == 1                                       # eligible items are source-item unique
+    for record in records:
+        if record["reason"].startswith("duplicate_question_stem:"):
+            kept = record["reason"].split(":", 1)[1]
+            assert by_id[kept].eligible
+            assert int(kept.split("/")[1]) < int(record["item_id"].split("/")[1])
+            assert (mmlu_pro.trim_outer(rows[kept]["question"])
+                    == mmlu_pro.trim_outer(rows[record["item_id"]]["question"]))
+    assert {item.public.source_revision for item in mmlu_inventory} == {mmlu_pro.SOURCE_REVISION}
     for item in mmlu_inventory:
         public = item.public
         row = rows[public.item_id]
@@ -150,6 +178,7 @@ def test_bbh_four_formats_have_correct_labels(bbh_inventory):
         assert raw["target"] in (gold, f"({gold})")
     for item in bbh_inventory:
         assert item.private.gold_answer in item.public.allowed_choices
+        assert item.public.source_revision == item.private.source_revision == bbh_logic4.SOURCE_COMMIT
     assert "target" not in _public_manifest_text(bbh_inventory)
 
 
@@ -205,3 +234,67 @@ def test_private_hash_is_stable_and_binds_the_gold(math_inventory):
     changed = math500.build_item({**rows[0], "answer": rows[0]["answer"] + "1"})
     assert changed.private.private_hash != again[0].private.private_hash
     assert changed.public == again[0].public
+
+
+@pytest.mark.parametrize("module", [math500, mmlu_pro])
+def test_pinned_sha256_is_enforced(module, monkeypatch):
+    monkeypatch.setattr(module, "SOURCE_SHA256", "0" * 64)
+    path = module.hf_snapshot_file(module.SOURCE_REPO, module.SOURCE_REVISION, module.SOURCE_FILE)
+    if not path.is_file():
+        pytest.skip("pinned snapshot not in HF cache")
+    with pytest.raises(SourceIntegrityError):
+        module.read_rows()
+
+
+def test_math500_source_ids_are_validated():
+    with pytest.raises(SourceIntegrityError):
+        math500.build_item(_math_row(unique_id="../../etc/passwd"))
+
+
+def test_source_records_name_revision_hash_and_licence():
+    for module in (math500, mmlu_pro, bbh_logic4):
+        record = module.source_record()
+        assert "MIT" in record["license"] and record["preprocessing_version"].endswith("-prompt-v1")
+    assert math500.source_record()["revision"] == "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be"
+    assert mmlu_pro.source_record()["revision"] == "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+    assert bbh_logic4.source_record()["commit"] == "9ee07bd481feebf959a6b59d61ea57bdcf30964d"
+    assert set(bbh_logic4.source_record()["files"]) == {f"bbh/{s}.json" for s in BBH_SUBTASKS}
+
+
+@pytest.mark.parametrize("benchmark", ["math500", "mmlu_pro", "bbh_logic4"])
+def test_fixture_inventories_are_typed_drawable_and_leak_free(benchmark):
+    from agent_allocation.benchmarks.text_manifest import FIXTURE_REVISION, fixture_inventory, select_panels
+    items = fixture_inventory(benchmark)
+    assert len(items) == 24 and all(item.eligible for item in items)
+    assert {item.public.source_revision for item in items} == {FIXTURE_REVISION}
+    for item in items:
+        assert item.private.gold_answer is not None
+        if item.public.output_kind is not OutputKind.BOOLEAN:
+            assert item.private.gold_answer not in item.public.prompt.split("\nOptions:\n")[0]
+    draw = select_panels(items, benchmark=benchmark, seed=7, n_dev=4, n_main=8, n_reserve=4)
+    assert len(draw.main_item_ids) == 8
+
+
+def test_bbh_structural_exclusions_have_reasons():
+    choice = {"input": "Q?\nOptions:\n(A) same\n(B) same\n(C) other", "target": "(A)"}
+    assert bbh_logic4.build_item("temporal_sequences", 0, choice).exclusion_reason == "duplicate_option_text"
+    gap = {"input": "Q?\nOptions:\n(A) one\n(C) two", "target": "(A)"}
+    assert bbh_logic4.build_item("temporal_sequences", 1, gap).exclusion_reason == "option_letters_not_consecutive_from_A"
+    missing = {"input": "Q?\nOptions:\n(A) one\n(B) two", "target": "(D)"}
+    assert bbh_logic4.build_item("temporal_sequences", 2, missing).exclusion_reason == "target_letter_not_among_options"
+    boolean = {"input": "True and False is", "target": "false"}
+    assert bbh_logic4.build_item("boolean_expressions", 3, boolean).exclusion_reason == "boolean_target_not_true_false"
+    with pytest.raises(SourceIntegrityError):
+        bbh_logic4.build_item("temporal_sequences", 4, {"input": "x", "target": "(A)", "rationale": "leak"})
+
+
+def test_every_ineligible_item_carries_a_reason(math_inventory, mmlu_inventory, bbh_inventory):
+    for inventory in (math_inventory, mmlu_inventory, bbh_inventory):
+        records = exclusion_records(inventory)             # raises if any ineligible item lacks a reason
+        assert len(records) == sum(not item.eligible for item in inventory)
+
+
+def test_source_provenance_is_json_for_the_dataset_lock():
+    for module in (math500, mmlu_pro, bbh_logic4):
+        assert json.loads(json.dumps(module.SOURCE_PROVENANCE)) == module.source_record()
+        assert isinstance(module.LICENSE, str) and isinstance(module.PREPROCESSING_VERSION, str)
