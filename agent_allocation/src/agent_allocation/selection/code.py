@@ -1,7 +1,8 @@
 """Public-example selection for code (MASTER_SPEC §11.2). This is selection by a weak verifier, never voting.
 
 Eligible: parse ``VALID`` and a public check with ``CheckStatus.OK`` (``INVALID_CANDIDATE`` means no parseable
-program, so it is never delivered). Any ``CheckStatus.INFRASTRUCTURE_ERROR`` in the pool pauses the selector
+program, so it is never delivered). Any ``CheckStatus.INFRASTRUCTURE_ERROR`` in the pool -- or an ``OK`` check with
+zero public cases, whose ``pass_fraction`` is ``None`` (contract v2, D4) -- pauses the selector
 (``PAUSED_CHECK_ERROR``): unchecked code is never favoured and nothing is guessed. A ``VALID`` candidate without a
 public check is a harness ordering error and raises. Among eligible candidates the maximum exact pass fraction wins;
 ties go to the smallest :func:`candidate_priority_key`, a frozen hash of ``(seed, item_id, candidate_id)`` that
@@ -37,7 +38,9 @@ def candidate_priority_key(seed: int, item_id: str, candidate_id: str) -> str:
 
 
 def _fraction(check: PublicCheckResult) -> Fraction:
-    return Fraction(check.cases_passed, check.cases_total) if check.cases_total else Fraction(0)
+    if not check.cases_total:
+        raise ValueError(f"public check {check.candidate_id} has no public case; the selector must pause")
+    return Fraction(check.cases_passed, check.cases_total)
 
 
 def public_evidence_hash(pool_ids: Sequence[str], public_checks: Mapping[str, PublicCheckResult]) -> str:
@@ -75,7 +78,8 @@ def public_example_selection(pool_ids: Sequence[str], task: PublicTask, candidat
                 raise ValueError(f"{task.item_id}: valid candidate {cid} has no public check yet; select after checks")
             continue
         _validate_check(cid, check, task)
-        if check.status is CheckStatus.INFRASTRUCTURE_ERROR:
+        if check.status is CheckStatus.INFRASTRUCTURE_ERROR or (check.status is CheckStatus.OK
+                                                                 and check.pass_fraction is None):
             paused = True
         elif check.status is CheckStatus.OK and candidates[cid].parse_status is ParseStatus.VALID:
             eligible.append(cid)

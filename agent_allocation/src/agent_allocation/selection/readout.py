@@ -16,6 +16,10 @@ The API admits only public inputs: ``PolicyCheckpoint``, ``PublicTask``, ``Candi
 optional gold-blind equivalence callable. ``PrivateEvalSpec`` and ``GradeResult`` are refused with ``TypeError``
 wherever they appear, including inside a ``functools.partial``, bound method or closure passed as the callable.
 
+``PolicyCheckpoint.selector_name`` is the declared family (``plurality`` | ``public_tests_only``); the concrete selector
+run is recorded in ``SelectionResult.selector_name`` and must be legal for the declared family
+(``concrete_selector_is_legal``), otherwise the checkpoint is refused.
+
 ``pool_hash`` = canonical hash of the ordered ``[candidate_id, final_answer]`` pairs. ``public_evidence_hash`` (code
 selections only) = canonical hash of the ordered public-check evidence. ``cpu_seconds`` is process CPU time spent in
 this call, including the equivalence callable.
@@ -38,11 +42,12 @@ from agent_allocation.selection.keys import option_letters, vote_key
 from agent_allocation.selection.plurality import AnswerClass, plurality
 
 __all__ = [
-    "FAMILIES", "LAST_ANSWER_FAMILIES", "SELECTING_FAMILIES", "SELECTOR_VERSION", "SelectionDetail",
-    "pool_hash", "select_checkpoint", "select_checkpoint_detail", "selector_for",
+    "DECLARED_SELECTORS", "DECLARED_SELECTOR_VERSION", "FAMILIES", "LAST_ANSWER_FAMILIES", "SELECTING_FAMILIES",
+    "SELECTOR_VERSION", "SelectionDetail", "concrete_selector_is_legal", "pool_hash", "select_checkpoint",
+    "select_checkpoint_detail", "selector_for",
 ]
 
-SELECTOR_VERSION = "06-selection-v1"
+SELECTOR_VERSION = "06-selection-v2"
 FAMILIES: tuple[str, ...] = ("sample", "private_single", "private_team", "peer", "deep", "cp", "pooled")
 LAST_ANSWER_FAMILIES = frozenset({"private_single", "deep", "pooled"})
 SELECTING_FAMILIES = frozenset({"sample", "private_team", "peer", "cp"})
@@ -54,6 +59,15 @@ PLURALITY_MATH_EXACT = "plurality_math_exact"
 PLURALITY_MATH_MUTUAL = "plurality_math_mutual_complete_link"
 PUBLIC_EXAMPLE_SELECTION = "public_example_selection"
 ARCHIVE_PREFIX = "archive_"
+
+#: Declared selector families on ``PolicyCheckpoint.selector_name`` (config ``benchmarks[].selector``, contract v2
+#: R06-1) and the concrete selectors each may run. ``""`` (undeclared) is accepted for hand-built checkpoints.
+DECLARED_SELECTORS: dict[str, frozenset[str]] = {
+    "plurality": frozenset({LAST_ANSWER, PLURALITY_OPTION, PLURALITY_BOOLEAN, PLURALITY_MATH_EXACT,
+                            PLURALITY_MATH_MUTUAL}),
+    "public_tests_only": frozenset({LAST_ANSWER, PUBLIC_EXAMPLE_SELECTION}),
+}
+DECLARED_SELECTOR_VERSION = "v1"
 
 _FORBIDDEN = (PrivateEvalSpec, GradeResult)
 
@@ -92,6 +106,12 @@ def selector_for(family: str, view: CheckpointView, output_kind: OutputKind, poo
     if kind is OutputKind.MATH:
         return prefix + (PLURALITY_MATH_MUTUAL if math_equivalence else PLURALITY_MATH_EXACT)
     return prefix + (PLURALITY_OPTION if kind is OutputKind.OPTION else PLURALITY_BOOLEAN)
+
+
+def concrete_selector_is_legal(declared: str, concrete: str) -> bool:
+    """Whether ``concrete`` (``SelectionResult.selector_name``) may run for a checkpoint declaring ``declared``."""
+    base = concrete[len(ARCHIVE_PREFIX):] if concrete.startswith(ARCHIVE_PREFIX) else concrete
+    return base in DECLARED_SELECTORS.get(declared, frozenset())
 
 
 def pool_hash(candidate_ids: tuple[str, ...], candidates: Mapping[str, Candidate]) -> str:
@@ -180,12 +200,15 @@ def select_checkpoint_detail(checkpoint: PolicyCheckpoint, task: PublicTask, can
     view = CheckpointView(checkpoint.view)
     name = selector_for(checkpoint.family, view, task.output_kind, len(pool),
                         math_equivalence=math_equivalent is not None)
+    if checkpoint.selector_name and not concrete_selector_is_legal(checkpoint.selector_name, name):
+        raise ValueError(f"{checkpoint.policy_id}: declared selector {checkpoint.selector_name!r} does not admit "
+                         f"{name!r} for a {task.output_kind.value} task")
     digest = pool_hash(pool, candidates)
 
     def finish(status: SelectionStatus, selected: str | None, evidence: str | None, **extra: Any) -> SelectionDetail:
         result = SelectionResult(policy_id=checkpoint.policy_id, selected_candidate_id=selected, selector_name=name,
                                  selector_version=SELECTOR_VERSION, pool_hash=digest, public_evidence_hash=evidence,
-                                 cpu_seconds=max(0.0, time.process_time() - started), status=status.value)
+                                 cpu_seconds=max(0.0, time.process_time() - started), status=status)
         return SelectionDetail(result=result, pool_size=len(pool), **extra)
 
     if len(pool) == 1:

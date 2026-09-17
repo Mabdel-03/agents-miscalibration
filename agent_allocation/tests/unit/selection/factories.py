@@ -75,7 +75,10 @@ def check(cid: str, t: PublicTask, passed: int, total: int = 2,
                              public_inputs_sha256="inputs", environment_digest="env", cpu_seconds=0.01)
 
 
-def grade(cid: str, correct: bool | None, status: GradeStatus = GradeStatus.GRADED) -> GradeResult:
-    return GradeResult(candidate_id=cid, status=status, semantic_correct=correct,
-                       operational_success=None if correct is None else correct, grader_version="g-1",
-                       private_eval_hash="private")
+def grade(cid: str, correct: bool | None, status: GradeStatus | None = None) -> GradeResult:
+    """A contract-valid grade: ``correct=None`` defaults to EVALUATOR_ERROR (unknown), INVALID_OUTPUT is never bool."""
+    status = status or (GradeStatus.GRADED if correct is not None else GradeStatus.EVALUATOR_ERROR)
+    semantic = correct if status is GradeStatus.GRADED else None
+    operational = False if status is GradeStatus.INVALID_OUTPUT else True
+    return GradeResult(candidate_id=cid, status=status, semantic_correct=semantic, operational_success=operational,
+                       grader_version="g-1", private_eval_hash="private")

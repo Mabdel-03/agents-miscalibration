@@ -66,6 +66,13 @@ def test_transport_failure_has_no_content_and_is_empty():
     assert cand.parse_status is ParseStatus.EMPTY
 
 
+@pytest.mark.parametrize("transport", [TransportStatus.CACHE_HIT, TransportStatus.PROVIDER_MISMATCH])
+def test_rejected_transport_with_a_body_is_never_a_valid_draw(transport):
+    cand, _ = _extract("<final>1</final>", transport=transport)
+    assert cand.parse_status is ParseStatus.EMPTY and cand.final_answer is None
+    assert cand.visible_content == "<final>1</final>"
+
+
 def test_blocked_is_refusal_even_with_content():
     cand, _ = _extract("<final>1</final>", completion=CompletionStatus.BLOCKED, finish_reason="content_filter")
     assert cand.parse_status is ParseStatus.REFUSAL and cand.final_answer is None
