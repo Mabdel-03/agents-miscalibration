@@ -79,7 +79,7 @@ def scope_notes(analysis: "Analysis") -> str:
 def run_report(analysis: "Analysis") -> str:
     parts = [header(analysis, "Run report"), scope_notes(analysis), unfinished_section(analysis),
              seal_section(analysis), primary_section(analysis), accuracy_section(analysis),
-             passk_section(analysis), cost_section(analysis), high_low_section(analysis), replay_section(analysis),
+             coverage_section(analysis), passk_section(analysis), cost_section(analysis), high_low_section(analysis), replay_section(analysis),
              dynamics_section(analysis), operations_section(analysis), figures_section(analysis),
              warnings_section(analysis)]
     return "\n".join(p for p in parts if p)
@@ -180,6 +180,23 @@ def _wide_accuracy(acc: pd.DataFrame, partition: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def coverage_section(analysis: "Analysis") -> str:
+    acc = analysis.accuracy
+    if acc.empty or "coverage" not in acc:
+        return ""
+    macro = acc[(acc["level"] == "macro")].copy()
+    macro = macro.iloc[sorted(range(len(macro)), key=lambda i: (str(macro.iloc[i]["partition_id"]),
+                                                                  name_sort_key(macro.iloc[i]["name"]),
+                                                                  str(macro.iloc[i]["view"])))]
+    return ("## Coverage and selection gap (macro)\n\nOracle coverage of each checkpoint's own declared pool: the "
+            "current view gives current coverage, the archive view archive coverage over candidates that policy "
+            "really generated. `selection_gap = coverage - delivered` for candidate-only selectors on the same pool; "
+            "empty for POOLED synthesis and whenever coverage or delivery is unknown. Per-benchmark rows: "
+            "`tables/accuracy_summary`.\n\n"
+            + md_table(macro[["partition_id", "name", "view", "acc", "coverage", "selection_gap",
+                              "n_coverage_unknown"]], digits=3))
+
+
 def accuracy_section(analysis: "Analysis") -> str:
     acc = analysis.accuracy
     if acc.empty:
@@ -258,10 +275,13 @@ def high_low_section(analysis: "Analysis") -> str:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return ""
     macro = frame[frame["level"] == "macro"]
-    rows = [{"contrast": r["contrast"], "shared_items": r.get("n_items"), "status": r.get("status"),
-             "estimate": r.get("estimate"), "ci95": _ci(pd.Series(r), "ci95_percentile_lo", "ci95_percentile_hi")}
+    rows = [{"variant": r.get("variant"), "contrast": r["contrast"], "shared_items": r.get("n_items"),
+             "status": r.get("status"), "estimate": r.get("estimate"),
+             "ci95": _ci(pd.Series(r), "ci95_percentile_lo", "ci95_percentile_hi")}
             for r in macro.to_dict("records")]
-    return ("## Higher allowance versus main allowance (shared item ids only, exploratory)\n\n"
+    return ("## Panel variants versus main (shared item ids only, exploratory)\n\nHigher allowance (`high`) and the "
+            "optional second-model panel (`replication`) are compared with `main` only on the item ids both "
+            "planned; within-Gemini replication does not establish cross-family transfer.\n\n"
             + md_table(pd.DataFrame(rows)) + "\nPer-benchmark rows: `tables/high_vs_main_shared_items`.\n")
 
 

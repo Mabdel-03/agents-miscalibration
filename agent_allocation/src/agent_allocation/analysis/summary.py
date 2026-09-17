@@ -143,32 +143,43 @@ def accuracy_summary(outcomes: pd.DataFrame, *, by: Sequence[str] = ("partition_
 def weighted_means(frame: pd.DataFrame, group_cols: Sequence[str], value_cols: Sequence[str]) -> pd.DataFrame:
     """Equal-benchmark / equal-BBH-subtask weighted means of item-level columns at benchmark and macro level.
 
-    Each value uses the items where it is known; ``n_<col>_unknown`` counts the rest and ``<col>_complete`` says
-    whether the fixed population was fully known.
+    Each stratum mean uses the items where the value is known; ``n_<col>_unknown`` counts the rest and
+    ``<col>_complete`` says whether the fixed population was fully known. A level whose stratum has no known value
+    for a column reports ``None`` for that column. One vectorized groupby; weights combine per outer group.
     """
-    rows: list[dict[str, Any]] = []
     if frame.empty:
-        return pd.DataFrame(rows)
-    for keys, group in frame.groupby(list(group_cols), sort=True, dropna=False):
-        keys = keys if isinstance(keys, tuple) else (keys,)
-        base = dict(zip(group_cols, keys))
-        strata = strata_order(set(group["stratum"].dropna()))
+        return pd.DataFrame()
+    group_cols = list(group_cols)
+    values = frame[list(value_cols)].apply(pd.to_numeric, errors="coerce").astype(float)
+    work = pd.concat([frame[group_cols + ["stratum"]], values], axis=1)
+    keys = group_cols + ["stratum"]
+    grouped = work.groupby(keys, sort=True, dropna=False)
+    means = grouped[list(value_cols)].mean()
+    unknown = values.isna().groupby([work[k] for k in keys], sort=True, dropna=False).sum()
+    sizes = grouped.size()
+    rows: list[dict[str, Any]] = []
+    outer_index = means.index.droplevel("stratum") if len(group_cols) else None
+    for outer in dict.fromkeys(outer_index):
+        outer_key = outer if isinstance(outer, tuple) else (outer,)
+        mask = outer_index == outer if len(group_cols) == 1 else [ix == outer for ix in outer_index]
+        sub_means = means[mask]
+        sub_unknown = unknown[mask]
+        sub_sizes = sizes[mask]
+        strata_present = [ix[-1] for ix in sub_means.index]
+        by_stratum = {st: i for i, st in enumerate(strata_present)}
+        strata = strata_order(strata_present)
         levels = [("macro", stratum_weights(strata))] + [
             (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
                                                                    key=BENCHMARKS.index)]
-        by_stratum = {s: group[group["stratum"] == s] for s in strata}
+        base = dict(zip(group_cols, outer_key))
         for level, weights in levels:
             row = {**base, "level": "macro" if level == "macro" else "benchmark", "benchmark": level,
-                   "n_items": int(sum(len(by_stratum[s]) for s in weights))}
+                   "n_items": int(sum(int(sub_sizes.iloc[by_stratum[s]]) for s in weights))}
             for col in value_cols:
-                parts = []
-                unknown = 0
-                for s, w in weights.items():
-                    values = pd.to_numeric(by_stratum[s][col], errors="coerce").astype(float)
-                    unknown += int(values.isna().sum())
-                    parts.append((w, float(values.mean()) if values.notna().any() else math.nan))
+                parts = [(w, float(sub_means[col].iloc[by_stratum[s]])) for s, w in weights.items()]
+                n_unknown = int(sum(int(sub_unknown[col].iloc[by_stratum[s]]) for s in weights))
                 row[col] = None if any(math.isnan(v) for _, v in parts) else math.fsum(w * v for w, v in parts)
-                row[f"n_{col}_unknown"] = unknown
-                row[f"{col}_complete"] = unknown == 0
+                row[f"n_{col}_unknown"] = n_unknown
+                row[f"{col}_complete"] = n_unknown == 0
             rows.append(row)
     return pd.DataFrame(rows)

@@ -148,14 +148,20 @@ class RunData:
         return task.subtask if task else None
 
     def input_digest(self) -> str:
-        """Order-independent digest of every input file's bytes (report provenance, deterministic)."""
+        """Order-independent digest of every input file's run-relative path and bytes (computed once)."""
+        cached = getattr(self, "_input_digest", None)
+        if cached is not None:
+            return cached
+        root = str(self.paths.run_dir)
         h = sha256()
-        for path in sorted(set(self.input_files)):
-            h.update(self.paths.relative(path).encode())
+        for path in sorted({str(p) for p in self.input_files}):
+            rel = path[len(root) + 1:] if path.startswith(root + "/") else self.paths.relative(Path(path))
+            h.update(rel.encode())
             h.update(b"\0")
-            h.update(sha256(path.read_bytes()).hexdigest().encode())
+            h.update(sha256(Path(path).read_bytes()).hexdigest().encode())
             h.update(b"\n")
-        return h.hexdigest()
+        self._input_digest = h.hexdigest()
+        return self._input_digest
 
 
 # ----------------------------------------------------------------------------------------------------

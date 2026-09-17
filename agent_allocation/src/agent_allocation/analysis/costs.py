@@ -402,45 +402,24 @@ def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, pric
 
 def cost_summary(costs: pd.DataFrame, accuracy: pd.DataFrame) -> pd.DataFrame:
     """Mean per-item cost measures per (partition, checkpoint) at benchmark and macro level (equal weights),
-    joined with delivered accuracy. Cost means use items whose cost is known; ``n_cost_unknown`` counts the rest."""
+    joined with delivered accuracy. Cost means use items whose cost is known; ``n_<measure>_unknown`` counts the rest."""
+    from agent_allocation.analysis.summary import weighted_means
+
     if costs.empty:
         return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
     current = costs[costs["view"] == "current"]
-    numeric = {m: pd.to_numeric(current[m], errors="coerce") for m in COST_MEASURES}
-    frame = current.assign(**{m: v.astype(float) for m, v in numeric.items()})
-    for (partition, name), group in frame.groupby(["partition_id", "name"], sort=False):
-        strata = strata_order(set(group["stratum"].dropna()))
-        stratum_means = {s: group[group["stratum"] == s] for s in strata}
-        levels = [("macro", stratum_weights(strata))] + [
-            (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
-                                                                   key=BENCHMARKS.index)]
-        for level, weights in levels:
-            row: dict[str, Any] = {"partition_id": partition, "name": name,
-                                   "level": "macro" if level == "macro" else "benchmark", "benchmark": level}
-            for measure in COST_MEASURES:
-                vals = []
-                unknown = 0
-                for s, w in weights.items():
-                    col = stratum_means[s][measure]
-                    unknown += int(col.isna().sum())
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", category=RuntimeWarning)
-                        vals.append((w, float(np.nanmean(col)) if col.notna().any() else math.nan))
-                row[f"mean_{measure}"] = (None if any(math.isnan(v) for _, v in vals)
-                                          else math.fsum(w * v for w, v in vals))
-                row[f"n_{measure}_unknown"] = unknown
-            rows.append(row)
-    summary = pd.DataFrame(rows)
+    summary = weighted_means(current, ["partition_id", "name"], list(COST_MEASURES))
+    summary = summary.rename(columns={m: f"mean_{m}" for m in COST_MEASURES})
+    summary = summary.drop(columns=[c for c in summary.columns if c.endswith("_complete")])
     acc = accuracy[(accuracy["view"] == "current") & (accuracy["level"] != "stratum")][
         ["partition_id", "name", "benchmark", "acc", "acc_lower", "acc_upper"]]
     summary = summary.merge(acc, on=["partition_id", "name", "benchmark"], how="left")
     summary["family"] = summary["name"].map(lambda n: str(n).split("/", 1)[0])
-    summary = summary.iloc[sorted(range(len(summary)), key=lambda i: (
-        str(summary.iloc[i]["partition_id"]), name_sort_key(summary.iloc[i]["name"]),
-        (BENCHMARKS + ("macro",)).index(summary.iloc[i]["benchmark"])
-        if summary.iloc[i]["benchmark"] in BENCHMARKS + ("macro",) else 99))].reset_index(drop=True)
-    return summary
+    level_rank = {b: i for i, b in enumerate(("macro",) + BENCHMARKS)}
+    order = sorted(range(len(summary)), key=lambda i: (str(summary.at[i, "partition_id"]),
+                                                       name_sort_key(summary.at[i, "name"]),
+                                                       level_rank.get(summary.at[i, "benchmark"], 99)))
+    return summary.iloc[order].reset_index(drop=True)
 
 
 def descriptive_frontier(summary: pd.DataFrame, measure: str) -> pd.DataFrame:

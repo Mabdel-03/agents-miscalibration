@@ -84,12 +84,13 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
 
     analysis.accuracy, populations, ci_warnings, ci_mismatch = attach_accuracy_intervals(
         outcomes, accuracy, replicates=reps, study_seed=seed)
+    analysis.accuracy = attach_coverage(outcomes, analysis.accuracy)
     warnings += ci_warnings
     problems += ci_mismatch
 
     primary, estimates, primary_notes = K.primary_analysis(outcomes, replicates=reps, study_seed=seed,
                                                            item_panels=run.item_panels())
-    high_low, hl_notes = K.high_low_shared(outcomes, replicates=reps, study_seed=seed)
+    high_low, hl_notes = K.shared_panel_comparisons(outcomes, replicates=reps, study_seed=seed)
     for note in primary_notes + hl_notes:
         (warnings if ("small panel" in note or "stratum" in note or "absent" in note) else notes).append(note)
 
@@ -125,6 +126,31 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
         "notes": sorted(set(notes)), "warnings": _compact_warnings(warnings), "problems": sorted(set(problems)),
     })
     return analysis
+
+
+def attach_coverage(outcomes: pd.DataFrame, accuracy: pd.DataFrame) -> pd.DataFrame:
+    """Oracle coverage of each checkpoint's declared pool (current view: current coverage; archive view: archive
+    coverage) and, for candidate-only selectors, the same-pool selection gap ``coverage - delivered``. POOLED is
+    synthesis: its gap is not defined against its input bank and is left empty."""
+    if outcomes.empty or accuracy.empty:
+        return accuracy
+    cov = weighted_means(outcomes.assign(coverage_y=outcomes["coverage"]), ["partition_id", "name", "view"],
+                         ["coverage_y"])
+    cov = cov.rename(columns={"coverage_y": "coverage", "n_coverage_y_unknown": "n_coverage_unknown",
+                              "coverage_y_complete": "coverage_complete"})
+    merged = accuracy.merge(cov[["partition_id", "name", "view", "level", "benchmark", "coverage",
+                                 "n_coverage_unknown", "coverage_complete"]],
+                            how="left", on=["partition_id", "name", "view", "level", "benchmark"])
+    gaps = []
+    for rec in merged[["name", "acc", "coverage", "coverage_complete"]].itertuples(index=False):
+        family = str(rec.name).split("/", 1)[0]
+        if family == "pooled" or rec.acc is None or pd.isna(rec.acc) or rec.coverage is None or pd.isna(rec.coverage) \
+                or not bool(rec.coverage_complete):
+            gaps.append(None)
+        else:
+            gaps.append(float(rec.coverage) - float(rec.acc))
+    merged["selection_gap"] = gaps
+    return merged
 
 
 def _primary_planned(outcomes: pd.DataFrame, run: RunData) -> dict[str, int]:

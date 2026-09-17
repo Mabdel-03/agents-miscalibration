@@ -181,3 +181,21 @@ def test_populations_do_not_depend_on_outcomes(tmp_path):
     assert a.accuracy[acc_keys].equals(b.accuracy[acc_keys])
     assert a.extras["populations"].equals(b.extras["populations"])
     assert not a.accuracy["acc"].equals(b.accuracy["acc"])
+
+
+def test_replication_panel_compared_on_shared_ids_with_its_own_prices(tmp_path):
+    paths = build_run(tmp_path, SynthSpec(waves=2, extension_waves=0, replication_waves=1,
+                                          grid=Grid(team_sizes=(4,), deep_multipliers=(), archive_views=False)))
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
+    shared = analysis.extras["high_low"]
+    rep = shared[(shared["variant"] == "replication") & (shared["level"] == "macro")]
+    assert len(rep) and set(rep["n_items"]) == {16}
+    assert all("/w0/" in i for i in analysis.outcomes.loc[analysis.outcomes["partition_id"] == "replication", "item_id"])
+    checks = {r["check"]: r for r in analysis.extras["price_checks"]}
+    assert checks["realized_cost_over_standardized_ratio"]["passed"]      # flash rows priced at 0.30/2.50 per M
+    acc = analysis.accuracy
+    pooled_gap = acc.loc[acc["name"].str.startswith("pooled"), "selection_gap"]
+    assert pooled_gap.isna().all()
+    peer = acc[(acc["name"] == "peer/4/4") & (acc["view"] == "current") & (acc["level"] == "macro")
+               & (acc["partition_id"] == "main")].iloc[0]
+    assert peer["selection_gap"] == pytest.approx(peer["coverage"] - peer["acc"]) and peer["selection_gap"] >= 0

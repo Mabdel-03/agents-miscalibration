@@ -259,40 +259,24 @@ def _budget_grid(trajs, reservations) -> dict[str, list[float]]:
 
 
 def _aggregate(items: pd.DataFrame) -> pd.DataFrame:
+    from agent_allocation.analysis.summary import weighted_means
+
     if items.empty:
         return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
-    for (partition, label, budget), group in items.groupby(["partition_id", "trajectory", "budget_usd"], sort=True):
-        strata = strata_order(set(group["stratum"].dropna()))
-        levels = [("macro", stratum_weights(strata))] + [
-            (b, stratum_weights(strata, within=b)) for b in sorted({benchmark_of_stratum(s) for s in strata},
-                                                                   key=BENCHMARKS.index)]
-        available = bool(group["replay_available"].all())
-        for level, weights in levels:
-            parts = {s: group[group["stratum"] == s] for s in weights}
-            known = all(parts[s]["y"].notna().all() for s in weights)
-            acc = math.fsum(w * float(parts[s]["y"].mean()) for s, w in weights.items()) if known else None
-            rows.append({
-                "partition_id": partition, "trajectory": label, "budget_usd": budget,
-                "level": "macro" if level == "macro" else "benchmark", "benchmark": level,
-                "n_items": int(sum(len(parts[s]) for s in weights)),
-                "label": "budgeted policy replay" if available else "descriptive (replay unavailable)",
-                "accuracy": acc,
-                "n_unknown": int(sum(parts[s]["y"].isna().sum() for s in weights)),
-                "abstention_rate": _wmean(parts, weights, lambda g: (g["status"] == "abstain_initialization_does_not_fit").mean()),
-                "binding_cap_rate": _wmean(parts, weights, lambda g: g["binding_cap"].astype(float).mean()
-                                           if "binding_cap" in g and g["binding_cap"].notna().all() else math.nan),
-                "mean_spend_usd": _wmean(parts, weights, lambda g: g["spend_usd"].mean() if "spend_usd" in g else math.nan),
-                "mean_slack_usd": _wmean(parts, weights, lambda g: g["slack_usd"].mean() if "slack_usd" in g else math.nan),
-            })
-    return pd.DataFrame(rows)
-
-
-def _wmean(parts, weights, fn) -> float | None:
-    vals = []
-    for s, w in weights.items():
-        v = fn(parts[s])
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return None
-        vals.append(w * float(v))
-    return math.fsum(vals)
+    work = items.assign(
+        accuracy=items["y"],
+        abstention_rate=(items["status"] == "abstain_initialization_does_not_fit").astype(float),
+        binding_cap_rate=pd.to_numeric(items.get("binding_cap"), errors="coerce").astype(float),
+        mean_spend_usd=pd.to_numeric(items.get("spend_usd"), errors="coerce"),
+        mean_slack_usd=pd.to_numeric(items.get("slack_usd"), errors="coerce"),
+    )
+    curves = weighted_means(work, ["partition_id", "trajectory", "budget_usd"],
+                            ["accuracy", "abstention_rate", "binding_cap_rate", "mean_spend_usd", "mean_slack_usd"])
+    available = items.groupby(["partition_id", "trajectory", "budget_usd"])["replay_available"].all()
+    curves["label"] = [("budgeted policy replay" if available.loc[(p, t, b)] else "descriptive (replay unavailable)")
+                       for p, t, b in zip(curves["partition_id"], curves["trajectory"], curves["budget_usd"])]
+    curves["accuracy"] = [a if complete else None for a, complete in zip(curves["accuracy"], curves["accuracy_complete"])]
+    curves["n_unknown"] = curves["n_accuracy_unknown"]
+    keep = ["partition_id", "trajectory", "budget_usd", "level", "benchmark", "n_items", "label", "accuracy",
+            "n_unknown", "abstention_rate", "binding_cap_rate", "mean_spend_usd", "mean_slack_usd"]
+    return curves[keep]

@@ -235,9 +235,26 @@ def primary_analysis(outcomes: pd.DataFrame, *, replicates: int, study_seed: Any
     return frame, estimates, notes
 
 
+def shared_panel_comparisons(outcomes: pd.DataFrame, *, replicates: int, study_seed: Any
+                             ) -> tuple[pd.DataFrame, list[str]]:
+    """Core panel variants against the main panel on shared item ids only: ``high`` (A=4,096) and
+    ``replication`` (second model, reduced grid). Exploratory; never an unpaired 96-vs-400 aggregate."""
+    frames, notes = [], []
+    present = set(outcomes["partition_id"]) if not outcomes.empty else set()
+    for variant in ("high", "replication"):
+        if variant in present and MAIN_PARTITION in present:
+            frame, variant_notes = high_low_shared(outcomes, replicates=replicates, study_seed=study_seed,
+                                                   high=variant, low=MAIN_PARTITION)
+            if not frame.empty:
+                frame.insert(0, "variant", variant)
+                frames.append(frame)
+            notes.extend(variant_notes)
+    return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()), notes
+
+
 def high_low_shared(outcomes: pd.DataFrame, *, replicates: int, study_seed: Any,
                     high: str = HIGH_PARTITION, low: str = MAIN_PARTITION) -> tuple[pd.DataFrame, list[str]]:
-    """High-A minus low-A for every checkpoint name planned in both partitions, on shared item ids only."""
+    """``high`` minus ``low`` for every checkpoint name planned in both partitions, on shared item ids only."""
     names_high = set(outcomes.loc[(outcomes["partition_id"] == high) & (outcomes["view"] == "current"), "name"])
     names_low = set(outcomes.loc[(outcomes["partition_id"] == low) & (outcomes["view"] == "current"), "name"])
     shared_names = sorted(names_high & names_low, key=_name_key)
@@ -252,7 +269,7 @@ def high_low_shared(outcomes: pd.DataFrame, *, replicates: int, study_seed: Any,
                  f"{low}); comparisons use shared ids only")
     for name in shared_names:
         contrast = LinearContrast(f"{name}: {high} - {low}", ((high, name, 1.0), (low, name, -1.0)),
-                                  "shared_high_main", "exploratory", "higher allowance minus main allowance")
+                                  f"shared_{high}_{low}", "exploratory", f"{high} panel minus {low} panel, shared ids")
         found, population = evaluate_contrast(outcomes, contrast, replicates=replicates, study_seed=study_seed,
                                               items=shared_items)
         rows.extend(found)
@@ -271,4 +288,5 @@ def _name_key(name: str):
 
 
 __all__ = ["PRIMARY_I", "PRIMARY_II", "LinearContrast", "evaluate_contrast", "high_low_shared", "primary_analysis",
+           "shared_panel_comparisons",
            "primary_contrasts", "decomposition_contrasts", "StatsError"]

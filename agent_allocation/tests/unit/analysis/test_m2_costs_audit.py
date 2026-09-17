@@ -263,7 +263,8 @@ def test_run_report_states_required_labels(analysed):
                    "Oracle pass@k", "requested", "realized", "not a FLOP-matched", "descriptive",
                    "Budgeted policy replay", "Billed retries", "Stop reasons", "share_finish_length",
                    "share_response_cache_hit", "median_latency_seconds", "Independent-item counts",
-                   "Small-panel warnings", "Primary contrasts", "CP decomposition"):
+                   "Small-panel warnings", "Primary contrasts", "CP decomposition", "Coverage and selection gap",
+                   "archive coverage"):
         assert needle in text, needle
     assert (paths.reports_dir / "RUN_REPORT.html").read_text().startswith("<!doctype html>")
     for table in ("policy_costs", "cost_summary", "frontier_descriptive", "pass_at_k_vs_readout",
