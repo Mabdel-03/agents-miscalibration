@@ -117,6 +117,56 @@ def test_pool_hash_covers_ordered_ids_and_final_answers():
     assert len({a, b, c}) == 3
 
 
+# ----------------------------------------------------------------------------------------- absent members (07-R12)
+
+
+def test_absent_members_are_invalid_and_selection_uses_the_rest():
+    t = f.task(OutputKind.OPTION)
+    cands = f.pool(t, ["A", "B", "B", "A"])
+    cp = f.checkpoint(t, "sample/4", "sample", ("c0", "c1", "c2", "c3"))
+    present = {k: v for k, v in cands.items() if k not in ("c1", "c2")}
+    result = select_checkpoint(cp, t, present, {}, seed=SEED)
+    assert result.status is SelectionStatus.SELECTED and result.selected_candidate_id == "c0"
+    strict = select_checkpoint(cp, t, present, {}, seed=SEED, absent_ids=frozenset({"c1", "c2"}))
+    assert strict.pool_hash == result.pool_hash and strict.selected_candidate_id == "c0"
+    with pytest.raises(ValueError):
+        select_checkpoint(cp, t, present, {}, seed=SEED, absent_ids=frozenset({"c1"}))       # c2 undeclared
+    with pytest.raises(ValueError):
+        select_checkpoint(cp, t, cands, {}, seed=SEED, absent_ids=frozenset({"c1"}))         # c1 is present
+
+
+def test_absent_is_distinguishable_from_invalid_in_the_pool_hash():
+    t = f.task(OutputKind.MATH)
+    cp = f.checkpoint(t, "sample/2", "sample", ("c0", "c1"))
+    valid = f.candidate("c0", "1", t=t)
+    absent = select_checkpoint(cp, t, {"c0": valid}, {}, seed=SEED)
+    invalid = select_checkpoint(cp, t, {"c0": valid, "c1": f.candidate("c1", None, t=t)}, {}, seed=SEED)
+    assert absent.selected_candidate_id == invalid.selected_candidate_id == "c0"
+    assert absent.pool_hash != invalid.pool_hash
+    assert absent.pool_hash == readout.pool_hash(("c0", "c1"), {"c0": valid}, frozenset({"c1"}))
+
+
+@pytest.mark.parametrize("family, name", [("deep", "deep/2"), ("sample", "sample/1")])
+def test_a_single_absent_member_abstains(family, name):
+    t = f.task(OutputKind.MATH)
+    cp = f.checkpoint(t, name, family, ("c0",))
+    result = select_checkpoint(cp, t, {}, {}, seed=SEED)
+    assert result.status is SelectionStatus.ABSTAINED_ALL_INVALID and result.selected_candidate_id is None
+
+
+def test_all_absent_or_invalid_pool_abstains_and_code_skips_absent_members():
+    t = f.task(OutputKind.MATH)
+    cp = f.checkpoint(t, "sample/2", "sample", ("c0", "c1"))
+    result = select_checkpoint(cp, t, {"c1": f.candidate("c1", None, t=t)}, {}, seed=SEED)
+    assert result.status is SelectionStatus.ABSTAINED_ALL_INVALID
+    code = f.task(OutputKind.PYTHON)
+    cands = f.pool(code, ["p0", "p1", "p2"])
+    cp = f.checkpoint(code, "sample/3", "sample", ("c0", "c1", "c2"))
+    checks = {"c0": f.check("c0", code, 1), "c2": f.check("c2", code, 2)}
+    picked = select_checkpoint(cp, code, {k: cands[k] for k in ("c0", "c2")}, checks, seed=SEED)
+    assert picked.selected_candidate_id == "c2" and picked.status is SelectionStatus.SELECTED
+
+
 # ----------------------------------------------------------------------------------------- math classes
 
 
@@ -159,6 +209,26 @@ def test_complete_link_blocks_nontransitive_chains():
     t = f.task(OutputKind.MATH)
     cands = f.pool(t, ["a", "b", "c"])        # a~b, b~c, but not a~c
     detail = _select(t, cands, math_equivalent=_fake_equivalence({("a", "b"), ("b", "c")}))
+    assert {c.member_ids for c in detail.classes} == {("c0", "c1"), ("c2",)}
+
+
+def test_exact_keys_never_merge_what_equivalence_keeps_apart():
+    t = f.task(OutputKind.MATH)
+    never = lambda a, b: a == b or None                                    # noqa: E731 - unknown for any pair
+    detail = _select(t, f.pool(t, ["1 2", "12", "7"]), math_equivalent=never)
+    assert {c.member_ids for c in detail.classes} == {("c0",), ("c1",), ("c2",)}
+    detail = _select(t, f.pool(t, ["x²", "x2", "x^2"]), math_equivalent=never)
+    assert len(detail.classes) == 3
+    twelve = _fake_equivalence({("12", "12.0")})
+    detail = _select(t, f.pool(t, ["12", "1 2", "12.0"]), math_equivalent=twelve)
+    assert {c.member_ids for c in detail.classes} == {("c0", "c2"), ("c1",)}
+
+
+def test_complete_link_checks_every_distinct_text_of_a_class():
+    t = f.task(OutputKind.MATH)
+    # "\\frac{1}{2}" and "\\dfrac{1}{2}" share an exact key; "0.5" verifies against only one of the two texts
+    eq = lambda a, b: a == b or ({a, b} == {"0.5", "\\frac{1}{2}"}) or None  # noqa: E731
+    detail = _select(t, f.pool(t, ["\\frac{1}{2}", "\\dfrac{1}{2}", "0.5"]), math_equivalent=eq)
     assert {c.member_ids for c in detail.classes} == {("c0", "c1"), ("c2",)}
 
 
@@ -293,7 +363,9 @@ def test_selector_signature_names_no_private_types():
     text = " ".join(str(v) for v in hints.values())
     assert "PrivateEvalSpec" not in text and "GradeResult" not in text
     assert list(inspect.signature(readout.select_checkpoint).parameters) == [
-        "checkpoint", "task", "candidates", "public_checks", "seed", "math_equivalent"]
+        "checkpoint", "task", "candidates", "public_checks", "seed", "math_equivalent", "absent_ids"]
+    params = inspect.signature(readout.select_checkpoint).parameters
+    assert params["absent_ids"].kind is inspect.Parameter.KEYWORD_ONLY and params["absent_ids"].default is None
 
 
 def test_selection_package_imports_only_the_gold_blind_normalizer_from_grading():

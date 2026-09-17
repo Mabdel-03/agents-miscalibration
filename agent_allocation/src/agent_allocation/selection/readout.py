@@ -20,7 +20,15 @@ wherever they appear, including inside a ``functools.partial``, bound method or 
 run is recorded in ``SelectionResult.selector_name`` and must be legal for the declared family
 (``concrete_selector_is_legal``), otherwise the checkpoint is refused.
 
-``pool_hash`` = canonical hash of the ordered ``[candidate_id, final_answer]`` pairs. ``public_evidence_hash`` (code
+Absent members (07-R12): a ``candidate_ids`` entry with no ``Candidate`` -- a node that ended without any response,
+e.g. exhausted transport attempts -- is an invalid member: never a vote, never delivered, never "wrong". Selection
+runs over the remaining members; a pool with nothing valid left abstains (``ABSTAINED_ALL_INVALID``), including a
+single-member pool whose member is absent. By default any missing id is taken as absent (the caller only selects
+checkpoints whose missing members are confirmed terminal); passing ``absent_ids`` makes it strict: a missing id that
+is not declared absent, or a declared-absent id that is present, raises.
+
+``pool_hash`` = canonical hash of the ordered ``[candidate_id, final_answer]`` pairs, with ``[candidate_id, null,
+"absent"]`` for an absent member so an audit can tell absent from invalid. ``public_evidence_hash`` (code
 selections only) = canonical hash of the ordered public-check evidence. ``cpu_seconds`` is process CPU time spent in
 this call, including the equivalence callable.
 
@@ -31,7 +39,7 @@ from __future__ import annotations
 import functools
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 from agent_allocation.contracts import (
     Candidate, CheckpointView, GradeResult, OutputKind, ParseStatus, PolicyCheckpoint, PrivateEvalSpec,
@@ -42,9 +50,9 @@ from agent_allocation.selection.keys import option_letters, vote_key
 from agent_allocation.selection.plurality import AnswerClass, plurality
 
 __all__ = [
-    "DECLARED_SELECTORS", "DECLARED_SELECTOR_VERSION", "FAMILIES", "LAST_ANSWER_FAMILIES", "SELECTING_FAMILIES",
-    "SELECTOR_VERSION", "SelectionDetail", "concrete_selector_is_legal", "pool_hash", "select_checkpoint",
-    "select_checkpoint_detail", "selector_for",
+    "ABSENT_MARKER", "DECLARED_SELECTORS", "DECLARED_SELECTOR_VERSION", "FAMILIES", "LAST_ANSWER_FAMILIES",
+    "SELECTING_FAMILIES", "SELECTOR_VERSION", "SelectionDetail", "concrete_selector_is_legal", "pool_hash",
+    "select_checkpoint", "select_checkpoint_detail", "selector_for",
 ]
 
 SELECTOR_VERSION = "06-selection-v3"
@@ -114,8 +122,16 @@ def concrete_selector_is_legal(declared: str, concrete: str) -> bool:
     return base in DECLARED_SELECTORS.get(declared, frozenset())
 
 
-def pool_hash(candidate_ids: tuple[str, ...], candidates: Mapping[str, Candidate]) -> str:
-    return canonical_hash([[cid, candidates[cid].final_answer] for cid in candidate_ids])
+ABSENT_MARKER = "absent"
+
+
+def pool_hash(candidate_ids: tuple[str, ...], candidates: Mapping[str, Candidate],
+              absent_ids: Collection[str] = ()) -> str:
+    """Canonical hash of the ordered pool: ``[candidate_id, final_answer]`` per member, and
+    ``[candidate_id, null, "absent"]`` for a member that never produced a candidate (07-R12)."""
+    absent = frozenset(absent_ids)
+    return canonical_hash([[cid, None, ABSENT_MARKER] if cid in absent else [cid, candidates[cid].final_answer]
+                           for cid in candidate_ids])
 
 
 def _refuse_private(value: Any, where: str) -> None:
@@ -170,7 +186,9 @@ def _guard_inputs(checkpoint: Any, task: Any, candidates: Any, public_checks: An
         _guard_callable(math_equivalent)
 
 
-def _check_pool(checkpoint: PolicyCheckpoint, task: PublicTask, candidates: Mapping[str, Candidate]) -> None:
+def _check_pool(checkpoint: PolicyCheckpoint, task: PublicTask, candidates: Mapping[str, Candidate],
+                absent_ids: frozenset[str] | None) -> frozenset[str]:
+    """Validate the pool; return its absent members (ids without a candidate)."""
     if checkpoint.family not in FAMILIES:
         raise ValueError(f"{checkpoint.policy_id}: unknown family {checkpoint.family!r}")
     if checkpoint.item_id != task.item_id:
@@ -180,30 +198,42 @@ def _check_pool(checkpoint: PolicyCheckpoint, task: PublicTask, candidates: Mapp
         raise ValueError(f"{checkpoint.policy_id}: empty candidate pool")
     if len(set(pool)) != len(pool):
         raise ValueError(f"{checkpoint.policy_id}: duplicate candidate ids would double-count an opportunity")
+    absent: set[str] = set()
     for cid in pool:
         candidate = candidates.get(cid)
         if candidate is None:
-            raise ValueError(f"{checkpoint.policy_id}: candidate {cid} is not available; select after it is terminal")
+            if absent_ids is not None and cid not in absent_ids:
+                raise ValueError(f"{checkpoint.policy_id}: candidate {cid} is missing but not declared absent")
+            absent.add(cid)
+            continue
+        if absent_ids is not None and cid in absent_ids:
+            raise ValueError(f"{checkpoint.policy_id}: candidate {cid} is declared absent but present")
         if candidate.candidate_id != cid or candidate.node_id != cid:
             raise ValueError(f"{checkpoint.policy_id}: candidate keyed {cid} carries id {candidate.candidate_id}")
         if candidate.item_id != task.item_id or candidate.output_kind is not task.output_kind:
             raise ValueError(f"{checkpoint.policy_id}: candidate {cid} belongs to another item or output kind")
+    return frozenset(absent)
 
 
 def select_checkpoint_detail(checkpoint: PolicyCheckpoint, task: PublicTask, candidates: Mapping[str, Candidate],
                              public_checks: Mapping[str, PublicCheckResult], *, seed: int,
-                             math_equivalent: Callable[[str, str], bool | None] | None = None) -> SelectionDetail:
+                             math_equivalent: Callable[[str, str], bool | None] | None = None,
+                             absent_ids: frozenset[str] | None = None) -> SelectionDetail:
     started = time.process_time()
     _guard_inputs(checkpoint, task, candidates, public_checks, seed, math_equivalent)
-    _check_pool(checkpoint, task, candidates)
+    if absent_ids is not None and (not isinstance(absent_ids, (set, frozenset))
+                                   or any(not isinstance(a, str) for a in absent_ids)):
+        raise TypeError("absent_ids must be a frozenset of candidate ids")
+    absent = _check_pool(checkpoint, task, candidates, None if absent_ids is None else frozenset(absent_ids))
     pool = tuple(checkpoint.candidate_ids)
+    present = tuple(cid for cid in pool if cid not in absent)
     view = CheckpointView(checkpoint.view)
     name = selector_for(checkpoint.family, view, task.output_kind, len(pool),
                         math_equivalence=math_equivalent is not None)
     if checkpoint.selector_name and not concrete_selector_is_legal(checkpoint.selector_name, name):
         raise ValueError(f"{checkpoint.policy_id}: declared selector {checkpoint.selector_name!r} does not admit "
                          f"{name!r} for a {task.output_kind.value} task")
-    digest = pool_hash(pool, candidates)
+    digest = pool_hash(pool, candidates, absent)
 
     def finish(status: SelectionStatus, selected: str | None, evidence: str | None, **extra: Any) -> SelectionDetail:
         result = SelectionResult(policy_id=checkpoint.policy_id, selected_candidate_id=selected, selector_name=name,
@@ -212,11 +242,13 @@ def select_checkpoint_detail(checkpoint: PolicyCheckpoint, task: PublicTask, can
         return SelectionDetail(result=result, pool_size=len(pool), **extra)
 
     if len(pool) == 1:
+        if absent:                                   # the one member never produced a candidate: nothing to deliver
+            return finish(SelectionStatus.ABSTAINED_ALL_INVALID, None, None, n_votes=0)
         valid = _counts_as_vote(candidates[pool[0]], task)
         return finish(SelectionStatus.SINGLE_CANDIDATE, pool[0], None, n_votes=int(valid))
 
     if task.output_kind is OutputKind.PYTHON:
-        outcome = public_example_selection(pool, task, candidates, public_checks, seed=seed)
+        outcome = public_example_selection(present, task, candidates, public_checks, seed=seed)
         best = None if outcome.best_fraction is None else f"{outcome.best_fraction.numerator}/" \
                                                           f"{outcome.best_fraction.denominator}"
         return finish(outcome.status, outcome.selected_candidate_id, outcome.evidence_hash,
@@ -224,7 +256,7 @@ def select_checkpoint_detail(checkpoint: PolicyCheckpoint, task: PublicTask, can
 
     letters = option_letters(task) if task.output_kind is OutputKind.OPTION else None
     votes = []
-    for cid in pool:
+    for cid in present:
         key = vote_key(candidates[cid], task, letters=letters)
         if key is not None:
             votes.append((cid, key))
@@ -251,6 +283,7 @@ def _counts_as_vote(candidate: Candidate, task: PublicTask) -> bool:
 
 def select_checkpoint(checkpoint: PolicyCheckpoint, task: PublicTask, candidates: Mapping[str, Candidate],
                       public_checks: Mapping[str, PublicCheckResult], *, seed: int,
-                      math_equivalent: Callable[[str, str], bool | None] | None = None) -> SelectionResult:
+                      math_equivalent: Callable[[str, str], bool | None] | None = None,
+                      absent_ids: frozenset[str] | None = None) -> SelectionResult:
     return select_checkpoint_detail(checkpoint, task, candidates, public_checks, seed=seed,
-                                    math_equivalent=math_equivalent).result
+                                    math_equivalent=math_equivalent, absent_ids=absent_ids).result

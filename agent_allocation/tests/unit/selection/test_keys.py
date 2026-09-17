@@ -101,7 +101,12 @@ def test_math_text_and_exact_key():
     assert keys.math_exact_key("\\dfrac {1}{2}") == keys.math_exact_key("\\frac{1}{2}") == "\\frac{1}{2}"
     assert keys.math_exact_key("\\left( 1, 2 \\right)") == "(1,2)"
     assert keys.math_exact_key("\\pi r^2") == "\\pi r^2" and keys.math_exact_key("\\rightarrow") == "\\rightarrow"
-    assert keys.math_exact_key("50\\%") == "50%" and keys.math_exact_key("5.") == "5"
+    assert keys.math_exact_key("50\\%") == "50\\%" and keys.math_exact_key("5.") == "5"
+    # value-preserving only: no digit joining, no Unicode folding, no guessing about percent or tildes
+    assert keys.math_exact_key("1 2") == "1 2" != keys.math_exact_key("12")
+    assert keys.math_exact_key("x y") == "x y" and keys.math_exact_key("1 + 2") == "1+2"
+    assert keys.math_text("x²") == "x²" and keys.math_exact_key("x²") != keys.math_exact_key("x2")
+    assert keys.math_exact_key("5~\\text{cm}") == "5~\\text{cm}"
 
 
 def test_option_letters_accept_bare_or_parenthesized_choices():

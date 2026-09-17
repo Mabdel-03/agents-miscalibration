@@ -83,13 +83,34 @@ def test_python_strips_exactly_one_outer_fence():
     cand, _ = _extract(f"<final>\n```python\n{code}\n```\n</final>", kind=OutputKind.PYTHON)
     assert cand.parse_status is ParseStatus.VALID and cand.final_answer == code
     bare, _ = _extract(f"<final>```\n{code}\n```</final>", kind=OutputKind.PYTHON)
-    assert bare.final_answer == code
-    double, _ = _extract(f"<final>```python\n```python\n{code}\n```\n```</final>", kind=OutputKind.PYTHON)
-    assert double.final_answer == f"```python\n{code}\n```"
-    other, _ = _extract(f"<final>```json\n{code}\n```</final>", kind=OutputKind.PYTHON)
-    assert other.final_answer.startswith("```json")
-    unclosed, _ = _extract(f"<final>```python\n{code}</final>", kind=OutputKind.PYTHON)
-    assert unclosed.final_answer == f"```python\n{code}"
+    assert bare.parse_status is ParseStatus.VALID and bare.final_answer == code
+    # at most one fence is stripped: what remains is not a program, so there is no program (W06-2)
+    for text in (f"```python\n```python\n{code}\n```\n```", f"```json\n{code}\n```", f"```python\n{code}"):
+        other, _ = _extract(f"<final>{text}</final>", kind=OutputKind.PYTHON)
+        assert other.parse_status is ParseStatus.MALFORMED and other.final_answer is None, text
+
+
+@pytest.mark.parametrize("final", [
+    "I would write a loop that adds numbers.",                      # prose instead of code
+    "def add_two(a, b):\n    return a + b\n```\n```python\nprint(1)",  # a second fence left inside
+    "def f(x:\n    pass",                                           # syntax error
+    "x = 1\x00",                                                    # null byte
+    "(" * 5000 + ")" * 5000,                                          # nesting beyond the parser
+])
+def test_python_final_that_is_not_a_program_is_malformed(final):
+    cand, _ = _extract(f"<final>{final}</final>", kind=OutputKind.PYTHON)
+    assert cand.parse_status is ParseStatus.MALFORMED and cand.final_answer is None
+
+
+def test_python_program_check_never_executes(tmp_path):
+    marker = tmp_path / "executed"
+    cand, _ = _extract(f"<final>open({str(marker)!r}, 'w').write('x')</final>", kind=OutputKind.PYTHON)
+    assert cand.parse_status is ParseStatus.VALID and not marker.exists()
+
+
+def test_non_python_finals_are_not_parsed_as_code():
+    cand, _ = _extract("<final>I would write a loop.</final>", kind=OutputKind.MATH)
+    assert cand.parse_status is ParseStatus.VALID
 
 
 def test_fence_only_python_final_is_malformed():

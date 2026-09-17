@@ -6,10 +6,12 @@ Class construction, in the checkpoint's ``candidate_ids`` order:
 2. Exact keys group first: equal ``VoteKey.exact`` means the same class.
 3. MATH only, and only when an equivalence callable is injected: exact-key groups are admitted by **mutual,
    complete-link** equivalence. Processing distinct exact keys in first-occurrence order, a group joins the first
-   existing class (creation order) for which ``eq(a, b) is True and eq(b, a) is True`` against *every* key already
-   in that class; otherwise it founds a new class. ``None`` (unknown/timeout) and ``False`` never merge, so a
-   one-direction Math-Verify success cannot merge and a nontransitive chain cannot collapse into one class. Each
-   ordered pair is evaluated at most once per call; exceptions from the callable propagate (fail loudly).
+   existing class (creation order) for which ``eq(a, b) is True and eq(b, a) is True`` for *every* pair of a distinct
+   answer text of the group and a distinct answer text already in that class; otherwise it founds a new class.
+   ``None`` (unknown/timeout) and ``False`` never merge, so a one-direction Math-Verify success cannot merge and a
+   nontransitive chain cannot collapse into one class. Each ordered pair is evaluated at most once per call;
+   exceptions from the callable propagate (fail loudly). Exact keys only apply value-preserving rewrites
+   (``selection.keys.math_exact_key``), so step 2 never merges what step 3 would keep apart.
 
 Winner: greatest support (candidate occurrences). Tied classes are ordered by :func:`class_tie_key`, a hash of
 ``(seed, item_id, canonical class id)`` only -- independent of completion order, candidate ids and gold. The
@@ -107,10 +109,12 @@ def build_classes(votes: Sequence[tuple[str, VoteKey]], *, kind: OutputKind,
     if kind not in _CLASS_PREFIX:
         raise ValueError(f"no answer classes for output kind {kind.value!r}")
     members: dict[str, list[str]] = {}
-    texts: dict[str, str] = {}
+    texts: dict[str, list[str]] = {}                 # distinct answer texts per exact key, first-occurrence order
     for candidate_id, key in votes:
         members.setdefault(key.exact, []).append(candidate_id)
-        texts.setdefault(key.exact, key.text)
+        seen = texts.setdefault(key.exact, [])
+        if key.text not in seen:
+            seen.append(key.text)
     order = list(members)                            # first-occurrence order of distinct exact keys
     groups: list[list[str]] = []
     calls = unknown = 0
@@ -118,7 +122,7 @@ def build_classes(votes: Sequence[tuple[str, VoteKey]], *, kind: OutputKind,
         eq = _Equivalence(math_equivalent)
         for key in order:
             for group in groups:
-                if all(eq.mutual(texts[key], texts[other]) for other in group):
+                if all(eq.mutual(mine, theirs) for mine in texts[key] for other in group for theirs in texts[other]):
                     group.append(key)
                     break
             else:

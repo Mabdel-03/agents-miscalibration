@@ -10,21 +10,22 @@ answer, a grade or another candidate.
   ``Answer: B`` are not votes and cannot win plurality. A boolean final is a vote only when it is an explicit
   ``true``/``false`` under that module's outer-character rule. That module is pure string handling with no gold.
   MMLU options keep their original order, so the letter is the option identity.
-* MATH: ``math_text`` is what an equivalence check reads -- NFKC, outer whitespace, one enclosing ``**...**`` pair
+* MATH: ``math_text`` is what an equivalence check reads -- outer whitespace, one enclosing ``**...**`` pair
   removed, then the content of the ``\\boxed{...}`` when the final carries boxed expressions, otherwise one outer
   ``$``/``$$``/``\\(..\\)``/``\\[..\\]`` wrapper removed. A final whose top-level boxed expressions are not all the
   same answer (``\\boxed{2} or \\boxed{3}``) is a hedge: it has no key and casts no vote (the grader marks hedged
   answers wrong, so no class may be represented by one); repeating one answer (``\\boxed{3} ... \\boxed{3}``) is not
-  a hedge. ``math_exact_key`` is the exact-equality key built from the text: ``\\dfrac``/``\\tfrac`` -> ``\\frac``,
-  sizing ``\\left``/``\\right`` dropped, LaTeX spacing commands and ``~`` treated as spaces, ``\\%`` -> ``%``,
-  whitespace removed except one space between a control word and a following letter (``\\pi r`` stays two tokens),
-  one trailing period dropped. Anything subtler is left to the injected, mutual, complete-link equivalence check.
+  a hedge. ``math_exact_key`` is the exact-equality key built from the text with *value-preserving* rewrites only:
+  ``\\dfrac``/``\\tfrac`` -> ``\\frac``, sizing ``\\left``/``\\right`` dropped, LaTeX spacing commands
+  (``\\, \\; \\: \\! \\ ``) read as spaces, a whitespace run removed unless it separates two alphanumeric characters
+  (``1 2``, ``x y`` and ``\\pi r`` keep one space), one trailing period dropped. No Unicode normalization (``x²`` is
+  not ``x2``). Everything else -- ``0.5`` vs ``\\frac{1}{2}``, ``50\\%`` vs ``0.5`` -- is left to the injected mutual,
+  complete-link equivalence check.
 * PYTHON has no vote key: code is never voted on (public-example selection, ``selection.code``).
 """
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 
 from agent_allocation.contracts import Candidate, OutputKind, ParseStatus, PublicTask
@@ -35,7 +36,7 @@ __all__ = [
     "math_text", "option_key", "option_letters", "vote_key",
 ]
 
-KEYS_VERSION = "06-keys-v3"
+KEYS_VERSION = "06-keys-v4"
 #: The grader normalizer whose identities are the option/boolean vote keys.
 TEXT_NORMALIZER_VERSION = NORMALIZER_VERSION
 
@@ -46,7 +47,6 @@ _WHOLE_BOX = re.compile(r"^\\boxed\s*\{")
 _DFRAC = re.compile(r"\\[dt]frac(?![A-Za-z])")
 _SIZING = re.compile(r"\\(?:left|right)(?![A-Za-z])")
 _SPACING = re.compile(r"\\[,;:! ]")
-_CONTROL_WORD_END = re.compile(r"\\[A-Za-z]+$")
 _WS = re.compile(r"\s+")
 
 
@@ -131,7 +131,7 @@ def _strip_math_wrapper(text: str) -> str:
 
 def math_text(final_answer: str) -> str | None:
     """The answer expression an equivalence check reads, or ``None`` (blank, unclosed box, or a boxed hedge)."""
-    text = unicodedata.normalize("NFKC", final_answer).strip()
+    text = final_answer.strip()
     if len(text) > 4 and text.startswith("**") and text.endswith("**"):
         text = text[2:-2].strip()
     if "\\boxed" in text:
@@ -152,12 +152,14 @@ def math_text(final_answer: str) -> str | None:
 
 
 def _squeeze_whitespace(text: str) -> str:
+    """Drop each whitespace run unless it separates two alphanumeric characters (then keep one space)."""
     out: list[str] = []
     pos = 0
     for match in _WS.finditer(text):
         out.append(text[pos:match.start()])
-        following = text[match.end():match.end() + 1]
-        if following.isalpha() and _CONTROL_WORD_END.search(text[:match.start()]):
+        before = text[match.start() - 1:match.start()]
+        after = text[match.end():match.end() + 1]
+        if before.isalnum() and after.isalnum():
             out.append(" ")
         pos = match.end()
     out.append(text[pos:])
@@ -167,7 +169,7 @@ def _squeeze_whitespace(text: str) -> str:
 def math_exact_key(text: str) -> str | None:
     key = _DFRAC.sub(r"\\frac", text)
     key = _SIZING.sub("", key)
-    key = _SPACING.sub(" ", key).replace("~", " ").replace("\\%", "%")
+    key = _SPACING.sub(" ", key)
     key = _squeeze_whitespace(key.strip())
     if key.endswith(".") and len(key) > 1:
         key = key[:-1]
