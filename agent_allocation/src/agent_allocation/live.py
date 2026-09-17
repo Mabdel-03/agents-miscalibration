@@ -1079,7 +1079,7 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
     ceiling = active_ceiling(max_usd, spent, snap)
     n_waves = len(by_wave["main"])
     ext_waves = cfg["panels"]["extension_items"] // 16
-    admission = wave_admission(costs, n_waves=n_waves - FORECAST_CHECK_WAVES,
+    admission = wave_admission(costs, n_waves=max(n_waves - FORECAST_CHECK_WAVES, 0),
                                extension_waves=max(ext_waves - FORECAST_CHECK_WAVES, 0),
                                high_waves=len(by_wave["high"]), available_usd=min(ceiling, soft) - spent)
     record_decision(paths, phase="B", admission=admission, spent=str(spent), ceiling=str(ceiling),
