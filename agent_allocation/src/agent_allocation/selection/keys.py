@@ -1,22 +1,24 @@
-"""Gold-blind vote keys: option letters, booleans and exact-normalized mathematical answers (MASTER_SPEC §11.1).
+"""Gold-blind vote keys: option letters, booleans and exact-normalized mathematical answers (MASTER_SPEC §2.2, §11.1).
 
 Every function here reads only the candidate's own final answer and the public task. Nothing here sees a gold
 answer, a grade or another candidate.
 
-* OPTION (MMLU-Pro, BBH choice subtasks): after removing outer whitespace the final must be exactly ``X`` or ``(X)``
-  with ``X`` an uppercase letter listed in ``PublicTask.allowed_choices``; anything else casts no vote. MMLU options
-  keep their original order, so the letter *is* the option identity.
-* BOOLEAN (BBH boolean_expressions): after removing outer whitespace and the characters in
-  ``BOOLEAN_OUTER_CHARACTERS``, exactly ``true``/``false`` case-insensitively -> ``"True"``/``"False"``.
-* Both rules are byte-for-byte the grader's frozen identities (``grading.text.normalize``, ``text-normalize-v1``),
-  copied rather than imported so the selector's import closure never loads grading code; a parity test pins them.
-  Votes and grades therefore agree: a class representative is never graded ``INVALID_OUTPUT`` for its form.
-* MATH: ``math_text`` is what an equivalence check reads -- NFKC, outer whitespace, the content of the *last*
-  ``\\boxed{...}`` when one is present, otherwise one outer ``$``/``$$``/``\\(..\\)``/``\\[..\\]`` wrapper removed.
-  ``math_exact_key`` is the exact-equality key built from it: ``\\dfrac``/``\\tfrac`` -> ``\\frac``, sizing
-  ``\\left``/``\\right`` dropped, LaTeX spacing commands and ``~`` treated as spaces, ``\\%`` -> ``%``, whitespace
-  removed except one space between a control word and a following letter (``\\pi r`` stays two tokens), one
-  trailing period dropped. Anything subtler is left to the injected, mutual, complete-link equivalence check.
+* OPTION (MMLU-Pro, BBH choice subtasks) and BOOLEAN (BBH boolean_expressions): the vote identity *is* the grader's
+  frozen identity, imported from ``grading.text.normalize`` (``option_identity`` / ``boolean_identity``, lead
+  decision on 04-R2): one normalization for voting and grading. An option final is a vote only when, after outer
+  whitespace, it is exactly ``X`` or ``(X)`` for a letter in ``PublicTask.allowed_choices``; ``B.``, ``**B**`` or
+  ``Answer: B`` are not votes and cannot win plurality. A boolean final is a vote only when it is an explicit
+  ``true``/``false`` under that module's outer-character rule. That module is pure string handling with no gold.
+  MMLU options keep their original order, so the letter is the option identity.
+* MATH: ``math_text`` is what an equivalence check reads -- NFKC, outer whitespace, one enclosing ``**...**`` pair
+  removed, then the content of the ``\\boxed{...}`` when the final carries boxed expressions, otherwise one outer
+  ``$``/``$$``/``\\(..\\)``/``\\[..\\]`` wrapper removed. A final whose top-level boxed expressions are not all the
+  same answer (``\\boxed{2} or \\boxed{3}``) is a hedge: it has no key and casts no vote (the grader marks hedged
+  answers wrong, so no class may be represented by one); repeating one answer (``\\boxed{3} ... \\boxed{3}``) is not
+  a hedge. ``math_exact_key`` is the exact-equality key built from the text: ``\\dfrac``/``\\tfrac`` -> ``\\frac``,
+  sizing ``\\left``/``\\right`` dropped, LaTeX spacing commands and ``~`` treated as spaces, ``\\%`` -> ``%``,
+  whitespace removed except one space between a control word and a following letter (``\\pi r`` stays two tokens),
+  one trailing period dropped. Anything subtler is left to the injected, mutual, complete-link equivalence check.
 * PYTHON has no vote key: code is never voted on (public-example selection, ``selection.code``).
 """
 from __future__ import annotations
@@ -25,22 +27,22 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from agent_allocation._vendor.extraction_tags import extract_boxed
 from agent_allocation.contracts import Candidate, OutputKind, ParseStatus, PublicTask
+from agent_allocation.grading.text.normalize import NORMALIZER_VERSION, boolean_identity, option_identity
 
 __all__ = [
-    "BOOLEAN_OUTER_CHARACTERS", "KEYS_VERSION", "TEXT_NORMALIZER_PARITY", "VoteKey", "boolean_key", "math_exact_key",
+    "KEYS_VERSION", "TEXT_NORMALIZER_VERSION", "VoteKey", "boolean_key", "boxed_contents", "math_exact_key",
     "math_text", "option_key", "option_letters", "vote_key",
 ]
 
-KEYS_VERSION = "06-keys-v2"
-#: The grader normalizer these option/boolean keys reproduce exactly (see tests/unit/selection/test_keys.py).
-TEXT_NORMALIZER_PARITY = "text-normalize-v1"
-BOOLEAN_OUTER_CHARACTERS = " \t\n\r\f\v.,;:!?\"'`*_()[]{}$"
-_OPTION = re.compile(r"([A-Z])|\(([A-Z])\)")
+KEYS_VERSION = "06-keys-v3"
+#: The grader normalizer whose identities are the option/boolean vote keys.
+TEXT_NORMALIZER_VERSION = NORMALIZER_VERSION
 
 _CHOICE = re.compile(r"^\(?([A-Za-z])\)?$")
 _MATH_WRAPPERS: tuple[tuple[str, str], ...] = (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$"))
+_BOXED_OPEN = re.compile(r"\\boxed\s*\{")
+_WHOLE_BOX = re.compile(r"^\\boxed\s*\{")
 _DFRAC = re.compile(r"\\[dt]frac(?![A-Za-z])")
 _SIZING = re.compile(r"\\(?:left|right)(?![A-Za-z])")
 _SPACING = re.compile(r"\\[,;:! ]")
@@ -69,22 +71,52 @@ def option_letters(task: PublicTask) -> frozenset[str]:
 
 
 def option_key(final_answer: str | None, letters: frozenset[str]) -> str | None:
-    """The legal option letter when the final is exactly ``X`` or ``(X)`` (outer whitespace removed), else ``None``."""
-    if final_answer is None:
-        return None
-    match = _OPTION.fullmatch(final_answer.strip())
-    if match is None:
-        return None
-    letter = match.group(1) or match.group(2)
-    return letter if letter in letters else None
+    """``grading.text.normalize.option_identity`` over the item's legal letters."""
+    return option_identity(final_answer, tuple(sorted(letters)))
 
 
 def boolean_key(final_answer: str | None) -> str | None:
-    """``"True"``/``"False"`` for an explicit boolean final, else ``None``."""
-    if final_answer is None:
-        return None
-    text = final_answer.strip().strip(BOOLEAN_OUTER_CHARACTERS).casefold()
-    return {"true": "True", "false": "False"}.get(text)
+    """``grading.text.normalize.boolean_identity``."""
+    return boolean_identity(final_answer)
+
+
+def _balanced(text: str, open_brace: int) -> int | None:
+    """Index just past the brace that closes ``text[open_brace]``, or ``None`` when it never closes."""
+    depth = 0
+    for index in range(open_brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _unwrap_box(content: str) -> str:
+    """``\\boxed{\\boxed{x}}`` content -> ``x``: a box that is the whole content is the same expression."""
+    while True:
+        stripped = content.strip()
+        match = _WHOLE_BOX.match(stripped)
+        end = None if match is None else _balanced(stripped, match.end() - 1)
+        if match is None or end != len(stripped):
+            return stripped
+        content = stripped[match.end():end - 1]
+
+
+def boxed_contents(text: str) -> list[str] | None:
+    """Contents of the top-level ``\\boxed{...}`` expressions in order; ``None`` when a box never closes."""
+    contents: list[str] = []
+    position = 0
+    while True:
+        match = _BOXED_OPEN.search(text, position)
+        if match is None:
+            return contents
+        end = _balanced(text, match.end() - 1)
+        if end is None:
+            return None
+        contents.append(_unwrap_box(text[match.end():end - 1]))
+        position = end
 
 
 def _strip_math_wrapper(text: str) -> str:
@@ -98,9 +130,23 @@ def _strip_math_wrapper(text: str) -> str:
 
 
 def math_text(final_answer: str) -> str | None:
+    """The answer expression an equivalence check reads, or ``None`` (blank, unclosed box, or a boxed hedge)."""
     text = unicodedata.normalize("NFKC", final_answer).strip()
-    boxed = extract_boxed(text) if "\\boxed" in text else None
-    text = boxed if boxed is not None else _strip_math_wrapper(text)
+    if len(text) > 4 and text.startswith("**") and text.endswith("**"):
+        text = text[2:-2].strip()
+    if "\\boxed" in text:
+        boxes = boxed_contents(text)
+        if boxes is None:
+            return None
+        if boxes:
+            distinct = {math_exact_key(box) for box in boxes}
+            if len(distinct) != 1 or None in distinct:
+                return None         # several different boxed answers (a hedge) or an empty box
+            text = boxes[-1]
+        else:
+            text = _strip_math_wrapper(text)
+    else:
+        text = _strip_math_wrapper(text)
     text = text.strip()
     return text or None
 
@@ -129,7 +175,7 @@ def math_exact_key(text: str) -> str | None:
 
 
 def vote_key(candidate: Candidate, task: PublicTask, *, letters: frozenset[str] | None = None) -> VoteKey | None:
-    """The candidate's vote key, or ``None`` when it casts no vote (invalid parse, illegal or unreadable answer)."""
+    """The candidate's vote key, or ``None`` when it casts no vote (invalid parse, illegal, unreadable or hedged)."""
     if candidate.parse_status is not ParseStatus.VALID or candidate.final_answer is None:
         return None
     kind = task.output_kind

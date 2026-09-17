@@ -22,16 +22,6 @@
     "origin_sha256": "fac97d55668ea99653b53cf68fa5c175e2db352f271a1a59ed24fbbcf4e8eb0d"
   },
   {
-    "changes": "none (verbatim)",
-    "file": "src/agent_allocation/_vendor/extraction_tags.py",
-    "functions": [
-      "extract_boxed"
-    ],
-    "origin": "src/agents_scaling/ard/graders/_boxed.py",
-    "origin_commit": "e4b4037",
-    "origin_sha256": "f84171fb19bae616573eec4283493f305ed2561790c39b274d11623185dc80f5"
-  },
-  {
     "changes": "returns the exact Fraction instead of float(Fraction)",
     "file": "src/agent_allocation/_vendor/metrics_reference.py",
     "functions": [

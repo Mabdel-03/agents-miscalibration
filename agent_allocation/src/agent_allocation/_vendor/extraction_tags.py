@@ -1,4 +1,4 @@
-"""Strict tag extraction, one-fence strip and last ``\\boxed{}`` (vendored for agent 06; see PROVENANCE.json).
+"""Strict tag extraction and one-fence strip (vendored for agent 06; see PROVENANCE.json).
 
 Origins at ``agents_scaling@e4b4037``:
 
@@ -6,7 +6,6 @@ Origins at ``agents_scaling@e4b4037``:
   Change: an empty inner element is reported as ``TAG_EMPTY`` with ``content=None`` (the origin returned ``""``).
 * ``strip_one_fence`` -- ``src/agents_scaling/study/parse/candidate.py:127`` with the fence regexes at ``:72-73``.
   Change: the opening fence's info string must be in ``allowed_info`` (case-insensitive) when that is given.
-* ``extract_boxed`` -- ``src/agents_scaling/ard/graders/_boxed.py`` verbatim.
 """
 from __future__ import annotations
 
@@ -64,22 +63,3 @@ def strip_one_fence(text: str, allowed_info: Collection[str] | None = None) -> s
     if closing is None:
         return stripped
     return rest[: closing.start()].strip()
-
-
-def extract_boxed(text: str) -> str | None:
-    """Return the content of the last ``\\boxed{...}``, brace-balanced, or ``None``."""
-    idx = text.rfind(r"\boxed")
-    if idx == -1:
-        return None
-    i = text.find("{", idx)
-    if i == -1:
-        return None
-    depth = 0
-    for j in range(i, len(text)):
-        if text[j] == "{":
-            depth += 1
-        elif text[j] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[i + 1: j].strip()
-    return None

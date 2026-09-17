@@ -296,12 +296,17 @@ def test_selector_signature_names_no_private_types():
         "checkpoint", "task", "candidates", "public_checks", "seed", "math_equivalent"]
 
 
-def test_selection_package_never_imports_grading():
+def test_selection_package_imports_only_the_gold_blind_normalizer_from_grading():
+    import ast
     import pathlib
     root = pathlib.Path(readout.__file__).parent
     for path in root.glob("*.py"):
-        source = path.read_text()
-        assert "agent_allocation.grading" not in source and "import grading" not in source, path
+        for node in ast.walk(ast.parse(path.read_text())):
+            names = [node.module or ""] if isinstance(node, ast.ImportFrom) else \
+                [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
+            for name in names:
+                if "grading" in name:
+                    assert name == "agent_allocation.grading.text.normalize", (path, name)
 
 
 def test_results_ignore_grades_entirely():
