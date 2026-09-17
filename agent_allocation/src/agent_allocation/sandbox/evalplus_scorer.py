@@ -321,7 +321,7 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
         limits=[max(4.0,4.0*t) for t in batch['reference_times']]
         if any(not math.isfinite(t) or t<=0 for t in limits):raise ValueError('Invalid native reference timing')
         wall=min(float(suite_wall_seconds),sum(limits))+3;deadline=time.monotonic()+wall
-        passed=[];atol=row['atol'];failure=None
+        passed=[];atol=row['atol'];failure=None;timeouts=0
         try:
             with Sandbox({},python_prefix=python_prefix or CERTIFIED_PYTHON_PREFIX,
                          limits=SandboxLimits(cpu_seconds=math.ceil(wall)+1,wall_seconds=wall,memory_bytes=memory_bytes,
@@ -350,12 +350,13 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
                         else:
                             correct=False
                             if sandbox_denial(result):denied.add(sandbox_denial(result))
+                            if 'Native candidate execution time exceeded' in (result.get('error') or ''):timeouts+=1
                         passed.append(bool(correct))
         except SandboxError as error:
             failure,split_crash=classify_sandbox_error(error)
             crash=crash or split_crash
         batches[split]={'passed':sum(passed),'attempted':len(passed),'total':len(inputs),
-                        'success':len(passed)==len(inputs) and all(passed),'failure_class':failure,
+                        'success':len(passed)==len(inputs) and all(passed),'failure_class':failure,'input_timeouts':timeouts,
                         'wall_seconds':round(time.monotonic()-(deadline-wall),3),'batch_ceiling_seconds':round(wall,3)}
     success=all(value['success'] for value in batches.values())
     return Grade(success,float(success),SCORER_ID,None if success else 'native_tests_failed',

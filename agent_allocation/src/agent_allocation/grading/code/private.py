@@ -105,7 +105,8 @@ def _detail(grade: Grade) -> str:
         for split in ("base", "plus"):
             batch = grade.details[split]
             if not batch["success"]:
-                detail = f"{split}_{batch['failure_class'] or 'wrong_output'}"
+                reason = batch["failure_class"] or ("input_timeout" if batch.get("input_timeouts") else "wrong_output")
+                detail = f"{split}_{reason}"
                 break
     denied = grade.details.get("sandbox_denied") or []
     return detail + (f";sandbox_denied={','.join(denied)}" if denied else "")
