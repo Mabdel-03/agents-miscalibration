@@ -365,13 +365,15 @@ class StateStore:
             conn.execute(
                 "INSERT INTO attempts(attempt_id, node_id, attempt_no, state, transport_status, sent, record_json,"
                 " result_json, updated_at) VALUES(?, ?, ?, 'response_persisted', ?, 1, ?, ?, ?) ON CONFLICT(attempt_id)"
-                " DO UPDATE SET sent=1, state=CASE WHEN attempts.state='terminal' THEN attempts.state ELSE excluded.state END,"
+                " DO UPDATE SET sent=1, state=CASE WHEN attempts.state='terminal' AND EXISTS (SELECT 1 FROM results r"
+                " WHERE r.node_id=attempts.node_id) THEN attempts.state ELSE excluded.state END,"
                 " transport_status=excluded.transport_status, record_json=excluded.record_json,"
                 " result_json=excluded.result_json, updated_at=excluded.updated_at",
                 (attempt.attempt_id, attempt.node_id, attempt.attempt_no, result.transport_status.value,
                  _json(persisted), _json(result), now))
-            conn.execute("UPDATE nodes SET state='response_persisted', updated_at=? WHERE node_id=?"
-                         " AND state IN ('pending', 'leased', 'sent')", (now, attempt.node_id))
+            conn.execute("UPDATE nodes SET state='response_persisted', lease_owner=NULL, lease_attempt_id=NULL,"
+                         " heartbeat_at=NULL, updated_at=? WHERE node_id=? AND state IN ('pending', 'leased', 'sent')",
+                         (now, attempt.node_id))
 
     def persisted_unfinished(self) -> list[tuple[Attempt, GenerationResult]]:
         """Persisted OK responses whose node has no accepted result yet (finish them without re-sending)."""
@@ -533,33 +535,38 @@ class StateStore:
                     result, candidate = read_parsed(file)
                     if self._ingest_result(result, candidate):
                         report["parsed_ingested"] += 1
-        # 2. raw/ -> persisted responses not yet committed, and failed attempts
+        # 2. raw/ -> persisted responses not yet committed, and failed attempts. Every OK response of a node without a
+        #    result is re-ingested whatever its attempt row says (a cancelled run may have marked it TERMINAL):
+        #    a paid response on disk is never re-sent.
         known = journal_attempts(self.paths.ledger_journal)          # read-only: recovery never writes the journal
         accepted = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
-        terminal_attempts = {r["attempt_id"] for r in self._query("SELECT attempt_id FROM attempts WHERE state='terminal'")}
-        open_in_journal = {aid for aid, info in known.items() if info.resolution is None}
-        raw_results: dict[str, GenerationResult] = {}
+        node_states = {r["node_id"]: r["state"] for r in self._query("SELECT node_id, state FROM nodes")}
         for file in iter_raw_files(self.paths):
             attempt_guess = _attempt_id_from_raw_name(file.name)
-            if attempt_guess in terminal_attempts and attempt_guess not in open_in_journal:
-                continue                      # already accounted and committed: no need to read the artifact
+            if attempt_guess is not None and attempt_guess.rsplit(":", 1)[0] in accepted:
+                continue                      # the node has its accepted result: nothing to re-ingest
             relative = self.paths.relative(file)
             payload = read_raw_response(self.paths, relative)
             result = result_from_raw(payload, relative_path=relative, sha256=sha256_file(file))
-            if result is None:
+            if result is None or result.node_id in accepted:
                 continue
-            raw_results[result.attempt_id] = result
-            row = self._query("SELECT state FROM attempts WHERE attempt_id=?", (result.attempt_id,))
-            if row and row[0]["state"] == AttemptState.TERMINAL.value:
-                continue
+            rows = self._query("SELECT state, record_json FROM attempts WHERE attempt_id=?", (result.attempt_id,))
             reserved = known[result.attempt_id].reserved_usd if result.attempt_id in known else Decimal("0")
-            attempt = Attempt(result.attempt_id, result.node_id, attempt_number(result.attempt_id),
-                              AttemptState.SENT, reserved, now_iso(), transport_status=result.transport_status,
-                              http_status=result.http_status, generation_id=result.generation_id)
-            if result.transport_status is TransportStatus.OK and result.node_id not in accepted:
+            attempt = (load_record(Attempt, json.loads(rows[0]["record_json"])) if rows else
+                       Attempt(result.attempt_id, result.node_id, attempt_number(result.attempt_id), AttemptState.SENT,
+                               reserved, now_iso(), transport_status=result.transport_status,
+                               http_status=result.http_status, generation_id=result.generation_id))
+            if result.transport_status is TransportStatus.OK:
+                if node_states.get(result.node_id) == AttemptState.TERMINAL.value:
+                    continue                  # never resurrect a node already terminal without a result
+                if rows and rows[0]["state"] == AttemptState.RESPONSE_PERSISTED.value:
+                    continue
                 self.record_persisted_response(attempt, result)
                 report["raw_persisted"] += 1
             else:
+                if rows and rows[0]["state"] == AttemptState.TERMINAL.value:
+                    self._query("UPDATE attempts SET sent=1 WHERE attempt_id=? AND sent=0", (result.attempt_id,))
+                    continue
                 self._record_attempt(replace(attempt, state=AttemptState.TERMINAL, completed_at=now_iso()), sent=True)
                 report["raw_failed_attempts"] += 1
         # 3. journal -> every attempt known to the DB. Open reservations are NOT charged here: the ledger
@@ -572,6 +579,8 @@ class StateStore:
                                              error_detail="recovered_from_journal"),
                                      sent=info.sent or info.resolution is None)
                 report["journal_attempts_recorded"] += 1
+            elif info.sent:
+                self._query("UPDATE attempts SET sent=1 WHERE attempt_id=? AND sent=0", (aid,))
             if info.resolution is None:
                 report["journal_open_reservations"] += 1
         return report

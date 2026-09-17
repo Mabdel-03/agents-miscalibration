@@ -702,6 +702,12 @@ class Dispatcher:
             row = rows[node.node_id]
             node.attempts_used = row.attempts_used
             node.sends = sends.get(node.node_id, 0)
+            if row.state == AttemptState.PENDING.value and node.sends >= self.settings.max_transport_attempts:
+                # Earlier runs (or a restored backup that predates the exhaustion) already used every transport
+                # attempt: the limit holds across runs, so the node is terminal without a candidate.
+                self.store.mark_exhausted(node.node_id, "attempts_exhausted:prior_runs")
+                row = replace(row, state=AttemptState.TERMINAL.value, outcome="exhausted")
+                self._event("exhausted_from_prior_runs", node.node_id)
             if row.state == AttemptState.TERMINAL.value:
                 node.terminal = True
                 node.succeeded = row.outcome == OUTCOME_SUCCEEDED
@@ -740,26 +746,38 @@ class Dispatcher:
                 continue
             await self._finish_ok(node, attempt, result)
 
-    async def _finish_from_raw(self, node: _Node, attempt_id: str) -> bool:
-        """A dead owner's attempt whose OK response reached disk is finished from the artifact, never re-sent
-        (covers a restart that skipped ``StateStore.recover``)."""
+    async def _persist_ok_raw(self, node_id: str, attempt_id: str) -> tuple[Attempt, GenerationResult] | None:
+        """If this attempt's OK response is on disk: settle it from its confirmed cost (if still open) and record it
+        as persisted so it is finished from the artifact and never re-sent. Returns None when there is no OK raw."""
         raw_path = self.paths.raw_response(attempt_id)
-        if node.terminal or not raw_path.exists():
-            return False
+        if not raw_path.exists():
+            return None
         relative = self.paths.relative(raw_path)
         result = result_from_raw(read_raw_response(self.paths, relative), relative_path=relative,
                                  sha256=sha256_file(raw_path))
-        if result is None or result.node_id != node.node_id or result.transport_status is not TransportStatus.OK:
-            return False
+        if result is None or result.node_id != node_id or result.transport_status is not TransportStatus.OK:
+            return None
         cost = confirmed_cost(result)
         if self.ledger.state_of(attempt_id) in ("reserved", "sent", "unresolved"):
             await (self.ledger.settle(attempt_id, cost) if cost is not None else self.ledger.charge_max(attempt_id))
-        prior = {a.attempt_id: a for a in self.store.attempts_for(node.node_id)}.get(attempt_id)
+        prior = {a.attempt_id: a for a in self.store.attempts_for(node_id)}.get(attempt_id)
         if prior is None:
-            prior = Attempt(attempt_id, node.node_id, int(attempt_id.rsplit(":", 1)[1]), AttemptState.SENT,
+            prior = Attempt(attempt_id, node_id, int(attempt_id.rsplit(":", 1)[1]), AttemptState.SENT,
                             Decimal("0"), _utc(), transport_status=result.transport_status)
-        await self._finish_ok(node, prior, result)
-        return node.terminal
+        self.store.record_persisted_response(prior, result)
+        return prior, result
+
+    async def _finish_from_raw(self, node: _Node, attempt_id: str) -> bool:
+        """A dead owner's attempt whose OK response reached disk is finished from the artifact, never re-sent
+        (covers a restart that skipped ``StateStore.recover``). True whenever such a response exists, even if
+        extraction then fails (the node stays response_persisted for the next run)."""
+        if node.terminal:
+            return False
+        persisted = await self._persist_ok_raw(node.node_id, attempt_id)
+        if persisted is None:
+            return False
+        await self._finish_ok(node, *persisted)
+        return True
 
     async def _maybe_take_over(self, node: _Node, owner: str | None, attempt_id: str | None,
                                heartbeat_at: float | None) -> bool:
@@ -950,6 +968,15 @@ class Dispatcher:
         node.status = "ready"
         self.ready[node.node_id] = node
 
+    def _effective_exposure(self, snap: Any) -> Decimal:
+        """Journaled exposure plus reservations admitted in this process but not yet recorded by the ledger."""
+        return snap.exposure + self.pending_reservation
+
+    def _block_level(self, snap: Any) -> Decimal:
+        # The block lifts as soon as effective exposure drops below this level (a settlement below its reservation).
+        level = self._effective_exposure(snap)
+        return level if level > 0 else Decimal("0.000000001")
+
     def _pick(self, now: float, *, retries_only: bool = False) -> _Node | None:
         best: _Node | None = None
         best_key: tuple | None = None
@@ -978,11 +1005,12 @@ class Dispatcher:
             self._event_once("paused_unresolved_exposure")
             return "unresolved_exposure"
         snap = self.ledger.snapshot()
+        effective = self._effective_exposure(snap)
         if self.budget_blocked_at is not None:
-            if snap.exposure >= self.budget_blocked_at:
+            if effective >= self.budget_blocked_at:
                 return "budget"
             self.budget_blocked_at = None
-        if self.first_attempts_blocked_at is not None and snap.exposure < self.first_attempts_blocked_at:
+        if self.first_attempts_blocked_at is not None and effective < self.first_attempts_blocked_at:
             self.first_attempts_blocked_at = None
         while self.ready:
             if self._capacity() <= 0:
@@ -994,6 +1022,10 @@ class Dispatcher:
             node = self._pick(now, retries_only=self.first_attempts_blocked_at is not None)
             if node is None:
                 return "budget" if self.first_attempts_blocked_at is not None else "none_eligible"
+            if node.sends >= self.settings.max_transport_attempts:
+                self.store.mark_exhausted(node.node_id, "attempts_exhausted:limit")
+                self._on_terminal(node, succeeded=False)
+                continue
             try:
                 parents = [(self.nodes[p].spec, self.store.candidate(p) if self.nodes[p].succeeded else None)
                            for p in node.parents]
@@ -1024,11 +1056,11 @@ class Dispatcher:
             first_attempt = node.sends == 0
             if first_attempt and not self.ledger.fits(amount + self.pending_reservation, ceiling_usd=self.soft_ceiling):
                 # The soft admission ceiling binds new work; the reserve above it is only for retries of admitted work.
-                self.first_attempts_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                self.first_attempts_blocked_at = self._block_level(snap)
                 self._event_once(f"soft_ceiling_blocks_first_attempts:{self.ledger.last_refusal or 'ceiling'}")
                 continue
             if not self.ledger.fits(amount + self.pending_reservation):
-                self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                self.budget_blocked_at = self._block_level(snap)
                 self._event_once(f"budget_blocked:{self.ledger.last_refusal or 'ceiling'}")
                 return "budget"
             if not first_attempt and snap.exposure + self.pending_reservation + amount > self.soft_ceiling:
@@ -1055,16 +1087,15 @@ class Dispatcher:
         attempt = Attempt(attempt_id, node.node_id, attempt_no, AttemptState.PENDING, amount, _utc())
         phase = {"pre_send": True}
         try:
-            try:
-                reserved = await self.ledger.reserve(attempt_id=attempt_id, node_id=node.node_id,
-                                                     partition_id=spec.partition_id, amount_usd=amount)
-            finally:
-                self.pending_reservation -= amount
+            # Hand the amount from pending to the ledger with no await in between: reserve() records it in memory
+            # synchronously before its first await, so it is never counted twice (or not at all).
+            self.pending_reservation -= amount
+            reserved = await self.ledger.reserve(attempt_id=attempt_id, node_id=node.node_id,
+                                                 partition_id=spec.partition_id, amount_usd=amount)
             if not reserved:
                 node.attempts_used -= 1          # a refused reservation is not journaled: the id is still free
                 if self.ledger.last_refusal == "ceiling":
-                    snap = self.ledger.snapshot()
-                    self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                    self.budget_blocked_at = self._block_level(self.ledger.snapshot())
                 self._requeue(node)              # unresolved_exposure: the pause lifts when reconciliation runs
                 return
             if not self.store.try_lease(node.node_id, attempt_id, owner=self.owner):
@@ -1401,6 +1432,11 @@ class Dispatcher:
             if row.lease_owner != self.owner or row.lease_attempt_id is None:
                 continue
             attempt_id = row.lease_attempt_id
+            if await self._persist_ok_raw(row.node_id, attempt_id) is not None:
+                # The paid response reached disk before the run stopped: keep it (response_persisted) for the next
+                # run to finish; returning the node to pending would re-send and pay again.
+                self._event("lease_persisted_at_exit", row.node_id)
+                continue
             state = self.ledger.state_of(attempt_id)
             if state == "reserved":
                 await self.ledger.release_unsent(attempt_id)
