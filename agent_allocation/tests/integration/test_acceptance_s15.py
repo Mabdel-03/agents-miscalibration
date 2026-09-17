@@ -760,6 +760,39 @@ def test_s15_14_text_grader_keeps_unknown_and_invalid_distinct_production(adv_it
         assert (g.status, g.semantic_correct) != (gw.status, gw.semantic_correct)
 
 
+def test_s15_14_math_grader_exception_is_unknown_not_wrong_production(adv_items, monkeypatch):
+    """Evaluator outage injection: every Math-Verify entry point raises. The verdict must be unknown, never False.
+    (Patched in-process and in module-level aliases; a grader that *spawns* fresh worker processes would not see
+    the patch -- if this fails for that reason, expose a fault hook rather than deleting the test.)"""
+    import sys
+    import math_verify
+    grade_mod = optional_module("agent_allocation.grading.text.grade")
+
+    def outage(*args, **kwargs):
+        raise RuntimeError("injected evaluator outage")
+
+    originals = {name: getattr(math_verify, name) for name in ("parse", "verify") if hasattr(math_verify, name)}
+    for name in originals:
+        monkeypatch.setattr(math_verify, name, outage)
+    for modname, mod in list(sys.modules.items()):
+        if modname.startswith("agent_allocation.") and mod is not None:
+            for attr, value in list(vars(mod).items()):
+                if any(value is orig for orig in originals.values()):
+                    monkeypatch.setattr(mod, attr, outage)
+    task, private, _ = next((t, p, r) for t, p, r in adv_items if t.benchmark == "math500" and p.gold_answer == "4")
+    node = next(iter(h.ref_graph(grids_from_config(adversarial_config())["pilot_r1"], task).nodes.values()))
+    cand = h.valid_candidate(node, task, content="<final>4</final>", final="4")
+    grade = grade_mod.grade_text(cand, private)
+    assert grade.status is GradeStatus.EVALUATOR_ERROR, grade
+    assert grade.semantic_correct is None and grade.operational_success is not False, grade
+
+
+def adversarial_config():
+    from agent_allocation.config import load_config
+    from tests.integration.conftest import PROJECT
+    return load_config(PROJECT / "configs" / "balanced150.json")
+
+
 # =========================================================================================================
 # 15.15 Missing reasoning usage is null, not zero; a response-cache HIT blocks the partition.
 # =========================================================================================================
