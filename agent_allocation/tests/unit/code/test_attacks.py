@@ -241,3 +241,22 @@ def test_unsupported_dependency_is_a_failure_not_silently_dropped(run_paths):
     assert check.status is CheckStatus.OK and check.case_outcomes == ("error",)
     assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
     assert grade.detail_code == "base_compile_or_initialization_failure"
+
+
+def test_unprivileged_read_only_base_disposable_scratch_no_docker_socket():
+    observed = _probe(
+        "import json, os\nout = {'uid': os.getuid(), 'euid': os.geteuid()}\n"
+        "status = open('/proc/self/status').read().splitlines()\n"
+        "out['caps'] = {l.split(':')[0]: l.split(':')[1].strip() for l in status if l.startswith('Cap')}\n"
+        "for target in ('/usr/evil.txt', '/runtime/evil.txt', '/runner.py'):\n"
+        "    try:\n        open(target, 'w').write('x'); out[target] = 'WROTE'\n"
+        "    except OSError as exc:\n        out[target] = exc.errno\n"
+        "open('/tmp/scratch.txt', 'w').write('ok'); out['scratch'] = open('/tmp/scratch.txt').read()\n"
+        "out['docker'] = [os.path.exists(p) for p in ('/var/run/docker.sock', '/run/docker.sock')]\n"
+        "out['nproc_visible'] = len([p for p in os.listdir('/proc') if p.isdigit()])\n"
+        "print(json.dumps(out))\n")
+    assert observed["uid"] != 0 and observed["euid"] != 0
+    assert observed["caps"]["CapEff"] == "0000000000000000" and observed["caps"]["CapPrm"] == "0000000000000000"
+    assert all(observed[t] in (13, 30) for t in ("/usr/evil.txt", "/runtime/evil.txt", "/runner.py"))  # EACCES/EROFS
+    assert observed["scratch"] == "ok" and observed["docker"] == [False, False]
+    assert observed["nproc_visible"] <= 3                     # own pid namespace: bwrap init + the worker

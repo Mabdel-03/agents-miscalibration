@@ -122,12 +122,15 @@ def load_tasks(paths: RunPaths) -> tuple[dict[str, PublicTask], dict[str, Privat
     return public, private
 
 
-def scan_candidates(paths: RunPaths) -> list[Candidate]:
+def scan_candidates(paths: RunPaths, skip: set[str] | frozenset[str] = frozenset()) -> list[Candidate]:
+    """Candidates from ``parsed/``; ``skip`` holds candidate ids already finished in an earlier pass (follow mode)."""
     parsed_root = paths.run_dir / "parsed"
     out: list[Candidate] = []
     if not parsed_root.is_dir():
         return out
     for path in sorted(parsed_root.glob("*/*.json")):
+        if path.stem in skip:
+            continue
         payload = json.loads(path.read_text())
         candidate = load_record(Candidate, payload["candidate"])
         if paths.parsed(candidate.node_id) != path or candidate.candidate_id != candidate.node_id:
@@ -225,7 +228,7 @@ def _read_cached(paths: RunPaths, kind: str, key: str | None, cls: type) -> Any 
 
 
 def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: bool, workers: int,
-               text_grader: str = TEXT_GRADER, log=print) -> dict[str, int]:
+               text_grader: str = TEXT_GRADER, log=print, finished: set[str] | None = None) -> dict[str, int]:
     """One scan: public checks for code candidates first, then private grades. Returns counters.
 
     Identical code for the same item shares one sandbox run within a pass and across passes (cache); every
@@ -237,7 +240,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     profile_mod.configure(profile)
     env = profile_mod.environment_digest(profile)
     public_tasks, private_specs = load_tasks(paths)
-    candidates = scan_candidates(paths)
+    candidates = scan_candidates(paths, finished if finished is not None else frozenset())
     counts = {"candidates": len(candidates), "public_written": 0, "public_cached": 0, "public_skipped": 0,
               "grades_written": 0, "grades_cached": 0, "grades_skipped": 0, "blocked_text": 0, "unknown_item": 0,
               "infrastructure_errors": 0, "evaluator_errors": 0, "sandbox_denied": 0}
@@ -316,7 +319,8 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
                 _atomic_write(_cache_path(paths, "public", key), dump_record(result), private=True)
         # ---- private grades ---------------------------------------------------------------------------------
         futures = {}
-        for key, members in code_groups.items():
+        # Submit item by item: worker processes keep a small per-process oracle cache, and some oracles are large.
+        for key, members in sorted(code_groups.items(), key=lambda kv: (kv[1][0][0].item_id, kv[0])):
             cached = _read_cached(paths, "private", key, GradeResult) if cacheable(key) else None
             if cached is not None:
                 for candidate, _ in members:
@@ -347,7 +351,26 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     finally:
         if pool is not None:
             pool.shutdown(wait=True, cancel_futures=True)
+    if finished is not None:
+        for candidate in candidates:
+            if _is_finished(paths, candidate, public_tasks, CHECKER_VERSION, GRADER_VERSION):
+                finished.add(candidate.candidate_id)
     return counts
+
+
+def _is_finished(paths: RunPaths, candidate: Candidate, public_tasks: Mapping[str, PublicTask], checker_version: str,
+                 grader_version: str) -> bool:
+    task = public_tasks.get(candidate.item_id)
+    if task is None:
+        return False
+    grade = _read_record(paths.grade(candidate.candidate_id), GradeResult)
+    if grade is None or grade.status not in TERMINAL_GRADE:
+        return False
+    if task.output_kind is not OutputKind.PYTHON:
+        return True
+    check = _read_record(paths.public_check(candidate.candidate_id), PublicCheckResult)
+    return (grade.grader_version == grader_version and check is not None and check.status in TERMINAL_CHECK
+            and check.checker_version == checker_version)
 
 
 class _InlineExecutor:
@@ -385,9 +408,10 @@ def cmd_grade(argv: list[str]) -> int:
     profile = _resolve_profile(paths, args.config)
     workers = worker_count(profile, args.workers)
     resume = args.resume
+    finished: set[str] | None = set() if args.follow else None
     while True:
         try:
-            counts = grade_pass(paths, profile, resume=resume, workers=workers)
+            counts = grade_pass(paths, profile, resume=resume, workers=workers, finished=finished)
         except GradeRefused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return EXIT_BLOCKED

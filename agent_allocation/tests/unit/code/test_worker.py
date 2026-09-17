@@ -244,3 +244,16 @@ def test_parsed_record_identity_is_verified(run_paths):
     wrong.write_text(run_paths.parsed(candidates[0].node_id).read_text())
     with pytest.raises(ValueError):
         worker.scan_candidates(run_paths)
+
+
+def test_follow_mode_skips_finished_candidates_on_later_passes(run_paths, monkeypatch):
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    finished: set[str] = set()
+    profile = profile_mod.active_profile()
+    worker.grade_pass(run_paths, profile, resume=False, workers=0, finished=finished)
+    assert finished == {candidates[0].candidate_id}
+    loads = []
+    real_loads = worker.json.loads
+    monkeypatch.setattr(worker.json, "loads", lambda text: loads.append(1) or real_loads(text))
+    again = worker.grade_pass(run_paths, profile, resume=True, workers=0, finished=finished)
+    assert again["candidates"] == 0
