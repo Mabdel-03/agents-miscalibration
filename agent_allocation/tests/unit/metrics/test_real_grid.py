@@ -104,3 +104,42 @@ def test_real_graphs_select_seal_and_join(run, tmp_path):
     kinds = {r.generation_kind for r in tables.failures}
     assert kinds == {"root", "private", "peer", "deep", "communicate_then_private", "pooled"}
     assert sum(r.n_nodes for r in tables.failures) == 138 + 125
+
+
+def test_real_graphs_round_trip_through_run_paths(run, tmp_path):
+    """Manifests, jobs, parsed records, public checks and grades on disk -> select_partition -> sealed tables."""
+    from agent_allocation.contracts import dump_record
+    from agent_allocation.metrics.io import load_partition_tables, write_partition_tables
+    from agent_allocation.selection.partition import select_partition
+
+    tasks, graphs, candidates, results = run
+    paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
+
+    def write(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    for task in tasks.values():
+        write(paths.public_manifest(task.benchmark), json.dumps(dump_record(task)) + "\n")
+    write(paths.policies("main"), "".join(json.dumps(dump_record(cp)) + "\n" for g in graphs for cp in g.checkpoints))
+    write(paths.jobs("main"), "".join(json.dumps({"node_id": n.node_id, "record": dump_record(n)}) + "\n"
+                                      for g in graphs for n in g.nodes))
+    for graph in graphs:
+        task = tasks[graph.item_id]
+        for node in graph.nodes:
+            candidate = candidates[node.node_id]
+            write(paths.parsed(node.node_id), json.dumps({"result": dump_record(results[node.node_id]),
+                                                          "candidate": dump_record(candidate)}))
+            write(paths.grade(node.node_id), json.dumps(dump_record(_grade(candidate, task))))
+            if task.output_kind is OutputKind.PYTHON and candidate.parse_status is ParseStatus.VALID:
+                write(paths.public_check(node.node_id), json.dumps(dump_record(_public_check(candidate, task))))
+
+    equivalent = lambda a, b: {a, b} <= {"1", "\\frac{2}{2}"} or a == b  # noqa: E731
+    selection = select_partition(paths, "main", seed=SEED, math_equivalent=equivalent)
+    assert len(selection.results) == 390 and not selection.pending_policy_ids and selection.sealed_sha256
+    tables = load_partition_tables(paths, "main")
+    assert len(tables.checkpoints) == 390 and all(r.delivered_state != "missing_selection" for r in tables.checkpoints)
+    assert {r.generation_kind for r in tables.failures} >= {"root", "peer", "pooled"}
+    assert sum(r.n_grade_unknown for r in tables.failures) == 0
+    digests = write_partition_tables(paths, "main", tables)
+    assert paths.metrics_table("main.checkpoints").exists() and len(digests) == 7

@@ -88,7 +88,8 @@ def load_partition_records(paths: RunPaths, partition: str) -> PartitionRecords:
     for item_id in sorted(by_item):
         if item_id not in tasks:
             raise ValueError(f"item {item_id} has checkpoints but no public task")
-        ids = sorted({c for cp in by_item[item_id] for c in (*cp.candidate_ids, *cp.required_node_ids)})
+        ids = sorted({c for cp in by_item[item_id] for c in (*cp.candidate_ids, *cp.required_node_ids)}
+                     | {n for n, spec in specs.items() if spec.item_id == item_id})
         candidates: dict[str, Candidate] = {}
         results: dict[str, GenerationResult] = {}
         for node_id in ids:
@@ -128,6 +129,7 @@ def load_partition_tables(paths: RunPaths, partition: str, *, strict_populations
     sealed = load_sealed_selections(paths, partition)          # refuses an unsealed partition before any grade read
     records = load_partition_records(paths, partition)
     ids = {c for item in records.items for cp in item.checkpoints for c in (*cp.candidate_ids, *cp.required_node_ids)}
+    ids |= {n for item in records.items for n in item.specs}
     return build_partition_tables(sealed, records, load_grades(paths, ids), strict_populations=strict_populations)
 
 
