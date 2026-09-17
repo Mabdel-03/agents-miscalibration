@@ -1,7 +1,13 @@
 {
   "continuation_prefill_sha256": "d81aee4b2755be17a2be6552643d7000fb91ada121ed89e9b849342d372fd9a8",
   "continuation_prefill_text": "\n\n{\n  \"reasoning\": \"",
-  "locked_at": "2026-09-16T21:52:27+00:00",
+  "locked_at": "2026-09-17T01:54:48+00:00",
+  "phase_prefill_sha256": {
+    "receiver_plan": "256c1bf8c0397875584490310dd47d6cf8aa960e59eedc2d0a7c9e085a4f9220"
+  },
+  "phase_prefill_text": {
+    "receiver_plan": "\n\n{\n  \"check_requests\": "
+  },
   "schema_version": 1,
   "templates": {
     "audit.txt": "829521e5fe68d7f476bdb15e50484d9199e94bd3c859a713794679f01cef9984",

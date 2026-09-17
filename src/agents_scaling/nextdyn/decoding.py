@@ -34,7 +34,7 @@ Spec: 5.5 (sampling recipe and token contract), 5.6 (the total-output envelope c
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Mapping
 
 from agents_scaling.nextdyn import contract as K
 from agents_scaling.nextdyn.errors import ContractViolation
@@ -56,6 +56,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: ``reasoning``, so the prefilled opening is also the spec-6.1 field order's first key.
 CONTINUATION_PREFILL_TEXT: Final[str] = '\n\n{\n  "reasoning": "'
 
+#: Phases whose report is *not* the public output, and so whose continuation must open a
+#: different object.  The receiver plan phase declares ``{"check_requests": [...]}`` and has no
+#: ``reasoning`` field at all, so prefilling the public opening forced a cap-hitting plan to
+#: begin the wrong report: measured on the smoke, both un-continued plans parsed and one of the
+#: three continued ones did not.  The prefill exists to open the report the phase owes, so
+#: naming a field that phase's contract does not have is a defect, not a strictness choice.
+#: Amendment A9; every entry is locked beside the default in ``prompts.lock.json``.
+PHASE_CONTINUATION_PREFILL_TEXT: Final[Mapping[str, str]] = {
+    K.PHASE_RECEIVER_PLAN: '\n\n{\n  "check_requests": ',
+}
+
 #: ``RequestSpec.role`` labels: ledger metadata only, never part of the request identity.
 DECISION_ROLE: Final[str] = "nd1_decision"
 CONTINUATION_ROLE: Final[str] = "nd1_continuation"
@@ -67,7 +78,7 @@ CONTINUATION_ROLE: Final[str] = "nd1_continuation"
 TOP_LOGPROBS_SAMPLED: Final[int] = 1
 
 
-def prefill_text(lock: "PromptsLock | None" = None) -> str:
+def prefill_text(lock: "PromptsLock | None" = None, *, phase: str | None = None) -> str:
     """The continuation prefill bytes, read from ``prompts.lock.json`` when one is given.
 
     :data:`CONTINUATION_PREFILL_TEXT` is the declaration and the lock is its frozen copy
@@ -77,8 +88,20 @@ def prefill_text(lock: "PromptsLock | None" = None) -> str:
     two.  Without a lock the declaration is returned unchanged, which is what ``lock-inputs``
     itself needs before any lock exists.
     """
+    declared = PHASE_CONTINUATION_PREFILL_TEXT.get(str(phase), CONTINUATION_PREFILL_TEXT)
     if lock is None:
-        return CONTINUATION_PREFILL_TEXT
+        return declared
+    if phase is not None and str(phase) in PHASE_CONTINUATION_PREFILL_TEXT:
+        locked_phase = dict(lock.phase_prefill_text or {}).get(str(phase))
+        if locked_phase is None:
+            raise ContractViolation(
+                f"prompts.lock.json carries no continuation prefill for phase {phase!r}; run "
+                "`lock-inputs` (the per-phase prefill is prompt bytes and enters the request id)")
+        if locked_phase != declared:
+            raise ContractViolation(
+                f"prompts.lock.json's prefill for phase {phase!r} has drifted from the "
+                "declaration in decoding.PHASE_CONTINUATION_PREFILL_TEXT")
+        return locked_phase
     locked = lock.continuation_prefill_text
     if locked is None:
         raise ContractViolation(

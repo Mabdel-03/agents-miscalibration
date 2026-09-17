@@ -96,10 +96,16 @@ def test_skeleton_locks_have_null_fields_and_fail_closed(tmp_path):
     with pytest.raises(LockError):
         L.verify_models_lock(models, tmp_path, required=["primary"])
 
+    # Built from the dataclass, not spelled out: the loader requires every key explicitly
+    # ("write null explicitly when a value is not yet known"), so a hand-listed skeleton stops
+    # compiling the moment the lock gains a field -- which is how A9's per-phase prefills broke
+    # this test.  A fixture that must be edited whenever its subject changes is a second
+    # declaration of that subject.
     empty_prompts = tmp_path / "prompts.lock.json"
-    empty_prompts.write_text(json.dumps({"schema_version": L.LOCK_SCHEMA_VERSION, "locked_at": None,
-                                         "templates": {}, "continuation_prefill_text": None,
-                                         "continuation_prefill_sha256": None}), encoding="utf-8")
+    blank = {f.name: {} if "templates" in f.name or "phase_prefill" in f.name else None
+             for f in dataclasses.fields(L.PromptsLock)}
+    blank["schema_version"] = L.LOCK_SCHEMA_VERSION
+    empty_prompts.write_text(json.dumps(blank), encoding="utf-8")
     prompts = L.load_prompts_lock(empty_prompts)
     assert prompts.templates == {} and prompts.continuation_prefill_sha256 is None
     with pytest.raises(LockError, match="skeleton"):

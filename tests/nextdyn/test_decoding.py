@@ -140,3 +140,32 @@ def _sampling() -> K.Sampling:
     return K.Sampling.from_floats(temperature=0.6, top_p=0.95, top_k=20, min_p=0.0,
                                   repetition_penalty=1.0, presence_penalty=0.0,
                                   frequency_penalty=0.0)
+
+
+def test_the_continuation_opens_the_report_the_phase_actually_owes():
+    """A9: the receiver plan phase declares ``{"check_requests": [...]}``, not the public output.
+
+    One frozen prefill was applied to every phase, so a plan that hit the thinking cap was made
+    to begin ``{"reasoning": "`` -- a field its own contract does not have and its own parser
+    does not read.  Measured on the smoke: both un-continued plans parsed, and one of the three
+    continued ones did not.  The prefill exists to open the report the phase owes, so naming
+    the wrong field is a defect rather than a question of strictness.
+
+    Same root cause as A8, which fixed the *gate* asking a plan for a final answer; this is the
+    generator making a plan write one.
+    """
+    from agents_scaling.nextdyn import contract as K
+
+    assert D.prefill_text(phase=K.PHASE_RECEIVER_PLAN) == '\n\n{\n  "check_requests": '
+    # every other phase keeps the public opening, including the plan's own decision phase
+    for phase in (K.PHASE_BANK, K.PHASE_REVISION, K.PHASE_RECEIVER_DECISION, K.PHASE_AUDIT, None):
+        assert D.prefill_text(phase=phase) == D.CONTINUATION_PREFILL_TEXT, phase
+
+    # the prefill opens an object the plan parser can actually read
+    from agents_scaling.nextdyn import checker as CH
+
+    merged = D.prefill_text(phase=K.PHASE_RECEIVER_PLAN) + '[{"packet_id": "p1", "step_id": 7}]}'
+    assert CH.parse_plan_output(merged.strip()) != ()
+    # where the old one could not: it opens a field the plan parser never looks at
+    old = D.CONTINUATION_PREFILL_TEXT + 'I would check step 7."\n}'
+    assert CH.parse_plan_output(old.strip()) == ()

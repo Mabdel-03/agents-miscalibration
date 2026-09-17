@@ -656,8 +656,25 @@ class DispatchContext:
     #: Continuation prefill bytes; ``None`` means "the declaration in ``decoding``".  The
     #: runner passes ``decoding.prefill_text(prompts_lock)`` so the locked bytes are used.
     prefill_text: str | None = None
+    #: Per-phase prefills (A9).  ``None`` means "the declarations in ``decoding``"; the runner
+    #: passes the locked map so what is re-sent is locked prompt bytes and nothing else.
+    phase_prefill_text: Mapping[str, str] | None = None
     _clients: dict[str, NextdynChatClient] = field(default_factory=dict)
     _clients_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def prefill_for(self, phase: str | None) -> str:
+        """The continuation prefill this phase's report opens with (A9).
+
+        One resolver, so the two continuation call sites cannot disagree about which bytes a
+        phase gets -- the same R1 reason the prefill itself is declared once.
+        """
+        if self.phase_prefill_text is not None and phase is not None:
+            declared = dict(self.phase_prefill_text).get(str(phase))
+            if declared is not None:
+                return declared
+        if self.prefill_text is not None and str(phase) not in D.PHASE_CONTINUATION_PREFILL_TEXT:
+            return self.prefill_text
+        return D.prefill_text(phase=phase)
 
     def tokenizer(self, model: K.ModelCell) -> Any:
         return self.tokenizer_for(model.name)
@@ -887,8 +904,7 @@ def request_specs_for(req: DecisionRequest, ctx: DispatchContext,
         raise ProtocolError(
             f"phase-1 record {record.physical_request_ids[0][:12]} is not in the store; a "
             "continued decision's specs cannot be rebuilt without it")
-    cc = C.ContinuationContract.of(req.tokens, D.prefill_text() if ctx.prefill_text is None
-                                   else ctx.prefill_text)
+    cc = C.ContinuationContract.of(req.tokens, ctx.prefill_for(req.purpose))
     _start, think_end = A.delimiter_ids(tokenizer)
     spec2 = C.continuation_spec(spec, committed,
                                 prefill_ids=record.continuation["prefill_token_ids"], cc=cc,

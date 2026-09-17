@@ -679,8 +679,10 @@ def continue_decision(first: DecisionRecord, record: RequestRecord, split: A.Spl
     if not split.boundary_injected:
         raise ContractViolation("continue_decision is called only on a forced boundary (plan D5)")
     model = ctx.contract.model(req.model.name)
-    cc = ContinuationContract.of(req.tokens, D.prefill_text() if ctx.prefill_text is None
-                                 else ctx.prefill_text)
+    # The phase decides which report the continuation opens (A9): a receiver plan owes
+    # ``{"check_requests": [...]}``, not the public output, and prefilling the wrong opening
+    # made a cap-hitting plan begin an object its own parser could not read.
+    cc = ContinuationContract.of(req.tokens, ctx.prefill_for(req.purpose))
     pool = client.pool if client is not None else ctx.pool(model)
     return continue_from(
         first, record, spec=spec, cc=cc, sampling=ctx.contract.sampling,

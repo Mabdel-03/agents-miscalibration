@@ -132,6 +132,11 @@ class PromptsLock:
     templates: Mapping[str, str]
     continuation_prefill_text: str | None
     continuation_prefill_sha256: str | None
+    #: Per-phase continuation prefills (A9), for the phases whose report is not the public
+    #: output.  Locked beside the default because they are prompt bytes on the same footing:
+    #: each enters the request id of every phase-2 call it opens.
+    phase_prefill_text: Mapping[str, str] | None = None
+    phase_prefill_sha256: Mapping[str, str] | None = None
 
 
 # --------------------------------------------------------------------------- io
@@ -357,7 +362,8 @@ def templates_dir() -> Path:
     return Path(__file__).resolve().parent / TEMPLATES_DIRNAME
 
 
-def lock_prompts(templates_path: str | os.PathLike, prefill_text: str) -> PromptsLock:
+def lock_prompts(templates_path: str | os.PathLike, prefill_text: str,
+                 phase_prefills: Mapping[str, str] | None = None) -> PromptsLock:
     """Hash every file under ``templates/`` (sorted relative paths) plus the continuation
     prefill bytes (plan D5)."""
     root = Path(templates_path)
@@ -369,20 +375,37 @@ def lock_prompts(templates_path: str | os.PathLike, prefill_text: str) -> Prompt
     if not prefill_text:
         raise LockError("the continuation prefill text is empty")
     templates = {str(p.relative_to(root)): identity.sha256_hex(p.read_bytes()) for p in files}
+    phases = dict(phase_prefills or {})
+    if any(not text for text in phases.values()):
+        raise LockError("a per-phase continuation prefill is empty")
     return PromptsLock(schema_version=LOCK_SCHEMA_VERSION,
                        locked_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                        templates=templates, continuation_prefill_text=prefill_text,
-                       continuation_prefill_sha256=identity.sha256_hex(prefill_text.encode("utf-8")))
+                       continuation_prefill_sha256=identity.sha256_hex(prefill_text.encode("utf-8")),
+                       phase_prefill_text=phases,
+                       phase_prefill_sha256={k: identity.sha256_hex(v.encode("utf-8"))
+                                             for k, v in sorted(phases.items())})
 
 
-def verify_prompts_lock(lock: PromptsLock, templates_path: str | os.PathLike, prefill_text: str) -> None:
+def verify_prompts_lock(lock: PromptsLock, templates_path: str | os.PathLike, prefill_text: str,
+                        phase_prefills: Mapping[str, str] | None = None) -> None:
     if lock.locked_at is None or lock.continuation_prefill_sha256 is None:
         raise LockError("prompts.lock.json is a skeleton; run lock-inputs")
-    current = lock_prompts(templates_path, prefill_text)
+    current = lock_prompts(templates_path, prefill_text, phase_prefills)
+    if dict(current.phase_prefill_sha256) != dict(lock.phase_prefill_sha256 or {}):
+        raise LockError("prompts.lock.json's per-phase continuation prefills have drifted from "
+                        "decoding.PHASE_CONTINUATION_PREFILL_TEXT (A9)")
     if dict(current.templates) != dict(lock.templates):
         raise LockError("prompts.lock.json: template hashes drifted")
     if current.continuation_prefill_sha256 != lock.continuation_prefill_sha256:
         raise LockError("prompts.lock.json: continuation prefill drifted")
+
+
+def _phase_prefill_texts() -> Mapping[str, str]:
+    """The per-phase prefills, read from their one declaration in ``decoding`` (A9)."""
+    from agents_scaling.nextdyn import decoding
+
+    return dict(decoding.PHASE_CONTINUATION_PREFILL_TEXT)
 
 
 def _continuation_prefill_text() -> str:
@@ -426,7 +449,8 @@ def lock_inputs_main(argv: Sequence[str]) -> Report:
 
     # prompts
     try:
-        prompts = lock_prompts(templates_dir(), _continuation_prefill_text())
+        prompts = lock_prompts(templates_dir(), _continuation_prefill_text(),
+                               _phase_prefill_texts())
         write_prompts_lock(paths.prompts, prompts)
         report = report + Report(completed=1, detail=f"prompts -> {paths.prompts}")
     except LockError as exc:
