@@ -293,10 +293,14 @@ def dynamics_section(analysis: "Analysis") -> str:
 
 
 def operations_section(analysis: "Analysis") -> str:
-    ops = analysis.extras.get("operations")
-    out = ["## Operations: realized versus requested budgets, headroom, truncation, cache, latency, retries", ""]
+    ops = analysis.extras.get("operations_condensed")
+    out = ["## Operations: realized versus requested budgets, headroom, truncation, cache, latency, retries", "",
+           "Per partition x generation kind x round (all benchmarks; per-benchmark rows in `tables/operations`). "
+           "Prompt growth shows in `mean_prompt_tokens` across rounds; `mean_completion_over_cap` and "
+           "`share_finish_length` show headroom use and truncation; a response-cache HIT on an independent draw "
+           "is a blocker.", ""]
     if isinstance(ops, pd.DataFrame) and not ops.empty:
-        out.append(md_table(ops[["partition_id", "benchmark", "kind", "team_size", "update_round", "generations",
+        out.append(md_table(ops[["partition_id", "kind", "team_size", "update_round", "generations",
                                  "mean_prompt_tokens", "mean_requested_reasoning", "mean_reasoning_tokens",
                                  "mean_completion_over_cap", "share_finish_length", "share_parse_invalid",
                                  "share_response_cache_hit", "mean_cached_prompt_share", "median_latency_seconds"]],

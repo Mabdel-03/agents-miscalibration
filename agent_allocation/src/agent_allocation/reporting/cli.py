@@ -118,7 +118,9 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
         "policy_costs": costs, "cost_summary": summary, "frontier": frontier, "price_checks": price_checks,
         "item_metrics": metrics, "passk_summary": passk, "transition_summary": trans_summary,
         "replay_items": replay_items, "replay_curves": replay_curves, "reconciliation": rec,
-        "operations": generation_operations(candidates), "retries": retry_table(run, charges, attempts_by_node),
+        "operations": generation_operations(candidates),
+        "operations_condensed": generation_operations(candidates, ("partition_id", "kind", "team_size", "update_round")),
+        "retries": retry_table(run, charges, attempts_by_node),
         "stop_reasons": stop_reasons(run),
         "notes": sorted(set(notes)), "warnings": _compact_warnings(warnings), "problems": sorted(set(problems)),
     })
@@ -155,48 +157,68 @@ def _transition_summary(trans: pd.DataFrame) -> pd.DataFrame:
 
 
 def _compact_warnings(messages: list[str]) -> list[str]:
-    """Group identical small-panel messages across populations: ``message (populations: a, b)``."""
-    grouped: dict[str, set[str]] = {}
+    """Collapse per-population small-panel messages into one line per (kind, size)."""
+    import re
+
+    small: dict[int, set[str]] = {}
+    strata: dict[int, set[str]] = {}
+    other: set[str] = set()
+    labels: set[str] = set()
     for msg in messages:
         label, _, text = msg.partition(": ")
-        grouped.setdefault(text or msg, set()).add(label if text else "")
-    out = []
-    for text, labels in sorted(grouped.items()):
-        labels.discard("")
-        out.append(f"{text} (populations: {len(labels)})" if labels else text)
-    return out
+        m = re.match(r"small panel for (\S+) \((\d+) independent items\)", text)
+        if m:
+            small.setdefault(int(m.group(2)), set()).add(m.group(1))
+            labels.add(label)
+            continue
+        m = re.match(r"BBH subtask stratum (\S+) has (\d+) items", text)
+        if m:
+            strata.setdefault(int(m.group(2)), set()).add(m.group(1))
+            labels.add(label)
+            continue
+        other.add(text or msg)
+    out = [f"small panel: {', '.join(sorted(b))} with {n} independent items in some analysis population(s); "
+           "intervals are unstable" for n, b in sorted(small.items())]
+    out += [f"BBH subtask strata with {n} items: {', '.join(sorted(s))}" for n, s in sorted(strata.items())]
+    return out + sorted(other)
 
 
 def attach_accuracy_intervals(outcomes: pd.DataFrame, accuracy: pd.DataFrame, *, replicates: int, study_seed: Any
                               ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str]]:
-    """Item-clustered percentile intervals for every current-view checkpoint, one population per partition
-    (base families) and one for its extension families; all columns of a population share resample indices."""
+    """Item-clustered percentile intervals for every current-view checkpoint.
+
+    Checkpoints of a partition are grouped by their planned item set (the main grid, the extension panel, a pilot
+    sub-grid on a nested subset, ...); each group is one population whose columns share resample indices, so every
+    method, round and team size of an item moves together. Fixed-population violations are the audit's job."""
     warnings: list[str] = []
     mismatches: list[str] = []
     frames = []
     pop_rows = []
     current = outcomes[outcomes["view"] == "current"]
     for partition, group in current.groupby("partition_id", sort=True):
-        names = sorted(set(group["name"]), key=name_sort_key)
-        ext = [n for n in names if n.split("/", 1)[0] in ("cp", "pooled")]
-        base = [n for n in names if n not in ext]
-        for label, subset in ((f"{partition}:accuracy", base), (f"{partition}:extension_accuracy", ext)):
-            if not subset:
-                continue
-            columns = [(str(partition), n) for n in subset]
-            population = build_population(outcomes, columns, label=label)
+        signature: dict[frozenset, list[str]] = {}
+        for name, rows in group.groupby("name", sort=False):
+            signature.setdefault(frozenset(rows["item_id"]), []).append(str(name))
+        ordered = sorted(signature.items(), key=lambda kv: (-len(kv[0]), name_sort_key(min(kv[1], key=name_sort_key))))
+        for index, (items, names) in enumerate(ordered):
+            names = sorted(names, key=name_sort_key)
+            families = sorted({n.split("/", 1)[0] for n in names})
+            label = f"{partition}:population_{index} ({'+'.join(families)})"
+            columns = [(str(partition), n) for n in names]
+            population = build_population(outcomes, columns, label=label, items=items)
             warnings.extend(population.warnings())
             mismatches.extend(population.mismatches)
-            pop_rows.append({"population": label, "partition_id": partition, "checkpoints": len(subset),
+            pop_rows.append({"population": label, "partition_id": partition, "checkpoints": len(names),
                              "independent_items": population.n_items,
                              **{f"items_{b}": n for b, n in population.n_by_benchmark.items()},
                              "strata": ";".join(f"{s}={n}" for s, n in population.n_by_stratum.items())})
             if not population.n_items:
                 continue
             matrix = value_matrix(outcomes, population, columns)
-            ci = column_intervals(matrix, population.resampler(replicates, study_seed), subset)
+            ci = column_intervals(matrix, population.resampler(replicates, study_seed), names)
             ci["partition_id"] = partition
             ci["view"] = "current"
+            ci["population"] = label
             frames.append(ci)
     populations = pd.DataFrame(pop_rows)
     if not frames or accuracy.empty:

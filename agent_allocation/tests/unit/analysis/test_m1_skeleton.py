@@ -39,13 +39,14 @@ def test_analyze_writes_deterministic_reports_and_tables(built_run, tmp_path):
     assert {"RUN_REPORT.md", "RUN_REPORT.html", "COMPLETENESS.md", "COMPLETENESS.html"} <= set(reports_a)
     assert reports_a == reports_b
     assert _files(first.tables_dir) == _files(second.tables_dir)
+    assert _files(first.figures_dir) == _files(second.figures_dir) and _files(first.figures_dir)
     for name in ("policy_outcomes", "accuracy_summary", "completeness", "candidates"):
         assert (first.tables_dir / f"{name}.parquet").is_file() and (first.tables_dir / f"{name}.csv").is_file()
     text = (first.reports_dir / "RUN_REPORT.md").read_text()
     assert "BBH four-subtask zero-shot subset" in text
     assert "public-test selector" in text
     assert "not a FLOP-matched" in text
-    assert "INTERIM" not in text
+    assert "INTERIM" not in text and "Final: every planned checkpoint is known and costs are reconciled" in text
 
 
 def test_hand_computed_fixture_matches_exports(tmp_path):

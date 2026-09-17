@@ -19,12 +19,14 @@ def _share(mask: pd.Series) -> float | None:
     return float(mask.mean()) if len(mask) else None
 
 
-def generation_operations(candidates: pd.DataFrame) -> pd.DataFrame:
+def generation_operations(candidates: pd.DataFrame, keys: tuple[str, ...] = ("partition_id", "benchmark", "kind",
+                                                                            "team_size", "update_round")
+                          ) -> pd.DataFrame:
     if candidates.empty:
         return pd.DataFrame()
     rows: list[dict[str, Any]] = []
     done = candidates[candidates["terminal"]]
-    keys = ["partition_id", "benchmark", "kind", "team_size", "update_round"]
+    keys = list(keys)
     for group_keys, group in done.groupby(keys, sort=True, dropna=False):
         prompt = pd.to_numeric(group["prompt_tokens"], errors="coerce")
         completion = pd.to_numeric(group["completion_tokens"], errors="coerce")

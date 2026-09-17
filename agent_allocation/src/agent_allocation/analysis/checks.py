@@ -12,7 +12,8 @@ import pandas as pd
 
 from agent_allocation.analysis.load import RunData
 
-PARTITION_PANEL = {"main": "main", "high": "high", "replication": "replication", "pilot": "pilot"}
+PARTITION_PANEL = {"main": "main", "high": "high", "replication": "replication"}
+CLAIM_PARTITIONS = frozenset(PARTITION_PANEL)   # canary/pilot are development samples with nested sub-grids
 EXTENSION_FAMILIES = frozenset({"cp", "pooled"})
 
 
@@ -47,11 +48,12 @@ def check_fixed_population(run: RunData, outcomes: pd.DataFrame) -> CheckResult:
     wave order (no outcome-dependent removal at the manifest level).
     """
     violations: list[str] = []
-    if outcomes.empty:
-        return CheckResult("fixed_population", "skip", "no planned checkpoints in the policy manifests",
-                           "manifests/policies/")
-    for (partition, benchmark, view), group in outcomes.groupby(["partition_id", "benchmark", "view"],
-                                                               sort=True, dropna=False):
+    scoped = outcomes[outcomes["partition_id"].isin(CLAIM_PARTITIONS)] if not outcomes.empty else outcomes
+    if scoped.empty:
+        return CheckResult("fixed_population", "skip", "no planned checkpoints in claim partitions "
+                           f"({', '.join(sorted(CLAIM_PARTITIONS))})", "manifests/policies/")
+    for (partition, benchmark, view), group in scoped.groupby(["partition_id", "benchmark", "view"],
+                                                             sort=True, dropna=False):
         sets = {name: frozenset(g["item_id"]) for name, g in group.groupby("name", sort=True)}
         dup = group.groupby("name")["item_id"].apply(lambda s: s.duplicated().any())
         for name in dup[dup].index:
@@ -76,9 +78,9 @@ def check_fixed_population(run: RunData, outcomes: pd.DataFrame) -> CheckResult:
                 violations.append(f"{partition}/{benchmark}/{view}: extension population is not nested in the "
                                   f"base population")
     if run.waves:
-        violations.extend(_wave_prefix_violations(run, outcomes))
+        violations.extend(_wave_prefix_violations(run, scoped))
     return _result("fixed_population", violations,
-                   "every checkpoint in each partition x benchmark x view covers the same planned items"
+                   "every checkpoint in each claim partition x benchmark x view covers the same planned items"
                    + ("" if run.waves else " (waves.json absent: wave-prefix check not run)"),
                    "manifests/policies/*.jsonl, manifests/waves.json")
 
