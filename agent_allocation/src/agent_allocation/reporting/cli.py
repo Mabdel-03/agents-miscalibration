@@ -91,6 +91,7 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
 
     primary, estimates, primary_notes = K.primary_analysis(outcomes, replicates=reps, study_seed=seed,
                                                            item_panels=run.item_panels())
+    problems += _primary_allowance_problems(outcomes, run.config)
     high_low, hl_notes = K.shared_panel_comparisons(outcomes, replicates=reps, study_seed=seed)
     for note in primary_notes + hl_notes:
         (warnings if ("small panel" in note or "stratum" in note or "absent" in note) else notes).append(note)
@@ -161,6 +162,21 @@ def attach_coverage(outcomes: pd.DataFrame, accuracy: pd.DataFrame) -> pd.DataFr
             gaps.append(float(rec.coverage) - float(rec.acc))
     merged["selection_gap"] = gaps
     return merged
+
+
+def _primary_allowance_problems(outcomes: pd.DataFrame, cfg: Mapping[str, Any]) -> list[str]:
+    """The primary contrasts are frozen at the main allowance: every checkpoint they use must carry it."""
+    main_a = cfg.get("reasoning", {}).get("main_a")
+    if main_a is None or outcomes.empty:
+        return []
+    names = {name for contrast in K.primary_contrasts() for _, name, _ in contrast.terms} | {"peer/4/1"}
+    rows = outcomes[(outcomes["partition_id"] == K.MAIN_PARTITION) & (outcomes["view"] == "current")
+                    & outcomes["name"].isin(names)]
+    wrong = rows[rows["reasoning_budget"] != int(main_a)]
+    if wrong.empty:
+        return []
+    return [f"{len(wrong)} primary-contrast checkpoint rows in partition main have reasoning_budget "
+            f"{sorted(set(int(v) for v in wrong['reasoning_budget']))} instead of reasoning.main_a={main_a}"]
 
 
 def _primary_planned(outcomes: pd.DataFrame, run: RunData) -> dict[str, int]:
