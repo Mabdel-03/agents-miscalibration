@@ -26,14 +26,16 @@ answer is derived from the item id (``vary_final_by_node=True`` derives it from 
 math500 -> an integer, mmlu_pro / bbh multiple choice -> a letter A-C, bbh boolean_expressions -> True/False,
 mbpp_plus -> a stub function named after the first ``assert name(`` in the prompt.
 
-Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is used
-verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
+Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is
+used verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
 contract (streaming, seed, tools, fallbacks, unknown keys, ...) gets HTTP 400 and is appended to
 ``script.violations``. Omitting ``X-OpenRouter-Cache: false`` turns on response-cache emulation (identical bodies
 return the first response verbatim with ``x-openrouter-cache-status: HIT``).
 
 Recorded state for assertions: ``script.calls`` (every request, credentials redacted), ``script.billed_usd`` (what the
-fake "charged", including requests whose response the client never saw), ``script.generations`` (metadata by id).
+fake "charged", including requests whose response the client never saw), ``script.generations`` (metadata by id),
+``script.peak_in_flight`` (server-side concurrency actually reached). ``max_concurrent_requests`` emulates upstream
+capacity: a completion request arriving while that many are in flight gets HTTP 429 with ``capacity_retry_after``.
 
 Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
 one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
@@ -141,7 +143,7 @@ class FakeReply:
     model: Any = AUTO                      # top-level "model" (AUTO echoes the request)
     headers: Mapping[str, str] = field(default_factory=dict)            # extra/overriding response headers
     status_code: int | None = None         # HTTP status for UPSTREAM_ERROR (default 502) or a raw ``body``
-    retry_after: str | None = "2"          # Retry-After value sent with RATE_LIMITED (seconds or HTTP-date)
+    retry_after: str | None = "1"          # Retry-After value sent with RATE_LIMITED (seconds or HTTP-date)
     error_message: str | None = None       # message inside error bodies/envelopes
     delay_seconds: float = 0.0             # server think time; beyond the client's read timeout -> ReadTimeout
     body: bytes | None = None              # raw response body override (status_code or 200)
@@ -363,11 +365,15 @@ class FakeScript:
     prior_usage_usd: Decimal = Decimal("0")       # account/key usage that predates this script (unrelated spend)
     key_label: str = "sk-or-v1-fak...e00"
     endpoints: dict[str, Any] = field(default_factory=dict)   # model -> listing dict or raw bytes override
+    max_concurrent_requests: int | None = None    # emulated upstream capacity: requests beyond it get HTTP 429
+    capacity_retry_after: str | None = "1"        # Retry-After sent with those capacity 429s
     # ---- recorded state -----------------------------------------------------------------------------------------
     calls: list[FakeCall] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
     billed_usd: Decimal = Decimal("0")
     generations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    in_flight: int = 0                            # completion requests currently being "processed"
+    peak_in_flight: int = 0                       # measured server-side concurrency (for effective-concurrency tests)
     _node_calls: Counter = field(default_factory=Counter, repr=False)
     _metadata_polls: Counter = field(default_factory=Counter, repr=False)
     _response_cache: dict[str, tuple[int, dict[str, str], bytes]] = field(default_factory=dict, repr=False)
@@ -531,12 +537,39 @@ class FakeScript:
             exc = httpx.ConnectError if fault is Fault.CONNECT_ERROR else httpx.ConnectTimeout
             raise exc(f"fake {fault.value}", request=request)
 
+        with self._mutex:
+            over_capacity = self.max_concurrent_requests is not None and \
+                self.in_flight >= self.max_concurrent_requests
+            if not over_capacity:
+                self.in_flight += 1
+                self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        if over_capacity:
+            headers = {"content-type": "application/json"}
+            if self.capacity_retry_after is not None:
+                headers["retry-after"] = self.capacity_retry_after
+            self._record(replace(call, status_code=429, outcome="capacity_rate_limited"))
+            return httpx.Response(429, headers=headers, content=_json_bytes(
+                {"error": {"code": 429, "message": _HTTP_ERROR_MESSAGE[429],
+                           "metadata": {"provider_name": self.provider_name, "raw": "capacity"}}}))
+        try:
+            return await self._reply(request, call, reply, cache_enabled, cache_key)
+        finally:
+            with self._mutex:
+                self.in_flight -= 1
+
+    async def _reply(self, request: httpx.Request, call: FakeCall, reply: FakeReply, cache_enabled: bool,
+                     cache_key: str) -> httpx.Response:
+        fault = reply.fault
         if reply.delay_seconds > 0:
             read_timeout = (request.extensions.get("timeout") or {}).get("read")
             if read_timeout is not None and reply.delay_seconds > read_timeout:
                 await asyncio.sleep(read_timeout)
-                generation_id, _, cost = self._generate(call, reply, request)
-                self._record(replace(call, outcome="read_timeout", generation_id=generation_id, billed_usd=cost))
+                if fault in _HTTP_ERROR_STATUS or fault is Fault.ERROR_ENVELOPE:
+                    self._record(replace(call, outcome="read_timeout"))       # an error, never generated/billed
+                else:
+                    generation_id, _, cost = self._generate(call, reply, request)
+                    self._record(replace(call, outcome="read_timeout", generation_id=generation_id,
+                                         billed_usd=cost))
                 raise httpx.ReadTimeout("fake read timeout (delay beyond the client's read timeout)",
                                         request=request)
             await asyncio.sleep(reply.delay_seconds)

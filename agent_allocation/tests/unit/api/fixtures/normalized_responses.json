@@ -1,0 +1,1318 @@
+{
+ "cases": [
+  {
+   "case": "ok_with_reasoning",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-069b9e284fc00eb2\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\\n<final>48</final>\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":409,\"total_tokens\":420,\"cost\":0.0001647,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":0.0001636},\"completion_tokens_details\":{\"image_tokens\":0,\"reasoning_tokens\":384}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "c4468113337a06284502fde4abd757a45adf290c88dd77b3fe5023b9a08cb5da:1",
+    "cache_status": "MISS",
+    "completion_status": "completed",
+    "error_detail": null,
+    "finish_reason": "stop",
+    "generation_id": "gen-fake-000001-069b9e284fc00eb2",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "STOP",
+    "node_id": "c4468113337a06284502fde4abd757a45adf290c88dd77b3fe5023b9a08cb5da",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "ok",
+    "usage": {
+     "actual_cost_usd": "0.0001647",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 409,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 409,
+      "completion_tokens_details": {
+       "image_tokens": 0,
+       "reasoning_tokens": 384
+      },
+      "cost": 0.0001647,
+      "cost_details": {
+       "upstream_inference_completions_cost": 0.0001636,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 420
+     },
+     "reasoning_tokens": 384,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": "<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\n<final>48</final>"
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 0,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "ok_without_reasoning_fields",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-bf9aa15f528cbeb2\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\\n<final>48</final>\",\"refusal\":null}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":25,\"total_tokens\":36,\"cost\":1.11e-05,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":1e-05},\"completion_tokens_details\":{\"image_tokens\":0}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "3cdf6ebc44ebb21feec5902eadd4e4e61f0a352693dd98dddc6d0b2f6b3e4920:1",
+    "cache_status": "MISS",
+    "completion_status": "completed",
+    "error_detail": null,
+    "finish_reason": "stop",
+    "generation_id": "gen-fake-000001-bf9aa15f528cbeb2",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "STOP",
+    "node_id": "3cdf6ebc44ebb21feec5902eadd4e4e61f0a352693dd98dddc6d0b2f6b3e4920",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": false,
+    "retry_after_seconds": null,
+    "transport_status": "ok",
+    "usage": {
+     "actual_cost_usd": "0.0000111",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 25,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 25,
+      "completion_tokens_details": {
+       "image_tokens": 0
+      },
+      "cost": 1.11e-05,
+      "cost_details": {
+       "upstream_inference_completions_cost": 1e-05,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 36
+     },
+     "reasoning_tokens": null,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": "<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\n<final>48</final>"
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 1,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "length_empty_content",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-071102ac36cce71f\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"length\",\"native_finish_reason\":\"MAX_TOKENS\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2048,\"total_tokens\":2059,\"cost\":0.0008203,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":0.0008192},\"completion_tokens_details\":{\"image_tokens\":0,\"reasoning_tokens\":2048}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "4af9aa8434968ef12020056cef9a226b166a0be498130dde5f87b8391b6bccb4:1",
+    "cache_status": "MISS",
+    "completion_status": "length",
+    "error_detail": null,
+    "finish_reason": "length",
+    "generation_id": "gen-fake-000001-071102ac36cce71f",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "MAX_TOKENS",
+    "node_id": "4af9aa8434968ef12020056cef9a226b166a0be498130dde5f87b8391b6bccb4",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "ok",
+    "usage": {
+     "actual_cost_usd": "0.0008203",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 2048,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 2048,
+      "completion_tokens_details": {
+       "image_tokens": 0,
+       "reasoning_tokens": 2048
+      },
+      "cost": 0.0008203,
+      "cost_details": {
+       "upstream_inference_completions_cost": 0.0008192,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 2059
+     },
+     "reasoning_tokens": 2048,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": ""
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 2,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "empty_stop",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-49d30d4baa4fa8d5\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":412,\"total_tokens\":423,\"cost\":0.0001659,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":0.0001648},\"completion_tokens_details\":{\"image_tokens\":0,\"reasoning_tokens\":412}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "eaa0177289ce3f856d98f62ea1ac8941baa89d92747b89e708db311c24cae693:1",
+    "cache_status": "MISS",
+    "completion_status": "empty",
+    "error_detail": null,
+    "finish_reason": "stop",
+    "generation_id": "gen-fake-000001-49d30d4baa4fa8d5",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "STOP",
+    "node_id": "eaa0177289ce3f856d98f62ea1ac8941baa89d92747b89e708db311c24cae693",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "ok",
+    "usage": {
+     "actual_cost_usd": "0.0001659",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 412,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 412,
+      "completion_tokens_details": {
+       "image_tokens": 0,
+       "reasoning_tokens": 412
+      },
+      "cost": 0.0001659,
+      "cost_details": {
+       "upstream_inference_completions_cost": 0.0001648,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 423
+     },
+     "reasoning_tokens": 412,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": ""
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 3,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "blocked_safety",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-3421349b54b2b933\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"content_filter\",\"native_finish_reason\":\"SAFETY\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":736,\"total_tokens\":747,\"cost\":0.0002955,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":0.0002944},\"completion_tokens_details\":{\"image_tokens\":0,\"reasoning_tokens\":736}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "a260c86a590ee17edbb344c7e3132cc78a8e2cdb8c2cf283f9b668fa1654885e:1",
+    "cache_status": "MISS",
+    "completion_status": "blocked",
+    "error_detail": null,
+    "finish_reason": "content_filter",
+    "generation_id": "gen-fake-000001-3421349b54b2b933",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "SAFETY",
+    "node_id": "a260c86a590ee17edbb344c7e3132cc78a8e2cdb8c2cf283f9b668fa1654885e",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "ok",
+    "usage": {
+     "actual_cost_usd": "0.0002955",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 736,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 736,
+      "completion_tokens_details": {
+       "image_tokens": 0,
+       "reasoning_tokens": 736
+      },
+      "cost": 0.0002955,
+      "cost_details": {
+       "upstream_inference_completions_cost": 0.0002944,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 747
+     },
+     "reasoning_tokens": 736,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": ""
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 4,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "malformed_usage",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-078f387d8f7835e7\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\\n<final>48</final>\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":\"12\",\"completion_tokens\":-3,\"total_tokens\":null,\"cost\":\"n/a\",\"prompt_tokens_details\":[],\"completion_tokens_details\":{\"reasoning_tokens\":true},\"cost_details\":\"none\"}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "9ff788892d970b1169306c4f2442239e7f7d9fadb217918810deb20506bb9162:1",
+    "cache_status": "MISS",
+    "completion_status": "completed",
+    "error_detail": null,
+    "finish_reason": "stop",
+    "generation_id": "gen-fake-000001-078f387d8f7835e7",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "STOP",
+    "node_id": "9ff788892d970b1169306c4f2442239e7f7d9fadb217918810deb20506bb9162",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "ok",
+    "usage": {
+     "actual_cost_usd": null,
+     "cached_prompt_tokens": null,
+     "completion_tokens": null,
+     "prompt_tokens": null,
+     "raw_usage": {
+      "completion_tokens": -3,
+      "completion_tokens_details": {
+       "reasoning_tokens": true
+      },
+      "cost": "n/a",
+      "cost_details": "none",
+      "prompt_tokens": "12",
+      "prompt_tokens_details": [],
+      "total_tokens": null
+     },
+     "reasoning_tokens": null,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": "<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\n<final>48</final>"
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 5,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "cache_hit",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-91985b9382c9a93c\",\"provider\":\"Google AI Studio\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\\n<final>48</final>\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":444,\"total_tokens\":455,\"cost\":0.0001787,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":0.0001776},\"completion_tokens_details\":{\"image_tokens\":0,\"reasoning_tokens\":419}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "HIT"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "8aaffad298393ed738879f2e503498904f56cd9254ccc3b0cdfb669d082531ee:1",
+    "cache_status": "HIT",
+    "completion_status": null,
+    "error_detail": "x-openrouter-cache-status HIT on an independent draw",
+    "finish_reason": "stop",
+    "generation_id": "gen-fake-000001-91985b9382c9a93c",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "STOP",
+    "node_id": "8aaffad298393ed738879f2e503498904f56cd9254ccc3b0cdfb669d082531ee",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google AI Studio",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "cache_hit",
+    "usage": {
+     "actual_cost_usd": "0.0001787",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 444,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 444,
+      "completion_tokens_details": {
+       "image_tokens": 0,
+       "reasoning_tokens": 419
+      },
+      "cost": 0.0001787,
+      "cost_details": {
+       "upstream_inference_completions_cost": 0.0001776,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 455
+     },
+     "reasoning_tokens": 419,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": "<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\n<final>48</final>"
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 6,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "provider_mismatch",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"id\":\"gen-fake-000001-7b468f70d00130e4\",\"provider\":\"Google\",\"model\":\"google/gemini-2.5-flash-lite\",\"object\":\"chat.completion\",\"created\":1758092401,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"STOP\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\\n<final>48</final>\",\"refusal\":null,\"reasoning\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"**Planning the solution**\\nFake reasoning summary; never relayed to peers.\",\"format\":\"google-gemini-v1\",\"index\":0}]}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":791,\"total_tokens\":802,\"cost\":0.0003175,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"audio_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":null,\"upstream_inference_prompt_cost\":1.1e-06,\"upstream_inference_completions_cost\":0.0003164},\"completion_tokens_details\":{\"image_tokens\":0,\"reasoning_tokens\":766}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "1929c843802fc677d82832e7c0ce48a1546a310bea286c20f8ed389857aebd32:1",
+    "cache_status": "MISS",
+    "completion_status": null,
+    "error_detail": "served outside the endpoint lock: provider 'Google' != locked 'Google AI Studio'",
+    "finish_reason": "stop",
+    "generation_id": "gen-fake-000001-7b468f70d00130e4",
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": "STOP",
+    "node_id": "1929c843802fc677d82832e7c0ce48a1546a310bea286c20f8ed389857aebd32",
+    "observed_model": "google/gemini-2.5-flash-lite",
+    "observed_provider": "Google",
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": true,
+    "retry_after_seconds": null,
+    "transport_status": "provider_mismatch",
+    "usage": {
+     "actual_cost_usd": "0.0003175",
+     "cached_prompt_tokens": 0,
+     "completion_tokens": 791,
+     "prompt_tokens": 11,
+     "raw_usage": {
+      "completion_tokens": 791,
+      "completion_tokens_details": {
+       "image_tokens": 0,
+       "reasoning_tokens": 766
+      },
+      "cost": 0.0003175,
+      "cost_details": {
+       "upstream_inference_completions_cost": 0.0003164,
+       "upstream_inference_cost": null,
+       "upstream_inference_prompt_cost": 1.1e-06
+      },
+      "is_byok": false,
+      "prompt_tokens": 11,
+      "prompt_tokens_details": {
+       "audio_tokens": 0,
+       "cached_tokens": 0
+      },
+      "total_tokens": 802
+     },
+     "reasoning_tokens": 766,
+     "upstream_inference_cost_usd": null
+    },
+    "visible_content": "<rationale>Fake deterministic rationale for math500/test/algebra/1.</rationale>\n<final>48</final>"
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 7,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "error_envelope_200",
+   "http_status": 200,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"error\":{\"code\":502,\"message\":\"Provider returned error\",\"metadata\":{\"provider_name\":\"Google AI Studio\",\"raw\":\"{\\\"error\\\":{\\\"code\\\":500,\\\"status\\\":\\\"INTERNAL\\\"}}\"}},\"user_id\":\"user_fake\"}",
+   "response_headers": {
+    "content-type": "application/json",
+    "x-openrouter-cache-status": "MISS"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "5f8719f2d12bebb481a55e755435daa974e982e1e57c1841ff6e8469555a233b:1",
+    "cache_status": "MISS",
+    "completion_status": null,
+    "error_detail": "error_envelope code=502 message=Provider returned error provider=Google AI Studio raw={\"error\":{\"code\":500,\"status\":\"INTERNAL\"}}",
+    "finish_reason": null,
+    "generation_id": null,
+    "http_status": 200,
+    "latency_seconds": null,
+    "native_finish_reason": null,
+    "node_id": "5f8719f2d12bebb481a55e755435daa974e982e1e57c1841ff6e8469555a233b",
+    "observed_model": null,
+    "observed_provider": null,
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": false,
+    "retry_after_seconds": null,
+    "transport_status": "error_envelope",
+    "usage": null,
+    "visible_content": null
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 8,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "rate_limited_429",
+   "http_status": 429,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"error\":{\"code\":429,\"message\":\"Rate limit exceeded: google/gemini-2.5-flash-lite is temporarily rate-limited upstream.\",\"metadata\":{\"provider_name\":\"Google AI Studio\",\"raw\":\"429 RESOURCE_EXHAUSTED\"}}}",
+   "response_headers": {
+    "content-type": "application/json",
+    "retry-after": "7"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "d1de7d3c03049383056bdfdde278de50cfebbc94c82af0bc4dfd80c23417d682:1",
+    "cache_status": null,
+    "completion_status": null,
+    "error_detail": "http 429 code=429 message=Rate limit exceeded: google/gemini-2.5-flash-lite is temporarily rate-limited upstream. provider=Google AI Studio raw=429 RESOURCE_EXHAUSTED",
+    "finish_reason": null,
+    "generation_id": null,
+    "http_status": 429,
+    "latency_seconds": null,
+    "native_finish_reason": null,
+    "node_id": "d1de7d3c03049383056bdfdde278de50cfebbc94c82af0bc4dfd80c23417d682",
+    "observed_model": null,
+    "observed_provider": null,
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": false,
+    "retry_after_seconds": 7.0,
+    "transport_status": "rate_limited",
+    "usage": null,
+    "visible_content": null
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 9,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "payment_required_402",
+   "http_status": 402,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"error\":{\"code\":402,\"message\":\"Insufficient credits. Add more using https://openrouter.ai/settings/credits\"}}",
+   "response_headers": {
+    "content-type": "application/json"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "b12550ff2fceceb1d1ec2e4ecb188943d5db316761525b12fdb7f4942973c2d6:1",
+    "cache_status": null,
+    "completion_status": null,
+    "error_detail": "http 402 code=402 message=Insufficient credits. Add more using https://openrouter.ai/settings/credits",
+    "finish_reason": null,
+    "generation_id": null,
+    "http_status": 402,
+    "latency_seconds": null,
+    "native_finish_reason": null,
+    "node_id": "b12550ff2fceceb1d1ec2e4ecb188943d5db316761525b12fdb7f4942973c2d6",
+    "observed_model": null,
+    "observed_provider": null,
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": false,
+    "retry_after_seconds": null,
+    "transport_status": "payment_required",
+    "usage": null,
+    "visible_content": null
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 10,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  },
+  {
+   "case": "upstream_502",
+   "http_status": 502,
+   "messages": [
+    {
+     "content": "Solve the supplied task.",
+     "role": "system"
+    },
+    {
+     "content": "TASK\nWhat is 6 * 7?\n",
+     "role": "user"
+    }
+   ],
+   "request_body": {
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "content": "Solve the supplied task.",
+      "role": "system"
+     },
+     {
+      "content": "TASK\nWhat is 6 * 7?\n",
+      "role": "user"
+     }
+    ],
+    "model": "google/gemini-2.5-flash-lite",
+    "provider": {
+     "allow_fallbacks": false,
+     "only": [
+      "google-ai-studio"
+     ],
+     "require_parameters": true
+    },
+    "reasoning": {
+     "exclude": false,
+     "max_tokens": 1024
+    },
+    "stream": false,
+    "temperature": 0.7,
+    "top_p": 0.95
+   },
+   "response_body_text": "{\"error\":{\"code\":502,\"message\":\"Provider returned error\",\"metadata\":{\"provider_name\":\"Google AI Studio\",\"raw\":\"upstream failure\"}}}",
+   "response_headers": {
+    "content-type": "application/json"
+   },
+   "result": {
+    "__record__": "GenerationResult",
+    "attempt_id": "d87176b345ed55aa03c67f4d3300d5b8404a4861afc1c882a5663fb2cdea0559:1",
+    "cache_status": null,
+    "completion_status": null,
+    "error_detail": "http 502 code=502 message=Provider returned error provider=Google AI Studio raw=upstream failure",
+    "finish_reason": null,
+    "generation_id": null,
+    "http_status": 502,
+    "latency_seconds": null,
+    "native_finish_reason": null,
+    "node_id": "d87176b345ed55aa03c67f4d3300d5b8404a4861afc1c882a5663fb2cdea0559",
+    "observed_model": null,
+    "observed_provider": null,
+    "raw_response_path": null,
+    "raw_response_sha256": null,
+    "reasoning_returned": false,
+    "retry_after_seconds": null,
+    "transport_status": "upstream_error",
+    "usage": null,
+    "visible_content": null
+   },
+   "spec": {
+    "__record__": "GenerationSpec",
+    "benchmark": "math500",
+    "completion_headroom": 1024,
+    "decoding_config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "draw_id": 0,
+    "endpoint_lock_hash": "66df85f839a381b359238c758e107cea351f47b6ad289faf8ca1798b3c1db7ee",
+    "input_manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "item_id": "math500/test/algebra/1",
+    "kind": "root",
+    "model": "google/gemini-2.5-flash-lite",
+    "parent_ids": [],
+    "partition_id": "pilot",
+    "prompt_version": "prompts-v1-000000000000",
+    "reasoning_budget": 1024,
+    "repetition_id": 0,
+    "root_slot": 11,
+    "run_id": "fixture",
+    "team_size": 0,
+    "update_round": 0
+   }
+  }
+ ],
+ "lock": {
+  "__record__": "EndpointLock",
+  "context_length": 1048576,
+  "fetched_at": "",
+  "input_price_per_token": "0.0000001",
+  "internal_reasoning_price_per_token": "0.0000004",
+  "max_completion_tokens": 65535,
+  "model": "google/gemini-2.5-flash-lite",
+  "output_price_per_token": "0.0000004",
+  "provider_name": "Google AI Studio",
+  "provider_tag": "google-ai-studio",
+  "service_tier": "standard",
+  "snapshot_path": "",
+  "snapshot_sha256": "",
+  "supported_parameters": [
+   "include_reasoning",
+   "max_tokens",
+   "reasoning",
+   "response_format",
+   "seed",
+   "stop",
+   "structured_outputs",
+   "temperature",
+   "tool_choice",
+   "tools",
+   "top_p"
+  ]
+ },
+ "note": "Raw OpenRouter-shaped responses from api.fake with their normalized GenerationResult records (latency_seconds nulled). Replayed by tests/unit/api/test_normalized_fixtures.py.",
+ "schema": "agent_allocation.api.normalized_responses/v1"
+}

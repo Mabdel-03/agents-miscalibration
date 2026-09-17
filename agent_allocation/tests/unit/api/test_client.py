@@ -139,3 +139,42 @@ async def test_list_endpoints_returns_raw_bytes_and_parsed():
     raw, parsed = await client.list_endpoints("google/gemini-2.5-flash-lite")
     await client.aclose()
     assert raw == raw_bytes and parsed["data"]["endpoints"] == []
+
+
+async def test_live_construction_has_zero_transport_retries_and_study_timeouts():
+    client = OpenRouterClient(api_key=DUMMY_KEY, connect_timeout=15.0, read_timeout=600.0)  # no request is made
+    inner = client._client
+    transport = inner._transport
+    assert transport._pool._retries == 0
+    assert inner.timeout.connect == 15.0 and inner.timeout.read == 600.0
+    assert inner.follow_redirects is False
+    assert DUMMY_KEY not in repr(client) and "authorization" not in {k.lower() for k in inner.headers}
+    await client.aclose()
+
+
+async def test_contract_violations_raise_before_anything_is_sent(make_spec, lock):
+    import dataclasses
+
+    from agent_allocation.api.request import RequestContractError
+
+    script = FakeScript()
+    client = make_client(script)
+    spec = make_spec()
+    bad_calls = [
+        dict(attempt_id="1", lock=lock, sampling=SAMPLING),
+        dict(attempt_id=attempt(spec), lock=lock, sampling={}),
+        dict(attempt_id=attempt(spec), lock=lock, sampling={**SAMPLING, "api_seed_enabled": True}),
+        dict(attempt_id=attempt(spec), lock=dataclasses.replace(lock, provider_tag="google-ai-studio/flex"),
+             sampling=SAMPLING),
+        dict(attempt_id=attempt(spec), lock=dataclasses.replace(lock, model="google/gemini-2.5-flash"),
+             sampling=SAMPLING),
+    ]
+    for kwargs in bad_calls:
+        with pytest.raises(RequestContractError):
+            await client.generate(spec, MESSAGES, **kwargs)
+    with pytest.raises(RequestContractError):
+        await client.generate(spec, [{"role": "user", "content": "x", "name": "peer"}], attempt_id=attempt(spec),
+                              lock=lock, sampling=SAMPLING)
+    await client.aclose()
+    assert script.calls == [] and script.billed_usd == 0   # provably unsent: the reservation may be released
+    assert issubclass(RequestContractError, ValueError)
