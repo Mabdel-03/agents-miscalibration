@@ -280,6 +280,13 @@ def native_record(private):
     return row,dataset
 
 
+def deeply_immutable(value):
+    """True when a native input cannot be mutated in place (scalars, strings, bytes, complex, tuples thereof)."""
+    if value is None or type(value) in (bool,int,float,complex,str,bytes):return True
+    if type(value) in (tuple,frozenset):return all(deeply_immutable(item) for item in value)
+    return False
+
+
 def classify_sandbox_error(error):
     """Map a SandboxError to (failure_class, crash) or raise EvaluatorOutage for evaluator-side faults."""
     if getattr(error,'phase',None)!='candidate':
@@ -344,7 +351,12 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
                         if result.get('ok'):
                             try:
                                 actual=unpack_native(result['value']['output'],lazy_rows=True);expected=unpack_native(batch['expected'][index],lazy_rows=True)
-                                mutated_input=unpack_native(result['value']['post_input'])
+                                # Upstream compares against the post-call input (in-place mutation is visible to
+                                # special oracles). An input that cannot be mutated must come back unchanged, so the
+                                # host keeps its own copy instead of trusting a value reported by the sandbox.
+                                # (The argument list itself is never handed to the program: fn(*inp).)
+                                immutable=type(inp) in (list,tuple) and all(deeply_immutable(arg) for arg in inp)
+                                mutated_input=inp if immutable else unpack_native(result['value']['post_input'])
                                 if isinstance(actual,StringTupleRows) and isinstance(expected,StringTupleRows) and actual.outer!=expected.outer:
                                     correct=False
                                 else:correct,atol=native['compare_result'](dataset,row['entry_point'],mutated_input,actual,expected,atol)

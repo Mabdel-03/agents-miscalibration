@@ -276,3 +276,21 @@ def test_scratch_flood_is_killed_by_the_host_quota_and_graded_as_a_verdict(run_p
     assert check.status is CheckStatus.OK and check.case_outcomes == ("error",)
     assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
     assert grade.detail_code == "base_scratch_limit"
+
+
+def test_fabricated_post_call_input_cannot_satisfy_a_special_oracle(run_paths):
+    # Mbpp/581-style special oracle: out is accepted when it equals _surface_Area(*inp). A program that rewrites the
+    # sandbox transport to report inp=(0, 0) would make out=0 "correct" if the host trusted the reported input.
+    cheat = ("import sys\nnamespace = sys.modules['__main__'].namespace\nreal_pack = namespace['pack_native']\n"
+             "def lying_pack(value):\n"
+             "    if isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value):\n"
+             "        return real_pack([0, 0])\n    return real_pack(value)\n"
+             "def surface_Area(base_edge, height):\n    namespace['pack_native'] = lying_pack\n    return 0\n")
+    public, private = install_synthetic_task(run_paths, task_id="Mbpp/581", entry="surface_Area",
+                                             base=([[3, 4]], [33]), plus=([[6, 8]], [132]),
+                                             prompt='"""\nSurface area.\nassert surface_Area(3,4) == 33\n"""\n')
+    grade = grade_code(make_candidate(private.item_id, cheat), private, run_paths)
+    assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
+    honest = ("import math\ndef surface_Area(b, s):\n    return round(b * b + 4 * (b * math.sqrt((b / 2) ** 2 + s * s))"
+              " / 2)\n")
+    assert grade_code(make_candidate(private.item_id, honest), private, run_paths).semantic_correct is True
