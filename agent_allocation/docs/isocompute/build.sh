@@ -2,7 +2,14 @@
 # Regenerate every figure and number from the sealed tables, then compile the report.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY="${PY:-$HERE/../../.venv/bin/python}"
+# The analysis imports agent_allocation, which lives in the allocation-v1 worktree's venv.
+# Works both in that worktree (../../.venv) and from this copy in the main checkout.
+WORKTREE_VENV=/orcd/data/tpoggio/001/mabdel03/agents_scaling_allocation_v1/agent_allocation/.venv
+if [ -z "${PY:-}" ]; then
+  if [ -x "$HERE/../../.venv/bin/python" ]; then PY="$HERE/../../.venv/bin/python"
+  elif [ -x "$WORKTREE_VENV/bin/python" ]; then PY="$WORKTREE_VENV/bin/python"
+  else echo "no interpreter with agent_allocation installed; set PY=..." >&2; exit 1; fi
+fi
 export PATH="/home/mabdel03/.local/bin:$PATH"   # TinyTeX, TeX Live 2026
 
 cd "$HERE"

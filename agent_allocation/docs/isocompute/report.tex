@@ -53,8 +53,17 @@ MMLU-Pro. Third, letting agents see each other's work actively destroys accuracy
 grows with rounds: at five agents and four peer rounds the penalty is 5.0 points on the macro and
 10 points on MBPP+.
 
-The binding constraint in this regime is not generation but selection. Extra compute reliably
-produces a correct answer somewhere in the pool; no evaluated policy reliably finds it.
+The binding constraint in this regime is not generation but selection. Going from one sample to
+twenty-five moves 16 points of MMLU-Pro items out of the state where no correct answer exists, but
+only 1.1 of those points end up in a state a vote can deliver; the other 15 land in a state where
+the correct answer is present and outvoted.
+
+We then ask which axis would collapse that gap. Ranking the levers on the same sealed data, a
+reranker with pairwise AUC 0.70 applied to candidates the run already paid for beats every one of
+the 95 allocations, and AUC 0.80 delivers 0.876 against an oracle of 0.917; today's plurality vote
+is equivalent to AUC 0.63. A larger per-draw reasoning allowance is the only generation-side lever
+that helps, halving the MATH-500 gap. More agents and more rounds contribute close to nothing.
+The prescription is to spend on verification, not on allocation.
 
 \section{Methods}
 
@@ -384,6 +393,113 @@ configuration of 0.806 against a ceiling of 0.833 at $k=16$. Both panels are sma
 so these are consistency checks rather than independent confirmations. The direction of the peer
 penalty is preserved on both.
 
+\subsection{Anatomy of the gap}
+
+Every configuration satisfies, per item, \emph{delivered} = \emph{pool coverage} $-$
+\emph{selection loss}, where coverage is 1 when the configuration's own candidate pool contained a
+correct answer. Comparing that coverage with independent sampling at the same budget splits the gap
+in two: a generation-side part, where the pool never held the answer, and a selection-side part,
+where it did and the selector missed it.
+
+\input{tables/gap_split}
+
+The split is stark. Independent sampling has \emph{zero} coverage deficit by construction and its
+entire 8.3-point gap is selection loss. One agent revising 25 times has the opposite profile:
+essentially no selection loss, because its delivered pool is a single final answer, and an 8.0-point
+coverage deficit. Peer teams are worst on coverage, at 11.0 points, because mutual exposure
+collapses the pool onto a shared answer. No allocation in the study is generation-limited in the
+sense that matters: at every budget, some allocation holds the correct answer.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f12_gap_split.pdf}
+\caption{Each allocation's budget-matched gap, split into the two losses. Bars sum to the coverage
+that independent sampling achieves at the same budget. Tick marks show the archive readout, which
+votes over every round's output instead of only the last and costs nothing extra.}
+\label{fig:split}
+\end{figure}
+
+Figure~\ref{fig:anatomy} explains why coverage is nearly worthless on its own. Given that a correct
+answer is in the pool, the probability of delivering it is 0.305 on MATH-500, 0.20 on MMLU-Pro and
+0.06 on MBPP+ when correct answers make up under a fifth of the pool, and rises to essentially 1 on
+the text benchmarks once they pass half. A vote does not need the correct answer to be present, it
+needs it to be modal.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f11_gap_anatomy.pdf}
+\caption{(a) Probability of delivering a correct answer given that one is in the pool, against the
+correct share of that pool. (b to d) Where the item mass sits for a $k$-sample prefix, computed
+exactly from the bank by the hypergeometric prefix distribution, with ties broken as half.}
+\label{fig:anatomy}
+\end{figure}
+
+That is what the stacked panels show. On MMLU-Pro, going from one sample to twenty-five reduces the
+share of items with no correct answer anywhere from 0.301 to 0.140. Almost none of that 16.1 points
+becomes deliverable: the majority share rises only from 0.699 to 0.710, and 15.0 points land in the
+middle band where a correct answer exists and loses the vote. Extra draws convert impossible items
+into unusable ones. The middle band is the oracle gap, exactly.
+
+The archive readout is the one free lever. Voting over every round's output rather than the last
+restores \texttt{private\_team/5/4} coverage to 0.917, precisely the 25-sample ceiling, at no extra
+tokens. As a delivered gain it is worth $+0.037$ on \texttt{peer/5/4} (95\% CI $[0.017, 0.060]$) and
+$+0.033$ on \texttt{peer/4/4}, but only $0.000$ on \texttt{private\_team/5/4}. It repairs what peer
+exposure discards; it does not lift the frontier.
+
+\subsection{What a verifier would buy}
+
+If selection is the constraint, the natural question is how good a selector would have to be.
+Figure~\ref{fig:verifier} answers it on the real pool compositions by scoring correct candidates
+$\mathcal{N}(\mu, 1)$ and incorrect ones $\mathcal{N}(0,1)$ and taking the argmax, which makes the
+verifier's pairwise AUC $\Phi(\mu/\sqrt{2})$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f13_verifier_sweep.pdf}
+\caption{Delivered accuracy at $k=25$ from a reranker of given pairwise AUC, applied to candidates
+the run already generated. This bounds what discriminative power is worth; it is not evidence that
+such a verifier exists for these tasks.}
+\label{fig:verifier}
+\end{figure}
+
+Today's plurality vote delivers 0.833 on the macro, which is what a reranker of AUC 0.63 would
+achieve. A reranker at AUC 0.70 delivers 0.851, already above the best of all 95 allocations
+(0.850). At AUC 0.80 it delivers 0.876, which is 2.6 points beyond anything the allocation design
+reached, and at AUC 0.90 it delivers 0.897 against an oracle of 0.917.
+
+The comparison is the point. The entire design, 95 configurations and 67{,}514 generations spanning
+every combination of agents, rounds and reasoning allowance, moves delivered accuracy over a range
+of about 7 points. A mediocre verifier applied to twenty-five samples already paid for moves it
+further.
+
+\subsection{The one generation-side lever, and one selector that backfires}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f14_allowance_and_selector.pdf}
+\caption{(a, b) The reasoning allowance on the 96 shared items. (c) MBPP+ public-test selection
+against simply taking one candidate at random.}
+\label{fig:allowance}
+\end{figure}
+
+Because the gap is governed by per-draw accuracy rather than draw count, the one axis that should
+help is $A$. On the 96 shared items, raising the allowance from 1024 to 4096 lifts MATH-500 per-draw
+accuracy from 0.830 to 0.902 and halves the gap from 0.083 to 0.042. On MMLU-Pro per-draw accuracy
+rises from 0.717 to 0.753 and the gap is unchanged at 0.083. On MBPP+ per-draw accuracy falls
+slightly and the gap widens from 0.083 to 0.125. $A$ helps exactly where longer reasoning raises
+per-draw accuracy, and not otherwise.
+
+Among allocations, the only lever that moves the relevant quantity is concentration. At $C = 25A_0$
+private teams raise the correct share of the pool from 0.795 under sampling to 0.843, which is why
+they deliver 0.850 against 0.833. Peer exposure lowers it to 0.797. Private teams help not because
+they explore more but because they consolidate, which is what a vote can use.
+
+Finally, one defect worth fixing on its own. MBPP+ selects by prompt-visible tests, and from $k=8$
+onward that selector performs \emph{below} a random draw: 0.790 against 0.802 at $k=25$, having
+started at 0.810 for a single candidate. Enlarging a code candidate pool and filtering on visible
+assertions finds programs that satisfy the visible evidence and fail the hidden suite. On this
+benchmark the run would have done better selecting at random, and better still doing nothing.
+
 \subsection{A design check}
 
 On all 400 items, a team of $n$ agents run for zero revision rounds delivers exactly the same answer
@@ -427,12 +543,85 @@ within 0.3 points and wins outright on MBPP+, while requiring no orchestration, 
 and no selector. If a practitioner has to pick one thing to do with extra tokens on this model, the
 evidence points at that.
 
-\textbf{What would actually move the frontier.} Not more agents, and not more rounds. The 6.7-point
-macro gap is a selection problem, so the levers are selection ones: a verifier that scores
-candidates on something other than agreement, a code selector that does not overfit to visible
-tests, or a reranker calibrated against held-out evidence. On MBPP+ the entire 7-point gap is
-reachable by a selector that avoids being fooled by the public assertion, and the study already
-shows that the correct program is usually present in the pool. Until the readout improves, buying
-more generations mostly buys a larger pool of answers nobody can pick from.
+\textbf{A prescription, in order of what it is worth.} The levers can be ranked on this data, at
+$C = 25A_0$ on the three-benchmark macro.
+
+\emph{First, verification.} Moving the selector from its current effective AUC of 0.63 to 0.80 is
+worth 4.3 points, from 0.833 to 0.876, on candidates already generated. Even AUC 0.70 beats every
+allocation in the study. Nothing else on this list comes close, and it is the only lever that scales
+with the compute already being spent, because a better selector makes every additional sample worth
+something.
+
+\emph{Second, per-draw reasoning.} Raising $A$ is the only generation-side axis that touches the
+binding quantity, and it works where longer reasoning raises per-draw accuracy: it halved the
+MATH-500 gap, did nothing on MMLU-Pro and hurt on MBPP+. Verify per benchmark before spending on it.
+
+\emph{Third, fix broken selectors.} MBPP+ public-test selection is below random from $k=8$. This is
+not a research problem, it is a defect, and repairing it is worth 1.2 points immediately and unlocks
+the 10-point coverage headroom that sits behind it.
+
+\emph{Fourth, consolidate rather than communicate.} If the readout is a vote, prefer allocations that
+raise the correct share of the pool. Private teams do this and are worth 1.7 points over sampling;
+peer exposure does the opposite. Read out over the archive rather than the last round, which is free
+and recovers 3.7 points of the damage peer exposure causes.
+
+\emph{Last, and close to worthless, more draws.} At fixed $A$ with a vote as the readout, additional
+agents or rounds move delivered accuracy by about nothing. They raise the ceiling and leave the
+floor where it is.
+
+The one-line version: this model does not need to think more times, it needs someone to tell it
+which of its answers was right.
+
+
+\appendix
+
+\section{A validation experiment for the prescription}
+
+The prescription rests on a simulation: a reranker of given pairwise AUC, applied to the pool
+compositions this run actually produced. It bounds what discriminative power is worth. It does not
+show that a verifier with that power is available for these tasks. The following design tests that,
+and it is cheap because the candidates already exist.
+
+\textbf{Hypothesis.} A judge model scoring stored candidates delivers higher accuracy at $k=25$ than
+the plurality vote, by at least the 4.3 macro points the simulation predicts for AUC 0.80.
+
+\textbf{Design.} No generation. The 25-sample bank for each of the 400 main-panel items is already
+stored, graded and sealed, so the run scores existing candidates and re-reads the outcome. Arms:
+
+\begin{enumerate}
+\item \emph{Pointwise judge}, Flash-Lite. One call per candidate scoring correctness on a fixed
+rubric without the reference answer. 10{,}000 calls.
+\item \emph{Pointwise judge}, Flash, as a capability check on the same items.
+\item \emph{Pairwise tournament} on the top five candidates by judge score, to test whether pairwise
+comparison beats pointwise scoring where it matters.
+\item \emph{MBPP+ selector repair}, at zero API cost: re-select among stored candidates that pass the
+public assertion, breaking ties by judge score rather than by order.
+\end{enumerate}
+
+\textbf{Primary outcome.} Delivered accuracy at $k=25$, macro over the three informative benchmarks,
+paired per item against the sealed plurality readout. \textbf{Secondary.} The judge's realised
+pairwise AUC, which places it on Figure~\ref{fig:verifier} and tests the simulation itself rather
+than only its conclusion.
+
+\textbf{Power.} The median standard error of a paired macro contrast on this panel is 0.0119 at 400
+items, so the minimum detectable effect at 80\% power is 0.0333. The predicted effect of 0.043
+clears it; a 192-item panel, with a detectable effect of 0.0481, would not. Use the full 400 items.
+
+\textbf{Cost.} At roughly 1082 completion tokens per stored candidate, the pointwise arm is about
+16.8M input and 1.28M output tokens: \$2.19 on Flash-Lite and \$8.25 on Flash. The pairwise arm adds
+ten comparisons per item. The whole study is comfortably inside \$25, against \$47.64 already spent
+of a \$135 ledger ceiling. The shared account balance should be checked before launching, since it
+is not reserved for this study.
+
+\textbf{Prespecify before running.} The rubric and its version hash, the scoring temperature, the
+tie-break rule, the exclusion of the reference answer from the judge context, and the two primary
+comparisons (pointwise judge against plurality, and pairwise against pointwise) with Holm
+correction over exactly those two. The judge must never see the grader output; the existing
+seal-before-join discipline applies unchanged.
+
+\textbf{What would falsify the prescription.} If a competent judge lands at or below AUC 0.63, which is what plurality already achieves, the
+selection headroom identified here is not reachable with an LLM judge on these tasks, and the
+conclusion narrows from ``spend on verification'' to ``this particular verifier does not work'', with
+the gap remaining open.
 
 \end{document}

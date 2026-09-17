@@ -14,7 +14,8 @@ import pandas as pd
 
 import isocore as ic
 import isoframe
-import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust
+import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap
+import isogap
 
 DEFAULT_RUN = ("/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/"
                "openrouter_agent_allocation_v1/artifacts/openrouter_agent_allocation_v1")
@@ -93,7 +94,25 @@ def main():
     fig_rest.deep_vs_split(fm, OUT)
     fig_rest.dollar_frontier(costs, OUT)
     fig_robust.draw(frames, curves, OUT)
-    print("figures: 11 written")
+
+    # ---- where the gap sits, and what would collapse it
+    dec = isogap.decomposition(RUN)
+    resp = isogap.selector_response(RUN)
+    buck = isogap.buckets(RUN)
+    sweep = isogap.verifier_sweep(RUN)
+    aa = isogap.allowance_axis(RUN)
+    arc = isogap.archive_gain(RUN)
+    conc = isogap.concentration(RUN)
+    for nm, df in [("decomposition", dec), ("selector_response", resp), ("buckets", buck),
+                   ("verifier_sweep", sweep), ("allowance_axis", aa), ("archive_gain", arc),
+                   ("concentration", conc)]:
+        df.to_parquet(f"{OUT}/cache/{nm}.parquet")
+    best_alloc = float(fm[fm["level"] == "macro3"]["acc"].max())
+    fig_gap.anatomy(resp, buck, OUT)
+    fig_gap.split(dec, OUT)
+    fig_gap.verifier(sweep, best_alloc, OUT)
+    fig_gap.allowance(aa, buck, OUT)
+    print("figures: 15 written")
 
     # ---------------------------------------------------------------- numbers
     N: dict = {}
@@ -188,15 +207,86 @@ def main():
                     kmax=kmax, n_items=int(f["n_items"].iloc[0]))
         N[p]["headroom"] = fmt(N[p]["oracle_max"] - N[p]["best_at_max"])
 
+    # ---------------------------------------------------------------- prescription numbers
+    P: dict = {}
+    d25 = dec[(dec["level"] == "macro3") & (dec["rung"] == 25)].set_index("name")
+    P["decomp25"] = {n: dict(cov_sample=fmt(r["cov_sample"]), cov_own=fmt(r["cov_own"]),
+                             cov_arc=fmt(r["cov_arc"]), y=fmt(r["y"]), y_arc=fmt(r["y_arc"]),
+                             cov_deficit=fmt(r["cov_deficit"]), sel_loss=fmt(r["sel_loss"]))
+                     for n, r in d25.iterrows()}
+    for bench in ["math500", "mmlu_pro", "mbpp_plus"]:
+        b1 = buck[(buck["benchmark"] == bench) & (buck["k"] == 1)].iloc[0]
+        b25 = buck[(buck["benchmark"] == bench) & (buck["k"] == 25)].iloc[0]
+        P.setdefault("buckets", {})[bench] = dict(
+            none1=fmt(b1["no_correct"]), none25=fmt(b25["no_correct"]),
+            minority1=fmt(b1["minority"]), minority25=fmt(b25["minority"]),
+            majority1=fmt(b1["majority"]), majority25=fmt(b25["majority"]),
+            gained=fmt(b1["no_correct"] - b25["no_correct"]),
+            to_minority=fmt(b25["minority"] - b1["minority"]),
+            to_majority=fmt(b25["majority"] - b1["majority"]))
+        r = resp[resp["benchmark"] == bench].set_index("bin")["deliver"]
+        P.setdefault("selector", {})[bench] = {str(k): fmt(v) for k, v in r.items()}
+    mac = sweep[sweep["benchmark"] == "macro3"].set_index("auc")["delivered"]
+    P["verifier"] = {f"auc{int(a*100)}": fmt(v) for a, v in mac.items()}
+    P["verifier"]["plurality"] = fmt(float(sweep[sweep["benchmark"] == "macro3"]["plurality"].iloc[0]))
+    P["verifier"]["oracle"] = fmt(float(sweep[sweep["benchmark"] == "macro3"]["oracle"].iloc[0]))
+    P["verifier"]["best_alloc"] = fmt(best_alloc)
+    P["verifier"]["equiv_auc_plurality"] = fmt(isogap.equivalent_auc(sweep, "macro3",
+                                                                    P["verifier"]["plurality"]), 2)
+    P["verifier"]["auc_to_beat_best"] = fmt(isogap.equivalent_auc(sweep, "macro3", best_alloc), 2)
+    # Derived gains the prescription quotes directly.
+    P["verifier"]["gain_auc80_over_plurality"] = fmt(P["verifier"]["auc80"] - P["verifier"]["plurality"])
+    P["verifier"]["gain_auc80_over_best_alloc"] = fmt(P["verifier"]["auc80"] - P["verifier"]["best_alloc"])
+    P["verifier"]["gain_auc70_over_plurality"] = fmt(P["verifier"]["auc70"] - P["verifier"]["plurality"])
+    P["allowance"] = {f"{r['panel']}_{r['benchmark']}":
+                      dict(draw_acc=fmt(r["draw_acc"]), gap=fmt(r["gap"]),
+                           minority=fmt(r["minority"]), oracle=fmt(r["oracle"]),
+                           readout=fmt(r["readout"]))
+                      for _, r in aa.iterrows()}
+    a3 = arc[arc["level"] == "macro3"].set_index("name")
+    P["archive"] = {n: dict(estimate=fmt(r["estimate"]), lo=fmt(r["ci_lo"]), hi=fmt(r["ci_hi"]))
+                    for n, r in a3.iterrows()
+                    if n in ("peer/5/4", "peer/4/4", "private_team/5/4", "private_single/25",
+                             "sample/25")}
+    c3 = conc[conc["rung"] == 25].set_index("family")["conc"]
+    P["concentration25"] = {k: fmt(v) for k, v in c3.items()}
+    for lv in ["math500", "mmlu_pro", "bbh_logic4", "mbpp_plus", "macro3"]:
+        g = dec[dec["level"] == lv]
+        N[lv]["best_arc"] = fmt(g["y_arc"].max())
+        N[lv]["best_arc_name"] = str(g.loc[g["y_arc"].idxmax(), "name"])
+    mb = buck[buck["benchmark"] == "mbpp_plus"].set_index("k")
+    P["mbpp_selector"] = {f"k{k}": dict(readout=fmt(mb.loc[k, "readout"]),
+                                        random=fmt(mb.loc[k, "random_draw"]))
+                          for k in [1, 4, 8, 16, 25] if k in mb.index}
+    # Sizing for the proposed validation run (Appendix A).
+    gm = fm[(fm["level"] == "macro3") & fm["delta_lo"].notna()]
+    se400 = float(((gm["delta_hi"] - gm["delta_lo"]) / (2 * 1.96)).median())
+    pcm = ic.load(RUN, "policy_costs")
+    pcm = pcm[(pcm["partition_id"] == "main") & (pcm["view"] == "current")
+              & (pcm["name"] == "sample/25")]
+    per_cand = int(pcm["completion_tokens"].mean() / 25)
+    n_calls = 400 * 25
+    tin = n_calls * (600 + per_cand) / 1e6
+    tout = n_calls * 128 / 1e6
+    P["followup"] = dict(
+        se400=fmt(se400, 4), mde400=fmt(2.8 * se400, 4),
+        mde192=fmt(2.8 * se400 * np.sqrt(400 / 192), 4),
+        predicted_effect=P["verifier"]["gain_auc80_over_plurality"],
+        judge_calls=n_calls, tokens_in_m=fmt(tin, 1), tokens_out_m=fmt(tout, 2),
+        cost_lite=fmt(tin * 0.10 + tout * 0.40, 2),
+        cost_flash=fmt(tin * 0.30 + tout * 2.50, 2),
+        per_candidate_tokens=per_cand)
+    N["prescription"] = P
+
     with open(f"{OUT}/numbers.json", "w") as fh:
         json.dump(N, fh, indent=1, sort_keys=True)
     print(f"numbers.json: {len(N)} top-level keys")
 
-    emit_tables(OUT, fm, cm, N)
+    emit_tables(OUT, fm, cm, N, dec)
     print("tables written")
 
 
-def emit_tables(OUT, fm, cm, N):
+def emit_tables(OUT, fm, cm, N, dec=None):
     """LaTeX booktabs fragments. Every number here also lives in numbers.json."""
     # T1: the iso-compute rung inventory.
     rows = []
@@ -219,14 +309,33 @@ def emit_tables(OUT, fm, cm, N):
     lab = {"math500": "MATH-500", "mmlu_pro": "MMLU-Pro", "bbh_logic4": "BBH-logic4",
            "mbpp_plus": "MBPP+", "macro3": "Macro (3)"}
     with open(f"{OUT}/tables/headline.tex", "w") as fh:
-        fh.write("\\begin{tabular}{lrrrrrr}\n\\toprule\n")
-        fh.write("Benchmark & pass@1 & vote@2 & vote@25 & best any & oracle@25 & headroom \\\\\n")
+        fh.write("\\begin{tabular}{lrrrrrrr}\n\\toprule\n")
+        fh.write("Benchmark & pass@1 & vote@2 & vote@25 & best any & best archive & "
+                 "oracle@25 & headroom \\\\\n")
         fh.write("\\midrule\n")
         for k in order:
             n = N[k]
             fh.write(f"{lab[k]} & {n['pass1']:.3f} & {n['vote2']:.3f} & {n['vote25']:.3f} & "
-                     f"{n['best_acc']:.3f} & {n['oracle25']:.3f} & {n['headroom_best25']:.3f} \\\\\n")
+                     f"{n['best_acc']:.3f} & {n['best_arc']:.3f} & "
+                     f"{n['oracle25']:.3f} & {n['headroom_best25']:.3f} \\\\\n")
         fh.write("\\bottomrule\n\\end{tabular}\n")
+
+    # T4: the budget-matched gap decomposition at the top of the ladder.
+    if dec is not None:
+        d = dec[(dec["level"] == "macro3") & (dec["rung"] == 25)
+                & dec["family"].isin(["sample", "private_single", "private_team", "peer"])]
+        d = d.sort_values("y", ascending=False)
+        with open(f"{OUT}/tables/gap_split.tex", "w") as fh:
+            fh.write("\\begin{tabular}{lrrrrr}\n\\toprule\n")
+            fh.write("Allocation & Pool coverage & Delivered & Coverage deficit & "
+                     "Selection loss & Archive \\\\\n\\midrule\n")
+            for _, r in d.iterrows():
+                nm = str(r["name"]).replace("_", "\\_")
+                fh.write(f"\\texttt{{{nm}}} & {r['cov_own']:.3f} & {r['y']:.3f} & "
+                         f"{r['cov_deficit']:.3f} & {r['sel_loss']:.3f} & {r['y_arc']:.3f} \\\\\n")
+            fh.write("\\midrule\n")
+            fh.write(f"\\emph{{Sampling ceiling}} & {d['cov_sample'].iloc[0]:.3f} & & & & \\\\\n")
+            fh.write("\\bottomrule\n\\end{tabular}\n")
 
     # T3: the two prespecified contrasts, quoted from the sealed table.
     with open(f"{OUT}/tables/primary.tex", "w") as fh:
