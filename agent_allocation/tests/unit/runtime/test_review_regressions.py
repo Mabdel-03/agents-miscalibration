@@ -192,3 +192,115 @@ async def test_pending_reservations_are_not_counted_twice_during_the_journal_lin
     assert dispatcher.pending_reservation == 0 and snap.in_flight > 0
     summary = await run
     assert summary.stop_reason == "completed"
+
+
+# (4) the Retry-After and unresolved-exposure pauses also bind attempts already waiting for the HTTP limiter ---------
+
+async def test_retry_after_pause_holds_attempts_that_were_admitted_before_the_429(tmp_path):
+    import time
+
+    env = Env.create(tmp_path, concurrency_start=8, max_calls_per_item_in_flight=16)
+    graph = make_graph("ra", bank=16, chain=1, team_slots=1, peer_sizes=(), deep=())
+    start = time.monotonic()
+    sends: list[float] = []
+
+    def script(spec, attempt_id, index):
+        sends.append(time.monotonic() - start)
+        if index < 8:
+            return Behavior(status=TransportStatus.RATE_LIMITED, cost=None, retry_after=0.6, delay=0.05)
+        return Behavior(delay=0.01)
+
+    summary = await env.dispatcher(FakeClient(script)).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 16
+    answered = min(sends[:8]) + 0.05
+    assert all(t >= answered + 0.6 - 0.02 for t in sends[8:]), [round(t, 3) for t in sends[8:]]
+    released = [a for a in journal_attempts(env.paths.ledger_journal).values()
+                if a.resolution is LedgerEventKind.RELEASE_UNSENT]
+    assert released and not any(a.sent for a in released)         # the prefetched attempts never left
+
+
+async def test_unresolved_pause_holds_attempts_waiting_for_the_http_limiter(tmp_path):
+    import time
+
+    env = Env.create(tmp_path, concurrency_start=2, lease_stale_seconds=0.6)
+    env.config["budget"]["max_unresolved_spend_usd"] = 0.0008
+    env.reopen(recover=False)
+    graph = make_graph("u2", bank=6, chain=1, team_slots=1, peer_sizes=(), deep=())
+    start = time.monotonic()
+    sends: list[float] = []
+
+    def script(spec, attempt_id, index):
+        sends.append(time.monotonic() - start)
+        if index < 2:
+            return Behavior(status=TransportStatus.AMBIGUOUS_TIMEOUT, cost=None)
+        return Behavior(delay=0.05)
+
+    summary = await env.dispatcher(FakeClient(script)).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 6
+    assert len(sends) == 8 and all(t >= 0.5 for t in sends[2:]), [round(t, 3) for t in sends]
+
+
+# (5) cancellation leaves no running exchange and no leaked reservation ----------------------------------------------
+
+async def test_cancelled_run_leaves_no_http_exchange_running(tmp_path):
+    env = Env.create(tmp_path, concurrency_start=2)
+    graph = make_graph("cancel2", bank=2, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(delay=1.0)
+    run = asyncio.create_task(env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5")))
+    await asyncio.sleep(0.2)
+    run.cancel()
+    with suppress(asyncio.CancelledError):
+        await run
+    await asyncio.sleep(0)
+    assert client.active == 0
+    assert not [t for t in asyncio.all_tasks() if "generate" in repr(t.get_coro())]
+    await asyncio.sleep(1.1)
+    assert client.completed == []                                   # nothing finished (and billed) behind our back
+
+
+async def test_cancel_inside_the_reservation_linger_releases_and_never_reuses_attempt_ids(tmp_path):
+    env = Env.create(tmp_path, concurrency_start=2)
+    env.group_commit_ms = 250
+    env.reopen(recover=False)
+    graph = make_graph("leak", bank=4, chain=1, team_slots=1, peer_sizes=(), deep=())
+    dispatcher = env.dispatcher(FakeClient(delay=0.05))
+    run = asyncio.create_task(dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=D("5")))
+    await asyncio.sleep(0.05)
+    run.cancel()
+    with suppress(asyncio.CancelledError):
+        await run
+    assert env.ledger.snapshot().in_flight == 0 and env.ledger.snapshot().unresolved == 0
+    assert all(a.resolution is not None for a in journal_attempts(env.paths.ledger_journal).values())
+    client = FakeClient()
+    dispatcher.client = client
+    summary = await dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed" and summary.nodes_succeeded == 4
+    attempts = journal_attempts(env.paths.ledger_journal)
+    assert all(a.resolution is not None for a in attempts.values())
+    assert {aid for _, aid in client.calls} <= set(attempts) and len(set(a for _, a in client.calls)) == 4
+
+
+# (6) STOP written during a drain takes over ------------------------------------------------------------------------
+
+async def test_stop_written_during_a_drain_overrides_it(tmp_path, monkeypatch):
+    import time
+
+    from agent_allocation.runtime.control import cmd_stop
+
+    monkeypatch.setattr(scheduler_mod, "CONTROL_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(scheduler_mod, "STOP_GRACE_SECONDS", 0.1)
+    env = Env.create(tmp_path, concurrency_start=3)
+    graph = make_graph("d", bank=6, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(delay=6)
+    run = asyncio.create_task(env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5")))
+    await asyncio.sleep(0.2)
+    cmd_stop(["--run-dir", str(env.paths.run_dir), "--drain"])
+    await asyncio.sleep(0.3)
+    escalated = time.monotonic()
+    cmd_stop(["--run-dir", str(env.paths.run_dir)])
+    summary = await asyncio.wait_for(run, timeout=5)
+    assert time.monotonic() - escalated < 2.0
+    assert summary.stop_reason == "stop_sentinel" and summary.stop_detail == "escalated_during_drain"
+    charged = [a for a in journal_attempts(env.paths.ledger_journal).values() if a.sent]
+    assert len(charged) == 3 and all(a.resolution is LedgerEventKind.CHARGE_MAX for a in charged)
+    assert summary.in_flight_usd == 0 and summary.unresolved_usd == 0

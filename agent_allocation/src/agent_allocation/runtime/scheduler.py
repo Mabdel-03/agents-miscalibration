@@ -94,6 +94,8 @@ BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 60.0
 MIN_RPS = 0.25
 NOT_SENT = "not_sent"
+DEFERRED = "deferred_by_pause"
+WITHDRAWN_FOR_PAUSE = "withdrawn_for_pause_after_sent_journal"
 WITHDRAWN_AFTER_SENT = "withdrawn_after_sent_journal"
 REQUEST_CONTRACT_ERROR = "request_contract_error"
 
@@ -559,6 +561,7 @@ class Dispatcher:
         self.bucket_served: dict[tuple[str, str], int] = defaultdict(int)
         self.unresolved: dict[str, _Unresolved] = {}
         self.tasks: set[asyncio.Task] = set()
+        self.attempt_tasks: dict[str, tuple[asyncio.Task | None, Attempt]] = {}
         self.admit_blocker = "empty"
         self.first_attempts_blocked_at: Decimal | None = None   # soft ceiling reached: only retries may use reserve
         self.reserve_admissions = 0
@@ -1086,6 +1089,7 @@ class Dispatcher:
         attempt_id = f"{node.node_id}:{attempt_no}"
         attempt = Attempt(attempt_id, node.node_id, attempt_no, AttemptState.PENDING, amount, _utc())
         phase = {"pre_send": True}
+        self.attempt_tasks[attempt_id] = (asyncio.current_task(), attempt)
         try:
             # Hand the amount from pending to the ledger with no await in between: reserve() records it in memory
             # synchronously before its first await, so it is never counted twice (or not at all).
@@ -1118,6 +1122,18 @@ class Dispatcher:
                 self.store.record_unsent_attempt(attempt, detail="not_sent:stopping")
                 self._requeue(node, park=True)
                 return
+            if error in (DEFERRED, WITHDRAWN_FOR_PAUSE):
+                # A Retry-After or unresolved-exposure pause began while this attempt waited for the limiter (or its
+                # SENT fsync): it never left. Release (or settle 0 once SENT is journaled) and retry after the pause.
+                if error == DEFERRED:
+                    await self.ledger.release_unsent(attempt_id)
+                else:
+                    await self.ledger.settle(attempt_id, Decimal("0"))
+                self.store.record_unsent_attempt(attempt, detail=error)
+                node.not_before = max(node.not_before, self.aimd.pause_until)
+                self._event_once("deferred_by_pause")
+                self._requeue(node)
+                return
             if error is not None and (error == WITHDRAWN_AFTER_SENT or error.startswith(REQUEST_CONTRACT_ERROR)):
                 # SENT is already journaled, so the reservation is never released (QA s15.08); the request provably
                 # did not leave the process, so it settles at 0 and the attempt is recorded as unsent.
@@ -1145,7 +1161,36 @@ class Dispatcher:
             if phase["pre_send"]:
                 self.pre_send -= 1
             self.item_active[node.item_key] -= 1
+            self.attempt_tasks.pop(attempt_id, None)
             self.wake.set()
+
+    def _note_classification_now(self, node: _Node, attempt: Attempt, outcome: GenerationOutcome,
+                                 sent_at: float) -> None:
+        """Decisions that must bind before this HTTP slot is released to a waiting attempt (no await here): the
+        circuit, the Retry-After pause/AIMD decrease, and unresolved exposure for an exchange without a confirmed
+        cost. ``_handle`` repeats them idempotently."""
+        result = outcome.result
+        status = result.transport_status
+        if result.node_id != node.node_id or result.attempt_id != attempt.attempt_id:
+            self._open_circuit(f"client_identity_mismatch:{result.attempt_id}")
+            self._note_ambiguous_now(attempt.attempt_id, "client_identity_mismatch")
+            return
+        if status in CIRCUIT_BREAKING_TRANSPORT:
+            self._open_circuit(f"{status.value}:{node.node_id}")
+        if status is TransportStatus.RATE_LIMITED:
+            if self.aimd.on_rate_limited(self.clock(), sent_at, result.retry_after_seconds):
+                self.http.set_limit(self.aimd.concurrency_limit)
+                self._event("aimd_decrease", f"{self.aimd.concurrency_limit}/{self.aimd.rps:.2f}")
+        if confirmed_cost(result) is None:
+            self._note_ambiguous_now(attempt.attempt_id, status.value)
+
+    def _note_ambiguous_now(self, attempt_id: str, detail: str) -> None:
+        if self.ledger.state_of(attempt_id) == "sent":
+            self.ledger.mark_unresolved_nowait(attempt_id, detail=detail)
+
+    def _send_paused(self) -> bool:
+        """Retry-After pause or unresolved-exposure pause: nothing may leave, even if it was admitted earlier."""
+        return self.aimd.pause_until > self.clock() or self.ledger.unresolved_exceeded
 
     async def _exchange(self, node: _Node, messages: list[dict[str, str]], attempt: Attempt,
                         phase: dict[str, bool]) -> tuple[GenerationOutcome | None, str | None, float, Attempt]:
@@ -1154,9 +1199,13 @@ class Dispatcher:
             self.pre_send -= 1
             if self.stop_mode is not None or self.circuit_reason is not None:
                 return None, NOT_SENT, self.clock(), attempt
+            if self._send_paused():
+                return None, DEFERRED, self.clock(), attempt              # admitted before the pause began
             await self.ledger.mark_sent(attempt.attempt_id)       # urgent fsync: SENT is durable before sending
             if self.stop_mode is not None or self.circuit_reason is not None:
                 return None, WITHDRAWN_AFTER_SENT, self.clock(), attempt  # decided during the fsync: still unsent
+            if self._send_paused():
+                return None, WITHDRAWN_FOR_PAUSE, self.clock(), attempt   # a 429/timeout landed during the fsync
             node.sends += 1
             attempt = replace(attempt, state=AttemptState.SENT, sent_at=_utc())
             self.store.record_attempt(attempt)
@@ -1170,16 +1219,26 @@ class Dispatcher:
                                              return_when=asyncio.FIRST_COMPLETED)
                 if generation in done:
                     try:
-                        return generation.result(), None, sent_at, attempt
+                        outcome = generation.result()
                     except Exception as exc:  # noqa: BLE001 - the client must classify; an escape is ambiguous
                         if _is_request_contract_error(exc):
                             node.sends -= 1                            # raised before any byte was sent
                             return None, f"{REQUEST_CONTRACT_ERROR}:{exc}"[:500], sent_at, attempt
+                        self._note_ambiguous_now(attempt.attempt_id, "client_exception")
                         return None, f"client_exception:{type(exc).__name__}", sent_at, attempt
-                generation.cancel()
-                await asyncio.wait({generation}, timeout=5.0)
-                return None, ("cancelled_by_stop" if self.hard_stop.done() else "watchdog_timeout"), sent_at, attempt
+                    self._note_classification_now(node, attempt, outcome, sent_at)
+                    return outcome, None, sent_at, attempt
+                reason = "cancelled_by_stop" if self.hard_stop.done() else "watchdog_timeout"
+                self._note_ambiguous_now(attempt.attempt_id, reason)
+                return None, reason, sent_at, attempt
             finally:
+                # Never leave the HTTP exchange running outside the limiter (watchdog, STOP, or this task cancelled).
+                if not generation.done():
+                    generation.cancel()
+                    try:
+                        await asyncio.wait({generation}, timeout=5.0)
+                    except asyncio.CancelledError:
+                        pass
                 self.meter.change(-1)
 
     async def _handle(self, node: _Node, attempt: Attempt, outcome: GenerationOutcome | None, error: str | None,
@@ -1248,10 +1307,7 @@ class Dispatcher:
             return
         if status in RETRYABLE_TRANSPORT:
             if status is TransportStatus.RATE_LIMITED:
-                self.rate_limited += 1
-                if self.aimd.on_rate_limited(now, sent_at, result.retry_after_seconds):
-                    self.http.set_limit(self.aimd.concurrency_limit)
-                    self._event("aimd_decrease", f"{self.aimd.concurrency_limit}/{self.aimd.rps:.2f}")
+                self.rate_limited += 1               # the pause and AIMD decrease were applied at classification
             self._retry_or_exhaust(node, status, result.retry_after_seconds)
             return
         self.store.mark_exhausted(node.node_id, f"non_retryable:{status.value}")
@@ -1328,14 +1384,26 @@ class Dispatcher:
 
     # ---- drain / background -------------------------------------------------------------------------------
     async def _drain(self) -> None:
-        if self.stop_mode == "stop":
-            deadline = self.clock() + STOP_GRACE_SECONDS
-            while self._live_tasks() and self.clock() < deadline:
-                await asyncio.wait(self._live_tasks(), timeout=max(0.01, deadline - self.clock()))
-            if not self.hard_stop.done():
-                self.hard_stop.set_result(True)
-        while self._live_tasks():
-            await asyncio.wait(self._live_tasks())
+        """Wait for in-flight work. Control sentinels keep being polled, so a STOP written during a drain (or a
+        circuit drain) takes over: after STOP_GRACE_SECONDS the remaining exchanges are abandoned (charged, never
+        released)."""
+        stop_deadline: float | None = None
+        while True:
+            self._poll_control()
+            if self.stop_mode == "stop" and not self.hard_stop.done():
+                if stop_deadline is None:
+                    stop_deadline = self.clock() + STOP_GRACE_SECONDS
+                    if self.stop_reason == STOP_DRAIN:
+                        self._finish(STOP_SENTINEL, "escalated_during_drain")
+                if self.clock() >= stop_deadline:
+                    self.hard_stop.set_result(True)
+            live = self._live_tasks()
+            if not live:
+                break
+            timeout = CONTROL_POLL_SECONDS
+            if stop_deadline is not None and not self.hard_stop.done():
+                timeout = min(timeout, max(0.01, stop_deadline - self.clock()))
+            await asyncio.wait(live, timeout=timeout)
         await self._reconcile_unresolved(final=True)
         await self.ledger.journal.flush()
 
@@ -1449,11 +1517,40 @@ class Dispatcher:
             self.store.take_over_lease(row.node_id, attempt_id)
             self._event("lease_released_at_exit", row.node_id)
 
+    async def _resolve_leftover_reservations(self) -> None:
+        """Nothing of this run is live any more: a reservation still open (an attempt cancelled inside reserve()
+        before it was leased, or an unresolved attempt a cancelled run never reconciled) is released if it was never
+        marked sent, charged in full otherwise, and its attempt number is recorded so it is never reused."""
+        for open_attempt in self.ledger.open_attempts():
+            attempt_id = open_attempt.attempt_id
+            owner = self.attempt_tasks.get(attempt_id)
+            if owner is not None and owner[0] is not None and not owner[0].done():
+                continue                                   # still running (should not happen after cancellation)
+            if open_attempt.state == "reserved":
+                await self.ledger.release_unsent(attempt_id)
+            else:
+                await self.ledger.charge_max(attempt_id)
+            node_id = open_attempt.node_id or attempt_id.rsplit(":", 1)[0]
+            if not any(a.attempt_id == attempt_id for a in self.store.attempts_for(node_id)):
+                record = owner[1] if owner is not None else Attempt(
+                    attempt_id, node_id, int(attempt_id.rsplit(":", 1)[1]), AttemptState.PENDING,
+                    open_attempt.amount_usd, _utc())
+                self.store.record_unsent_attempt(record, detail="reservation_resolved_at_exit") \
+                    if open_attempt.state == "reserved" else self.store.record_attempt(
+                        replace(record, state=AttemptState.TERMINAL, completed_at=_utc(),
+                                error_detail="charged_at_exit"))
+            self.unresolved.pop(attempt_id, None)
+            self._event("reservation_resolved_at_exit", attempt_id)
+
     async def _final_persist(self) -> None:
         try:
             await self._release_own_leases()
         except Exception as exc:  # noqa: BLE001
             self._event("lease_release_failed", repr(exc))
+        try:
+            await self._resolve_leftover_reservations()
+        except Exception as exc:  # noqa: BLE001
+            self._event("reservation_resolution_failed", repr(exc))
         try:
             await self.ledger.journal.flush()
         except Exception:  # noqa: BLE001

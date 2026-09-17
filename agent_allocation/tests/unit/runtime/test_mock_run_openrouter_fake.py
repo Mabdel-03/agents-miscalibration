@@ -114,8 +114,14 @@ async def test_mock_run_with_faults_reconciles_every_charge(tmp_path, capsys):
         aid = call.coordinates["attempt_id"]
         billed[aid] = billed.get(aid, Decimal("0")) + call.billed_usd
     attempts = journal_attempts(env.paths.ledger_journal)
-    assert set(billed) == set(attempts)
+    # attempts admitted before a 429's Retry-After pause but still waiting for the HTTP limiter never left: they are
+    # released (or settled at 0 if their SENT fsync overlapped the pause) and never reach the provider
+    withdrawn = {aid for aid, info in attempts.items() if info.resolution is LedgerEventKind.RELEASE_UNSENT
+                 or (info.resolution is LedgerEventKind.SETTLE and info.resolved_usd == 0 and aid not in billed)}
+    assert set(billed) == set(attempts) - withdrawn
     for aid, info in attempts.items():
+        if aid in withdrawn:
+            continue
         if info.resolution is LedgerEventKind.SETTLE:
             assert info.resolved_usd == billed[aid], aid              # settled exactly what was charged
         else:                                                         # read timeouts: never assumed free
