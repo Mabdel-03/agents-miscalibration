@@ -1,0 +1,15 @@
+{
+ "fake_api_key_parts": [
+  "sk-or-v1-",
+  "c4n4ry0000fake0000key0000do0not0use00000123456789abcdef0123456789"
+ ],
+ "tokens": {
+  "gold_math": "CANARY-GOLD-MATH-9C41E2",
+  "plus_input_mbpp": "CANARY-PLUS-INPUT-MBPP-0F9E1D",
+  "private_test_mbpp": "CANARY-PRIVATE-TEST-MBPP-A1D2F3",
+  "rationale_mmlu": "CANARY-RATIONALE-MMLU-5B7D10",
+  "reference_code_mbpp": "CANARY-REFERENCE-CODE-MBPP-77B0C4",
+  "solution_math": "CANARY-SOLUTION-MATH-2D6A90",
+  "target_note_bbh": "CANARY-TARGET-BBH-3E8F66"
+ }
+}
