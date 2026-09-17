@@ -60,7 +60,7 @@ async def test_tiny_ceiling_concurrent_reservations_never_exceed_it(tmp_path):
     replayed = CollectionLedger(LedgerJournal(tmp_path / "journal.jsonl"), ceiling_usd=D("0.01"),
                                 max_unresolved_usd=D(2)).snapshot()
     assert replayed.settled == snap.settled
-    assert replayed.unresolved == snap.in_flight + snap.unresolved     # nothing in flight after a restart
+    assert replayed.in_flight + replayed.unresolved == snap.in_flight + snap.unresolved   # nothing disappears
 
 
 async def test_transitions_and_outstanding_costs_cannot_disappear(tmp_path):
@@ -86,7 +86,8 @@ async def test_transitions_and_outstanding_costs_cannot_disappear(tmp_path):
     # crash: everything open becomes unresolved exposure; nothing is lost
     restarted = _ledger(tmp_path, ceiling="10")
     after = restarted.snapshot()
-    assert after.settled == D("0.6") and after.in_flight == 0 and after.unresolved == D("1.0")
+    # n:2 was sent (unresolved, feeds the pause); n:5 was only reserved (provably unsent, still counted in flight)
+    assert after.settled == D("0.6") and after.in_flight == D("0.5") and after.unresolved == D("0.5")
     assert restarted.inherited_attempt_ids == {"n:2", "n:5"}
     kinds = {a: j.resolution for a, j in journal_attempts(restarted.journal).items()}
     assert kinds == {"n:1": LedgerEventKind.SETTLE, "n:2": None, "n:3": LedgerEventKind.RELEASE_UNSENT,

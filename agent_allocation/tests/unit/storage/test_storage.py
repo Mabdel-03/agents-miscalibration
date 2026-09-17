@@ -69,8 +69,9 @@ async def test_journal_repairs_torn_tail_but_not_a_corrupt_middle(paths):
     with open(paths.ledger_journal, "ab") as handle:
         handle.write(b'{"seq": 3, "kind": "res')
     reopened = LedgerJournal(paths.ledger_journal, group_commit_ms=0)
-    assert reopened.torn_tail_bytes > 0 and reopened.last_seq == 2
-    await reopened.append(_event(3, attempt="a:3"))
+    assert reopened.torn_tail_bytes == 0 and reopened.last_seq == 2      # constructing never writes
+    await reopened.append(_event(3, attempt="a:3"))                       # the writer take-over repairs the tail
+    assert reopened.torn_tail_bytes > 0 and journal.revocations == 1
     assert [e.seq for e in reopened.replay()] == [1, 2, 3]
     lines = paths.ledger_journal.read_bytes().split(b"\n")
     lines[1] = b"not json"

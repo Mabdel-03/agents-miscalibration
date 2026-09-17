@@ -8,8 +8,8 @@ client-classified result once persisted), ``results`` (the one accepted result +
 Ordering (outbox style): raw artifact fsync'd -> ``record_persisted_response`` -> ``parsed/`` file fsync'd ->
 ``record_result`` commits the terminal row. Durability of the last few commits is traded for speed
 (``synchronous=NORMAL``) because every committed fact is re-derivable from the fsync'd journal and artifacts on the
-shared filesystem: ``recover`` restores the backup, re-ingests ``parsed/`` and ``raw/``, and settles or charges every
-reservation the journal left open. A node is never leased twice: ``try_lease`` is a conditional update from
+shared filesystem: ``recover`` restores the backup and re-ingests ``parsed/`` and ``raw/``; the ledger (never
+``recover``) settles or charges every reservation the journal left open. A node is never leased twice: ``try_lease`` is a conditional update from
 ``pending``; a lease is only taken over (``take_over_lease``) after its attempt is resolved in the ledger.
 
 Config keys consumed: none (lease timing comes from the dispatcher, which reads ``scheduler.lease_*``).
@@ -28,12 +28,10 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from agent_allocation.contracts import (
-    Attempt, AttemptState, Candidate, GenerationResult, GenerationSpec, LedgerEvent, LedgerEventKind,
-    TransportStatus, dump_record, load_record,
+    Attempt, AttemptState, Candidate, GenerationResult, GenerationSpec, TransportStatus, dump_record, load_record,
 )
 from agent_allocation.paths import RunPaths
 from agent_allocation.storage._atomic import copy_atomic, write_once
-from agent_allocation.storage.journal import LedgerJournal
 from agent_allocation.storage.raw import iter_raw_files, read_raw_response, result_from_raw, sha256_file
 
 OUTCOME_SUCCEEDED = "succeeded"
@@ -496,9 +494,10 @@ class StateStore:
 
     @classmethod
     def recover(cls, paths: RunPaths) -> "StateStore":
-        """Restore backup (if the local DB is missing or corrupt) -> re-ingest ``parsed/`` and ``raw/`` -> resolve
-        every reservation the journal left open (settle from a persisted response's confirmed cost, else charge the
-        full reservation). Successful nodes are never re-sent afterwards."""
+        """Restore backup (if the local DB is missing or corrupt) -> re-ingest ``parsed/`` and ``raw/`` -> record every
+        journal attempt. Never writes the ledger journal: open reservations stay open until
+        ``CollectionLedger.resolve_inherited`` (dispatcher startup) settles them from a persisted response or charges
+        the full reservation. Successful nodes are never re-sent afterwards."""
         paths.local_state_dir.mkdir(parents=True, exist_ok=True)
         local = paths.state_db_local
         if not cls._db_ok(local):
@@ -520,9 +519,9 @@ class StateStore:
         return store
 
     def _reingest_and_reconcile(self) -> dict[str, int]:
-        from agent_allocation.runtime.ledger import attempt_number, confirmed_cost, journal_attempts, utc_now as now_iso
-        report = {"parsed_ingested": 0, "raw_persisted": 0, "raw_failed_attempts": 0, "journal_settled_from_raw": 0,
-                  "journal_charged_max": 0, "journal_attempts_recorded": 0}
+        from agent_allocation.runtime.ledger import attempt_number, journal_attempts, utc_now as now_iso
+        report = {"parsed_ingested": 0, "raw_persisted": 0, "raw_failed_attempts": 0, "journal_open_reservations": 0,
+                  "journal_attempts_recorded": 0}
         # 1. parsed/ -> accepted results (file name = node_id: only files the DB lacks are read)
         accepted_before = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
         root = parsed_root(self.paths)
@@ -535,8 +534,7 @@ class StateStore:
                     if self._ingest_result(result, candidate):
                         report["parsed_ingested"] += 1
         # 2. raw/ -> persisted responses not yet committed, and failed attempts
-        journal = LedgerJournal(self.paths.ledger_journal, group_commit_ms=0)
-        known = journal_attempts(journal)
+        known = journal_attempts(self.paths.ledger_journal)          # read-only: recovery never writes the journal
         accepted = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
         terminal_attempts = {r["attempt_id"] for r in self._query("SELECT attempt_id FROM attempts WHERE state='terminal'")}
         open_in_journal = {aid for aid, info in known.items() if info.resolution is None}
@@ -564,7 +562,9 @@ class StateStore:
             else:
                 self._record_attempt(replace(attempt, state=AttemptState.TERMINAL, completed_at=now_iso()), sent=True)
                 report["raw_failed_attempts"] += 1
-        # 3. journal -> every attempt known to the DB; every open reservation resolved conservatively
+        # 3. journal -> every attempt known to the DB. Open reservations are NOT charged here: the ledger
+        #    (CollectionLedger.resolve_inherited, run by the dispatcher at startup) is the one owner of recovery
+        #    charging, so two writers can never charge the same attempt (pilot kill -9 finding).
         for aid, info in known.items():
             if not self._query("SELECT 1 FROM attempts WHERE attempt_id=?", (aid,)):
                 self._record_attempt(Attempt(aid, info.node_id or aid.rsplit(":", 1)[0], attempt_number(aid),
@@ -572,18 +572,8 @@ class StateStore:
                                              error_detail="recovered_from_journal"),
                                      sent=info.sent or info.resolution is None)
                 report["journal_attempts_recorded"] += 1
-            if info.resolution is not None:
-                continue
-            cost = confirmed_cost(raw_results.get(aid))
-            if cost is not None:
-                kind, amount, detail = LedgerEventKind.SETTLE, cost, "recovery:settled_from_raw"
-                report["journal_settled_from_raw"] += 1
-            else:
-                kind, amount, detail = LedgerEventKind.CHARGE_MAX, info.reserved_usd, "recovery:no_confirmed_cost"
-                report["journal_charged_max"] += 1
-            journal.append_sync(LedgerEvent(seq=journal.next_seq(), kind=kind, amount_usd=amount,
-                                            recorded_at=now_iso(), attempt_id=aid, node_id=info.node_id,
-                                            partition_id=info.partition_id, detail=detail))
+            if info.resolution is None:
+                report["journal_open_reservations"] += 1
         return report
 
     recovery_report: dict[str, int] = {}

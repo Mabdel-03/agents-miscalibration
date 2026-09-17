@@ -41,8 +41,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from typing import TYPE_CHECKING
+
 from agent_allocation.contracts import GenerationResult, LedgerEvent, LedgerEventKind, TransportStatus
 from agent_allocation.storage.journal import JournalError, LedgerJournal
+
+if TYPE_CHECKING:
+    from agent_allocation.paths import RunPaths
 
 ZERO = Decimal("0")
 
@@ -129,7 +134,7 @@ class CollectionLedger:
         self.max_unresolved_usd = _dec(max_unresolved_usd, "max_unresolved_usd")
         self._ceiling = self.study_cap
         self._run_cap: Decimal | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._open: dict[str, _Open] = {}
         self._resolved: dict[str, tuple[LedgerEventKind, Decimal]] = {}
         self._settled = ZERO
@@ -140,38 +145,68 @@ class CollectionLedger:
         self.late_bills: list[tuple[str, Decimal]] = []
         self.overruns: list[tuple[str, Decimal, Decimal]] = []
         self.peak_exposure = ZERO
-        self._replay()
-        self.inherited_attempt_ids: frozenset[str] = frozenset(self._open)
+        self._inherited: set[str] = set()
+        with self._lock:
+            self._replay()
+            journal.listener = self._on_external_events
 
     # ---- replay -------------------------------------------------------------------------------------------
-    def _replay(self) -> None:
-        for event in self.journal.replay():
-            aid = event.attempt_id
-            if event.kind is LedgerEventKind.RESERVE:
-                if aid is None or aid in self._open or aid in self._resolved:
+    def _apply(self, event: LedgerEvent, *, strict: bool) -> None:
+        aid = event.attempt_id
+        if event.kind is LedgerEventKind.RESERVE:
+            if aid is None or aid in self._open or aid in self._resolved:
+                if strict:
                     raise LedgerError(f"journal seq {event.seq}: duplicate or anonymous reservation {aid!r}")
-                self._open[aid] = _Open(aid, event.node_id, event.partition_id, event.amount_usd, _RESERVED)
-            elif event.kind is LedgerEventKind.SENT:
-                if aid in self._open:
-                    self._open[aid].state = _SENT
-            elif event.kind in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX, LedgerEventKind.RELEASE_UNSENT):
-                if aid in self._resolved:
-                    continue
-                opened = self._open.pop(aid, None)
-                if opened is None:
+                return
+            # Reserved but never marked sent: SENT is always fsync'd before a request leaves, so this attempt
+            # provably never left its process. It stays in flight until resolve_inherited releases it.
+            self._open[aid] = _Open(aid, event.node_id, event.partition_id, event.amount_usd, _RESERVED)
+            self._in_flight += event.amount_usd
+            self._inherited.add(aid)
+        elif event.kind in (LedgerEventKind.SENT, LedgerEventKind.UNRESOLVED):
+            opened = self._open.get(aid)
+            if opened is not None and opened.state != _UNRESOLVED:
+                # v2 replay rule: a SENT reservation without a terminal event is unresolved (feeds the $2 pause).
+                self._in_flight -= opened.amount
+                self._unresolved += opened.amount
+                opened.state = _UNRESOLVED
+        elif event.kind in (LedgerEventKind.SETTLE, LedgerEventKind.CHARGE_MAX, LedgerEventKind.RELEASE_UNSENT):
+            if aid in self._resolved:
+                return
+            opened = self._open.get(aid)
+            if opened is None:
+                if strict:
                     raise LedgerError(f"journal seq {event.seq}: {event.kind.value} for unknown attempt {aid!r}")
-                if event.kind is not LedgerEventKind.RELEASE_UNSENT:
-                    self._settled += event.amount_usd
-                self._resolved[aid] = (event.kind, event.amount_usd)
-            elif event.kind is LedgerEventKind.UNRESOLVED:
-                if aid in self._open:
-                    self._open[aid].state = _UNRESOLVED
-        # Nothing is in flight in a fresh process: every inherited open attempt (SENT or not) is unresolved exposure
-        # and feeds the unresolved-exposure pause until recovery settles or charges it.
-        for opened in self._open.values():
-            opened.state = _UNRESOLVED
-            self._unresolved += opened.amount
+                return
+            self._remove_locked(opened)
+            if event.kind is not LedgerEventKind.RELEASE_UNSENT:
+                self._settled += event.amount_usd
+            self._resolved[aid] = (event.kind, event.amount_usd)
+            self._inherited.discard(aid)
+        # RECONCILE: a note, no reservation change
+
+    def _replay(self) -> None:
+        # Open attempts from the file: SENT ones are unresolved exposure (they may have been billed); reserved-only
+        # ones provably never left and are released by resolve_inherited.
+        for event in self.journal.reload():
+            self._apply(event, strict=True)
         self.peak_exposure = self._settled + self._unresolved
+
+    def _on_external_events(self, events: list[LedgerEvent]) -> None:
+        """Events another journal instance/process appended while this one did not hold the writer role."""
+        with self._lock:
+            for event in events:
+                self._apply(event, strict=False)
+            self.peak_exposure = max(self.peak_exposure, self._settled + self._in_flight + self._unresolved)
+
+    @property
+    def inherited_attempt_ids(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(a for a in self._inherited if a in self._open)
+
+    def _sync(self) -> None:
+        """Take the journal's writer role (applying anything appended meanwhile) before deciding a transition."""
+        self.journal.ensure_writer()
 
     # ---- views --------------------------------------------------------------------------------------------
     def snapshot(self) -> LedgerSnapshot:
@@ -253,6 +288,7 @@ class CollectionLedger:
         if amount <= ZERO:
             raise LedgerError(f"reservation for {attempt_id} must be positive, got {amount}")
         with self._lock:
+            self._sync()
             if attempt_id in self._open or attempt_id in self._resolved:
                 raise LedgerError(f"attempt {attempt_id} was already reserved")
             refusal = self._refusal_locked(amount, None)
@@ -290,6 +326,7 @@ class CollectionLedger:
     async def mark_sent(self, attempt_id: str) -> None:
         """Journal ``SENT`` (urgent fsync) right before the request leaves; from here on it is never released."""
         with self._lock:
+            self._sync()
             opened = self._open.get(attempt_id)
             if opened is None:
                 raise LedgerError(f"mark_sent for unknown or resolved attempt {attempt_id}")
@@ -303,6 +340,7 @@ class CollectionLedger:
     async def mark_unresolved(self, attempt_id: str, *, detail: str = "") -> None:
         """Sent attempt whose exchange ended without a confirmed cost: keep the full reservation as unresolved."""
         with self._lock:
+            self._sync()
             opened = self._open.get(attempt_id)
             if opened is None:
                 raise LedgerError(f"mark_unresolved for unknown or resolved attempt {attempt_id}")
@@ -328,6 +366,7 @@ class CollectionLedger:
         if cost < ZERO:
             raise LedgerError(f"negative cost {cost} for {attempt_id}")
         with self._lock:
+            self._sync()
             opened = self._open.get(attempt_id)
             if opened is None:
                 prior = self._resolved.get(attempt_id)
@@ -357,6 +396,7 @@ class CollectionLedger:
 
     async def release_unsent(self, attempt_id: str) -> None:
         with self._lock:
+            self._sync()
             opened = self._open.get(attempt_id)
             if opened is None:
                 if attempt_id in self._resolved:
@@ -374,6 +414,7 @@ class CollectionLedger:
 
     async def charge_max(self, attempt_id: str) -> None:
         with self._lock:
+            self._sync()
             opened = self._open.get(attempt_id)
             if opened is None:
                 if attempt_id in self._resolved:
@@ -387,9 +428,44 @@ class CollectionLedger:
             pending = self.journal.submit(event)
         await asyncio.shield(pending)
 
+    async def resolve_inherited(self, paths: "RunPaths") -> dict[str, int]:
+        """The ONE owner of recovery charging (``StateStore.recover`` never writes the journal). For every reservation
+        an earlier (or other) writer left open: reserved-only (never marked sent, so provably never left) ->
+        ``RELEASE_UNSENT``; sent -> settle from the persisted response's confirmed cost, else ``CHARGE_MAX``.
+        Idempotent: the writer take-over first applies anything already resolved by anyone."""
+        from agent_allocation.storage.raw import read_raw_response, result_from_raw, sha256_file
+
+        report = {"settled_from_raw": 0, "charged_max": 0, "released_unsent": 0}
+        with self._lock:
+            self._sync()
+            pending = sorted(self.inherited_attempt_ids)
+        for attempt_id in pending:
+            state = self.state_of(attempt_id)
+            if state == _RESERVED:
+                await self.release_unsent(attempt_id)
+                report["released_unsent"] += 1
+                continue
+            if state != _UNRESOLVED:
+                continue
+            raw_path = paths.raw_response(attempt_id)
+            cost = None
+            if raw_path.exists():
+                relative = paths.relative(raw_path)
+                result = result_from_raw(read_raw_response(paths, relative), relative_path=relative,
+                                         sha256=sha256_file(raw_path))
+                cost = confirmed_cost(result)
+            if cost is not None:
+                await self.settle(attempt_id, cost)
+                report["settled_from_raw"] += 1
+            else:
+                await self.charge_max(attempt_id)
+                report["charged_max"] += 1
+        return report
+
     async def note(self, detail: str, *, attempt_id: str | None = None) -> None:
         """Provider-side reconciliation note (``RECONCILE``, amount 0, no reservation change)."""
         with self._lock:
+            self._sync()
             event = LedgerEvent(seq=self.journal.next_seq(), kind=LedgerEventKind.RECONCILE, amount_usd=ZERO,
                                 recorded_at=utc_now(), attempt_id=attempt_id, detail=detail)
             pending = self.journal.submit(event)
