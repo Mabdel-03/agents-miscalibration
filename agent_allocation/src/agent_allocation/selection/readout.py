@@ -47,7 +47,7 @@ __all__ = [
     "select_checkpoint_detail", "selector_for",
 ]
 
-SELECTOR_VERSION = "06-selection-v2"
+SELECTOR_VERSION = "06-selection-v3"
 FAMILIES: tuple[str, ...] = ("sample", "private_single", "private_team", "peer", "deep", "cp", "pooled")
 LAST_ANSWER_FAMILIES = frozenset({"private_single", "deep", "pooled"})
 SELECTING_FAMILIES = frozenset({"sample", "private_team", "peer", "cp"})
