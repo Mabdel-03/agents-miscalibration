@@ -6,6 +6,7 @@ Each candidate gets the same checks: the official prompt-visible ``assert`` stat
 module is pre-populated with ``math`` and ``sys``. Outcomes per case, in official order: ``pass`` | ``fail``
 (AssertionError) | ``timeout`` | ``error`` (any other exception, program load failure, or a reproduced crash).
 
+A task with no parsed public case yields ``INFRASTRUCTURE_ERROR`` with ``cases_total == 0`` (contract v2, D4).
 Infrastructure faults (sandbox cannot start, trusted bootstrap breaks, or an unexplained sandbox death) are retried
 once in a fresh sandbox after a known-good canary; if that fails the result is ``CheckStatus.INFRASTRUCTURE_ERROR``
 and the selector pauses. A limit hit (wall timer, CPU rlimit) is a real ``timeout`` outcome, never an outage.
@@ -105,8 +106,6 @@ def run_public_checks(candidate: Candidate, task: PublicTask) -> PublicCheckResu
     if candidate.item_id != task.item_id:
         raise ValueError(f"candidate {candidate.candidate_id} belongs to {candidate.item_id}, not {task.item_id}")
     examples = tuple(task.public_examples)
-    if not examples:
-        raise ValueError(f"{task.item_id}: no public examples; the code selector cannot run")
     profile = active_profile()
     env = environment_digest(profile)
     inputs_hash = public_inputs_sha256(task)
@@ -119,6 +118,9 @@ def run_public_checks(candidate: Candidate, task: PublicTask) -> PublicCheckResu
                                  case_outcomes=tuple(outcomes), checker_version=CHECKER_VERSION,
                                  public_inputs_sha256=inputs_hash, environment_digest=env, cpu_seconds=cpu)
 
+    if not examples:
+        # D4: no parsed public case means the selector has no evidence; it must pause, not rank.
+        return result(CheckStatus.INFRASTRUCTURE_ERROR, [], code_sha256(program) if program else None, 0.0)
     if candidate.parse_status is not ParseStatus.VALID or program is None or not program.strip():
         return result(CheckStatus.INVALID_CANDIDATE, ["fail"] * n, None, 0.0)
     sha = code_sha256(program)

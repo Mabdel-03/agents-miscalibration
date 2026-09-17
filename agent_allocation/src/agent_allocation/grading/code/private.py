@@ -7,7 +7,8 @@ source. Expected outputs, reference code and inputs of other cases never enter t
 sandbox receives the program and one input at a time; comparison happens here, in the trusted process.
 
 Status mapping:
-* no parseable program -> ``INVALID_OUTPUT`` (semantic_correct False, operational_success False, "no_program");
+* no parseable program -> ``INVALID_OUTPUT`` (semantic_correct None, operational_success False, "no_program"; the
+  contract v2 tri-state rule D3);
 * any real verdict (pass, wrong output, exception, per-input timeout, batch timeout, CPU limit, memory error,
   crash reproduced after a healthy canary) -> ``GRADED`` with semantic_correct True/False;
 * evaluator fault (sandbox cannot start, trusted bootstrap fails, unexplained death with an unhealthy canary, or a
@@ -129,7 +130,7 @@ def grade_code(candidate: Candidate, private: PrivateEvalSpec, paths: RunPaths) 
 
     program = candidate.final_answer
     if candidate.parse_status is not ParseStatus.VALID or program is None or not program.strip():
-        return result(GradeStatus.INVALID_OUTPUT, False, False, "no_program", 0.0)
+        return result(GradeStatus.INVALID_OUTPUT, None, False, "no_program", 0.0)
     try:
         record = load_private_record(private, paths)
     except PrivateRecordError:

@@ -12,8 +12,9 @@ environment digest, public-inputs hash / private hash). Only real verdicts are c
 grades); outages are never cached and are redone on ``--resume``. Identical code shares a verdict, never an API
 draw: every candidate keeps its own record.
 
-Resume: an existing record with a terminal status is kept; INFRASTRUCTURE_ERROR / EVALUATOR_ERROR / NOT_EVALUATED
-records are redone. Without ``--resume`` the command refuses (exit 2) to run over existing records. Exit 2 also
+Resume: an existing record with a terminal status is kept (for code: only if produced by the current checker/grader
+version); INFRASTRUCTURE_ERROR / EVALUATOR_ERROR / NOT_EVALUATED records are redone. A verdict from a different
+version is moved to ``paths.superseded_public_check`` / ``paths.superseded_grade`` before the new one is written (D9). Without ``--resume`` the command refuses (exit 2) to run over existing records. Exit 2 also
 when text grading is blocked (agent 04's module absent), an item is unknown, or an outage record remains.
 
 Config keys consumed: ``grading.*`` via ``grading.code.profile.profile_from_config`` (the run's config lock when
@@ -45,12 +46,8 @@ TERMINAL_GRADE = {GradeStatus.GRADED, GradeStatus.INVALID_OUTPUT}
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# Paths (shim: requested as RunPaths.grade_cache_dir in docs/requests/05.md)
+# Writing (single writer; D9: a verdict from a different checker/grader version is moved aside, never overwritten)
 # ---------------------------------------------------------------------------------------------------------------
-
-def grade_cache_dir(paths: RunPaths) -> Path:
-    return paths.run_dir / "grade_cache"
-
 
 def _atomic_write(path: Path, payload: Mapping[str, Any], *, private: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +62,32 @@ def _atomic_write(path: Path, payload: Mapping[str, Any], *, private: bool) -> N
     if private:
         os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def write_public_check(paths: RunPaths, record: PublicCheckResult) -> None:
+    current = paths.public_check(record.candidate_id)
+    previous = _read_record(current, PublicCheckResult)
+    if previous is not None and previous.checker_version != record.checker_version:
+        _move_aside(current, paths.superseded_public_check(record.candidate_id, previous.checker_version), private=False)
+    _atomic_write(current, dump_record(record), private=False)
+
+
+def write_grade(paths: RunPaths, record: GradeResult) -> None:
+    current = paths.grade(record.candidate_id)
+    previous = _read_record(current, GradeResult)
+    if previous is not None and previous.grader_version != record.grader_version:
+        _move_aside(current, paths.superseded_grade(record.candidate_id, previous.grader_version), private=True)
+    _atomic_write(current, dump_record(record), private=True)
+
+
+def _move_aside(current: Path, target: Path, *, private: bool) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if private:
+        for directory in (target.parent, target.parent.parent, target.parent.parent.parent):
+            os.chmod(directory, PRIVATE_DIR_MODE)
+    if target.exists():
+        raise FileExistsError(f"{target} already holds a superseded verdict; refusing to overwrite it")
+    os.replace(current, target)
 
 
 def _read_record(path: Path, cls: type) -> Any | None:
@@ -132,7 +155,7 @@ def private_cache_key(private: PrivateEvalSpec, code_sha: str, env: str) -> str:
 
 
 def _cache_path(paths: RunPaths, kind: str, key: str) -> Path:
-    return grade_cache_dir(paths) / kind / key[:2] / f"{key}.json"
+    return paths.grade_cache_dir / kind / key[:2] / f"{key}.json"
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -208,7 +231,8 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     Identical code for the same item shares one sandbox run within a pass and across passes (cache); every
     candidate still gets its own record. The parent process is the only writer.
     """
-    from agent_allocation.grading.code.public import code_sha256
+    from agent_allocation.grading.code.private import GRADER_VERSION
+    from agent_allocation.grading.code.public import CHECKER_VERSION, code_sha256
 
     profile_mod.configure(profile)
     env = profile_mod.environment_digest(profile)
@@ -222,7 +246,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
                     or paths.grade(c.candidate_id).exists()]
         if existing:
             raise GradeRefused(f"{len(existing)} candidates already have checks/grades; rerun with --resume")
-    for directory in (paths.grades_dir, grade_cache_dir(paths)):
+    for directory in (paths.grades_dir, paths.grade_cache_dir):
         directory.mkdir(parents=True, exist_ok=True)
         os.chmod(directory, PRIVATE_DIR_MODE)
 
@@ -239,13 +263,14 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
         sha = code_sha256(candidate.final_answer) if (is_code and candidate.final_answer) else None
         if is_code:
             existing = _read_record(paths.public_check(candidate.candidate_id), PublicCheckResult)
-            if existing is not None and existing.status in TERMINAL_CHECK:
+            if existing is not None and existing.status in TERMINAL_CHECK and existing.checker_version == CHECKER_VERSION:
                 counts["public_skipped"] += 1
             else:
                 key = public_cache_key(task, sha, env) if sha else "nocache:" + candidate.candidate_id
                 public_groups.setdefault(key, []).append((candidate, task))
         existing_grade = _read_record(paths.grade(candidate.candidate_id), GradeResult)
-        if existing_grade is not None and existing_grade.status in TERMINAL_GRADE:
+        if existing_grade is not None and existing_grade.status in TERMINAL_GRADE \
+                and (not is_code or existing_grade.grader_version == GRADER_VERSION):
             counts["grades_skipped"] += 1
         elif is_code:
             key = private_cache_key(private, sha, env) if sha else "nocache:" + candidate.candidate_id
@@ -273,8 +298,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             cached = _read_cached(paths, "public", key, PublicCheckResult) if cacheable(key) else None
             if cached is not None:
                 for candidate, _ in members:
-                    record = dataclasses.replace(cached, candidate_id=candidate.candidate_id)
-                    _atomic_write(paths.public_check(candidate.candidate_id), dump_record(record), private=False)
+                    write_public_check(paths, dataclasses.replace(cached, candidate_id=candidate.candidate_id))
                     counts["public_cached"] += 1
                 continue
             pool = pool or _pool(workers, profile)
@@ -285,7 +309,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             result = load_record(PublicCheckResult, future.result())
             for candidate, _ in public_groups[key]:
                 record = dataclasses.replace(result, candidate_id=candidate.candidate_id)
-                _atomic_write(paths.public_check(candidate.candidate_id), dump_record(record), private=False)
+                write_public_check(paths, record)
                 counts["public_written"] += 1
                 counts["infrastructure_errors"] += record.status is CheckStatus.INFRASTRUCTURE_ERROR
             if cacheable(key) and result.status is CheckStatus.OK:
@@ -296,8 +320,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             cached = _read_cached(paths, "private", key, GradeResult) if cacheable(key) else None
             if cached is not None:
                 for candidate, _ in members:
-                    record = dataclasses.replace(cached, candidate_id=candidate.candidate_id)
-                    _atomic_write(paths.grade(candidate.candidate_id), dump_record(record), private=True)
+                    write_grade(paths, dataclasses.replace(cached, candidate_id=candidate.candidate_id))
                     counts["grades_cached"] += 1
                 continue
             pool = pool or _pool(workers, profile)
@@ -315,7 +338,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             members = [c for c, _ in code_groups[ref]] if kind == "code" else [ref]
             for candidate in members:
                 record = dataclasses.replace(result, candidate_id=candidate.candidate_id)
-                _atomic_write(paths.grade(candidate.candidate_id), dump_record(record), private=True)
+                write_grade(paths, record)
                 counts["grades_written"] += 1
                 counts["evaluator_errors"] += record.status is GradeStatus.EVALUATOR_ERROR
                 counts["sandbox_denied"] += "sandbox_denied=" in (record.detail_code or "")
