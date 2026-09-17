@@ -365,6 +365,8 @@ class Aimd:
         self.pause_until = 0.0
         self.increases = 0
         self.decreases = 0
+        self.increases_at_run_start = 0
+        self.decreases_at_run_start = 0
         self.max_concurrency_reached = int(self.concurrency)
         self._tokens = 1.0
         self._token_time = clock()
@@ -372,6 +374,14 @@ class Aimd:
     @property
     def concurrency_limit(self) -> int:
         return max(1, int(self.concurrency))
+
+    def begin_run(self, now: float) -> None:
+        """Keep allowances, halvings and any Retry-After pause; the idle gap between runs is no stability evidence,
+        so the observation window restarts and must be binding again before the next increase."""
+        self.window_start = now
+        self.bound_in_window = False
+        self.increases_at_run_start = self.increases
+        self.decreases_at_run_start = self.decreases
 
     def tick(self, now: float) -> bool:
         if now - self.window_start < self.s.aimd_window_seconds:
@@ -532,11 +542,16 @@ class Dispatcher:
         self.clock: Callable[[], float] = time.monotonic
         self.rng = random.Random()
         self.owner = make_owner_id()
+        # AIMD allowances belong to the instance, not to one run(): a later run() on the same Dispatcher continues
+        # from the previous run's concurrency/rps (halvings, Retry-After pause) instead of re-ramping from the start.
+        self.aimd = Aimd(self.settings, self.clock)
         self._reset_run_state()
 
     def _reset_run_state(self) -> None:
-        self.aimd = Aimd(self.settings, self.clock)
+        self.aimd.begin_run(self.clock())
         self.meter = InFlightMeter(self.clock)
+        self.run_start_concurrency = self.aimd.concurrency_limit
+        self.run_start_rps = self.aimd.rps
         self.nodes: dict[str, _Node] = {}
         self.waves: list[_Wave] = []
         self.ready: dict[str, _Node] = {}
@@ -1268,6 +1283,7 @@ class Dispatcher:
             "concurrency": {"in_flight_now": self.meter.value, "peak_in_flight": self.meter.peak,
                             "mean_in_flight": overall, "mean_in_flight_active": active,
                             "configured_start": self.settings.concurrency_start,
+                            "run_start": self.run_start_concurrency, "rps_run_start": self.run_start_rps,
                             "configured_now": self.aimd.concurrency_limit,
                             "configured_max": self.settings.concurrency_max,
                             "rps_now": self.aimd.rps, "rps_max": self.settings.rps_max,
@@ -1310,7 +1326,7 @@ class Dispatcher:
             peak_in_flight=self.meter.peak,
             mean_in_flight=overall,
             mean_in_flight_active=active,
-            concurrency_start=self.settings.concurrency_start,
+            concurrency_start=self.run_start_concurrency,
             concurrency_final=self.aimd.concurrency_limit,
             concurrency_max_reached=self.aimd.max_concurrency_reached,
             rps_final=self.aimd.rps,
@@ -1320,8 +1336,11 @@ class Dispatcher:
             waves_completed=sum(1 for w in self.waves if w.remaining == 0),
             circuit_reason=self.circuit_reason,
             duplicate_notifications=self.duplicate_notifications,
-            extra={"events": list(self.events[-200:]), "aimd_increases": self.aimd.increases,
-                   "aimd_decreases": self.aimd.decreases, "ledger_overruns": len(self.ledger.overruns),
+            extra={"events": list(self.events[-200:]),
+                   "aimd_increases": self.aimd.increases - self.aimd.increases_at_run_start,
+                   "aimd_decreases": self.aimd.decreases - self.aimd.decreases_at_run_start,
+                   "rps_start": self.run_start_rps, "configured_concurrency_start": self.settings.concurrency_start,
+                   "configured_rps_start": self.settings.rps_start, "ledger_overruns": len(self.ledger.overruns),
                    "journal_batches": self.ledger.journal.batches_written,
                    "journal_max_batch": self.ledger.journal.max_batch},
         )

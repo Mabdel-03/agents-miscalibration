@@ -125,3 +125,29 @@ async def test_tiny_budget_never_exceeded_and_pilot_allowance_caps_pilot_plans(t
     pilot_summary = await pilot_env.dispatcher(FakeClient()).run(plan_of(pilot), allow_paid=False,
                                                                  max_usd=Decimal("135"))
     assert pilot_summary.ceiling_usd == Decimal("5") and pilot_summary.soft_ceiling_usd == Decimal("5")
+
+
+async def test_aimd_allowances_carry_over_between_runs_on_one_instance(tmp_path):
+    from agent_allocation.contracts import TransportStatus
+    from tests.unit.runtime.fakes import Behavior
+
+    env = Env.create(tmp_path, concurrency_start=8, requests_per_second_start=1000, aimd_window_seconds=3600)
+    first_graph = make_graph("first", bank=3, chain=1, team_slots=1, peer_sizes=(), deep=())
+    second_graph = make_graph("second", bank=3, chain=1, team_slots=1, peer_sizes=(), deep=())
+
+    def script(spec, attempt_id, index):
+        if index == 0:
+            return Behavior(status=TransportStatus.RATE_LIMITED, cost=None, retry_after=0.05)
+        return Behavior(delay=0.01)
+
+    client = FakeClient(script)
+    dispatcher = env.dispatcher(client)
+    first = await dispatcher.run(plan_of([first_graph]), allow_paid=False, max_usd=Decimal("5"))
+    assert first.stop_reason == "completed" and first.extra["aimd_decreases"] == 1
+    assert (first.concurrency_start, first.concurrency_final, first.rps_final) == (8, 4, 500)
+    second = await dispatcher.run(plan_of([second_graph]), allow_paid=False, max_usd=Decimal("5"))
+    assert second.stop_reason == "completed"
+    assert (second.concurrency_start, second.extra["rps_start"]) == (4, 500)    # no re-ramp from the start
+    assert second.extra["aimd_decreases"] == 0 and client.peak <= 4
+    fresh = env.dispatcher(FakeClient())
+    assert (fresh.aimd.concurrency_limit, fresh.aimd.rps) == (8, 1000)          # a new instance starts over
