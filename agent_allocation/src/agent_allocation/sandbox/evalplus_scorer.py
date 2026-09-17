@@ -28,7 +28,7 @@ import time
 from typing import Any
 from agent_allocation._vendor.learnagents_io import file_hash,content_hash,read_json
 from agent_allocation._vendor.evalplus_external import decode_evalplus_record
-from .sandbox import (CERTIFIED_PYTHON_PREFIX, PROCESS_EXITED, WALL_TIMEOUT, Sandbox, SandboxError,
+from .sandbox import (CERTIFIED_PYTHON_PREFIX, PROCESS_EXITED, SCRATCH_LIMIT, WALL_TIMEOUT, Sandbox, SandboxError,
                       SandboxLimits)
 
 REVISION='26d6d00bb1fd0fa37f39c99d5290da67891d1c5e'
@@ -280,6 +280,13 @@ def native_record(private):
     return row,dataset
 
 
+def deeply_immutable(value):
+    """True when a native input cannot be mutated in place (scalars, strings, bytes, complex, tuples thereof)."""
+    if value is None or type(value) in (bool,int,float,complex,str,bytes):return True
+    if type(value) in (tuple,frozenset):return all(deeply_immutable(item) for item in value)
+    return False
+
+
 def classify_sandbox_error(error):
     """Map a SandboxError to (failure_class, crash) or raise EvaluatorOutage for evaluator-side faults."""
     if getattr(error,'phase',None)!='candidate':
@@ -290,18 +297,31 @@ def classify_sandbox_error(error):
         return 'timeout',False
     if error.kind==PROCESS_EXITED and error.returncode==SIGXCPU_EXIT:
         return 'cpu_limit',False
+    if error.kind==SCRATCH_LIMIT:
+        return 'scratch_limit',False
     return 'candidate_crash',True
 
 
+THREAD_DENIED_MARKERS=("can't start new thread",)
+
+
+def sandbox_denial(message):
+    """Name the seccomp denial behind a candidate exception, if any: 'thread' or 'eperm' (fork/socket/...)."""
+    text=(message or {}).get('error') or ''
+    if any(marker in text for marker in THREAD_DENIED_MARKERS):return 'thread'
+    if '[Errno 1] Operation not permitted' in text:return 'eperm'
+    return None
+
+
 def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*1024**3,output_bytes=64*1024,
-                   stack_bytes=64*1024**2,suite_wall_seconds=60.0,row=None):
+                   stack_bytes=64*1024**2,suite_wall_seconds=60.0,row=None,scratch_bytes=64*1024**2,file_bytes=16*1024**2):
     if not isinstance(source,str):return Grade(False,0,'evalplus-'+REVISION[:12],'non_string_program')
     if isinstance(oracle,(str,Path)):oracle=read_json(oracle)
     if oracle['restricted_record_sha256']!=content_hash(private) or oracle['native_revision']!=REVISION:
         raise ValueError('Native reference oracle differs from the frozen task')
     if row is None:row,dataset=native_record(private)
     else:dataset='mbpp' if row['task_id'].startswith('Mbpp/') else 'humaneval'
-    native=native_functions();batches={};cpu=0.0;crash=False;stdout_truncated=False
+    native=native_functions();batches={};cpu=0.0;crash=False;stdout_truncated=False;denied=set()
     not_none=dataset=='mbpp' and row['entry_point'] in native['MBPP_OUTPUT_NOT_NONE_TASKS']
     for split in ['base','plus']:
         inputs=row[split+'_input'];batch=oracle['batches'][split]
@@ -310,14 +330,16 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
         limits=[max(4.0,4.0*t) for t in batch['reference_times']]
         if any(not math.isfinite(t) or t<=0 for t in limits):raise ValueError('Invalid native reference timing')
         wall=min(float(suite_wall_seconds),sum(limits))+3;deadline=time.monotonic()+wall
-        passed=[];atol=row['atol'];failure=None
+        passed=[];atol=row['atol'];failure=None;timeouts=0
         try:
             with Sandbox({},python_prefix=python_prefix or CERTIFIED_PYTHON_PREFIX,
                          limits=SandboxLimits(cpu_seconds=math.ceil(wall)+1,wall_seconds=wall,memory_bytes=memory_bytes,
-                                              output_bytes=output_bytes,stack_bytes=stack_bytes,
-                                              max_protocol_bytes=64*1024**2)) as sandbox:
+                                              output_bytes=output_bytes,stack_bytes=stack_bytes,file_bytes=file_bytes,
+                                              scratch_bytes=scratch_bytes,max_protocol_bytes=64*1024**2)) as sandbox:
                 loaded=load_program(sandbox,source);cpu+=loaded.get('_resource_usage',{}).get('sandbox_cpu_seconds',0)
-                if not loaded.get('ok'):failure='compile_or_initialization_failure'
+                if not loaded.get('ok'):
+                    failure='compile_or_initialization_failure'
+                    if sandbox_denial(loaded):denied.add(sandbox_denial(loaded))
                 else:
                     for index,inp in enumerate(inputs):
                         remaining=deadline-time.monotonic()
@@ -329,22 +351,31 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
                         if result.get('ok'):
                             try:
                                 actual=unpack_native(result['value']['output'],lazy_rows=True);expected=unpack_native(batch['expected'][index],lazy_rows=True)
-                                mutated_input=unpack_native(result['value']['post_input'])
+                                # Upstream compares against the post-call input (in-place mutation is visible to
+                                # special oracles). An input that cannot be mutated must come back unchanged, so the
+                                # host keeps its own copy instead of trusting a value reported by the sandbox.
+                                # (The argument list itself is never handed to the program: fn(*inp).)
+                                immutable=type(inp) in (list,tuple) and all(deeply_immutable(arg) for arg in inp)
+                                mutated_input=inp if immutable else unpack_native(result['value']['post_input'])
                                 if isinstance(actual,StringTupleRows) and isinstance(expected,StringTupleRows) and actual.outer!=expected.outer:
                                     correct=False
                                 else:correct,atol=native['compare_result'](dataset,row['entry_point'],mutated_input,actual,expected,atol)
                             except Exception:correct=False
-                        else:correct=False
+                        else:
+                            correct=False
+                            if sandbox_denial(result):denied.add(sandbox_denial(result))
+                            if 'Native candidate execution time exceeded' in (result.get('error') or ''):timeouts+=1
                         passed.append(bool(correct))
         except SandboxError as error:
             failure,split_crash=classify_sandbox_error(error)
             crash=crash or split_crash
         batches[split]={'passed':sum(passed),'attempted':len(passed),'total':len(inputs),
-                        'success':len(passed)==len(inputs) and all(passed),'failure_class':failure}
+                        'success':len(passed)==len(inputs) and all(passed),'failure_class':failure,'input_timeouts':timeouts,
+                        'wall_seconds':round(time.monotonic()-(deadline-wall),3),'batch_ceiling_seconds':round(wall,3)}
     success=all(value['success'] for value in batches.values())
     return Grade(success,float(success),SCORER_ID,None if success else 'native_tests_failed',
                  {'base':batches['base'],'plus':batches['plus'],'_resource_usage':{'sandbox_cpu_seconds':cpu},
-                  'candidate_crash':crash,'stdout_truncated':stdout_truncated,
+                  'candidate_crash':crash,'stdout_truncated':stdout_truncated,'sandbox_denied':sorted(denied),
                   'native_comparison_source_pins':PINS,
                   'runtime_profile':{'memory_bytes':memory_bytes,'output_bytes':output_bytes,'stack_bytes':stack_bytes,
                                      'suite_wall_seconds':suite_wall_seconds,'per_input':'max(4 s, 4 x reference time)'}})

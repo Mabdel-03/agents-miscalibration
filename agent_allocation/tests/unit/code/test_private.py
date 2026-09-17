@@ -37,4 +37,4 @@ def test_invalid_output_is_operational_failure_not_outage(small_inventory, run_p
     grade = grade_code(make_candidate(item.public.item_id, None, status=ParseStatus.MALFORMED), item.private,
                        run_paths)
     assert grade.status is GradeStatus.INVALID_OUTPUT
-    assert grade.semantic_correct is False and grade.operational_success is False
+    assert grade.semantic_correct is None and grade.operational_success is False

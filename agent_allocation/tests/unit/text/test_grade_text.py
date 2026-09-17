@@ -22,15 +22,19 @@ from agent_allocation.grading.text.normalize import boolean_identity, option_ide
 from .conftest import make_candidate
 
 
-def _spec(item_id: str, kind: EvalKind, gold: str | None, *, subtask: str | None = None) -> PrivateEvalSpec:
+def _spec(item_id: str, kind: EvalKind, gold: str | None, *, subtask: str | None = None,
+          allowed: tuple[str, ...] = ()) -> PrivateEvalSpec:
     benchmark = item_id.split("/")[0]
     return PrivateEvalSpec(item_id=item_id, benchmark=benchmark, source_revision="rev", eval_kind=kind,
-                           gold_answer=gold, private_record_ref=None, private_hash="private-hash", subtask=subtask)
+                           gold_answer=gold, private_record_ref=None, private_hash="private-hash", subtask=subtask,
+                           allowed_choices=allowed)
 
 
-MMLU = _spec("mmlu_pro/1", EvalKind.OPTION_EXACT, "C")
-BOOL = _spec("bbh_logic4/boolean_expressions/0", EvalKind.TASK_EXACT, "False", subtask="boolean_expressions")
-TEMPORAL = _spec("bbh_logic4/temporal_sequences/0", EvalKind.TASK_EXACT, "A", subtask="temporal_sequences")
+MMLU = _spec("mmlu_pro/1", EvalKind.OPTION_EXACT, "C", allowed=tuple("ABCD"))
+BOOL = _spec("bbh_logic4/boolean_expressions/0", EvalKind.TASK_EXACT, "False", subtask="boolean_expressions",
+             allowed=("True", "False"))
+TEMPORAL = _spec("bbh_logic4/temporal_sequences/0", EvalKind.TASK_EXACT, "A", subtask="temporal_sequences",
+                 allowed=tuple("ABCD"))
 MATH = _spec("math500/test/algebra/1.json", EvalKind.MATH_VERIFY, "\\frac{1}{2}")
 
 
@@ -61,27 +65,26 @@ def test_boolean_identity_is_explicit(final, expected):
 # ---------------------------------------------------------------------------------------------------------
 
 def test_option_grading_known_right_and_wrong():
-    right = grade_text(make_candidate("mmlu_pro/1", "(C)", OutputKind.OPTION), MMLU, allowed_choices="ABCD")
-    wrong = grade_text(make_candidate("mmlu_pro/1", "B", OutputKind.OPTION), MMLU, allowed_choices="ABCD")
+    right = grade_text(make_candidate("mmlu_pro/1", "(C)", OutputKind.OPTION), MMLU)
+    wrong = grade_text(make_candidate("mmlu_pro/1", "B", OutputKind.OPTION), MMLU)
     assert (right.status, right.semantic_correct, right.operational_success) == (GradeStatus.GRADED, True, True)
     assert (wrong.status, wrong.semantic_correct, wrong.operational_success) == (GradeStatus.GRADED, False, True)
     assert right.private_eval_hash == "private-hash" and right.grader_version.startswith("text-grade-v1")
 
 
 def test_illegal_option_is_invalid_output_not_a_wrong_answer():
-    result = grade_text(make_candidate("mmlu_pro/1", "E", OutputKind.OPTION), MMLU, allowed_choices="ABCD")
+    result = grade_text(make_candidate("mmlu_pro/1", "E", OutputKind.OPTION), MMLU)
     assert (result.status, result.semantic_correct, result.operational_success) == (
         GradeStatus.INVALID_OUTPUT, None, False)
     assert result.detail_code == "not_a_legal_option"
-    prose = grade_text(make_candidate("mmlu_pro/1", "The answer is C", OutputKind.OPTION), MMLU,
-                       allowed_choices="ABCD")
+    prose = grade_text(make_candidate("mmlu_pro/1", "The answer is C", OutputKind.OPTION), MMLU)
     assert prose.status is GradeStatus.INVALID_OUTPUT and prose.semantic_correct is None
 
 
 @pytest.mark.parametrize("status", [s for s in ParseStatus if s is not ParseStatus.VALID])
 def test_non_valid_parse_status_is_invalid_output(status):
     candidate = make_candidate("mmlu_pro/1", "C", OutputKind.OPTION, status=status)
-    result = grade_text(candidate, MMLU, allowed_choices="ABCD")
+    result = grade_text(candidate, MMLU)
     assert (result.status, result.semantic_correct, result.operational_success) == (
         GradeStatus.INVALID_OUTPUT, None, False)
     assert result.detail_code == f"parse_status:{status.value}"
@@ -92,8 +95,7 @@ def test_boolean_and_bbh_choice_grading():
     assert grade_text(make_candidate(BOOL.item_id, "True", OutputKind.BOOLEAN), BOOL).semantic_correct is False
     maybe = grade_text(make_candidate(BOOL.item_id, "Unknown", OutputKind.BOOLEAN), BOOL)
     assert maybe.status is GradeStatus.INVALID_OUTPUT and maybe.semantic_correct is None
-    choice = grade_text(make_candidate(TEMPORAL.item_id, "(A)", OutputKind.OPTION), TEMPORAL,
-                        allowed_choices=("A", "B", "C", "D"))
+    choice = grade_text(make_candidate(TEMPORAL.item_id, "(A)", OutputKind.OPTION), TEMPORAL)
     assert choice.status is GradeStatus.GRADED and choice.semantic_correct is True
 
 
@@ -108,7 +110,7 @@ def test_wiring_mismatches_raise():
 
 
 def test_grade_result_round_trips_through_the_codec():
-    result = grade_text(make_candidate("mmlu_pro/1", "C", OutputKind.OPTION), MMLU, allowed_choices="ABCD")
+    result = grade_text(make_candidate("mmlu_pro/1", "C", OutputKind.OPTION), MMLU)
     assert load_record(GradeResult, dump_record(result)) == result
 
 
@@ -116,7 +118,7 @@ def test_every_candidate_gets_exactly_one_grade_and_a_fixed_denominator():
     finals = ["C", "B", None, "(C)", "zzz"]
     statuses = [ParseStatus.VALID, ParseStatus.VALID, ParseStatus.MISSING, ParseStatus.VALID, ParseStatus.VALID]
     grades = [grade_text(make_candidate("mmlu_pro/1", final, OutputKind.OPTION, status=status, node=f"{i:064x}"),
-                         MMLU, allowed_choices="ABCD")
+                         MMLU)
               for i, (final, status) in enumerate(zip(finals, statuses))]
     assert len(grades) == len(finals) and len({g.candidate_id for g in grades}) == len(finals)
     delivered_correct = sum(g.semantic_correct is True and g.operational_success is True for g in grades)
@@ -161,7 +163,7 @@ def test_math_evaluator_timeout_stays_unknown(monkeypatch):
 
 def test_missing_gold_is_evaluator_error():
     result = grade_text(make_candidate("mmlu_pro/1", "C", OutputKind.OPTION), _spec("mmlu_pro/1",
-                        EvalKind.OPTION_EXACT, None), allowed_choices="ABCD")
+                        EvalKind.OPTION_EXACT, None, allowed=tuple("ABCD")))
     assert result.status is GradeStatus.EVALUATOR_ERROR and result.semantic_correct is None
 
 
@@ -169,15 +171,15 @@ def test_missing_gold_is_evaluator_error():
 # Reference round trips on the pinned inventories
 # ---------------------------------------------------------------------------------------------------------
 
-def _round_trip(inventory, forms):
+def _round_trip(inventory, forms, *, include_ineligible=False):
     failures = []
     for item in inventory:
-        if not item.eligible:
+        if not (item.eligible or include_ineligible):
             continue
         for form in forms:
             final = form(item.private.gold_answer)
             candidate = make_candidate(item.public.item_id, final, item.public.output_kind)
-            result = grade_text(candidate, item.private, allowed_choices=item.public.allowed_choices)
+            result = grade_text(candidate, item.private)
             if not (result.status is GradeStatus.GRADED and result.semantic_correct is True):
                 failures.append((item.public.item_id, final, result.status, result.detail_code))
     return failures
@@ -197,9 +199,71 @@ def test_every_math_gold_grades_correct_against_itself(math_inventory):
 
 def test_frozen_math_exclusions_match_the_recomputed_audit(math_inventory):
     from agent_allocation.benchmarks import math500
-    failing = {item_id for item_id, *_ in _round_trip([i for i in math_inventory], (lambda g: g,))}
-    assert failing == set() and set(math500.ENGINEERING_EXCLUSIONS) == failing
+    from agent_allocation.grading.text._limits import wall_clock_limit
+    failing = {item_id for item_id, *_ in _round_trip(math_inventory, (lambda g: g,), include_ineligible=True)}
+    math_equiv._math_verify()
+    for item in math_inventory:                          # every gold parses to a mathematical object, not a string
+        with wall_clock_limit(10.0):
+            parsed = math_equiv.parse_answer(item.private.gold_answer)
+        if not parsed or any(isinstance(value, str) for value in parsed):
+            failing.add(item.public.item_id)
+    assert set(math500.ENGINEERING_EXCLUSIONS) == failing == set()
+
+
+def test_malformed_math_final_is_invalid_output_not_wrong():
+    for final in ("\\frac{1}{", "???", "(1,2"):
+        result = grade_text(make_candidate(MATH.item_id, final, OutputKind.MATH), MATH)
+        assert (result.status, result.semantic_correct, result.operational_success, result.detail_code) == (
+            GradeStatus.INVALID_OUTPUT, None, False, "candidate_unparseable"), final
 
 
 def test_grade_module_exports_versions():
     assert "math-verify==0.9.0" in grade_module.grader_version()
+
+
+@pytest.mark.parametrize("benchmark", ["math500", "mmlu_pro", "bbh_logic4"])
+def test_fixture_golds_round_trip(benchmark):
+    from agent_allocation.benchmarks.text_manifest import fixture_inventory
+    assert _round_trip(fixture_inventory(benchmark), (lambda g: g,)) == []
+
+
+def test_specs_without_usable_legal_choices_are_unknown_not_guessed():
+    bare = _spec("mmlu_pro/1", EvalKind.OPTION_EXACT, "C")
+    result = grade_text(make_candidate("mmlu_pro/1", "C", OutputKind.OPTION), bare)
+    assert (result.status, result.semantic_correct, result.detail_code) == (
+        GradeStatus.EVALUATOR_ERROR, None, "allowed_choices_missing_or_malformed")
+    outside = _spec("mmlu_pro/1", EvalKind.OPTION_EXACT, "E", allowed=tuple("ABCD"))
+    assert grade_text(make_candidate("mmlu_pro/1", "E", OutputKind.OPTION), outside).status is GradeStatus.EVALUATOR_ERROR
+    implied = _spec(BOOL.item_id, EvalKind.TASK_EXACT, "False", subtask="boolean_expressions")
+    graded = grade_text(make_candidate(BOOL.item_id, "False", OutputKind.BOOLEAN), implied)
+    assert (graded.status, graded.semantic_correct) == (GradeStatus.GRADED, True)
+    conflicting = _spec(BOOL.item_id, EvalKind.TASK_EXACT, "False", subtask="boolean_expressions", allowed=("A", "B"))
+    result = grade_text(make_candidate(BOOL.item_id, "False", OutputKind.BOOLEAN), conflicting)
+    assert (result.status, result.detail_code) == (GradeStatus.EVALUATOR_ERROR, "allowed_choices_not_boolean")
+
+
+def test_private_specs_carry_the_public_legal_choices(math_inventory, mmlu_inventory, bbh_inventory):
+    for inventory in (math_inventory, mmlu_inventory, bbh_inventory):
+        for item in inventory:
+            assert item.private.allowed_choices == item.public.allowed_choices
+    assert all(item.private.allowed_choices == () for item in math_inventory)
+
+
+@pytest.mark.parametrize("gold, final, expected", [
+    ("5", "5.", True),                                  # one trailing period is format noise
+    ("4", "**4**", True),                               # one markdown bold pair
+    ("4", "Final answer: $4$", True),                   # delimited inline math is read as written
+    ("\\frac{1}{2}", "$\\frac12$", True),
+    ("\\$32,\\!348", "\\$32,348", True),                 # escaped dollar is not a math delimiter
+    ("2", "2\\sqrt{2}", False),                         # bare expressions are read whole, never as a fragment
+    ("1", "x^2 + 1", False),
+    ("5", "6 - 5i", False),
+    ("3", "1, 2, 3", False),
+    ("6-5i", "6 - 5i", True),
+    ("5", "The answer is 5", False),                    # undelimited prose is a format violation, not rescued
+])
+def test_math_parse_rule_fixtures(gold, final, expected):
+    spec = _spec("math500/fixture", EvalKind.MATH_VERIFY, gold)
+    result = grade_text(make_candidate("math500/fixture", final, OutputKind.MATH), spec)
+    assert result.status is GradeStatus.GRADED and result.semantic_correct is expected
+    assert "math-parse-v3" in result.grader_version

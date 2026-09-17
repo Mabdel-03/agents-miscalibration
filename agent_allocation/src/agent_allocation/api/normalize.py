@@ -8,9 +8,13 @@ Transport classification (``classify_http_status`` / ``classify_exception`` / ``
 * HTTP status: 429 -> RATE_LIMITED; 401/403 -> AUTH_FAILED; 402 -> PAYMENT_REQUIRED; 408 -> AMBIGUOUS_TIMEOUT;
   400/404/422 and every other 1xx/3xx/4xx -> BAD_REQUEST; 5xx -> UPSTREAM_ERROR; 2xx -> body inspection.
 * 2xx body, in this order: ``x-openrouter-cache-status: HIT`` -> CACHE_HIT (even if the body looks fine);
-  top-level ``provider`` present and != ``lock.provider_name`` or ``model`` present and != ``lock.model``
-  -> PROVIDER_MISMATCH; a non-null top-level ``error`` or a choice-level ``error``, or a body that is not a single
-  well-formed completion (non-JSON, no/several choices, no message) -> ERROR_ENVELOPE; otherwise OK.
+  a non-null top-level ``error``, a choice-level ``error``, ``finish_reason: "error"``, or a body that is not a single
+  well-formed completion (non-JSON, no/several choices, no message) -> ERROR_ENVELOPE (retryable in contract v2; an
+  error body's own ``provider``/``model`` strings are only noted in ``error_detail`` -- OpenRouter's documented error
+  bodies use slug forms, so they must not open the circuit); top-level ``provider`` present and
+  != ``lock.provider_name`` or ``model`` present and != ``lock.model`` -> PROVIDER_MISMATCH; otherwise OK.
+* 504 and 524 (gateway timeouts) are UPSTREAM_ERROR by rule but carry ``gateway_timeout_may_be_billed`` in
+  ``error_detail``: the upstream may have finished and charged the generation.
 
 Completion status (transport OK only; every value terminal): finish ``length`` or native ``MAX_TOKENS`` -> LENGTH;
 finish ``content_filter`` or a blocking native reason (SAFETY, RECITATION, BLOCKLIST, PROHIBITED_CONTENT, SPII, ...)
@@ -47,13 +51,16 @@ BLOCKING_NATIVE_FINISH_REASONS = frozenset({
 LENGTH_NATIVE_FINISH_REASONS = frozenset({"MAX_TOKENS", "FINISH_REASON_MAX_TOKENS"})
 STOP_NATIVE_FINISH_REASONS = frozenset({"STOP", "FINISH_REASON_STOP"})
 
+GATEWAY_TIMEOUT_STATUSES = frozenset({504, 524})
+
 _CONNECT_EXCEPTIONS: tuple[type[BaseException], ...] = (
     httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ProxyError, httpx.UnsupportedProtocol,
 )
 
 
 def classify_exception(exc: BaseException) -> TransportStatus:
-    """CONNECT_FAILED only when httpx guarantees no request bytes left the process; everything else is ambiguous."""
+    """CONNECT_FAILED only when httpx guarantees no request bytes left the process; everything else (including a raw
+    ``ssl.SSLError``/``OSError`` that httpcore does not wrap after the handshake) is ambiguous."""
     if isinstance(exc, _CONNECT_EXCEPTIONS):
         return TransportStatus.CONNECT_FAILED
     return TransportStatus.AMBIGUOUS_TIMEOUT
@@ -91,14 +98,14 @@ def parse_retry_after(value: str | None, *, now: datetime | None = None) -> floa
         return max(0.0, seconds) if math.isfinite(seconds) else None
     try:
         when = email.utils.parsedate_to_datetime(text)
-    except (TypeError, ValueError, IndexError):
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        reference = now or datetime.now(timezone.utc)
+        return max(0.0, (when - reference).total_seconds())
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
-    if when is None:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    reference = now or datetime.now(timezone.utc)
-    return max(0.0, (when - reference).total_seconds())
 
 
 def _count(value: Any) -> int | None:
@@ -270,21 +277,25 @@ def parse_completion(body: bytes, cache_status: str | None, lock: EndpointLock) 
         mismatches.append(f"provider {observed_provider!r} != locked {lock.provider_name!r}")
     if observed_model is not None and observed_model != lock.model:
         mismatches.append(f"model {observed_model!r} != locked {lock.model!r}")
+    identity_note = "" if not mismatches else " [identity in error body: " + "; ".join(mismatches) + "]"
     if (cache_status or "").strip().upper() == "HIT":
         status = TransportStatus.CACHE_HIT
         detail = "x-openrouter-cache-status HIT on an independent draw"
+    elif parsed_ok and data.get("error") is not None:
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = error_summary(data, prefix="error_envelope") + identity_note
+    elif parsed_ok and choice.get("error") is not None:
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = error_summary({"error": choice.get("error")}, prefix="error_envelope choice") + identity_note
+    elif shape_problem is not None:
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = shape_problem + identity_note
+    elif finish_reason is not None and finish_reason.strip().lower() == "error":
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = "error_envelope finish_reason=error without an error object" + identity_note
     elif mismatches:
         status = TransportStatus.PROVIDER_MISMATCH
         detail = "served outside the endpoint lock: " + "; ".join(mismatches)
-    elif parsed_ok and data.get("error") is not None:
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = error_summary(data, prefix="error_envelope")
-    elif parsed_ok and isinstance(choice, Mapping) and choice.get("error") is not None:
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = error_summary({"error": choice.get("error")}, prefix="error_envelope choice")
-    elif shape_problem is not None:
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = shape_problem
     return ParsedCompletion(
         transport_status=status,
         completion_status=(completion_status(visible_content, finish_reason, native_finish_reason,

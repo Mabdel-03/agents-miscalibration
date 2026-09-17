@@ -1,6 +1,7 @@
 """M1: deterministic report skeleton, fixed-population and sealed-before-join invariants, tri-state outcomes."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -12,12 +13,12 @@ from agent_allocation.analysis.load import load_run, resolve_config
 from agent_allocation.analysis.outcomes import outcome_table
 from agent_allocation.analysis.summary import accuracy_summary, stratum_weights
 from agent_allocation.contracts import (
-    BBH_SUBTASKS, GenerationKind, GradeResult, GradeStatus, SelectionResult, dump_record, load_record,
+    BBH_SUBTASKS, GenerationKind, GradeResult, GradeStatus, SelectionResult, canonical_json, dump_record, load_record,
 )
 from agent_allocation.reporting.audit import cmd_audit
 from agent_allocation.reporting.cli import analyze, cmd_analyze
 from tests.unit.analysis.conftest import REPLICATES, copy_run
-from tests.unit.analysis.synthrun import Grid, SynthSpec, build_run, reseal
+from tests.unit.analysis.synthrun import Grid, SynthSpec, build_run, reseal, selection_lines, write_selection_batches
 
 
 def _load(paths):
@@ -38,13 +39,14 @@ def test_analyze_writes_deterministic_reports_and_tables(built_run, tmp_path):
     assert {"RUN_REPORT.md", "RUN_REPORT.html", "COMPLETENESS.md", "COMPLETENESS.html"} <= set(reports_a)
     assert reports_a == reports_b
     assert _files(first.tables_dir) == _files(second.tables_dir)
+    assert _files(first.figures_dir) == _files(second.figures_dir) and _files(first.figures_dir)
     for name in ("policy_outcomes", "accuracy_summary", "completeness", "candidates"):
         assert (first.tables_dir / f"{name}.parquet").is_file() and (first.tables_dir / f"{name}.csv").is_file()
     text = (first.reports_dir / "RUN_REPORT.md").read_text()
     assert "BBH four-subtask zero-shot subset" in text
     assert "public-test selector" in text
     assert "not a FLOP-matched" in text
-    assert "INTERIM" not in text
+    assert "INTERIM" not in text and "Final: every planned checkpoint is known and costs are reconciled" in text
 
 
 def test_hand_computed_fixture_matches_exports(tmp_path):
@@ -68,7 +70,7 @@ def test_hand_computed_fixture_matches_exports(tmp_path):
     grade_path = paths.grade(target.candidate_ids[0])
     grade_path.write_text(json.dumps(dump_record(GradeResult(target.candidate_ids[0], GradeStatus.EVALUATOR_ERROR,
                                                              None, None, "grader-1", "h"))))
-    analysis = analyze(paths.run_dir, replicates=REPLICATES)
+    analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
     table = pd.read_csv(paths.tables_dir / "accuracy_summary.csv")
     selected = table[(table["name"] == "private_single/1") & (table["view"] == "current")]
     rows = selected[selected["level"] != "stratum"].set_index("stratum")
@@ -132,39 +134,59 @@ def test_audit_fails_when_a_checkpoint_drops_an_item(mutable_run):
 
 
 def test_tampered_selections_are_not_joined_and_fail_audit(mutable_run):
-    path = mutable_run.selections("main")
+    path = mutable_run.selections("main", 0)
     lines = path.read_text().splitlines()
     first = load_record(SelectionResult, json.loads(lines[0]))
     other = next(json.loads(ln)["selected_candidate_id"] for ln in lines
                  if json.loads(ln)["selected_candidate_id"] not in (None, first.selected_candidate_id))
-    lines[0] = json.dumps(dump_record(SelectionResult(first.policy_id, other, first.selector_name,
-                                                      first.selector_version, first.pool_hash, None, 0.0,
-                                                      first.status)), sort_keys=True)
+    lines[0] = canonical_json(dump_record(dataclasses.replace(first, selected_candidate_id=other)))
     path.write_text("\n".join(lines) + "\n")
     run = _load(mutable_run)
-    assert not run.seals["main"].valid
+    seal = run.seals["main"]
+    assert not seal.valid and 0 not in seal.valid_batches
     outcomes = outcome_table(run)
-    assert outcomes["y"].isna().all()
-    assert set(outcomes["delivered_state"]) == {"unsealed"}
+    batch0 = outcomes[outcomes["selection_batch"] == 0]
+    assert len(batch0) and batch0["y"].isna().all() and set(batch0["delivered_state"]) == {"unsealed"}
+    # batch 1's own seal still verifies, but its chain now points at an intact previous seal: it stays joinable
     assert cmd_audit(["--run-dir", str(mutable_run.run_dir), "--replicates", str(REPLICATES)]) == 1
     checks = pd.read_csv(mutable_run.tables_dir / "audit_checks.csv").set_index("check")
     assert checks.loc["sealed_before_join", "status"] == "fail"
 
 
 def test_missing_seal_blocks_join_and_resealing_restores_it(mutable_run):
-    mutable_run.selection_seal("main").unlink()
-    outcomes = outcome_table(_load(mutable_run))
-    assert outcomes["y"].isna().all()
+    mutable_run.selection_seal("main", 1).unlink()
+    run = _load(mutable_run)
+    outcomes = outcome_table(run)
+    assert outcomes.loc[outcomes["selection_batch"] == 1, "y"].isna().all()
+    assert outcomes.loc[outcomes["selection_batch"] == 0, "y"].notna().all()
     reseal(mutable_run, "main")
     assert outcome_table(_load(mutable_run))["y"].notna().all()
 
 
-def test_broken_selector_is_missing_not_zero(mutable_run):
-    path = mutable_run.selections("main")
-    lines = [ln for ln in path.read_text().splitlines() if "/peer/4/2/" not in json.loads(ln)["policy_id"]]
-    path.write_text("\n".join(lines) + "\n")
+def test_broken_seal_chain_is_not_joined(mutable_run):
+    seal_path = mutable_run.selection_seal("main", 1)
+    seal = json.loads(seal_path.read_text())
+    seal["previous_seal_sha256"] = "0" * 64
+    seal_path.write_text(json.dumps(seal))
+    run = _load(mutable_run)
+    assert run.seals["main"].valid_batches == frozenset({0})
+    assert "chain" in "; ".join(run.seals["main"].all_problems)
+
+
+def test_policy_resealed_in_a_later_batch_is_rejected(mutable_run):
+    lines = selection_lines(mutable_run, "main")
+    batch1 = mutable_run.selections("main", 1)
+    batch1.write_text(batch1.read_text() + canonical_json(lines[0]) + "\n")
     reseal(mutable_run, "main")
-    analysis = analyze(mutable_run.run_dir, replicates=REPLICATES)
+    run = _load(mutable_run)
+    assert 1 not in run.seals["main"].valid_batches
+    assert "already sealed in batch 0" in "; ".join(run.seals["main"].all_problems)
+
+
+def test_broken_selector_is_missing_not_zero(mutable_run):
+    kept = [r for r in selection_lines(mutable_run, "main") if "/peer/4/2/" not in r["policy_id"]]
+    write_selection_batches(mutable_run, "main", kept, n_batches=2)
+    analysis = analyze(mutable_run.run_dir, replicates=REPLICATES, figures=False)
     rows = analysis.outcomes[analysis.outcomes["name"] == "peer/4/2"]
     assert len(rows) and set(rows["delivered_state"]) == {"missing_selection"}
     assert rows["y"].isna().all()
@@ -182,11 +204,9 @@ def test_unrun_jobs_are_administrative_not_false(mutable_run):
         if spec.item_id == item:
             mutable_run.parsed(node_id).unlink()
             mutable_run.grade(node_id).unlink()
-    path = mutable_run.selections("main")
-    lines = [ln for ln in path.read_text().splitlines() if f"/{item}/" not in json.loads(ln)["policy_id"]]
-    path.write_text("\n".join(lines) + "\n")
-    reseal(mutable_run, "main")
-    analysis = analyze(mutable_run.run_dir, replicates=REPLICATES)
+    kept = [r for r in selection_lines(mutable_run, "main") if f"/{item}/" not in r["policy_id"]]
+    write_selection_batches(mutable_run, "main", kept, n_batches=2)
+    analysis = analyze(mutable_run.run_dir, replicates=REPLICATES, figures=False)
     rows = analysis.outcomes[analysis.outcomes["item_id"] == item]
     assert set(rows["delivered_state"]) == {"not_started"} and rows["y"].isna().all()
     comp = analysis.completeness

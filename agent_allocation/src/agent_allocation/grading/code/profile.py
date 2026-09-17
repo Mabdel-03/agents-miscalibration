@@ -8,6 +8,8 @@ Config keys consumed (``grading`` block): ``memory_mib_per_sandbox``, ``pids_lim
 ``pids_limit``: the seccomp policy denies fork/vfork/clone/clone3, so a candidate runs as exactly one process
 (stricter than 64). RLIMIT_NPROC is not used because on this kernel it counts the user's host-wide processes.
 ``cpu_quota_per_sandbox``: thread creation is denied, so one sandbox uses at most one CPU.
+Stack: ``RLIMIT_STACK`` equals the memory limit, the convention of upstream EvalPlus ``reliability_guard``
+(the interactive node inherits ``unlimited``, so an explicit value keeps behaviour deterministic).
 """
 from __future__ import annotations
 
@@ -23,8 +25,8 @@ from agent_allocation.sandbox.sandbox import CERTIFIED_PYTHON_PREFIX
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "balanced150.json"
 SANDBOX_DIR = Path(__file__).resolve().parents[2] / "sandbox"
-STACK_BYTES = 64 * 1024 ** 2
-FILE_BYTES = 16 * 1024 ** 2
+FILE_BYTES = 16 * 1024 ** 2       # RLIMIT_FSIZE per file (not a config knob; part of the environment digest)
+SCRATCH_BYTES = 64 * 1024 ** 2    # host-enforced /tmp + /work quota (not a config knob; part of the digest)
 
 
 @dataclass(frozen=True)
@@ -36,10 +38,15 @@ class GradingProfile:
     suite_wall_seconds: float
     cpu_quota: int
     workers_max: int
-    stack_bytes: int = STACK_BYTES
+    stack_bytes: int = 0                      # 0 -> equal to memory_bytes
     file_bytes: int = FILE_BYTES
+    scratch_bytes: int = SCRATCH_BYTES
     python_prefix: str = CERTIFIED_PYTHON_PREFIX
     cache_by_code_hash: bool = True
+
+    def __post_init__(self) -> None:
+        if self.stack_bytes <= 0:
+            object.__setattr__(self, "stack_bytes", self.memory_bytes)
 
 
 def profile_from_config(cfg: Mapping[str, Any]) -> GradingProfile:
@@ -100,10 +107,17 @@ def vendored_source_hashes() -> dict[str, str]:
     return out
 
 
+def environment_manifest(profile: GradingProfile | None = None) -> dict[str, Any]:
+    """What the environment digest hashes: interpreter identity, vendored sandbox/EvalPlus source hashes, limits.
+    Suitable for the lead's environment lock."""
+    profile = profile or active_profile()
+    return {"interpreter": _interpreter_identity(profile.python_prefix), "sources": vendored_source_hashes(),
+            "limits": {k: v for k, v in asdict(profile).items() if k not in {"workers_max", "cache_by_code_hash"}}}
+
+
 @lru_cache(maxsize=8)
 def _digest(profile: GradingProfile) -> str:
-    payload = {"interpreter": _interpreter_identity(profile.python_prefix), "sources": vendored_source_hashes(),
-               "limits": {k: v for k, v in asdict(profile).items() if k not in {"workers_max", "cache_by_code_hash"}}}
+    payload = environment_manifest(profile)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

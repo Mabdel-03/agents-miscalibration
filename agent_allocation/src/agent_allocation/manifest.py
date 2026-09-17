@@ -185,6 +185,34 @@ def write_once_json(path: Path, payload: Mapping[str, Any], *, semantic_keys_ign
     return digest
 
 
+def replacement_allowed(paths: RunPaths, draws: Mapping[str, PanelDraw],
+                        inventories: Mapping[str, Sequence[InventoryItem]]) -> tuple[bool, str]:
+    """A draft lock may be replaced before any spend, or when the only spend is canary calls whose items stay
+    development items with byte-identical public records (so no paid output ever touched a main-panel item)."""
+    if not paths.ledger_journal.exists():
+        return True, "no paid work yet"
+    partitions = set()
+    for line in paths.ledger_journal.read_text().splitlines():
+        if line.strip():
+            partitions.add(json.loads(line).get("partition_id"))
+    if partitions - {"canary", None}:
+        return False, f"paid work exists outside the canary: {sorted(p for p in partitions if p)}"
+    from agent_allocation.contracts import GenerationSpec, public_task_hash
+    dev = {i for d in draws.values() for i in d.dev_item_ids}
+    public = {item.public.item_id: item.public for inv in inventories.values() for item in inv}
+    jobs = paths.jobs("canary")
+    if jobs.exists():
+        for line in jobs.read_text().splitlines():
+            if not line.strip():
+                continue
+            spec = load_record(GenerationSpec, json.loads(line)["record"])
+            if spec.item_id not in dev:
+                return False, f"canary item {spec.item_id} would leave the development panel"
+            if public_task_hash(public[spec.item_id]) != spec.input_manifest_hash:
+                return False, f"canary item {spec.item_id} public record would change"
+    return True, "only canary spend on unchanged development items"
+
+
 def prepare_data(cfg: Mapping[str, Any], paths: RunPaths) -> dict[str, Any]:
     problems = validate_config(cfg)
     if problems:
@@ -192,30 +220,34 @@ def prepare_data(cfg: Mapping[str, Any], paths: RunPaths) -> dict[str, Any]:
     paths.ensure()
     inventories, draws = draw_panels(cfg, paths)
     waves = build_waves(cfg, draws)
+    allowed, reason = replacement_allowed(paths, draws, inventories)
+    manifest_texts: dict[str, tuple[Path, str, int | None]] = {}
     manifest_hashes: dict[str, str] = {}
     exclusions = {}
     for benchmark in BENCHMARKS:
         by_id = {item.public.item_id: item for item in inventories[benchmark]}
         chosen = [*draws[benchmark].dev_item_ids, *draws[benchmark].main_item_ids, *draws[benchmark].reserve_item_ids]
-        manifest_hashes[f"public/{benchmark}"] = write_jsonl(paths.public_manifest(benchmark),
-                                                             [by_id[i].public for i in chosen])
-        manifest_hashes[f"private/{benchmark}"] = write_jsonl(paths.private_manifest(benchmark),
-                                                              [by_id[i].private for i in chosen], mode=0o600)
+        for kind, records, target, mode in (("public", [by_id[i].public for i in chosen], paths.public_manifest(benchmark), None),
+                                            ("private", [by_id[i].private for i in chosen], paths.private_manifest(benchmark), 0o600)):
+            text = "".join(json.dumps(dump_record(r), sort_keys=True, ensure_ascii=False) + "\n" for r in records)
+            manifest_texts[f"{kind}/{benchmark}"] = (target, text, mode)
+            manifest_hashes[f"{kind}/{benchmark}"] = sha256(text.encode("utf-8")).hexdigest()
         exclusions[benchmark] = [{"item_id": i.public.item_id, "reason": i.exclusion_reason}
                                  for i in inventories[benchmark] if not i.eligible]
     panels_text = json.dumps({b: dump_record(d) for b, d in draws.items()}, indent=1, sort_keys=True)
-    write_atomic(paths.panels, panels_text)
-    manifest_hashes["panels"] = sha256(panels_text.encode()).hexdigest()
     waves_text = json.dumps([dump_record(w) for w in waves], indent=1, sort_keys=True)
-    write_atomic(paths.waves, waves_text)
+    manifest_hashes["panels"] = sha256(panels_text.encode()).hexdigest()
     manifest_hashes["waves"] = sha256(waves_text.encode()).hexdigest()
+    payload = {**dataset_lock_payload(cfg, inventories, draws, manifest_hashes), "config_sha256": config_hash(cfg)}
+    # Decide on the lock BEFORE touching any manifest, so a refusal leaves the previous state intact.
+    lock_digest = write_once_json(paths.dataset_lock, payload, allow_replace=allowed)
+    for target, text, mode in manifest_texts.values():
+        write_atomic(target, text, mode=mode)
+    write_atomic(paths.panels, panels_text)
+    write_atomic(paths.waves, waves_text)
     write_atomic(paths.exclusions, json.dumps(exclusions, indent=1, sort_keys=True))
-    lock_digest = write_once_json(paths.dataset_lock,
-                                  {**dataset_lock_payload(cfg, inventories, draws, manifest_hashes),
-                                   "config_sha256": config_hash(cfg)},
-                                  allow_replace=not paths.ledger_journal.exists())
     return {"dataset_lock_sha256": lock_digest, "waves": len(waves), "manifests": manifest_hashes,
-            "exclusions": {b: len(v) for b, v in exclusions.items()}}
+            "exclusions": {b: len(v) for b, v in exclusions.items()}, "replacement_rule": reason}
 
 
 def load_waves(paths: RunPaths) -> list[Wave]:

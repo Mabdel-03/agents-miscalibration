@@ -4,21 +4,30 @@ How a node runs (outbox ordering; every step durable before the next):
 
 1. *ready* - every parent is terminal (with or without a candidate); the node's wave is open.
 2. *admission* (coordinator, synchronous) - fair pick, render, conservative estimate, budget pre-check, rate token.
-3. ``ledger.reserve`` (journal fsync) -> ``store.try_lease`` -> ``Attempt(LEASED)`` -> ``ledger.mark_sent`` ->
-   ``Attempt(SENT)`` -> acquire the HTTP limiter -> ``client.generate`` -> release the limiter. The limiter covers
-   only the HTTP exchange: never rendering, journal waits, backoff sleeps, extraction or database work.
-4. ``write_raw_response`` (fsync, before any commit) -> settle / keep unresolved / release (CONNECT_FAILED only) ->
-   ``store.record_persisted_response`` -> ``extract`` (worker thread) -> ``store.record_result`` (parsed/ + DB) ->
-   children unlocked immediately.
+3. ``ledger.reserve`` (journal fsync) -> ``store.try_lease`` -> ``Attempt(LEASED)`` -> acquire the HTTP limiter ->
+   re-check stop/drain/circuit (withdraw with ``release_unsent`` if set) -> ``ledger.mark_sent`` (urgent fsync, so
+   ``SENT`` is durable before the request leaves) -> ``Attempt(SENT)`` -> ``client.generate`` -> release the limiter.
+   The limiter covers the HTTP exchange plus that one urgent fsync: never rendering, reservation waits, backoff
+   sleeps, extraction or database queues.
+4. ``write_raw_response`` (fsync, before any commit) -> settle (confirmed cost; CONNECT_FAILED settles 0) or keep
+   unresolved -> ``store.record_persisted_response`` -> ``extract`` (worker thread) -> ``store.record_result``
+   (parsed/ + DB) -> children unlocked immediately.
+
+Context limit (R03-1): when ``render`` raises ``prompts.render.ContextLimitEvent`` the node becomes terminal with
+outcome ``context_limit``: no reservation, no API call, no candidate; its children render the absent marker.
 
 Transport outcomes (``contracts``): OK -> candidate (every completion status is terminal, never redrawn);
 ``RETRYABLE_TRANSPORT`` -> new attempt after randomized backoff, at most ``max_transport_attempts`` attempts per node,
 then the node is terminal without a candidate and its children still run (absent-response marker);
-``CIRCUIT_BREAKING_TRANSPORT`` -> circuit opens: admissions stop, in-flight work drains, reason recorded; anything
-else (ERROR_ENVELOPE) -> terminal without candidate. AMBIGUOUS_TIMEOUT (and any exchange without a confirmed cost)
-keeps its full reservation as *unresolved* until generation metadata confirms the cost or the reconciliation horizon
-(``lease_stale_seconds``) passes, then ``charge_max``; admissions pause while unresolved exposure exceeds
+``CIRCUIT_BREAKING_TRANSPORT`` -> circuit opens: admissions stop, in-flight work drains, reason recorded; any other
+status -> terminal without candidate. AMBIGUOUS_TIMEOUT and ERROR_ENVELOPE (and any exchange without a confirmed
+cost) keep the full reservation as *unresolved* until generation metadata confirms the cost or the reconciliation
+horizon (``lease_stale_seconds``) passes, then ``charge_max``; admissions pause while unresolved exposure exceeds
 ``max_unresolved_spend_usd``.
+
+``RunSummary.stop_reason`` is one of ``STOP_REASONS`` (``completed``, ``budget_exhausted``, ``circuit_open``,
+``stop_sentinel``, ``drain``, ``control_sentinel_present``, ``stalled``); ``circuit_reason`` / ``stop_detail`` carry the
+specifics.
 
 Waves: waves open in plan order, at most ``max_active_waves`` incomplete at once, and a new one opens only when the
 ready work of open waves cannot fill the dispatcher. Pick order among ready nodes: older wave, then critical path
@@ -49,12 +58,9 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 import random
-import socket
 import time
-import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -67,7 +73,8 @@ from agent_allocation.contracts import (
 )
 from agent_allocation.paths import RunPaths
 from agent_allocation.runtime.estimate import rendered_chars, reservation_usd
-from agent_allocation.runtime.ledger import CollectionLedger, LedgerError, confirmed_cost
+from agent_allocation.runtime.ledger import CollectionLedger, confirmed_cost
+from agent_allocation.runtime.owner import make_owner_id, owner_is_dead
 from agent_allocation.storage.raw import read_raw_response, result_from_raw, sha256_file, write_raw_response
 from agent_allocation.storage.state import OUTCOME_SUCCEEDED, StateStore
 
@@ -77,12 +84,32 @@ ExtractFn = Callable[[GenerationResult, GenerationSpec], Candidate]
 STATUS_INTERVAL_SECONDS = 10.0
 BACKUP_INTERVAL_SECONDS = 120.0
 RECONCILE_POLL_SECONDS = 30.0
+METADATA_TIMEOUT_SECONDS = 30.0
+MAX_EVENTS = 10_000
 CONTROL_POLL_SECONDS = 1.0
 STOP_GRACE_SECONDS = 30.0
 WATCHDOG_MARGIN_SECONDS = 30.0
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 60.0
 MIN_RPS = 0.25
+NOT_SENT = "not_sent"
+WITHDRAWN_AFTER_SENT = "withdrawn_after_sent_journal"
+REQUEST_CONTRACT_ERROR = "request_contract_error"
+
+STOP_COMPLETED = "completed"
+STOP_BUDGET_EXHAUSTED = "budget_exhausted"
+STOP_CIRCUIT_OPEN = "circuit_open"
+STOP_SENTINEL = "stop_sentinel"
+STOP_DRAIN = "drain"
+STOP_CONTROL_SENTINEL_PRESENT = "control_sentinel_present"
+STOP_STALLED = "stalled"
+STOP_REASONS = frozenset({STOP_COMPLETED, STOP_BUDGET_EXHAUSTED, STOP_CIRCUIT_OPEN, STOP_SENTINEL, STOP_DRAIN,
+                          STOP_CONTROL_SENTINEL_PRESENT, STOP_STALLED})
+
+OUTCOME_CONTEXT_LIMIT = "context_limit"
+FORECAST_DEFAULT_RENDERED_CHARS = 6000       # until prompts have been rendered in this run
+FORECAST_MIN_SAMPLES = 20                    # settled OK attempts before the realized cost ratio replaces 1.0
+FORECAST_REFRESH_SECONDS = 30.0
 OPTIONAL_PARTITIONS = frozenset({Partition.REPLICATION.value})
 PILOT_PARTITIONS = frozenset({Partition.CANARY.value, Partition.PILOT.value})
 
@@ -134,6 +161,8 @@ class RunSummary:
     waves_completed: int
     circuit_reason: str | None
     duplicate_notifications: int
+    stop_detail: str | None = None
+    nodes_context_limited: int = 0
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -272,35 +301,6 @@ def client_is_offline_mock(client: Any) -> bool:
     return bool(leaves) and all(isinstance(t, httpx.MockTransport) for t in leaves)
 
 
-def _proc_start_time(pid: int) -> str | None:
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as handle:
-            fields = handle.read().rsplit(b")", 1)[1].split()
-        return fields[19].decode()
-    except (OSError, IndexError):
-        return None
-
-
-def make_owner_id() -> str:
-    pid = os.getpid()
-    return f"{socket.gethostname()}|{pid}|{_proc_start_time(pid)}|{uuid.uuid4().hex[:12]}"
-
-
-def owner_is_dead(owner: str | None) -> bool:
-    """Provably dead: recorded on this host and the pid is gone or belongs to a different process now."""
-    if not owner:
-        return True
-    try:
-        host, pid_s, start, _ = owner.split("|", 3)
-        pid = int(pid_s)
-    except ValueError:
-        return False
-    if host != socket.gethostname():
-        return False
-    current = _proc_start_time(pid)
-    return current is None or current != start
-
-
 class HttpLimiter:
     """Counting semaphore with a mutable limit; held only around ``client.generate``."""
 
@@ -341,6 +341,8 @@ class Aimd:
         self.pause_until = 0.0
         self.increases = 0
         self.decreases = 0
+        self.increases_at_run_start = 0
+        self.decreases_at_run_start = 0
         self.max_concurrency_reached = int(self.concurrency)
         self._tokens = 1.0
         self._token_time = clock()
@@ -348,6 +350,14 @@ class Aimd:
     @property
     def concurrency_limit(self) -> int:
         return max(1, int(self.concurrency))
+
+    def begin_run(self, now: float) -> None:
+        """Keep allowances, halvings and any Retry-After pause; the idle gap between runs is no stability evidence,
+        so the observation window restarts and must be binding again before the next increase."""
+        self.window_start = now
+        self.bound_in_window = False
+        self.increases_at_run_start = self.increases
+        self.decreases_at_run_start = self.decreases
 
     def tick(self, now: float) -> bool:
         if now - self.window_start < self.s.aimd_window_seconds:
@@ -469,6 +479,30 @@ class _Unresolved:
     deadline: float
 
 
+def _is_context_limit(exc: BaseException) -> bool:
+    try:
+        from agent_allocation.prompts.render import ContextLimitEvent
+    except ImportError:  # pragma: no cover - agent 03's module not present
+        return type(exc).__name__ == "ContextLimitEvent"
+    return isinstance(exc, ContextLimitEvent)
+
+
+def _request_validator() -> Callable[..., Any] | None:
+    try:
+        from agent_allocation.api.request import build_request_body
+    except ImportError:  # pragma: no cover - agent 01's module not present
+        return None
+    return build_request_body
+
+
+def _is_request_contract_error(exc: BaseException) -> bool:
+    try:
+        from agent_allocation.api.request import RequestContractError
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(exc, RequestContractError)
+
+
 def critical_class(spec: GenerationSpec) -> int:
     if spec.kind is GenerationKind.ROOT and spec.root_slot == 0:
         return 0
@@ -500,11 +534,23 @@ class Dispatcher:
         self.clock: Callable[[], float] = time.monotonic
         self.rng = random.Random()
         self.owner = make_owner_id()
+        # AIMD allowances belong to the instance, not to one run(): a later run() on the same Dispatcher continues
+        # from the previous run's concurrency/rps (halvings, Retry-After pause) instead of re-ramping from the start.
+        self.aimd = Aimd(self.settings, self.clock)
+        # Forecast inputs are learned per instance too (mean rendered size, realized cost / reservation).
+        self.rendered_chars_total = 0
+        self.rendered_count = 0
+        reserved, cost, samples = store.ok_cost_history()          # seeded from earlier processes' settled calls
+        self.ok_reserved_total = Decimal(repr(reserved))
+        self.ok_cost_total = Decimal(repr(cost))
+        self.ok_cost_samples = samples
         self._reset_run_state()
 
     def _reset_run_state(self) -> None:
-        self.aimd = Aimd(self.settings, self.clock)
+        self.aimd.begin_run(self.clock())
         self.meter = InFlightMeter(self.clock)
+        self.run_start_concurrency = self.aimd.concurrency_limit
+        self.run_start_rps = self.aimd.rps
         self.nodes: dict[str, _Node] = {}
         self.waves: list[_Wave] = []
         self.ready: dict[str, _Node] = {}
@@ -512,17 +558,24 @@ class Dispatcher:
         self.bucket_served: dict[tuple[str, str], int] = defaultdict(int)
         self.unresolved: dict[str, _Unresolved] = {}
         self.tasks: set[asyncio.Task] = set()
-        self.pre_send = 0
+        self.admit_blocker = "empty"
+        self.first_attempts_blocked_at: Decimal | None = None   # soft ceiling reached: only retries may use reserve
+        self.reserve_admissions = 0
+        self.wave_forecasts: dict[int, tuple[float, Decimal]] = {}
+        self.pre_send = 0                          # admitted, not yet holding the HTTP limiter
+        self.pending_reservation = Decimal("0")    # admitted, reservation not yet journaled
         self.requests_sent = 0
         self.rate_limited = 0
         self.retries_scheduled = 0
         self.duplicate_notifications = 0
+        self.context_limited = 0
         self.attempt_statuses: dict[str, int] = defaultdict(int)
         self.circuit_reason: str | None = None
         self.stop_mode: str | None = None          # "stop" | "drain"
         self.budget_blocked_at: Decimal | None = None
         self.stop_reason: str | None = None
-        self.events: list[tuple[float, str, str]] = []
+        self.stop_detail: str | None = None
+        self.events: deque[tuple[float, str, str]] = deque(maxlen=MAX_EVENTS)
         self.soft_ceiling = Decimal("0")
         self.run_ceiling = Decimal("0")
         self._seq = 0
@@ -533,40 +586,50 @@ class Dispatcher:
         started = self.clock()
         if not allow_paid and not client_is_offline_mock(self.client):
             raise DispatchRefused("allow_paid=False but the client transport is not an httpx.MockTransport")
-        self._configure_budget(plan, Decimal(str(max_usd)))
-        settled_before = self.ledger.snapshot().settled
-        self.store.owner = self.owner
-        self._build(plan)
-        self._loop = asyncio.get_running_loop()
-        self.http = HttpLimiter(self.aimd.concurrency_limit)
-        self.hard_stop: asyncio.Future = self._loop.create_future()
-        self.wake = asyncio.Event()
-        self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
-        if self.paths.stop_sentinel.exists() or self.paths.drain_sentinel.exists():
-            self.stop_reason = "control_sentinel_present"
-            self.cpu.shutdown(wait=False)
-            return self._summary(started, settled_before)
-        self._claim_dispatcher()
-        background: list[asyncio.Task] = []
         try:
-            await self._startup_reconcile()
-            background = [self._loop.create_task(coro) for coro in (
-                self._status_loop(), self._backup_loop(), self._heartbeat_loop(), self._reconcile_loop())]
-            await self._main_loop()
-            await self._drain()
+            self._configure_budget(plan, Decimal(str(max_usd)))
+            settled_before = self.ledger.snapshot().settled
+            self._build(plan)
+            self._loop = asyncio.get_running_loop()
+            self.http = HttpLimiter(self.aimd.concurrency_limit)
+            self.hard_stop: asyncio.Future = self._loop.create_future()
+            self.wake = asyncio.Event()
+            if self.paths.stop_sentinel.exists() or self.paths.drain_sentinel.exists():
+                self._finish(STOP_CONTROL_SENTINEL_PRESENT, "STOP" if self.paths.stop_sentinel.exists() else "DRAIN")
+                return self._summary(started, settled_before)
+            self._claim_dispatcher()
+            self.store.owner = self.owner
+            self.cpu = ThreadPoolExecutor(max_workers=2, thread_name_prefix="extract")
+            background: list[asyncio.Task] = []
+            try:
+                await self._startup_reconcile()
+                background = [self._loop.create_task(coro) for coro in (
+                    self._status_loop(), self._backup_loop(), self._heartbeat_loop(), self._reconcile_loop())]
+                await self._main_loop()
+                await self._drain()
+            finally:
+                for task in background:
+                    task.cancel()
+                for task in background:
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
+                live = self._live_tasks()
+                if live:
+                    # run() itself was cancelled or failed: stop our attempts before touching their leases.
+                    if not self.hard_stop.done():
+                        self.hard_stop.set_result(True)
+                    for task in live:
+                        task.cancel()
+                    await asyncio.wait(live, timeout=10.0)
+                self.cpu.shutdown(wait=True)
+                await self._final_persist()
+                if self.store.get_meta("dispatcher_owner") == self.owner:
+                    self.store.delete_meta("dispatcher_owner")
+            return self._summary(started, settled_before)
         finally:
-            for task in background:
-                task.cancel()
-            for task in background:
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            self.cpu.shutdown(wait=True)
-            await self._final_persist()
-            if self.store.get_meta("dispatcher_owner") == self.owner:
-                self.store.delete_meta("dispatcher_owner")
-        return self._summary(started, settled_before)
+            self.ledger.set_run_cap(None)
 
     # ---- setup ----------------------------------------------------------------------------------------------
     def _configure_budget(self, plan: AdmissionPlan, max_usd: Decimal) -> None:
@@ -577,13 +640,14 @@ class Dispatcher:
             raise DispatchRefused("ledger max_unresolved_usd differs from budget.max_unresolved_spend_usd")
         if self.ledger.study_cap > b.credit_ceiling_usd:
             raise DispatchRefused("ledger ceiling exceeds budget.credit_ceiling_usd")
-        ceiling = min(max_usd, b.credit_ceiling_usd)
-        soft = min(b.soft_admission_ceiling_usd, ceiling)
+        run_cap = min(max_usd, b.credit_ceiling_usd)
+        soft = min(b.soft_admission_ceiling_usd, run_cap)
         partitions = {g.partition_id for wave in plan.waves for g in wave}
         if partitions and partitions <= PILOT_PARTITIONS:
-            ceiling = min(ceiling, b.pilot_allowance_usd)
+            run_cap = min(run_cap, b.pilot_allowance_usd)
             soft = min(soft, b.pilot_allowance_usd)
-        self.ledger.set_active_ceiling(min(self.ledger.snapshot().ceiling, ceiling))
+        # Per-run cap, not a permanent change: a later run() with a larger --max-usd is not held at this one's cap.
+        self.ledger.set_run_cap(run_cap)
         self.run_ceiling = self.ledger.snapshot().ceiling
         self.soft_ceiling = min(soft, self.run_ceiling)
 
@@ -676,12 +740,37 @@ class Dispatcher:
         else:
             await self.ledger.charge_max(attempt_id)
 
+    async def _finish_from_raw(self, node: _Node, attempt_id: str) -> bool:
+        """A dead owner's attempt whose OK response reached disk is finished from the artifact, never re-sent
+        (covers a restart that skipped ``StateStore.recover``)."""
+        raw_path = self.paths.raw_response(attempt_id)
+        if node.terminal or not raw_path.exists():
+            return False
+        relative = self.paths.relative(raw_path)
+        result = result_from_raw(read_raw_response(self.paths, relative), relative_path=relative,
+                                 sha256=sha256_file(raw_path))
+        if result is None or result.node_id != node.node_id or result.transport_status is not TransportStatus.OK:
+            return False
+        cost = confirmed_cost(result)
+        if self.ledger.state_of(attempt_id) in ("reserved", "sent", "unresolved"):
+            await (self.ledger.settle(attempt_id, cost) if cost is not None else self.ledger.charge_max(attempt_id))
+        prior = {a.attempt_id: a for a in self.store.attempts_for(node.node_id)}.get(attempt_id)
+        if prior is None:
+            prior = Attempt(attempt_id, node.node_id, int(attempt_id.rsplit(":", 1)[1]), AttemptState.SENT,
+                            Decimal("0"), _utc(), transport_status=result.transport_status)
+        await self._finish_ok(node, prior, result)
+        return node.terminal
+
     async def _maybe_take_over(self, node: _Node, owner: str | None, attempt_id: str | None,
                                heartbeat_at: float | None) -> bool:
         stale = heartbeat_at is None or time.time() - heartbeat_at >= self.settings.lease_stale_seconds
         if not (stale or owner_is_dead(owner)):
             node.foreign_lease = owner or "unknown"
             return False
+        if attempt_id is not None and await self._finish_from_raw(node, attempt_id):
+            node.foreign_lease = None
+            self._event("lease_finished_from_raw", node.node_id)
+            return True
         if attempt_id is not None:
             if self.ledger.state_of(attempt_id) in ("reserved", "sent", "unresolved"):
                 await self.ledger.charge_max(attempt_id)
@@ -712,13 +801,13 @@ class Dispatcher:
                 self.http.set_limit(self.aimd.concurrency_limit)
                 self._event("aimd_increase", f"{self.aimd.concurrency_limit}/{self.aimd.rps:.2f}")
             if self.stop_mode is not None:
-                self.stop_reason = "stopped" if self.stop_mode == "stop" else "drained"
+                self._finish(STOP_SENTINEL if self.stop_mode == "stop" else STOP_DRAIN, None)
                 return
             if self.circuit_reason is not None:
-                self.stop_reason = f"circuit_open:{self.circuit_reason}"
+                self._finish(STOP_CIRCUIT_OPEN, self.circuit_reason)
                 return
             if all(w.remaining == 0 for w in self.waves):
-                self.stop_reason = "complete"
+                self._finish(STOP_COMPLETED, None)
                 return
             self._maybe_open_waves()
             self._admit(now)
@@ -726,7 +815,7 @@ class Dispatcher:
             if idle:
                 verdict = self._idle_verdict(now)
                 if verdict is not None:
-                    self.stop_reason = verdict
+                    self._finish(*verdict)
                     return
             timeout = self._next_wakeup(now)
             self.wake.clear()
@@ -735,7 +824,13 @@ class Dispatcher:
             except asyncio.TimeoutError:
                 pass
 
-    def _idle_verdict(self, now: float) -> str | None:
+    def _finish(self, reason: str, detail: str | None) -> None:
+        if reason not in STOP_REASONS:
+            raise AssertionError(f"undeclared stop reason {reason!r}")
+        self.stop_reason = reason
+        self.stop_detail = detail
+
+    def _idle_verdict(self, now: float) -> tuple[str, str | None] | None:
         """Nothing is running. Return a stop reason if nothing can ever run again without outside help."""
         if self.aimd.pause_until > now or any(n.not_before > now for n in self.ready.values()):
             return None                                   # backoff / Retry-After: time will unblock it
@@ -743,23 +838,37 @@ class Dispatcher:
             return None                                   # the heartbeat loop re-checks foreign leases
         if self.unresolved and self.ledger.unresolved_exceeded:
             return None                                   # the reconcile loop will settle or charge them
-        if self.budget_blocked_at is not None and self.ready:
-            return "budget_exhausted"
+        if (self.budget_blocked_at is not None or self.first_attempts_blocked_at is not None) and self.ready:
+            if any(u.generation_id for u in self.unresolved.values()):
+                return None                               # a confirmed bill below the reservation may free budget
+            if self.budget_blocked_at is None and any(n.sends > 0 for n in self.ready.values()):
+                return None                               # retries can still use the reserve
+            return STOP_BUDGET_EXHAUSTED, ("hard_ceiling" if self.budget_blocked_at is not None
+                                           else "soft_admission_ceiling")
         if self.ready:
             return None                                   # admissible next iteration (rate token)
         unopened = [w for w in self.waves if not w.opened and w.remaining]
         if unopened:
             if self.ledger.snapshot().exposure >= self.soft_ceiling:
-                return "budget_exhausted"
+                return STOP_BUDGET_EXHAUSTED, "soft_admission_ceiling"
+            nxt = next((w for w in self.waves if not w.opened), None)
+            if nxt is not None and any(w.opened for w in self.waves) and not (
+                    nxt.optional and self.budget.optional_requires_core_completion and not self._core_complete()):
+                if self.ledger.snapshot().exposure + self._wave_forecast(nxt) > self.soft_ceiling:
+                    return STOP_BUDGET_EXHAUSTED, f"wave_forecast_exceeds_soft_ceiling:{nxt.index}"
             if all(w.optional for w in unopened) and not self._core_complete():
-                return "stalled:core_incomplete"
+                return STOP_STALLED, "optional_block_waits_for_incomplete_core"
             return None
-        return "stalled"
+        parked = sum(1 for n in self.nodes.values() if n.status == "parked" and not n.terminal)
+        return STOP_STALLED, f"no_runnable_nodes:parked={parked}"
 
     def _next_wakeup(self, now: float) -> float:
+        # Completions, settlements and unlocks set ``wake``; timers only cover what time alone unblocks, so the
+        # coordinator never spins while capacity is exhausted.
         candidates = [CONTROL_POLL_SECONDS]
         if self.ready:
-            candidates.append(self.aimd.seconds_until_token(now))
+            if self.admit_blocker == "token":
+                candidates.append(self.aimd.seconds_until_token(now))
             future = [n.not_before - now for n in self.ready.values() if n.not_before > now]
             if future:
                 candidates.append(min(future))
@@ -792,12 +901,40 @@ class Dispatcher:
                 continue
             if wave.optional and self.budget.optional_requires_core_completion and not self._core_complete():
                 return
+            forecast = self._wave_forecast(wave)
+            first_of_run = not any(w.opened for w in self.waves)
+            if not first_of_run and snap.exposure + self.pending_reservation + forecast > self.soft_ceiling:
+                # Reduce future waves rather than abandon items halfway. The run's first wave is exempt: the lead's
+                # planner admitted this plan, and every reservation is still held to the ceilings.
+                self._event_once(f"wave_forecast_exceeds_soft_ceiling:{wave.index}")
+                return
             wave.opened = True
-            self._event("wave_opened", str(wave.index))
+            self._event("wave_opened", f"{wave.index}:forecast={forecast:.6f}")
             for node in wave.nodes:
                 if not node.terminal and node.waiting_parents == 0 and node.status == "blocked":
                     self._make_ready(node)
             return
+
+    def _cost_ratio(self) -> Decimal:
+        """Realized cost / reservation over settled OK attempts (1 until enough samples; never above 1)."""
+        if self.ok_cost_samples < FORECAST_MIN_SAMPLES or self.ok_reserved_total <= 0:
+            return Decimal("1")
+        return min(Decimal("1"), self.ok_cost_total / self.ok_reserved_total)
+
+    def _wave_forecast(self, wave: _Wave) -> Decimal:
+        """Expected cost of a wave's unfinished nodes: reservation at the mean rendered size x realized ratio."""
+        now = self.clock()
+        cached = self.wave_forecasts.get(wave.index)
+        if cached is not None and now - cached[0] < FORECAST_REFRESH_SECONDS:
+            return cached[1]
+        chars = (self.rendered_chars_total // self.rendered_count) if self.rendered_count else \
+            FORECAST_DEFAULT_RENDERED_CHARS
+        multiplier = self.budget.reservation_multiplier
+        total = sum((reservation_usd(n.spec, chars, self.lock, multiplier=multiplier)
+                     for n in wave.nodes if not n.terminal), Decimal("0"))
+        forecast = total * self._cost_ratio()
+        self.wave_forecasts[wave.index] = (now, forecast)
+        return forecast
 
     def _capacity(self) -> int:
         limit = self.aimd.concurrency_limit
@@ -813,12 +950,14 @@ class Dispatcher:
         node.status = "ready"
         self.ready[node.node_id] = node
 
-    def _pick(self, now: float) -> _Node | None:
+    def _pick(self, now: float, *, retries_only: bool = False) -> _Node | None:
         best: _Node | None = None
         best_key: tuple | None = None
         cap = self.settings.max_calls_per_item_in_flight
         for node in self.ready.values():
             if node.not_before > now or node.foreign_lease or self.item_active[node.item_key] >= cap:
+                continue
+            if retries_only and node.sends == 0:
                 continue
             key = (node.wave, node.crit, self.bucket_served[node.bucket], node.seq)
             if best_key is None or key < best_key:
@@ -826,28 +965,35 @@ class Dispatcher:
         return best
 
     def _admit(self, now: float) -> None:
-        if self.stop_mode or self.circuit_reason or not self.ready:
-            return
+        self.admit_blocker = self._admit_inner(now)
+
+    def _admit_inner(self, now: float) -> str:
+        if self.stop_mode or self.circuit_reason:
+            return "closed"
+        if not self.ready:
+            return "empty"
         if self.aimd.pause_until > now:
-            return
+            return "retry_after"
         if self.ledger.unresolved_exceeded:
             self._event_once("paused_unresolved_exposure")
-            return
+            return "unresolved_exposure"
         snap = self.ledger.snapshot()
         if self.budget_blocked_at is not None:
             if snap.exposure >= self.budget_blocked_at:
-                return
+                return "budget"
             self.budget_blocked_at = None
+        if self.first_attempts_blocked_at is not None and snap.exposure < self.first_attempts_blocked_at:
+            self.first_attempts_blocked_at = None
         while self.ready:
             if self._capacity() <= 0:
                 self.aimd.bound_in_window = True
-                return
+                return "capacity"
             if not self.aimd.token_available(now):
                 self.aimd.bound_in_window = True
-                return
-            node = self._pick(now)
+                return "token"
+            node = self._pick(now, retries_only=self.first_attempts_blocked_at is not None)
             if node is None:
-                return
+                return "budget" if self.first_attempts_blocked_at is not None else "none_eligible"
             try:
                 parents = [(self.nodes[p].spec, self.store.candidate(p) if self.nodes[p].succeeded else None)
                            for p in node.parents]
@@ -855,13 +1001,39 @@ class Dispatcher:
                 amount = reservation_usd(node.spec, rendered_chars(messages), self.lock,
                                          multiplier=self.budget.reservation_multiplier)
             except Exception as exc:  # noqa: BLE001 - a render/estimate defect must stop spending, loudly
+                if _is_context_limit(exc):
+                    # R03-1: terminal without an API call, a reservation or a candidate (the lead's render wrapper
+                    # logs the event); children render the absent-response marker.
+                    self.store.mark_terminal_without_candidate(node.node_id, OUTCOME_CONTEXT_LIMIT,
+                                                               f"context_limit:{exc}"[:500])
+                    self.context_limited += 1
+                    self._event("context_limit", node.node_id)
+                    self._on_terminal(node, succeeded=False)
+                    continue
                 self._open_circuit(f"render_failed:{type(exc).__name__}:{exc}")
-                return
+                return "closed"
+            validate = _request_validator()
+            if validate is not None:
+                try:
+                    validate(node.spec, messages, self.lock, self.sampling)
+                except Exception as exc:  # noqa: BLE001 - RequestContractError or any body defect: nothing reserved
+                    self._open_circuit(f"request_contract_error:{type(exc).__name__}:{exc}"[:500])
+                    return "closed"
+            self.rendered_chars_total += rendered_chars(messages)
+            self.rendered_count += 1
             first_attempt = node.sends == 0
-            if not self.ledger.fits(amount, ceiling_usd=self.soft_ceiling if first_attempt else None):
+            if first_attempt and not self.ledger.fits(amount + self.pending_reservation, ceiling_usd=self.soft_ceiling):
+                # The soft admission ceiling binds new work; the reserve above it is only for retries of admitted work.
+                self.first_attempts_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                self._event_once(f"soft_ceiling_blocks_first_attempts:{self.ledger.last_refusal or 'ceiling'}")
+                continue
+            if not self.ledger.fits(amount + self.pending_reservation):
                 self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
                 self._event_once(f"budget_blocked:{self.ledger.last_refusal or 'ceiling'}")
-                return
+                return "budget"
+            if not first_attempt and snap.exposure + self.pending_reservation + amount > self.soft_ceiling:
+                self.reserve_admissions += 1
+                self._event("reserve_used_by_retry", node.node_id)
             self.aimd.take_token()
             self.bucket_served[node.bucket] += 1
             del self.ready[node.node_id]
@@ -869,25 +1041,31 @@ class Dispatcher:
             node.attempts_used += 1
             self.item_active[node.item_key] += 1
             self.pre_send += 1
+            self.pending_reservation += amount
             task = self._loop.create_task(self._attempt(node, node.attempts_used, messages, amount))
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
             snap = self.ledger.snapshot()
+        return "empty"
 
     # ---- one attempt ----------------------------------------------------------------------------------------
     async def _attempt(self, node: _Node, attempt_no: int, messages: list[dict[str, str]], amount: Decimal) -> None:
         spec = node.spec
         attempt_id = f"{node.node_id}:{attempt_no}"
         attempt = Attempt(attempt_id, node.node_id, attempt_no, AttemptState.PENDING, amount, _utc())
-        in_pre_send = True
+        phase = {"pre_send": True}
         try:
-            reserved = await self.ledger.reserve(attempt_id=attempt_id, node_id=node.node_id,
-                                                 partition_id=spec.partition_id, amount_usd=amount)
+            try:
+                reserved = await self.ledger.reserve(attempt_id=attempt_id, node_id=node.node_id,
+                                                     partition_id=spec.partition_id, amount_usd=amount)
+            finally:
+                self.pending_reservation -= amount
             if not reserved:
                 node.attempts_used -= 1          # a refused reservation is not journaled: the id is still free
-                snap = self.ledger.snapshot()
-                self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
-                self._requeue(node)
+                if self.ledger.last_refusal == "ceiling":
+                    snap = self.ledger.snapshot()
+                    self.budget_blocked_at = snap.exposure if snap.exposure > 0 else Decimal("0.000000001")
+                self._requeue(node)              # unresolved_exposure: the pause lifts when reconciliation runs
                 return
             if not self.store.try_lease(node.node_id, attempt_id, owner=self.owner):
                 await self.ledger.release_unsent(attempt_id)
@@ -902,19 +1080,22 @@ class Dispatcher:
                 return
             attempt = replace(attempt, state=AttemptState.LEASED)
             self.store.record_attempt(attempt)
-            if self.stop_mode is not None or self.circuit_reason is not None:
+            outcome, error, sent_at, attempt = await self._exchange(node, messages, attempt, phase)
+            if error == NOT_SENT:
+                # Stop/drain/circuit arrived while this attempt waited for the HTTP limiter: it never left.
                 await self.ledger.release_unsent(attempt_id)
-                self.store.record_attempt(replace(attempt, state=AttemptState.TERMINAL, completed_at=_utc(),
-                                                  error_detail="not_sent:stopping"))
+                self.store.record_unsent_attempt(attempt, detail="not_sent:stopping")
                 self._requeue(node, park=True)
                 return
-            await self.ledger.mark_sent(attempt_id)
-            node.sends += 1
-            attempt = replace(attempt, state=AttemptState.SENT, sent_at=_utc())
-            self.store.record_attempt(attempt)
-            self.pre_send -= 1
-            in_pre_send = False
-            outcome, error, sent_at = await self._exchange(spec, messages, attempt_id)
+            if error is not None and (error == WITHDRAWN_AFTER_SENT or error.startswith(REQUEST_CONTRACT_ERROR)):
+                # SENT is already journaled, so the reservation is never released (QA s15.08); the request provably
+                # did not leave the process, so it settles at 0 and the attempt is recorded as unsent.
+                await self.ledger.settle(attempt_id, Decimal("0"))
+                self.store.record_unsent_attempt(attempt, detail=error)
+                if error.startswith(REQUEST_CONTRACT_ERROR):
+                    self._open_circuit(error)
+                self._requeue(node, park=True)
+                return
             await self._handle(node, attempt, outcome, error, sent_at)
         except Exception as exc:  # noqa: BLE001 - harness defect: stop spending, keep every reservation counted
             self._open_circuit(f"attempt_failed:{type(exc).__name__}:{exc}")
@@ -930,29 +1111,43 @@ class Dispatcher:
                 pass
             node.status = "parked"
         finally:
-            if in_pre_send:
+            if phase["pre_send"]:
                 self.pre_send -= 1
             self.item_active[node.item_key] -= 1
             self.wake.set()
 
-    async def _exchange(self, spec: GenerationSpec, messages: list[dict[str, str]],
-                        attempt_id: str) -> tuple[GenerationOutcome | None, str | None, float]:
+    async def _exchange(self, node: _Node, messages: list[dict[str, str]], attempt: Attempt,
+                        phase: dict[str, bool]) -> tuple[GenerationOutcome | None, str | None, float, Attempt]:
         async with self.http:
+            phase["pre_send"] = False
+            self.pre_send -= 1
+            if self.stop_mode is not None or self.circuit_reason is not None:
+                return None, NOT_SENT, self.clock(), attempt
+            await self.ledger.mark_sent(attempt.attempt_id)       # urgent fsync: SENT is durable before sending
+            if self.stop_mode is not None or self.circuit_reason is not None:
+                return None, WITHDRAWN_AFTER_SENT, self.clock(), attempt  # decided during the fsync: still unsent
+            node.sends += 1
+            attempt = replace(attempt, state=AttemptState.SENT, sent_at=_utc())
+            self.store.record_attempt(attempt)
             sent_at = self.clock()
             self.requests_sent += 1
             self.meter.change(+1)
             generation = self._loop.create_task(self.client.generate(
-                spec, messages, attempt_id=attempt_id, lock=self.lock, sampling=self.sampling))
+                node.spec, messages, attempt_id=attempt.attempt_id, lock=self.lock, sampling=self.sampling))
             try:
                 done, _ = await asyncio.wait({generation, self.hard_stop}, timeout=self.settings.watchdog_seconds,
                                              return_when=asyncio.FIRST_COMPLETED)
                 if generation in done:
                     try:
-                        return generation.result(), None, sent_at
+                        return generation.result(), None, sent_at, attempt
                     except Exception as exc:  # noqa: BLE001 - the client must classify; an escape is ambiguous
-                        return None, f"client_exception:{type(exc).__name__}", sent_at
+                        if _is_request_contract_error(exc):
+                            node.sends -= 1                            # raised before any byte was sent
+                            return None, f"{REQUEST_CONTRACT_ERROR}:{exc}"[:500], sent_at, attempt
+                        return None, f"client_exception:{type(exc).__name__}", sent_at, attempt
                 generation.cancel()
-                return None, ("cancelled_by_stop" if self.hard_stop.done() else "watchdog_timeout"), sent_at
+                await asyncio.wait({generation}, timeout=5.0)
+                return None, ("cancelled_by_stop" if self.hard_stop.done() else "watchdog_timeout"), sent_at, attempt
             finally:
                 self.meter.change(-1)
 
@@ -979,17 +1174,26 @@ class Dispatcher:
             return
         status = result.transport_status
         self.attempt_statuses[status.value] += 1
+        if status in CIRCUIT_BREAKING_TRANSPORT:
+            self._open_circuit(f"{status.value}:{node.node_id}")   # before the raw-write/fsync awaits (W02-3)
         raw_error: BaseException | None = None
         try:
             relative, digest = await asyncio.to_thread(write_raw_response, self.paths, attempt_id, outcome)
             result = replace(result, raw_response_path=relative, raw_response_sha256=digest)
         except Exception as exc:  # noqa: BLE001
             raw_error = exc
-        cost = confirmed_cost(result)
-        if status is TransportStatus.CONNECT_FAILED and cost is None:
-            await self.ledger.release_unsent(attempt_id)
-        elif cost is not None:
+        cost = confirmed_cost(result)                   # CONNECT_FAILED without usage: provably unsent, 0
+        if cost is not None:
             await self.ledger.settle(attempt_id, cost)
+            if cost > attempt.reservation_usd:
+                self._event("cost_exceeds_reservation", f"{attempt_id}:{cost}>{attempt.reservation_usd}")
+            snap = self.ledger.snapshot()
+            if snap.settled > snap.ceiling:
+                self._open_circuit(f"ceiling_breached:settled={snap.settled}>ceiling={snap.ceiling}")
+            if status is TransportStatus.OK:
+                self.ok_cost_samples += 1
+                self.ok_cost_total += cost
+                self.ok_reserved_total += attempt.reservation_usd
         else:
             await self.ledger.mark_unresolved(attempt_id, detail=status.value)
             self.unresolved[attempt_id] = _Unresolved(attempt_id, node.node_id, result.generation_id,
@@ -1023,6 +1227,9 @@ class Dispatcher:
         self._on_terminal(node, succeeded=False)
 
     async def _finish_ok(self, node: _Node, attempt: Attempt, result: GenerationResult) -> None:
+        if node.terminal:
+            self.duplicate_notifications += 1
+            return
         self.store.record_persisted_response(attempt, result)
         try:
             candidate = await self._loop.run_in_executor(self.cpu, self.extract, result, node.spec)
@@ -1113,8 +1320,9 @@ class Dispatcher:
             cost: Decimal | None = None
             if item.generation_id and hasattr(self.client, "generation_metadata"):
                 try:
-                    meta = await self.client.generation_metadata(item.generation_id)
-                except Exception:  # noqa: BLE001 - metadata lag or outage: try again later
+                    meta = await asyncio.wait_for(self.client.generation_metadata(item.generation_id),
+                                                  timeout=METADATA_TIMEOUT_SECONDS)
+                except Exception:  # noqa: BLE001 - metadata lag, outage or timeout: try again later
                     meta = None
                 if meta:
                     raw_cost = meta.get("total_cost", meta.get("cost"))
@@ -1128,30 +1336,49 @@ class Dispatcher:
                 self.unresolved.pop(item.attempt_id, None)
         self.wake.set()
 
+    async def _guarded(self, name: str, step: Callable[[], Any], *, failures: dict[str, int]) -> None:
+        """One background iteration; three consecutive failures open the circuit (never die silently)."""
+        try:
+            await step()
+            failures[name] = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            failures[name] = failures.get(name, 0) + 1
+            self._event(f"{name}_failed", f"{type(exc).__name__}:{exc}")
+            if failures[name] >= 3:
+                self._open_circuit(f"{name}_failed:{type(exc).__name__}:{exc}")
+
     async def _reconcile_loop(self) -> None:
         interval = min(RECONCILE_POLL_SECONDS, max(0.05, self.settings.lease_stale_seconds / 4))
+        failures: dict[str, int] = {}
         while True:
             await asyncio.sleep(interval)
-            await self._reconcile_unresolved()
+            await self._guarded("reconcile", self._reconcile_unresolved, failures=failures)
+
+    async def _heartbeat_once(self) -> None:
+        self.store.heartbeat(self.owner)
+        self.store.set_meta("dispatcher_heartbeat", repr(time.time()))
+        for row in self.store.leased_nodes():
+            node = self.nodes.get(row.node_id)
+            if node is not None and node.foreign_lease and row.lease_owner != self.owner:
+                await self._maybe_take_over(node, row.lease_owner, row.lease_attempt_id, row.heartbeat_at)
+        self.wake.set()
 
     async def _heartbeat_loop(self) -> None:
+        failures: dict[str, int] = {}
         while True:
             await asyncio.sleep(self.settings.lease_heartbeat_seconds)
-            self.store.heartbeat(self.owner)
-            self.store.set_meta("dispatcher_heartbeat", repr(time.time()))
-            for row in self.store.leased_nodes():
-                node = self.nodes.get(row.node_id)
-                if node is not None and node.foreign_lease and row.lease_owner != self.owner:
-                    await self._maybe_take_over(node, row.lease_owner, row.lease_attempt_id, row.heartbeat_at)
-            self.wake.set()
+            await self._guarded("heartbeat", self._heartbeat_once, failures=failures)
+
+    async def _backup_once(self) -> None:
+        await asyncio.to_thread(self.store.backup)
 
     async def _backup_loop(self) -> None:
+        failures: dict[str, int] = {}
         while True:
             await asyncio.sleep(BACKUP_INTERVAL_SECONDS)
-            try:
-                await asyncio.to_thread(self.store.backup)
-            except Exception as exc:  # noqa: BLE001
-                self._open_circuit(f"backup_failed:{type(exc).__name__}:{exc}")
+            await self._guarded("backup", self._backup_once, failures=failures)
 
     async def _status_loop(self) -> None:
         while True:
@@ -1167,7 +1394,30 @@ class Dispatcher:
         except Exception:  # noqa: BLE001 - status is advisory; never stop spending accounting for it
             pass
 
+    async def _release_own_leases(self) -> None:
+        """After drain nothing of ours is on the wire: resolve and release any lease a defect path left behind, so a
+        restart in this same process does not wait ``lease_stale_seconds`` for our own dead attempts."""
+        for row in self.store.leased_nodes():
+            if row.lease_owner != self.owner or row.lease_attempt_id is None:
+                continue
+            attempt_id = row.lease_attempt_id
+            state = self.ledger.state_of(attempt_id)
+            if state == "reserved":
+                await self.ledger.release_unsent(attempt_id)
+            elif state in ("sent", "unresolved"):
+                await self.ledger.charge_max(attempt_id)
+            prior = {a.attempt_id: a for a in self.store.attempts_for(row.node_id)}.get(attempt_id)
+            if prior is not None and prior.state is not AttemptState.TERMINAL:
+                self.store.record_attempt(replace(prior, state=AttemptState.TERMINAL, completed_at=_utc(),
+                                                  error_detail="lease_released_at_exit"))
+            self.store.take_over_lease(row.node_id, attempt_id)
+            self._event("lease_released_at_exit", row.node_id)
+
     async def _final_persist(self) -> None:
+        try:
+            await self._release_own_leases()
+        except Exception as exc:  # noqa: BLE001
+            self._event("lease_release_failed", repr(exc))
         try:
             await self.ledger.journal.flush()
         except Exception:  # noqa: BLE001
@@ -1197,6 +1447,7 @@ class Dispatcher:
             "concurrency": {"in_flight_now": self.meter.value, "peak_in_flight": self.meter.peak,
                             "mean_in_flight": overall, "mean_in_flight_active": active,
                             "configured_start": self.settings.concurrency_start,
+                            "run_start": self.run_start_concurrency, "rps_run_start": self.run_start_rps,
                             "configured_now": self.aimd.concurrency_limit,
                             "configured_max": self.settings.concurrency_max,
                             "rps_now": self.aimd.rps, "rps_max": self.settings.rps_max,
@@ -1210,6 +1461,8 @@ class Dispatcher:
                       "active": sum(1 for w in self.waves if w.opened and w.remaining > 0)},
             "ready": len(self.ready),
             "unresolved_attempts": len(self.unresolved),
+            "cost_overruns": len(self.ledger.overruns),
+            "reserve_admissions": self.reserve_admissions,
             "duplicate_notifications": self.duplicate_notifications,
         }
 
@@ -1219,7 +1472,9 @@ class Dispatcher:
         succeeded = sum(1 for n in self.nodes.values() if n.terminal and n.succeeded)
         failed = sum(1 for n in self.nodes.values() if n.terminal and not n.succeeded)
         return RunSummary(
-            stop_reason=self.stop_reason or "unknown",
+            stop_reason=self.stop_reason or STOP_STALLED,
+            stop_detail=self.stop_detail,
+            nodes_context_limited=self.context_limited,
             nodes_planned=len(self.nodes),
             nodes_succeeded=succeeded,
             nodes_failed=failed,
@@ -1237,7 +1492,7 @@ class Dispatcher:
             peak_in_flight=self.meter.peak,
             mean_in_flight=overall,
             mean_in_flight_active=active,
-            concurrency_start=self.settings.concurrency_start,
+            concurrency_start=self.run_start_concurrency,
             concurrency_final=self.aimd.concurrency_limit,
             concurrency_max_reached=self.aimd.max_concurrency_reached,
             rps_final=self.aimd.rps,
@@ -1247,8 +1502,12 @@ class Dispatcher:
             waves_completed=sum(1 for w in self.waves if w.remaining == 0),
             circuit_reason=self.circuit_reason,
             duplicate_notifications=self.duplicate_notifications,
-            extra={"events": list(self.events[-200:]), "aimd_increases": self.aimd.increases,
-                   "aimd_decreases": self.aimd.decreases, "ledger_overruns": len(self.ledger.overruns),
+            extra={"events": list(self.events)[-200:],
+                   "aimd_increases": self.aimd.increases - self.aimd.increases_at_run_start,
+                   "aimd_decreases": self.aimd.decreases - self.aimd.decreases_at_run_start,
+                   "rps_start": self.run_start_rps, "reserve_admissions": self.reserve_admissions,
+                   "realized_cost_ratio": str(self._cost_ratio()), "configured_concurrency_start": self.settings.concurrency_start,
+                   "configured_rps_start": self.settings.rps_start, "ledger_overruns": len(self.ledger.overruns),
                    "journal_batches": self.ledger.journal.batches_written,
                    "journal_max_batch": self.ledger.journal.max_batch},
         )

@@ -38,6 +38,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 asyncio_mode = "auto"
 timeout = 300
+timeout_method = "thread"
 markers = [
     "live: requires the OpenRouter key and spends money; never run by default",
     "sandbox: requires bwrap/prlimit/libseccomp on this node",

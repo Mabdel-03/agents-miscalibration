@@ -141,6 +141,8 @@ def reference_graph(grid: GridSpec, *, run_id: str, partition_id: str, task: Pub
                    for j in range(n)]
             cp(f"peer/{n}/{r}", "peer", cur, team=n, rounds=r, cycles=n * (1 + r))
             prev = cur
+    if grid.deep_multipliers:
+        cp("deep/1", "deep", (roots[0],), team=1, rounds=0, cycles=1)     # spec 5.5: the A-level is root[0]
     for m in grid.deep_multipliers:
         node = add(f"deep/{m}", GenerationKind.DEEP, budget=base_budget * m)
         cp(f"deep/{m}", "deep", (node,), team=1, rounds=0, cycles=1)
@@ -316,8 +318,11 @@ class LedgerChecker:
     * CHARGE_MAX settles the full reservation (not less)
     """
 
-    def __init__(self, ceiling: Decimal) -> None:
+    def __init__(self, ceiling: Decimal, *, connect_failed: Iterable[str] | None = None) -> None:
         self.ceiling = Decimal(ceiling)
+        # Attempts with independent evidence (wire log / attempt records) of a provable connect failure: the only
+        # case in which a SENT reservation may be released (contract: CONNECT_FAILED "provably never sent").
+        self.connect_failed = set(connect_failed or ())
 
     def replay(self, events: Iterable[LedgerEvent]) -> LedgerReplay:
         state = LedgerReplay()
@@ -363,7 +368,7 @@ class LedgerChecker:
             bucket = "open_sent" if att.sent else "open_unsent"
             setattr(state, bucket, getattr(state, bucket) - att.reserved)
             if ev.kind is LedgerEventKind.RELEASE_UNSENT:
-                if att.sent:
+                if att.sent and ev.attempt_id not in self.connect_failed:
                     state.violations.append(f"{where}: RELEASE_UNSENT after SENT releases unknown money")
                     setattr(state, bucket, getattr(state, bucket) + att.reserved)   # keep it counted
                     continue

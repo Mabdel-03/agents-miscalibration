@@ -439,14 +439,23 @@ async def test_s15_08_concurrent_reservations_tiny_ceiling_production(run_paths)
 
 
 async def test_s15_08_sent_money_is_never_released_production(run_paths):
+    """A SENT reservation may be released in-process only on a provable connect failure (the dispatcher's call).
+    Once unresolved -- explicitly, or because the process restarted -- no path may release it."""
     journal, ledger = await _ledger(run_paths, "1.00")
-    a = f"{1:064x}:1"
-    assert await ledger.reserve(attempt_id=a, node_id=a[:64], partition_id="main", amount_usd=Decimal("0.30"))
-    await ledger.mark_sent(a)
+    a, b = f"{1:064x}:1", f"{2:064x}:1"
+    for att in (a, b):
+        assert await ledger.reserve(attempt_id=att, node_id=att[:64], partition_id="main", amount_usd=Decimal("0.30"))
+        await ledger.mark_sent(att)
+    if hasattr(ledger, "mark_unresolved"):
+        await ledger.mark_unresolved(a, detail="ambiguous_timeout")
+        with contextlib.suppress(Exception):
+            await ledger.release_unsent(a)
+        assert ledger.snapshot().unresolved >= Decimal("0.30"), "an unresolved reservation was released in-process"
+    _, restarted = await _ledger(run_paths, "1.00")                    # the coordinator dies and restarts
     with contextlib.suppress(Exception):
-        await ledger.release_unsent(a)                                 # must refuse (raise) or be a no-op
-    snap = ledger.snapshot()
-    assert snap.in_flight + snap.unresolved + snap.settled >= Decimal("0.30")
+        await restarted.release_unsent(b)
+    snap = restarted.snapshot()
+    assert snap.unresolved + snap.in_flight + snap.settled >= Decimal("0.60"), "restart released unknown money"
     assert ref.LedgerChecker(Decimal("1.00")).replay(list(journal.replay())).violations == []
 
 
@@ -541,13 +550,23 @@ def test_s15_10_extraction_never_repairs_malformed_finals_production(adv_items, 
     extraction = optional_module("agent_allocation.extraction.final")
     tasks = {t.output_kind.value: t for t, _, _ in adv_items}
     for case in adversarial.load_json("malformed_finals.json"):
+        if case["output_kind"] == "python":
+            continue                     # see test_s15_14_unparseable_python_final_is_invalid_not_wrong_production
         task = tasks[case["output_kind"]]
         node = next(iter(h.ref_graph(grids_from_config(cfg)["pilot_r1"], task).nodes.values()))
         result = dataclasses.replace(h.ok_result(node, case["visible_content"]), finish_reason=case["finish_reason"],
                                      completion_status=CompletionStatus.LENGTH if case["finish_reason"] == "length"
                                      else CompletionStatus.COMPLETED)
         cand = extraction.extract_candidate(result, node, task)
-        assert cand.parse_status is not ParseStatus.VALID, case["case"]
+        if cand.parse_status is ParseStatus.VALID:
+            # Tolerated only for option/boolean identities that the gold-blind normalizer and the grader both
+            # reject downstream (W06-1: parse_status then undercounts invalid outputs).
+            assert case["output_kind"] in ("option", "boolean"), (case["case"], cand.final_answer)
+            grader = optional_module("agent_allocation.grading.text.grade")
+            private = next(p for t, p, _ in adv_items if t.item_id == task.item_id)
+            grade = grader.grade_text(cand, private)
+            assert grade.status is GradeStatus.INVALID_OUTPUT, (case["case"], grade)
+            continue
         if case["expected_parse_status"]:
             assert cand.parse_status.value == case["expected_parse_status"], case["case"]
         assert cand.candidate_id == cand.node_id == node.node_id
@@ -720,8 +739,13 @@ def test_s15_13_selection_independent_of_candidate_mapping_order_production(adv_
 # =========================================================================================================
 
 def test_s15_14_tri_state_reference():
+    raw_rows = adversarial.load_jsonl("grades_unknown.jsonl")
+    for r in raw_rows:
+        if r["expected_state"] == "load_error":
+            with pytest.raises((ValueError, TypeError)):
+                load_record(GradeResult, r["record"])
     rows = {r["case"]: (load_record(GradeResult, r["record"]), r["expected_state"])
-            for r in adversarial.load_jsonl("grades_unknown.jsonl")}
+            for r in raw_rows if r["expected_state"] != "load_error"}
     for case, (grade, state) in rows.items():
         assert ref.tri_state(grade) == state, case
         assert load_record(GradeResult, dump_record(grade)).semantic_correct is grade.semantic_correct
@@ -754,6 +778,78 @@ def test_s15_14_text_grader_keeps_unknown_and_invalid_distinct_production(adv_it
             continue
         assert gw.status is GradeStatus.GRADED and gw.semantic_correct is False, task.item_id
         assert (g.status, g.semantic_correct) != (gw.status, gw.semantic_correct)
+
+
+def test_s15_14_math_grader_exception_is_unknown_not_wrong_production(adv_items, monkeypatch):
+    """Evaluator outage injection: every Math-Verify entry point raises. The verdict must be unknown, never False.
+    (Patched in-process and in module-level aliases; a grader that *spawns* fresh worker processes would not see
+    the patch -- if this fails for that reason, expose a fault hook rather than deleting the test.)"""
+    import sys
+    import math_verify
+    grade_mod = optional_module("agent_allocation.grading.text.grade")
+
+    def outage(*args, **kwargs):
+        raise RuntimeError("injected evaluator outage")
+
+    import math_verify.grader
+    import math_verify.parser
+    originals = {}
+    for module in (math_verify, math_verify.parser, math_verify.grader):
+        for name in ("parse", "verify"):
+            if hasattr(module, name):
+                originals[f"{module.__name__}.{name}"] = getattr(module, name)
+                monkeypatch.setattr(module, name, outage)
+    for modname, mod in list(sys.modules.items()):
+        if modname.startswith("agent_allocation.") and mod is not None:
+            for attr, value in list(vars(mod).items()):
+                if any(value is orig for orig in originals.values()):
+                    monkeypatch.setattr(mod, attr, outage)
+    # Graders may memoize the Math-Verify entry points (lru_cache): clear every grading cache around the injection.
+    caches = [obj for name, mod in list(sys.modules.items()) if mod is not None and name.startswith("agent_allocation.grading")
+              for obj in list(vars(mod).values()) if callable(getattr(obj, "cache_clear", None))]
+    for cache in caches:
+        cache.cache_clear()
+    task, private, _ = next((t, p, r) for t, p, r in adv_items if t.benchmark == "math500" and p.gold_answer == "4")
+    node = next(iter(h.ref_graph(grids_from_config(adversarial_config())["pilot_r1"], task).nodes.values()))
+    cand = h.valid_candidate(node, task, content="<final>4</final>", final="4")
+    try:
+        grade = grade_mod.grade_text(cand, private)
+    finally:
+        monkeypatch.undo()
+        for cache in caches:
+            cache.cache_clear()
+    assert grade.status is GradeStatus.EVALUATOR_ERROR, grade
+    assert grade.semantic_correct is None and grade.operational_success is not False, grade
+
+
+@pytest.mark.sandbox
+@pytest.mark.xfail(strict=True, reason="W06-2/W05-1: a <final> that is prose, not a program, extracts as VALID and the "
+                                       "public checker reports OK with an 'error' case instead of INVALID_CANDIDATE, so "
+                                       "code transitions cannot separate 'no program' from 'wrong program' (15.14)")
+def test_s15_14_unparseable_python_final_is_invalid_not_wrong_production(adv_items, cfg):
+    import ast
+    extraction = optional_module("agent_allocation.extraction.final")
+    public = optional_module("agent_allocation.grading.code.public")
+    task = _task(adv_items, "mbpp_plus")
+    node = next(iter(h.ref_graph(grids_from_config(cfg)["pilot_r1"], task).nodes.values()))
+    for case in adversarial.load_json("malformed_finals.json"):
+        if case["output_kind"] != "python":
+            continue
+        cand = extraction.extract_candidate(h.ok_result(node, case["visible_content"]), node, task)
+        parseable = True
+        try:
+            ast.parse(cand.final_answer or "")
+        except SyntaxError:
+            parseable = False
+        if cand.parse_status is ParseStatus.VALID and not parseable:
+            check = public.run_public_checks(cand, task)
+            assert check.status is CheckStatus.INVALID_CANDIDATE, (case["case"], check.status, check.case_outcomes)
+
+
+def adversarial_config():
+    from agent_allocation.config import load_config
+    from tests.integration.conftest import PROJECT
+    return load_config(PROJECT / "configs" / "balanced150.json")
 
 
 # =========================================================================================================

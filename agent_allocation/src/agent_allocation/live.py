@@ -30,10 +30,21 @@ from agent_allocation.contracts import (
 from agent_allocation.paths import RunPaths
 
 SAFETY_MARGIN_USD = Decimal("1.00")
+REHEARSAL_ENV = "ALLOCATION_REHEARSAL"   # set by `--rehearsal`: fake transport end to end, never sends a request
+
+
+def rehearsal() -> bool:
+    return os.environ.get(REHEARSAL_ENV) == "1"
+
+
+def rehearsal_transport():
+    from agent_allocation.api.fake import fake_openrouter_transport
+    return fake_openrouter_transport()
 CANARY_BUDGETS = (512, 1024, 2048, 4096, 8192, 16384)
 CANARY_CODE_BUDGETS = (1024, 4096)
 PILOT_CEILING_USD = Decimal("5")
-BUDGET_STOP_TEST_CEILING_USD = Decimal("0.25")
+BUDGET_STOP_TEST_CEILING_USD = Decimal("0.10")     # ~150 real pilot calls, leaving ~300 for the kill/resume test
+REHEARSAL_BUDGET_STOP_CEILING_USD = Decimal("0.03")
 
 
 class RunRefused(RuntimeError):
@@ -128,6 +139,14 @@ def provider_snapshot(paths: RunPaths, source: str) -> dict[str, Any]:
     from agent_allocation.apikey import load_api_key
     from agent_allocation.doctor import provider_snapshot as fetch
     from agent_allocation.doctor import write_provider_usage
+    if rehearsal():
+        spent = ledger_settled(paths)
+        snap = {"recorded_at": datetime.now(timezone.utc).isoformat(),
+                "key": {"usage": float(spent), "limit": 200, "limit_remaining": float(200 - spent), "is_free_tier": False},
+                "credits": {"total_credits": 100, "total_usage": float(spent)},
+                "account_balance_usd": str(Decimal("100") - spent)}
+        write_provider_usage(paths, source, snap)
+        return snap
     snap = fetch(load_api_key())
     write_provider_usage(paths, source, snap)
     return snap
@@ -214,66 +233,93 @@ def first_per_subtask(ids: Sequence[str], tasks: Mapping[str, PublicTask], occur
 # Dispatch
 # ------------------------------------------------------------------------------------------------------------------
 
+class Runtime:
+    """One client, ledger, state store and dispatcher reused across successive plans, so the admission-rate ramp and
+    any 429 back-off carry over between collection phases on the same endpoint lock."""
+
+    def __init__(self, cfg: Mapping[str, Any], paths: RunPaths, *, lock: EndpointLock,
+                 tasks: Mapping[str, PublicTask], ceiling: Decimal, transport=None, api_key: str | None = None):
+        from agent_allocation.api.client import OpenRouterClient
+        from agent_allocation.extraction.final import extract_candidate
+        from agent_allocation.prompts.render import render_messages_with_report
+        from agent_allocation.runtime.ledger import CollectionLedger
+        from agent_allocation.runtime.scheduler import Dispatcher
+        from agent_allocation.storage.journal import LedgerJournal
+        from agent_allocation.storage.state import StateStore
+
+        self.cfg, self.paths, self.lock = cfg, paths, lock
+        if rehearsal():
+            transport, api_key = rehearsal_transport(), None
+        scheduler = cfg["scheduler"]
+        self.client = OpenRouterClient(api_key=api_key, transport=transport,
+                                       connect_timeout=float(scheduler["connect_timeout_seconds"]),
+                                       read_timeout=float(scheduler["read_timeout_seconds"]))
+        self.ledger = CollectionLedger(LedgerJournal(paths.ledger_journal), ceiling_usd=ceiling,
+                                       max_unresolved_usd=Decimal(str(cfg["budget"]["max_unresolved_spend_usd"])))
+        self.store = (StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists()
+                      else StateStore(paths))
+        seed = int(cfg["seed"])
+        render_log = paths.render_reports
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+
+        def render(spec, parents):
+            try:
+                messages, report = render_messages_with_report(spec, tasks[spec.item_id], parents, seed=seed)
+            except Exception as exc:
+                if "context" in type(exc).__name__.lower():
+                    record = getattr(exc, "record", None) or {}
+                    with open(paths.context_limit_events, "a") as handle:
+                        handle.write(json.dumps({"node_id": spec.node_id, "recorded_at": utcnow(), **record},
+                                                sort_keys=True, default=str) + "\n")
+                    with open(render_log, "a") as handle:
+                        handle.write(json.dumps({"node_id": spec.node_id, "context_limit": True,
+                                                 "error": type(exc).__name__, "recorded_at": utcnow()}) + "\n")
+                raise
+            with open(render_log, "a") as handle:
+                handle.write(json.dumps({"node_id": spec.node_id, "context_limit": False,
+                                         "trimmed_packets": report.get("trimmed_packets"),
+                                         "bytes_removed_total": report.get("bytes_removed_total"),
+                                         "rendered_chars": report.get("rendered_chars"),
+                                         "recorded_at": utcnow()}) + "\n")
+            return messages
+
+        def extract(result, spec):
+            return extract_candidate(result, spec, tasks[spec.item_id])
+
+        self.dispatcher = Dispatcher(config=cfg, paths=paths, store=self.store, ledger=self.ledger,
+                                     client=self.client, lock=lock, render=render, extract=extract)
+
+    async def run(self, waves: Sequence[Sequence[ItemGraph]], *, allow_paid: bool, max_usd: Decimal,
+                  ceiling: Decimal | None = None):
+        from agent_allocation.protocols.grid import check_budgets
+        from agent_allocation.runtime.scheduler import AdmissionPlan
+        if ceiling is not None:
+            self.ledger.set_active_ceiling(min(ceiling, max_usd))
+        for wave in waves:
+            for graph in wave:
+                check_budgets(graph, max_completion_tokens=self.lock.max_completion_tokens,
+                              requested_reasoning_max=int(self.cfg["reasoning"]["requested_reasoning_max"]))
+        summary = await self.dispatcher.run(AdmissionPlan(waves=tuple(tuple(w) for w in waves)),
+                                            allow_paid=allow_paid, max_usd=max_usd)
+        self.store.backup()
+        return summary
+
+    async def aclose(self) -> None:
+        try:
+            await self.client.aclose()
+        finally:
+            self.store.backup()
+
+
 async def dispatch(cfg: Mapping[str, Any], paths: RunPaths, waves: Sequence[Sequence[ItemGraph]], *,
                    lock: EndpointLock, tasks: Mapping[str, PublicTask], allow_paid: bool, max_usd: Decimal,
                    ceiling: Decimal, transport=None, api_key: str | None = None):
-    from agent_allocation.api.client import OpenRouterClient
-    from agent_allocation.extraction.final import extract_candidate
-    from agent_allocation.prompts.render import render_messages_with_report
-    from agent_allocation.runtime.ledger import CollectionLedger
-    from agent_allocation.runtime.scheduler import AdmissionPlan, Dispatcher
-    from agent_allocation.storage.journal import LedgerJournal
-    from agent_allocation.storage.state import StateStore
-
-    scheduler = cfg["scheduler"]
-    client = OpenRouterClient(api_key=api_key, transport=transport,
-                              connect_timeout=float(scheduler["connect_timeout_seconds"]),
-                              read_timeout=float(scheduler["read_timeout_seconds"]))
-    journal = LedgerJournal(paths.ledger_journal)
-    ledger = CollectionLedger(journal, ceiling_usd=min(ceiling, max_usd),
-                              max_unresolved_usd=Decimal(str(cfg["budget"]["max_unresolved_spend_usd"])))
-    store = StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists() else StateStore(paths)
-    seed = int(cfg["seed"])
-
-    render_log = paths.render_reports
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-
-    def render(spec, parents):
-        try:
-            messages, report = render_messages_with_report(spec, tasks[spec.item_id], parents, seed=seed)
-        except Exception as exc:
-            if "context" in type(exc).__name__.lower():
-                record = getattr(exc, "record", None) or {}
-                with open(paths.context_limit_events, "a") as handle:
-                    handle.write(json.dumps({"node_id": spec.node_id, "recorded_at": utcnow(), **record},
-                                            sort_keys=True, default=str) + "\n")
-                with open(render_log, "a") as handle:
-                    handle.write(json.dumps({"node_id": spec.node_id, "context_limit": True,
-                                             "error": type(exc).__name__, "recorded_at": utcnow()}) + "\n")
-            raise
-        with open(render_log, "a") as handle:
-            handle.write(json.dumps({"node_id": spec.node_id, "context_limit": False,
-                                     "trimmed_packets": report.get("trimmed_packets"),
-                                     "bytes_removed_total": report.get("bytes_removed_total"),
-                                     "rendered_chars": report.get("rendered_chars"), "recorded_at": utcnow()}) + "\n")
-        return messages
-
-    def extract(result, spec):
-        return extract_candidate(result, spec, tasks[spec.item_id])
-
-    from agent_allocation.protocols.grid import check_budgets
-    for wave in waves:
-        for graph in wave:
-            check_budgets(graph, max_completion_tokens=lock.max_completion_tokens,
-                          requested_reasoning_max=int(cfg["reasoning"]["requested_reasoning_max"]))
-    dispatcher = Dispatcher(config=cfg, paths=paths, store=store, ledger=ledger, client=client, lock=lock,
-                            render=render, extract=extract)
+    runtime = Runtime(cfg, paths, lock=lock, tasks=tasks, ceiling=min(ceiling, max_usd), transport=transport,
+                      api_key=api_key)
     try:
-        return await dispatcher.run(AdmissionPlan(waves=tuple(tuple(w) for w in waves)), allow_paid=allow_paid,
-                                    max_usd=max_usd)
+        return await runtime.run(waves, allow_paid=allow_paid, max_usd=max_usd)
     finally:
-        await client.aclose()
-        store.backup()
+        await runtime.aclose()
 
 
 def checked_max_usd(cfg: Mapping[str, Any], requested: str) -> Decimal:
@@ -330,6 +376,8 @@ def canary_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[ItemGraph]
 async def fetch_metadata(paths: RunPaths, generation_ids: Sequence[str], *, attempts: int = 12, delay_s: float = 10.0):
     from agent_allocation.api.client import OpenRouterClient
     from agent_allocation.apikey import load_api_key
+    if rehearsal():
+        return {}
     client = OpenRouterClient(api_key=load_api_key())
     found: dict[str, Any] = {}
     try:
@@ -347,7 +395,8 @@ async def fetch_metadata(paths: RunPaths, generation_ids: Sequence[str], *, atte
         await client.aclose()
     with open(paths.generation_metadata, "a") as handle:
         for gid, data in found.items():
-            handle.write(json.dumps({"generation_id": gid, "data": data, "fetched_at": utcnow()}, sort_keys=True) + "\n")
+            handle.write(json.dumps({"generation_id": gid, "data": data, "fetched_at": utcnow()}, sort_keys=True,
+                                    default=str) + "\n")
     return found
 
 
@@ -379,10 +428,58 @@ def ledger_settled(paths: RunPaths) -> Decimal:
     return total
 
 
+def _before_snapshot(paths: RunPaths, stage: str) -> tuple[Decimal, Decimal]:
+    """(key usage, account balance) from the latest provider_usage lines of ``stage``."""
+    key_usage, balance = None, None
+    for line in paths.provider_usage.read_text().splitlines():
+        row = json.loads(line)
+        if row.get("stage") != stage:
+            continue
+        if row["endpoint"] == "key":
+            key_usage = Decimal(str(row["data"].get("usage", 0)))
+        elif row["endpoint"] == "credits":
+            balance = Decimal(str(row["data"]["total_credits"])) - Decimal(str(row["data"]["total_usage"]))
+    if key_usage is None:
+        raise RunRefused(f"no provider snapshot for stage {stage}")
+    return key_usage, balance
+
+
+async def evaluate_canary(cfg, paths: RunPaths) -> int:
+    from agent_allocation.api.canary import canary_report
+    from agent_allocation.gates import evaluate_gate1, write_gate
+    locks = read_endpoint_locks(paths)
+    before = json.loads((paths.state_dir / "canary_before.json").read_text()) \
+        if (paths.state_dir / "canary_before.json").exists() else None
+    key_before = Decimal(before["key_usage_before"]) if before else _before_snapshot(paths, "canary_before")[0]
+    settled_before = Decimal(before["settled_before"]) if before else Decimal("0")
+    rows = load_call_rows(paths, "canary", {})
+    known = {}
+    if paths.generation_metadata.exists():
+        for line in paths.generation_metadata.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                known[row["generation_id"]] = row["data"]
+    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    if missing:
+        known.update(await fetch_metadata(paths, missing))
+    rows = load_call_rows(paths, "canary", known)
+    await asyncio.sleep(20)
+    after = provider_snapshot(paths, "canary_after")
+    key_delta = Decimal(str(after["key"].get("usage", 0))) - key_before
+    settled_delta = ledger_settled(paths) - settled_before
+    result = evaluate_gate1(rows, locks, key_usage_delta_usd=key_delta, ledger_settled_usd=settled_delta)
+    write_gate(paths, result)
+    report = canary_report([(r.spec, r.result, r.metadata) for r in rows])
+    paths.reports_dir.mkdir(parents=True, exist_ok=True)
+    (paths.reports_dir / "CANARY_REPORT.json").write_text(json.dumps(report, indent=1, sort_keys=True, default=str))
+    print(json.dumps({"gate": dump_record(result), "calls": len(rows), "key_delta": str(key_delta),
+                      "ledger_settled_delta": str(settled_delta)}, indent=1, default=str))
+    return 0 if result.decision == "advance" else 3
+
+
 async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     from agent_allocation.api.client import OpenRouterClient
     from agent_allocation.apikey import load_api_key
-    from agent_allocation.gates import evaluate_gate1, write_gate
     api_key = load_api_key()
     tasks = load_tasks(paths)
     amendments = load_amendments(paths)
@@ -394,37 +491,30 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
         await client.aclose()
     before = provider_snapshot(paths, "canary_before")
     settled_before = ledger_settled(paths)
+    (paths.state_dir / "canary_before.json").write_text(json.dumps(
+        {"key_usage_before": str(before["key"].get("usage", 0)), "settled_before": str(settled_before),
+         "recorded_at": utcnow()}, sort_keys=True))
     lite, flash = canary_graphs(cfg, paths, tasks, locks, amendments)
     write_jobs(paths, "canary", [*lite, *flash])
     ceiling = min(active_ceiling(max_usd, settled_before, before), settled_before + Decimal("0.50"))
-    summaries = []
     for graphs, model in ((lite, cfg["primary_model"]), (flash, cfg["replication_model"])):
-        summaries.append(await dispatch(cfg, paths, [graphs], lock=locks[model], tasks=tasks, allow_paid=True,
-                                        max_usd=max_usd, ceiling=ceiling, api_key=api_key))
-    rows = load_call_rows(paths, "canary", {})
-    metadata = await fetch_metadata(paths, [r.result.generation_id for r in rows])
-    rows = load_call_rows(paths, "canary", metadata)
-    await asyncio.sleep(30)
-    after = provider_snapshot(paths, "canary_after")
-    key_delta = Decimal(str(after["key"].get("usage", 0))) - Decimal(str(before["key"].get("usage", 0)))
-    settled_delta = ledger_settled(paths) - settled_before
-    result = evaluate_gate1(rows, locks, key_usage_delta_usd=key_delta, ledger_settled_usd=settled_delta)
-    write_gate(paths, result)
-    from agent_allocation.api.canary import canary_report
-    report = canary_report([(r.spec, r.result, r.metadata) for r in rows])
-    (paths.reports_dir / "CANARY_REPORT.json").parent.mkdir(parents=True, exist_ok=True)
-    (paths.reports_dir / "CANARY_REPORT.json").write_text(json.dumps(report, indent=1, sort_keys=True, default=str))
-    print(json.dumps({"gate": dump_record(result), "summaries": [str(s) for s in summaries]}, indent=1, default=str))
-    return 0 if result.decision == "advance" else 3
+        summary = await dispatch(cfg, paths, [graphs], lock=locks[model], tasks=tasks, allow_paid=True,
+                                 max_usd=max_usd, ceiling=ceiling, api_key=api_key)
+        print(json.dumps({"model": model, "summary": str(summary)}, default=str))
+    return await evaluate_canary(cfg, paths)
 
 
 def cmd_canary(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation canary")
     common_args(parser)
+    parser.add_argument("--evaluate-only", action="store_true",
+                        help="re-evaluate Gate 1 from stored canary artifacts without dispatching")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     paths, max_usd = preflight(cfg, args)
     paths.ensure()
+    if args.evaluate_only:
+        return asyncio.run(evaluate_canary(cfg, paths))
     return asyncio.run(run_canary(cfg, paths, max_usd))
 
 
@@ -585,42 +675,55 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     from agent_allocation.apikey import load_api_key
     tasks = load_tasks(paths)
     amendments = load_amendments(paths)
+    if rehearsal() and not paths.endpoint_lock.exists():
+        from agent_allocation.api.fake import fake_endpoint_lock
+        fake = {m: fake_endpoint_lock(m) for m in (cfg["primary_model"], cfg["replication_model"])}
+        paths.endpoint_lock.parent.mkdir(parents=True, exist_ok=True)
+        paths.endpoint_lock.write_text(json.dumps({"locks": {m: dump_record(l) for m, l in fake.items()},
+                                                   "rehearsal": True}, indent=1, sort_keys=True))
     locks = read_endpoint_locks(paths)
     if cfg["primary_model"] not in locks:
         raise RunRefused("no endpoint lock: the canary must pass first")
     gate1 = paths.gate_result("gate1", "canary")
-    if not gate1.exists() or json.loads(gate1.read_text()).get("decision") != "advance":
+    if not rehearsal() and (not gate1.exists() or json.loads(gate1.read_text()).get("decision") != "advance"):
         raise RunRefused("Gate 1 has not advanced")
     pilot_cap = min(max_usd, PILOT_CEILING_USD)
     waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
     write_jobs(paths, "pilot", graphs)
-    api_key = load_api_key()
+    api_key = None if rehearsal() else load_api_key()
+    paid = not rehearsal()
     lock = locks[cfg["primary_model"]]
 
+    if phase == "finish":           # re-evaluate Gate 2 from stored pilot artifacts without dispatching
+        return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+    if phase == "amend":            # the single pre-authorized headroom amendment, then re-collect and re-evaluate
+        return await amend_and_rerun_pilot(cfg, paths, max_usd, config_path)
     if phase == "collect":          # subprocess entry used by the kill/resume test
         snap = provider_snapshot(paths, "pilot_collect")
         ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
-        await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True, max_usd=pilot_cap,
+        await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid, max_usd=pilot_cap,
                        ceiling=ceiling, api_key=api_key)
         return 0
 
     report: dict[str, Any] = {"started_at": utcnow()}
     # 1) budget-stop test: a ceiling just above current spend must stop admissions without over-reserving
     settled = ledger_settled(paths)
-    stop_ceiling = settled + BUDGET_STOP_TEST_CEILING_USD
+    stop_ceiling = settled + (REHEARSAL_BUDGET_STOP_CEILING_USD if rehearsal() else BUDGET_STOP_TEST_CEILING_USD)
     seq0 = last_journal_seq(paths)
-    summary = await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True, max_usd=pilot_cap,
+    summary = await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid, max_usd=pilot_cap,
                              ceiling=stop_ceiling, api_key=api_key)
     report["budget_stop"] = {"ceiling": str(stop_ceiling), "summary": str(summary),
                              "max_overshoot_usd": str(journal_replay_overshoot(paths, stop_ceiling, seq0))}
     # 2) crash/resume test: a subprocess continues the pilot and is SIGKILLed mid-flight
     cmd = [str(Path(sys.executable).parent / "allocation"), "pilot", "--config", config_path, "--run-dir",
            str(paths.run_dir), "--allow-paid", "--max-usd", str(pilot_cap), "--phase", "collect"]
+    if rehearsal():
+        cmd.append("--rehearsal")
     report["kill_test"] = run_subprocess_kill_test(cmd, paths, kill_after_parsed=40)
     # 3) resume to completion under the full pilot ceiling
     snap = provider_snapshot(paths, "pilot_resume")
     ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
-    report["resume_summary"] = str(await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=True,
+    report["resume_summary"] = str(await dispatch(cfg, paths, waves, lock=lock, tasks=tasks, allow_paid=paid,
                                                   max_usd=pilot_cap, ceiling=ceiling, api_key=api_key))
     report["collected_at"] = utcnow()
     (paths.state_dir / "pilot_collection.json").write_text(json.dumps(report, indent=1, sort_keys=True))
@@ -704,8 +807,16 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
     grade_rc = run_grader(paths)
     selection = select_and_seal(cfg, paths, "pilot", graphs, tasks)
     rows = load_call_rows(paths, "pilot", {})
-    metadata = await fetch_metadata(paths, [r.result.generation_id for r in rows], attempts=6)
-    rows = load_call_rows(paths, "pilot", metadata)
+    known: dict[str, Any] = {}
+    if paths.generation_metadata.exists():
+        for line in paths.generation_metadata.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                known[row["generation_id"]] = row["data"]
+    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    if missing:
+        known.update(await fetch_metadata(paths, missing, attempts=6))
+    rows = load_call_rows(paths, "pilot", known)
     used = [json.loads(l).get("id") for l in paths.amendments.read_text().splitlines() if l.strip()] \
         if paths.amendments.exists() else []
     inputs = pilot_gate_inputs(cfg, paths, graphs, rows, used)
@@ -719,12 +830,60 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
     return {"advance": 0, "amend_headroom_once": 4}.get(gate.decision, 3)
 
 
+async def amend_and_rerun_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str) -> int:
+    from agent_allocation.config import CODE_BENCHMARKS
+    from agent_allocation.contracts import GateResult
+    from agent_allocation.gates import HEADROOM_AMENDMENT, family_of
+    gate2 = load_record(GateResult, json.loads(paths.gate_result("gate2", "pilot").read_text()))
+    if gate2.decision != "amend_headroom_once":
+        raise RunRefused(f"Gate 2 decision is {gate2.decision!r}, not amend_headroom_once")
+    failing = {c.name.rsplit("_truncated_without_final", 1)[0] for c in gate2.criteria
+               if not c.passed and c.name.endswith("_truncated_without_final")}
+    families = {family_of(b) for b in failing}
+    used = set()
+    if paths.amendments.exists():
+        used = {json.loads(l).get("id") for l in paths.amendments.read_text().splitlines() if l.strip()}
+    with open(paths.amendments, "a") as handle:
+        for family in sorted(families):
+            amendment_id = f"headroom_{family}"
+            if amendment_id in used:
+                raise RunRefused(f"{amendment_id} was already used; a second amendment needs the owner")
+            before, after = HEADROOM_AMENDMENT[family]
+            scope = sorted(b for b in BENCHMARKS if (b in CODE_BENCHMARKS) == (family == "code"))
+            handle.write(json.dumps({
+                "id": amendment_id, "recorded_at": utcnow(), "rule": "headroom_once", "scope": scope,
+                "before": before, "after": after, "trigger_benchmarks": sorted(failing),
+                "reason": "Gate 2 truncation-without-final above 3%; pre-authorized single headroom doubling "
+                          "(approved plan, frozen before the canary)",
+                "gate2_evaluated_at": gate2.evaluated_at}, sort_keys=True) + "\n")
+    record_decision(paths, phase="pilot_amend", families=sorted(families), trigger=sorted(failing))
+    tasks = load_tasks(paths)
+    amendments = load_amendments(paths)
+    locks = read_endpoint_locks(paths)
+    waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
+    write_jobs(paths, "pilot", graphs)
+    pilot_cap = min(max_usd, PILOT_CEILING_USD)
+    snap = provider_snapshot(paths, "pilot_amend")
+    ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
+    summary = await dispatch(cfg, paths, waves, lock=locks[cfg["primary_model"]], tasks=tasks,
+                             allow_paid=not rehearsal(), max_usd=pilot_cap, ceiling=ceiling,
+                             api_key=None if rehearsal() else __import__("agent_allocation.apikey", fromlist=["x"]).load_api_key())
+    record_decision(paths, phase="pilot_amend_collect", summary=str(summary))
+    return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
 def cmd_pilot(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation pilot")
     common_args(parser)
-    parser.add_argument("--phase", choices=["all", "collect"], default="all")
+    parser.add_argument("--phase", choices=["all", "collect", "finish", "amend"], default="all")
+    parser.add_argument("--rehearsal", action="store_true",
+                        help="run the whole pilot flow on the fake transport in a scratch run dir; sends nothing")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
+    if args.rehearsal:
+        if RunPaths.for_run(args.run_dir).run_dir.resolve() == RunPaths.for_run(None).run_dir.resolve():
+            raise RunRefused("--rehearsal must use a scratch --run-dir, never the study run dir")
+        os.environ[REHEARSAL_ENV] = "1"
     paths, max_usd = preflight(cfg, args)
     paths.ensure()
     return asyncio.run(run_pilot(cfg, paths, max_usd, args.config, args.phase))
@@ -823,8 +982,23 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     # Phase A: the first waves establish a trustworthy forecast; extension CP/POOLED ride with their items.
     snap = provider_snapshot(paths, "run_phase_a")
     ceiling = min(active_ceiling(max_usd, ledger_settled(paths), snap), soft)
-    summary = await dispatch(cfg, paths, by_wave["main"][:FORECAST_CHECK_WAVES], lock=primary, tasks=tasks,
-                             allow_paid=True, max_usd=max_usd, ceiling=ceiling, api_key=api_key)
+    runtime = Runtime(cfg, paths, lock=primary, tasks=tasks, ceiling=ceiling, api_key=api_key)
+    try:
+        return await _run_main_phases(cfg, paths, max_usd, runtime=runtime, by_wave=by_wave, tasks=tasks,
+                                      locks=locks, amendments=amendments, api_key=api_key, soft=soft,
+                                      reserve=reserve, ceiling=ceiling)
+    finally:
+        await runtime.aclose()
+
+
+async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "Runtime", by_wave, tasks, locks,
+                           amendments, api_key, soft: Decimal, reserve: Decimal, ceiling: Decimal) -> int:
+    from agent_allocation.forecast import (
+        fit_models, item_cost, observations_from_rows, per_item_costs, wave_admission, SAFETY_MULTIPLIER,
+    )
+    primary = locks[cfg["primary_model"]]
+    summary = await runtime.run(by_wave["main"][:FORECAST_CHECK_WAVES], allow_paid=True, max_usd=max_usd,
+                                ceiling=ceiling)
     record_decision(paths, phase="A", summary=str(summary), ceiling=str(ceiling))
     if stopped_early(summary):
         record_decision(paths, phase="A", decision="stop_notify", reason=stopped_early(summary))
@@ -854,8 +1028,7 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
             interleaved.append(high[index])
         if index < len(main_rest):
             interleaved.append(main_rest[index])
-    summary = await dispatch(cfg, paths, interleaved, lock=primary, tasks=tasks, allow_paid=True, max_usd=max_usd,
-                             ceiling=ceiling, api_key=api_key)
+    summary = await runtime.run(interleaved, allow_paid=True, max_usd=max_usd, ceiling=ceiling)
     record_decision(paths, phase="B", summary=str(summary))
     if stopped_early(summary):
         record_decision(paths, phase="B", decision="stop_notify", reason=stopped_early(summary))
@@ -922,3 +1095,100 @@ def cmd_seal(argv: list[str]) -> int:
         out[partition] = select_and_seal(cfg, paths, partition, graphs, tasks)
     print(json.dumps(out, indent=1, sort_keys=True))
     return 0
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Offline end-to-end (Q1 from agent 08; also the lead's seam test). Never paid: the transport must be a mock.
+# ------------------------------------------------------------------------------------------------------------------
+
+def _write_offline_manifests(paths: RunPaths, items: Sequence[Any], extension_ids: set[str]) -> None:
+    from agent_allocation.contracts import PanelDraw, Wave
+    from agent_allocation.manifest import write_atomic, write_jsonl
+    paths.ensure()
+    for benchmark in BENCHMARKS:
+        chosen = [i for i in items if i.public.benchmark == benchmark]
+        write_jsonl(paths.public_manifest(benchmark), [i.public for i in chosen])
+        write_jsonl(paths.private_manifest(benchmark), [i.private for i in chosen], mode=0o600)
+    draws = {b: PanelDraw(benchmark=b, dev_item_ids=(),
+                          main_item_ids=tuple(i.public.item_id for i in items if i.public.benchmark == b),
+                          reserve_item_ids=(), selection_seed=0, procedure="offline_given_items")
+             for b in BENCHMARKS}
+    write_atomic(paths.panels, json.dumps({b: dump_record(d) for b, d in draws.items()}, indent=1, sort_keys=True))
+    ext = tuple(i.public.item_id for i in items if i.public.item_id in extension_ids)
+    rest = tuple(i.public.item_id for i in items if i.public.item_id not in extension_ids)
+    waves = [w for w in (Wave(0, ext, ("main", "extension")) if ext else None,
+                         Wave(1 if ext else 0, rest, ("main",)) if rest else None) if w is not None]
+    write_atomic(paths.waves, json.dumps([dump_record(w) for w in waves], indent=1, sort_keys=True))
+
+
+def _grade_offline(paths: RunPaths, graphs: Sequence[ItemGraph], tasks, privates, code_grader, public_checker) -> dict:
+    from agent_allocation.contracts import Candidate
+    from agent_allocation.grading.text.grade import grade_text
+    counts = {"public_checks": 0, "grades": 0}
+    for graph in graphs:
+        for node in graph.nodes:
+            parsed = paths.parsed(node.node_id)
+            if not parsed.exists():
+                continue
+            payload = json.loads(parsed.read_text())
+            if not payload.get("candidate"):
+                continue
+            candidate = load_record(Candidate, payload["candidate"])
+            private = privates[node.item_id]
+            if node.benchmark == "mbpp_plus":
+                if public_checker is None:
+                    from agent_allocation.grading.code.public import run_public_checks as public_checker
+                check = public_checker(candidate, tasks[node.item_id])
+                target = paths.public_check(node.node_id)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(dump_record(check), sort_keys=True))
+                counts["public_checks"] += 1
+                if code_grader is None:
+                    from agent_allocation.grading.code.private import grade_code as code_grader
+                grade = code_grader(candidate, private, paths)
+            else:
+                grade = grade_text(candidate, private)
+            target = paths.grade(node.node_id)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(dump_record(grade), sort_keys=True))
+            counts["grades"] += 1
+    return counts
+
+
+async def run_offline_async(paths: RunPaths, config: Mapping[str, Any], items: Sequence[Any], transport, *,
+                            extension_item_ids: Sequence[str] = (), code_grader=None, public_checker=None) -> dict:
+    import httpx
+    from agent_allocation.api.fake import fake_endpoint_lock
+    if not isinstance(transport, httpx.MockTransport):
+        raise RunRefused("run_offline only accepts a mock transport")
+    extension_ids = set(extension_item_ids)
+    _write_offline_manifests(paths, items, extension_ids)
+    tasks = {i.public.item_id: i.public for i in items}
+    privates = {i.public.item_id: i.private for i in items}
+    lock = fake_endpoint_lock(config["primary_model"])
+    grids = grids_from_config(config)
+    graphs = [graph_for(grids["main_extension"] if i.public.item_id in extension_ids else grids["main"], cfg=config,
+                        partition="main", task=i.public, lock=lock, base_budget=int(config["reasoning"]["main_a"]),
+                        amendments={}) for i in items]
+    write_jobs(paths, "main", graphs)
+    ceiling = credit_ceiling(config)
+    waves = [graphs[k:k + 16] for k in range(0, len(graphs), 16)]
+    summary = await dispatch(config, paths, waves, lock=lock, tasks=tasks, allow_paid=False, max_usd=ceiling,
+                             ceiling=ceiling, transport=transport, api_key=None)
+    grading = _grade_offline(paths, graphs, tasks, privates, code_grader, public_checker)
+    selection = select_and_seal(config, paths, "main", graphs, tasks)
+    from agent_allocation.reporting.audit import cmd_audit
+    from agent_allocation.reporting.cli import cmd_analyze
+    analyze_rc = cmd_analyze(["--run-dir", str(paths.run_dir)])
+    audit_rc = cmd_audit(["--run-dir", str(paths.run_dir)])
+    return {"summary": summary, "grading": grading, "selection": selection, "analyze_rc": analyze_rc,
+            "audit_rc": audit_rc, "stubbed_code_grader": code_grader is not None,
+            "stubbed_public_checker": public_checker is not None,
+            "nodes": sum(len(g.nodes) for g in graphs)}
+
+
+def run_offline(paths: RunPaths, config: Mapping[str, Any], items: Sequence[Any], transport, *,
+                extension_item_ids: Sequence[str] = (), code_grader=None, public_checker=None) -> dict:
+    """Mocked four-benchmark pipeline for tests. Calling it again on the same ``paths`` is the resume path."""
+    return asyncio.run(run_offline_async(paths, config, items, transport, extension_item_ids=extension_item_ids,
+                                         code_grader=code_grader, public_checker=public_checker))

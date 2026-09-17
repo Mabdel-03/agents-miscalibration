@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from agent_allocation.runtime.scheduler import DispatchRefused, PlanError, client_is_offline_mock
-from tests.unit.runtime.fakes import ABSENT, Behavior, Env, FakeClient, make_graph, plan_of
+from tests.unit.runtime.fakes import ABSENT, Env, FakeClient, make_graph, plan_of
 
 
 async def test_runs_dag_unlocking_children_and_settling_costs(tmp_path):
@@ -16,7 +16,7 @@ async def test_runs_dag_unlocking_children_and_settling_costs(tmp_path):
     client = FakeClient(delay=0.02)
     summary = await env.dispatcher(client).run(plan_of(graphs), allow_paid=False, max_usd=Decimal("5"))
     total = sum(len(g.nodes) for g in graphs)
-    assert summary.stop_reason == "complete", summary
+    assert summary.stop_reason == "completed", summary
     assert summary.nodes_succeeded == total and summary.requests_sent == total == len(client.calls)
     assert summary.settled_usd == Decimal("0.0001") * total
     assert summary.in_flight_usd == 0 and summary.unresolved_usd == 0
@@ -36,7 +36,7 @@ async def test_runs_dag_unlocking_children_and_settling_costs(tmp_path):
     env.reopen(recover=True)
     again = FakeClient()
     second = await env.dispatcher(again).run(plan_of(graphs), allow_paid=False, max_usd=Decimal("5"))
-    assert second.stop_reason == "complete" and again.calls == [] and second.spent_this_run_usd == 0
+    assert second.stop_reason == "completed" and again.calls == [] and second.spent_this_run_usd == 0
 
 
 async def test_allow_paid_false_refuses_a_real_transport(tmp_path):
