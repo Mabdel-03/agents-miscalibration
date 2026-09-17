@@ -1022,13 +1022,15 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
         fit_models, item_cost, observations_from_rows, per_item_costs, wave_admission, SAFETY_MULTIPLIER,
     )
     auth = verify_authorization(paths)
-    api_key = load_api_key()
+    api_key = None if rehearsal() else load_api_key()
     locks = read_endpoint_locks(paths)
-    client = OpenRouterClient(api_key=api_key)
-    try:
-        drift = await verify_endpoint_drift(client, locks)
-    finally:
-        await client.aclose()
+    drift: list[str] = []
+    if not rehearsal():
+        client = OpenRouterClient(api_key=api_key)
+        try:
+            drift = await verify_endpoint_drift(client, locks)
+        finally:
+            await client.aclose()
     if drift:
         record_decision(paths, phase="preflight", decision="stop_notify", reason="endpoint drift", detail=drift)
         raise RunRefused(f"endpoint drift: {drift}")
@@ -1059,7 +1061,7 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
         fit_models, item_cost, observations_from_rows, per_item_costs, wave_admission, SAFETY_MULTIPLIER,
     )
     primary = locks[cfg["primary_model"]]
-    summary = await runtime.run(by_wave["main"][:FORECAST_CHECK_WAVES], allow_paid=True, max_usd=max_usd,
+    summary = await runtime.run(by_wave["main"][:FORECAST_CHECK_WAVES], allow_paid=not rehearsal(), max_usd=max_usd,
                                 ceiling=ceiling)
     record_decision(paths, phase="A", summary=str(summary), ceiling=str(ceiling))
     if stopped_early(summary):
@@ -1090,7 +1092,7 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
             interleaved.append(high[index])
         if index < len(main_rest):
             interleaved.append(main_rest[index])
-    summary = await runtime.run(interleaved, allow_paid=True, max_usd=max_usd, ceiling=ceiling)
+    summary = await runtime.run(interleaved, allow_paid=not rehearsal(), max_usd=max_usd, ceiling=ceiling)
     record_decision(paths, phase="B", summary=str(summary))
     if stopped_early(summary):
         record_decision(paths, phase="B", decision="stop_notify", reason=stopped_early(summary))
@@ -1104,12 +1106,14 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
     replication_lock = locks[cfg["replication_model"]]
     flash_rows = [r for r in load_call_rows(paths, "canary", {}) if r.spec.model == replication_lock.model]
     flash_models = fit_models(observations_from_rows(flash_rows))
+    from agent_allocation.forecast import BenchmarkModel
+    saturated = BenchmarkModel(root_prompt=2500.0, private_prompt=2500.0, packet_tokens=0.0, completion={})
     grids = grids_from_config(cfg)
     flash_items = sum(len(w) for w in by_wave["replication"])
     flash_forecast = Decimal("0")
     for wave in by_wave["replication"]:
         for graph in wave:
-            model = flash_models.get(graph.nodes[0].benchmark) or next(iter(flash_models.values()))
+            model = flash_models.get(graph.nodes[0].benchmark) or next(iter(flash_models.values()), saturated)
             flash_forecast += item_cost(model, grids["replication"], int(cfg["reasoning"]["main_a"]),
                                         headroom_for(cfg, graph.nodes[0].benchmark, amendments), replication_lock)
     flash_forecast *= SAFETY_MULTIPLIER
@@ -1122,8 +1126,8 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
                     decision="run_replication" if fits else "skip_replication")
     if not fits:
         return 0
-    summary = await dispatch(cfg, paths, by_wave["replication"], lock=replication_lock, tasks=tasks, allow_paid=True,
-                             max_usd=max_usd, ceiling=absolute - reserve, api_key=api_key)
+    summary = await dispatch(cfg, paths, by_wave["replication"], lock=replication_lock, tasks=tasks,
+                             allow_paid=not rehearsal(), max_usd=max_usd, ceiling=absolute - reserve, api_key=api_key)
     record_decision(paths, phase="C", summary=str(summary))
     return 3 if stopped_early(summary) else 0
 
@@ -1132,8 +1136,13 @@ def cmd_run(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation run")
     common_args(parser)
     parser.add_argument("--resume", action="store_true", help="accepted for the spec's command contract; runs always resume")
+    parser.add_argument("--rehearsal", action="store_true", help="fake transport end to end in a scratch run dir")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
+    if args.rehearsal:
+        if RunPaths.for_run(args.run_dir).run_dir.resolve() == RunPaths.for_run(None).run_dir.resolve():
+            raise RunRefused("--rehearsal must use a scratch --run-dir, never the study run dir")
+        os.environ[REHEARSAL_ENV] = "1"
     paths, max_usd = preflight(cfg, args)
     paths.ensure()
     return asyncio.run(run_main(cfg, paths, max_usd))
