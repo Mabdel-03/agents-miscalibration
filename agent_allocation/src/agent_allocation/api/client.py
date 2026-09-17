@@ -6,8 +6,10 @@ before anything is sent, and cancellation propagates). Retrying, backoff, reserv
 scheduler (agent 02). httpx itself never retries requests; the default transport is built with ``retries=0``.
 
 Account endpoints (``key_info``, ``credits``, ``generation_metadata``, ``list_endpoints``) raise
-``OpenRouterAccountError`` on transport failures or unexpected statuses. Their JSON is parsed with
-``parse_float=Decimal`` (except ``list_endpoints``), so money arrives as ``Decimal`` and integers stay ``int``.
+``OpenRouterAccountError`` on transport failures or unexpected statuses. In ``key_info``, ``credits`` and
+``generation_metadata`` every JSON float becomes ``Decimal(str(value))`` -- the same conversion the completion usage
+gets, so costs from both sources compare exactly -- and integers stay ``int``. ``list_endpoints`` returns the raw bytes
+(save them beside the lock) and the plain parsed JSON.
 """
 from __future__ import annotations
 
@@ -36,6 +38,16 @@ from agent_allocation.contracts import EndpointLock, GenerationOutcome, Generati
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 WRITE_TIMEOUT_SECONDS = 60.0
 _MODEL_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*/[A-Za-z0-9][A-Za-z0-9._\-:]*$")
+
+
+def _decimalize(value: Any) -> Any:
+    if isinstance(value, float):
+        return Decimal(str(value)) if value == value and value not in (float("inf"), float("-inf")) else None
+    if isinstance(value, dict):
+        return {k: _decimalize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decimalize(v) for v in value]
+    return value
 
 
 class OpenRouterAccountError(RuntimeError):
@@ -180,7 +192,7 @@ class OpenRouterClient:
 
     def _data(self, path: str, response: httpx.Response) -> Mapping[str, Any]:
         try:
-            payload = json.loads(response.content, parse_float=Decimal)
+            payload = _decimalize(json.loads(response.content))
         except (ValueError, UnicodeDecodeError):
             raise OpenRouterAccountError(f"GET /{path}: response is not JSON",
                                          transport_status=TransportStatus.ERROR_ENVELOPE,
