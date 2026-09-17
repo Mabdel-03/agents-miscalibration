@@ -30,6 +30,7 @@ import os
 import sys
 import time
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, Mapping
@@ -178,15 +179,38 @@ def _init_worker(profile: profile_mod.GradingProfile) -> None:
 
 
 def _job_public(candidate_data: dict, task_data: dict) -> dict:
-    from agent_allocation.grading.code.public import run_public_checks
-    return dump_record(run_public_checks(load_record(Candidate, candidate_data), load_record(PublicTask, task_data)))
+    """An unexpected checker exception is an infrastructure error (selector pauses), never a failed case."""
+    from agent_allocation.grading.code import public as public_mod
+    candidate = load_record(Candidate, candidate_data)
+    task = load_record(PublicTask, task_data)
+    try:
+        return dump_record(public_mod.run_public_checks(candidate, task))
+    except Exception:
+        from agent_allocation.grading.code.profile import active_profile, environment_digest
+        n = len(task.public_examples)
+        return dump_record(PublicCheckResult(
+            candidate_id=candidate.candidate_id, item_id=task.item_id,
+            code_sha256=public_mod.code_sha256(candidate.final_answer) if candidate.final_answer else None,
+            status=CheckStatus.INFRASTRUCTURE_ERROR, cases_total=n, cases_passed=0, case_outcomes=("error",) * n,
+            checker_version=public_mod.CHECKER_VERSION, public_inputs_sha256=public_mod.public_inputs_sha256(task),
+            environment_digest=environment_digest(active_profile()), cpu_seconds=0.0))
 
 
 def _job_code_grade(candidate_data: dict, private_data: dict, run_dir: str, locks_dir: str, local: str) -> dict:
-    from agent_allocation.grading.code.private import grade_code
+    """An unexpected grader exception is an evaluator error (unknown), never a wrong answer."""
+    from agent_allocation.grading.code import private as private_mod
+    candidate = load_record(Candidate, candidate_data)
+    private = load_record(PrivateEvalSpec, private_data)
     paths = RunPaths(Path(run_dir), Path(locks_dir), Path(local))
-    return dump_record(grade_code(load_record(Candidate, candidate_data), load_record(PrivateEvalSpec, private_data),
-                                  paths))
+    try:
+        return dump_record(private_mod.grade_code(candidate, private, paths))
+    except Exception as exc:
+        from agent_allocation.grading.code.profile import active_profile, environment_digest
+        return dump_record(GradeResult(
+            candidate_id=candidate.candidate_id, status=GradeStatus.EVALUATOR_ERROR, semantic_correct=None,
+            operational_success=None, grader_version=private_mod.GRADER_VERSION,
+            private_eval_hash=private.private_hash, detail_code=f"grader_exception:{type(exc).__name__}",
+            environment_digest=environment_digest(active_profile()), cpu_seconds=None))
 
 
 def _job_text_grade(candidate_data: dict, private_data: dict, grader_spec: str) -> dict:
@@ -243,7 +267,7 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
     candidates = scan_candidates(paths, finished if finished is not None else frozenset())
     counts = {"candidates": len(candidates), "public_written": 0, "public_cached": 0, "public_skipped": 0,
               "grades_written": 0, "grades_cached": 0, "grades_skipped": 0, "blocked_text": 0, "unknown_item": 0,
-              "infrastructure_errors": 0, "evaluator_errors": 0, "sandbox_denied": 0}
+              "infrastructure_errors": 0, "evaluator_errors": 0, "sandbox_denied": 0, "pool_failures": 0}
     if not resume:
         existing = [c for c in candidates if paths.public_check(c.candidate_id).exists()
                     or paths.grade(c.candidate_id).exists()]
@@ -309,7 +333,11 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             futures[pool.submit(_job_public, dump_record(candidate), dump_record(task))] = key
         for future in as_completed(futures):
             key = futures[future]
-            result = load_record(PublicCheckResult, future.result())
+            try:
+                result = load_record(PublicCheckResult, future.result())
+            except BrokenProcessPool:
+                counts["pool_failures"] += 1            # no record written: the candidate is redone on resume
+                continue
             for candidate, _ in public_groups[key]:
                 record = dataclasses.replace(result, candidate_id=candidate.candidate_id)
                 write_public_check(paths, record)
@@ -318,6 +346,9 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
             if cacheable(key) and result.status is CheckStatus.OK:
                 _atomic_write(_cache_path(paths, "public", key), dump_record(result), private=True)
         # ---- private grades ---------------------------------------------------------------------------------
+        if counts["pool_failures"] and pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            pool = None
         futures = {}
         # Submit item by item: worker processes keep a small per-process oracle cache, and some oracles are large.
         for key, members in sorted(code_groups.items(), key=lambda kv: (kv[1][0][0].item_id, kv[0])):
@@ -338,7 +369,11 @@ def grade_pass(paths: RunPaths, profile: profile_mod.GradingProfile, *, resume: 
                                     text_grader)] = ("text", candidate)
         for future in as_completed(futures):
             kind, ref = futures[future]
-            result = load_record(GradeResult, future.result())
+            try:
+                result = load_record(GradeResult, future.result())
+            except BrokenProcessPool:
+                counts["pool_failures"] += 1
+                continue
             members = [c for c, _ in code_groups[ref]] if kind == "code" else [ref]
             for candidate in members:
                 record = dataclasses.replace(result, candidate_id=candidate.candidate_id)
@@ -421,7 +456,7 @@ def cmd_grade(argv: list[str]) -> int:
         resume = True
         time.sleep(args.poll_seconds)
     incomplete = counts["blocked_text"] or counts["unknown_item"] or counts["infrastructure_errors"] \
-        or counts["evaluator_errors"]
+        or counts["evaluator_errors"] or counts["pool_failures"]
     return EXIT_BLOCKED if incomplete else 0
 
 

@@ -257,3 +257,22 @@ def test_follow_mode_skips_finished_candidates_on_later_passes(run_paths, monkey
     monkeypatch.setattr(worker.json, "loads", lambda text: loads.append(1) or real_loads(text))
     again = worker.grade_pass(run_paths, profile, resume=True, workers=0, finished=finished)
     assert again["candidates"] == 0
+
+
+def test_unexpected_grader_exception_is_unknown_not_wrong(run_paths, monkeypatch):
+    from agent_allocation.grading.code import private as private_mod, public as public_mod
+
+    def explode(*_args):
+        raise OSError("injected: too many open files")
+
+    monkeypatch.setattr(public_mod, "run_public_checks", explode)
+    monkeypatch.setattr(private_mod, "grade_code", explode)
+    _, _, candidates = _synthetic_run(run_paths, [GOOD_PROGRAM])
+    counts = worker.grade_pass(run_paths, profile_mod.active_profile(), resume=False, workers=0)
+    cid = candidates[0].candidate_id
+    grade = load_record(GradeResult, json.loads(run_paths.grade(cid).read_text()))
+    check = load_record(PublicCheckResult, json.loads(run_paths.public_check(cid).read_text()))
+    assert grade.status is GradeStatus.EVALUATOR_ERROR and grade.semantic_correct is None
+    assert grade.detail_code == "grader_exception:OSError"
+    assert check.status is CheckStatus.INFRASTRUCTURE_ERROR and check.cases_passed == 0
+    assert counts["infrastructure_errors"] == 1 and counts["evaluator_errors"] == 1
