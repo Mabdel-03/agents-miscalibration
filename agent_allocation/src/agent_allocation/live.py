@@ -621,35 +621,15 @@ def render_report_violations(paths: RunPaths) -> int:
     return len({json.loads(line)["node_id"] for line in target.read_text().splitlines() if line.strip()})
 
 
-def select_and_seal(cfg, paths: RunPaths, partition: str, graphs: Sequence[ItemGraph], tasks) -> dict[str, int]:
-    from agent_allocation.contracts import Candidate, PublicCheckResult
+def select_and_seal(cfg, paths: RunPaths, partition: str, graphs: Sequence[ItemGraph], tasks) -> dict[str, Any]:
+    """Delegates to agent 06's ``select_partition``: reads the partition's policy manifest, treats confirmed
+    terminal-without-output members as absent (07-R12), waits for code public checks, memoizes Math-Verify
+    equivalence for MATH checkpoints only, and seals an append-only batch. ``graphs``/``tasks`` are kept for callers."""
     from agent_allocation.grading.text.math_equiv import math_equivalent
-    from agent_allocation.selection.readout import select_checkpoint
-    from agent_allocation.selection.seal import seal_selections
-    results = []
-    missing = 0
-    for graph in graphs:
-        candidates: dict[str, Candidate] = {}
-        checks: dict[str, PublicCheckResult] = {}
-        for node in graph.nodes:
-            parsed = paths.parsed(node.node_id)
-            if parsed.exists():
-                payload = json.loads(parsed.read_text())
-                if payload.get("candidate"):
-                    candidates[node.node_id] = load_record(Candidate, payload["candidate"])
-            check = paths.public_check(node.node_id)
-            if check.exists():
-                checks[node.node_id] = load_record(PublicCheckResult, json.loads(check.read_text()))
-        for checkpoint in graph.checkpoints:
-            if not all(c in candidates for c in checkpoint.candidate_ids):
-                missing += 1
-                continue
-            task = tasks[graph.item_id]
-            equivalence = math_equivalent if task.output_kind.value == "math" else None
-            results.append(select_checkpoint(checkpoint, task, candidates, checks, seed=int(cfg["seed"]),
-                                             math_equivalent=equivalence))
-    seal = seal_selections(paths, partition, results)
-    return {"selections": len(results), "checkpoints_missing_candidates": missing, "seal": seal}
+    from agent_allocation.selection.partition import select_partition
+    outcome = select_partition(paths, partition, seed=int(cfg["seed"]), math_equivalent=math_equivalent, seal=True)
+    return {"selections": len(outcome.results), "checkpoints_missing_candidates": len(outcome.pending_policy_ids),
+            "pending_policy_ids_sample": list(outcome.pending_policy_ids[:5]), "seal": outcome.sealed_sha256}
 
 
 def run_subprocess_kill_test(args_list: list[str], paths: RunPaths, kill_after_parsed: int, timeout_s: float = 900) -> dict:
