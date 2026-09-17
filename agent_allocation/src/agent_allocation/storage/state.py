@@ -285,10 +285,17 @@ class StateStore:
     def record_attempt(self, attempt: Attempt) -> None:
         self._record_attempt(attempt, sent=None)
 
+    def record_unsent_attempt(self, attempt: Attempt, *, detail: str) -> None:
+        """Terminal record for an attempt that was marked sent but provably never left the process."""
+        self._record_attempt(replace(attempt, state=AttemptState.TERMINAL, sent_at=None, completed_at=utc_now(),
+                                     error_detail=detail), sent=False)
+
     def _record_attempt(self, attempt: Attempt, *, sent: bool | None) -> None:
-        """``sent=None`` derives the flag from the record (``sent_at`` set or state SENT/RESPONSE_PERSISTED)."""
+        """``sent=None`` derives the flag from the record (``sent_at`` set or state SENT/RESPONSE_PERSISTED) and never
+        lowers it; an explicit ``sent`` overrides it."""
         now = utc_now()
         state = attempt.state.value
+        sent_update = "MAX(attempts.sent, excluded.sent)" if sent is None else "excluded.sent"
         if sent is None:
             sent = attempt.sent_at is not None or attempt.state in (AttemptState.SENT, AttemptState.RESPONSE_PERSISTED)
         with self._tx() as conn:
@@ -298,7 +305,7 @@ class StateStore:
             conn.execute(
                 "INSERT INTO attempts(attempt_id, node_id, attempt_no, state, transport_status, sent, record_json,"
                 " updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(attempt_id) DO UPDATE SET state=excluded.state,"
-                " transport_status=excluded.transport_status, sent=MAX(attempts.sent, excluded.sent),"
+                f" transport_status=excluded.transport_status, sent={sent_update},"
                 " record_json=excluded.record_json, updated_at=excluded.updated_at",
                 (attempt.attempt_id, attempt.node_id, attempt.attempt_no, state,
                  None if attempt.transport_status is None else attempt.transport_status.value, int(sent),
