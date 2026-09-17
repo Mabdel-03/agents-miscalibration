@@ -13,7 +13,8 @@ Preprocessing ``mmlu_pro-prompt-v1`` (frozen):
   would delete.
 * Prompt layout: ``<question>\\n\\nOptions:\\nA. <option 0>\\nB. <option 1>...`` with options in their original
   order, lettered from ``A``.
-* ``allowed_choices``: the letters of this item's options only. Gold: the letter of ``answer_index``.
+* ``allowed_choices`` (on both ``PublicTask`` and ``PrivateEvalSpec``): the letters of this item's options only.
+  Gold: the letter of ``answer_index``.
 * Public fields: question and options. Never ``answer``, ``answer_index``, ``cot_content`` (they live in the
   hashed private record together with ``category`` and ``src``). ``item_id = "mmlu_pro/<question_id>"``.
 * Strata: ``category``.
@@ -127,7 +128,7 @@ def build_item(row: Mapping[str, Any], *, source_revision: str = SOURCE_REVISION
     }
     private = PrivateEvalSpec(item_id=item_id, benchmark=BENCHMARK, source_revision=source_revision,
                               eval_kind=EvalKind.OPTION_EXACT, gold_answer=gold, private_record_ref=None,
-                              private_hash=canonical_hash(private_record))
+                              private_hash=canonical_hash(private_record), allowed_choices=allowed)
     return InventoryItem(public=public, private=private, strata=(("category", str(record["category"])),),
                          eligible=reason is None, exclusion_reason=reason)
 

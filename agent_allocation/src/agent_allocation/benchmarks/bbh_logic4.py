@@ -15,7 +15,7 @@ Config keys consumed: ``benchmarks[id=bbh_logic4].source`` (pinned repo) and ``.
 
 Preprocessing ``bbh_logic4-prompt-v1``: ``PublicTask.prompt`` is the example's ``input`` string exactly;
 ``item_id = "bbh_logic4/<subtask>/<index>"`` with the 0-based index in the file's ``examples`` list.
-Choice subtasks (``output_kind=OPTION``): ``allowed_choices`` are the option letters listed as ``(X) ...`` lines
+Choice subtasks (``output_kind=OPTION``): ``allowed_choices`` (public and private) are the option letters listed as ``(X) ...`` lines
 after the input's final ``Options:`` line (they must run A, B, C... in order, with distinct option texts); gold is
 ``target`` ``"(X)"`` normalized to ``"X"``. ``boolean_expressions`` (``output_kind=BOOLEAN``): ``allowed_choices=("True", "False")``
 and gold is ``target`` exactly. A target that does not normalize to an allowed choice is an engineering exclusion.
@@ -254,7 +254,8 @@ def build_item(subtask: str, index: int, example: Mapping[str, Any], *,
     }
     private = PrivateEvalSpec(item_id=item_id, benchmark=BENCHMARK, source_revision=source_revision,
                               eval_kind=eval_kind, gold_answer=gold, private_record_ref=None,
-                              private_hash=canonical_hash(private_record), subtask=subtask)
+                              private_hash=canonical_hash(private_record), subtask=subtask,
+                              allowed_choices=tuple(allowed))
     return InventoryItem(public=public, private=private, strata=(("subtask", subtask),),
                          eligible=reason is None, exclusion_reason=reason)
 
