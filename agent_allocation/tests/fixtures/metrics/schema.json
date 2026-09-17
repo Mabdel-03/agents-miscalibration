@@ -389,6 +389,26 @@
       {
         "name": "n_parse_refusal",
         "type": "int"
+      },
+      {
+        "name": "n_invalid_output",
+        "type": "int"
+      },
+      {
+        "name": "n_invalid_after_valid_parse",
+        "type": "int"
+      },
+      {
+        "name": "n_graded_correct",
+        "type": "int"
+      },
+      {
+        "name": "n_graded_wrong",
+        "type": "int"
+      },
+      {
+        "name": "n_grade_unknown",
+        "type": "int"
       }
     ],
     "root_strata": [

@@ -289,7 +289,8 @@ def standard_items() -> list[ItemSpec]:
         gold=frozenset({"C"}),
         answers={"root/0": "B", "root/1": "C", "root/2": "B", "root/3": "(C)", "root/4": "K", "root/5": "(C)",
                  "private/0/1": "C", "private/0/2": "B", "private/0/3": "C", "private/0/4": TRUNCATED,
-                 "peer/2/1/0": "B", "peer/2/1/1": "B", "peer/4/1/0": "B", "peer/4/1/1": "B", "peer/4/1/2": "B", "peer/4/1/3": "B",
+                 "peer/2/1/0": "B", "peer/2/1/1": "B", "peer/4/1/0": "B", "peer/4/1/1": "B", "peer/4/1/2": "B",
+                 "peer/4/1/3": "B",
                  "peer/4/2/2": "B", "peer/4/2/3": "B", "cp/2/0": MISSING_FINAL, "cp/3/0": "B", "cp/3/1": "B",
                  "cp/3/2": "B"})
     boolean = ItemSpec(

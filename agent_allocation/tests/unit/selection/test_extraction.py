@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from agent_allocation.contracts import CompletionStatus, OutputKind, ParseStatus, TransportStatus
-from agent_allocation.extraction.final import extract_candidate
+from agent_allocation.extraction.final import extract_candidate, terminal_without_response
 from tests.unit.selection import factories as f
 
 
@@ -110,3 +110,13 @@ def test_identity_mismatches_raise():
         extract_candidate(f.result(other, "<final>1</final>"), s, t)
     with pytest.raises(ValueError):
         extract_candidate(f.result(s, "<final>1</final>"), s, f.task(item_id="other"))
+
+
+def test_terminal_without_response_is_an_empty_candidate():
+    t = f.task(OutputKind.OPTION)
+    s = f.spec(t, root_slot=3)
+    cand = terminal_without_response(s, t)
+    assert cand.candidate_id == cand.node_id == s.node_id and cand.parse_status is ParseStatus.EMPTY
+    assert cand.final_answer is None and cand.visible_content == "" and cand.output_kind is OutputKind.OPTION
+    with pytest.raises(ValueError):
+        terminal_without_response(s, f.task(OutputKind.OPTION, item_id="other"))
