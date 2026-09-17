@@ -7,7 +7,7 @@ Rules (MASTER_SPEC §11-§12, contract R9):
 * ``y`` is 1.0 / 0.0 / NaN. Operational failures (all-invalid abstention, invalid output, no output) are
   known zeros; evaluator errors, paused public checks, pending grades, missing selector rows, unsealed
   partitions and unrun jobs are NaN (unknown), never 0.
-* Grades are joined onto selections only for partitions whose seal verifies (``load.SealStatus.valid``).
+* Grades are joined onto a selection only when its batch seal verifies (``RunData.is_sealed``, contract v2 batches).
 * Coverage is oracle information over the checkpoint's declared pool; POOLED is synthesis, so its
   delivered accuracy is compared with the coverage of its *input* roots only descriptively.
 """
@@ -145,10 +145,9 @@ def outcome_table(run: RunData) -> pd.DataFrame:
     wave_of = run.wave_of()
     rows: list[dict[str, Any]] = []
     for partition in run.partitions:
-        seal = run.seals.get(partition)
-        sealed = bool(seal and seal.valid)
         selections = run.selections.get(partition, {})
         for cp in run.policies.get(partition, []):
+            sealed = run.is_sealed(partition, cp.policy_id)
             benchmark = run.benchmark_of(cp.item_id)
             subtask = run.subtask_of(cp.item_id)
             required = cp.required_node_ids
@@ -191,7 +190,9 @@ def outcome_table(run: RunData) -> pd.DataFrame:
                 "n_pool_unknown": int(sum(1 for v in pool_values if v != v)),
                 "coverage": coverage,
                 "input_coverage": input_coverage,
-                "selection_status": sel.status if sel else None,
+                "selection_status": SelectionStatus(sel.status).value if sel else None,
+                "selection_batch": run.selection_batch.get(partition, {}).get(cp.policy_id),
+                "selector_concrete": sel.selector_name if sel else None,
                 "selected_candidate_id": selected,
                 "selected_in_pool": (selected in cp.candidate_ids) if selected else None,
                 "sealed": sealed,
@@ -211,7 +212,7 @@ def _delivered(run: RunData, cp, sel, sealed: bool, n_terminal: int, n_required:
         return "missing_selection", NAN, None
     if not sealed:
         return "unsealed", NAN, sel.selected_candidate_id
-    status = sel.status
+    status = SelectionStatus(sel.status).value
     selected = sel.selected_candidate_id
     if status == SelectionStatus.ABSTAINED_ALL_INVALID.value:
         return "op_abstained_all_invalid", 0.0, selected

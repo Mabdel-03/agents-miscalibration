@@ -28,7 +28,7 @@ def two_wave_run(tmp_path_factory) -> RunPaths:
 def copy_run(paths: RunPaths, dest: Path) -> RunPaths:
     """Mutable copy of a session run (run dir + sibling locks)."""
     shutil.copytree(paths.run_dir, dest / "run")
-    return RunPaths.for_run(dest / "run", locks_dir=dest / "locks", local_state_dir=dest / "local")
+    return RunPaths.for_run(dest / "run", local_state_dir=dest / "local")
 
 
 @pytest.fixture
