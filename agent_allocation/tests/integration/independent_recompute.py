@@ -58,6 +58,9 @@ CANDIDATE_ONLY = {"sample", "private_single", "private_team", "peer", "deep", "c
 _KEY_RE = re.compile(rb"sk-or-(?:v\d+-)?[A-Za-z0-9_\-]{16,}")
 
 
+# Lead integration fix: the fixed-population rule applies to the study's claim partitions only.
+CLAIM_PARTITIONS = frozenset({"main", "high", "replication"})
+
 def _reference_impl():
     name = "agent08_reference_impl"
     if name in sys.modules:
@@ -414,6 +417,8 @@ def _checks(run: Run) -> list[dict[str, Any]]:
                 coverage_problems += ref.delivered_vs_coverage_violations([{
                     "policy_id": cp.policy_id, "family": cp.family, "delivered_correct": y == 1 if y is not None else None,
                     "pool_states": states}])
+        if partition not in CLAIM_PARTITIONS:
+            continue          # canary/pilot are gate evidence with deliberately nested grids, not claims
         for family_prefix in ("sample/", "private_single/", "private_team/", "peer/", "deep/", "cp/", "pooled/"):
             sets = [items for name, items in names.items() if name.startswith(family_prefix)]
             if sets and any(s != sets[0] for s in sets):
