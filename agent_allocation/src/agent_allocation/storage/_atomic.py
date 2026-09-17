@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -85,6 +86,27 @@ def replace_atomic(final: Path, data: bytes) -> None:
     except BaseException:
         try:
             os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    fsync_dir(final.parent)
+
+
+def copy_atomic(source: Path, final: Path) -> None:
+    """Stream ``source`` to a temp file beside ``final``, fsync, atomically replace (no whole-file memory copy)."""
+    final = Path(final)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{final.name}.", suffix=".tmp", dir=final.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as out, open(source, "rb") as src:
+            shutil.copyfileobj(src, out, length=4 * 1024 * 1024)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, final)
+    except BaseException:
+        try:
+            tmp.unlink()
         except FileNotFoundError:
             pass
         raise

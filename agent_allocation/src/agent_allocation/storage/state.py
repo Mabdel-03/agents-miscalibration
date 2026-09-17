@@ -32,7 +32,7 @@ from agent_allocation.contracts import (
     TransportStatus, dump_record, load_record,
 )
 from agent_allocation.paths import RunPaths
-from agent_allocation.storage._atomic import replace_atomic, write_once
+from agent_allocation.storage._atomic import copy_atomic, write_once
 from agent_allocation.storage.journal import LedgerJournal
 from agent_allocation.storage.raw import iter_raw_files, read_raw_response, result_from_raw, sha256_file
 
@@ -193,17 +193,23 @@ class StateStore:
     # ---- nodes --------------------------------------------------------------------------------------------
     def register_nodes(self, specs: Iterable[GenerationSpec], *, wave_index: int | None) -> None:
         now = utc_now()
-        rows = []
-        for spec in specs:
-            rows.append((spec.node_id, spec.partition_id, spec.item_id, spec.benchmark, spec.kind.value, wave_index,
-                         _json(spec), AttemptState.PENDING.value, now))
+        by_id = {spec.node_id: spec for spec in specs}
+        existing: set[str] = set()
+        wanted = list(by_id)
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            existing.update(r["node_id"] for r in self._query(f"SELECT node_id FROM nodes WHERE node_id IN ({marks})",
+                                                               chunk))
+        rows = [(node_id, spec.partition_id, spec.item_id, spec.benchmark, spec.kind.value, wave_index, _json(spec),
+                 AttemptState.PENDING.value, now) for node_id, spec in by_id.items() if node_id not in existing]
         with self._tx() as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO nodes(node_id, partition_id, item_id, benchmark, kind, wave_index, spec_json,"
                 " state, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
-            if wave_index is not None:
+            if wave_index is not None and existing:
                 conn.executemany("UPDATE nodes SET wave_index=? WHERE node_id=? AND wave_index IS NULL",
-                                 [(wave_index, r[0]) for r in rows])
+                                 [(wave_index, node_id) for node_id in existing])
             ids = [(r[0],) for r in rows]
             # Facts recorded before registration (recovery re-ingest) win over the fresh 'pending' row.
             conn.executemany(
@@ -320,7 +326,7 @@ class StateStore:
                          (attempt.attempt_no, attempt.node_id))
             if attempt.state in (AttemptState.LEASED, AttemptState.SENT):
                 conn.execute(
-                    "UPDATE nodes SET state=?, lease_attempt_id=?, lease_owner=COALESCE(?, lease_owner),"
+                    "UPDATE nodes SET state=?, lease_attempt_id=?, lease_owner=COALESCE(lease_owner, ?),"
                     " heartbeat_at=?, updated_at=? WHERE node_id=? AND state NOT IN ('terminal', 'response_persisted')",
                     (state, attempt.attempt_id, self.owner, time.time(), now, attempt.node_id))
             elif attempt.state is AttemptState.TERMINAL:
@@ -333,6 +339,15 @@ class StateStore:
         """Attempts that (may have) left the process, per node: the transport-attempt limit counts these."""
         return {r["node_id"]: r["n"] for r in
                 self._query("SELECT node_id, COUNT(*) AS n FROM attempts WHERE sent=1 GROUP BY node_id")}
+
+    def ok_cost_history(self) -> tuple[float, float, int]:
+        """(sum of reservations, sum of settled cost, count) over settled transport-OK attempts, for forecasting."""
+        row = self._query(
+            "SELECT COALESCE(SUM(CAST(json_extract(record_json, '$.reservation_usd') AS REAL)), 0) AS reserved,"
+            " COALESCE(SUM(CAST(json_extract(record_json, '$.settled_usd') AS REAL)), 0) AS cost, COUNT(*) AS n"
+            " FROM attempts WHERE transport_status='ok' AND json_extract(record_json, '$.settled_usd') IS NOT NULL"
+            " AND CAST(json_extract(record_json, '$.reservation_usd') AS REAL) > 0")[0]
+        return float(row["reserved"]), float(row["cost"]), int(row["n"])
 
     def attempts_for(self, node_id: str) -> list[Attempt]:
         rows = self._query("SELECT record_json FROM attempts WHERE node_id=? ORDER BY attempt_no", (node_id,))
@@ -406,8 +421,8 @@ class StateStore:
             row = conn.execute("SELECT record_json FROM attempts WHERE attempt_id=?", (result.attempt_id,)).fetchone()
             if row is not None:
                 attempt = replace(load_record(Attempt, json.loads(row["record_json"])), state=AttemptState.TERMINAL)
-                conn.execute("UPDATE attempts SET state='terminal', record_json=?, result_json=?, updated_at=?"
-                             " WHERE attempt_id=?", (_json(attempt), _json(result), now, result.attempt_id))
+                conn.execute("UPDATE attempts SET state='terminal', record_json=?, result_json=NULL, updated_at=?"
+                             " WHERE attempt_id=?", (_json(attempt), now, result.attempt_id))
             else:
                 from agent_allocation.runtime.ledger import attempt_number
                 attempt = Attempt(result.attempt_id, result.node_id, attempt_number(result.attempt_id),
@@ -416,9 +431,9 @@ class StateStore:
                                   generation_id=result.generation_id)
                 conn.execute(
                     "INSERT INTO attempts(attempt_id, node_id, attempt_no, state, transport_status, sent, record_json,"
-                    " result_json, updated_at) VALUES(?, ?, ?, 'terminal', ?, 1, ?, ?, ?)",
+                    " updated_at) VALUES(?, ?, ?, 'terminal', ?, 1, ?, ?)",
                     (attempt.attempt_id, attempt.node_id, attempt.attempt_no, result.transport_status.value,
-                     _json(attempt), _json(result), now))
+                     _json(attempt), now))
             conn.execute(
                 "UPDATE nodes SET state='terminal', outcome='succeeded', terminal_reason=NULL, lease_owner=NULL,"
                 " lease_attempt_id=NULL, attempts_used=MAX(attempts_used, (SELECT MAX(attempt_no) FROM attempts"
@@ -458,7 +473,7 @@ class StateStore:
             finally:
                 dest.close()
                 source.close()
-            replace_atomic(final, local_tmp.read_bytes())
+            copy_atomic(local_tmp, final)
         finally:
             try:
                 local_tmp.unlink()
@@ -492,8 +507,15 @@ class StateStore:
                 if stale.exists():
                     stale.rename(stale.with_name(f"{stale.name}.corrupt-{int(time.time())}"))
             if paths.state_db_backup.exists() and cls._db_ok(paths.state_db_backup):
-                replace_atomic(local, paths.state_db_backup.read_bytes())
+                copy_atomic(paths.state_db_backup, local)
         store = cls(paths)
+        from agent_allocation.runtime.owner import owner_host, owner_is_dead
+        import socket
+        owner = store.get_meta("dispatcher_owner")
+        if owner and owner_host(owner) == socket.gethostname() and not owner_is_dead(owner):
+            store.close()
+            raise StateError(f"dispatcher {owner} is alive on this host: recovery would charge its in-flight "
+                             "reservations; stop it first")
         store.recovery_report = store._reingest_and_reconcile()
         return store
 
@@ -501,11 +523,14 @@ class StateStore:
         from agent_allocation.runtime.ledger import attempt_number, confirmed_cost, journal_attempts, utc_now as now_iso
         report = {"parsed_ingested": 0, "raw_persisted": 0, "raw_failed_attempts": 0, "journal_settled_from_raw": 0,
                   "journal_charged_max": 0, "journal_attempts_recorded": 0}
-        # 1. parsed/ -> accepted results
+        # 1. parsed/ -> accepted results (file name = node_id: only files the DB lacks are read)
+        accepted_before = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
         root = parsed_root(self.paths)
         if root.is_dir():
             for shard_dir in sorted(p for p in root.iterdir() if p.is_dir()):
                 for file in sorted(shard_dir.glob("*.json")):
+                    if file.stem in accepted_before:
+                        continue
                     result, candidate = read_parsed(file)
                     if self._ingest_result(result, candidate):
                         report["parsed_ingested"] += 1
@@ -513,8 +538,13 @@ class StateStore:
         journal = LedgerJournal(self.paths.ledger_journal, group_commit_ms=0)
         known = journal_attempts(journal)
         accepted = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
+        terminal_attempts = {r["attempt_id"] for r in self._query("SELECT attempt_id FROM attempts WHERE state='terminal'")}
+        open_in_journal = {aid for aid, info in known.items() if info.resolution is None}
         raw_results: dict[str, GenerationResult] = {}
         for file in iter_raw_files(self.paths):
+            attempt_guess = _attempt_id_from_raw_name(file.name)
+            if attempt_guess in terminal_attempts and attempt_guess not in open_in_journal:
+                continue                      # already accounted and committed: no need to read the artifact
             relative = self.paths.relative(file)
             payload = read_raw_response(self.paths, relative)
             result = result_from_raw(payload, relative_path=relative, sha256=sha256_file(file))
@@ -557,6 +587,13 @@ class StateStore:
         return report
 
     recovery_report: dict[str, int] = {}
+
+
+def _attempt_id_from_raw_name(name: str) -> str | None:
+    """Inverse of ``paths.safe_name`` for ``<node_id hex>_<attempt_no>.json.gz``; None if the name is foreign."""
+    stem = name[:-len(".json.gz")] if name.endswith(".json.gz") else name
+    node_id, sep, number = stem.rpartition("_")
+    return f"{node_id}:{number}" if sep and number.isdigit() else None
 
 
 def iter_parsed_files(paths: RunPaths) -> Iterator[Path]:

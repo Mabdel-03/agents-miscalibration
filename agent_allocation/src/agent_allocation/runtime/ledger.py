@@ -24,7 +24,9 @@ Reservations above ``max_unresolved_usd`` of unresolved exposure are refused (``
 
 ``set_active_ceiling`` takes ``min(study cap, key remaining, account balance)`` expressed in *study* dollars; use
 :func:`active_ceiling_from_provider` to convert provider "remaining" figures so a shared account's unrelated usage
-lowers the ceiling instead of being counted as study spend.
+lowers the ceiling instead of being counted as study spend. ``set_run_cap`` is the dispatcher's per-``run()`` cap
+(``--max-usd``, pilot allowance); the enforced (and snapshot) ceiling is ``min(active ceiling, run cap)``, and clearing
+the run cap never raises the active ceiling the lead set.
 
 Config keys consumed: none directly (the lead passes ``budget.credit_ceiling_usd`` / the run's ``--max-usd`` as
 ``ceiling_usd`` and ``budget.max_unresolved_spend_usd`` as ``max_unresolved_usd``; the dispatcher verifies both).
@@ -126,6 +128,7 @@ class CollectionLedger:
             raise LedgerError("ceiling_usd must be >= 0")
         self.max_unresolved_usd = _dec(max_unresolved_usd, "max_unresolved_usd")
         self._ceiling = self.study_cap
+        self._run_cap: Decimal | None = None
         self._lock = threading.Lock()
         self._open: dict[str, _Open] = {}
         self._resolved: dict[str, tuple[LedgerEventKind, Decimal]] = {}
@@ -173,7 +176,7 @@ class CollectionLedger:
     # ---- views --------------------------------------------------------------------------------------------
     def snapshot(self) -> LedgerSnapshot:
         with self._lock:
-            return LedgerSnapshot(self._settled, self._in_flight, self._unresolved, self._ceiling)
+            return LedgerSnapshot(self._settled, self._in_flight, self._unresolved, self._effective_ceiling_locked())
 
     def fits(self, amount_usd: Decimal, *, ceiling_usd: Decimal | None = None) -> bool:
         """Non-mutating: would ``reserve(amount)`` pass (optionally under a lower soft ceiling)?"""
@@ -205,6 +208,22 @@ class CollectionLedger:
             return self._unresolved > self.max_unresolved_usd
 
     # ---- ceiling ------------------------------------------------------------------------------------------
+    def _effective_ceiling_locked(self) -> Decimal:
+        return self._ceiling if self._run_cap is None else min(self._ceiling, self._run_cap)
+
+    @property
+    def active_ceiling(self) -> Decimal:
+        """The lead's provider-derived ceiling, without the per-run cap."""
+        with self._lock:
+            return self._ceiling
+
+    def set_run_cap(self, cap_usd: Decimal | None) -> None:
+        cap = None if cap_usd is None else _dec(cap_usd, "cap_usd")
+        if cap is not None and cap < ZERO:
+            raise LedgerError("run cap must be >= 0")
+        with self._lock:
+            self._run_cap = cap
+
     def set_active_ceiling(self, ceiling_usd: Decimal) -> None:
         ceiling = _dec(ceiling_usd, "ceiling_usd")
         if ceiling < ZERO:
@@ -216,7 +235,8 @@ class CollectionLedger:
     def _refusal_locked(self, amount: Decimal, ceiling_usd: Decimal | None) -> str | None:
         if self._unresolved > self.max_unresolved_usd:
             return "unresolved_exposure"
-        ceiling = self._ceiling if ceiling_usd is None else min(self._ceiling, _dec(ceiling_usd, "ceiling_usd"))
+        effective = self._effective_ceiling_locked()
+        ceiling = effective if ceiling_usd is None else min(effective, _dec(ceiling_usd, "ceiling_usd"))
         if self._settled + self._in_flight + self._unresolved + amount > ceiling:
             return "ceiling"
         return None
@@ -382,6 +402,9 @@ class CollectionLedger:
 
 # Statuses whose response itself proves no generation was billed when it carries no usage: the request was refused
 # before any model ran (rate limit, auth, payment, bad request).
+# agent 01 (R01-4): HTTP 504/524 are UPSTREAM_ERROR but the upstream may have finished and charged the generation.
+GATEWAY_TIMEOUT_MAY_BE_BILLED = "gateway_timeout_may_be_billed"
+
 NEVER_BILLED_WITHOUT_USAGE = frozenset({
     TransportStatus.RATE_LIMITED,
     TransportStatus.AUTH_FAILED,
@@ -394,7 +417,8 @@ def confirmed_cost(result: GenerationResult | None) -> Decimal | None:
     """The cost a finished exchange provably incurred, or ``None`` when it is unknown (keep it unresolved).
 
     ``usage.actual_cost_usd`` wins whenever present. Without it: refusals in ``NEVER_BILLED_WITHOUT_USAGE``,
-    CONNECT_FAILED (provably never sent) and ``UPSTREAM_ERROR`` without a generation id cost 0; everything else
+    CONNECT_FAILED (provably never sent) and ``UPSTREAM_ERROR`` without a generation id cost 0 - except gateway
+    timeouts (``error_detail`` starts with ``gateway_timeout_may_be_billed``, HTTP 504/524); everything else
     (timeouts, 200 responses without usage, error envelopes, cache hits, provider mismatches, 5xx with a generation
     id) is unknown and stays unresolved until generation metadata or ``charge_max``.
     """
@@ -405,8 +429,9 @@ def confirmed_cost(result: GenerationResult | None) -> Decimal | None:
     status = result.transport_status
     if status in NEVER_BILLED_WITHOUT_USAGE or status is TransportStatus.CONNECT_FAILED:
         return ZERO
-    if status is TransportStatus.UPSTREAM_ERROR and not result.generation_id:
-        return ZERO
+    if status is TransportStatus.UPSTREAM_ERROR and not result.generation_id \
+            and not (result.error_detail or "").startswith(GATEWAY_TIMEOUT_MAY_BE_BILLED):
+        return ZERO                     # 502/503 before processing; 504/524 gateway timeouts may have been billed
     return None
 
 
