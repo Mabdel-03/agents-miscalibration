@@ -60,8 +60,8 @@ def freeze(cfg: Mapping[str, Any], config_path: str, paths: RunPaths) -> dict[st
     if problems:
         raise FreezeRefused(f"config invalid: {problems}")
     gate2 = paths.gate_result("gate2", "pilot")
-    if not gate2.exists() or json.loads(gate2.read_text()).get("decision") != "advance":
-        raise FreezeRefused("Gate 2 has not advanced")
+    if not gate2.exists() or json.loads(gate2.read_text()).get("decision") not in ("advance", "advance_owner_override"):
+        raise FreezeRefused("Gate 2 has not advanced (or been accepted by the owner)")
     locks = read_endpoint_locks(paths)
     for model in (cfg["primary_model"], cfg["replication_model"]):
         if model not in locks:

@@ -77,7 +77,7 @@ def load_amendments(paths: RunPaths) -> dict[str, int]:
         for line in paths.amendments.read_text().splitlines():
             if line.strip():
                 row = json.loads(line)
-                if row.get("rule") == "headroom_once":
+                if row.get("rule") in ("headroom_once", "headroom_owner_approved"):
                     for benchmark in row["scope"]:
                         result[benchmark] = int(row["after"])
     return result
@@ -874,6 +874,53 @@ async def amend_and_rerun_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_p
     return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
 
 
+async def owner_headroom_and_rerun_pilot(cfg, paths: RunPaths, max_usd: Decimal, *, family: str, headroom: int,
+                                        approval: str) -> int:
+    """Owner-approved headroom change beyond the single pre-authorized amendment (never automatic)."""
+    from agent_allocation.config import CODE_BENCHMARKS
+    if not approval.strip():
+        raise RunRefused("an owner approval reference is required")
+    current = load_amendments(paths)
+    scope = sorted(b for b in BENCHMARKS if (b in CODE_BENCHMARKS) == (family == "code"))
+    before = sorted({headroom_for(cfg, b, current) for b in scope})
+    with open(paths.amendments, "a") as handle:
+        handle.write(json.dumps({"id": f"headroom_{family}_owner_{headroom}", "recorded_at": utcnow(),
+                                 "rule": "headroom_owner_approved", "scope": scope, "before": before[-1],
+                                 "after": int(headroom), "approval": approval,
+                                 "reason": "Gate 2 truncation still above 3% after the pre-authorized amendment; "
+                                           "owner approved a further headroom change"}, sort_keys=True) + "\n")
+    record_decision(paths, phase="pilot_owner_headroom", family=family, headroom=headroom, approval=approval)
+    tasks = load_tasks(paths)
+    amendments = load_amendments(paths)
+    locks = read_endpoint_locks(paths)
+    waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
+    write_jobs(paths, "pilot", graphs)
+    pilot_cap = min(max_usd, PILOT_CEILING_USD)
+    from agent_allocation.apikey import load_api_key
+    snap = provider_snapshot(paths, "pilot_owner_headroom")
+    ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
+    summary = await dispatch(cfg, paths, waves, lock=locks[cfg["primary_model"]], tasks=tasks, allow_paid=True,
+                             max_usd=pilot_cap, ceiling=ceiling, api_key=load_api_key())
+    record_decision(paths, phase="pilot_owner_headroom_collect", summary=str(summary))
+    supersede_pilot_readouts(paths, reason=f"owner-approved {family} headroom {headroom}: text pilot cells re-collected")
+    return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
+def owner_accept_gate2(paths: RunPaths, approval: str) -> int:
+    """Owner accepts the remaining Gate 2 failures as documented limitations; freeze then treats Gate 2 as advanced."""
+    from agent_allocation.contracts import GateResult
+    from agent_allocation.gates import write_gate
+    if not approval.strip():
+        raise RunRefused("an owner approval reference is required")
+    gate = load_record(GateResult, json.loads(paths.gate_result("gate2", "pilot").read_text()))
+    failing = [c.name for c in gate.criteria if not c.passed]
+    supersede_pilot_readouts(paths, reason="owner acceptance of remaining Gate 2 failures")
+    accepted = replace(gate, decision="advance_owner_override", evaluated_at=utcnow())
+    write_gate(paths, accepted)
+    record_decision(paths, phase="gate2_owner_override", failing=failing, approval=approval)
+    return 0
+
+
 def supersede_pilot_readouts(paths: RunPaths, *, reason: str) -> None:
     """Pilot selections and the Gate 2 record are gate evidence, not study results: move them aside (never rewrite a
     sealed batch in place) before re-evaluating from the same or amended stored outputs."""
@@ -881,7 +928,7 @@ def supersede_pilot_readouts(paths: RunPaths, *, reason: str) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     moved = []
     selections = paths.selections_dir("pilot")
-    if selections.exists():
+    if selections.exists() and "owner acceptance" not in reason:
         target = paths.run_dir / "selections_superseded" / f"pilot_{stamp}"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(selections), str(target))
@@ -897,7 +944,11 @@ def supersede_pilot_readouts(paths: RunPaths, *, reason: str) -> None:
 def cmd_pilot(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation pilot")
     common_args(parser)
-    parser.add_argument("--phase", choices=["all", "collect", "finish", "amend"], default="all")
+    parser.add_argument("--phase", choices=["all", "collect", "finish", "amend", "owner-headroom", "owner-accept"],
+                        default="all")
+    parser.add_argument("--family", choices=["text", "code"], default="text")
+    parser.add_argument("--headroom", type=int, default=None)
+    parser.add_argument("--approval", default="", help="owner approval reference (message timestamp/quote)")
     parser.add_argument("--rehearsal", action="store_true",
                         help="run the whole pilot flow on the fake transport in a scratch run dir; sends nothing")
     args = parser.parse_args(argv)
@@ -908,6 +959,13 @@ def cmd_pilot(argv: list[str]) -> int:
         os.environ[REHEARSAL_ENV] = "1"
     paths, max_usd = preflight(cfg, args)
     paths.ensure()
+    if args.phase == "owner-headroom":
+        if not args.headroom:
+            raise RunRefused("--headroom is required with --phase owner-headroom")
+        return asyncio.run(owner_headroom_and_rerun_pilot(cfg, paths, max_usd, family=args.family,
+                                                          headroom=args.headroom, approval=args.approval))
+    if args.phase == "owner-accept":
+        return owner_accept_gate2(paths, args.approval)
     return asyncio.run(run_pilot(cfg, paths, max_usd, args.config, args.phase))
 
 
