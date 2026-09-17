@@ -14,8 +14,8 @@ import pandas as pd
 
 import isocore as ic
 import isoframe
-import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap
-import isogap
+import fig_design, fig_ladder, fig_matrix, fig_rest, fig_robust, fig_gap, fig_select
+import isogap, isoselect
 
 DEFAULT_RUN = ("/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/"
                "openrouter_agent_allocation_v1/artifacts/openrouter_agent_allocation_v1")
@@ -112,7 +112,23 @@ def main():
     fig_gap.split(dec, OUT)
     fig_gap.verifier(sweep, best_alloc, OUT)
     fig_gap.allowance(aa, buck, OUT)
-    print("figures: 15 written")
+
+    # ---- does allocation change selection, and what would read a pool out better
+    ss = isoselect.selection_success(RUN)
+    sconc = isoselect.success_by_concentration(RUN)
+    matched, matched_ci = isoselect.matched_pool(RUN)
+    struct = isoselect.answer_structure(RUN, cache=f"{OUT}/cache/bank_answers.pkl")
+    topm = isoselect.topm_curve(struct)
+    selv = isoselect.selective_verification(struct)
+    tci = isoselect.topm_ci(struct, 2)
+    for nm, df in [("selection_success", ss), ("success_by_conc", sconc),
+                   ("matched_pool", matched), ("matched_pool_ci", matched_ci),
+                   ("answer_structure", struct), ("topm", topm), ("selective", selv),
+                   ("topm_ci", tci)]:
+        df.to_parquet(f"{OUT}/cache/{nm}.parquet")
+    fig_select.tradeoff(ss, sconc, matched, OUT)
+    fig_select.adjudication(struct, topm, selv, OUT)
+    print("figures: 17 written")
 
     # ---------------------------------------------------------------- numbers
     N: dict = {}
@@ -276,6 +292,43 @@ def main():
         cost_lite=fmt(tin * 0.10 + tout * 0.40, 2),
         cost_flash=fmt(tin * 0.30 + tout * 2.50, 2),
         per_candidate_tokens=per_cand)
+    # ---- selection-side numbers
+    Q: dict = {}
+    mp = matched.set_index("name")
+    Q["matched_pool"] = {n: dict(n_pool=fmt(r["n_pool"], 1), coverage=fmt(r["coverage"]),
+                                 conc=fmt(r["conc"]), y=fmt(r["y"]), S=fmt(r["S"]))
+                         for n, r in mp.iterrows()}
+    mc = matched_ci[matched_ci["level"] == "macro3"].set_index("name")
+    Q["matched_ci"] = {n: dict(estimate=fmt(r["estimate"]), lo=fmt(r["ci_lo"]), hi=fmt(r["ci_hi"]))
+                       for n, r in mc.iterrows()}
+    for fam in ["sample", "private_team", "peer"]:
+        g = ss[ss["family"] == fam]
+        lo = g[g["rung"] <= 4]["S"].mean()
+        hi = g[g["rung"] >= 20]["S"].mean()
+        Q.setdefault("S_by_family", {})[fam] = dict(low_budget=fmt(lo), high_budget=fmt(hi))
+    sstr = struct.groupby("benchmark")[["n_distinct", "top_share", "margin"]].mean()
+    Q["answer_space"] = {b: dict(n_distinct=fmt(r["n_distinct"], 1),
+                                 top_share=fmt(r["top_share"]), margin=fmt(r["margin"]))
+                         for b, r in sstr.iterrows()}
+    Q["topm"] = {}
+    for b, g in topm.groupby("benchmark"):
+        gg = g.set_index("m")["acc"]
+        Q["topm"][b] = {f"top{m}": fmt(gg.loc[m]) for m in isoselect.TOP_M}
+        Q["topm"][b]["plurality"] = fmt(float(g["plurality"].iloc[0]))
+        Q["topm"][b]["oracle"] = fmt(float(g["oracle"].iloc[0]))
+    Q["topm_ci"] = {r["benchmark"]: dict(estimate=fmt(r["estimate"]), lo=fmt(r["ci_lo"]),
+                                         hi=fmt(r["ci_hi"])) for _, r in tci.iterrows()}
+    sv = selv[(selv["benchmark"] == "mmlu_pro")].set_index("tau")
+    Q["selective_mmlu"] = {f"tau{int(t*100)}": dict(verified=fmt(sv.loc[t, "verified"]),
+                                                    recovered=fmt(sv.loc[t, "recovered"]))
+                           for t in [0.10, 0.50, 1.01] if t in sv.index}
+    # Rank of the correct answer on the items where plurality fails but a correct answer exists.
+    fail = struct[(struct["has_correct"]) & (~struct["plurality_ok"])]
+    Q["failing_items"] = {b: dict(n=int(len(g)), mean_rank=fmt(g["correct_rank"].mean(), 2),
+                                  rank2_share=fmt((g["correct_rank"] == 2).mean()))
+                          for b, g in fail.groupby("benchmark") if len(g)}
+    N["selection"] = Q
+
     N["prescription"] = P
 
     with open(f"{OUT}/numbers.json", "w") as fh:

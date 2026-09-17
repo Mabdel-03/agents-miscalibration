@@ -500,6 +500,93 @@ started at 0.810 for a single candidate. Enlarging a code candidate pool and fil
 assertions finds programs that satisfy the visible evidence and fail the hidden suite. On this
 benchmark the run would have done better selecting at random, and better still doing nothing.
 
+\subsection{Does the allocation change how well a pool reads out?}
+
+Delivering a correct answer requires the pool to hold one, so for every configuration
+\emph{delivered} $=$ \emph{coverage} $\times S$ exactly, where $S$ is selection success, the chance
+of delivering given the pool held a correct answer. That identity turns the allocation question
+into a question about which of the two factors an axis buys.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f15_coverage_selectability.pdf}
+\caption{(a) Every configuration at $C/A_0 \geq 4$ in the coverage-selectability plane; grey lines
+are iso-delivered contours, since the product of the axes is delivered accuracy. Private single is
+absent because its current-view pool is one candidate, so it has no selection to measure.
+(b) Selection success against budget. (c) Four ways to produce 25 candidates.}
+\label{fig:tradeoff}
+\end{figure}
+
+The answer is that allocation changes selection success a great deal, and in the direction opposite
+to its effect on coverage. Scaling horizontally drives $S$ down: independent sampling falls from
+0.965 at the smallest budgets to 0.905 at the largest, because each extra candidate is another way
+for the vote to fragment. Scaling vertically with peer exposure drives $S$ up, from 0.970 to 0.989,
+because the agents converge on one answer and the vote becomes trivial. Private teams sit between,
+at 0.967 falling to 0.944.
+
+Neither extreme wins, because each pays for its factor with the other. Peer configurations have the
+best selection success in the entire study and the worst coverage; independent sampling has the
+best coverage and the worst selection success. Panel (a) shows the consequence: the configurations
+lie along an anti-diagonal band and therefore mostly on the same iso-delivered contour. This is the
+mechanism behind the report's first finding. Allocation shape is close to irrelevant not because
+the axes do nothing, but because what they give on one factor they take back on the other.
+
+The controlled comparison is panel (c), where pool size is held at 25 and only the way those 25
+candidates were produced varies. Twenty-five independent samples and a five-agent, five-round team
+read over its archive have \emph{identical} coverage, 0.917. The team's pool is more concentrated,
+0.829 against 0.795, and its selection success is higher, 0.927 against 0.909, so it delivers 0.850
+against 0.833. The difference is $+0.017$ with a 95\% interval of $[-0.003, 0.037]$, so the
+mechanism is measured cleanly while the delivered advantage is not separable from noise at 400
+items. One agent revising 25 times has the highest selection success of all, 0.951, and loses on
+coverage, at 0.883.
+
+The practical reading is that a mix is the only allocation that can hold both factors at once:
+parallel agents give coverage, revision gives concentration, and reading out over the archive
+rather than the final round keeps both. That is a reason to prefer it, but this study does not
+have the power to prove it pays.
+
+\subsection{Repairing the selector}
+
+If selection is the constraint, the structure of the answer space decides which repair is even
+available. Figure~\ref{fig:repair} shows that this structure differs enormously across benchmarks.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f16_selection_repair.pdf}
+\caption{(a) Distinct answers among 25 samples. (b) Accuracy from a perfect choice restricted to the
+$m$ most-voted distinct answers; dotted lines are each benchmark's oracle. (c) Gap recovered against
+the share of items sent to an adjudicator, gating on the plurality margin.}
+\label{fig:repair}
+\end{figure}
+
+Twenty-five MMLU-Pro samples produce only 1.7 distinct answers, with the top one taking 0.891 of
+the vote. MATH-500 produces 2.4. MBPP+ produces 19.0, with the top program taking 0.170, because
+programs are nearly all textually unique. These are three different selection problems wearing the
+same name.
+
+Where the answer space is narrow, the repair is cheap. On MMLU-Pro a perfect choice between just the
+\emph{top two} voted answers lifts accuracy from 0.740 to 0.820, which is $+0.080$ with a 95\%
+interval of $[0.030, 0.140]$ and recovers two thirds of the 0.120 gap. By the top five it reaches
+0.860, the full oracle. On the twelve items where a correct answer exists and the vote misses it,
+the correct answer is ranked second in two thirds of cases and ranked 2.58 on average. So the
+verifier this benchmark needs is not a reranker over 25 candidates; it is one binary comparison per
+item.
+
+Where the answer space is wide, adjudication does almost nothing. On MBPP+ the correct program sits
+at rank 7.43 among the failing items, top-two adjudication is worth $+0.010$ $[0.000, 0.030]$, and
+recovering the gap requires ranking essentially the whole pool. Code needs a verifier that scores
+each candidate on its own, which in practice means better tests rather than better voting. That is
+consistent with the public-test selector failing here: it is the only benchmark whose selector
+already tries to score candidates individually, and it does so on evidence the candidates were
+optimised against.
+
+Gating helps less than it should. Sending only the closest 16\% of MMLU-Pro items to an adjudicator
+recovers 0.417 of the gap, and recovering the full 0.667 requires sending all of them. The reason is
+visible in panel (a): the mean plurality margin on MMLU-Pro is 0.813, so most failures are not close
+calls. They are items where the model is confidently and consistently wrong, and an adjudicator has
+to be willing to overrule a large majority. That is a harder verifier to build than a tie-breaker,
+and it is the central difficulty this study surfaces.
+
 \subsection{A design check}
 
 On all 400 items, a team of $n$ agents run for zero revision rounds delivers exactly the same answer
@@ -560,6 +647,11 @@ MATH-500 gap, did nothing on MMLU-Pro and hurt on MBPP+. Verify per benchmark be
 not a research problem, it is a defect, and repairing it is worth 1.2 points immediately and unlocks
 the 10-point coverage headroom that sits behind it.
 
+\emph{Third-and-a-half, adjudicate the top two where the answer space is narrow.} On MMLU-Pro one
+binary comparison per item is worth $+0.080$ $[0.030, 0.140]$, two thirds of the gap, and needs a
+single extra call rather than a full reranking pass. This does not transfer to code, where the
+correct program ranks 7.43 among failures and no shortlist is short enough.
+
 \emph{Fourth, consolidate rather than communicate.} If the readout is a vote, prefer allocations that
 raise the correct share of the pool. Private teams do this and are worth 1.7 points over sampling;
 peer exposure does the opposite. Read out over the archive rather than the last round, which is free
@@ -592,8 +684,10 @@ stored, graded and sealed, so the run scores existing candidates and re-reads th
 \item \emph{Pointwise judge}, Flash-Lite. One call per candidate scoring correctness on a fixed
 rubric without the reference answer. 10{,}000 calls.
 \item \emph{Pointwise judge}, Flash, as a capability check on the same items.
-\item \emph{Pairwise tournament} on the top five candidates by judge score, to test whether pairwise
-comparison beats pointwise scoring where it matters.
+\item \emph{Top-two adjudication}, one pairwise call per item between the two most-voted answers.
+On the analysis above this is the highest-value arm on MMLU-Pro and the cheapest to run, at 400
+calls rather than 10{,}000. It also tests the hard part directly, since the adjudicator must be
+willing to overrule a majority whose mean margin is 0.813.
 \item \emph{MBPP+ selector repair}, at zero API cost: re-select among stored candidates that pass the
 public assertion, breaking ties by judge score rather than by order.
 \end{enumerate}

@@ -122,14 +122,14 @@ def verifier(sweep, best_alloc, outdir, name="f13_verifier_sweep"):
     eq = isogap.equivalent_auc(sweep, "macro3", plur)
     ax.plot([eq], [plur], marker="*", ms=9, color=ic.FAMILY_COLOR["sample"], zorder=5)
     ax.annotate(f"today's selector\n$\\approx$ AUC {eq:.2f}", xy=(eq, plur),
-                xytext=(eq + 0.03, plur - 0.045), fontsize=6,
+                xytext=(eq - 0.12, plur + 0.030), fontsize=6,
                 arrowprops=dict(arrowstyle="->", lw=0.6))
     st.grid(ax)
     ax.set_xlabel("Reranker pairwise AUC")
     ax.set_ylabel("Delivered accuracy (macro, 3)")
     ax.set_title("(b) Verification against allocation", fontsize=7.8)
-    ax.legend(fontsize=6, loc="lower right", handlelength=1.6, framealpha=0.9, frameon=True,
-              edgecolor="none")
+    ax.legend(fontsize=5.8, loc="lower right", handlelength=1.6, framealpha=0.95,
+              frameon=True, edgecolor="none", borderpad=0.3)
     fig.subplots_adjust(wspace=0.30)
     return st.save(fig, name, outdir)
 
