@@ -14,7 +14,7 @@ from agent_allocation.contracts import (
     BENCHMARKS, STUDY_ID, Attempt, AttemptState, Candidate, CompletionStatus, EndpointLock, GateCriterion,
     GateResult, GenerationKind, GenerationResult, GenerationSpec, GradeResult, GradeStatus, LedgerEvent,
     LedgerEventKind, OutputKind, PanelDraw, ParseStatus, PolicyCheckpoint, PrivateEvalSpec, PublicCheckResult,
-    PublicTask, CheckStatus, SelectionResult, TransportStatus, Usage, Wave, EvalKind, dump_record, load_record,
+    PublicTask, CheckStatus, SelectionResult, SelectionStatus, TransportStatus, Usage, Wave, EvalKind, dump_record, load_record,
     public_task_hash,
 )
 
@@ -62,8 +62,9 @@ def test_every_contract_record_round_trips():
         PolicyCheckpoint("main/math500/1/peer/3/2/current", task.item_id, "peer", 3, 3, 2, ("a", "b", "c"),
                          ("a", "b", "c", "r0", "r1", "r2"), "plurality", "v1", "main", "peer/3/2"),
         PublicCheckResult("c", "mbpp/1", "sha", CheckStatus.OK, 1, 1, ("pass",), "v1", "in", "env", 0.01),
-        SelectionResult("p", "c", "plurality", "v1", "pool", None, 0.001, "selected"),
-        GradeResult("c", GradeStatus.GRADED, None, True, "v1", "h"),
+        SelectionResult("p", "c", "plurality", "v1", "pool", None, 0.001, SelectionStatus.SELECTED),
+        GradeResult("c", GradeStatus.GRADED, False, True, "v1", "h"),
+        GradeResult("c", GradeStatus.EVALUATOR_ERROR, None, None, "v1", "h"),
         GateResult("gate1", "canary", False, "stop_notify", (GateCriterion("cache_hits", "1", "0", False, "g"),), "t"),
     ]
     for record in records:
