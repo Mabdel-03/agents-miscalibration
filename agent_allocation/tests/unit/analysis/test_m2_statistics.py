@@ -131,6 +131,29 @@ def test_primary_contrasts_match_hand_computation(primary_run):
         == pytest.approx(0.25)
 
 
+def test_tautological_and_degenerate_rows_are_labelled(primary_run):
+    """`cp/0 - peer/4/1` compares a pool with itself (grid: cp[0] = peer[4,1]), so it is 0 by construction, and a
+    zero-width interval from an all-zero difference vector must not read as a precisely estimated null."""
+    frame = analyze(primary_run.run_dir, replicates=REPLICATES, figures=False).extras["primary"]
+    tautology = frame[frame["contrast"] == f"cp/0 - {K.CP0_POOL}"]
+    assert not tautology.empty
+    assert (tautology["estimate"] == 0).all()
+    assert tautology["note"].str.contains("identically 0 by construction").all()
+    assert not tautology["note"].str.contains("zero-width interval").any()   # tautology wins; never both labels
+
+    degenerate = frame[(frame["status"] == "complete") & (frame["se"] == 0)
+                       & ~frame["contrast"].eq(f"cp/0 - {K.CP0_POOL}")]
+    assert degenerate["note"].str.contains("zero-width interval").all()
+    assert frame[frame["se"] > 0]["note"].isna().all()
+
+
+def test_identity_note_only_fires_when_the_terms_cancel():
+    cancels = K.LinearContrast("x", (("main", "cp/0", 1.0), ("main", K.CP0_POOL, -1.0)), "extension", "exploratory", "")
+    real = K.LinearContrast("y", (("main", "cp/3", 1.0), ("main", K.CP0_POOL, -1.0)), "extension", "exploratory", "")
+    assert K.identity_note(cancels) and "tautology" in K.identity_note(cancels)
+    assert K.identity_note(real) is None
+
+
 def test_unknown_primary_outcome_gives_bounds_and_withholds_p_values(primary_run, tmp_path):
     from tests.unit.analysis.conftest import copy_run
 

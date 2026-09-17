@@ -2,7 +2,9 @@
 # Offline grader: public checks for code first, then private grades. Never blocks generation; resubmittable.
 #   sbatch slurm/grade.sbatch --run-dir artifacts/openrouter_agent_allocation_v1 --resume --follow --workers 8
 #SBATCH --job-name=alloc-grade
-#SBATCH --partition=mit_normal
+# Offer both partitions so Slurm starts wherever it can first; override with `sbatch --partition=...`.
+# (2026-09-17: a mit_normal-only finalize job sat behind the queue with StartTime +15 h while pi_lhtsai was idle.)
+#SBATCH --partition=pi_lhtsai,mit_normal
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=48G
 #SBATCH --time=12:00:00

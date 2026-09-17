@@ -5,7 +5,9 @@
 # 2) final cached grading pass (public checks before private grades); 3) seal every partition's selections before any
 # grade join; 4) analyze; 5) audit. A STOP sentinel stays behind on purpose: resuming collection needs `stop --clear`.
 #SBATCH --job-name=alloc-finalize
-#SBATCH --partition=mit_normal
+# Offer both partitions so Slurm starts wherever it can first; override with `sbatch --partition=...`. This job is
+# the tail of the chain, so a queue wait here strands finished collection (2026-09-17: StartTime was +15 h).
+#SBATCH --partition=pi_lhtsai,mit_normal
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=48G
 #SBATCH --time=12:00:00

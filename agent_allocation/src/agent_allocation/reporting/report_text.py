@@ -128,6 +128,12 @@ def _ci(row: pd.Series, lo: str, hi: str) -> str:
     return f"[{a:.3f}, {b:.3f}]"
 
 
+def _contrast_note(note: str) -> bool:
+    """Notes that belong under the contrast tables rather than in the general ``## Notes`` list."""
+    return ("Primary p-values" in note or "cp/0" in note or "identically 0 by construction" in note
+            or "zero-width interval" in note)
+
+
 def primary_section(analysis: "Analysis") -> str:
     frame = analysis.extras.get("primary")
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -164,7 +170,7 @@ def primary_section(analysis: "Analysis") -> str:
              "ci95": _ci(pd.Series(r), "ci95_percentile_lo", "ci95_percentile_hi"),
              "bounds": _ci(pd.Series(r), "bound_lower", "bound_upper")} for r in desc.to_dict("records")]
     out.append(md_table(pd.DataFrame(rows)))
-    notes = [n for n in analysis.extras.get("notes", []) if "Primary p-values" in n or "cp/0" in n]
+    notes = [n for n in analysis.extras.get("notes", []) if _contrast_note(n)]
     if notes:
         out.append(bullet_list(notes))
     return "\n".join(out)
@@ -404,7 +410,7 @@ def amendments_section(analysis: "Analysis") -> str:
 
 def warnings_section(analysis: "Analysis") -> str:
     out = ["## Small-panel warnings", "", bullet_list(analysis.extras.get("warnings", []))]
-    notes = [n for n in analysis.extras.get("notes", []) if "Primary p-values" not in n]
+    notes = [n for n in analysis.extras.get("notes", []) if not _contrast_note(n)]
     out += ["## Notes", "", bullet_list(notes)]
     problems = sorted(set(list(analysis.run.problems) + list(analysis.extras.get("problems", []))))
     out += ["## Load and consistency problems", "", bullet_list(problems)]

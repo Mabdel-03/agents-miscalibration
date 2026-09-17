@@ -5,7 +5,39 @@ Always start with `source slurm/env.sh`. Study run dir: `artifacts/openrouter_ag
 `/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/openrouter_agent_allocation_v1/artifacts/openrouter_agent_allocation_v1`).
 Key: `~/.config/agents_scaling/openrouter_allocation_v1.key` (0600). Logs: `.../openrouter_agent_allocation_v1/logs/`.
 
-## Where things stand (2026-09-17 05:00 EDT)
+## FINAL — the study is complete (2026-09-17 14:52 EDT)
+
+Collection ran 11:35:58 → 13:01:49; finalize (seal → analyze → audit) finished 14:52:44. Nothing is pending.
+
+- **67,514 generations terminal, 101,088 checkpoint outcomes known, 0 unfinished partitions.** All four selection
+  batches sealed and verified before any gold join.
+- **Spend $47.64** (main $28.64, high $10.26, Flash replication $7.71, pilot $0.98, canary $0.03) against the $135
+  ledger ceiling; ledger vs `/key` difference −$0.098 on a $39.83 window, inside tolerance; 0 invariant violations.
+- **`audit`: 29 pass / 0 fail / 1 skip** (the skip is the optional agent-06 duplicate metrics table, never produced).
+  0 cache hits, 0 provider drift, 0 rate-limit responses, 0 duplicate dispatches across the run.
+- Reports: `artifacts/openrouter_agent_allocation_v1/reports/{RUN_REPORT,AUDIT,COST_RECONCILIATION,COMPLETENESS}.md`
+  (+ `.html`); the 14:23 first edition is kept at `reports_1423_backup/` for diffing.
+- **Read `docs/FINDINGS.md` before quoting any contrast.** The MMLU-Pro primary zeros are genuine but fragile
+  (degenerate bootstrap, one item from non-zero), and `cp/0 - peer/4/1` is a tautology (cp/0 *is* peer/4/1).
+- Results headline: PEER n=4 r=4 is **worse** than PRIVATE_TEAM by 2.5 pts macro (95% CI −4.6 to −0.8,
+  Holm p=0.027), driven by MBPP+ (−7.0) and MATH (−3.0); the CP contrast is null (−0.5 pts, p=0.57).
+
+### Deviations during finalization (both recorded in `state/run_decisions.jsonl`)
+1. Pending finalize job 22899228 was moved `mit_normal` → `pi_lhtsai` (Slurm had it starting the next morning).
+   The sbatch files now list both partitions; still check `squeue --start -j <id>` after submitting.
+2. The final cached grading pass was terminated after 32 min (`grade rc=143`). It re-reads ~71k cached grade files
+   over NFS and writes only for candidates lacking a grade; the follower grader had already reported
+   `candidates: 0`, no parsed record was newer than 13:02:38, and `audit` confirmed every checkpoint has a selector
+   row and every candidate a grade. Seal/analyze/audit then ran normally.
+
+### Re-running analysis (free: reads sealed artifacts, no API calls)
+```bash
+.venv/bin/allocation analyze --run-dir artifacts/openrouter_agent_allocation_v1 --config configs/balanced150.json
+.venv/bin/allocation audit   --run-dir artifacts/openrouter_agent_allocation_v1 --config configs/balanced150.json
+```
+`analyze` takes ~25 min (10,000 bootstrap replicates over 101k rows).
+
+## History — where things stood (2026-09-17 05:00 EDT)
 
 - Gate 1 (canary) **passed** 03:39; $0.0321442 = key usage delta.
 - Gate 2 (pilot) **stopped for an owner decision**: after the single pre-authorized amendment (text headroom

@@ -27,6 +27,7 @@ from agent_allocation.analysis.names import CheckpointNameError, parse_name
 from agent_allocation.analysis.stats import Population, build_population, value_matrix
 from agent_allocation.analysis.summary import benchmark_of_stratum, stratum_weights
 from agent_allocation.contracts import BENCHMARKS
+from agent_allocation.protocols.grid import CP_PEER_ROUND, CP_TEAM_SIZE
 
 CONTRAST_COLUMNS = ("contrast", "role", "panel", "description", "terms", "note", "level", "benchmark", "n_items",
                     "n_complete", "n_by_stratum", "bound_lower", "bound_upper", "status", "estimate", "se", "ci95_lo",
@@ -37,6 +38,9 @@ PRIMARY_II = "primary_ii_cp_minus_private_team_gain_h3"
 N_PRIMARY = 2
 MAIN_PARTITION = "main"
 HIGH_PARTITION = "high"
+CP0_POOL = f"peer/{CP_TEAM_SIZE}/{CP_PEER_ROUND}"      # cp/0 IS this pool (protocols/grid.py)
+DEGENERATE_ZERO_NOTE = ("zero-width interval: every per-item difference is exactly 0, so the bootstrap is "
+                        "degenerate (se=0); read it as no item ever flipping, never as a precisely estimated null")
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,22 @@ def _alias_cp0(outcomes: pd.DataFrame, contrast: LinearContrast) -> tuple[Linear
     return LinearContrast(contrast.name, tuple(terms), contrast.panel, contrast.role, contrast.description), note
 
 
+def identity_note(contrast: LinearContrast) -> str | None:
+    """A contrast whose terms cancel is identically zero by construction, not an empirical null.
+
+    ``cp/0`` and ``peer/4/1`` name the same pool (``protocols/grid.py``: ``cp[0] = peer[CP_TEAM_SIZE,
+    CP_PEER_ROUND]``), so they are the same term here even when both checkpoints exist in the manifest.
+    """
+    residual: dict[tuple[str, str], float] = {}
+    for part, name, coef in contrast.terms:
+        key = (part, CP0_POOL if name == "cp/0" else name)
+        residual[key] = residual.get(key, 0.0) + coef
+    if any(abs(c) > 1e-12 for c in residual.values()):
+        return None
+    return (f"{contrast.name} is identically 0 by construction: its terms name the same checkpoint pool "
+            f"(cp/0 is the {CP0_POOL} pool), so this row is a tautology, not a finding")
+
+
 def extension_items(outcomes: pd.DataFrame, partition: str, item_panels: Mapping[str, Sequence[str]]) -> set[str] | None:
     """Items declared in the extension panel (waves.json); ``None`` when no wave declares it."""
     declared = {i for i, panels in item_panels.items() if "extension" in panels}
@@ -97,6 +117,7 @@ def extension_items(outcomes: pd.DataFrame, partition: str, item_panels: Mapping
 def evaluate_contrast(outcomes: pd.DataFrame, contrast: LinearContrast, *, replicates: int, study_seed: Any,
                       items: set[str] | None = None, n_primary: int = N_PRIMARY) -> tuple[list[dict[str, Any]], Population]:
     contrast, note = _alias_cp0(outcomes, contrast)
+    note = "; ".join(n for n in (note, identity_note(contrast)) if n) or None
     columns = [(p, n) for p, n, _ in contrast.terms]
     population = build_population(outcomes, columns, label=contrast.name, items=items)
     coefs = np.array([c for _, _, c in contrast.terms])
@@ -130,6 +151,8 @@ def evaluate_contrast(outcomes: pd.DataFrame, contrast: LinearContrast, *, repli
         small = [s for s in ds if len(diff[s]) < 2]
         if level_complete and not small:
             res = paired_contrast({s: diff[s] for s in ds}, rs, domains=ds, weights=weights, n_primary=n_primary)
+            if res["se"] == 0 and not identity_note(contrast):
+                row["note"] = "; ".join(n for n in (note, DEGENERATE_ZERO_NOTE) if n)
             row.update({"status": "complete", "estimate": res["estimate"], "se": res["se"],
                         "ci95_lo": res["ci95_studentized"][0], "ci95_hi": res["ci95_studentized"][1],
                         "ci95_percentile_lo": res["ci95_percentile"][0], "ci95_percentile_hi": res["ci95_percentile"][1],
@@ -213,6 +236,12 @@ def primary_analysis(outcomes: pd.DataFrame, *, replicates: int, study_seed: Any
     for col in CONTRAST_COLUMNS:
         if not frame.empty and col not in frame:
             frame[col] = None
+    if not frame.empty:                       # row notes (tautologies, degenerate zero-width CIs) reach the report
+        for text in sorted({n for n in frame["note"].dropna() if n}):
+            where = [f"{c}:{b}" for c, b in frame.loc[frame["note"] == text, ["contrast", "benchmark"]]
+                     .itertuples(index=False)]
+            shown = ", ".join(where[:6]) + (f", +{len(where) - 6} more" if len(where) > 6 else "")
+            notes.append(f"{text} [{shown}]")
     estimates: dict[str, float | None] = {}
     if not frame.empty:
         macro = frame[(frame["level"] == "macro") & (frame["role"] == "primary")].set_index("contrast")
