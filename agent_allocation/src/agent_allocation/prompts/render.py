@@ -52,6 +52,7 @@ from agent_allocation.contracts import (
     ParseStatus,
     PublicTask,
     canonical_hash,
+    canonical_json,
     public_task_hash,
 )
 from agent_allocation.paths import PROJECT_ROOT
@@ -196,6 +197,16 @@ def _substitute(template_name: str, values: Mapping[str, str]) -> str:
 # Packets
 # ---------------------------------------------------------------------------------------------------------
 
+def _utf8(text: str) -> bytes:
+    """UTF-8 bytes; a lone surrogate decoded from a response's JSON escapes must not crash rendering."""
+    return text.encode("utf-8", "surrogatepass")
+
+
+def _audit_hash(obj: Any) -> str:
+    """``canonical_hash`` (identical for every well-formed string), tolerant of lone surrogates."""
+    return sha256(_utf8(canonical_json(obj))).hexdigest()
+
+
 def _final_spans(text: str) -> list[tuple[int, int]]:
     """Complete ``<final>...</final>`` elements, leftmost-first and non-overlapping, in linear time.
 
@@ -267,7 +278,7 @@ def bound_packet_text(text: str, *, envelope: int = PACKET_ENVELOPE_CHARS, sourc
     if envelope <= 2 * len(_OMISSION_INSERT):
         raise ValueError(f"envelope of {envelope} chars cannot hold an omission marker")
     spans = _final_spans(text)     # counted for every packet, trimmed or not (the report is audit data)
-    report: dict[str, Any] = {"original_chars": len(text), "original_bytes": len(text.encode("utf-8")),
+    report: dict[str, Any] = {"original_chars": len(text), "original_bytes": len(_utf8(text)),
                               "trimmed": False, "cuts": 0, "chars_removed": 0, "bytes_removed": 0,
                               "final_elements": len(spans), "finals_protected": True}
     if len(text) <= envelope:
@@ -295,7 +306,7 @@ def bound_packet_text(text: str, *, envelope: int = PACKET_ENVELOPE_CHARS, sourc
     if any(text[a:b] not in bounded for a, b in spans):  # pragma: no cover - cuts never intersect finals
         raise AssertionError("packet bound altered a <final> element")
     report.update(trimmed=True, cuts=len(cuts), chars_removed=sum(b - a for a, b in cuts),
-                  bytes_removed=sum(len(text[a:b].encode("utf-8")) for a, b in cuts), relayed_chars=len(bounded))
+                  bytes_removed=sum(len(_utf8(text[a:b])) for a, b in cuts), relayed_chars=len(bounded))
     return bounded, report
 
 
@@ -432,7 +443,7 @@ def render_messages_with_report(spec: GenerationSpec, task: PublicTask,
         "system_chars": len(messages[0]["content"]),
         "user_chars": len(messages[1]["content"]),
         "rendered_chars": sum(len(m["content"]) for m in messages),
-        "messages_sha256": canonical_hash(messages),   # audit only, never a cache key (R5)
+        "messages_sha256": _audit_hash(messages),      # audit only, never a cache key (R5)
     }
     return messages, report
 

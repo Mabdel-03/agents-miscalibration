@@ -375,3 +375,18 @@ def test_final_span_scanner_matches_reference_regex_and_is_linear():
     start = time.perf_counter()
     assert render._final_spans(degenerate) == []
     assert time.perf_counter() - start < 0.5
+
+
+def test_lone_surrogate_in_a_response_does_not_crash_rendering():
+    content = json.loads('"<rationale>\\nbad \\ud800 byte\\n</rationale>\\n<final>\\n1\\n</final>"')
+    g = graph("main")
+    index = node_index(g)
+    priv = next(n for n in g.nodes if n.kind is GenerationKind.PRIVATE)
+    parent = index[priv.parent_ids[0]]
+    messages, report = render_messages_with_report(priv, MATH_TASK, [(parent, candidate(parent, content))], seed=SEED)
+    assert "\ud800" in messages[1]["content"] and report["packets"][0]["final_elements"] == 1
+    long_content = content.replace("bad", "bad" + "\ud800" * (2 * PACKET_ENVELOPE_CHARS))
+    _, trimmed = render_messages_with_report(priv, MATH_TASK, [(parent, candidate(parent, long_content))], seed=SEED)
+    assert trimmed["bytes_removed_total"] > 0
+    ordinary = render_messages_with_report(priv, MATH_TASK, [(parent, candidate(parent))], seed=SEED)
+    assert ordinary[1]["messages_sha256"] == render.canonical_hash(ordinary[0])
