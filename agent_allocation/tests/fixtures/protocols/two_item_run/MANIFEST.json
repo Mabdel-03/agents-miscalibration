@@ -1,15 +1,15 @@
 {
   "candidate_parse_status_counts": {
-    "empty_content": 16,
-    "missing_final": 18,
-    "valid": 229
+    "empty_content": 14,
+    "missing_final": 21,
+    "valid": 228
   },
   "endpoint_lock_hash": "7be4781e088743dd5e9bf063e9b9e11811316409f98230ee13c8a4177683b6e6",
   "files_sha256_decompressed": {
-    "candidates.jsonl.gz": "43e3519aa160c44a473046c3429eeef75ff0399dcf6d65e1cfce53ff02945127",
-    "graphs.jsonl.gz": "cc0af7ed5fdab108ed081ccefd18cddc4817cea5297b66018df3662b318bf95a",
-    "prompts.jsonl.gz": "90756260a82c65925bfdc3b3ece0041cdcc6c8ad34f50ea3487bcba0cb02b515",
-    "results.jsonl.gz": "36d6b418ae428e10e48c49cdff4cd1d40f784e84d15a300a5237278147879b7b",
+    "candidates.jsonl.gz": "bacf6efec2f5d94f992d1d09f2c45732d34ad405c022160a096dca67087b494c",
+    "graphs.jsonl.gz": "92feea98f2e4168b2c570cfc7de1c175b879e4debac3f973411fc40fe437f947",
+    "prompts.jsonl.gz": "3cce84c0530376beb7f2801b5de5e4783f0add98b7deb1d3fc0868ebe9a7729d",
+    "results.jsonl.gz": "0006d652011e5946985d3d91ce94b6ded490f9b3a2d2c876bf57d47e96e9a328",
     "tasks.jsonl.gz": "d438ae8a1862a320ade566d8cd36790b1d960036fe0c8094e1c0cc25cb0198fc"
   },
   "generator": "agent_allocation.protocols.synthetic",
@@ -32,7 +32,7 @@
   "notes": "Synthetic, gold-free. Load records with contracts.load_record; prompts lines are plain JSON.",
   "packet_envelope_chars": 12000,
   "partition_id": "main",
-  "prompt_version": "prompts-v1-8eafd2a2bca2",
+  "prompt_version": "prompts-v1-e807ffe03995",
   "seed": 20260917,
   "study_id": "openrouter_agent_allocation_v1",
   "trimmed_prompts": 27

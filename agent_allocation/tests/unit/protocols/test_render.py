@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 from dataclasses import replace
 
@@ -36,8 +37,15 @@ def test_prompt_hashes_match_pack_checksums_and_version_format():
     pack = json.loads((ROOT / "CHECKSUMS.json").read_text())
     hashes = prompt_hashes()
     assert set(hashes) == {"system.txt", "root.txt", "private.txt", "peer.txt", "pooled.txt", "output_requirements.json"}
+    registry = json.loads((ROOT / "docs" / "amendments" / "prompt_amendments.json").read_text())["amendments"]
+    amended = {Path(a["template"]).name: a for a in registry}
     for name, digest in hashes.items():
-        assert pack[f"prompts/{name}"] == digest, name
+        if name in amended:
+            # A documented, owner-approved amendment: the pack hash is the recorded "before", the file the "after".
+            assert pack[f"prompts/{name}"] == amended[name]["before_sha256"], name
+            assert digest == amended[name]["after_sha256"], name
+        else:
+            assert pack[f"prompts/{name}"] == digest, name
     assert re.fullmatch(r"prompts-v1-[0-9a-f]{12}", prompt_version())
     verify_prompt_lock(prompt_lock_record())
     with pytest.raises(PromptError):

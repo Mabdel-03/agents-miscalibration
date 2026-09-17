@@ -1,0 +1,16 @@
+{
+ "amendments": [
+  {
+   "id": "prompt_system_v2",
+   "template": "prompts/system.txt",
+   "recorded_at": "2026-09-17T15:27:56.006040+00:00",
+   "before_sha256": "e8b9262e6391559aaf2f19fcea7f6bd957f7be272dd9b468b4bb4fcfd91a62bb",
+   "after_sha256": "e3b379e978d8ac5635557d49aa00940674aacbafc27c4fdc55988501e9cac17c",
+   "before_sentence": "Solve the supplied task accurately using only the information provided in this request.",
+   "after_sentence": "Solve the supplied task accurately. Use your own knowledge and reasoning together with the information provided in this request; no external tools, search, or retrieval are available. Always commit to exactly one final answer, even when uncertain.",
+   "pack_original_copy": "docs/amendments/prompts/system.pack-v1.txt",
+   "approval": "Owner answer in the Claude Code session, 2026-09-17 ~09:14 EDT: 'Clarify prompt, re-pilot' (option previewed with this exact wording)",
+   "reason": "Gate 2 pilot at text headroom 4096: all 9 invalid MMLU-Pro finals were empty <final> abstentions on one item (mmlu_pro/5728) where the model read 'using only the information provided in this request' as forbidding its own knowledge; 6 of the 9 abstentions propagated through PEER rounds, which would bias the communication comparison. Spec section 3 permits a documented prompt amendment before main collection."
+  }
+ ]
+}

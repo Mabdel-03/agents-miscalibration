@@ -886,6 +886,28 @@ async def owner_headroom_and_rerun_pilot(cfg, paths: RunPaths, max_usd: Decimal,
     return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
 
 
+async def recollect_pilot(cfg, paths: RunPaths, max_usd: Decimal, *, approval: str, reason: str) -> int:
+    """Re-collect every pilot cell under the current prompts and amendments (node ids change with the prompt version),
+    supersede the earlier pilot readouts, and re-evaluate Gate 2. Requires an owner approval reference."""
+    if not approval.strip():
+        raise RunRefused("an owner approval reference is required")
+    record_decision(paths, phase="pilot_recollect", approval=approval, reason=reason)
+    tasks = load_tasks(paths)
+    amendments = load_amendments(paths)
+    locks = read_endpoint_locks(paths)
+    waves, graphs = pilot_graphs(cfg, paths, tasks, locks, amendments)
+    write_jobs(paths, "pilot", graphs)
+    pilot_cap = min(max_usd, PILOT_CEILING_USD)
+    from agent_allocation.apikey import load_api_key
+    snap = provider_snapshot(paths, "pilot_recollect")
+    ceiling = active_ceiling(pilot_cap, ledger_settled(paths), snap)
+    summary = await dispatch(cfg, paths, waves, lock=locks[cfg["primary_model"]], tasks=tasks, allow_paid=True,
+                             max_usd=pilot_cap, ceiling=ceiling, api_key=load_api_key())
+    record_decision(paths, phase="pilot_recollect_collect", summary=str(summary))
+    supersede_pilot_readouts(paths, reason=reason)
+    return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
 def owner_accept_gate2(paths: RunPaths, approval: str) -> int:
     """Owner accepts the remaining Gate 2 failures as documented limitations; freeze then treats Gate 2 as advanced."""
     from agent_allocation.contracts import GateResult
@@ -924,7 +946,8 @@ def supersede_pilot_readouts(paths: RunPaths, *, reason: str) -> None:
 def cmd_pilot(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation pilot")
     common_args(parser)
-    parser.add_argument("--phase", choices=["all", "collect", "finish", "amend", "owner-headroom", "owner-accept"],
+    parser.add_argument("--phase", choices=["all", "collect", "finish", "amend", "owner-headroom", "owner-accept",
+                                            "recollect"],
                         default="all")
     parser.add_argument("--family", choices=["text", "code"], default="text")
     parser.add_argument("--headroom", type=int, default=None)
@@ -946,6 +969,10 @@ def cmd_pilot(argv: list[str]) -> int:
                                                           headroom=args.headroom, approval=args.approval))
     if args.phase == "owner-accept":
         return owner_accept_gate2(paths, args.approval)
+    if args.phase == "recollect":
+        return asyncio.run(recollect_pilot(cfg, paths, max_usd, approval=args.approval,
+                                           reason="owner-approved prompt amendment prompt_system_v2: all pilot cells "
+                                                  "re-collected under the new prompt version"))
     return asyncio.run(run_pilot(cfg, paths, max_usd, args.config, args.phase))
 
 
