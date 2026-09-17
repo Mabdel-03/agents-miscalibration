@@ -276,3 +276,7 @@ def load_inventory(cfg: Mapping[str, Any], paths: RunPaths) -> list[InventoryIte
     if tuple(entry.get("subtasks", ())) != BBH_SUBTASKS:
         raise ValueError(f"{BENCHMARK}: config subtasks {entry.get('subtasks')!r} != {BBH_SUBTASKS}")
     return items_from_bytes(materialize_sources(paths))
+
+
+#: Dataset-lock provenance read by ``manifest.dataset_lock_payload`` (plain dict so it serializes as JSON).
+SOURCE_PROVENANCE: dict[str, Any] = source_record()

@@ -292,3 +292,9 @@ def test_every_ineligible_item_carries_a_reason(math_inventory, mmlu_inventory, 
     for inventory in (math_inventory, mmlu_inventory, bbh_inventory):
         records = exclusion_records(inventory)             # raises if any ineligible item lacks a reason
         assert len(records) == sum(not item.eligible for item in inventory)
+
+
+def test_source_provenance_is_json_for_the_dataset_lock():
+    for module in (math500, mmlu_pro, bbh_logic4):
+        assert json.loads(json.dumps(module.SOURCE_PROVENANCE)) == module.source_record()
+        assert isinstance(module.LICENSE, str) and isinstance(module.PREPROCESSING_VERSION, str)

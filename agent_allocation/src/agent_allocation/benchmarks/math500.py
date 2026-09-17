@@ -111,3 +111,7 @@ def load_inventory(cfg: Mapping[str, Any], paths: RunPaths) -> list[InventoryIte
     if unknown:
         raise SourceIntegrityError(f"MATH-500: exclusions name unknown items {sorted(unknown)}")
     return items
+
+
+#: Dataset-lock provenance read by ``manifest.dataset_lock_payload`` (plain dict so it serializes as JSON).
+SOURCE_PROVENANCE: dict[str, Any] = source_record()

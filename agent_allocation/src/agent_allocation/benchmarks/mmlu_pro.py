@@ -181,3 +181,7 @@ def apply_source_item_rule(items: Sequence[InventoryItem], questions: Iterable[s
             out[position] = replace(items[position], eligible=False,
                                     exclusion_reason=f"duplicate_question_stem:{kept}")
     return out
+
+
+#: Dataset-lock provenance read by ``manifest.dataset_lock_payload`` (plain dict so it serializes as JSON).
+SOURCE_PROVENANCE: dict[str, Any] = source_record()
