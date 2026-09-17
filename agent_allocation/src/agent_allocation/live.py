@@ -1104,7 +1104,8 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
         record_decision(paths, phase="C", decision="skip_replication", reason="core incomplete")
         return 0
     replication_lock = locks[cfg["replication_model"]]
-    flash_rows = [r for r in load_call_rows(paths, "canary", {}) if r.spec.model == replication_lock.model]
+    flash_rows = ([r for r in load_call_rows(paths, "canary", {}) if r.spec.model == replication_lock.model]
+                  if paths.jobs("canary").exists() else [])
     flash_models = fit_models(observations_from_rows(flash_rows))
     from agent_allocation.forecast import BenchmarkModel
     saturated = BenchmarkModel(root_prompt=2500.0, private_prompt=2500.0, packet_tokens=0.0, completion={})
