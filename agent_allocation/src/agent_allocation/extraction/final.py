@@ -32,7 +32,7 @@ from agent_allocation.contracts import (
 )
 
 __all__ = [
-    "ALLOWED_FENCE_INFO", "EXTRACTOR_VERSION", "FINAL_CLOSE", "FINAL_OPEN", "extract_candidate",
+    "ALLOWED_FENCE_INFO", "EXTRACTOR_VERSION", "FINAL_CLOSE", "FINAL_OPEN", "empty_candidate", "extract_candidate",
     "terminal_without_response",
 ]
 
@@ -99,6 +99,12 @@ def terminal_without_response(spec: GenerationSpec, task: PublicTask) -> Candida
         raise TypeError("terminal_without_response expects (GenerationSpec, PublicTask)")
     if task.item_id != spec.item_id or task.benchmark != spec.benchmark:
         raise ValueError(f"task {task.benchmark}/{task.item_id} does not match spec {spec.benchmark}/{spec.item_id}")
-    node_id = spec.node_id
-    return Candidate(candidate_id=node_id, node_id=node_id, item_id=spec.item_id, visible_content="", final_answer=None,
+    return empty_candidate(spec.node_id, task)
+
+
+def empty_candidate(node_id: str, task: PublicTask) -> Candidate:
+    """``terminal_without_response`` for readers that hold only the node id (a parsed record with ``candidate: null``)."""
+    if not isinstance(node_id, str) or not node_id or not isinstance(task, PublicTask):
+        raise TypeError("empty_candidate expects (non-empty node_id, PublicTask)")
+    return Candidate(candidate_id=node_id, node_id=node_id, item_id=task.item_id, visible_content="", final_answer=None,
                      rationale=None, parse_status=ParseStatus.EMPTY, finish_reason=None, output_kind=task.output_kind)

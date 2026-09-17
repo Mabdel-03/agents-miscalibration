@@ -42,6 +42,23 @@ def run(tmp_path):
     return paths, panel
 
 
+def test_a_parsed_record_without_candidate_is_an_empty_candidate(run):
+    paths, panel = run
+    item = panel.records.items[1]                                  # mmlu_pro/fixture-2
+    nid = panel.node_ids[(item.task.item_id, "root/5")]
+    paths.parsed(nid).write_text(json.dumps({"result": None, "candidate": None}))
+    select_partition(paths, "main", seed=SEED, math_equivalent=fixture_math_equivalent)
+    records = metrics_io.load_partition_records(paths, "main")
+    loaded = next(i for i in records.items if i.task.item_id == item.task.item_id)
+    assert loaded.candidates[nid].parse_status.value == "empty_content" and nid not in loaded.results
+    grades = dict(panel.grades)
+    grades.pop(nid)
+    tables = build_partition_tables(load_sealed_selections(paths, "main"), records, grades)
+    row = next(r for r in tables.checkpoints if r.item_id == item.task.item_id and r.name == "sample/6"
+               and r.view == "current")
+    assert row.pool_n_invalid == 2 and row.delivered_state != "missing_selection"
+
+
 def test_unsealed_partition_refuses_before_reading_any_grade(run, monkeypatch):
     paths, _ = run
 

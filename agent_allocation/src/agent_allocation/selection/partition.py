@@ -2,8 +2,9 @@
 
 Reads, through ``RunPaths``: ``manifests/policies/{partition}.jsonl``, ``manifests/public/*.jsonl``,
 ``parsed/**/{node_id}.json`` and, for code, ``public_checks/**/{candidate_id}.json``. It never opens ``private/`` or
-``grades/``. A checkpoint is *ready* when every pool candidate is parsed and, for code, every validly parsed pool
-candidate has a public check; other checkpoints are reported as pending and selected on a later call (sealing
+``grades/``. A checkpoint is *ready* when every pool candidate is parsed (a parsed record whose ``candidate`` is
+``null`` -- a node made terminal without a response -- counts as an ``EMPTY`` candidate) and, for code, every validly
+parsed pool candidate has a public check; other checkpoints are reported as pending and selected on a later call (sealing
 merges, see ``selection.seal``). ``math_equivalent`` is memoized once per call (``memoized_equivalence``) and
 passed to MATH checkpoints only.
 
@@ -19,6 +20,7 @@ from agent_allocation.contracts import (
     BENCHMARKS, Candidate, OutputKind, ParseStatus, PolicyCheckpoint, PublicCheckResult, PublicTask, SelectionResult,
     load_record,
 )
+from agent_allocation.extraction.final import empty_candidate
 from agent_allocation.paths import RunPaths
 from agent_allocation.selection.plurality import memoized_equivalence
 from agent_allocation.selection.readout import select_checkpoint
@@ -73,7 +75,9 @@ def select_partition(paths: RunPaths, partition: str, *, seed: int,
                 if not path.exists():
                     ready = False
                     break
-                candidates[cid] = load_record(Candidate, _load_json(path)["candidate"])
+                record = _load_json(path).get("candidate")
+                # A node made terminal without any response (v2 R03-1) is an EMPTY candidate, not a pending one.
+                candidates[cid] = empty_candidate(cid, task) if record is None else load_record(Candidate, record)
             if task.output_kind is OutputKind.PYTHON and cid not in checks:
                 check_path = paths.public_check(cid)
                 if check_path.exists():
