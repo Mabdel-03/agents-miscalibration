@@ -340,6 +340,15 @@ class StateStore:
         return {r["node_id"]: r["n"] for r in
                 self._query("SELECT node_id, COUNT(*) AS n FROM attempts WHERE sent=1 GROUP BY node_id")}
 
+    def ok_cost_history(self) -> tuple[float, float, int]:
+        """(sum of reservations, sum of settled cost, count) over settled transport-OK attempts, for forecasting."""
+        row = self._query(
+            "SELECT COALESCE(SUM(CAST(json_extract(record_json, '$.reservation_usd') AS REAL)), 0) AS reserved,"
+            " COALESCE(SUM(CAST(json_extract(record_json, '$.settled_usd') AS REAL)), 0) AS cost, COUNT(*) AS n"
+            " FROM attempts WHERE transport_status='ok' AND json_extract(record_json, '$.settled_usd') IS NOT NULL"
+            " AND CAST(json_extract(record_json, '$.reservation_usd') AS REAL) > 0")[0]
+        return float(row["reserved"]), float(row["cost"]), int(row["n"])
+
     def attempts_for(self, node_id: str) -> list[Attempt]:
         rows = self._query("SELECT record_json FROM attempts WHERE node_id=? ORDER BY attempt_no", (node_id,))
         return [load_record(Attempt, json.loads(r["record_json"])) for r in rows]

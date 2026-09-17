@@ -540,9 +540,10 @@ class Dispatcher:
         # Forecast inputs are learned per instance too (mean rendered size, realized cost / reservation).
         self.rendered_chars_total = 0
         self.rendered_count = 0
-        self.ok_reserved_total = Decimal("0")
-        self.ok_cost_total = Decimal("0")
-        self.ok_cost_samples = 0
+        reserved, cost, samples = store.ok_cost_history()          # seeded from earlier processes' settled calls
+        self.ok_reserved_total = Decimal(repr(reserved))
+        self.ok_cost_total = Decimal(repr(cost))
+        self.ok_cost_samples = samples
         self._reset_run_state()
 
     def _reset_run_state(self) -> None:
@@ -851,8 +852,8 @@ class Dispatcher:
             if self.ledger.snapshot().exposure >= self.soft_ceiling:
                 return STOP_BUDGET_EXHAUSTED, "soft_admission_ceiling"
             nxt = next((w for w in self.waves if not w.opened), None)
-            if nxt is not None and not (nxt.optional and self.budget.optional_requires_core_completion
-                                        and not self._core_complete()):
+            if nxt is not None and any(w.opened for w in self.waves) and not (
+                    nxt.optional and self.budget.optional_requires_core_completion and not self._core_complete()):
                 if self.ledger.snapshot().exposure + self._wave_forecast(nxt) > self.soft_ceiling:
                     return STOP_BUDGET_EXHAUSTED, f"wave_forecast_exceeds_soft_ceiling:{nxt.index}"
             if all(w.optional for w in unopened) and not self._core_complete():
@@ -901,9 +902,12 @@ class Dispatcher:
             if wave.optional and self.budget.optional_requires_core_completion and not self._core_complete():
                 return
             forecast = self._wave_forecast(wave)
-            if snap.exposure + self.pending_reservation + forecast > self.soft_ceiling:
+            first_of_run = not any(w.opened for w in self.waves)
+            if not first_of_run and snap.exposure + self.pending_reservation + forecast > self.soft_ceiling:
+                # Reduce future waves rather than abandon items halfway. The run's first wave is exempt: the lead's
+                # planner admitted this plan, and every reservation is still held to the ceilings.
                 self._event_once(f"wave_forecast_exceeds_soft_ceiling:{wave.index}")
-                return                       # reduce future waves rather than abandon items halfway
+                return
             wave.opened = True
             self._event("wave_opened", f"{wave.index}:forecast={forecast:.6f}")
             for node in wave.nodes:

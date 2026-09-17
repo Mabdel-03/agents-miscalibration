@@ -218,3 +218,15 @@ async def test_run_caps_do_not_stick_to_the_ledger_between_runs(tmp_path):
     third = await dispatcher.run(plan_of(main), allow_paid=False, max_usd=Decimal("135"))
     assert third.ceiling_usd == Decimal("100") and third.soft_ceiling_usd == Decimal("100")
     assert env.ledger.active_ceiling == Decimal("100")
+
+
+async def test_forecast_ratio_is_seeded_from_stored_history(tmp_path):
+    from tests.unit.runtime.fakes import Behavior
+
+    env = Env.create(tmp_path)
+    graph = make_graph("hist", bank=25, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(lambda spec, aid, i: Behavior(cost=Decimal("0.0003")))
+    await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=Decimal("5"))
+    fresh = env.dispatcher(FakeClient())                               # a new process would start here
+    assert fresh.ok_cost_samples == 25
+    assert Decimal("0.3") < fresh._cost_ratio() < Decimal("0.4")       # 0.0003 / ~0.00091 reserved
