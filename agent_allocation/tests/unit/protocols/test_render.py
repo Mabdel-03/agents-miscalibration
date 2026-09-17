@@ -360,3 +360,18 @@ def test_symmetric_trim_property_over_random_texts():
         assert kept + rep["chars_removed"] == len(text)
         assert rep["bytes_removed"] == len(text.encode()) - sum(len(p.encode()) for p in pieces)
         assert len(bounded) == envelope                                  # K is exactly what fits
+
+
+def test_final_span_scanner_matches_reference_regex_and_is_linear():
+    import random
+    import time
+    reference = re.compile(r"<final\b[^>]{0,64}>.*?</final\s*>", re.IGNORECASE | re.DOTALL)
+    rng = random.Random(7)
+    alphabet = ["<final>", "</final>", "<FINAL >", "</final >", "<final x='1'>", "<finally>", "a", "\n", ">", "<"]
+    for _ in range(500):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 40)))
+        assert render._final_spans(text) == [m.span() for m in reference.finditer(text)], text
+    degenerate = "<final>x " * 20000
+    start = time.perf_counter()
+    assert render._final_spans(degenerate) == []
+    assert time.perf_counter() - start < 0.5

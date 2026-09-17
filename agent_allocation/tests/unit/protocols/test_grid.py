@@ -188,7 +188,8 @@ def test_pilot_grids_checkpoints():
     assert {n.node_id for n in r1.nodes} <= {n.node_id for n in r2.nodes}
     names = {cp.name for cp in r2.checkpoints}
     assert names == ({f"sample/{k}" for k in (1, 2, 3)} | {f"private_single/{t}" for t in (1, 2, 3)}
-                     | {f"private_team/3/{r}" for r in (0, 1, 2)} | {f"peer/3/{r}" for r in (0, 1, 2)})
+                     | {f"private_team/3/{r}" for r in (0, 1, 2)} | {f"peer/3/{r}" for r in (0, 1, 2)} | {"deep/1"})
+    assert checkpoint_by_name(r1, "deep/1").candidate_ids == (r1.nodes[0].node_id,)
     assert len(checkpoint_by_name(r2, "peer/3/2").required_node_ids) == 9
     assert len(checkpoint_by_name(r1, "private_team/3/2").required_node_ids) == 9
 

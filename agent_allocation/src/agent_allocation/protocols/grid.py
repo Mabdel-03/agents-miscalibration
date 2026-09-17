@@ -20,7 +20,7 @@ PRIVATE_TEAM; ``sample/k``, ``private_team/n/0`` and ``peer/n/0`` all point at t
 repeats are a canary-only concern of the lead).
 
 Checkpoints (names as in ``tools/reference_dag.py``, plus ``deep/1`` = root[0], the A-level point of the deep curve,
-emitted whenever the grid has a deep curve), each in two views:
+emitted for every grid), each in two views:
 
 * CURRENT: ``candidate_ids`` is the declared pool the primary selector reads.
 * ARCHIVE: ``candidate_ids`` is every candidate the policy itself generated (its ancestors, topological order).
@@ -247,11 +247,10 @@ def build_item_graph(grid: GridSpec, *, run_id: str, partition_id: str, task: Pu
     for n in grid.team_sizes:
         for r in range(grid.peer_rounds + 1):
             checkpoint(f"peer/{n}/{r}", "peer", peer[n, r], team_size=n, total_cycles=1 + r, peer_rounds=r)
-    if grid.deep_multipliers:
-        checkpoint("deep/1", "deep", (roots[0],), team_size=1, total_cycles=1, peer_rounds=0)
-        for m in grid.deep_multipliers:
-            checkpoint(f"deep/{m}", "deep", (deep[m],), team_size=1, total_cycles=1, peer_rounds=0,
-                       budget=base_budget * m)
+    checkpoint("deep/1", "deep", (roots[0],), team_size=1, total_cycles=1, peer_rounds=0)
+    for m in grid.deep_multipliers:
+        checkpoint(f"deep/{m}", "deep", (deep[m],), team_size=1, total_cycles=1, peer_rounds=0,
+                   budget=base_budget * m)
     if grid.extension:
         assert pooled is not None
         for h in range(CP_PRIVATE_STEPS + 1):

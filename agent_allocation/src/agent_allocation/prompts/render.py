@@ -90,7 +90,8 @@ PLACEHOLDERS: Mapping[str, frozenset[str]] = {
     "pooled.txt": frozenset({"task_prompt", "output_requirement", "candidate_packets"}),
 }
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
-_FINAL_ELEMENT = re.compile(r"<final\b[^>]*>.*?</final\s*>", re.IGNORECASE | re.DOTALL)
+_FINAL_OPEN = re.compile(r"<final\b[^>]{0,64}>", re.IGNORECASE)
+_FINAL_CLOSE = re.compile(r"</final\s*>", re.IGNORECASE)
 _OMISSION_INSERT = f"\n{OMISSION_MARKER}\n"
 _TASK_KIND = {"math500": OutputKind.MATH, "mmlu_pro": OutputKind.OPTION, "mbpp_plus": OutputKind.PYTHON}
 
@@ -196,7 +197,26 @@ def _substitute(template_name: str, values: Mapping[str, str]) -> str:
 # ---------------------------------------------------------------------------------------------------------
 
 def _final_spans(text: str) -> list[tuple[int, int]]:
-    return [m.span() for m in _FINAL_ELEMENT.finditer(text)]
+    """Complete ``<final>...</final>`` elements, leftmost-first and non-overlapping, in linear time.
+
+    Same spans as ``re.finditer(r"<final\\b[^>]{0,64}>.*?</final\\s*>", IGNORECASE | DOTALL)`` without its
+    quadratic backtracking on degenerate outputs full of unclosed ``<final>`` tags.
+    """
+    closes = [(m.start(), m.end()) for m in _FINAL_CLOSE.finditer(text)]
+    spans: list[tuple[int, int]] = []
+    ci = 0
+    cursor = 0
+    for opening in _FINAL_OPEN.finditer(text):
+        if opening.start() < cursor:
+            continue
+        while ci < len(closes) and closes[ci][0] < opening.end():
+            ci += 1
+        if ci == len(closes):
+            break
+        spans.append((opening.start(), closes[ci][1]))
+        cursor = closes[ci][1]
+        ci += 1
+    return spans
 
 
 def _cuts_for(text: str, spans: Sequence[tuple[int, int]], keep: int) -> list[tuple[int, int]]:
