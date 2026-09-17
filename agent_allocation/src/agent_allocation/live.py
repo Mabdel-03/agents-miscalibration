@@ -1061,7 +1061,9 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
 
     # Phase A: the first waves establish a trustworthy forecast; extension CP/POOLED ride with their items.
     snap = provider_snapshot(paths, "run_phase_a")
-    ceiling = min(active_ceiling(max_usd, ledger_settled(paths), snap), soft)
+    # R02-8: the ledger gets the absolute provider-derived ceiling (retries/reconciliation may use the contingency);
+    # the dispatcher holds NEW attempts to the configured soft admission ceiling itself.
+    ceiling = active_ceiling(max_usd, ledger_settled(paths), snap)
     runtime = Runtime(cfg, paths, lock=primary, tasks=tasks, ceiling=ceiling, api_key=api_key)
     try:
         return await _run_main_phases(cfg, paths, max_usd, runtime=runtime, by_wave=by_wave, tasks=tasks,
@@ -1092,12 +1094,12 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
                            main_a=int(cfg["reasoning"]["main_a"]), high_a=int(cfg["reasoning"]["high_a"]))
     spent = ledger_settled(paths)
     snap = provider_snapshot(paths, "run_phase_b")
-    ceiling = min(active_ceiling(max_usd, spent, snap), soft)
+    ceiling = active_ceiling(max_usd, spent, snap)
     n_waves = len(by_wave["main"])
     ext_waves = cfg["panels"]["extension_items"] // 16
     admission = wave_admission(costs, n_waves=n_waves - FORECAST_CHECK_WAVES,
                                extension_waves=max(ext_waves - FORECAST_CHECK_WAVES, 0),
-                               high_waves=len(by_wave["high"]), available_usd=ceiling - spent)
+                               high_waves=len(by_wave["high"]), available_usd=min(ceiling, soft) - spent)
     record_decision(paths, phase="B", admission=admission, spent=str(spent), ceiling=str(ceiling),
                     per_item_costs={b: {k: str(v) for k, v in c.items()} for b, c in costs.items()})
     main_rest = by_wave["main"][FORECAST_CHECK_WAVES:FORECAST_CHECK_WAVES + admission["main_waves"]]
