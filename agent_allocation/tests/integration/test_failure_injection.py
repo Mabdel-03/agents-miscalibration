@@ -180,16 +180,27 @@ async def test_timeout_after_dispatch_never_releases_the_reservation(run_paths, 
 
 
 async def test_unresolved_exposure_above_limit_pauses_admission(run_paths, cfg):
+    """While an ambiguous attempt's reservation is unresolved and above ``max_unresolved_usd``, no other attempt may
+    be sent. Resolution may come from reconciliation or a conservative CHARGE_MAX; either ends the window."""
     hx = _harness(run_paths, cfg, max_unresolved="0.000001", concurrency_start=1, concurrency_max=1)
     victim = _root(hx, 0, 0)
     hx.stub.script(victim, read_timeout())
     await hx.run(expect_error=True)
-    events = hx.events_for(victim)
-    first = sorted({e.attempt_id for e in events if e.kind is K.RESERVE})[0]
-    if any(e.kind is K.CHARGE_MAX for e in hx.events_for(first)):
-        pytest.skip("timeout settled conservatively at max; no unresolved exposure to pause on")
-    assert len(hx.stub.served) < len(hx.specs), "admission continued past the unresolved-exposure limit"
     assert hx.ledger_violations() == []
+    events = hx.journal_events()
+    reserved = sorted({e.attempt_id for e in events if e.kind is K.RESERVE and e.attempt_id.startswith(victim)})
+    assert reserved, "the victim was never dispatched"
+    first = reserved[0]
+    unresolved_kind = getattr(K, "UNRESOLVED", None)
+    mark_seq = next((e.seq for e in events if e.attempt_id == first and (
+        (unresolved_kind is not None and e.kind is unresolved_kind)
+        or (e.kind is K.RECONCILE and "unresolved" in (e.detail or "")))), None)
+    if mark_seq is None:
+        mark_seq = next(e.seq for e in events if e.attempt_id == first and e.kind is K.SENT)
+    resolved_seq = next((e.seq for e in events if e.attempt_id == first and e.kind in (K.SETTLE, K.CHARGE_MAX)), None)
+    during = [e for e in events if e.kind is K.SENT and e.attempt_id != first and e.seq > mark_seq
+              and (resolved_seq is None or e.seq < resolved_seq)]
+    assert not during, f"{len(during)} attempts were sent while ${hx.max_unresolved} of unresolved exposure was exceeded"
 
 
 # --------------------------------------------------------------------------------------------------------------
