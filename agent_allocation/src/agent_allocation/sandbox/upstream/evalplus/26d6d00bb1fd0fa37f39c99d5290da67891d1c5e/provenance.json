@@ -1,0 +1,43 @@
+{
+  "dataset_contents_downloaded": false,
+  "files": [
+    {
+      "bytes": 3454,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/humaneval.py",
+      "sha256": "105969e0c700fa77f18b1ae7dd06230e22f81540cf030ddca2cbfeb2630055b4",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/humaneval.py"
+    },
+    {
+      "bytes": 5504,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py",
+      "sha256": "186e09b7b14dcf12ed259dfca1d6644a1c266c1bbac41c917fd3c0449a734b24",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/mbpp.py"
+    },
+    {
+      "bytes": 6105,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/utils.py",
+      "sha256": "15dc36203f078cdf6c213b5ff55469e23e166e4fe898d46e7287fa4a0e100fbc",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/data/utils.py"
+    },
+    {
+      "bytes": 12935,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/evaluate.py",
+      "sha256": "47f766df2dbb2280f7dd2c1040bfff0396c2b414a8d44b639424aa941bee7eab",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/evaluate.py"
+    },
+    {
+      "bytes": 10651,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py",
+      "sha256": "3c833c39b842e33f251c83db4347e0a95191909f23b390c12d73ab29a28a4daf",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/__init__.py"
+    },
+    {
+      "bytes": 11558,
+      "path": "data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE",
+      "sha256": "fcc1f77fe5443b21bfc4dfcc3d66f7654f599b91582df771850e5e876986a103",
+      "url": "https://raw.githubusercontent.com/evalplus/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/LICENSE"
+    }
+  ],
+  "repository": "evalplus/evalplus",
+  "revision": "26d6d00bb1fd0fa37f39c99d5290da67891d1c5e"
+}

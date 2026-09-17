@@ -15,6 +15,8 @@ Rules that every module relies on (see ``docs/00_contract.md`` for the full tabl
 * Records cross module and process boundaries only through ``dump_record`` / ``load_record``.
   Never hand-roll a dict for a contract type: writer/reader key drift is this project's recurring defect.
 * Selectors never receive ``PrivateEvalSpec`` or ``GradeResult``.
+
+Contract v2 (2026-09-17 03:40 EDT) resolves docs/requests D1-D4, D10, D11, R01-1, R01-2, R04-1; see docs/00_contract.md §6.
 """
 from __future__ import annotations
 
@@ -106,7 +108,7 @@ class AttemptState(str, Enum):
 
 class TransportStatus(str, Enum):
     OK = "ok"                                # HTTP 200 carrying a completion (content may still be empty)
-    ERROR_ENVELOPE = "error_envelope"        # HTTP 200 carrying an error object: not success
+    ERROR_ENVELOPE = "error_envelope"        # HTTP 2xx without one usable completion: retryable, charge unknown
     RATE_LIMITED = "rate_limited"            # 429: retryable, honor Retry-After, halve allowances
     AUTH_FAILED = "auth_failed"              # 401/403: open the circuit
     PAYMENT_REQUIRED = "payment_required"    # 402: open the circuit
@@ -119,6 +121,7 @@ class TransportStatus(str, Enum):
 
 
 RETRYABLE_TRANSPORT = frozenset({
+    TransportStatus.ERROR_ENVELOPE,          # v2: provider error inside HTTP 200; reservation kept until reconciled
     TransportStatus.RATE_LIMITED,
     TransportStatus.UPSTREAM_ERROR,
     TransportStatus.CONNECT_FAILED,
@@ -168,6 +171,9 @@ class LedgerEventKind(str, Enum):
     SETTLE = "settle"
     RELEASE_UNSENT = "release_unsent"   # only for attempts that provably never left the process
     CHARGE_MAX = "charge_max"           # conservative settlement of an unresolved attempt
+    UNRESOLVED = "unresolved"           # v2 (amount 0): attempt may have been billed; counts toward the $2 pause.
+                                        # On replay, every SENT reservation without SETTLE/CHARGE_MAX/RELEASE_UNSENT
+                                        # is unresolved, whether or not this event was written before a crash.
     RECONCILE = "reconcile"             # provider-side reconciliation note (no reservation change)
 
 
@@ -207,6 +213,7 @@ class PrivateEvalSpec:
     private_record_ref: str | None     # run-dir-relative path of the restricted record / oracle (code)
     private_hash: str                  # canonical hash of the full private record (gold + tests)
     subtask: str | None = None
+    allowed_choices: tuple[str, ...] = ()   # v2: legal final identities for option/boolean items; () for MATH/code
 
 
 @dataclass(frozen=True)
@@ -459,8 +466,9 @@ class PublicCheckResult:
     cpu_seconds: float
 
     @property
-    def pass_fraction(self) -> float:
-        return self.cases_passed / self.cases_total if self.cases_total else 0.0
+    def pass_fraction(self) -> float | None:
+        """None when no public case exists: the checker must report INFRASTRUCTURE_ERROR and the selector pauses."""
+        return self.cases_passed / self.cases_total if self.cases_total else None
 
 
 @dataclass(frozen=True)
@@ -472,7 +480,7 @@ class SelectionResult:
     pool_hash: str
     public_evidence_hash: str | None
     cpu_seconds: float
-    status: str                            # a SelectionStatus value
+    status: SelectionStatus                # v2: typed (was str)
 
 
 @dataclass(frozen=True)
@@ -486,6 +494,16 @@ class GradeResult:
     detail_code: str | None = None
     environment_digest: str | None = None
     cpu_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        # v2: the tri-state rule is enforced by the type (ARD36's grading defect cannot be constructed).
+        if self.status == GradeStatus.GRADED and self.semantic_correct is None:
+            raise ValueError("GRADED requires semantic_correct True/False")
+        if self.status in (GradeStatus.EVALUATOR_ERROR, GradeStatus.NOT_EVALUATED) and self.semantic_correct is not None:
+            raise ValueError(f"{self.status.value} requires semantic_correct=None (unknown)")
+        if self.status == GradeStatus.INVALID_OUTPUT and (self.semantic_correct is not None
+                                                          or self.operational_success is not False):
+            raise ValueError("INVALID_OUTPUT requires semantic_correct=None and operational_success=False")
 
 
 @dataclass(frozen=True)
@@ -517,7 +535,8 @@ class ItemGraph:
 
 
 class Generator(Protocol):
-    async def generate(self, spec: GenerationSpec, messages: Sequence[Mapping[str, str]]) -> Any: ...
+    async def generate(self, spec: GenerationSpec, messages: Sequence[Mapping[str, str]], *, attempt_id: str,
+                       lock: EndpointLock, sampling: Mapping[str, Any]) -> "GenerationOutcome": ...
 
 
 class Selector(Protocol):
@@ -552,6 +571,8 @@ def dump_record(obj: Any) -> dict[str, Any]:
 
 
 _HINT_CACHE: dict[type, dict[str, Any]] = {}
+import contextvars as _contextvars
+_NONSTRICT: "_contextvars.ContextVar[bool]" = _contextvars.ContextVar("allocation_nonstrict_load", default=False)
 
 
 def _hints(cls: type) -> dict[str, Any]:
@@ -584,13 +605,15 @@ def _coerce(tp: Any, value: Any) -> Any:
         if tp is Decimal:
             return Decimal(str(value))
         if dataclasses.is_dataclass(tp):
-            return load_record(tp, value)
+            return load_record(tp, value, strict=False) if _NONSTRICT.get() else load_record(tp, value)
         if tp is float and isinstance(value, int):
             return float(value)
     return value
 
 
-def load_record(cls: type, data: Mapping[str, Any]) -> Any:
+def load_record(cls: type, data: Mapping[str, Any], *, strict: bool = True) -> Any:
+    """v2: strict by default -- every field must be present (a missing field never silently takes its default,
+    which would change e.g. a checkpoint's view or a node's identity). ``strict=False`` is for hand-written fixtures."""
     if not dataclasses.is_dataclass(cls):
         raise TypeError(f"{cls!r} is not a contract dataclass")
     tag = data.get("__record__")
@@ -601,5 +624,13 @@ def load_record(cls: type, data: Mapping[str, Any]) -> Any:
     unknown = set(data) - names - {"__record__"}
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown fields {sorted(unknown)}")
-    kwargs = {name: _coerce(hints[name], data[name]) for name in names if name in data}
+    if strict:
+        missing = names - set(data)
+        if missing:
+            raise ValueError(f"{cls.__name__}: missing fields {sorted(missing)} (strict load)")
+    token = _NONSTRICT.set(not strict)
+    try:
+        kwargs = {name: _coerce(hints[name], data[name]) for name in names if name in data}
+    finally:
+        _NONSTRICT.reset(token)
     return cls(**kwargs)

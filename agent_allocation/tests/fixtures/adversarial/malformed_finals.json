@@ -1,0 +1,198 @@
+[
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [],
+  "case": "no final element",
+  "expected_parse_status": "missing_final",
+  "finish_reason": "stop",
+  "output_kind": "math",
+  "visible_content": "<rationale>The answer is 4.</rationale>\nThe answer is 4."
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "case": "empty visible content",
+  "expected_parse_status": "empty_content",
+  "finish_reason": "stop",
+  "output_kind": "option",
+  "visible_content": ""
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [],
+  "case": "length-truncated inside final",
+  "expected_parse_status": null,
+  "finish_reason": "length",
+  "output_kind": "math",
+  "visible_content": "<rationale>x</rationale><final>\\frac{1}{"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "case": "two competing finals",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "option",
+  "visible_content": "<final>A</final>\n<final>B</final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "case": "unclosed final",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "option",
+  "visible_content": "<rationale>r</rationale><final>C"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [],
+  "case": "empty final element",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "math",
+  "visible_content": "<rationale>r</rationale><final>   </final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "case": "illegal option letter",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "option",
+  "visible_content": "<final>Z</final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "case": "option answer only in rationale",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "option",
+  "visible_content": "<rationale>So (B) is right.</rationale><final></final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [
+   "True",
+   "False"
+  ],
+  "case": "boolean hedge",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "boolean",
+  "visible_content": "<final>True or False</final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [],
+  "case": "nested finals",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "math",
+  "visible_content": "<final><final>4</final></final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [],
+  "case": "python prose instead of code",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "python",
+  "visible_content": "<final>I would write a loop that adds numbers.</final>"
+ },
+ {
+  "acceptable_parse_statuses": [
+   "missing_final",
+   "malformed_final",
+   "empty_content",
+   "refusal"
+  ],
+  "allowed_choices": [],
+  "case": "python with two fences",
+  "expected_parse_status": null,
+  "finish_reason": "stop",
+  "output_kind": "python",
+  "visible_content": "<final>```python\ndef add_two(a, b):\n    return a + b\n```\n```python\nprint(1)\n```</final>"
+ }
+]
