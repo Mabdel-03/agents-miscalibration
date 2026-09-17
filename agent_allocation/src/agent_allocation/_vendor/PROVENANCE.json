@@ -140,5 +140,26 @@
       "read as pinned source text; never imported"
     ],
     "changes": "none (byte copy)"
+  },
+  {
+    "file": "src/agent_allocation/sandbox/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/utils.py",
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/data/upstream/evalplus/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/utils.py (upstream https://github.com/evalplus/evalplus/blob/26d6d00bb1fd0fa37f39c99d5290da67891d1c5e/evalplus/eval/utils.py, Apache-2.0)",
+    "origin_commit": "2af2879",
+    "origin_sha256": "5bf8925c8dd7c8f06b05c0ff4f28672e8e3b61d1b567b6a86b90e80bd8b780a4",
+    "functions": [
+      "imported only inside the parity bwrap worker as part of official untrusted_check"
+    ],
+    "changes": "none (byte copy)"
+  },
+  {
+    "file": "src/agent_allocation/sandbox/evalplus_validation.py",
+    "origin": "/orcd/data/tpoggio/001/mabdel03/agent_methods_bench/learnagents/data/evalplus_validation.py",
+    "origin_commit": "2af2879",
+    "origin_sha256": "0d3c05760a9ae481b5b4c451892ce5561efbe0c8fc736c5c236bb04b50c1b129",
+    "functions": [
+      "fixtures",
+      "validate (split into official_results/fixture_private/validate)"
+    ],
+    "changes": "fixtures unchanged; certified interpreter prefix instead of sys.prefix; packaged upstream root; psutil bound read-only from agent_methods_bench .venvs/evalplus site-packages; fixture private record built inline (no learnagents adapt_evalplus); sandbox profile arguments; returns the report instead of writing manifests/; reference certification drivers dropped (grading/code/certify.py replaces them)"
   }
 ]
