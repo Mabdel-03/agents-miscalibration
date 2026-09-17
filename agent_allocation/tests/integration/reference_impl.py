@@ -365,6 +365,10 @@ class LedgerChecker:
                 state.open_unsent -= att.reserved
                 state.open_sent += att.reserved
                 continue
+            if ev.kind is LedgerEventKind.UNRESOLVED:
+                if not att.sent:
+                    state.violations.append(f"{where}: UNRESOLVED before SENT")
+                continue                      # state note (amount 0): the sent reservation stays exposed until terminal
             bucket = "open_sent" if att.sent else "open_unsent"
             setattr(state, bucket, getattr(state, bucket) - att.reserved)
             if ev.kind is LedgerEventKind.RELEASE_UNSENT:
