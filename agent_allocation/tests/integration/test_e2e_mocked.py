@@ -239,8 +239,6 @@ def test_resume_reuses_stored_grades_byte_for_byte(run_paths, cfg):
     assert _snapshot(run_paths, ("grades",)) == before
 
 
-@pytest.mark.xfail(strict=True, reason="L-2: run_offline returns stubbed_code_grader=True but no report under reports/ "
-                                       "labels the code verdicts as stubbed (contract section 6, Q1 decision)")
 def test_stubbed_code_grader_is_labelled_in_reports(run_paths, cfg):
     live = optional_module("agent_allocation.live")
     if not hasattr(live, "run_offline"):

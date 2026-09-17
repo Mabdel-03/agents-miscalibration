@@ -867,9 +867,6 @@ def test_s15_14_math_grader_exception_is_unknown_not_wrong_production(adv_items,
 
 
 @pytest.mark.sandbox
-@pytest.mark.xfail(strict=True, reason="W06-2/W05-1: a <final> that is prose, not a program, extracts as VALID and the "
-                                       "public checker reports OK with an 'error' case instead of INVALID_CANDIDATE, so "
-                                       "code transitions cannot separate 'no program' from 'wrong program' (15.14)")
 def test_s15_14_unparseable_python_final_is_invalid_not_wrong_production(adv_items, cfg):
     import ast
     extraction = optional_module("agent_allocation.extraction.final")

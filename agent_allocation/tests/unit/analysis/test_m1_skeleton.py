@@ -116,7 +116,9 @@ def test_audit_passes_on_consistent_run(mutable_run):
     checks = pd.read_csv(mutable_run.tables_dir / "audit_checks.csv").set_index("check")
     assert checks.loc["fixed_population", "status"] == "pass"
     assert checks.loc["sealed_before_join", "status"] == "pass"
-    assert checks.loc["independent_recompute", "status"] in {"skip", "pass"}
+    independent = [name for name in checks.index if str(name).startswith("independent")]
+    assert independent, "the independent recompute hook must report at least one check row"
+    assert all(checks.loc[name, "status"] in {"skip", "pass"} for name in independent)
     assert (mutable_run.reports_dir / "AUDIT.md").is_file()
 
 
