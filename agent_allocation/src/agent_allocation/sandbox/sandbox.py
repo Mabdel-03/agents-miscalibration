@@ -11,7 +11,10 @@ ptrace, mounts, namespaces, bpf, keyrings and module loading. Changes (see ``_ve
 * an explicit ``RLIMIT_STACK`` (the login node inherits ``unlimited``);
 * candidate stdout/stderr overflow is truncated (flagged) instead of failing the whole batch;
 * every ``SandboxError`` carries a ``kind``, the request ``phase`` ("startup" | "trusted" | "candidate") and the
-  process return code, so graders can separate limit hits (real verdicts) from infrastructure faults.
+  process return code, so graders can separate limit hits (real verdicts) from infrastructure faults;
+* a host-enforced scratch quota: bwrap 0.4.0 cannot size its tmpfs mounts (default: half of host RAM), so the host
+  polls the sandbox's own ``/tmp`` + ``/work`` usage through ``/proc/<pid>/root`` every 20 ms while a request is in
+  flight and kills the sandbox above ``limits.scratch_bytes``.
 """
 from __future__ import annotations
 
@@ -38,6 +41,8 @@ WALL_TIMEOUT = "wall_timeout"          # host wall-clock limit for one request e
 PROCESS_EXITED = "process_exited"      # sandbox process exited while a request was in flight
 PROTOCOL_ERROR = "protocol_error"      # malformed / oversized protocol traffic
 INPUT_FAILED = "input_failed"          # request could not be written (pipe closed or stalled)
+SCRATCH_LIMIT = "scratch_limit"        # /tmp + /work usage exceeded limits.scratch_bytes (host-enforced)
+SCRATCH_POLL_SECONDS = 0.02
 
 
 class SandboxError(RuntimeError):
@@ -60,6 +65,7 @@ class SandboxLimits:
     max_open_files: int = 64
     max_rpc_calls: int = 128
     stack_bytes: int = 64 * 1024 ** 2
+    scratch_bytes: int = 64 * 1024 ** 2    # bwrap 0.4.0 has no tmpfs --size: the host polls and kills on overflow
 
 
 def seccomp_fd() -> int:
@@ -153,9 +159,14 @@ class Sandbox:
         for stream, label in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
             os.set_blocking(stream.fileno(), False)
             self.selector.register(stream, selectors.EVENT_READ, label)
+        self.worker_pid = None
+        self._scratch_checked = 0.0
         try:
             self._request({"op": "init", "public": public or {}, "allow_children": allow_children,
                            "output_limit": self.limits.output_bytes}, phase="startup")
+            self.worker_pid = self._innermost_pid()
+            if self.worker_pid is None or self._sees_host_root(self.worker_pid):
+                raise SandboxError("Cannot locate the sandboxed worker for the scratch quota", kind=STARTUP_FAILED)
         except SandboxError as exc:
             if exc.kind != SPAWN_FAILED:
                 exc.kind = STARTUP_FAILED
@@ -177,6 +188,49 @@ class Sandbox:
             except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
                 continue
         return ticks / os.sysconf("SC_CLK_TCK")
+
+    def _innermost_pid(self) -> int | None:
+        pid = self.process.pid
+        for _ in range(8):
+            try:
+                children = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+            except (FileNotFoundError, ProcessLookupError):
+                return None
+            if not children:
+                return pid
+            pid = int(children[-1])
+        return pid
+
+    @staticmethod
+    def _sees_host_root(pid: int) -> bool:
+        try:
+            inner, host = os.stat(f"/proc/{pid}/root"), os.stat("/")
+        except OSError:
+            return True
+        return (inner.st_dev, inner.st_ino) == (host.st_dev, host.st_ino)
+
+    def scratch_used_bytes(self) -> int | None:
+        """Bytes used in the sandbox's own tmpfs mounts, read from the host through /proc/<pid>/root."""
+        if self.worker_pid is None:
+            return None
+        used = 0
+        for mount in ("tmp", "work"):
+            try:
+                stat = os.statvfs(f"/proc/{self.worker_pid}/root/{mount}")
+            except OSError:
+                return None
+            used += (stat.f_blocks - stat.f_bfree) * stat.f_frsize
+        return used
+
+    def _check_scratch(self, phase: str) -> None:
+        now = time.monotonic()
+        if self.worker_pid is None or now - self._scratch_checked < SCRATCH_POLL_SECONDS:
+            return
+        self._scratch_checked = now
+        used = self.scratch_used_bytes()
+        if used is not None and used > self.limits.scratch_bytes:
+            raise SandboxError(f"Sandbox scratch usage {used} bytes exceeds {self.limits.scratch_bytes}",
+                               kind=SCRATCH_LIMIT, phase=phase)
 
     def _send(self, obj: dict, phase: str) -> None:
         payload = (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8", "surrogatepass")
@@ -251,7 +305,8 @@ class Sandbox:
                         "sandbox_cpu_seconds": max(0.0, self._cpu_seconds()-cpu_started),
                         "source": "host_proc_process_tree", "clock_resolution_seconds": 1/os.sysconf("SC_CLK_TCK")}
                     return message
-                events = self.selector.select(timeout=min(0.1, max(0, deadline - time.monotonic())))
+                self._check_scratch(phase)
+                events = self.selector.select(timeout=min(SCRATCH_POLL_SECONDS, max(0, deadline - time.monotonic())))
                 for key, _ in events:
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:

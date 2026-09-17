@@ -25,7 +25,8 @@ from agent_allocation.sandbox.sandbox import CERTIFIED_PYTHON_PREFIX
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "balanced150.json"
 SANDBOX_DIR = Path(__file__).resolve().parents[2] / "sandbox"
-FILE_BYTES = 16 * 1024 ** 2
+FILE_BYTES = 16 * 1024 ** 2       # RLIMIT_FSIZE per file (not a config knob; part of the environment digest)
+SCRATCH_BYTES = 64 * 1024 ** 2    # host-enforced /tmp + /work quota (not a config knob; part of the digest)
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class GradingProfile:
     workers_max: int
     stack_bytes: int = 0                      # 0 -> equal to memory_bytes
     file_bytes: int = FILE_BYTES
+    scratch_bytes: int = SCRATCH_BYTES
     python_prefix: str = CERTIFIED_PYTHON_PREFIX
     cache_by_code_hash: bool = True
 

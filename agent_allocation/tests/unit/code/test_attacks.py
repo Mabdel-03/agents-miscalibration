@@ -260,3 +260,19 @@ def test_unprivileged_read_only_base_disposable_scratch_no_docker_socket():
     assert all(observed[t] in (13, 30) for t in ("/usr/evil.txt", "/runtime/evil.txt", "/runner.py"))  # EACCES/EROFS
     assert observed["scratch"] == "ok" and observed["docker"] == [False, False]
     assert observed["nproc_visible"] <= 3                     # own pid namespace: bwrap init + the worker
+
+
+def test_scratch_flood_is_killed_by_the_host_quota_and_graded_as_a_verdict(run_paths):
+    from agent_allocation.sandbox.sandbox import SCRATCH_LIMIT
+    flood = ("def fill():\n    for index in range(64):\n"
+             "        with open(f'/tmp/blob{index}', 'wb') as handle:\n"
+             "            handle.write(b'x' * (15 * 1024 * 1024))\n")
+    with pytest.raises(sandbox_mod.SandboxError) as info:
+        with Sandbox({}, limits=LIMITS) as sandbox:
+            sandbox.execute(flood + "fill()\nimport time\ntime.sleep(5)\n")
+    assert info.value.kind == SCRATCH_LIMIT and info.value.phase == "candidate"
+    program = flood + "def f(x):\n    fill()\n    return x + 1\n"
+    check, grade = _check_and_grade(run_paths, program)
+    assert check.status is CheckStatus.OK and check.case_outcomes == ("error",)
+    assert grade.status is GradeStatus.GRADED and grade.semantic_correct is False
+    assert grade.detail_code == "base_scratch_limit"
