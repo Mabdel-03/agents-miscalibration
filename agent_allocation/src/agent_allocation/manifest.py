@@ -167,15 +167,20 @@ def dataset_lock_payload(cfg: Mapping[str, Any], inventories: Mapping[str, Seque
     return {"study_id": cfg["study_id"], "seed": cfg["seed"], "sources": sources, "manifests": dict(manifest_hashes)}
 
 
-def write_once_json(path: Path, payload: Mapping[str, Any], *, semantic_keys_ignore: Sequence[str] = ("written_at",)) -> str:
-    """Write a lock once. An identical rerun is a no-op; a different payload refuses."""
+def write_once_json(path: Path, payload: Mapping[str, Any], *, semantic_keys_ignore: Sequence[str] = ("written_at",),
+                    allow_replace: bool = False) -> str:
+    """Write a lock once. An identical rerun is a no-op; a different payload refuses unless nothing has been spent yet
+    (``allow_replace``), in which case the superseded lock is kept beside it for the audit trail."""
     body = {k: v for k, v in payload.items() if k not in semantic_keys_ignore}
     digest = canonical_hash(body)
     if path.exists():
         existing = json.loads(path.read_text())
-        if existing.get("lock_sha256") != digest:
-            raise ManifestRefused(f"{path} exists with different content; source or manifest changed after lock")
-        return digest
+        if existing.get("lock_sha256") == digest:
+            return digest
+        if not allow_replace:
+            raise ManifestRefused(f"{path} exists with different content and paid work exists; source or manifest "
+                                  "changed after lock")
+        os.replace(path, path.with_suffix(f".superseded-{existing.get('lock_sha256', 'unknown')[:12]}.json"))
     write_atomic(path, json.dumps({**payload, "lock_sha256": digest, "written_at": utcnow()}, indent=1, sort_keys=True))
     return digest
 
@@ -207,7 +212,8 @@ def prepare_data(cfg: Mapping[str, Any], paths: RunPaths) -> dict[str, Any]:
     write_atomic(paths.exclusions, json.dumps(exclusions, indent=1, sort_keys=True))
     lock_digest = write_once_json(paths.dataset_lock,
                                   {**dataset_lock_payload(cfg, inventories, draws, manifest_hashes),
-                                   "config_sha256": config_hash(cfg)})
+                                   "config_sha256": config_hash(cfg)},
+                                  allow_replace=not paths.ledger_journal.exists())
     return {"dataset_lock_sha256": lock_digest, "waves": len(waves), "manifests": manifest_hashes,
             "exclusions": {b: len(v) for b, v in exclusions.items()}}
 
