@@ -58,7 +58,7 @@ def _diagnose(program: str, record: dict[str, Any], profile: profile_mod.Grading
         grade = grade_evalplus(program, record["restricted"], record["oracle"], python_prefix=profile.python_prefix,
                                memory_bytes=profile.memory_bytes, output_bytes=profile.stdout_bytes,
                                stack_bytes=profile.stack_bytes, suite_wall_seconds=profile.suite_wall_seconds,
-                               row=record["row"])
+                               row=record["row"], scratch_bytes=profile.scratch_bytes, file_bytes=profile.file_bytes)
     except EvaluatorOutage as exc:
         return {"outage": f"{exc.kind}/{exc.phase}/{exc.returncode}: {str(exc)[:300]}",
                 "wall_seconds": round(time.monotonic() - started, 3)}

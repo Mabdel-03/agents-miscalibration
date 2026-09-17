@@ -78,7 +78,7 @@
   "origin_sha256": "5409c84cac6d0ee5564af2e4ea8e83b16e5e975a27043f9afb9dd592ff222ab4"
  },
  {
-  "changes": "python_prefix defaults to CERTIFIED_PYTHON_PREFIX (not sys.prefix); explicit RLIMIT_STACK via prlimit --stack; OMP_NUM_THREADS=1 in the scrubbed env; SandboxError carries kind/phase/returncode; stdout over output_bytes is truncated and stderr overflow drained+discarded instead of raising; execute/invoke take a phase ('trusted'|'candidate'); init sends output_limit; drains readable stdout before declaring an exit; isolation flags and seccomp deny-list unchanged",
+  "changes": "python_prefix defaults to CERTIFIED_PYTHON_PREFIX (never sys.prefix); explicit RLIMIT_STACK via prlimit --stack (the grading profile sets it equal to the memory limit, upstream reliability_guard's convention); OMP_NUM_THREADS=1 in the scrubbed env; SandboxError carries kind (spawn_failed/startup_failed/wall_timeout/process_exited/protocol_error/input_failed), phase (startup/trusted/candidate) and returncode; stdout beyond output_bytes is truncated and flagged, stderr overflow drained and discarded, instead of raising; execute/invoke take a phase; init sends output_limit; readable stdout drained before declaring an exit; isolation flags and seccomp deny-list unchanged; host-enforced scratch quota (bwrap 0.4.0 has no tmpfs --size): the host polls statvfs of the worker's /proc/<pid>/root/{tmp,work} every 20 ms during a request and kills above limits.scratch_bytes (kind scratch_limit), failing closed if the worker's root cannot be distinguished from the host root",
   "file": "src/agent_allocation/sandbox/sandbox.py",
   "functions": [
    "SandboxError",
@@ -91,7 +91,7 @@
   "origin_sha256": "67c5c4b9d7bd537206c3c805d708056dff10b44db72bbf833ad722f40bc51ef3"
  },
  {
-  "changes": "RPC moved to dup'd fds with fds 0/1 pointed at /dev/null (raw fd writes cannot corrupt the protocol; stdin reads see EOF); BoundedCapture replaces unbounded StringIO for stdout/stderr (truncation flag); surrogatepass I/O; error results carry error_type and are length-bounded",
+  "changes": "RPC moved to dup'd fds with fds 0/1 pointed at /dev/null (raw fd-1 writes cannot corrupt the protocol; stdin reads see EOF like EvalPlus swallow_io); BoundedCapture replaces the unbounded StringIO (first output_limit chars kept, truncation flag); surrogatepass I/O; error results carry error_type and are length-bounded",
   "file": "src/agent_allocation/sandbox/sandbox_worker.py",
   "functions": [
    "emit",
@@ -107,7 +107,7 @@
   "origin_sha256": "d052fbf4684b03c1746c61a58a5875f37bc2eee596a22c69be4384e05da2a6ad"
  },
  {
-  "changes": "ROOT points at the packaged upstream copy; local Grade dataclass; prepare_oracle dropped (certified oracles are reused, never regenerated); grade_evalplus takes memory/stdout/stack/suite-ceiling/interpreter and an optional pre-decoded row; SandboxError outside candidate code raises EvaluatorOutage, inside candidate code is classified timeout/cpu_limit/candidate_crash (crash flag for canary+retry) instead of one failure class; transport functions entering the sandbox are byte-identical",
+  "changes": "ROOT points at the packaged upstream copy; local Grade dataclass; prepare_oracle dropped (certified oracles reused, never regenerated); grade_evalplus takes memory/stdout/stack/suite-ceiling/interpreter and an optional pre-decoded row; SandboxError outside candidate code raises EvaluatorOutage, inside candidate code is classified timeout / cpu_limit (SIGXCPU exit 152) / candidate_crash (flag for canary + retry) instead of one failure class; batch details add wall_seconds, batch_ceiling_seconds, input_timeouts, sandbox_denied (thread/eperm), stdout_truncated; load_program runs the transport bootstrap in the trusted phase. native_functions, StringTupleRows, pack_native, unpack_native, _invoke_native, _load_native and native_record are byte-identical (tests/unit/code/test_parity.py checks this against the origin commit); when the original input is deeply immutable the host passes its own input (not the sandbox-reported post_input) to the pinned comparison, so a program cannot fabricate the input that special oracles (surface_Area, digit_distance_nums) recompute from; mutable inputs keep upstream post-call semantics",
   "file": "src/agent_allocation/sandbox/evalplus_scorer.py",
   "functions": [
    "native_functions",

@@ -76,7 +76,7 @@ def _grade(program: str, record: dict[str, Any], profile: GradingProfile) -> Gra
     return grade_evalplus(program, record["restricted"], record["oracle"], python_prefix=profile.python_prefix,
                           memory_bytes=profile.memory_bytes, output_bytes=profile.stdout_bytes,
                           stack_bytes=profile.stack_bytes, suite_wall_seconds=profile.suite_wall_seconds,
-                          row=record["row"])
+                          row=record["row"], scratch_bytes=profile.scratch_bytes, file_bytes=profile.file_bytes)
 
 
 def _canary_ok(profile: GradingProfile) -> bool:
@@ -92,7 +92,8 @@ def _canary_ok(profile: GradingProfile) -> bool:
         grade = grade_evalplus("def canary_add_one(x):\n    return x + 1\n", private, oracle,
                                python_prefix=profile.python_prefix, memory_bytes=profile.memory_bytes,
                                output_bytes=profile.stdout_bytes, stack_bytes=profile.stack_bytes,
-                               suite_wall_seconds=profile.suite_wall_seconds, row=row)
+                               suite_wall_seconds=profile.suite_wall_seconds, row=row,
+                               scratch_bytes=profile.scratch_bytes, file_bytes=profile.file_bytes)
     except (EvaluatorOutage, ValueError):
         return False
     return grade.success and not grade.details.get("candidate_crash")
