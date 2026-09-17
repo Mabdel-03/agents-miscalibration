@@ -46,15 +46,17 @@ def test_reseal_is_idempotent_and_ignores_cpu_time(paths):
     assert again == first and read_seal(paths, "main").sealed_at == sealed_at
 
 
-def test_reseal_may_only_append(paths):
+def test_reseal_merges_and_never_changes_a_sealed_row(paths):
     seal_selections(paths, "main", [_sel("main/a/x/current", cpu=0.5)])
     grown = seal_selections(paths, "main", [_sel("main/a/x/current", cpu=7.0), _sel("main/b/x/current")])
     loaded = load_sealed_selections(paths, "main")
     assert loaded.seal.sha256 == grown and loaded.by_policy["main/a/x/current"].cpu_seconds == 0.5
     with pytest.raises(SealError):
         seal_selections(paths, "main", [_sel("main/a/x/current", selected="c9"), _sel("main/b/x/current")])
-    with pytest.raises(SealError):
-        seal_selections(paths, "main", [_sel("main/b/x/current")])
+    merged = seal_selections(paths, "main", [_sel("main/c/x/current")])      # unmentioned sealed rows are kept
+    assert set(load_sealed_selections(paths, "main").by_policy) == {"main/a/x/current", "main/b/x/current",
+                                                                     "main/c/x/current"}
+    assert merged != grown
 
 
 def test_tampering_and_missing_seals_refuse_to_load(paths):
@@ -83,3 +85,14 @@ def test_invalid_inputs(paths):
 def test_sealed_selections_cannot_be_forged():
     with pytest.raises(SealError):
         SealedSelections(partition="main", seal=SealInfo("x", 0, "t"), by_policy={})
+
+
+def test_a_paused_selection_may_resume_over_the_same_pool_only(paths):
+    paused = _sel("main/a/x/current", selected=None, status=SelectionStatus.PAUSED_CHECK_ERROR)
+    seal_selections(paths, "main", [paused])
+    with pytest.raises(SealError):
+        seal_selections(paths, "main", [replace(_sel("main/a/x/current"), pool_hash="other-pool")])
+    seal_selections(paths, "main", [_sel("main/a/x/current")])
+    assert load_sealed_selections(paths, "main").by_policy["main/a/x/current"].status == "selected"
+    with pytest.raises(SealError):
+        seal_selections(paths, "main", [paused])

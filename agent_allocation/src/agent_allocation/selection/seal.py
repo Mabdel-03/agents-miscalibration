@@ -5,11 +5,13 @@ canonical JSON, sorted by ``policy_id`` -- and then ``paths.selection_seal(parti
 ``{"sha256", "count", "sealed_at"}``, both atomically (tmp + fsync + rename). ``sha256`` is the digest of the exact
 JSONL bytes and is returned.
 
-Sealing is append-only: a partition that already has a seal may be re-sealed only with a superset of its policies,
-where every previously sealed policy is semantically unchanged (all fields but ``cpu_seconds``); the previously
-sealed line is kept byte-for-byte. A changed or removed sealed selection raises ``SealError`` -- a selection that
-was sealed (and may already have been joined to grades) is never rewritten. Re-sealing identical content is
-idempotent and keeps the original ``sealed_at``.
+Sealing is append-only: re-sealing a partition merges the new results into the sealed set. Policies already sealed
+and not passed again are kept; a policy passed again must be semantically unchanged (all fields but
+``cpu_seconds``), and its previously sealed line is kept byte-for-byte. A changed sealed selection raises
+``SealError`` -- a selection that was sealed (and may already have been joined to grades) is never rewritten. The one exception is a
+``PAUSED_CHECK_ERROR`` row: a pause is the absence of a selection, so after the public-check infrastructure is
+repaired it may be replaced by the resumed selection over the *same* pool (equal ``pool_hash``, selector name and
+version). Re-sealing identical content is idempotent and keeps the original ``sealed_at``.
 
 ``load_sealed_selections`` is the only way to obtain a ``SealedSelections``; it verifies the seal digest and count
 against the file bytes. ``metrics`` joins grades only through a verified ``SealedSelections``.
@@ -86,6 +88,11 @@ def _semantic(result: SelectionResult) -> dict[str, object]:
     return {f.name: getattr(result, f.name) for f in fields(result) if f.name != "cpu_seconds"}
 
 
+def _resumes_pause(old: SelectionResult, new: SelectionResult) -> bool:
+    return (old.status == SelectionStatus.PAUSED_CHECK_ERROR.value and old.pool_hash == new.pool_hash
+            and old.selector_name == new.selector_name and old.selector_version == new.selector_version)
+
+
 def _check_partition(partition: str) -> None:
     if not isinstance(partition, str) or not partition or "/" in partition or partition.startswith("."):
         raise ValueError(f"invalid partition name {partition!r}")
@@ -143,11 +150,11 @@ def seal_selections(paths: RunPaths, partition: str, results: Sequence[Selection
     if previous is not None:
         for raw in _read_verified_lines(paths, partition, previous):
             old = load_record(SelectionResult, json.loads(raw))
-            if old.policy_id not in new:
-                raise SealError(f"{partition}: sealed selection {old.policy_id} would be removed")
-            if _semantic(old) != _semantic(new[old.policy_id]):
+            replacement = new.get(old.policy_id, old)
+            if _semantic(old) == _semantic(replacement):
+                lines[old.policy_id] = raw
+            elif not _resumes_pause(old, replacement):
                 raise SealError(f"{partition}: sealed selection {old.policy_id} would change")
-            lines[old.policy_id] = raw
     body = b"".join(lines[policy] for policy in sorted(lines))
     digest = sha256(body).hexdigest()
     if previous is not None and previous.sha256 == digest and previous.count == len(lines):
