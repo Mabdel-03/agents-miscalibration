@@ -210,9 +210,6 @@ async def test_unresolved_exposure_above_limit_pauses_admission(run_paths, cfg):
 # Circuit breakers: cache HIT, provider mismatch, 402/401
 # --------------------------------------------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="W02-3: runtime/scheduler.py:984-1011 opens the circuit only after the raw "
-                                       "write thread hop and the ledger fsync; admissions continue meanwhile (4-5 extra "
-                                       "requests observed at concurrency 1)")
 @pytest.mark.parametrize("fault", ["cache_hit", "provider_mismatch", "payment_required", "auth_failed"])
 async def test_circuit_breakers_stop_the_partition(run_paths, cfg, fault):
     hx = _harness(run_paths, cfg, concurrency_start=1, concurrency_max=1)
