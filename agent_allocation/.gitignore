@@ -1,0 +1,16 @@
+# Nested project rules (override the parent repo's *.jsonl / *.parquet ignores for committed fixtures).
+!*.jsonl
+!*.parquet
+.venv/
+/artifacts
+artifacts/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite.bak
+.env
+.env.*
+!.env.example
+*.key
+__pycache__/
+.pytest_cache/

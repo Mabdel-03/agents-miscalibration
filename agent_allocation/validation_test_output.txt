@@ -1,0 +1,25 @@
+test_headroom_and_invalid_budget (test_contracts_and_configs.ContractTests.test_headroom_and_invalid_budget) ... ok
+test_identity_contains_decoding_and_manifest (test_contracts_and_configs.ContractTests.test_identity_contains_decoding_and_manifest) ... ok
+test_identity_contains_draw_and_kind (test_contracts_and_configs.ContractTests.test_identity_contains_draw_and_kind) ... ok
+test_immutable (test_contracts_and_configs.ContractTests.test_immutable) ... ok
+test_panel_balance (test_contracts_and_configs.ContractTests.test_panel_balance) ... ok
+test_public_task_has_no_private_fields (test_contracts_and_configs.ContractTests.test_public_task_has_no_private_fields) ... ok
+test_both_presets_fit (test_estimate_budget.BudgetTests.test_both_presets_fit) ... ok
+test_full_main_counts (test_estimate_budget.BudgetTests.test_full_main_counts) ... ok
+test_high_counts (test_estimate_budget.BudgetTests.test_high_counts) ... ok
+test_input_sensitivity (test_estimate_budget.BudgetTests.test_input_sensitivity) ... ok
+test_invalid_average (test_estimate_budget.BudgetTests.test_invalid_average) ... ok
+test_total_counts (test_estimate_budget.BudgetTests.test_total_counts) ... ok
+test_ancestor_costs (test_reference_dag.PlanTests.test_ancestor_costs) ... ok
+test_budget_not_clipped (test_reference_dag.PlanTests.test_budget_not_clipped) ... ok
+test_counts (test_reference_dag.PlanTests.test_counts) ... ok
+test_cp_private_after_first_peer (test_reference_dag.PlanTests.test_cp_private_after_first_peer) ... ok
+test_illegal_profiles (test_reference_dag.PlanTests.test_illegal_profiles) ... ok
+test_independent_draws_distinct (test_reference_dag.PlanTests.test_independent_draws_distinct) ... ok
+test_no_future_or_same_round_peer (test_reference_dag.PlanTests.test_no_future_or_same_round_peer) ... ok
+test_roots_shared_explicitly (test_reference_dag.PlanTests.test_roots_shared_explicitly) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.004s
+
+OK

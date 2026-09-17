@@ -1,0 +1,209 @@
+{
+  "spec_version": "1.0",
+  "study_id": "openrouter_agent_allocation_v1",
+  "seed": 20260917,
+  "primary_model": "google/gemini-2.5-flash-lite",
+  "replication_model": "google/gemini-2.5-flash",
+  "endpoint_lock_file": "artifacts/locks/openrouter_endpoints.json",
+  "dataset_lock_file": "artifacts/locks/datasets.json",
+  "reasoning": {
+    "main_a": 1024,
+    "high_a": 4096,
+    "pilot_a": [
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "text_completion_headroom": 1024,
+    "code_completion_headroom": 2048,
+    "requested_reasoning_max": 24576,
+    "budget_semantics": "soft_requested_allowance"
+  },
+  "sampling": {
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "api_seed_enabled": false,
+    "response_cache": false,
+    "n_per_request": 1
+  },
+  "provider": {
+    "allow_fallbacks": false,
+    "require_parameters": true,
+    "service_tier": "standard",
+    "resolve_exact_endpoint_in_preflight": true,
+    "auto_provider_switch": false
+  },
+  "protocols": {
+    "root_bank_size": 25,
+    "private_total_cycles": 25,
+    "team_sizes": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "peer_update_rounds": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "private_team_update_rounds": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "deep_main_multipliers": [
+      2,
+      4,
+      8,
+      16
+    ],
+    "deep_high_multipliers": [
+      2,
+      4
+    ],
+    "communication_mode": "synchronous",
+    "context_policy": "latest_visible_solution",
+    "cp_team_size": 4,
+    "cp_peer_rounds": 1,
+    "cp_private_rounds": 3,
+    "pooled_synthesis_team_size": 4,
+    "tools_during_generation": false
+  },
+  "benchmarks": [
+    {
+      "id": "math500",
+      "source": "HuggingFaceH4/MATH-500",
+      "grader": "math_verify",
+      "selector": "plurality",
+      "split": "test"
+    },
+    {
+      "id": "mmlu_pro",
+      "source": "TIGER-Lab/MMLU-Pro",
+      "grader": "option_exact",
+      "selector": "plurality",
+      "split": "test"
+    },
+    {
+      "id": "bbh_logic4",
+      "source": "suzgunmirac/BIG-Bench-Hard",
+      "grader": "task_exact",
+      "selector": "plurality",
+      "subtasks": [
+        "logical_deduction_seven_objects",
+        "tracking_shuffled_objects_seven_objects",
+        "boolean_expressions",
+        "temporal_sequences"
+      ],
+      "report_label": "BBH four-subtask zero-shot subset"
+    },
+    {
+      "id": "mbpp_plus",
+      "source": "evalplus/evalplus",
+      "grader": "evalplus_full",
+      "selector": "public_tests_only",
+      "report_label": "MBPP+ pinned inventory; official-visible-examples selection"
+    }
+  ],
+  "replication_grid": {
+    "root_bank_size": 16,
+    "private_total_cycles": 16,
+    "team_sizes": [
+      3,
+      5
+    ],
+    "peer_update_rounds": [
+      1,
+      2
+    ],
+    "private_team_update_rounds": [
+      1,
+      2
+    ],
+    "deep_multipliers": [
+      4,
+      16
+    ],
+    "optional": true
+  },
+  "scheduler": {
+    "concurrency_start": 16,
+    "concurrency_max": 128,
+    "requests_per_second_start": 2,
+    "requests_per_second_max": 16,
+    "aimd_window_seconds": 60,
+    "increase_concurrency_by": 8,
+    "increase_rps_by": 1,
+    "decrease_factor": 0.5,
+    "max_transport_attempts": 3,
+    "connect_timeout_seconds": 15,
+    "read_timeout_seconds": 600,
+    "lease_heartbeat_seconds": 15,
+    "lease_stale_seconds": 900,
+    "max_active_waves": 4,
+    "wave_items": 16,
+    "max_calls_per_item_in_flight": 8,
+    "single_paid_dispatcher": true,
+    "checkpoint_after_every_response": true,
+    "api_sdk_automatic_retries": false
+  },
+  "grading": {
+    "offline_workers_max": 8,
+    "untrusted_code_network": false,
+    "cpu_quota_per_sandbox": 1,
+    "memory_mib_per_sandbox": 512,
+    "pids_limit": 64,
+    "stdout_limit_bytes": 65536,
+    "public_case_wall_seconds": 3,
+    "full_suite_wall_seconds": 60,
+    "official_evalplus_timeout_rules": true,
+    "grade_cache_by_code_hash": true,
+    "expose_private_tests_to_generation": false
+  },
+  "statistics": {
+    "bootstrap_replicates": 10000,
+    "cluster_unit": "benchmark_and_item",
+    "macro_weight_benchmarks_equally": true,
+    "bbh_macro_weight_subtasks_equally": true,
+    "test_grid_frontier_is_descriptive": true,
+    "no_outcome_based_main_sampling": true
+  },
+  "planning_prices": {
+    "verified_on": "2026-09-17",
+    "primary": {
+      "input_price": "0.10",
+      "output_price": "0.40"
+    },
+    "replication": {
+      "input_price": "0.30",
+      "output_price": "2.50"
+    }
+  },
+  "preset": "lean100",
+  "panels": {
+    "pilot_items": 32,
+    "main_items": 320,
+    "high_items": 64,
+    "extension_items": 128,
+    "replication_items": 0
+  },
+  "budget": {
+    "cash_target_usd": 100,
+    "credit_ceiling_usd": 90,
+    "pilot_allowance_usd": 5,
+    "contingency_usd": 10,
+    "soft_admission_ceiling_usd": 80,
+    "reservation_multiplier": 1.1,
+    "max_unresolved_spend_usd": 2,
+    "optional_requires_core_completion": true
+  },
+  "execution": {
+    "default_mode": "dry_run",
+    "require_allow_paid_flag": true,
+    "main_requires_passed_pilot_and_frozen_locks": true
+  }
+}
