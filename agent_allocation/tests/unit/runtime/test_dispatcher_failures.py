@@ -587,3 +587,73 @@ async def test_cancelled_run_stops_its_attempts_before_releasing_leases(tmp_path
     again = FakeClient()
     summary = await env.dispatcher(again).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
     assert summary.stop_reason == "completed" and sorted(a[-1] for _, a in again.calls) == ["2", "2"]
+
+
+async def test_gateway_timeout_is_kept_unresolved_not_free(tmp_path, monkeypatch):
+    from agent_allocation.runtime.ledger import confirmed_cost
+
+    monkeypatch.setattr(scheduler_mod, "BACKOFF_BASE_SECONDS", 0.01)
+    env = Env.create(tmp_path, lease_stale_seconds=0.3)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    class GatewayClient(FakeClient):
+        async def generate(self, spec, messages, *, attempt_id, lock, sampling):
+            outcome = await super().generate(spec, messages, attempt_id=attempt_id, lock=lock, sampling=sampling)
+            if attempt_id.endswith(":1"):
+                result = replace(outcome.result, http_status=504,
+                                 error_detail="gateway_timeout_may_be_billed http 504: upstream timed out")
+                return replace(outcome, result=result)
+            return outcome
+
+    client = GatewayClient(lambda spec, aid, i: Behavior(status=TransportStatus.UPSTREAM_ERROR, cost=None)
+                           if i == 0 else Behavior(delay=0.5))
+    summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "completed"
+    gateway = journal_attempts(env.paths.ledger_journal)[f"{root.node_id}:1"]
+    assert gateway.resolution is LedgerEventKind.CHARGE_MAX and gateway.resolved_usd == gateway.reserved_usd
+    plain = env.store.attempts_for(root.node_id)[0]
+    assert plain.transport_status is TransportStatus.UPSTREAM_ERROR
+    from tests.unit.runtime.fakes import make_outcome
+    ordinary = make_outcome(root, f"{root.node_id}:7", [], Behavior(status=TransportStatus.UPSTREAM_ERROR, cost=None))
+    assert confirmed_cost(ordinary.result) == 0                                  # 502 before processing: free
+    assert confirmed_cost(replace(ordinary.result, error_detail="gateway_timeout_may_be_billed http 524")) is None
+
+
+async def test_request_contract_violation_reserves_nothing_and_opens_the_circuit(tmp_path):
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    client = FakeClient()
+    dispatcher = env.dispatcher(client)
+    dispatcher.lock = replace(dispatcher.lock, provider_tag="google-ai-studio/flex")     # a tier variant: forbidden
+    summary = await dispatcher.run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("request_contract_error")
+    assert client.calls == [] and journal_attempts(env.paths.ledger_journal) == {}
+
+
+async def test_contract_error_raised_by_generate_after_sent_settles_zero_never_releases(tmp_path):
+    from agent_allocation.api.request import RequestContractError
+
+    env = Env.create(tmp_path)
+    graph = chain_graph(length=1)
+    [root] = graph.nodes
+
+    class RefusingClient(FakeClient):
+        async def generate(self, spec, messages, *, attempt_id, lock, sampling):
+            self.calls.append((spec.node_id, attempt_id))
+            raise RequestContractError("sampling knob outside the contract")
+
+    summary = await env.dispatcher(RefusingClient()).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("request_contract_error")
+    attempt = journal_attempts(env.paths.ledger_journal)[f"{root.node_id}:1"]
+    assert attempt.sent and attempt.resolution is LedgerEventKind.SETTLE and attempt.resolved_usd == 0
+    assert env.store.sends_by_node() == {} and env.store.node(root.node_id).state == "pending"
+
+
+async def test_circuit_opens_at_classification_before_more_requests_leave(tmp_path):
+    env = Env.create(tmp_path, concurrency_start=1, max_calls_per_item_in_flight=8)
+    graph = make_graph("cb", bank=6, chain=1, team_slots=1, peer_sizes=(), deep=())
+    client = FakeClient(lambda spec, aid, i: Behavior(status=TransportStatus.CACHE_HIT) if i == 0 else Behavior())
+    summary = await env.dispatcher(client).run(plan_of([graph]), allow_paid=False, max_usd=D("5"))
+    assert summary.stop_reason == "circuit_open" and summary.circuit_reason.startswith("cache_hit")
+    assert len(client.calls) == 1                                  # the prefetched attempts never left

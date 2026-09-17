@@ -514,11 +514,14 @@ class StateStore:
         from agent_allocation.runtime.ledger import attempt_number, confirmed_cost, journal_attempts, utc_now as now_iso
         report = {"parsed_ingested": 0, "raw_persisted": 0, "raw_failed_attempts": 0, "journal_settled_from_raw": 0,
                   "journal_charged_max": 0, "journal_attempts_recorded": 0}
-        # 1. parsed/ -> accepted results
+        # 1. parsed/ -> accepted results (file name = node_id: only files the DB lacks are read)
+        accepted_before = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
         root = parsed_root(self.paths)
         if root.is_dir():
             for shard_dir in sorted(p for p in root.iterdir() if p.is_dir()):
                 for file in sorted(shard_dir.glob("*.json")):
+                    if file.stem in accepted_before:
+                        continue
                     result, candidate = read_parsed(file)
                     if self._ingest_result(result, candidate):
                         report["parsed_ingested"] += 1
@@ -526,8 +529,13 @@ class StateStore:
         journal = LedgerJournal(self.paths.ledger_journal, group_commit_ms=0)
         known = journal_attempts(journal)
         accepted = {r["node_id"] for r in self._query("SELECT node_id FROM results")}
+        terminal_attempts = {r["attempt_id"] for r in self._query("SELECT attempt_id FROM attempts WHERE state='terminal'")}
+        open_in_journal = {aid for aid, info in known.items() if info.resolution is None}
         raw_results: dict[str, GenerationResult] = {}
         for file in iter_raw_files(self.paths):
+            attempt_guess = _attempt_id_from_raw_name(file.name)
+            if attempt_guess in terminal_attempts and attempt_guess not in open_in_journal:
+                continue                      # already accounted and committed: no need to read the artifact
             relative = self.paths.relative(file)
             payload = read_raw_response(self.paths, relative)
             result = result_from_raw(payload, relative_path=relative, sha256=sha256_file(file))
@@ -570,6 +578,13 @@ class StateStore:
         return report
 
     recovery_report: dict[str, int] = {}
+
+
+def _attempt_id_from_raw_name(name: str) -> str | None:
+    """Inverse of ``paths.safe_name`` for ``<node_id hex>_<attempt_no>.json.gz``; None if the name is foreign."""
+    stem = name[:-len(".json.gz")] if name.endswith(".json.gz") else name
+    node_id, sep, number = stem.rpartition("_")
+    return f"{node_id}:{number}" if sep and number.isdigit() else None
 
 
 def iter_parsed_files(paths: RunPaths) -> Iterator[Path]:
