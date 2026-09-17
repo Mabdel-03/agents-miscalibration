@@ -232,3 +232,42 @@ def test_private_hash_is_stable_and_binds_the_gold(math_inventory):
     changed = math500.build_item({**rows[0], "answer": rows[0]["answer"] + "1"})
     assert changed.private.private_hash != again[0].private.private_hash
     assert changed.public == again[0].public
+
+
+@pytest.mark.parametrize("module", [math500, mmlu_pro])
+def test_pinned_sha256_is_enforced(module, monkeypatch):
+    monkeypatch.setattr(module, "SOURCE_SHA256", "0" * 64)
+    path = module.hf_snapshot_file(module.SOURCE_REPO, module.SOURCE_REVISION, module.SOURCE_FILE)
+    if not path.is_file():
+        pytest.skip("pinned snapshot not in HF cache")
+    with pytest.raises(SourceIntegrityError):
+        module.read_rows()
+
+
+def test_math500_source_ids_are_validated():
+    with pytest.raises(SourceIntegrityError):
+        math500.build_item(_math_row(unique_id="../../etc/passwd"))
+
+
+def test_source_records_name_revision_hash_and_licence():
+    for module in (math500, mmlu_pro, bbh_logic4):
+        record = module.source_record()
+        assert "MIT" in record["license"] and record["preprocessing_version"].endswith("-prompt-v1")
+    assert math500.source_record()["revision"] == "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be"
+    assert mmlu_pro.source_record()["revision"] == "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+    assert bbh_logic4.source_record()["commit"] == "9ee07bd481feebf959a6b59d61ea57bdcf30964d"
+    assert set(bbh_logic4.source_record()["files"]) == {f"bbh/{s}.json" for s in BBH_SUBTASKS}
+
+
+@pytest.mark.parametrize("benchmark", ["math500", "mmlu_pro", "bbh_logic4"])
+def test_fixture_inventories_are_typed_drawable_and_leak_free(benchmark):
+    from agent_allocation.benchmarks.text_manifest import FIXTURE_REVISION, fixture_inventory, select_panels
+    items = fixture_inventory(benchmark)
+    assert len(items) == 24 and all(item.eligible for item in items)
+    assert {item.public.source_revision for item in items} == {FIXTURE_REVISION}
+    for item in items:
+        assert item.private.gold_answer is not None
+        if item.public.output_kind is not OutputKind.BOOLEAN:
+            assert item.private.gold_answer not in item.public.prompt.split("\nOptions:\n")[0]
+    draw = select_panels(items, benchmark=benchmark, seed=7, n_dev=4, n_main=8, n_reserve=4)
+    assert len(draw.main_item_ids) == 8

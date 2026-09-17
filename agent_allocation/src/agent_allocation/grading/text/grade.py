@@ -11,8 +11,10 @@ Status rules (tri-state, ``text-grade-v1``):
 * A gradable final: ``GRADED`` with ``semantic_correct`` True/False and ``operational_success=True``.
   MATH uses ``math_equiv.verify_gold`` (Math-Verify ``verify(gold, prediction)``); options and booleans compare
   the ``normalize`` identity with the gold exactly.
-* Evaluator exception, timeout, or unusable gold: ``EVALUATOR_ERROR``, ``semantic_correct=None`` (never False),
-  ``operational_success=True`` (the model delivered a well-formed final; the failure is ours).
+* Evaluator exception, timeout, outage, or unusable gold: ``EVALUATOR_ERROR``, ``semantic_correct=None`` (never
+  False), ``operational_success=True`` (the model delivered a well-formed final; the failure is ours).
+* MATH grading is SIGALRM-bounded in-process on a main thread and runs in an isolated, killable child process
+  otherwise (see ``math_equiv``).
 
 Wiring errors (candidate and spec for different items, non-text eval kinds, output-kind mismatch) raise.
 

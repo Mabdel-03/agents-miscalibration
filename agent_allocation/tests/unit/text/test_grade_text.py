@@ -203,3 +203,9 @@ def test_frozen_math_exclusions_match_the_recomputed_audit(math_inventory):
 
 def test_grade_module_exports_versions():
     assert "math-verify==0.9.0" in grade_module.grader_version()
+
+
+@pytest.mark.parametrize("benchmark", ["math500", "mmlu_pro", "bbh_logic4"])
+def test_fixture_golds_round_trip(benchmark):
+    from agent_allocation.benchmarks.text_manifest import fixture_inventory
+    assert _round_trip(fixture_inventory(benchmark), (lambda g: g,)) == []

@@ -10,9 +10,11 @@ Comparison: ``math_verify.verify(gold, prediction)`` exactly in that argument or
 ``verify`` is not symmetric), ``raise_on_error=True``, default float rounding/precision/strictness.
 
 Time bound: one SIGALRM wall-clock limit (``_limits.wall_clock_limit``) covers every parse and comparison of a
-call. Math-Verify's own per-operation alarms are disabled so they cannot re-arm or cancel that limit. Calls must
-therefore run on the main thread of a (worker) process; elsewhere they raise ``EvaluatorUnavailable`` rather
-than running unbounded. Any exception or timeout is reported as unknown, never as a mismatch.
+call. Math-Verify's own per-operation alarms are disabled so they cannot re-arm or cancel that limit. On the main
+thread of a (worker) process the work runs in-process. Off the main thread, where SIGALRM is unavailable, the call
+is delegated to a persistent isolated child process (``_isolated``) that applies the same limit on its main thread
+and is hard-killed if it overruns ``timeout_s + grace``. Any exception, timeout or evaluator outage is reported as
+unknown, never as a mismatch.
 """
 from __future__ import annotations
 
@@ -24,7 +26,12 @@ from functools import lru_cache
 from importlib import metadata
 from typing import Any
 
-from agent_allocation.grading.text._limits import EvaluatorTimeout, EvaluatorUnavailable, wall_clock_limit
+from agent_allocation.grading.text._limits import (
+    EvaluatorTimeout,
+    EvaluatorUnavailable,
+    signal_bounds_available,
+    wall_clock_limit,
+)
 
 MATH_PARSE_VERSION = "math-parse-v1"
 DEFAULT_TIMEOUT_S = 5.0
@@ -100,8 +107,17 @@ def verify_gold(gold_answer: str, candidate_answer: str, *, timeout_s: float = D
 
     Codes: ``math_verify_equal`` / ``math_verify_not_equal`` (known), ``candidate_unparseable`` (no expression
     could be extracted from the candidate final: an output problem, not a wrong answer), ``gold_unparseable``,
-    ``timeout``, ``evaluator_exception:<Type>`` (unknown).
+    ``timeout``, ``evaluator_exception:<Type>``, ``evaluator_unavailable`` (unknown).
     """
+    if not signal_bounds_available():
+        from agent_allocation.grading.text._isolated import shared_evaluator
+        try:
+            return shared_evaluator().call("verify_gold", (gold_answer, candidate_answer),
+                                           {"timeout_s": timeout_s}, timeout_s)
+        except EvaluatorTimeout:
+            return MathVerdict(None, "timeout")
+        except EvaluatorUnavailable:
+            return MathVerdict(None, "evaluator_unavailable")
     try:
         with wall_clock_limit(timeout_s):
             gold = parse_answer(gold_answer)
@@ -125,8 +141,14 @@ def math_equivalent(a: str, b: str, *, timeout_s: float = 5.0) -> bool | None:
 
     ``True`` only when ``verify(parse(a), parse(b))`` and ``verify(parse(b), parse(a))`` both hold; ``False``
     when both answers parse and at least one direction fails; ``None`` when either answer does not parse, on
-    timeout, or on any evaluator exception. Raises ``EvaluatorUnavailable`` off the main thread.
+    timeout, or on any evaluator exception or outage. Off the main thread it runs in the isolated child process.
     """
+    if not signal_bounds_available():
+        from agent_allocation.grading.text._isolated import shared_evaluator
+        try:
+            return shared_evaluator().call("math_equivalent", (a, b), {"timeout_s": timeout_s}, timeout_s)
+        except (EvaluatorTimeout, EvaluatorUnavailable):
+            return None
     try:
         with wall_clock_limit(timeout_s):
             parsed_a = parse_answer(a)

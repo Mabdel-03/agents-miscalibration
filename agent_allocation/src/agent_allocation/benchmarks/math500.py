@@ -14,6 +14,7 @@ Strata: ``level`` x ``subject``.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 from agent_allocation.benchmarks.text_manifest import (
@@ -42,6 +43,7 @@ SOURCE_ROWS = 500
 LICENSE = "MIT (MATH: hendrycks/math; MATH-500 subset: HuggingFaceH4/MATH-500)"
 PREPROCESSING_VERSION = "math500-prompt-v1"
 SOURCE_FIELDS = ("problem", "solution", "answer", "subject", "level", "unique_id")
+UNIQUE_ID_PATTERN = re.compile(r"test/[a-z_]+/\d+\.json")
 
 #: Frozen pre-generation engineering exclusions ``{item_id: reason}``. Empty: every pinned gold answer parses
 #: and verifies against itself under the pinned Math-Verify rule (recomputed by the text unit tests).
@@ -63,6 +65,8 @@ def build_item(row: Mapping[str, Any], *, source_revision: str = SOURCE_REVISION
     missing = [name for name in SOURCE_FIELDS if name not in row]
     if missing:
         raise SourceIntegrityError(f"MATH-500 row lacks fields {missing}")
+    if not (isinstance(row["unique_id"], str) and UNIQUE_ID_PATTERN.fullmatch(row["unique_id"])):
+        raise SourceIntegrityError(f"MATH-500 unique_id {row['unique_id']!r} is not test/<subject>/<n>.json")
     item_id = item_id_for(row)
     problem = row["problem"]
     answer = row["answer"]

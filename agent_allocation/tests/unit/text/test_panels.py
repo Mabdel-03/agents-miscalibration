@@ -152,3 +152,14 @@ def test_real_inventories_draw_config_sized_panels(cfg, math_inventory, mmlu_inv
         assert not set(draw.dev_item_ids) & set(draw.main_item_ids)
         assert draw == select_panels(inventory, benchmark=benchmark, seed=cfg["seed"], n_dev=8, n_main=100,
                                      n_reserve=8)
+
+
+def test_panel_audit_counts_match_the_draw():
+    from agent_allocation.benchmarks.text_manifest import panel_audit
+    inventory = _math_like()
+    draw = select_panels(inventory, benchmark="math500", seed=13, **SIZES)
+    audit = panel_audit(inventory, draw)
+    assert audit["population"] == {"items": len(inventory), "eligible": len(inventory), "excluded": 0,
+                                   "strata": audit["population"]["strata"]}
+    for name, ids in (("dev", draw.dev_item_ids), ("main", draw.main_item_ids), ("reserve", draw.reserve_item_ids)):
+        assert audit["panels"][name]["size"] == len(ids) == sum(audit["panels"][name]["strata"].values())
