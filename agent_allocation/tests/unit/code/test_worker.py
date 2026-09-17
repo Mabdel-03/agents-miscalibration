@@ -44,8 +44,7 @@ def test_grade_pass_writes_checks_and_grades_and_resumes(small_inventory, run_pa
     _write_run(run_paths, chosen, candidates)
     profile = profile_mod.active_profile()
     counts = worker.grade_pass(run_paths, profile, resume=False, workers=1)
-    assert counts["public_written"] + counts["public_cached"] == 3
-    assert counts["grades_written"] + counts["grades_cached"] == 3
+    assert counts["public_written"] == 3 and counts["grades_written"] == 3
     checks = {c.candidate_id: load_record(PublicCheckResult, json.loads(run_paths.public_check(c.candidate_id)
                                                                         .read_text())) for c in candidates}
     grades = {c.candidate_id: load_record(GradeResult, json.loads(run_paths.grade(c.candidate_id).read_text()))
@@ -66,6 +65,5 @@ def test_cmd_grade_refuses_existing_records_without_resume(small_inventory, run_
     candidate = make_candidate(item.public.item_id, reference_program(plan, item.public.item_id), node="d4" * 32)
     _write_run(run_paths, chosen, [candidate])
     assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"]) == 0
-    with pytest.raises(SystemExit):
-        worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"])
+    assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1"]) == worker.EXIT_BLOCKED
     assert worker.cmd_grade(["--run-dir", str(run_paths.run_dir), "--workers", "1", "--resume"]) == 0

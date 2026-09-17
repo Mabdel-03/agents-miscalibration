@@ -293,6 +293,17 @@ def classify_sandbox_error(error):
     return 'candidate_crash',True
 
 
+THREAD_DENIED_MARKERS=("can't start new thread",)
+
+
+def sandbox_denial(message):
+    """Name the seccomp denial behind a candidate exception, if any: 'thread' or 'eperm' (fork/socket/...)."""
+    text=(message or {}).get('error') or ''
+    if any(marker in text for marker in THREAD_DENIED_MARKERS):return 'thread'
+    if '[Errno 1] Operation not permitted' in text:return 'eperm'
+    return None
+
+
 def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*1024**3,output_bytes=64*1024,
                    stack_bytes=64*1024**2,suite_wall_seconds=60.0,row=None):
     if not isinstance(source,str):return Grade(False,0,'evalplus-'+REVISION[:12],'non_string_program')
@@ -301,7 +312,7 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
         raise ValueError('Native reference oracle differs from the frozen task')
     if row is None:row,dataset=native_record(private)
     else:dataset='mbpp' if row['task_id'].startswith('Mbpp/') else 'humaneval'
-    native=native_functions();batches={};cpu=0.0;crash=False;stdout_truncated=False
+    native=native_functions();batches={};cpu=0.0;crash=False;stdout_truncated=False;denied=set()
     not_none=dataset=='mbpp' and row['entry_point'] in native['MBPP_OUTPUT_NOT_NONE_TASKS']
     for split in ['base','plus']:
         inputs=row[split+'_input'];batch=oracle['batches'][split]
@@ -317,7 +328,9 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
                                               output_bytes=output_bytes,stack_bytes=stack_bytes,
                                               max_protocol_bytes=64*1024**2)) as sandbox:
                 loaded=load_program(sandbox,source);cpu+=loaded.get('_resource_usage',{}).get('sandbox_cpu_seconds',0)
-                if not loaded.get('ok'):failure='compile_or_initialization_failure'
+                if not loaded.get('ok'):
+                    failure='compile_or_initialization_failure'
+                    if sandbox_denial(loaded):denied.add(sandbox_denial(loaded))
                 else:
                     for index,inp in enumerate(inputs):
                         remaining=deadline-time.monotonic()
@@ -334,17 +347,20 @@ def grade_evalplus(source,private,oracle,*,python_prefix=None,memory_bytes=4*102
                                     correct=False
                                 else:correct,atol=native['compare_result'](dataset,row['entry_point'],mutated_input,actual,expected,atol)
                             except Exception:correct=False
-                        else:correct=False
+                        else:
+                            correct=False
+                            if sandbox_denial(result):denied.add(sandbox_denial(result))
                         passed.append(bool(correct))
         except SandboxError as error:
             failure,split_crash=classify_sandbox_error(error)
             crash=crash or split_crash
         batches[split]={'passed':sum(passed),'attempted':len(passed),'total':len(inputs),
-                        'success':len(passed)==len(inputs) and all(passed),'failure_class':failure}
+                        'success':len(passed)==len(inputs) and all(passed),'failure_class':failure,
+                        'wall_seconds':round(time.monotonic()-(deadline-wall),3),'batch_ceiling_seconds':round(wall,3)}
     success=all(value['success'] for value in batches.values())
     return Grade(success,float(success),SCORER_ID,None if success else 'native_tests_failed',
                  {'base':batches['base'],'plus':batches['plus'],'_resource_usage':{'sandbox_cpu_seconds':cpu},
-                  'candidate_crash':crash,'stdout_truncated':stdout_truncated,
+                  'candidate_crash':crash,'stdout_truncated':stdout_truncated,'sandbox_denied':sorted(denied),
                   'native_comparison_source_pins':PINS,
                   'runtime_profile':{'memory_bytes':memory_bytes,'output_bytes':output_bytes,'stack_bytes':stack_bytes,
                                      'suite_wall_seconds':suite_wall_seconds,'per_input':'max(4 s, 4 x reference time)'}})

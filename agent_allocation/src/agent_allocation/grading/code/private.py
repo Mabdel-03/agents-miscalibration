@@ -98,13 +98,17 @@ def _canary_ok(profile: GradingProfile) -> bool:
 
 
 def _detail(grade: Grade) -> str:
-    if grade.success:
-        return "pass"
-    for split in ("base", "plus"):
-        batch = grade.details[split]
-        if not batch["success"]:
-            return f"{split}_{batch['failure_class'] or 'wrong_output'}"
-    return "fail"
+    """``pass`` | ``{split}_{failure}``; a seccomp denial seen in candidate errors is appended as
+    ``;sandbox_denied=thread|eperm`` (documented limitation: threads/processes/sockets are unavailable)."""
+    detail = "pass" if grade.success else "fail"
+    if not grade.success:
+        for split in ("base", "plus"):
+            batch = grade.details[split]
+            if not batch["success"]:
+                detail = f"{split}_{batch['failure_class'] or 'wrong_output'}"
+                break
+    denied = grade.details.get("sandbox_denied") or []
+    return detail + (f";sandbox_denied={','.join(denied)}" if denied else "")
 
 
 def grade_code(candidate: Candidate, private: PrivateEvalSpec, paths: RunPaths) -> GradeResult:

@@ -4,6 +4,8 @@ CPU-heavy: run as a Slurm batch job, never on the shared interactive node.
 
     python -m agent_allocation.grading.code.certify references --run-dir DIR --out REPORT.json [--workers N]
     python -m agent_allocation.grading.code.certify parity --out REPORT.json
+    python -m agent_allocation.grading.code.certify probe --run-dir DIR --out REPORT.json [--items Mbpp/255]
+        [--memory-mib 512,1024]
 
 ``references``: installs the MBPP+ private records into ``DIR`` (``load_inventory``), then for every task runs its
 canonical reference (``prompt + canonical_solution``) through the production public checker (its own prompt
@@ -183,6 +185,70 @@ def run_parity(args: argparse.Namespace) -> int:
     return 0 if report["status"] == "passed" else 1
 
 
+def probe_one(public_data: dict, private_data: dict, run_dir: str, locks_dir: str, local: str,
+              memories_mib: list[int]) -> dict[str, Any]:
+    """Reference through the scorer at a ladder of memory limits (other limits from the config profile)."""
+    from agent_allocation.grading.code.private import load_private_record
+
+    private = load_record(PrivateEvalSpec, private_data)
+    paths = RunPaths(Path(run_dir), Path(locks_dir), Path(local))
+    profile = profile_mod.active_profile()
+    record = load_private_record(private, paths)
+    program = record["row"]["prompt"] + record["row"]["canonical_solution"]
+    out: dict[str, Any] = {"item_id": private.item_id, "task_id": record["row"]["task_id"], "by_memory_mib": {}}
+    for mib in memories_mib:
+        limits = dataclasses.replace(profile, memory_bytes=mib * 1024 ** 2, stack_bytes=mib * 1024 ** 2)
+        out["by_memory_mib"][str(mib)] = _diagnose(program, record, limits)
+    return out
+
+
+def run_probe(args: argparse.Namespace) -> int:
+    from agent_allocation.benchmarks.mbpp_plus import load_inventory
+
+    cfg = json.loads(Path(args.config).read_text())
+    profile = profile_mod.profile_from_config(cfg)
+    profile_mod.configure(profile)
+    paths = RunPaths.for_run(args.run_dir, local_state_dir=Path(args.run_dir) / "local_state")
+    items = load_inventory(cfg, paths)
+    wanted = set(args.items.split(",")) if args.items else None
+    chosen = [i for i in items if wanted is None or i.public.item_id.split("/", 1)[1].replace("_", "/") in wanted]
+    ladder = [int(x) for x in args.memory_mib.split(",")]
+    affinity = len(os.sched_getaffinity(0))
+    workers = args.workers or min(profile.workers_max, max(1, affinity - 2))
+    rows = []
+    with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"), initializer=_init,
+                             initargs=(profile,)) as pool:
+        futures = [pool.submit(probe_one, dump_record(i.public), dump_record(i.private), str(paths.run_dir),
+                               str(paths.locks_dir), str(paths.local_state_dir), ladder) for i in chosen]
+        for future in as_completed(futures):
+            rows.append(future.result())
+    rows.sort(key=lambda r: r["item_id"])
+    headroom = []
+    for row in rows:
+        for mib, diag in row["by_memory_mib"].items():
+            for split in ("base", "plus"):
+                batch = diag.get(split) or {}
+                if batch.get("batch_ceiling_seconds"):
+                    headroom.append({"item_id": row["item_id"], "memory_mib": int(mib), "split": split,
+                                     "wall_seconds": batch["wall_seconds"],
+                                     "batch_ceiling_seconds": batch["batch_ceiling_seconds"],
+                                     "fraction": round(batch["wall_seconds"] / batch["batch_ceiling_seconds"], 4)})
+    headroom.sort(key=lambda h: -h["fraction"])
+    report = {"generated_at": _now(), "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+              "git_commit": os.environ.get("WP05_GIT_COMMIT"), "workers": workers, "affinity_cpus": affinity,
+              "memory_ladder_mib": ladder, "profile": dataclasses.asdict(profile), "items": len(rows),
+              "failures": [{"item_id": r["item_id"], "memory_mib": int(m), **d} for r in rows
+                           for m, d in r["by_memory_mib"].items() if not d.get("success")],
+              "tightest_batches": headroom[:25], "results": rows}
+    write_json(Path(args.out), report)
+    print(json.dumps({"items": len(rows), "failures": len(report["failures"])}), flush=True)
+    for failure in report["failures"]:
+        print(json.dumps(failure), flush=True)
+    for row in headroom[:10]:
+        print(json.dumps(row), flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -194,8 +260,15 @@ def main(argv: list[str] | None = None) -> int:
     parity = sub.add_parser("parity")
     parity.add_argument("--out", required=True)
     parity.add_argument("--config", default=str(profile_mod.DEFAULT_CONFIG))
+    probe = sub.add_parser("probe")
+    probe.add_argument("--run-dir", required=True)
+    probe.add_argument("--out", required=True)
+    probe.add_argument("--items", default="", help="comma-separated task ids (Mbpp/255); empty = all")
+    probe.add_argument("--memory-mib", default="512")
+    probe.add_argument("--workers", type=int, default=None)
+    probe.add_argument("--config", default=str(profile_mod.DEFAULT_CONFIG))
     args = parser.parse_args(argv)
-    return run_references(args) if args.mode == "references" else run_parity(args)
+    return {"references": run_references, "parity": run_parity, "probe": run_probe}[args.mode](args)
 
 
 if __name__ == "__main__":
