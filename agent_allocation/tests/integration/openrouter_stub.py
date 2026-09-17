@@ -108,3 +108,93 @@ class StubOpenRouter:
     @property
     def completion_requests(self) -> list[RecordedRequest]:
         return [r for r in self.requests if r.path.endswith("/chat/completions")]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Per-node scripted stub for dispatcher-level failure injection
+# ---------------------------------------------------------------------------------------------------------
+
+import asyncio
+import re
+import time
+from collections import Counter, defaultdict
+
+NODE_RE = re.compile(r"NODE ([0-9a-f]{64})")
+
+
+@dataclass
+class NodeScript:
+    replies: list[StubReply] = field(default_factory=list)   # consumed per request for this node; then default ok
+    delay_seconds: float = 0.0
+
+
+@dataclass
+class ServedRequest:
+    node_id: str | None
+    received_at: float
+    completed_at: float | None
+    outcome: str                       # "ok" | "429" | "timeout" | "connect" | "error_envelope" | "cache_hit" | ...
+    body_text: str
+    headers: dict[str, str]
+
+
+class DispatchStub:
+    """Identifies the node from the rendered prompt (``NODE <node_id>``), applies that node's script, tracks
+    per-node concurrency, and records when each successful response was handed back."""
+
+    def __init__(self, *, cost: float = 0.000176) -> None:
+        self.cost = cost
+        self.scripts: dict[str, NodeScript] = defaultdict(NodeScript)
+        self.served: list[ServedRequest] = []
+        self.active: Counter[str] = Counter()
+        self.max_active: Counter[str] = Counter()
+        self.metadata_requests: list[str] = []
+
+    def script(self, node_id: str, *replies: StubReply, delay: float = 0.0) -> None:
+        self.scripts[node_id] = NodeScript(list(replies), delay)
+
+    async def _handle(self, request: httpx.Request) -> httpx.Response:
+        text = request.content.decode("utf-8", errors="replace")
+        if not request.url.path.endswith("/chat/completions"):
+            self.metadata_requests.append(str(request.url))
+            return httpx.Response(404, json={"error": {"code": 404, "message": "not ready"}})
+        found = NODE_RE.search(text)
+        node = found.group(1) if found else None
+        rec = ServedRequest(node, time.monotonic(), None, "ok", text, {k.lower(): v for k, v in request.headers.items()})
+        self.served.append(rec)
+        script = self.scripts[node] if node else NodeScript()
+        reply = script.replies.pop(0) if script.replies else ok(cost=self.cost, generation_id=f"gen-{(node or 'x')[:12]}")
+        self.active[node] += 1
+        self.max_active[node] = max(self.max_active[node], self.active[node])
+        try:
+            if script.delay_seconds:
+                await asyncio.sleep(script.delay_seconds)
+            if reply.raise_exc is not None:
+                rec.outcome = "timeout" if issubclass(reply.raise_exc, httpx.TimeoutException) else "connect"
+                raise reply.raise_exc("injected by DispatchStub", request=request)
+            payload = reply.payload or {}
+            if reply.status == 429:
+                rec.outcome = "429"
+            elif reply.status >= 400:
+                rec.outcome = str(reply.status)
+            elif "error" in payload:
+                rec.outcome = "error_envelope"
+            elif reply.headers.get("x-openrouter-cache-status", "").upper() == "HIT":
+                rec.outcome = "cache_hit"
+            rec.completed_at = time.monotonic()
+            return httpx.Response(reply.status, json=reply.payload, headers=reply.headers)
+        finally:
+            self.active[node] -= 1
+
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self._handle)
+
+    def requests_for(self, node_id: str) -> list[ServedRequest]:
+        return [r for r in self.served if r.node_id == node_id]
+
+    def ok_count(self) -> Counter[str]:
+        return Counter(r.node_id for r in self.served if r.outcome == "ok")
+
+    def first_ok_completed(self, node_id: str) -> float | None:
+        times = [r.completed_at for r in self.served if r.node_id == node_id and r.outcome == "ok"]
+        return min(times) if times else None
