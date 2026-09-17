@@ -86,6 +86,25 @@ def check_lock_for_request(lock: EndpointLock) -> None:
         raise ValueError(f"locked endpoint {tag!r} does not advertise required parameters {missing}")
 
 
+def spec_lock_problems(spec: GenerationSpec, lock: EndpointLock) -> list[str]:
+    """Why ``spec`` must not be dispatched under ``lock`` (empty list = fine). ``generate`` enforces the model and cap
+    itself; the lock-hash check belongs to whoever loads manifests against the write-once lock file (live.py)."""
+    problems = []
+    if spec.model != lock.model:
+        problems.append(f"node {spec.node_id} model {spec.model!r} != lock model {lock.model!r}")
+    if spec.endpoint_lock_hash != lock.lock_hash:
+        problems.append(f"node {spec.node_id} was built for endpoint lock {spec.endpoint_lock_hash[:12]}..., "
+                        f"not {lock.lock_hash[:12]}...")
+    if spec.max_completion_tokens > lock.max_completion_tokens:
+        problems.append(f"node {spec.node_id} max_tokens {spec.max_completion_tokens} > endpoint cap "
+                        f"{lock.max_completion_tokens}")
+    try:
+        check_lock_for_request(lock)
+    except ValueError as exc:
+        problems.append(str(exc))
+    return problems
+
+
 def _check_messages(messages: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
     if isinstance(messages, (str, bytes)) or not messages:
         raise ValueError("messages must be a non-empty sequence of {role, content} mappings")

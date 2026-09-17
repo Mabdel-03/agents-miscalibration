@@ -34,6 +34,9 @@ return the first response verbatim with ``x-openrouter-cache-status: HIT``).
 
 Recorded state for assertions: ``script.calls`` (every request, credentials redacted), ``script.billed_usd`` (what the
 fake "charged", including requests whose response the client never saw), ``script.generations`` (metadata by id).
+
+Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
+one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
 """
 from __future__ import annotations
 
@@ -52,7 +55,7 @@ import httpx
 
 from agent_allocation.apikey import redact_headers
 from agent_allocation.api.request import REQUEST_EXTENSION_KEY
-from agent_allocation.contracts import EndpointLock
+from agent_allocation.contracts import EndpointLock, GenerationOutcome, GenerationSpec
 
 
 class _Sentinel:
@@ -752,3 +755,44 @@ def fake_openrouter_transport(script: FakeScript | None = None) -> httpx.MockTra
     transport = httpx.MockTransport(handler)
     transport.script = active  # type: ignore[attr-defined]
     return transport
+
+
+DEFAULT_FAKE_SAMPLING: Mapping[str, Any] = {"temperature": 0.7, "top_p": 0.95}
+
+
+async def fake_generation_outcome(spec: GenerationSpec, messages: Sequence[Mapping[str, str]] | None = None, *,
+                                  reply: FakeReply | None = None, script: FakeScript | None = None,
+                                  lock: EndpointLock | None = None, attempt_no: int = 1,
+                                  sampling: Mapping[str, Any] | None = None) -> GenerationOutcome:
+    """One realistic ``GenerationOutcome`` for ``spec`` through the real client and the fake transport.
+
+    For tests that need a ``GenerationResult``/``GenerationOutcome`` without wiring a client. ``lock`` defaults to
+    ``fake_endpoint_lock(spec.model)``; ``messages`` to a one-line user prompt naming the item; pass ``reply`` (a
+    one-off default) or a full ``script``, not both.
+    """
+    from agent_allocation.api.client import OpenRouterClient  # local import: client imports nothing from fake
+
+    if reply is not None and script is not None:
+        raise ValueError("pass reply or script, not both")
+    active = script if script is not None else FakeScript(default=reply or FakeReply())
+    client = OpenRouterClient(api_key=None, transport=fake_openrouter_transport(active))
+    try:
+        return await client.generate(
+            spec, messages or [{"role": "user", "content": f"Fake task for {spec.item_id}."}],
+            attempt_id=f"{spec.node_id}:{attempt_no}", lock=lock or fake_endpoint_lock(spec.model),
+            sampling=sampling or DEFAULT_FAKE_SAMPLING)
+    finally:
+        await client.aclose()
+
+
+def fake_generation_outcome_sync(spec: GenerationSpec, messages: Sequence[Mapping[str, str]] | None = None,
+                                 **kwargs: Any) -> GenerationOutcome:
+    """Synchronous ``fake_generation_outcome`` for plain (non-async) tests; safe inside a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(fake_generation_outcome(spec, messages, **kwargs))
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(fake_generation_outcome(spec, messages, **kwargs))).result()
