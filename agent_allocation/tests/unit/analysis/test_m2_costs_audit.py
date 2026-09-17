@@ -229,9 +229,17 @@ def test_independent_recompute_hook_contract(tmp_path, analysed):
         raise RuntimeError("independent code failed")
     assert hook_checks(boom, paths.run_dir, own)[0].status == "fail"
     hook = tmp_path / "hook.py"
-    hook.write_text("def independent_recompute(run_dir):\n    return {'contrasts': {}, 'checks': []}\n")
+    hook.write_text("from __future__ import annotations\nfrom dataclasses import dataclass\n\n@dataclass\n"
+                    "class Row:\n    name: str\n    value: float | None = None\n\n"
+                    "def independent_recompute(run_dir):\n    Row('x')\n    return {'contrasts': {}, 'checks': []}\n")
     assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES),
-                      "--recompute-hook", str(hook)]) == 0
+                      "--recompute-hook", str(hook)]) == 0             # postponed annotations import fine (W07-2)
+    broken = tmp_path / "broken_hook.py"
+    broken.write_text("raise ImportError('hook module is broken')\n")
+    assert cmd_audit(["--run-dir", str(paths.run_dir), "--replicates", str(REPLICATES),
+                      "--recompute-hook", str(broken)]) == 1             # reported as a failing check, no crash
+    checks = pd.read_csv(paths.tables_dir / "audit_checks.csv").set_index("check")
+    assert checks.loc["independent_recompute", "status"] == "fail"
 
 
 # ---------------------------------------------------------------------------------------------------------
