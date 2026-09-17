@@ -196,3 +196,30 @@ def test_omit_sentinel_survives_copy():
     import copy
     reply = FakeReply(reasoning=OMIT)
     assert copy.deepcopy(reply).reasoning is OMIT
+
+
+async def test_capacity_emulation_rate_limits_beyond_the_limit_and_measures_peak(make_spec, lock):
+    import asyncio
+
+    script = FakeScript(default=FakeReply(delay_seconds=0.1), max_concurrent_requests=4, capacity_retry_after="3")
+    client = OpenRouterClient(api_key=None, transport=fake_openrouter_transport(script))
+    specs = [make_spec(root_slot=slot) for slot in range(10)]
+    outcomes = await asyncio.gather(*(client.generate(s, MESSAGES, attempt_id=attempt(s), lock=lock,
+                                                      sampling=SAMPLING) for s in specs))
+    await client.aclose()
+    statuses = [o.result.transport_status for o in outcomes]
+    assert statuses.count(TransportStatus.OK) == 4 and statuses.count(TransportStatus.RATE_LIMITED) == 6
+    assert all(o.result.retry_after_seconds == 3.0 for o in outcomes
+               if o.result.transport_status is TransportStatus.RATE_LIMITED)
+    assert script.peak_in_flight == 4 and script.in_flight == 0
+    assert len(script.generations) == 4
+
+
+async def test_delayed_errors_that_time_out_are_not_billed(make_spec, lock):
+    script = FakeScript(default=FakeReply(fault=Fault.UPSTREAM_ERROR, delay_seconds=1.0))
+    client = OpenRouterClient(api_key=None, transport=fake_openrouter_transport(script), read_timeout=0.01)
+    spec = make_spec()
+    outcome = await client.generate(spec, MESSAGES, attempt_id=attempt(spec), lock=lock, sampling=SAMPLING)
+    await client.aclose()
+    assert outcome.result.transport_status is TransportStatus.AMBIGUOUS_TIMEOUT
+    assert script.billed_usd == 0 and script.generations == {} and script.in_flight == 0

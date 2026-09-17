@@ -139,3 +139,14 @@ async def test_list_endpoints_returns_raw_bytes_and_parsed():
     raw, parsed = await client.list_endpoints("google/gemini-2.5-flash-lite")
     await client.aclose()
     assert raw == raw_bytes and parsed["data"]["endpoints"] == []
+
+
+async def test_live_construction_has_zero_transport_retries_and_study_timeouts():
+    client = OpenRouterClient(api_key=DUMMY_KEY, connect_timeout=15.0, read_timeout=600.0)  # no request is made
+    inner = client._client
+    transport = inner._transport
+    assert transport._pool._retries == 0
+    assert inner.timeout.connect == 15.0 and inner.timeout.read == 600.0
+    assert inner.follow_redirects is False
+    assert DUMMY_KEY not in repr(client) and "authorization" not in {k.lower() for k in inner.headers}
+    await client.aclose()
