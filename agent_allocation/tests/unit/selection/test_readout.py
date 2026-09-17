@@ -162,6 +162,26 @@ def test_complete_link_blocks_nontransitive_chains():
     assert {c.member_ids for c in detail.classes} == {("c0", "c1"), ("c2",)}
 
 
+def test_exact_keys_never_merge_what_equivalence_keeps_apart():
+    t = f.task(OutputKind.MATH)
+    never = lambda a, b: a == b or None                                    # noqa: E731 - unknown for any pair
+    detail = _select(t, f.pool(t, ["1 2", "12", "7"]), math_equivalent=never)
+    assert {c.member_ids for c in detail.classes} == {("c0",), ("c1",), ("c2",)}
+    detail = _select(t, f.pool(t, ["x²", "x2", "x^2"]), math_equivalent=never)
+    assert len(detail.classes) == 3
+    twelve = _fake_equivalence({("12", "12.0")})
+    detail = _select(t, f.pool(t, ["12", "1 2", "12.0"]), math_equivalent=twelve)
+    assert {c.member_ids for c in detail.classes} == {("c0", "c2"), ("c1",)}
+
+
+def test_complete_link_checks_every_distinct_text_of_a_class():
+    t = f.task(OutputKind.MATH)
+    # "\\frac{1}{2}" and "\\dfrac{1}{2}" share an exact key; "0.5" verifies against only one of the two texts
+    eq = lambda a, b: a == b or ({a, b} == {"0.5", "\\frac{1}{2}"}) or None  # noqa: E731
+    detail = _select(t, f.pool(t, ["\\frac{1}{2}", "\\dfrac{1}{2}", "0.5"]), math_equivalent=eq)
+    assert {c.member_ids for c in detail.classes} == {("c0", "c1"), ("c2",)}
+
+
 def test_equivalence_callable_must_return_tristate():
     t = f.task(OutputKind.MATH)
     with pytest.raises(TypeError):
