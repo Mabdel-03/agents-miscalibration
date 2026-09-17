@@ -95,3 +95,103 @@ def test_isolated_child_stalled_in_c_code_is_killed_and_replaced():
         assert evaluator.call("math_equivalent", ("2", "2.0"), {"timeout_s": 5.0}, timeout_s=5.0) is True
     finally:
         evaluator.close()
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Regressions: order independence, unparseable finals, signal state, isolation failures, fork safety
+# ---------------------------------------------------------------------------------------------------------
+
+def test_outage_injected_at_math_verify_is_unknown_even_after_warm_calls(monkeypatch):
+    import math_verify.grader
+    import math_verify.parser
+    assert math_equivalent("1", "1.0") is True                  # warm every lazy path first (test-order proof)
+    assert math_equiv.verify_gold("4", "4").correct is True
+
+    def outage(*args, **kwargs):
+        raise RuntimeError("injected evaluator outage")
+    monkeypatch.setattr(math_verify.parser, "parse", outage)
+    monkeypatch.setattr(math_verify.grader, "verify", outage)
+    assert math_equiv.verify_gold("4", "4") == math_equiv.MathVerdict(None, "evaluator_exception:RuntimeError")
+    assert math_equivalent("4", "4") is None
+    monkeypatch.undo()
+    assert math_equiv.verify_gold("4", "4").correct is True
+
+
+@pytest.mark.parametrize("a, b", [("\\frac{1}{", "0.5"), ("???", "???"), ("\\frac{1}{", "\\frac{1}{."),
+                                  ("(1,2", "(1,2")])
+def test_malformed_math_is_unparseable_not_a_string_match(a, b):
+    assert math_equivalent(a, b) is None
+
+
+def test_invalid_timeout_raises_before_touching_signal_state():
+    import signal
+    handler_before = signal.getsignal(signal.SIGALRM)
+    for bad in (float("nan"), 0, -1, float("inf")):
+        with pytest.raises(ValueError):
+            math_equivalent("1", "1", timeout_s=bad)
+        with pytest.raises(ValueError):
+            with wall_clock_limit(bad):
+                pass
+    assert signal.getsignal(signal.SIGALRM) is handler_before
+    assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+
+
+def test_limit_restores_the_callers_handler_and_rearms_its_timer():
+    import signal
+    fired = []
+
+    def outer(signum, frame):
+        fired.append(signum)
+    previous = signal.signal(signal.SIGALRM, outer)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 30.0)
+        with pytest.raises(EvaluatorTimeout):
+            with wall_clock_limit(0.05):
+                while True:
+                    pass
+        assert signal.getsignal(signal.SIGALRM) is outer
+        remaining = signal.getitimer(signal.ITIMER_REAL)[0]
+        assert 25.0 < remaining <= 30.0
+        signal.setitimer(signal.ITIMER_REAL, 0.02)                   # an outer alarm that expires inside the limit
+        with pytest.raises(EvaluatorTimeout):
+            with wall_clock_limit(5.0):
+                while True:
+                    pass
+        deadline = time.monotonic() + 2.0
+        while not fired and time.monotonic() < deadline:             # re-armed: the caller's handler still runs
+            time.sleep(0.01)
+        assert fired
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_isolated_start_failure_is_unknown_not_raised(monkeypatch):
+    from agent_allocation.grading.text import _isolated
+
+    def broken_context(method):
+        raise OSError("EAGAIN: cannot fork")
+    monkeypatch.setattr(_isolated, "_SHARED", None)
+    monkeypatch.setattr(_isolated.multiprocessing, "get_context", broken_context)
+    results = {}
+
+    def run():
+        results["equivalent"] = math_equivalent("1", "1")
+        results["verdict"] = math_equiv.verify_gold("1", "1")
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(timeout=60)
+    assert results == {"equivalent": None, "verdict": math_equiv.MathVerdict(None, "evaluator_unavailable")}
+
+
+def test_forked_child_never_inherits_the_shared_evaluator():
+    import os
+    from agent_allocation.grading.text import _isolated
+    parent_instance = _isolated.shared_evaluator()
+    pid = os.fork()
+    if pid == 0:                                                     # child: must see a fresh, unlocked state
+        ok = _isolated._SHARED is None and _isolated.shared_evaluator() is not parent_instance
+        os._exit(0 if ok else 1)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert _isolated.shared_evaluator() is parent_instance

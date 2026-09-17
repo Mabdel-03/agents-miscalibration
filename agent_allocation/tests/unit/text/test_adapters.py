@@ -154,8 +154,11 @@ def test_mmlu_inventory_legal_choices_and_no_label_fields(mmlu_inventory):
         assert item.private.gold_answer == "ABCDEFGHIJ"[row["answer_index"]]
         assert item.private.gold_answer in public.allowed_choices
         assert public.prompt == public.prompt.strip(" \t\n\r\f\v")
-    for key in ("answer_index", "cot_content", '"answer"', '"src"', '"category"'):
-        assert key not in _public_manifest_text(mmlu_inventory[:200])
+    # The pinned test split carries no reference rationale (cot_content is empty on every row); prompts are built
+    # from question + options only, which render_prompt equality above already pins for every item.
+    assert all(not row["cot_content"].strip() for row in rows.values())
+    for item in mmlu_inventory:
+        assert set(dump_record(item.public)) == PUBLIC_FIELDS
 
 
 @needs_bbh
