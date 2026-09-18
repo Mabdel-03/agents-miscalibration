@@ -11,8 +11,8 @@ from typing import Any, Mapping
 from agent_allocation.config import grids_from_config, load_config, validate_config
 from agent_allocation.contracts import BENCHMARKS, OutputKind, PublicTask
 
-KIND_BY_BENCHMARK = {"math500": OutputKind.MATH, "mmlu_pro": OutputKind.OPTION, "bbh_logic4": OutputKind.OPTION,
-                     "mbpp_plus": OutputKind.PYTHON}
+KIND_BY_BENCHMARK = {"aime": OutputKind.MATH, "hmmt": OutputKind.MATH, "omni_math_hard": OutputKind.MATH,
+                     "gpqa_diamond": OutputKind.OPTION}
 
 
 def count_nodes(grid, benchmark: str, base_budget: int, cfg: Mapping[str, Any]) -> int:

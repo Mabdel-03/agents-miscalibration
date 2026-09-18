@@ -35,8 +35,8 @@ GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
 OTHER = "#c3c2b7"
 LEVELS = ("macro",) + BENCHMARKS
-LEVEL_TITLES = {"macro": "Macro (equal benchmarks)", "math500": "MATH-500", "mmlu_pro": "MMLU-Pro",
-                "bbh_logic4": "BBH four-subtask subset", "mbpp_plus": "MBPP+ (public-test selector)"}
+LEVEL_TITLES = {"macro": "Macro (equal benchmarks)", "aime": "AIME 2025 + 2026", "hmmt": "HMMT February 2025 + 2026",
+                "omni_math_hard": "Omni-MATH, difficulty >= 7", "gpqa_diamond": "GPQA-Diamond"}
 SCATTER_FAMILIES = ("sample", "private_team", "peer")          # first three slots, all-pairs validated
 TRAJECTORY_LINES = (("sample", "sample/k"), ("private_single", "private_single/t"),
                     ("private_team", "private_team/4/r"), ("peer", "peer/4/r"), ("cp", "cp/h"))

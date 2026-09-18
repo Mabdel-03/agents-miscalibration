@@ -75,38 +75,37 @@
   },
   "benchmarks": [
     {
-      "id": "math500",
-      "source": "HuggingFaceH4/MATH-500",
+      "id": "aime",
+      "source": "MathArena/aime_2025+MathArena/aime_2026",
       "grader": "math_verify",
       "selector": "plurality",
-      "split": "test"
+      "split": "train",
+      "report_label": "AIME 2025 + 2026"
     },
     {
-      "id": "mmlu_pro",
-      "source": "TIGER-Lab/MMLU-Pro",
+      "id": "hmmt",
+      "source": "MathArena/hmmt_feb_2025+MathArena/hmmt_feb_2026",
+      "grader": "math_verify",
+      "selector": "plurality",
+      "split": "train",
+      "report_label": "HMMT February 2025 + 2026"
+    },
+    {
+      "id": "omni_math_hard",
+      "source": "KbsdJames/Omni-MATH",
+      "grader": "math_verify",
+      "selector": "plurality",
+      "split": "test",
+      "min_difficulty": 7.0,
+      "report_label": "Omni-MATH, difficulty >= 7"
+    },
+    {
+      "id": "gpqa_diamond",
+      "source": "Idavidrein/gpqa",
       "grader": "option_exact",
       "selector": "plurality",
-      "split": "test"
-    },
-    {
-      "id": "bbh_logic4",
-      "source": "suzgunmirac/BIG-Bench-Hard",
-      "grader": "task_exact",
-      "selector": "plurality",
-      "subtasks": [
-        "logical_deduction_seven_objects",
-        "tracking_shuffled_objects_seven_objects",
-        "boolean_expressions",
-        "temporal_sequences"
-      ],
-      "report_label": "BBH four-subtask zero-shot subset"
-    },
-    {
-      "id": "mbpp_plus",
-      "source": "evalplus/evalplus",
-      "grader": "evalplus_full",
-      "selector": "public_tests_only",
-      "report_label": "MBPP+ pinned inventory; official-visible-examples selection"
+      "split": "train",
+      "report_label": "GPQA-Diamond (seeded option shuffle)"
     }
   ],
   "replication_grid": {

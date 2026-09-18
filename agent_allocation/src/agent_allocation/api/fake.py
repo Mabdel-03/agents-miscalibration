@@ -25,8 +25,8 @@ Default reply: HTTP 200, ``x-openrouter-cache-status: MISS``, provider ``script.
 ``completion_tokens_details.reasoning_tokens`` (inside ``completion_tokens``, never added on top) and
 ``prompt_tokens_details.cached_tokens``, and content ``"<rationale>...</rationale>\\n<final>...</final>"`` whose final
 answer is derived from the item id (``vary_final_by_node=True`` derives it from the node id instead):
-math500 -> an integer, mmlu_pro / bbh multiple choice -> a letter A-C, bbh boolean_expressions -> True/False,
-mbpp_plus -> a stub function named after the first ``assert name(`` in the prompt.
+aime / hmmt / omni_math_hard (and any other text benchmark) -> an integer, gpqa_diamond -> a letter A-D, mbpp_plus
+(dormant code path) -> a stub function named after the first ``assert name(`` in the prompt.
 
 Field values in ``FakeReply``: ``AUTO`` = the realistic default, ``OMIT`` = leave the JSON key out, anything else is
 used verbatim (``None`` becomes JSON ``null``). The fake also acts as a request-contract checker: a body outside the
@@ -283,10 +283,8 @@ def default_final_answer(coordinates: Mapping[str, Any], body: Mapping[str, Any]
         match = _ASSERT_CALL.search(prompt)
         name = match.group(1) if match else "solution"
         return f"def {name}(*args, **kwargs):\n    return None"
-    if benchmark == "mmlu_pro":
-        return "ABC"[number % 3]
-    if benchmark == "bbh_logic4":
-        return ("True", "False")[number % 2] if "boolean" in item_id else "ABC"[number % 3]
+    if benchmark == "gpqa_diamond":
+        return "ABCD"[number % 4]
     return str(number % 97)
 
 

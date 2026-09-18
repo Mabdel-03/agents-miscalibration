@@ -94,7 +94,8 @@ _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 _FINAL_OPEN = re.compile(r"<final\b[^>]{0,64}>", re.IGNORECASE)
 _FINAL_CLOSE = re.compile(r"</final\s*>", re.IGNORECASE)
 _OMISSION_INSERT = f"\n{OMISSION_MARKER}\n"
-_TASK_KIND = {"math500": OutputKind.MATH, "mmlu_pro": OutputKind.OPTION, "mbpp_plus": OutputKind.PYTHON}
+_TASK_KIND = {"aime": OutputKind.MATH, "hmmt": OutputKind.MATH, "omni_math_hard": OutputKind.MATH,
+              "gpqa_diamond": OutputKind.OPTION}
 
 
 class PromptError(ValueError):
@@ -162,18 +163,7 @@ def _requirements() -> dict[str, str]:
 
 
 def output_requirement(task: PublicTask) -> str:
-    """The benchmark's output requirement; BBH picks ``bbh_boolean`` or ``bbh_choice`` by output kind."""
-    if task.benchmark == "bbh_logic4":
-        if task.output_kind is OutputKind.BOOLEAN:
-            key = "bbh_boolean"
-        elif task.output_kind is OutputKind.OPTION:
-            key = "bbh_choice"
-        else:
-            raise PromptError(f"{task.item_id}: BBH output kind {task.output_kind.value!r} has no requirement")
-        if task.subtask is not None and (task.subtask == "boolean_expressions") != (key == "bbh_boolean"):
-            raise PromptError(f"{task.item_id}: subtask {task.subtask!r} disagrees with output kind "
-                              f"{task.output_kind.value!r}")
-        return _requirements()[key]
+    """The benchmark's output requirement (one string per benchmark in ``output_requirements.json``)."""
     expected = _TASK_KIND.get(task.benchmark)
     if expected is None:
         raise PromptError(f"{task.item_id}: unknown benchmark {task.benchmark!r}")

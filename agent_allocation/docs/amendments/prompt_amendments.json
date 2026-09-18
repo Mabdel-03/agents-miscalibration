@@ -11,6 +11,18 @@
    "pack_original_copy": "docs/amendments/prompts/system.pack-v1.txt",
    "approval": "Owner answer in the Claude Code session, 2026-09-17 ~09:14 EDT: 'Clarify prompt, re-pilot' (option previewed with this exact wording)",
    "reason": "Gate 2 pilot at text headroom 4096: all 9 invalid MMLU-Pro finals were empty <final> abstentions on one item (mmlu_pro/5728) where the model read 'using only the information provided in this request' as forbidding its own knowledge; 6 of the 9 abstentions propagated through PEER rounds, which would bias the communication comparison. Spec section 3 permits a documented prompt amendment before main collection."
+  },
+  {
+   "id": "prompt_output_requirements_forced_v2",
+   "template": "prompts/output_requirements.json",
+   "recorded_at": "2026-09-18T00:00:00+00:00",
+   "before_sha256": "6749f51d8480ea44dd622bb744748dd86c084ce2ff390349cbd89d5554b7cdc6",
+   "after_sha256": "40d73a5461e3b66c7af6c0842f30c46484ea0bfabdd5ea14ccdd02548bd52550",
+   "before_sentence": "keys math500, mmlu_pro, bbh_choice, bbh_boolean, mbpp_plus",
+   "after_sentence": "keys aime, hmmt, omni_math_hard (the math500 wording verbatim) and gpqa_diamond (the mmlu_pro wording verbatim)",
+   "pack_original_copy": null,
+   "approval": "Owner decision 2026-09-18 (plan ok-then-do-that-robust-elephant, forced_budget_v2): text only, four hard benchmarks AIME 2025+2026, HMMT Feb 2025+2026, Omni-MATH difficulty >= 7, GPQA-Diamond; drop MATH-500, MMLU-Pro, BBH, MBPP+",
+   "reason": "Benchmark set replaced for openrouter_forced_budget_v2 before any collection; the requirement wording per output kind is unchanged, only the benchmark keys differ."
   }
  ]
 }

@@ -354,19 +354,14 @@ def canary_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[ItemGraph]
     primary = locks[cfg["primary_model"]]
     replication = locks[cfg["replication_model"]]
     dev = dev_ids(paths)
-    bbh_tracking = [i for i in dev["bbh_logic4"] if tasks[i].subtask == "tracking_shuffled_objects_seven_objects"][0]
-    text_items = [dev["math500"][0], dev["mmlu_pro"][0], bbh_tracking]
+    text_items = [dev[benchmark][0] for benchmark in BENCHMARKS]
     lite: list[ItemGraph] = []
     for item in text_items:
         nodes = [standalone_spec(cfg=cfg, partition="canary", task=tasks[item], lock=primary, kind=GenerationKind.ROOT,
                                  budget=a, amendments=amendments) for a in CANARY_BUDGETS]
         lite.append(nodes_only_graph(tasks[item], "canary", nodes, "canary_budget_sweep"))
-    code_item = dev["mbpp_plus"][0]
-    nodes = [standalone_spec(cfg=cfg, partition="canary", task=tasks[code_item], lock=primary, kind=GenerationKind.ROOT,
-                             budget=a, amendments=amendments) for a in CANARY_CODE_BUDGETS]
-    lite.append(nodes_only_graph(tasks[code_item], "canary", nodes, "canary_code"))
     flash = []
-    for item in (dev["math500"][0], code_item):
+    for item in (dev["aime"][0], dev["gpqa_diamond"][0]):
         node = standalone_spec(cfg=cfg, partition="canary", task=tasks[item], lock=replication,
                                kind=GenerationKind.ROOT, budget=1024, amendments=amendments)
         flash.append(nodes_only_graph(tasks[item], "canary", [node], "canary_flash"))

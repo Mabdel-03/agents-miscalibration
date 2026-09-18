@@ -23,8 +23,7 @@ import pandas as pd
 from agent_allocation.analysis.load import RunData
 from agent_allocation.analysis.names import CheckpointNameError, parse_name
 from agent_allocation.analysis.outcomes import grade_value
-
-CODE_BENCHMARKS = frozenset({"mbpp_plus"})
+from agent_allocation.config import CODE_BENCHMARKS  # empty in the forced study: every level reads vote@k
 
 
 def pass_at_k(n: int, c: int, k: int) -> float:

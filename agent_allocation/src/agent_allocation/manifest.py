@@ -1,7 +1,7 @@
 """``allocation prepare-data`` (lead-owned): inventories -> seeded panels -> balanced waves -> manifests + dataset lock.
 
-Wave construction (plan design decision 7): every wave holds four items per benchmark in ``BENCHMARKS`` order
-(one per BBH subtask), and nested panels are wave prefixes so a budget stop trims only the tail of main:
+Wave construction (plan design decision 7): every wave holds four items per benchmark in ``BENCHMARKS`` order,
+and nested panels are wave prefixes so a budget stop trims only the tail of main:
 extension = the first ``extension_items/16`` waves, high = the first ``high_items/16``, replication = the first
 ``replication_items/16``. The pilot uses each benchmark's disjoint development items.
 
@@ -20,16 +20,16 @@ from typing import Any, Mapping, Sequence
 
 from agent_allocation.config import config_hash, load_config, validate_config
 from agent_allocation.contracts import (
-    BBH_SUBTASKS, BENCHMARKS, WAVE_ITEMS_PER_BENCHMARK, InventoryItem, PanelDraw, Wave, canonical_hash,
+    BENCHMARKS, WAVE_ITEMS_PER_BENCHMARK, InventoryItem, PanelDraw, Wave, canonical_hash,
     dump_record, load_record,
 )
 from agent_allocation.paths import RunPaths
 
 ADAPTERS = {
-    "math500": "agent_allocation.benchmarks.math500",
-    "mmlu_pro": "agent_allocation.benchmarks.mmlu_pro",
-    "bbh_logic4": "agent_allocation.benchmarks.bbh_logic4",
-    "mbpp_plus": "agent_allocation.benchmarks.mbpp_plus",
+    "aime": "agent_allocation.benchmarks.aime",
+    "hmmt": "agent_allocation.benchmarks.hmmt",
+    "omni_math_hard": "agent_allocation.benchmarks.omni_math_hard",
+    "gpqa_diamond": "agent_allocation.benchmarks.gpqa_diamond",
 }
 TEXT_MANIFEST = "agent_allocation.benchmarks.text_manifest"
 DEV_PER_BENCHMARK = 8
@@ -86,13 +86,9 @@ def draw_panels(cfg: Mapping[str, Any], paths: RunPaths) -> tuple[dict[str, list
         adapter = importlib.import_module(ADAPTERS[benchmark])
         inventory = list(adapter.load_inventory(cfg, paths))
         inventories[benchmark] = inventory
-        if benchmark == "mbpp_plus":
-            draw = adapter.select_panels(inventory, seed=seed, n_dev=DEV_PER_BENCHMARK, n_main=per["main_items"],
-                                         n_reserve=RESERVE_PER_BENCHMARK)
-        else:
-            text = importlib.import_module(TEXT_MANIFEST)
-            draw = text.select_panels(inventory, benchmark=benchmark, seed=seed, n_dev=DEV_PER_BENCHMARK,
-                                      n_main=per["main_items"], n_reserve=RESERVE_PER_BENCHMARK)
+        text = importlib.import_module(TEXT_MANIFEST)
+        draw = text.select_panels(inventory, benchmark=benchmark, seed=seed, n_dev=DEV_PER_BENCHMARK,
+                                  n_main=per["main_items"], n_reserve=RESERVE_PER_BENCHMARK)
         check_draw(benchmark, draw, inventory, n_main=per["main_items"])
         draws[benchmark] = draw
     return inventories, draws
@@ -118,14 +114,6 @@ def check_draw(benchmark: str, draw: PanelDraw, inventory: Sequence[InventoryIte
             raise ManifestRefused(f"{benchmark}: {name} contains ineligible items {ineligible[:3]}")
     if len(draw.main_item_ids) != n_main or len(draw.dev_item_ids) != DEV_PER_BENCHMARK:
         raise ManifestRefused(f"{benchmark}: wrong panel sizes")
-    if benchmark == "bbh_logic4":
-        for start in range(0, n_main, WAVE_ITEMS_PER_BENCHMARK):
-            block = [by_id[i].public.subtask for i in draw.main_item_ids[start:start + WAVE_ITEMS_PER_BENCHMARK]]
-            if tuple(block) != BBH_SUBTASKS:
-                raise ManifestRefused(f"bbh_logic4: main block at {start} is not one item per subtask in order")
-        dev_subtasks = sorted(by_id[i].public.subtask for i in draw.dev_item_ids)
-        if dev_subtasks != sorted(BBH_SUBTASKS * 2):
-            raise ManifestRefused("bbh_logic4: development panel must hold two items per subtask")
 
 
 def build_waves(cfg: Mapping[str, Any], draws: Mapping[str, PanelDraw]) -> list[Wave]:

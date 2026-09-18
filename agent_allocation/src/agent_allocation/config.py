@@ -7,10 +7,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
-from agent_allocation.contracts import BENCHMARKS, BBH_SUBTASKS, STUDY_ID, GridSpec, canonical_hash
+from agent_allocation.contracts import BENCHMARKS, STUDY_ID, GridSpec, canonical_hash
 
 PRESET_CEILINGS_USD = {"balanced150": Decimal("135"), "lean100": Decimal("90")}
-CODE_BENCHMARKS = frozenset({"mbpp_plus"})
+CODE_BENCHMARKS: frozenset[str] = frozenset()   # no code benchmark in the study; MBPP+ grading stays dormant
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -36,8 +36,6 @@ def validate_config(cfg: Mapping[str, Any]) -> list[str]:
     need(Decimal(str(budget.get("soft_admission_ceiling_usd", 0))) <= Decimal(str(budget.get("credit_ceiling_usd", 0))),
          "soft admission ceiling exceeds the credit ceiling")
     need([b["id"] for b in cfg.get("benchmarks", [])] == list(BENCHMARKS), "benchmark ids/order differ from contracts")
-    bbh = next((b for b in cfg.get("benchmarks", []) if b.get("id") == "bbh_logic4"), {})
-    need(tuple(bbh.get("subtasks", ())) == BBH_SUBTASKS, "BBH subtasks differ from contracts")
     for name, count in cfg.get("panels", {}).items():
         need(count % 16 == 0, f"panel {name} is not a multiple of 16")
     provider = cfg.get("provider", {})
