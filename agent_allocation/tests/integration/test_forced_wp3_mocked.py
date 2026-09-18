@@ -114,6 +114,21 @@ def test_sharded_forced_study_runs_straight_through_and_merges(tmp_path):
         assert (root.run_dir / "merged" / "tables" / f"{table}.parquet").is_file(), table
     assert (root.run_dir / "merged" / "reports" / "RUN_REPORT.md").read_text().count("forced to exactly") == 1
 
+    # The iso-compute ladder reads the merged tables: C = B*R*A holds, deep/25 sits on rung 25, effective depth joins.
+    import sys
+    from tests.forced_cfg import PROJECT
+    sys.path.insert(0, str(PROJECT / "docs" / "isocompute"))
+    try:
+        import isocore
+        merged_dir = str(root.run_dir / "merged")
+        assert isocore.self_check(merged_dir, "main") == []
+        eff = isocore.effective_depth(merged_dir, "main").set_index("name")
+        assert eff.loc["deep/25", "rung"] == 25 and eff.loc["deep/25", "C"] == 25600
+        assert eff["mean_effective_tokens"].notna().all()
+        assert (eff["mean_effective_tokens"] <= eff["C"] + 1e-9).all()
+    finally:
+        sys.path.remove(str(PROJECT / "docs" / "isocompute"))
+
 
 def test_calibration_collects_forced_and_natural_and_gates(tmp_path):
     cfg = request_ready(fast_config(forced_test_config()))

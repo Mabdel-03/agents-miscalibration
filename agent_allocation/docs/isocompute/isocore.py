@@ -17,6 +17,10 @@ from agent_allocation.analysis import stats as astats
 
 BENCH_ORDER = ["math500", "mmlu_pro", "bbh_logic4", "mbpp_plus"]
 BENCH_LABEL = {
+    "aime": "AIME 2025+2026",
+    "hmmt": "HMMT Feb 2025+2026",
+    "omni_math_hard": "Omni-MATH (difficulty >= 7)",
+    "gpqa_diamond": "GPQA-Diamond",
     "math500": "MATH-500",
     "mmlu_pro": "MMLU-Pro",
     "bbh_logic4": "BBH-logic4",
@@ -54,6 +58,10 @@ STUDY_SEED = 20260917
 A0 = {"main": 1024, "high": 4096, "pilot": 1024, "replication": 1024}
 # Families that live on the 400-item population_0 ladder (cp/pooled use a separate 192-item panel).
 LADDER_FAMILIES = ["sample", "private_single", "private_team", "peer", "deep"]
+# forced_budget_v2: deep multipliers {2,4,8,16,25}, so the deep curve reaches the 25-generation rung
+# (sample/25, private_single/25) and every rung C/A0 in LADDER_RUNGS has a depth-only point where one exists.
+LADDER_RUNGS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 25]
+DEEP_RUNGS_FORCED = [1, 2, 4, 8, 16, 25]
 
 
 def tables_dir(run_dir: str) -> str:
@@ -91,6 +99,43 @@ def checkpoint_index(oc: pd.DataFrame) -> pd.DataFrame:
     cols = ["name", "family", "B", "R", "A", "C", "rung", "partition_id"]
     idx = oc.drop_duplicates("name")[cols].reset_index(drop=True)
     return idx.sort_values(["rung", "family", "B"]).reset_index(drop=True)
+
+
+def has_table(run_dir: str, name: str) -> bool:
+    import os
+    return os.path.exists(tables_dir(run_dir) + name + ".parquet")
+
+
+# ---------------------------------------------------------------- effective depth (forced runs)
+
+def effective_depth(run_dir: str, partition: str = "main") -> pd.DataFrame:
+    """Per checkpoint: requested C, mean effective tokens (reasoning before loop onset, summed over the checkpoint's
+    own generations; ``analysis.effective_depth``), the effective fraction and the effective rung C_eff/A0.
+
+    Loop onset per generation = first 3,000-char window (step 500) of the reasoning whose zlib ratio < 0.1, as a
+    fraction of the reasoning length x reasoning_budget; a generation without a loop counts its whole realized
+    reasoning. Requires the ``effective_depth_summary`` table that ``allocation analyze`` writes for forced runs."""
+    eff = load(run_dir, "effective_depth_summary")
+    eff = eff[eff["partition_id"] == partition]
+    idx = checkpoint_index(outcomes(run_dir, partition, ladder_only=False))
+    out = idx.merge(eff[["name", "items", "items_known", "mean_effective_tokens", "mean_effective_fraction",
+                         "mean_looped_generations"]], on="name", how="left")
+    out["effective_rung"] = out["mean_effective_tokens"] / A0[partition]
+    return out.sort_values(["rung", "family", "B", "name"]).reset_index(drop=True)
+
+
+def realized_compute(run_dir: str, partition: str = "main") -> pd.DataFrame:
+    """Per checkpoint: requested C next to the realized tokens of its own ancestor set (policy ledger, macro rows).
+    In a forced run realized reasoning equals requested, so ``realized_reasoning / C`` must be 1 everywhere."""
+    cs = load(run_dir, "cost_summary")
+    cs = cs[(cs["partition_id"] == partition) & (cs["benchmark"] == "macro")]
+    idx = checkpoint_index(outcomes(run_dir, partition, ladder_only=False))
+    cols = [c for c in ("mean_requested_reasoning_tokens", "mean_reasoning_tokens", "mean_realized_tokens",
+                        "mean_total_charged_usd", "acc") if c in cs.columns]
+    out = idx.merge(cs[["name", *cols]], on="name", how="left")
+    if "mean_reasoning_tokens" in out:
+        out["realized_over_requested"] = out["mean_reasoning_tokens"] / out["C"]
+    return out.sort_values(["rung", "family", "B", "name"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------- self-check

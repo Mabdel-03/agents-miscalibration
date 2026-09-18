@@ -14,6 +14,14 @@ export PATH="/home/mabdel03/.local/bin:$PATH"   # TinyTeX, TeX Live 2026
 
 cd "$HERE"
 
+# A forced-budget run (openrouter_forced_budget_v2; analyze writes effective_depth_summary) gets its own ladder with
+# realized compute and effective depth; the v1 report below quotes v1 numbers and is not rebuilt for it.
+if [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/tables/effective_depth_summary.parquet" ]; then
+  echo "== forced ladder =="
+  "$PY" forced_ladder.py --run-dir "$RUN_DIR" --out "$HERE" "$@"
+  exit 0
+fi
+
 echo "== analysis =="
 "$PY" isocompute.py --out "$HERE" "$@"
 
