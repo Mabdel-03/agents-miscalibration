@@ -35,7 +35,7 @@ case "$VERB" in
   calibrate) exec $A calibrate "${common[@]}" --allow-paid --max-usd "$MAX_USD" ;;
   pilot)     exec $A pilot "${common[@]}" --allow-paid --max-usd "$MAX_USD" ;;
   freeze)    exec $A freeze "${common[@]}" ;;
-  run)       exec $A run "${common[@]}" --allow-paid --max-usd "$MAX_USD" --resume ;;
+  run)       exec $A run "${common[@]}" --allow-paid --max-usd "$MAX_USD" --resume ${RUN_FLAGS:-} ;;
   finalize)
     set +e
     $A stop --run-dir "$SHARD_DIR"

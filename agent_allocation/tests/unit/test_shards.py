@@ -230,3 +230,12 @@ def test_budget_by_shard_overrides_slices_within_the_cap():
     live_cfg["budget_by_shard"]["mancer"] = {"max_unresolved_spend_usd": 5}
     with pytest.raises(ValueError):
         shard_config(live_cfg, "mancer")
+
+
+def test_active_ceiling_ignores_the_balance_only_with_account_auto_reload():
+    from agent_allocation.live import active_ceiling
+    snap = {"key": {"limit_remaining": 147.9}, "account_balance_usd": "23.97"}
+    assert active_ceiling(Decimal("58.5"), Decimal("3.62"), snap) == Decimal("3.62") + Decimal("23.97") - 1
+    assert active_ceiling(Decimal("58.5"), Decimal("3.62"), snap, account_auto_reload=True) == Decimal("58.5")
+    low_key = {"key": {"limit_remaining": 20}, "account_balance_usd": "23.97"}
+    assert active_ceiling(Decimal("58.5"), Decimal("0"), low_key, account_auto_reload=True) == Decimal("19")

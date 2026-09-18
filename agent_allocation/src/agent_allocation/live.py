@@ -159,13 +159,17 @@ def provider_snapshot(paths: RunPaths, source: str) -> dict[str, Any]:
     return snap
 
 
-def active_ceiling(max_usd: Decimal, ledger_settled: Decimal, snapshot: Mapping[str, Any] | None) -> Decimal:
+def active_ceiling(max_usd: Decimal, ledger_settled: Decimal, snapshot: Mapping[str, Any] | None, *,
+                   account_auto_reload: bool = False) -> Decimal:
+    """``account_auto_reload``: the owner has credit auto-reload on the account, so the (startup-only) credit balance
+    is not a ceiling; the key's remaining limit, ``max_usd`` and the ledger's configured ceilings still are."""
     ceiling = max_usd
     if snapshot is not None:
         remaining = snapshot["key"].get("limit_remaining")
         if remaining is not None:
             ceiling = min(ceiling, ledger_settled + Decimal(str(remaining)) - SAFETY_MARGIN_USD)
-        ceiling = min(ceiling, ledger_settled + Decimal(snapshot["account_balance_usd"]) - SAFETY_MARGIN_USD)
+        if not account_auto_reload:
+            ceiling = min(ceiling, ledger_settled + Decimal(snapshot["account_balance_usd"]) - SAFETY_MARGIN_USD)
     return max(ceiling, Decimal("0"))
 
 
@@ -1268,7 +1272,7 @@ def stopped_early(summary: Any) -> str | None:
     return None if reason in (None, "completed", "complete", "done") else str(reason)
 
 
-async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
+async def run_main(cfg, paths: RunPaths, max_usd: Decimal, *, account_auto_reload: bool = False) -> int:
     from agent_allocation.api.client import OpenRouterClient
     from agent_allocation.apikey import load_api_key
     from agent_allocation.forecast import (
@@ -1298,7 +1302,11 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     snap = provider_snapshot(paths, "run_phase_a")
     # R02-8: the ledger gets the absolute provider-derived ceiling (retries/reconciliation may use the contingency);
     # the dispatcher holds NEW attempts to the configured soft admission ceiling itself.
-    ceiling = active_ceiling(max_usd, ledger_settled(paths), snap)
+    ceiling = active_ceiling(max_usd, ledger_settled(paths), snap, account_auto_reload=account_auto_reload)
+    if account_auto_reload:
+        record_decision(paths, phase="account_auto_reload", ceiling=str(ceiling),
+                        account_balance_usd=str(snap["account_balance_usd"]) if snap else None,
+                        detail="owner: credits auto-reload below $10; the balance is not used as a ceiling")
     runtime = Runtime(cfg, paths, lock=primary, tasks=tasks, ceiling=ceiling, api_key=api_key)
     try:
         return await _run_main_phases(cfg, paths, max_usd, runtime=runtime, by_wave=by_wave, tasks=tasks,
@@ -1406,6 +1414,9 @@ def cmd_run(argv: list[str]) -> int:
     common_args(parser)
     parser.add_argument("--resume", action="store_true", help="accepted for the spec's command contract; runs always resume")
     parser.add_argument("--rehearsal", action="store_true", help="fake transport end to end in a scratch run dir")
+    parser.add_argument("--account-auto-reload", action="store_true",
+                        help="owner has credit auto-reload on: do not cap admissions at the startup credit balance "
+                             "(key limit, --max-usd and the configured ceilings still apply)")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     if args.rehearsal:
@@ -1414,7 +1425,7 @@ def cmd_run(argv: list[str]) -> int:
         os.environ[REHEARSAL_ENV] = "1"
     cfg, paths, max_usd = preflight(cfg, args)
     paths.ensure()
-    return asyncio.run(run_main(cfg, paths, max_usd))
+    return asyncio.run(run_main(cfg, paths, max_usd, account_auto_reload=args.account_auto_reload))
 
 
 def cmd_seal(argv: list[str]) -> int:

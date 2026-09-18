@@ -28,7 +28,7 @@ print('\n'.join(shard_ids(load_config(sys.argv[1]))))" "$CFG")
 fi
 JOBS=()
 for SHARD in "${SHARDS[@]}"; do
-  EXPORTS="SHARD=$SHARD,VERB=$VERB,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}"
+  EXPORTS="SHARD=$SHARD,VERB=$VERB,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}${RUN_FLAGS:+,RUN_FLAGS=$RUN_FLAGS}"
   CMD=(sbatch --parsable --job-name="fv2-$VERB-$SHARD" --export="$EXPORTS" slurm/forced_v2_shard.sbatch)
   if [ "$DRY" = 1 ]; then echo "${CMD[*]}"; continue; fi
   JID=$("${CMD[@]}")
