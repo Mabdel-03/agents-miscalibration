@@ -730,7 +730,8 @@ async def forced_endpoint_gate(client: ForcedClient, lock: EndpointLock, cfg: Ma
 
     async def call(name: str, body: dict[str, Any]) -> ForcedCall | None:
         nonlocal spent
-        attempt_id = f"gate0:{stamp}:{name}"
+        probe_node = f"gate0-{stamp}-{name}"
+        attempt_id = f"{probe_node}:1"                       # the ledger's '<node_id>:<attempt_no>' shape
         if ledger is not None:
             from agent_allocation.runtime.estimate import input_token_bound
             price_in = Decimal(lock.input_price_per_token)
@@ -738,13 +739,13 @@ async def forced_endpoint_gate(client: ForcedClient, lock: EndpointLock, cfg: Ma
                             Decimal(lock.internal_reasoning_price_per_token or "0"))
             amount = (Decimal(input_token_bound(len(body["prompt"]))) * price_in
                       + Decimal(int(body["max_tokens"])) * price_out) * Decimal("1.1")
-            if not await ledger.reserve(attempt_id=attempt_id, node_id="gate0", partition_id="gate0",
+            if not await ledger.reserve(attempt_id=attempt_id, node_id=probe_node, partition_id="gate0",
                                         amount_usd=amount):
                 exchanges.append({"name": name, "refused_by_ledger": True})
                 return None
             await ledger.mark_sent(attempt_id)
         result = await client.raw_completion(body, lock=lock, coordinates={"phase": f"gate0_{name}",
-                                                                           "node_id": f"gate0:{name}",
+                                                                           "node_id": probe_node,
                                                                            "attempt_id": attempt_id,
                                                                            "item_id": "gate0"})
         if ledger is not None:

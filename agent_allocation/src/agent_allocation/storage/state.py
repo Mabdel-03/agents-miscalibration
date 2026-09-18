@@ -573,6 +573,10 @@ class StateStore:
         #    (CollectionLedger.resolve_inherited, run by the dispatcher at startup) is the one owner of recovery
         #    charging, so two writers can never charge the same attempt (pilot kill -9 finding).
         for aid, info in known.items():
+            if info.partition_id == "gate0":
+                # Gate 0 preflight probes (forced mode) are charged in the ledger but are not DAG nodes; the first
+                # live run wrote them as 'gate0:<stamp>:<name>', which is not an '<node_id>:<attempt_no>' id.
+                continue
             if not self._query("SELECT 1 FROM attempts WHERE attempt_id=?", (aid,)):
                 self._record_attempt(Attempt(aid, info.node_id or aid.rsplit(":", 1)[0], attempt_number(aid),
                                              AttemptState.TERMINAL, info.reserved_usd, now_iso(),

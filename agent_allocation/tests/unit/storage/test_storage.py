@@ -161,3 +161,19 @@ def test_recover_without_any_database_reingests_parsed_and_raw(paths):
     assert result.node_id == b.node_id and result.raw_response_path is not None
     assert dump_record(result)["transport_status"] == TransportStatus.OK.value
     recovered.close()
+
+
+async def test_recover_skips_gate0_probes_in_the_journal(paths):
+    """Gate 0's preflight probes are charged in the ledger but are not DAG nodes. The first live forced run wrote
+    them as 'gate0:<stamp>:<name>' (no attempt number); recovery must not choke on them (calibration crash)."""
+    journal = LedgerJournal(paths.ledger_journal)
+    for seq, (kind, attempt) in enumerate(((LedgerEventKind.RESERVE, "gate0:20260918T092214250065Z:banana"),
+                                           (LedgerEventKind.SENT, "gate0:20260918T092214250065Z:banana"),
+                                           (LedgerEventKind.SETTLE, "gate0:20260918T092214250065Z:banana"),
+                                           (LedgerEventKind.RESERVE, "gate0-20260918T1-think:1"),
+                                           (LedgerEventKind.SETTLE, "gate0-20260918T1-think:1")), start=1):
+        event = replace(_event(seq, kind, attempt=attempt), node_id=attempt.rsplit(":", 1)[0], partition_id="gate0")
+        await journal.append(event)
+    journal.close()
+    recovered = StateStore.recover(paths)
+    assert recovered.recovery_report["journal_attempts_recorded"] == 0
