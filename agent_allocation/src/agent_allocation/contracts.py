@@ -31,7 +31,7 @@ from hashlib import sha256
 from typing import Any, Mapping, Protocol, Sequence
 
 STUDY_ID = "openrouter_agent_allocation_v1"
-BENCHMARKS: tuple[str, ...] = ("math500", "mmlu_pro", "bbh_logic4", "mbpp_plus")
+BENCHMARKS: tuple[str, ...] = ("aime", "hmmt", "omni_math_hard", "gpqa_diamond")
 BBH_SUBTASKS: tuple[str, ...] = (
     "logical_deduction_seven_objects",
     "tracking_shuffled_objects_seven_objects",

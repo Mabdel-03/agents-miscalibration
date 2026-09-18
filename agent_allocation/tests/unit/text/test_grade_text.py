@@ -185,29 +185,29 @@ def _round_trip(inventory, forms, *, include_ineligible=False):
     return failures
 
 
-def test_every_mmlu_gold_grades_correct_against_itself(mmlu_inventory):
-    assert _round_trip(mmlu_inventory, (lambda g: g, lambda g: f"({g})")) == []
+def test_every_gpqa_gold_grades_correct_against_itself(gpqa_inventory):
+    assert _round_trip(gpqa_inventory, (lambda g: g, lambda g: f"({g})")) == []
 
 
-def test_every_bbh_gold_grades_correct_against_itself(bbh_inventory):
-    assert _round_trip(bbh_inventory, (lambda g: g,)) == []
+_MATH_FORMS = (lambda g: g, lambda g: f"\\boxed{{{g}}}", lambda g: f"${g}$")
 
 
-def test_every_math_gold_grades_correct_against_itself(math_inventory):
-    assert _round_trip(math_inventory, (lambda g: g, lambda g: f"\\boxed{{{g}}}")) == []
+def test_every_aime_gold_grades_correct_against_itself(aime_inventory):
+    assert _round_trip(aime_inventory, _MATH_FORMS) == []
 
 
-def test_frozen_math_exclusions_match_the_recomputed_audit(math_inventory):
-    from agent_allocation.benchmarks import math500
-    from agent_allocation.grading.text._limits import wall_clock_limit
-    failing = {item_id for item_id, *_ in _round_trip(math_inventory, (lambda g: g,), include_ineligible=True)}
-    math_equiv._math_verify()
-    for item in math_inventory:                          # every gold parses to a mathematical object, not a string
-        with wall_clock_limit(10.0):
-            parsed = math_equiv.parse_answer(item.private.gold_answer)
-        if not parsed or any(isinstance(value, str) for value in parsed):
-            failing.add(item.public.item_id)
-    assert set(math500.ENGINEERING_EXCLUSIONS) == failing == set()
+def test_every_hmmt_gold_grades_correct_against_itself(hmmt_inventory):
+    assert _round_trip(hmmt_inventory, _MATH_FORMS) == []
+
+
+def test_every_eligible_omni_gold_grades_correct_against_itself(omni_inventory):
+    assert _round_trip(omni_inventory, _MATH_FORMS[:2]) == []
+
+
+def test_competition_golds_pass_the_omni_gold_audit(aime_inventory, hmmt_inventory):
+    from agent_allocation.benchmarks import omni_math_hard
+    for item in (*aime_inventory, *hmmt_inventory):     # parse whole, self-verify bare and boxed
+        assert omni_math_hard.audit_gold(item.private.gold_answer) is None, item.public.item_id
 
 
 def test_malformed_math_final_is_invalid_output_not_wrong():
@@ -221,7 +221,7 @@ def test_grade_module_exports_versions():
     assert "math-verify==0.9.0" in grade_module.grader_version()
 
 
-@pytest.mark.parametrize("benchmark", ["math500", "mmlu_pro", "bbh_logic4"])
+@pytest.mark.parametrize("benchmark", ["aime", "hmmt", "omni_math_hard", "gpqa_diamond"])
 def test_fixture_golds_round_trip(benchmark):
     from agent_allocation.benchmarks.text_manifest import fixture_inventory
     assert _round_trip(fixture_inventory(benchmark), (lambda g: g,)) == []
@@ -242,11 +242,11 @@ def test_specs_without_usable_legal_choices_are_unknown_not_guessed():
     assert (result.status, result.detail_code) == (GradeStatus.EVALUATOR_ERROR, "allowed_choices_not_boolean")
 
 
-def test_private_specs_carry_the_public_legal_choices(math_inventory, mmlu_inventory, bbh_inventory):
-    for inventory in (math_inventory, mmlu_inventory, bbh_inventory):
+def test_private_specs_carry_the_public_legal_choices(aime_inventory, omni_inventory, gpqa_inventory):
+    for inventory in (aime_inventory, omni_inventory, gpqa_inventory):
         for item in inventory:
             assert item.private.allowed_choices == item.public.allowed_choices
-    assert all(item.private.allowed_choices == () for item in math_inventory)
+    assert all(item.private.allowed_choices == () for item in (*aime_inventory, *omni_inventory))
 
 
 @pytest.mark.parametrize("gold, final, expected", [
