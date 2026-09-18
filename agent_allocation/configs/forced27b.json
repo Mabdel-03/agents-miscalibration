@@ -1,0 +1,247 @@
+{
+ "spec_version": "1.0",
+ "study_id": "openrouter_forced_budget_v2",
+ "seed": 20260917,
+ "primary_model": "qwen/qwen3.8-27b",
+ "replication_model": null,
+ "endpoint_lock_file": "artifacts/locks/openrouter_endpoints.json",
+ "dataset_lock_file": "artifacts/locks/datasets.json",
+ "reasoning": {
+  "main_a": 1024,
+  "high_a": null,
+  "pilot_a": [
+   1024
+  ],
+  "text_completion_headroom": 4096,
+  "code_completion_headroom": 4096,
+  "requested_reasoning_max": 25600,
+  "budget_semantics": "forced_exact"
+ },
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "api_seed_enabled": false,
+  "response_cache": false,
+  "n_per_request": 1
+ },
+ "provider": {
+  "allow_fallbacks": false,
+  "require_parameters": true,
+  "service_tier": "standard",
+  "resolve_exact_endpoint_in_preflight": true,
+  "auto_provider_switch": false,
+  "endpoint_tag": null
+ },
+ "protocols": {
+  "root_bank_size": 25,
+  "private_total_cycles": 25,
+  "team_sizes": [
+   2,
+   3,
+   4,
+   5
+  ],
+  "peer_update_rounds": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "private_team_update_rounds": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "deep_main_multipliers": [
+   2,
+   4,
+   8,
+   16,
+   25
+  ],
+  "deep_high_multipliers": [],
+  "communication_mode": "synchronous",
+  "context_policy": "latest_visible_solution",
+  "cp_team_size": 4,
+  "cp_peer_rounds": 1,
+  "cp_private_rounds": 3,
+  "pooled_synthesis_team_size": 4,
+  "tools_during_generation": false
+ },
+ "benchmarks": [
+  {
+   "id": "aime",
+   "source": "MathArena/aime_2025+MathArena/aime_2026",
+   "grader": "math_verify",
+   "selector": "plurality",
+   "split": "train",
+   "report_label": "AIME 2025 + 2026"
+  },
+  {
+   "id": "hmmt",
+   "source": "MathArena/hmmt_feb_2025+MathArena/hmmt_feb_2026",
+   "grader": "math_verify",
+   "selector": "plurality",
+   "split": "train",
+   "report_label": "HMMT February 2025 + 2026"
+  },
+  {
+   "id": "omni_math_hard",
+   "source": "KbsdJames/Omni-MATH",
+   "grader": "math_verify",
+   "selector": "plurality",
+   "split": "test",
+   "min_difficulty": 7.0,
+   "report_label": "Omni-MATH, difficulty >= 7"
+  },
+  {
+   "id": "gpqa_diamond",
+   "source": "Idavidrein/gpqa",
+   "grader": "option_exact",
+   "selector": "plurality",
+   "split": "train",
+   "report_label": "GPQA-Diamond (seeded option shuffle)"
+  }
+ ],
+ "scheduler": {
+  "concurrency_start": 16,
+  "concurrency_max": 96,
+  "requests_per_second_start": 2,
+  "requests_per_second_max": 12,
+  "aimd_window_seconds": 60,
+  "increase_concurrency_by": 8,
+  "increase_rps_by": 1,
+  "decrease_factor": 0.5,
+  "max_transport_attempts": 3,
+  "connect_timeout_seconds": 15,
+  "read_timeout_seconds": 900,
+  "lease_heartbeat_seconds": 15,
+  "lease_stale_seconds": 900,
+  "max_active_waves": 6,
+  "wave_items": 16,
+  "max_calls_per_item_in_flight": 32,
+  "single_paid_dispatcher": true,
+  "checkpoint_after_every_response": true,
+  "api_sdk_automatic_retries": false
+ },
+ "grading": {
+  "offline_workers_max": 8,
+  "untrusted_code_network": false,
+  "cpu_quota_per_sandbox": 1,
+  "memory_mib_per_sandbox": 512,
+  "pids_limit": 64,
+  "stdout_limit_bytes": 65536,
+  "public_case_wall_seconds": 3,
+  "full_suite_wall_seconds": 60,
+  "official_evalplus_timeout_rules": true,
+  "grade_cache_by_code_hash": true,
+  "expose_private_tests_to_generation": false
+ },
+ "statistics": {
+  "bootstrap_replicates": 10000,
+  "cluster_unit": "benchmark_and_item",
+  "macro_weight_benchmarks_equally": true,
+  "bbh_macro_weight_subtasks_equally": true,
+  "test_grid_frontier_is_descriptive": true,
+  "no_outcome_based_main_sampling": true
+ },
+ "planning_prices": {
+  "verified_on": "2026-09-18",
+  "primary": {
+   "input_price": "0.24",
+   "output_price": "2.50"
+  },
+  "replication": null
+ },
+ "preset": "forced27b",
+ "panels": {
+  "pilot_items": 32,
+  "main_items": 96,
+  "high_items": 0,
+  "extension_items": 96,
+  "replication_items": 0
+ },
+ "budget": {
+  "cash_target_usd": 100,
+  "credit_ceiling_usd": 95,
+  "pilot_allowance_usd": 9,
+  "contingency_usd": 7,
+  "soft_admission_ceiling_usd": 88,
+  "reservation_multiplier": 1.1,
+  "max_unresolved_spend_usd": 2,
+  "optional_requires_core_completion": true
+ },
+ "execution": {
+  "default_mode": "dry_run",
+  "require_allow_paid_flag": true,
+  "main_requires_passed_pilot_and_frozen_locks": true
+ },
+ "forced": {
+  "enabled": true,
+  "endpoint": "completions",
+  "template": "qwen3.8-27b",
+  "template_file": "src/agent_allocation/api/templates/qwen3.8-27b.chat_template.jinja",
+  "ban_token_ids": [
+   248069,
+   248046,
+   248044
+  ],
+  "ban_bias": -100,
+  "bias_probe_token_id": 41674,
+  "think_close_text": "\n</think>\n\n",
+  "answer_attempts": 3,
+  "note": "THINK: raw prompt ending '<think>\\n', logit_bias ban, max_tokens=reasoning_budget; realized must equal budget with finish_reason=length. ANSWER: prompt+reasoning+think_close_text, max_tokens=headroom."
+ },
+ "calibration": {
+  "dev_items_per_benchmark": 8,
+  "forced_pass_at_1_min": 0.15,
+  "forced_pass_at_1_max": 0.85,
+  "fallback_easier": {
+   "hmmt": "omni_math_mid",
+   "aime": "math_level5"
+  },
+  "note": "pre-registered benchmark-level gate; no per-item selection"
+ },
+ "replication_grid": {
+  "root_bank_size": 16,
+  "private_total_cycles": 16,
+  "team_sizes": [
+   3,
+   5
+  ],
+  "peer_update_rounds": [
+   1,
+   2
+  ],
+  "private_team_update_rounds": [
+   1,
+   2
+  ],
+  "deep_multipliers": [
+   4,
+   16
+  ],
+  "optional": true,
+  "enabled": false
+ },
+ "shards": [
+  {
+   "id": "parasail",
+   "endpoint_tag": "parasail/fp8",
+   "share": 1
+  },
+  {
+   "id": "mancer",
+   "endpoint_tag": "mancer/fp8",
+   "share": 1
+  },
+  {
+   "id": "dekallm",
+   "endpoint_tag": "dekallm",
+   "share": 1
+  }
+ ],
+ "shards_note": "provisional until the endpoint screen; items are assigned to shards by a seeded benchmark-balanced hash; each shard gets share/sum(share) of budget.credit_ceiling_usd"
+}
