@@ -308,6 +308,22 @@ def main():
         N["v2_deep_realized"] = {m: int(v2cs[v2cs["name"] == f"deep/{m}"]["mean_reasoning_tokens"].iloc[0])
                                  for m in RUNGS if len(v2cs[v2cs["name"] == f"deep/{m}"])}
 
+    # ------------------------------------------------------------ generation vs selection (gap.py)
+    import gap
+    import gfig
+    G, rung_tab, fam_tab, vs, prt, cal, strat = gap.run(os.path.dirname(a.run.rstrip("/")), N, out, F)
+    N["gap"] = G
+    # proposed follow-up: k independent calls at depth m with k*m = C, for C = 16A and 32A, reusing the
+    # one deep call per depth already collected; cost from this run's measured per-item cost of each depth
+    cu = N["cost_usd"]
+    per = {m: cu[f"deep/{m}"] for m in (2, 4, 8, 16)}
+    new_calls = {16: {2: 7, 4: 3, 8: 1}, 32: {2: 15, 4: 7, 8: 3, 16: 1}}
+    item_cost = sum(k * per[m] for C in new_calls for m, k in new_calls[C].items())
+    N["followup"] = {"per_item_usd": round(item_cost, 3), "total_usd_96": round(96 * item_cost, 2),
+                     "new_calls_per_item": sum(sum(d.values()) for d in new_calls.values()),
+                     "tokens_per_item": sum(k * m * c.A0 for C in new_calls for m, k in new_calls[C].items())}
+    write_gap_tables(N, G, rung_tab, vs, prt, out)
+
     c.dump(N, f"{out}/numbers.json")
 
     # ------------------------------------------------------------ tables
@@ -324,6 +340,15 @@ def main():
     fg.f8_effective_depth(N, deep_nodes, out)
     fg.f9_dollars(csm, N, out)
     fg.f10_robustness(N, out)
+    gfig.g1_plane(rung_tab, out)
+    gfig.g2_decomposition(fam_tab, out)
+    gfig.g3_verifier(vs, N, out)
+    gfig.g4_strata(G, out)
+    gfig.g5_vote(G, out)
+    gfig.g6_portfolios(prt, N, out)
+    gfig.g7_transitions(G, out)
+    gfig.g8_slopes(G, out)
+    gfig.g9_team_shape(G, out)
     print(json.dumps({k: N[k] for k in ("n_items", "forced_exact_share", "spend_all_usd")}, indent=1))
 
 
@@ -393,6 +418,100 @@ def write_tables(N, F, iso, comm, out):
         path = f"{out}/tables/{name}.tex"
         text = re.sub(r"(?<![\w$])-(\d)", r"$-$\1", open(path).read())
         open(path, "w").write(text)
+
+
+def _f(x, d=3):
+    return "--" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.{d}f}"
+
+
+def _s(x, d=1):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "--"
+    return f"{x:+.{d}f}".replace("-", "$-$")
+
+
+def write_gap_tables(N, G, rung_tab, vs, prt, out):
+    fam_order = {"sample": 0, "private_single": 1, "private_team": 2, "peer": 3, "deep": 4, "cp": 5, "pooled": 6}
+    # compact: per rung, macro
+    L = [r"\begin{tabular}{rrrrrrrrr}", r"\toprule",
+         r"$C/A$ & pass@$k$ & vote@$k$ & \multicolumn{2}{c}{private chain} & \multicolumn{2}{c}{best team} & deep & best non-deep \\",
+         r" & & & delivered & coverage & delivered & coverage & & \\ \midrule"]
+    for r in (2, 4, 8, 16, 25):
+        t = rung_tab[(rung_tab.level == "macro") & (rung_tab.rung == r)]
+        ps = t[t.family == "private_single"]
+        tm = t[t.family.isin(["peer", "private_team"])]
+        bt = tm.sort_values("delivered").iloc[-1] if len(tm) else None
+        dp = t[t.family == "deep"]
+        L.append(f"{r} & {_f(t['pass_at_k'].iloc[0])} & {_f(t[t.family == 'sample']['delivered'].max())} & "
+                 f"{_f(ps['delivered'].max())} & {_f(ps['cov_archive'].max())} & "
+                 f"{_f(None if bt is None else bt['delivered'])} & {_f(None if bt is None else bt['cov_archive'])} & "
+                 f"{_f(dp['delivered'].max())} & {_f(t[t.family != 'deep']['delivered'].max())} \\\\")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    open(f"{out}/tables/rung_compact.tex", "w").write("\n".join(L) + "\n")
+
+    # full, macro, every configuration at the five depth rungs (appendix)
+    L = [r"\begin{longtable}{rlrrrrrr}", r"\toprule",
+         r"$C/A$ & configuration & $|$pool$|$ & delivered & cov.\ (current) & cov.\ (all) & gap (all) & $-$ pass@$k$ \\",
+         r"\midrule", r"\endhead"]
+    for r in (2, 4, 8, 16, 25):
+        t = rung_tab[(rung_tab.level == "macro") & (rung_tab.rung == r)].copy()
+        t["o"] = t["family"].map(fam_order)
+        t = t.sort_values(["o", "B", "name"])
+        L.append(f"\\multicolumn{{8}}{{l}}{{\\emph{{$C={r}A$: pass@{r} = {_f(t['pass_at_k'].iloc[0])}, "
+                 f"prefix coverage = {_f(t['prefix_cov'].iloc[0])}}}}} \\\\")
+        for _, x in t.iterrows():
+            L.append(f"{r} & \\texttt{{{x['name'].replace('_', chr(92) + '_')}}} & {x['n_pool_archive']:.0f} & "
+                     f"{_f(x['delivered'])} & {_f(x['cov_current'])} & {_f(x['cov_archive'])} & "
+                     f"{_s(100 * x['gap_archive'])} & {_s(100 * x['vs_pass_at_k'])} \\\\")
+        L.append(r"\addlinespace")
+    L += [r"\bottomrule", r"\end{longtable}"]
+    open(f"{out}/tables/rung_full_macro.tex", "w").write("\n".join(L) + "\n")
+
+    # per benchmark compact rung table (pass@k, vote, chain, best team, deep)
+    L = [r"\begin{tabular}{llrrrrr}", r"\toprule",
+         r"Benchmark & $C/A$ & pass@$k$ & vote@$k$ & private chain & best team & deep \\ \midrule"]
+    for b in c.BENCH_ORDER:
+        for r in (4, 8, 16, 25):
+            e = G["rung"][b][r]
+            L.append(f"{c.BENCH_LABEL[b] if r == 4 else ''} & {r} & {_f(e['pass_at_k'])} & {_f(e['vote'])} & "
+                     f"{_f(e['private_single'])} & {_f(e['teams_best'])} & {_f(e['deep'])} \\\\")
+        L.append(r"\addlinespace")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    open(f"{out}/tables/rung_by_bench.tex", "w").write("\n".join(L) + "\n")
+
+    # difficulty strata
+    cfgs = ["sample/25", "private_single/25", "peer/5/4", "private_team/5/4", "deep/4", "deep/8", "deep/16", "deep/25"]
+    L = [r"\begin{tabular}{lr" + "r" * len(cfgs) + "}", r"\toprule",
+         "Samples correct & items & " + " & ".join(
+             {"sample/25": "vote 25", "private_single/25": "chain 25", "peer/5/4": "peer 5/4",
+              "private_team/5/4": "team 5/4"}.get(x, x) for x in cfgs) + r" \\ \midrule"]
+    for st in G["strata"]:
+        L.append(f"{st['stratum']} & {st['n']} & " + " & ".join(_f(st[x]) for x in cfgs) + r" \\")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    open(f"{out}/tables/strata.tex", "w").write("\n".join(L) + "\n")
+
+    # portfolios
+    L = [r"\begin{tabular}{lrrrrrr}", r"\toprule",
+         r"Deep calls (multiples of $A$) & $C/A$ & coverage & deepest & vote & pass@$C$ & vote@$C$ \\ \midrule"]
+    for _, x in prt.sort_values("C").iterrows():
+        L.append(f"{x['portfolio']} & {x['C']} & {_f(x['cov'])} & {_f(x['deepest'])} & {_f(x['vote'])} & "
+                 f"{_f(x['pass_at_C'])} & {_f(x['vote_at_C'])} \\\\")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    open(f"{out}/tables/portfolios.tex", "w").write("\n".join(L) + "\n")
+
+    # verifier: macro accuracy by AUC at C=16 and C=25
+    L = [r"\begin{tabular}{llrrrrrrr}", r"\toprule",
+         r"$C/A$ & pool & AUC 0.5 & 0.6 & 0.7 & 0.8 & 0.9 & 0.95 & 1.0 \\ \midrule"]
+    for r in (4, 8, 16, 25):
+        for fam, lab in (("sample", f"{r} samples"), ("private_single", f"chain of {r}, all answers"),
+                         ("team", "best team, all answers")):
+            g = vs[(vs.rung == r) & (vs.family == fam)].sort_values("auc")
+            if len(g):
+                L.append(f"{r} & {lab} & " + " & ".join(_f(v) for v in g["macro"]) + r" \\")
+        L.append(f"{r} & \\emph{{deep/{r}, one call}} & \\multicolumn{{7}}{{c}}{{{_f(N['acc']['macro'][f'deep/{r}']['acc'])}}} \\\\")
+        L.append(r"\addlinespace")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    open(f"{out}/tables/verifier.tex", "w").write("\n".join(L) + "\n")
 
 
 if __name__ == "__main__":

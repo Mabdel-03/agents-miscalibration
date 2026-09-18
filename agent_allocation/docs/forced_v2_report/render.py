@@ -22,6 +22,8 @@ def resolve(N, path):
     for part in path.strip().split("."):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
         else:
             raise KeyError(f"numbers.json has no {path!r} (stuck at {part!r})")
     return cur
@@ -41,6 +43,8 @@ def fmt(v, spec):
         return "\\texttt{" + str(v).replace("_", r"\_") + "}"
     if spec == "%":
         return f"{100 * float(v):.1f}\\%"
+    if spec.startswith("a"):                           # absolute value ("falls 23.0 points short")
+        return f"{abs(float(v)):.{int(spec[1:])}f}"
     if spec.startswith("+"):                           # signed, with a typographic minus
         return f"{float(v):+.{int(spec[1:])}f}".replace("-", "$-$")
     return f"{float(v):.{int(spec)}f}"

@@ -1,6 +1,6 @@
 # Forced-budget allocation report (`openrouter_forced_budget_v2`)
 
-`report.pdf` is the deliverable (12 pages, 10 figures): the v1 iso-compute comparison of agents, rounds,
+`report.pdf` is the deliverable (23 pages, 19 figures): the v1 iso-compute comparison of agents, rounds,
 sampling and single-call depth, rerun with every generation forced to spend exactly its reasoning budget
 (Qwen3.8-27B; AIME 2025+2026, HMMT Feb 2025+2026, Omni-MATH >= 7, GPQA-Diamond; 96 items; A = 1024).
 
@@ -14,6 +14,16 @@ sampling and single-call depth, rerun with every generation forced to spend exac
 - Serial revision is the second lever; peer exposure now helps slightly (it hurt in v1).
 - Deep calls loop more as they get longer (28% at 16A), but looping calls are the ones that had already
   solved the problem (accuracy 0.96 vs 0.73 at 16A).
+
+## Generation versus selection (gap.py)
+
+- At every budget carrying a deep call, only the deep call delivers more than pass@k of 1024-token samples.
+- Structured multi-call allocations generate above pass@k (revision chains +6.0 pts coverage) but capture only
+  0.34-0.61 of their own headroom; no simulated verifier (AUC 0.5-1.0) over samples, chains or teams reaches depth
+  (perfect selection over 16 samples is 23.0 pts below deep/16). GPQA is the exception.
+- 37/96 items have no correct sample in 25; deep/16 solves 23. Low vote agreement flags them.
+- Slopes per doubling: deep 11.0, pass@k 5.7, revision 4.8, vote 2.0. Deep portfolios add ~1 pt coverage.
+- Section 5 costs a width-at-depth follow-up (~$37).
 
 ## Build
 
@@ -31,6 +41,8 @@ sampling and single-call depth, rerun with every generation forced to spend exac
 | `core.py` | loading, `C = B*R*A`, the paired item-clustered bootstrap frame (run's own `analysis.stats`) |
 | `analysis.py` | every number, table and figure, from the merged sealed tables |
 | `figures.py` | the ten figures |
+| `gap.py` | generation/selection decomposition, verifier sweep, strata, vote calibration, portfolios, dynamics, slopes |
+| `gfig.py` | the nine generation/selection figures |
 | `render.py` | placeholder rendering |
 
 Inputs (read only): `agents_scaling_results/forced_budget_v2/artifacts/merged/tables/` (merge of the

@@ -1,0 +1,49 @@
+\begin{longtable}{rlrrrrrr}
+\toprule
+$C/A$ & configuration & $|$pool$|$ & delivered & cov.\ (current) & cov.\ (all) & gap (all) & $-$ pass@$k$ \\
+\midrule
+\endhead
+\multicolumn{8}{l}{\emph{$C=2A$: pass@2 = 0.422, prefix coverage = 0.440}} \\
+2 & \texttt{sample/2} & 2 & 0.344 & 0.440 & 0.440 & +9.6 & $-$7.9 \\
+2 & \texttt{private\_single/2} & 2 & 0.388 & 0.388 & 0.430 & +4.2 & $-$3.4 \\
+2 & \texttt{private\_team/2/0} & 2 & 0.344 & 0.440 & 0.440 & +9.6 & $-$7.9 \\
+2 & \texttt{peer/2/0} & 2 & 0.344 & 0.440 & 0.440 & +9.6 & $-$7.9 \\
+2 & \texttt{deep/2} & 1 & 0.441 & 0.441 & 0.441 & +0.0 & +1.8 \\
+\addlinespace
+\multicolumn{8}{l}{\emph{$C=4A$: pass@4 = 0.484, prefix coverage = 0.465}} \\
+4 & \texttt{sample/4} & 4 & 0.354 & 0.465 & 0.465 & +11.1 & $-$13.0 \\
+4 & \texttt{private\_single/4} & 4 & 0.465 & 0.465 & 0.540 & +7.5 & $-$1.9 \\
+4 & \texttt{private\_team/2/1} & 4 & 0.365 & 0.492 & 0.524 & +15.9 & $-$11.9 \\
+4 & \texttt{private\_team/4/0} & 4 & 0.354 & 0.465 & 0.465 & +11.1 & $-$13.0 \\
+4 & \texttt{peer/2/1} & 4 & 0.375 & 0.427 & 0.471 & +9.6 & $-$10.9 \\
+4 & \texttt{peer/4/0} & 4 & 0.354 & 0.465 & 0.465 & +11.1 & $-$13.0 \\
+4 & \texttt{deep/4} & 1 & 0.610 & 0.610 & 0.610 & +0.0 & +12.6 \\
+\addlinespace
+\multicolumn{8}{l}{\emph{$C=8A$: pass@8 = 0.536, prefix coverage = 0.540}} \\
+8 & \texttt{sample/8} & 8 & 0.385 & 0.540 & 0.540 & +15.4 & $-$15.0 \\
+8 & \texttt{private\_single/8} & 8 & 0.493 & 0.493 & 0.561 & +6.8 & $-$4.2 \\
+8 & \texttt{private\_team/2/3} & 8 & 0.419 & 0.507 & 0.603 & +18.4 & $-$11.6 \\
+8 & \texttt{private\_team/4/1} & 8 & 0.409 & 0.543 & 0.566 & +15.7 & $-$12.7 \\
+8 & \texttt{peer/2/3} & 8 & 0.438 & 0.469 & 0.535 & +9.7 & $-$9.8 \\
+8 & \texttt{peer/4/1} & 8 & 0.398 & 0.498 & 0.529 & +13.1 & $-$13.8 \\
+8 & \texttt{deep/8} & 1 & 0.625 & 0.625 & 0.625 & +0.0 & +8.9 \\
+8 & \texttt{cp/0} & 8 & 0.398 & 0.498 & 0.529 & +13.1 & $-$13.8 \\
+8 & \texttt{pooled/4} & 5 & 0.412 & 0.412 & 0.509 & +9.6 & $-$12.3 \\
+\addlinespace
+\multicolumn{8}{l}{\emph{$C=16A$: pass@16 = 0.580, prefix coverage = 0.571}} \\
+16 & \texttt{sample/16} & 16 & 0.417 & 0.571 & 0.571 & +15.4 & $-$16.3 \\
+16 & \texttt{private\_single/16} & 16 & 0.525 & 0.525 & 0.657 & +13.2 & $-$5.5 \\
+16 & \texttt{private\_team/4/3} & 16 & 0.452 & 0.582 & 0.640 & +18.8 & $-$12.7 \\
+16 & \texttt{peer/4/3} & 16 & 0.479 & 0.557 & 0.615 & +13.6 & $-$10.0 \\
+16 & \texttt{deep/16} & 1 & 0.792 & 0.792 & 0.792 & +0.0 & +21.2 \\
+16 & \texttt{cp/2} & 16 & 0.427 & 0.555 & 0.614 & +18.7 & $-$15.3 \\
+\addlinespace
+\multicolumn{8}{l}{\emph{$C=25A$: pass@25 = 0.603, prefix coverage = 0.603}} \\
+25 & \texttt{sample/25} & 25 & 0.427 & 0.603 & 0.603 & +17.6 & $-$17.6 \\
+25 & \texttt{private\_single/25} & 25 & 0.535 & 0.535 & 0.689 & +15.4 & $-$6.8 \\
+25 & \texttt{private\_team/5/4} & 25 & 0.492 & 0.588 & 0.662 & +17.0 & $-$11.1 \\
+25 & \texttt{peer/5/4} & 25 & 0.577 & 0.599 & 0.647 & +6.9 & $-$2.6 \\
+25 & \texttt{deep/25} & 1 & 0.750 & 0.750 & 0.750 & +0.0 & +14.7 \\
+\addlinespace
+\bottomrule
+\end{longtable}

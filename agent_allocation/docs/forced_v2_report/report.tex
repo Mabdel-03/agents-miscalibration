@@ -8,6 +8,7 @@
 \usepackage{caption}
 \usepackage[hidelinks]{hyperref}
 \usepackage{times}
+\usepackage{longtable}
 
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.72em}
@@ -31,36 +32,47 @@ Forced Reasoning Depth against Agents, Rounds, and Sampling}
 
 A fixed inference budget can buy more agents, more rounds of revision, more independent samples read
 out by a vote, or a longer chain of reasoning inside a single call. The first study in this series
-(v1, \texttt{openrouter\_agent\_\allowbreak allocation\_v1}) compared these at a nominal budget $C = B \cdot R \cdot A$ and
-found that allocation shape barely mattered. It had a flaw that this study removes: the per-call
-reasoning allowance $A$ was a cap the model was free to leave unspent, and it did. A single call allowed
-16,384 reasoning tokens spent 2,774, so ``depth'' was never
-actually bought.
+(v1, \texttt{openrouter\_agent\_\allowbreak allocation\_v1}) compared these at a nominal budget
+$C = B \cdot R \cdot A$ and concluded that the binding constraint was \emph{selection}: sampling generated
+the right answer far more often than any readout delivered it, and no allocation of compute changed that.
+Its reasoning allowance $A$, however, was a cap the model was free to leave unspent, and it did: a call
+allowed 16,384 reasoning tokens spent 2,774.
 
-Here every generation is forced to spend exactly its budget. Over OpenRouter's raw completion endpoint the
-end-of-reasoning token is banned with a logit bias until the budget is exhausted, and a second call reads
-the model's own reasoning back to write the answer; the model sees one prompt and no injected text. All
-13,344 main-run generations realized exactly their budget. The study ran the full v1 grid
-of 96 configurations on Qwen3.8-27B, over 96 items from four hard
-benchmarks (AIME 2025 and 2026, HMMT February 2025 and 2026, Omni-MATH at difficulty 7 and above,
-GPQA-Diamond), at $A = 1024$ tokens per call, for \$70.00 of generation cost.
+This study forces every generation to spend exactly its budget (a logit bias bans the end of reasoning until
+the budget is exhausted; the model sees one prompt and no injected text), which makes the budget $C$ real
+for every configuration, deep calls included. All 13,344 main-run generations realized
+exactly their budget. It reruns the full v1 grid of 96 configurations with
+Qwen3.8-27B on 96 items from four hard benchmarks (AIME 2025 and 2026, HMMT February 2025 and
+2026, Omni-MATH at difficulty 7 and above, GPQA-Diamond) at $A = 1024$ tokens per call, for
+\$70.00.
 
-Once depth is real, allocation shape matters a great deal, and one direction dominates. A single call
-forced to $16A$ delivers 0.792 on the four-benchmark macro, against
-0.417 for sixteen independent samples and a vote at the same realized compute,
-a paired difference of +37.5 points
-(95\% CI +28.1 to +46.9).
-It also exceeds oracle pass@16 of the same sampling bank by 21.2 points: no
-selector over sixteen short samples could have matched it. A call at $4A$ beats twenty-five samples
-by 18.3 points. The best configuration without a deep call,
-\texttt{peer/5/4}, reaches 0.577. Every point on the
-accuracy-per-dollar frontier is a deep call.
+We ask three questions. \emph{How does pass@$k$ at budget $A$ compare with every other way of spending the
+same compute?} On the four-benchmark macro, at every budget that includes a deep call ($2A$ to $25A$), exactly
+one configuration delivers more than pass@$k$ of independent 1024-token samples: the single deep call. At $16A$ pass@16 is
+0.580 while a vote over the same sixteen samples delivers
+0.417, the best revision chain 0.525, the best
+team 0.479, and one 16,384-token call 0.792.
 
-The effect is carried by competition mathematics. On GPQA-Diamond depth and serial revision tie, and the
-best configuration is a single agent revising its own answer. Sequential revision is the second-best
-lever: a private revision chain is above sampling at every budget of three calls or more, significantly so at 16 of 25 budgets. Letting agents see
-each other's work now helps slightly rather than hurting as it did in v1. The binding constraint in v1 was
-selection; here it is the depth of a single chain of thought, which neither width nor a vote can supply.
+\emph{Can a structured allocation close the generation-selection gap?} We decompose every configuration
+into what it generates (the coverage of all candidates it produced) and what it delivers. Structured
+revision generates more than sampling (a revision chain's candidates cover the answer
+6.0 points more often than pass@$k$ on average)
+but loses most of it at selection. Selection cannot close the gap from the width side: even a perfect
+verifier over sixteen samples delivers 0.562, and over every candidate a
+sixteen-call revision chain produced 0.646, both below the deep call.
+The gap closes, and is overshot, only by moving compute into depth, where generation and selection
+coincide: a single call has nothing to select among. 37 of the 96 items have
+no correct answer among all 25 samples; the deep call at $16A$ solves 23 of
+them.
+
+\emph{What trends emerge?} Deep calls gain 11.0 accuracy points per
+doubling of compute, against 5.7 for the pass@$k$ ceiling of
+sampling, 4.8 for revision and
+2.0 for the vote. The advantage is carried by competition
+mathematics; on GPQA-Diamond, where short samples already reach the answer, the problem remains one of
+selection, as in v1. Revision's gains come in its first few steps; peer exposure now helps slightly;
+combining deep calls of different depths adds almost nothing, because they succeed and fail on the same
+items; and long forced calls that fall into repetition are the ones that had already solved the problem.
 
 \section{Methods}
 
@@ -183,6 +195,37 @@ Deep calls are drawn at the left, at height $m$: one call carrying $m$ units of 
 \label{fig:design}
 \end{figure}
 
+\subsection{Generation, selection and the gap}
+\label{sec:defs}
+
+Every configuration produces a pool of candidate answers and a selector delivers one of them. We separate
+the two:
+
+\begin{itemize}
+\item \textbf{Delivered accuracy} is the share of items on which the delivered answer is correct.
+\item \textbf{Coverage} is the share of items on which the pool contains at least one correct answer. It
+is computed for two pools. The \emph{current} pool is what the configuration's selector actually chooses
+from (the last round of a team; the last answer of a revision chain; all $k$ samples of \texttt{sample/k}).
+The \emph{archive} pool is every candidate the configuration ever generated (every round of a team, every
+step of a chain). Archive coverage measures what the configuration \emph{generated}; delivered accuracy
+measures what it \emph{selected}.
+\item \textbf{The selection gap} is coverage minus delivered accuracy.
+\item \textbf{pass@$k$ at $A$} is the combinatorial estimator $1-\binom{25-c}{k}/\binom{25}{k}$ over the
+25-sample bank of independent 1024-token calls, $c$ the number of correct samples. It is the generation
+ceiling of spending $C = kA$ on independent samples: the delivered accuracy of a perfect selector.
+\item \textbf{Capture} $\eta = (\text{delivered} - \text{pass@1}) / (\text{coverage} - \text{pass@1})$ is
+the share of the configuration's own generated headroom that its selector collects.
+\end{itemize}
+
+For a single deep call the pool has one candidate, so coverage equals delivered accuracy and the selection
+gap is zero by construction: a deep call trades width for depth and has nothing to select among.
+
+To ask what better selection could recover without new generation, we model a verifier that scores each
+candidate and picks the highest: correct and wrong candidates have normally distributed scores separated so
+that a random correct candidate outscores a random wrong one with probability AUC. AUC 0.5 is a random pick
+from the pool; AUC 1 is an oracle that delivers exactly the coverage. For a pool of $n$ candidates with $c$
+correct, the probability of delivering a correct answer is computed by simulation and averaged over items.
+
 \subsection{Estimation and multiplicity}
 
 A configuration delivers one answer per item: plurality vote for sampling and team arms, the last
@@ -213,7 +256,17 @@ one.
 
 \section{Results}
 
+The results are organised around the three questions. Section~\ref{sec:dom} shows the headline. Sections
+\ref{sec:passk} to \ref{sec:vote} compare pass@$k$ at $A$ with every allocation of the same compute and
+decompose each allocation into generation and selection: whether better selection could close the gap
+(\ref{sec:ver}), on which items the gap lives (\ref{sec:strata}) and what a vote knows
+(\ref{sec:vote}). Sections \ref{sec:ceiling} and \ref{sec:portf} show that depth passes the sampling ceiling
+and ask whether depth itself can be allocated in structured portfolios. Sections \ref{sec:dvw} to
+\ref{sec:shape} give the matched-compute contrasts and the trends in scaling, revision dynamics and team
+shape; the remaining sections cover repetition, communication, dollars and robustness.
+
 \subsection{Depth dominates at every matched budget}
+\label{sec:dom}
 
 Figure~\ref{fig:ladder} is the headline. On the three mathematics benchmarks the deep curve separates from
 every other family by the second budget level and keeps climbing, while sampling, teams and even the
@@ -258,7 +311,278 @@ configuration on that row.}
 \label{tab:headline}
 \end{table}
 
+\subsection{pass@\texorpdfstring{$k$}{k} at \texorpdfstring{$A$}{A} against every allocation of the same compute}
+\label{sec:passk}
+
+Table~\ref{tab:rung} places, at each budget $C = kA$ that carries a deep call, the ceiling of independent
+sampling (pass@$k$) beside what the vote over those same $k$ samples delivers and what the best revision
+chain, the best team and the single deep call deliver with the same total reasoning tokens. The full list
+of every configuration at every one of these budgets, with its coverage, is in Appendix~\ref{app:full}.
+
+\begin{table}[htbp]
+\centering
+\small
+\input{tables/rung_compact}
+\caption{Macro accuracy at equal realized compute $C = kA$. pass@$k$ is the generation ceiling of $k$
+independent 1024-token samples; every other column is delivered accuracy (coverage columns are the share of
+items on which the configuration's own candidates, over all its rounds, contained a correct answer).}
+\label{tab:rung}
+\end{table}
+
+Three facts stand out. First, at every budget only one configuration delivers more than pass@$k$: on the
+macro exactly 1 of 7 configurations at
+$4A$, 1 of 9 at $8A$,
+1 of 6 at $16A$ and
+1 of 5 at $25A$, and that one is the
+deep call. Pass@$k$ is an upper bound on anything that selects among $k$ independent samples; it is not an
+upper bound on anything else, and depth is the only allocation in the design that goes past it.
+
+Second, among the allocations that use several calls, none comes close to the sampling ceiling: at $16A$ the
+best of them delivers 0.525 (\texttt{private\_single/16})
+against pass@16 of 0.580, and at $25A$ the best,
+\texttt{peer/5/4}, delivers 0.577 against
+0.603.
+
+Third, several of those allocations \emph{generate} more than pass@$k$ even though they deliver less: at
+$16A$ the revision chain's candidates cover 0.657 of items, above
+pass@16. The structured allocations do not fail for lack of generation; they fail at turning what they
+generate into a delivered answer (Section~\ref{sec:decomp}).
+
+Per benchmark (Table~\ref{tab:rungb}) the pattern holds on AIME and HMMT, where the deep call exceeds pass@$k$
+by a wide margin at every budget from $4A$, weakens on Omni-MATH, where pass@25 (0.609)
+overtakes the deep call at $25A$ (0.500), and reverses on GPQA-Diamond, where
+pass@$k$ is near 1 by $k=8$ and no configuration approaches it.
+
+\begin{table}[htbp]
+\centering
+\small
+\input{tables/rung_by_bench}
+\caption{Per benchmark, at equal realized compute: pass@$k$ of 1024-token samples against delivered accuracy
+of the vote, the private revision chain, the best team and the deep call. 24 items per benchmark.}
+\label{tab:rungb}
+\end{table}
+
+\subsection{Generation and selection, allocation by allocation}
+\label{sec:decomp}
+
+Figure~\ref{fig:plane} places every configuration in the generation-selection plane: archive coverage on the
+horizontal axis, delivered accuracy on the vertical. The diagonal is perfect selection. Independent sampling
+traces the dashed line from pass@$k$ to vote@$k$; deep calls sit on the diagonal by construction. Every
+multi-call configuration lies below the diagonal, and the distance is large.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/g1_generation_selection_plane.pdf}
+\caption{The generation-selection plane. Each point is one configuration; the horizontal axis is the share of
+items on which any candidate it generated (over all rounds) was correct, the vertical axis the share on which
+its delivered answer was correct. Points on the dotted diagonal select perfectly. The dashed line connects
+pass@$k$ to vote@$k$ for independent sampling.}
+\label{fig:plane}
+\end{figure}
+
+Averaged over budgets of $4A$ and above on the macro (Figure~\ref{fig:decomp}):
+
+\begin{itemize}
+\item \textbf{Independent sampling} generates at the pass@$k$ ceiling by definition and captures
+0.342 of its headroom; its selection gap averages
+14.6 points.
+\item \textbf{The private revision chain} generates \emph{more}: its candidates cover the answer
++6.0 points more often than pass@$k$ at the
+same budget, because each step starts from a better draft. It delivers only its last answer, which captures
+0.614 of the headroom and leaves a gap of
+11.4 points to answers it generated and then revised away.
+\item \textbf{Private teams} generate +3.8 points
+above pass@$k$ and capture 0.372; the gap averages
+15.3 points.
+\item \textbf{Peer teams} generate +0.9 points above
+pass@$k$ and capture 0.464, better than private teams: seeing each other's
+answers makes agents converge, which helps the final vote.
+\item \textbf{Communicate-then-private} captures 0.356 and \textbf{pooled
+synthesis} 0.441.
+\end{itemize}
+
+So the structured allocations of v1's design do move generation above the sampling ceiling, modestly, and
+they do not solve selection: every one of them leaves between two fifths and two thirds of its own
+generated headroom uncollected.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/g2_family_decomposition.pdf}
+\caption{Per family, the best delivered accuracy (solid) and the best archive coverage (dotted) at each
+budget, against pass@$k$ at $A$ (dashed). The vertical distance between a family's dotted and solid line is
+its selection gap.}
+\label{fig:decomp}
+\end{figure}
+
+\subsection{Could better selection close the gap?}
+\label{sec:ver}
+
+If the gap were a selection problem, a better selector over candidates already generated would close it.
+Figure~\ref{fig:ver} and Table~\ref{tab:ver} give the macro accuracy that a verifier of a given quality would
+deliver from three pools at each budget: the $k$ independent samples, every candidate of a $k$-call revision
+chain, and every candidate of the team with the highest coverage at that budget.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/g3_verifier_sweep.pdf}
+\caption{Macro accuracy a verifier of pairwise AUC $a$ would deliver by picking the top-scored candidate from
+each pool at equal compute, against the single deep call at the same compute (horizontal line). AUC 1 equals
+the pool's coverage.}
+\label{fig:ver}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\input{tables/verifier}
+\caption{Verifier sweep, macro. Rows are pools of candidates already generated; columns are verifier pairwise
+AUC. The deep call's accuracy is given for comparison at each budget.}
+\label{tab:ver}
+\end{table}
+
+No verifier over any of these pools reaches the deep call on the macro at any budget from $4A$. At $16A$ a
+realistic verifier (AUC 0.7) over sixteen samples delivers 0.440, a strong one
+(AUC 0.9) 0.521, and a perfect one 0.562, against
+0.792 for one deep call. The revision chain's archive is the best pool to select from,
+but a perfect verifier over it still delivers only 0.646, and over the
+best team's candidates 0.625. Perfect selection over sixteen samples falls
+23.0 points short of the deep call on the macro. On AIME and HMMT the shortfall is
+37.5 and 50.0 points. Only on
+GPQA-Diamond does perfect selection over samples beat depth, by +8.3
+points at $16A$.
+
+In this regime, then, the gap between what short samples generate and what depth delivers is not a selection
+gap at all. It is a generation gap that pass@$k$ hides, because pass@$k$ is the ceiling of one particular
+allocation, not of the budget.
+
+\subsection{Where the gap lives: items by difficulty}
+\label{sec:strata}
+
+Grouping items by how many of their 25 independent samples were correct shows which items each allocation
+wins (Figure~\ref{fig:strata}, Table~\ref{tab:strata}). 37 of the 96 main items
+(12 AIME, 16 HMMT,
+9 Omni-MATH, 0 GPQA) have
+no correct sample at all: no selector over 25 samples, and no amount of voting or verification, can deliver
+them. The deep call solves 11 of them at $4A$, 16
+at $8A$ and 23 at $16A$; some deep call solves 27.
+The 25-call revision chain solves 7.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/g4_difficulty_strata.pdf}
+\caption{Delivered accuracy by item difficulty, measured as the number of the item's 25 independent
+1024-token samples that were correct.}
+\label{fig:strata}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\input{tables/strata}
+\caption{Delivered accuracy by item difficulty (number of correct samples among 25).}
+\label{tab:strata}
+\end{table}
+
+On items that short samples usually solve (16 or more of 25 correct), every allocation is near perfect. On the
+middle strata the allocations separate by how well they select. On the items short samples never solve, the
+multi-call allocations recover a few, because revising a draft or reading a peer's answer occasionally
+produces an answer no independent sample did (the 25-call chain 0.189, the
+five-agent peer team 0.162); the deep call recovers most
+(0.622 at $16A$). Item by item at $16A$
+(94 items with complete data), the deep call and the first sixteen samples both reach the
+answer on 49, only the deep call on 25, only the samples on
+5, and neither on 15.
+
+\subsection{What a vote knows}
+\label{sec:vote}
+
+Plurality voting is a selector with a built-in confidence signal: the share of samples that agree. Among the
+25 samples, the plurality answer is almost always right when it holds a large share and almost always wrong
+when it holds a small one (Figure~\ref{fig:vote}a). The low-agreement items are exactly the hard ones, and on
+those the deep call is still right most of the time: the vote's confidence tells you \emph{when} sampling has
+failed, not how to recover. Answer diversity tells the same story (Figure~\ref{fig:vote}b): on items where
+the 25 samples produce eight or more distinct answers (the median item has
+13 distinct answers among its 25 samples), the samples' coverage and vote collapse
+while the deep call does not. Low agreement among short samples is therefore a usable signal for
+\emph{routing} an item to depth.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/g5_vote_calibration.pdf}
+\caption{(a) Accuracy of the plurality of 25 samples, and of deep/16, by the share of votes the plurality
+answer holds. (b) Coverage and vote of 25 samples and accuracy of deep/16, by the number of distinct answers
+among the 25 samples. Answer classes group all graded-correct answers together and wrong answers by exact
+normalized form.}
+\label{fig:vote}
+\end{figure}
+
+\subsection{Depth goes past the ceiling of short samples}
+\label{sec:ceiling}
+
+In v1 the binding constraint was selection: the sampling bank contained the right answer far more often
+than any vote found it. The same gap exists here, and grows with $k$: at $k=25$ oracle pass@$k$ exceeds the
+vote readout by 17.6 macro points (Figure~\ref{fig:sel}). But the deep call
+does not merely close that gap; it goes past the ceiling. deep/$m$ exceeds oracle pass@$m$ of the sampling
+bank by 12.6 points at $m=4$ and 21.2 at $m=16$ on the
+macro, and by 49.0 points on HMMT at $m=16$. Twenty-five independent 1024-token
+attempts at an HMMT problem contain a correct answer on 0.304 of items; one 16,384-token
+attempt is correct on 0.792. The limit of a short sample is not that the right answer is
+hard to pick out; it is that a short sample usually does not produce it at all.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/f6_selection.pdf}
+\caption{The sampling bank at $A=1024$: oracle pass@$k$, the vote readout and the mean single draw, with
+the deep call at $m$ times the budget overlaid. Points above the dashed line are beyond anything a
+selector over $k$ short samples could deliver.}
+\label{fig:sel}
+\end{figure}
+
+The exception is GPQA-Diamond, where the sampling oracle reaches 1.000 and the deep
+call stays below it ($-$8.1 points at $m=16$). A multiple-choice question
+whose answer a short sample often reaches is a selection problem, as in v1; a competition problem whose
+answer a short sample rarely reaches is a depth problem.
+
+\subsection{Structured allocations of depth}
+\label{sec:portf}
+
+If a single deep call wins, the natural next question is whether depth itself can be allocated in structured
+ways: several deep calls of different lengths, read out by a vote or by trusting the deepest. The run
+collected one deep call per item at each of $2A, 4A, 8A, 16A$ and $25A$ (plus root[0] at $A$), which allows
+portfolios of distinct depths to be evaluated without new generation (Figure~\ref{fig:portf},
+Table~\ref{tab:portf}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/g6_deep_portfolios.pdf}
+\caption{Portfolios of deep calls of different depths (labels: multiples of $A$), against pass@$k$ and
+vote@$k$ of 1024-token samples at the same total compute. Triangles: coverage (some call in the portfolio is
+correct); circles: plurality vote over the portfolio, ties broken toward the deepest call.}
+\label{fig:portf}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\input{tables/portfolios}
+\caption{Portfolios of deep calls (one call per listed depth). ``deepest'' delivers the deepest call's
+answer; ``vote'' is a plurality over the portfolio with ties broken toward the deepest call.}
+\label{tab:portf}
+\end{table}
+
+Portfolios of deep calls sit far above sampling at every budget, but they add little over the single deepest
+call they contain. Deep calls of different depths succeed and fail on largely the same items, so their pool
+is not diverse: adding an $8A$ call to a $16A$ call raises coverage by about one point, and the vote over them
+delivers what the $16A$ call alone delivers. Portfolios that contain a $16A$ call all score close to it, those
+without one sit well below it (\texttt{8+4+2+1} 0.657, \texttt{8+4+2}
+0.668), and neither a single $25A$ call
+nor extra shallower members improves on the $16A$ call. In this data, then, what matters is that one chain
+reaches sufficient depth; spreading depth across calls of mixed length buys no useful diversity.
+What this cannot answer is the value of several \emph{independent} calls of the \emph{same} depth, which is
+where width might re-enter (Section~\ref{sec:follow}).
+
 \subsection{Depth against width against revision, at equal realized compute}
+\label{sec:dvw}
 
 Figure~\ref{fig:dvw} and Table~\ref{tab:dvw} make the comparison exact. At every budget level from $4A$
 upward, on the macro, the deep call beats sampling at the same budget, beats a private revision chain of
@@ -305,31 +629,72 @@ one item is 4.2 points; intervals are in \texttt{numbers.json}.}
 \label{tab:dvwb}
 \end{table}
 
-\subsection{Depth reaches answers that no selector over short samples could}
+\subsection{Scaling trends}
+\label{sec:slopes}
 
-In v1 the binding constraint was selection: the sampling bank contained the right answer far more often
-than any vote found it. The same gap exists here, and grows with $k$: at $k=25$ oracle pass@$k$ exceeds the
-vote readout by 17.6 macro points (Figure~\ref{fig:sel}). But the deep call
-does not merely close that gap; it goes past the ceiling. deep/$m$ exceeds oracle pass@$m$ of the sampling
-bank by 12.6 points at $m=4$ and 21.2 at $m=16$ on the
-macro, and by 49.0 points on HMMT at $m=16$. Twenty-five independent 1024-token
-attempts at an HMMT problem contain a correct answer on 0.304 of items; one 16,384-token
-attempt is correct on 0.792. The limit of a short sample is not that the right answer is
-hard to pick out; it is that a short sample usually does not produce it at all.
+Fitting accuracy against $\log_2 C$ from $A$ to $16A$ summarises each family's return on compute
+(Figure~\ref{fig:slopes}). On the macro the deep call gains 11.0
+points per doubling (95\% CI 8.4 to 13.5); the ceiling of
+sampling, pass@$k$, gains 5.7; the revision chain
+4.8; and the vote over samples
+2.0. The deep call's return per doubling exceeds even the
+generation ceiling of sampling: doubling the length of one chain of thought buys more than doubling the
+number of independent chains \emph{with perfect selection}. On HMMT the contrast is starkest (deep
+14.0, vote 0.2); on
+GPQA-Diamond all families scale at similar rates (6.2 for depth,
+7.1 for revision).
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=\textwidth]{figures/f6_selection.pdf}
-\caption{The sampling bank at $A=1024$: oracle pass@$k$, the vote readout and the mean single draw, with
-the deep call at $m$ times the budget overlaid. Points above the dashed line are beyond anything a
-selector over $k$ short samples could deliver.}
-\label{fig:sel}
+\includegraphics[width=0.85\textwidth]{figures/g8_scaling_slopes.pdf}
+\caption{Accuracy points gained per doubling of compute from $C=A$ to $C=16A$ (least-squares slope on
+$\log_2 C$; bars are 95\% item-bootstrap intervals). Tick marks: the same slope for pass@$k$, the generation
+ceiling of independent sampling.}
+\label{fig:slopes}
 \end{figure}
 
-The exception is GPQA-Diamond, where the sampling oracle reaches 1.000 and the deep
-call stays below it ($-$8.1 points at $m=16$). A multiple-choice question
-whose answer a short sample often reaches is a selection problem, as in v1; a competition problem whose
-answer a short sample rarely reaches is a depth problem.
+\subsection{How revision and communication change answers}
+\label{sec:rounds}
+
+The revising trajectories can be followed step by step (Figure~\ref{fig:rounds}). A single agent revising its
+own answer converts wrong answers to right ones mostly in its first few steps: the net share of items
+corrected at steps 1 to 4 is 0.031, 0.053,
+0.022 and 0.022 of items, after which
+right-to-wrong changes nearly cancel wrong-to-right ones. Revision without new information saturates quickly,
+which is why the chain's accuracy flattens while its archive coverage keeps growing: later steps keep
+producing correct answers on some items and discarding them on others.
+
+In teams, net corrections per agent are largest in the first round and decline with rounds for private
+teams; for the larger peer teams they stay higher for longer, because an agent that sees a correct peer answer can adopt
+it. That is the mechanism behind peer exposure's small positive effect in this study
+(Section~\ref{sec:comm}), and it is a selection mechanism: it spreads a correct answer that some agent already
+generated, it does not generate a new one.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/g7_round_dynamics.pdf}
+\caption{(a) Share of items whose answer changes from wrong to right, and from right to wrong, at each step of
+the 25-step private chain (3-step moving average). (b) Net corrections (wrong-to-right minus right-to-wrong)
+per agent per round, for private and peer teams of each size.}
+\label{fig:rounds}
+\end{figure}
+
+\subsection{Team shape at equal compute}
+\label{sec:shape}
+
+Holding team compute fixed, a team can have more agents or more rounds (Figure~\ref{fig:shape}). The
+differences between shapes at the same budget are a few points and mostly within noise, but two regularities
+recur: in most budgets up to $12A$, fewer agents with more rounds do at least as well as more agents with
+fewer rounds, while at the largest budgets the five-agent peer teams are best. Neither shape comes close to a deep call of the
+same budget.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/g9_team_shape.pdf}
+\caption{Macro accuracy of teams with the same total compute but different shapes (label: agents $\times$ total
+generations per agent, including the initial answer). Marker size grows with the number of agents.}
+\label{fig:shape}
+\end{figure}
 
 \subsection{The amplification matrix}
 
@@ -389,6 +754,7 @@ tokens before loop onset. (b) Accuracy of deep calls that looped against those t
 \end{figure}
 
 \subsection{The cost of letting agents talk}
+\label{sec:comm}
 
 In v1, peer exposure destroyed accuracy, increasingly with rounds. Here it helps slightly on average:
 across the 16 team shapes peer minus private team averages +1.4 macro points, positive in
@@ -457,43 +823,68 @@ on two items; each item is about one macro point, so they cannot move any macro 
 
 \section{Interpretation}
 
-v1 concluded that the binding constraint was selection and that allocation shape barely mattered. With the
-budget actually spent, that conclusion is overturned on hard reasoning problems. The dominant lever is the
-length of a single uninterrupted chain of thought. Sixteen short calls, whether sampled independently,
-arranged into teams or allowed to debate, do not add up to one long one: their pool reaches the right
-answer far less often than a single call of the same total length, so no amount of voting, verification or
-communication can recover the difference.
+\paragraph{The generation-selection gap depends on what you measure it against.} v1 measured the gap against
+pass@$k$ of the samples it drew and found that selection was the bottleneck. That is true of independent
+sampling in every regime: vote@$k$ sits well below pass@$k$ here too, by 17.6
+macro points at $k=25$. But pass@$k$ at a fixed per-call budget is the ceiling of one allocation, not of the
+compute. Once the per-call budget can be spent on depth, the relevant ceiling moves: one 16,384-token call
+delivers more than a perfect selector over sixteen 1024-token calls could. The gap between short samples and
+depth is a generation gap that pass@$k$ at $A$ conceals.
 
-On the macro, the ordering at equal realized compute is: one deep call, then one agent revising its own
-answer serially, then teams, then independent samples with a vote (mean advantage over sampling
-+21.5, +9.1,
-+3.6 for peer and +2.5
-for private teams). Per benchmark the middle of the ordering is noisy (on Omni-MATH the best non-deep
-configuration is a private team), but depth is first on all three mathematics benchmarks. It is an ordering by how much of the compute goes into a single continuous line of reasoning. Serial
-revision keeps some of that continuity (each call reads the previous answer) but restarts the reasoning
-at every call; teams split it further; independent samples discard it entirely.
+\paragraph{Structured allocation can close the gap only by changing what is generated.} The multi-call
+structures in the design (revision chains, private and peer teams, communicate-then-private, pooled synthesis)
+raise generation modestly above the sampling ceiling but lose most of it at selection, and no verifier over
+their candidates reaches depth. The single deep call closes the gap by construction, because it generates and
+selects in one step, and it overshoots the sampling ceiling because it reaches answers short samples never
+produce. A structured approach that works therefore has two stages: concentrate compute in depth until the
+per-call budget is no longer binding, and only then spend on width and selection.
 
-Two boundaries limit the claim. First, the regime: at $A=1024$ every short call is badly truncated on
-these problems, whose natural reasoning runs to thousands of tokens. When a single call already has
-enough room, as on easy problems in our pilots, forcing it longer buys repetition rather than accuracy, and
-the problem becomes one of selection again, as on GPQA-Diamond here. The relevant quantity is the budget
-relative to the length of reasoning the problem requires. Second, the model: this is one 27B model, and the
-ability to use a long budget productively is a property of the model's training.
+\paragraph{The regime is set by the ratio of budget to required reasoning.} Where short calls already reach the
+answer (GPQA-Diamond here, the easy benchmarks of v1), depth adds little, the gap is a genuine selection gap,
+and verification is the lever. Where they do not (AIME, HMMT), depth dominates. The item-level analysis shows
+that this is a property of items, not only of benchmarks, and that the agreement among a handful of short
+samples is a cheap signal of which regime an item is in.
+
+\paragraph{Mechanisms.} Revision helps early and then churns; peer exposure spreads correct answers it already
+has; deep calls of different lengths are highly correlated; and long forced calls fall into repetition mainly
+once they are done. All of these point the same way: returns come from lengthening a single productive line
+of reasoning, and from width only once that line is long enough.
+
+\paragraph{Limits.} This is one 27B model on 96 items, 24 per benchmark. The deep calls are single samples, so
+the portfolio analysis cannot measure the diversity of repeated calls at one depth. Forcing is a decode-time
+intervention: a forced call is not the call the model would choose, and its value depends on the model's
+ability to use a long budget, which is a property of its training.
 
 \section{What to do with this}
 
 \begin{enumerate}
-\item \textbf{Spend on depth before width when a single call is budget-limited.} If a model's natural
-reasoning on a task is longer than the per-call budget, raising the per-call budget dominates adding calls.
-On this benchmark mix a call at $4A$ beat twenty-five calls at $A$.
-\item \textbf{Measure natural length first.} The forcing mechanism and the calibration above give that
-number cheaply; depth pays up to roughly the natural length and loses its value beyond it.
-\item \textbf{Keep serial revision as the second lever} when a single call cannot be made longer (for
-example, a hard context or latency limit per call): it is above sampling at every budget of three calls or
-more, by 9.1 points on average.
-\item \textbf{Treat selection as the lever only where short samples already reach the answer} (the GPQA
-regime), which is where v1's verification prescription still applies.
+\item \textbf{Measure the per-call budget against the reasoning the task needs before allocating.} The forcing
+mechanism and a small unforced calibration give the natural reasoning length cheaply. If it exceeds the
+per-call budget, raise the budget before adding calls: on this mix a call at $4A$ beat twenty-five calls at $A$
+by 18.3 points.
+\item \textbf{Route by agreement.} Draw a few short samples; if they agree, deliver the plurality (it is almost
+always right when it holds a large share); if they scatter, spend the remaining budget on one deep call. (This rule is suggested by the data here and should be tested
+prospectively; see Section~\ref{sec:follow}.)
+\item \textbf{Do not expect selection to rescue short samples on hard problems.} Even perfect verification over
+short samples stays below depth in this regime; invest in verification where short samples already generate
+the answer (the GPQA regime), which is where v1's prescription still applies.
+\item \textbf{Use revision as the second lever, and stop early.} Its gains come in the first few steps; a long
+revision chain mostly churns.
 \end{enumerate}
+
+\section{A follow-up experiment: width at depth}
+\label{sec:follow}
+
+The open question is the one this design could not answer: once depth is sufficient, does width pay again? The
+experiment is the full width-by-depth grid of \emph{independent} calls: $k$ calls of $mA$ each with $km = C$,
+read out by vote, by the agreement-routing rule above, and by a verifier, for $C = 16A$ and $32A$. It reuses
+this run's items, prompts, forcing, grading and analysis, and the one deep call per depth already collected.
+For $C=16A$ it needs 7 new calls at $2A$, 3 at $4A$ and 1 at $8A$ per item; for $C=32A$ 15 at $2A$, 7 at $4A$,
+3 at $8A$ and 1 at $16A$: 37 calls and 135,168 forced
+reasoning tokens per item. At this run's measured cost per call that is about \$0.38 per
+item, or about \$36.84 for the 96-item panel. It would locate the optimum $(k, m)$ at
+each budget, measure the diversity of repeated deep calls that the portfolio analysis could not, and test
+agreement routing prospectively.
 
 \appendix
 \section{Run facts}
@@ -513,5 +904,16 @@ owner-accepted exceptions on the Mancer pilot (AIME invalid finals at 94.4\% aga
 and a forecast above that shard's proportional budget slice, resolved by re-splitting the \$95 cap).
 Sealed tables, the merge manifest and every figure and number in this report are regenerated by
 \texttt{build.sh} from the run directory.
+
+\section{Every configuration at every depth budget}
+\label{app:full}
+
+Macro delivered accuracy, current-pool and archive coverage, archive selection gap (coverage minus delivered)
+and the difference from pass@$k$ at $A$, for every configuration at the five budgets that carry a deep call.
+$|$pool$|$ is the number of candidates in the archive pool. Differences are in accuracy points.
+
+{\small
+\input{tables/rung_full_macro}
+}
 
 \end{document}
