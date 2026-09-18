@@ -328,8 +328,12 @@ def load_run(paths: RunPaths, config: Mapping[str, Any] | None = None, *, config
     gates_dir = paths.run_dir / "gates"
     if gates_dir.is_dir():
         for gate_file in sorted(gates_dir.glob("*.json")):
+            raw_gate = json.loads(gate_file.read_text())
+            if raw_gate.get("__record__") != "GateResult":
+                # e.g. a shard's gate0_endpoint.json verdict summary (the GateResult is gate0_preflight.json)
+                continue
             run.input_files.append(gate_file)
-            run.gates.append(load_record(GateResult, json.loads(gate_file.read_text())))
+            run.gates.append(load_record(GateResult, raw_gate))
     if paths.amendments.is_file():
         run.input_files.append(paths.amendments)
         run.amendments = [raw for _, raw in _jsonl(paths.amendments)]
