@@ -536,6 +536,13 @@ async def evaluate_canary(cfg, paths: RunPaths) -> int:
     after = provider_snapshot(paths, "canary_after")
     key_delta = Decimal(str(after["key"].get("usage", 0))) - key_before
     settled_delta = ledger_settled(paths) - settled_before
+    union = shard_key_window(cfg, paths, "canary")
+    if union is not None and "pending" in union:
+        # siblings still running: the union cannot be reconciled yet -> not advanced; re-run with --evaluate-only
+        print(json.dumps({"key_reconciliation": "pending", "waiting_for_shards": union["pending"]}))
+        key_delta = None
+    elif union is not None:
+        key_delta, settled_delta = union["key_delta"], union["ledger_settled"]
     result = evaluate_gate1(rows, locks, key_usage_delta_usd=key_delta, ledger_settled_usd=settled_delta)
     write_gate(paths, result)
     report = canary_report([(r.spec, r.result, r.metadata) for r in rows])
@@ -557,6 +564,9 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     try:
         models = [m for m in (cfg["primary_model"], cfg.get("replication_model")) if m]
         locks = await ensure_endpoint_locks(paths, client, models, allow_fetch=True, cfg=cfg)
+        # the window opens before Gate 0 so its probes (charged to this shard's ledger) are inside it
+        before = provider_snapshot(paths, "canary_before")
+        settled_before = ledger_settled(paths)
         gate0 = await run_gate0(cfg, paths, client, locks[cfg["primary_model"]])
     finally:
         await client.aclose()
@@ -564,8 +574,6 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
         record_decision(paths, phase="gate0", decision="stop_notify", detail=gate0)
         raise RunRefused(f"Gate 0 (forced endpoint screen) failed for {cfg['provider'].get('endpoint_tag')}: "
                          f"{gate0.get('detail')}")
-    before = provider_snapshot(paths, "canary_before")
-    settled_before = ledger_settled(paths)
     (paths.state_dir / "canary_before.json").write_text(json.dumps(
         {"key_usage_before": str(before["key"].get("usage", 0)), "settled_before": str(settled_before),
          "recorded_at": utcnow()}, sort_keys=True))
@@ -600,7 +608,10 @@ async def run_gate0(cfg: Mapping[str, Any], paths: RunPaths, client, lock: Endpo
     if gate is None:
         verdict = {"passed": rehearsal(), "detail": "forced_endpoint_gate is not available in this build"}
     else:
-        raw = gate(client, lock, cfg)
+        try:
+            raw = gate(client, lock, cfg, ledger=gate0_ledger(cfg, paths))
+        except TypeError:                                  # a gate without the ledger keyword (fakes)
+            raw = gate(client, lock, cfg)
         if asyncio.iscoroutine(raw):
             raw = await raw
         verdict = {"passed": gate0_passed(raw), "detail": raw if isinstance(raw, (dict, list, str)) else str(raw)}
@@ -610,6 +621,45 @@ async def run_gate0(cfg: Mapping[str, Any], paths: RunPaths, client, lock: Endpo
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(verdict, indent=1, sort_keys=True, default=str))
     return verdict
+
+
+def gate0_ledger(cfg: Mapping[str, Any], paths: RunPaths):
+    """The shard's own ledger journal, so Gate 0's probes are reserved and settled like any dispatched call."""
+    from agent_allocation.runtime.ledger import CollectionLedger
+    from agent_allocation.storage.journal import LedgerJournal
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    return CollectionLedger(LedgerJournal(paths.ledger_journal),
+                            ceiling_usd=Decimal(str(cfg["budget"]["credit_ceiling_usd"])),
+                            max_unresolved_usd=Decimal(str(cfg["budget"]["max_unresolved_spend_usd"])))
+
+
+def shard_key_window(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> dict[str, Any] | None:
+    """Sharded runs share one OpenRouter key, so a shard's own ``/key`` before/after window also contains its siblings'
+    concurrent spend. Reconcile the union instead: key usage from the earliest ``<stage>_before`` to the latest
+    ``<stage>_after`` snapshot across all shards, against the sum of every shard's ledger settled since its own
+    ``<stage>_before``. ``None`` outside a sharded run; ``{"pending": [...]}`` while a sibling has no after snapshot."""
+    shard = cfg.get("shard") or {}
+    if not shard:
+        return None
+    base = shard.get("base_config") or {}
+    ids = [s["id"] for s in base.get("shards", [])] or [shard["id"]]
+    shards_dir = paths.run_dir.parent
+    befores, afters, settled, pending = [], [], Decimal("0"), []
+    for sid in ids:
+        sib = paths if sid == shard["id"] else RunPaths.for_run(shards_dir / sid)
+        rows = [json.loads(l) for l in sib.provider_usage.read_text().splitlines() if l.strip()] \
+            if sib.provider_usage.exists() else []
+        key = {r["stage"]: Decimal(str(r["data"].get("usage", 0))) for r in rows if r.get("endpoint") == "key"}
+        marker = sib.state_dir / f"{stage}_before.json"
+        if f"{stage}_before" not in key or f"{stage}_after" not in key or not marker.exists():
+            pending.append(sid)
+            continue
+        befores.append(key[f"{stage}_before"])
+        afters.append(key[f"{stage}_after"])
+        settled += ledger_settled(sib) - Decimal(json.loads(marker.read_text())["settled_before"])
+    if pending:
+        return {"pending": pending}
+    return {"key_delta": max(afters) - min(befores), "ledger_settled": settled, "shards": ids}
 
 
 def gate0_passed(result: Any) -> bool:

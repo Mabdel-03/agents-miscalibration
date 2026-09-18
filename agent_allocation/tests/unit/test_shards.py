@@ -180,3 +180,32 @@ def test_live_config_shards_follow_the_screen():
     bad["scheduler_by_shard"] = {"parasail": {"not_a_key": 1}}
     with pytest.raises(ValueError):
         shard_config(bad, "parasail")
+
+
+def test_shard_key_window_reconciles_the_union_of_concurrent_shards(tmp_path, monkeypatch):
+    """Shards share one key: each shard's /key window contains its sibling's spend, so Gate 1 reconciles the union
+    (earliest before .. latest after) against the sum of every shard's ledger, and waits while a sibling is open."""
+    from agent_allocation import live
+    live_cfg = forced_test_config()
+    settled = {"mancer": Decimal("0.40"), "parasail": Decimal("0.35")}
+    monkeypatch.setattr(live, "ledger_settled", lambda p: settled[p.run_dir.name])
+
+    def write(sid, before, after, settled_before="0"):
+        p = RunPaths.for_run(tmp_path / "shards" / sid, local_state_dir=tmp_path / f"local_{sid}")
+        p.state_dir.mkdir(parents=True, exist_ok=True)
+        rows = [{"endpoint": "key", "stage": "canary_before", "data": {"usage": before}}]
+        if after is not None:
+            rows.append({"endpoint": "key", "stage": "canary_after", "data": {"usage": after}})
+        p.provider_usage.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (p.state_dir / "canary_before.json").write_text(json.dumps({"settled_before": settled_before}))
+        return p
+
+    mancer = write("mancer", 10.00, 10.76)
+    write("parasail", 9.99, None)
+    derived = shard_config(live_cfg, "mancer")
+    assert live.shard_key_window(derived, mancer, "canary") == {"pending": ["parasail"]}
+    write("parasail", 9.99, 10.70)
+    union = live.shard_key_window(derived, mancer, "canary")
+    assert union["key_delta"] == Decimal("10.76") - Decimal("9.99")
+    assert union["ledger_settled"] == Decimal("0.75") and union["shards"] == ["mancer", "parasail"]
+    assert live.shard_key_window(live_cfg, mancer, "canary") is None          # unsharded config: own window
