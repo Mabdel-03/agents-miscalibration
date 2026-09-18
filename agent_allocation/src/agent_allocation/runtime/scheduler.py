@@ -51,6 +51,8 @@ another live dispatcher owns the state).
 under it; retries may use the reserve up to the hard ceiling), pilot_allowance_usd (caps plans made only of canary/
 pilot partitions), reservation_multiplier, max_unresolved_spend_usd (must equal the ledger's), and
 optional_requires_core_completion.
+``forced``: enabled (two HTTP calls per node: forced reservation, two rate tokens per admission, the client's own
+``validate_request``) and answer_attempts (watchdog = THINK + every ANSWER attempt, ``api.forced.forced_watchdog_seconds``).
 Not consumed: scheduler.checkpoint_after_every_response (always true here), scheduler.api_sdk_automatic_retries
 (client), budget.cash_target_usd, budget.contingency_usd (implied by credit - soft ceilings).
 """
@@ -201,6 +203,15 @@ class SchedulerSettings:
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> "SchedulerSettings":
         s = _need(config, "scheduler", "")
+        connect = float(_need(s, "connect_timeout_seconds", "scheduler"))
+        read = float(_need(s, "read_timeout_seconds", "scheduler"))
+        watchdog = connect + read + WATCHDOG_MARGIN_SECONDS
+        forced = config.get("forced")
+        if isinstance(forced, Mapping) and forced.get("enabled") is True:
+            # a forced node is THINK + up to answer_attempts ANSWER calls inside one generate()
+            from agent_allocation.api.forced import forced_watchdog_seconds
+            watchdog = forced_watchdog_seconds(connect, read, int(forced.get("answer_attempts") or 1),
+                                               WATCHDOG_MARGIN_SECONDS)
         out = cls(
             concurrency_start=int(_need(s, "concurrency_start", "scheduler")),
             concurrency_max=int(_need(s, "concurrency_max", "scheduler")),
@@ -211,8 +222,7 @@ class SchedulerSettings:
             increase_rps_by=float(_need(s, "increase_rps_by", "scheduler")),
             decrease_factor=float(_need(s, "decrease_factor", "scheduler")),
             max_transport_attempts=int(_need(s, "max_transport_attempts", "scheduler")),
-            watchdog_seconds=float(_need(s, "connect_timeout_seconds", "scheduler"))
-            + float(_need(s, "read_timeout_seconds", "scheduler")) + WATCHDOG_MARGIN_SECONDS,
+            watchdog_seconds=watchdog,
             lease_heartbeat_seconds=float(_need(s, "lease_heartbeat_seconds", "scheduler")),
             lease_stale_seconds=float(_need(s, "lease_stale_seconds", "scheduler")),
             max_active_waves=int(_need(s, "max_active_waves", "scheduler")),
@@ -534,6 +544,11 @@ class Dispatcher:
         self.settings = SchedulerSettings.from_config(config)
         self.budget = BudgetSettings.from_config(config)
         self.sampling = dict(config.get("sampling", {}))
+        forced = config.get("forced")
+        # Forced mode: two HTTP calls per node (THINK + ANSWER) -- the reservation covers both, and each admission
+        # takes two rate tokens so requests_per_second counts HTTP requests, not nodes.
+        self.forced = isinstance(forced, Mapping) and forced.get("enabled") is True
+        self.http_calls_per_node = 2 if self.forced else 1
         self.clock: Callable[[], float] = time.monotonic
         self.rng = random.Random()
         self.owner = make_owner_id()
@@ -951,7 +966,7 @@ class Dispatcher:
         chars = (self.rendered_chars_total // self.rendered_count) if self.rendered_count else \
             FORECAST_DEFAULT_RENDERED_CHARS
         multiplier = self.budget.reservation_multiplier
-        total = sum((reservation_usd(n.spec, chars, self.lock, multiplier=multiplier)
+        total = sum((reservation_usd(n.spec, chars, self.lock, multiplier=multiplier, forced=self.forced)
                      for n in wave.nodes if not n.terminal), Decimal("0"))
         forecast = total * self._cost_ratio()
         self.wave_forecasts[wave.index] = (now, forecast)
@@ -1034,7 +1049,7 @@ class Dispatcher:
                            for p in node.parents]
                 messages = self.render(node.spec, parents)
                 amount = reservation_usd(node.spec, rendered_chars(messages), self.lock,
-                                         multiplier=self.budget.reservation_multiplier)
+                                         multiplier=self.budget.reservation_multiplier, forced=self.forced)
             except Exception as exc:  # noqa: BLE001 - a render/estimate defect must stop spending, loudly
                 if _is_context_limit(exc):
                     # R03-1: terminal without an API call, a reservation or a candidate (the lead's render wrapper
@@ -1047,7 +1062,8 @@ class Dispatcher:
                     continue
                 self._open_circuit(f"render_failed:{type(exc).__name__}:{exc}")
                 return "closed"
-            validate = _request_validator()
+            # A client with its own request contract (forced mode) validates exactly what it will send.
+            validate = getattr(self.client, "validate_request", None) or _request_validator()
             if validate is not None:
                 try:
                     validate(node.spec, messages, self.lock, self.sampling)
@@ -1069,7 +1085,8 @@ class Dispatcher:
             if not first_attempt and snap.exposure + self.pending_reservation + amount > self.soft_ceiling:
                 self.reserve_admissions += 1
                 self._event("reserve_used_by_retry", node.node_id)
-            self.aimd.take_token()
+            for _ in range(self.http_calls_per_node):
+                self.aimd.take_token()
             self.bucket_served[node.bucket] += 1
             del self.ready[node.node_id]
             node.status = "active"

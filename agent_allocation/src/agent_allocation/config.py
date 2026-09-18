@@ -98,6 +98,31 @@ def decoding_config_hash(cfg: Mapping[str, Any]) -> str:
     """Everything about a request's decoding except per-node budget/headroom (those are node fields)."""
     sampling = cfg["sampling"]
     provider = cfg["provider"]
+    forced = cfg.get("forced")
+    if isinstance(forced, Mapping) and forced.get("enabled") is True:
+        # Forced mode (two raw /completions calls, budget enforced by logit_bias + max_tokens): a different decoding
+        # contract, so every node id differs from its chat-mode twin. Chat mode's hash below is unchanged.
+        from agent_allocation.api.forced import template_sha256
+        return canonical_hash({
+            "temperature": sampling["temperature"],
+            "top_p": sampling["top_p"],
+            "top_k": sampling.get("top_k"),
+            "n": sampling["n_per_request"],
+            "response_cache": sampling["response_cache"],
+            "api_seed_enabled": sampling["api_seed_enabled"],
+            "allow_fallbacks": provider["allow_fallbacks"],
+            "require_parameters": provider["require_parameters"],
+            "service_tier": provider["service_tier"],
+            "stream": False,
+            "endpoint_kind": forced.get("endpoint"),
+            "reasoning_field": "forced_logit_bias",
+            "budget_semantics": "forced_exact",
+            "ban_token_ids": list(forced["ban_token_ids"]),
+            "ban_bias": forced["ban_bias"],
+            "think_close_text": forced["think_close_text"],
+            "template": forced["template"],
+            "template_sha256": template_sha256(forced["template"]),
+        })
     return canonical_hash({
         "temperature": sampling["temperature"],
         "top_p": sampling["top_p"],
