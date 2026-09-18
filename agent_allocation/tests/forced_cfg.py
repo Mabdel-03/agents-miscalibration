@@ -35,3 +35,16 @@ def forced_test_config() -> dict[str, Any]:
         cfg = copy.deepcopy(cfg)
         cfg["benchmarks"] = current
     return cfg
+
+
+def request_ready(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Drop sampling keys the request builder on this branch does not know yet (``top_k``: WP-1 adds it to the forced
+    request contract). AFTER THE WP-1 MERGE this is a no-op."""
+    from agent_allocation.api import request
+    known = getattr(request, "_KNOWN_SAMPLING_KEYS", None)
+    if known is None:
+        return cfg
+    cfg = copy.deepcopy(cfg)
+    for key in [k for k in cfg["sampling"] if k not in known]:
+        cfg["sampling"].pop(key)
+    return cfg
