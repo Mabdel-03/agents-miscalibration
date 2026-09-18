@@ -35,14 +35,13 @@ from tests.integration.openrouter_stub import completion_payload
 
 pytestmark = [pytest.mark.timeout(600)]
 
-E2E_ITEMS = ("math500/adv/1", "mmlu_pro/adv/1", "bbh_logic4/adv/1", "bbh_logic4/adv/2", "mbpp_plus/adv/1")
-EXTENSION_ITEMS = ("math500/adv/1", "bbh_logic4/adv/2")
+E2E_ITEMS = ("aime/adv/1", "gpqa_diamond/adv/1", "hmmt/adv/1", "omni_math_hard/adv/1")
+EXTENSION_ITEMS = ("aime/adv/1", "hmmt/adv/1")
 ANSWERS = {                                                    # item -> (correct, wrong)
-    "math500/adv/1": ("4", "5"),
-    "mmlu_pro/adv/1": ("C", "A"),
-    "bbh_logic4/adv/1": ("B", "A"),
-    "bbh_logic4/adv/2": ("False", "True"),
-    "mbpp_plus/adv/1": ("def add_two(a, b):\n    return a + b", "def add_two(a, b):\n    return a - b"),
+    "aime/adv/1": ("4", "5"),
+    "gpqa_diamond/adv/1": ("C", "A"),
+    "hmmt/adv/1": ("\\frac{1}{2}", "3"),
+    "omni_math_hard/adv/1": ("8", "7"),
 }
 FINAL_RE = re.compile(r"<final>(.*?)</final>", re.S)
 
@@ -151,10 +150,10 @@ def test_mocked_four_benchmark_run_generates_selects_grades_exports_resumes_and_
     assert payload["contrasts"][ir.PRIMARY_II] == pytest.approx(1.0, abs=1e-12)
     assert (paths.reports_dir / "AUDIT.md").is_file() and any(paths.tables_dir.rglob("*")), "analysis exports missing"
     assert summary.get("audit_rc") == 0, summary.get("audit_rc")
-    assert summary.get("stubbed_code_grader") is True
+    assert summary.get("stubbed_code_grader") is True            # passed, but no study benchmark routes to it
 
     # --- one full item per benchmark, traced by the separate script --------------------------------------------
-    for item in ("math500/adv/1", "mmlu_pro/adv/1", "bbh_logic4/adv/1", "mbpp_plus/adv/1"):
+    for item in E2E_ITEMS:
         trace = ir.recompute_item(paths.run_dir, item)["partitions"]["main"]
         n = 138 if item in EXTENSION_ITEMS else 125
         assert trace["nodes"] == trace["parsed"] == trace["raw_verified"] == trace["graded"] == n, (item, trace["raw_problems"])
@@ -229,7 +228,7 @@ def test_resume_reuses_stored_grades_byte_for_byte(run_paths, cfg):
     if not hasattr(live, "run_offline"):
         pytest.skip("waiting on live.run_offline (Q1)")
     items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
-    ids = ("math500/adv/1",)
+    ids = ("aime/adv/1",)
     inventory = [InventoryItem(public=items[i][0], private=items[i][1]) for i in ids]
     model = PromptOnlyModel([items[i][0] for i in ids])
     config = fast_config(cfg)
@@ -237,19 +236,6 @@ def test_resume_reuses_stored_grades_byte_for_byte(run_paths, cfg):
     before = _snapshot(run_paths, ("grades",))
     live.run_offline(run_paths, config, inventory, model.transport(), code_grader=stub_code_grader)
     assert _snapshot(run_paths, ("grades",)) == before
-
-
-def test_stubbed_code_grader_is_labelled_in_reports(run_paths, cfg):
-    live = optional_module("agent_allocation.live")
-    if not hasattr(live, "run_offline"):
-        pytest.skip("waiting on live.run_offline (Q1)")
-    items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
-    ids = ("mbpp_plus/adv/1",)
-    inventory = [InventoryItem(public=items[i][0], private=items[i][1]) for i in ids]
-    model = PromptOnlyModel([items[i][0] for i in ids])
-    live.run_offline(run_paths, fast_config(cfg), inventory, model.transport(), code_grader=stub_code_grader)
-    text = "\n".join(p.read_text(errors="replace") for p in run_paths.reports_dir.rglob("*.md")).lower()
-    assert "stub" in text
 
 
 class PeerOutageModel(PromptOnlyModel):
@@ -282,9 +268,9 @@ def test_failed_nodes_stay_in_the_population_and_analysis_agrees_with_the_indepe
     if not hasattr(live, "run_offline"):
         pytest.skip("waiting on live.run_offline (Q1)")
     items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
-    ids = ("math500/adv/1", "mmlu_pro/adv/1")
+    ids = ("aime/adv/1", "gpqa_diamond/adv/1")
     inventory = [InventoryItem(public=items[i][0], private=items[i][1]) for i in ids]
-    model = PeerOutageModel([items[i][0] for i in ids], outage_item="mmlu_pro/adv/1")
+    model = PeerOutageModel([items[i][0] for i in ids], outage_item="gpqa_diamond/adv/1")
     summary = live.run_offline(run_paths, fast_config(cfg), inventory, model.transport(), code_grader=stub_code_grader)
     assert model.rate_limited > 0
     run = ir.load(run_paths.run_dir)
@@ -293,6 +279,6 @@ def test_failed_nodes_stay_in_the_population_and_analysis_agrees_with_the_indepe
     payload = ir.independent_recompute(run_paths.run_dir)
     failing = {c["name"]: c["detail"] for c in payload["checks"] if c["passed"] is False}
     assert not failing, failing
-    trace = ir.recompute_item(run_paths.run_dir, "mmlu_pro/adv/1")["partitions"]["main"]
+    trace = ir.recompute_item(run_paths.run_dir, "gpqa_diamond/adv/1")["partitions"]["main"]
     assert trace["checkpoints"]["peer/4/4/current"]["delivered_correct"] in (0, None)
     assert summary.get("audit_rc") == 0, "agent 07's audit disagrees with the independent hook or failed a check"

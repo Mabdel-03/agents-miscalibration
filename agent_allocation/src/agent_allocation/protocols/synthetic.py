@@ -1,7 +1,7 @@
 """Deterministic two-item synthetic run for downstream agents (02 scheduler/ledger, 06 selection) -- offline, no gold.
 
-* Item A: a MATH-500-style text task on the ``main_extension`` grid (138 nodes; every family including CP/POOLED).
-* Item B: an MBPP+-style code task on the ``main`` grid (125 nodes).
+* Item A: an AIME-style math task on the ``main_extension`` grid (138 nodes; every family including CP/POOLED).
+* Item B: a GPQA-Diamond-style four-option task on the ``main`` grid (125 nodes).
 
 Every node gets a synthetic :class:`Candidate` (mostly VALID with a few competing answers; some raw MISSING text;
 some EMPTY, which renders as absent downstream; root slot 2 carries an over-envelope rationale so its receivers show
@@ -45,14 +45,13 @@ OUTPUT_PRICE = Decimal("0.0000004")
 FILES = ("tasks.jsonl.gz", "graphs.jsonl.gz", "candidates.jsonl.gz", "results.jsonl.gz", "prompts.jsonl.gz")
 
 TEXT_TASK = PublicTask(
-    item_id="math500/synthetic/0001", benchmark="math500", source_revision="synthetic",
+    item_id="aime/synthetic/0001", benchmark="aime", source_revision="synthetic",
     prompt="Compute $\\frac{1}{2} + \\frac{1}{2}$. Simplify your answer.", output_kind=OutputKind.MATH)
-CODE_TASK = PublicTask(
-    item_id="mbpp_plus/synthetic/0002", benchmark="mbpp_plus", source_revision="synthetic",
-    prompt=("Write a function to find the shared elements from the given two lists.\n"
-            "assert set(similar_elements((3, 4, 5, 6), (5, 7, 4, 10))) == set((4, 5))"),
-    output_kind=OutputKind.PYTHON,
-    public_examples=("assert set(similar_elements((3, 4, 5, 6), (5, 7, 4, 10))) == set((4, 5))",))
+OPTION_TASK = PublicTask(
+    item_id="gpqa_diamond/synthetic0002", benchmark="gpqa_diamond", source_revision="synthetic",
+    prompt=("Which particle mediates the electromagnetic force?\n\nOptions:\n"
+            "A. gluon\nB. photon\nC. W boson\nD. graviton"),
+    output_kind=OutputKind.OPTION, allowed_choices=("A", "B", "C", "D"))
 
 SYNTHETIC_LOCK = EndpointLock(
     model="google/gemini-2.5-flash-lite", provider_tag="google-ai-studio", provider_name="Google AI Studio",
@@ -61,8 +60,7 @@ SYNTHETIC_LOCK = EndpointLock(
     supported_parameters=("max_tokens", "reasoning", "temperature", "top_p"))
 
 _TEXT_ANSWERS = ("1", "1", "1", "\\frac{2}{2}", "2")
-_GOOD_CODE = "def similar_elements(a, b):\n    return set(a) & set(b)"
-_BAD_CODE = "def similar_elements(a, b):\n    return set(a) | set(b)"
+_OPTION_ANSWERS = ("B", "B", "B", "A", "C")
 
 
 def _h(node: GenerationSpec) -> int:
@@ -74,13 +72,14 @@ def synthetic_candidate(node: GenerationSpec, task: PublicTask) -> Candidate:
     h = _h(node)
     status = ParseStatus.VALID
     finish = "stop"
-    code = task.output_kind is OutputKind.PYTHON
-    answer = (_BAD_CODE if h % 4 == 0 else _GOOD_CODE) if code else _TEXT_ANSWERS[h % len(_TEXT_ANSWERS)]
-    rationale = "Intersect the two inputs as sets." if code else f"Half plus half; the result is {answer}."
+    option = task.output_kind is OutputKind.OPTION
+    answers = _OPTION_ANSWERS if option else _TEXT_ANSWERS
+    answer = answers[h % len(answers)]
+    rationale = ("The photon carries the electromagnetic interaction." if option
+                 else f"Half plus half; the result is {answer}.")
     if node.kind is GenerationKind.ROOT and node.root_slot == 2:
         rationale = " ".join(f"Check {i}: the decisive step holds." for i in range(PACKET_ENVELOPE_CHARS // 30 + 50))
-    final_body = f"```python\n{answer}\n```" if code else answer
-    visible = f"<rationale>\n{rationale}\n</rationale>\n<final>\n{final_body}\n</final>"
+    visible = f"<rationale>\n{rationale}\n</rationale>\n<final>\n{answer}\n</final>"
     final: str | None = answer
     if h % 23 == 0:
         status, finish, visible, final, rationale = ParseStatus.EMPTY, "length", "", None, None
@@ -117,12 +116,12 @@ def build_synthetic_run() -> dict[str, Any]:
     grids = grids_from_config(cfg)
     seed = int(cfg["seed"])
     version = prompt_version()
-    tasks = (TEXT_TASK, CODE_TASK)
+    tasks = (TEXT_TASK, OPTION_TASK)
     graphs: list[ItemGraph] = []
     candidates: dict[str, Candidate] = {}
     results: dict[str, GenerationResult] = {}
     prompts: list[dict[str, Any]] = []
-    for task, grid_name in ((TEXT_TASK, "main_extension"), (CODE_TASK, "main")):
+    for task, grid_name in ((TEXT_TASK, "main_extension"), (OPTION_TASK, "main")):
         graph = build_item_graph(grids[grid_name], run_id=STUDY_ID, partition_id=PARTITION, task=task,
                                  model=cfg["primary_model"], base_budget=int(cfg["reasoning"]["main_a"]),
                                  headroom=headroom_for(cfg, task.benchmark), endpoint_lock_hash=SYNTHETIC_LOCK.lock_hash,

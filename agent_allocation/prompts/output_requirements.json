@@ -1,7 +1,6 @@
 {
-  "math500": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
-  "mmlu_pro": "Put only the letter of one listed answer option inside <final>.",
-  "bbh_choice": "Put only the letter of one listed answer option inside <final>.",
-  "bbh_boolean": "Put exactly True or False inside <final>.",
-  "mbpp_plus": "Put a complete Python solution with the required entry-point signature and necessary imports inside <final>. Follow the task interface and public examples. Do not add a main program or a test harness unless the task explicitly requires it."
+  "aime": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
+  "hmmt": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
+  "omni_math_hard": "Put exactly one mathematical answer inside <final>. A boxed mathematical expression is allowed. Do not put the derivation in <final>.",
+  "gpqa_diamond": "Put only the letter of one listed answer option inside <final>."
 }

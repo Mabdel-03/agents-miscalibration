@@ -8,12 +8,12 @@ from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
-from agent_allocation.contracts import BENCHMARKS, BBH_SUBTASKS, STUDY_ID, GridSpec, canonical_hash
+from agent_allocation.contracts import BENCHMARKS, STUDY_ID, GridSpec, canonical_hash
 
 PRESET_CEILINGS_USD = {"balanced150": Decimal("135"), "lean100": Decimal("90"), "forced27b": Decimal("95")}
 # Study id per preset (default: contracts.STUDY_ID). forced27b is the forced-budget rerun (openrouter_forced_budget_v2).
 PRESET_STUDY_IDS = {"forced27b": "openrouter_forced_budget_v2"}
-CODE_BENCHMARKS = frozenset({"mbpp_plus"})
+CODE_BENCHMARKS: frozenset[str] = frozenset()   # no code benchmark in the study; MBPP+ grading stays dormant
 BUDGET_SEMANTICS = frozenset({"soft_requested_allowance", "forced_exact"})
 FORCED_ENDPOINTS = frozenset({"completions"})
 SHARD_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -85,10 +85,6 @@ def validate_config(cfg: Mapping[str, Any]) -> list[str]:
     need(Decimal(str(budget.get("soft_admission_ceiling_usd", 0))) <= Decimal(str(budget.get("credit_ceiling_usd", 0))),
          "soft admission ceiling exceeds the credit ceiling")
     need([b["id"] for b in cfg.get("benchmarks", [])] == list(BENCHMARKS), "benchmark ids/order differ from contracts")
-    bench_ids = [b.get("id") for b in cfg.get("benchmarks", [])]
-    if "bbh_logic4" in bench_ids or "bbh_logic4" in BENCHMARKS:
-        bbh = next((b for b in cfg.get("benchmarks", []) if b.get("id") == "bbh_logic4"), {})
-        need(tuple(bbh.get("subtasks", ())) == BBH_SUBTASKS, "BBH subtasks differ from contracts")
     for name, count in cfg.get("panels", {}).items():
         need(count % 16 == 0, f"panel {name} is not a multiple of 16")
     panels = cfg.get("panels", {})

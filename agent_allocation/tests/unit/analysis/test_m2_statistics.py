@@ -1,4 +1,4 @@
-"""M2 statistics: item-clustered intervals, BBH strata, hand-computed primary contrasts, partial handling,
+"""M2 statistics: item-clustered intervals, hand-computed primary contrasts, partial handling,
 shared-subset high/low joins, and no outcome-dependent population changes."""
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from agent_allocation._vendor.ard_stats import mean_ci
 from agent_allocation.analysis import contrasts as K
 from agent_allocation.analysis.stats import build_population, column_intervals, value_matrix
 from agent_allocation.analysis.summary import stratum_weights
-from agent_allocation.contracts import BBH_SUBTASKS, GenerationKind, GradeResult, GradeStatus, dump_record
+from agent_allocation.contracts import GenerationKind, GradeResult, GradeStatus, dump_record
 from agent_allocation.reporting.cli import analyze
 from tests.unit.analysis.conftest import REPLICATES
 from tests.unit.analysis.synthrun import Grid, SynthSpec, build_run
@@ -32,12 +32,12 @@ def _frame(values: dict[str, dict[str, list[float]]]) -> pd.DataFrame:
 
 def test_intervals_resample_items_and_keep_an_items_checkpoints_together():
     ys = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0]
-    frame = _frame({"math500": {"a": ys, "b": ys, "c": [1.0 - y for y in ys]}})
+    frame = _frame({"aime": {"a": ys, "b": ys, "c": [1.0 - y for y in ys]}})
     columns = [("main", "a"), ("main", "b"), ("main", "c")]
     population = build_population(frame, columns, label="t")
-    assert population.n_by_stratum == {"math500": 10}          # clusters are items, not rows (30 rows here)
+    assert population.n_by_stratum == {"aime": 10}          # clusters are items, not rows (30 rows here)
     rs = population.resampler(400, 7)
-    assert rs.idx["math500"].shape == (400, 10)
+    assert rs.idx["aime"].shape == (400, 10)
     matrix = value_matrix(frame, population, columns)
     ci = column_intervals(matrix, rs, ["a", "b", "c"])
     ci = ci[ci["level"] == "macro"].set_index("name")
@@ -45,13 +45,13 @@ def test_intervals_resample_items_and_keep_an_items_checkpoints_together():
     assert ci.loc["a", "ci_lo"] == ci.loc["b", "ci_lo"] and ci.loc["a", "ci_hi"] == ci.loc["b", "ci_hi"]
     assert ci.loc["c", "ci_lo"] == pytest.approx(1 - ci.loc["a", "ci_hi"])
     # the vendored engine on the same indices gives the same percentile interval
-    ref = mean_ci({"math500": np.array(ys)}, rs, domains=["math500"], weights={"math500": 1.0})
+    ref = mean_ci({"aime": np.array(ys)}, rs, domains=["aime"], weights={"aime": 1.0})
     assert [ci.loc["a", "ci_lo"], ci.loc["a", "ci_hi"]] == pytest.approx(ref["ci95_percentile"])
 
 
 def test_duplicated_candidate_rows_do_not_narrow_intervals():
     ys = [1.0, 0.0] * 6
-    single = _frame({"math500": {"a": ys}})
+    single = _frame({"aime": {"a": ys}})
     many = pd.concat([single] * 5, ignore_index=True)           # the same item rows repeated (e.g. per candidate)
     for frame in (single, many):
         pop = build_population(frame, [("main", "a")], label="dup")
@@ -63,18 +63,6 @@ def test_duplicated_candidate_rows_do_not_narrow_intervals():
                                       [("main", "a")]), build_population(many, [("main", "a")], label="dup")
                          .resampler(300, 1), ["a"])
     assert a[["ci_lo", "ci_hi"]].to_numpy().tolist() == b[["ci_lo", "ci_hi"]].to_numpy().tolist()
-
-
-def test_bbh_subtasks_are_resampling_strata():
-    values = {f"bbh_logic4/{BBH_SUBTASKS[0]}": {"a": [1.0] * 5}, f"bbh_logic4/{BBH_SUBTASKS[1]}": {"a": [0.0] * 5},
-              f"bbh_logic4/{BBH_SUBTASKS[2]}": {"a": [1.0] * 5}, f"bbh_logic4/{BBH_SUBTASKS[3]}": {"a": [0.0] * 5}}
-    frame = _frame(values)
-    pop = build_population(frame, [("main", "a")], label="bbh")
-    ci = column_intervals(value_matrix(frame, pop, [("main", "a")]), pop.resampler(500, 3), ["a"])
-    row = ci[ci["benchmark"] == "bbh_logic4"].iloc[0]
-    # items never move across subtasks, so every replicate's equal-subtask mean is exactly 0.5
-    assert row["estimate"] == pytest.approx(0.5) and row["ci_lo"] == pytest.approx(0.5) and row["ci_hi"] == pytest.approx(0.5)
-    assert stratum_weights(list(values))[f"bbh_logic4/{BBH_SUBTASKS[0]}"] == pytest.approx(0.25)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -115,7 +103,7 @@ def test_primary_contrasts_match_hand_computation(primary_run):
     ii = _macro(frame, K.PRIMARY_II)
     assert i["status"] == "complete" and i["estimate"] == pytest.approx(0.25) and i["n_items"] == 32
     assert ii["status"] == "complete" and ii["estimate"] == pytest.approx(0.5) and ii["n_items"] == 32
-    for bench in ("math500", "mmlu_pro", "bbh_logic4", "mbpp_plus"):
+    for bench in ("aime", "hmmt", "omni_math_hard", "gpqa_diamond"):
         row = frame[(frame["contrast"] == K.PRIMARY_I) & (frame["benchmark"] == bench)].iloc[0]
         assert row["estimate"] == pytest.approx(0.25)
         assert pd.isna(row["p_value"])
@@ -160,7 +148,7 @@ def test_unknown_primary_outcome_gives_bounds_and_withholds_p_values(primary_run
     paths = copy_run(primary_run, tmp_path)
     analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
     row = analysis.outcomes[(analysis.outcomes["name"] == "peer/4/4") & (analysis.outcomes["view"] == "current")
-                            & (analysis.outcomes["item_id"] == "math500/w0/i1")].iloc[0]
+                            & (analysis.outcomes["item_id"] == "aime/w0/i1")].iloc[0]
     grade_path = paths.grade(row["selected_candidate_id"])
     grade_path.write_text(json.dumps(dump_record(GradeResult(row["selected_candidate_id"], GradeStatus.EVALUATOR_ERROR,
                                                              None, None, "grader-1", "h"))))

@@ -9,7 +9,7 @@ import pytest
 
 from agent_allocation.contracts import STUDY_ID, GenerationKind, GenerationSpec, OutputKind, PublicTask, public_task_hash
 
-TASK = PublicTask(item_id="math500/test/algebra/1", benchmark="math500", source_revision="6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be",
+TASK = PublicTask(item_id="aime/2025/1", benchmark="aime", source_revision="c94da77eb22bbd6439e62a323bec18493a421302",
                   prompt="Compute $1+1$.", output_kind=OutputKind.MATH)
 COMMON = dict(run_id=STUDY_ID, partition_id="main", item_id=TASK.item_id, benchmark=TASK.benchmark,
               model="google/gemini-2.5-flash-lite", endpoint_lock_hash="golden-endpoint-lock",
@@ -54,9 +54,9 @@ def test_grid_builder_reproduces_golden_ids():
 
 
 PINNED = {
-    "root0": "b2b136242d40bfbd32f60222c40e23931b6cdf195ee71d53977297a5863e95b0",
-    "root4": "0229ee82021e8be9834f6bd5cb3bdc6dd74cdab0a5b2b8d175322ae7b828f9a8",
-    "private_0_1": "53ae3bbcdb91f64dad46076ba6911229179058aa98b982311c541fa140a43ec0",
-    "peer_3_1_2": "e8f9df9b54bf3942bfab78d7bc701def9b6721492879d50eaff6270e57901318",
-    "deep_16": "59074ae4e250d27c8005c9f6a827a1a0de7e192015b3fd564f0eafeed0e61703",
+    "root0": "07d5ea3b1c0893ff58f24089fdd3bda3b9a6e6911b862e5c35be4cd7e1c552e9",
+    "root4": "130c76f0c1d951ec635be441db3f3d55b07780e1d39e7a11c2598c614196fa5e",
+    "private_0_1": "1ab95dcc7ec5de861e63f1559cdaec65827f3322a99c6340397d3144a70205b3",
+    "peer_3_1_2": "126fb27b313d533738af27a2465c967f75942ab9f3687c9bd23b53d0cf1c0b51",
+    "deep_16": "a32d359e5733b5cc99abdd43afdd5cfbe48d406d1cbad42bfbaddf5da7239f4b",
 }

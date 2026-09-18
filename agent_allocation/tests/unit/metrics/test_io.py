@@ -46,7 +46,7 @@ def run(tmp_path):
 
 def test_a_parsed_record_without_candidate_is_an_empty_candidate(run):
     paths, panel = run
-    item = panel.records.items[1]                                  # mmlu_pro/fixture-2
+    item = panel.records.items[1]                                  # gpqa_diamond/fixture-2
     nid = panel.node_ids[(item.task.item_id, "root/5")]
     paths.parsed(nid).write_text(json.dumps({"result": None, "candidate": None}))
     select_partition(paths, "main", seed=SEED, math_equivalent=fixture_math_equivalent)
@@ -123,14 +123,14 @@ def test_disk_round_trip_matches_the_in_memory_join(run, tmp_path):
 
 def test_code_checkpoints_wait_for_public_checks(run):
     paths, panel = run
-    code = next(i for i in panel.records.items if i.task.item_id == "mbpp_plus/fixture-5")
+    code = next(i for i in panel.records.items if i.task.item_id == "omni_math_hard/fixture-5")
     missing = panel.node_ids[(code.task.item_id, "root/1")]
     paths.public_check(missing).unlink()
     selection = select_partition(paths, "main", seed=SEED, math_equivalent=fixture_math_equivalent)
     pending = set(selection.pending_policy_ids)
-    assert "main/mbpp_plus/fixture-5/sample/2/current" in pending
-    assert "main/mbpp_plus/fixture-5/sample/1/current" not in pending               # root/0 alone needs no check
-    assert "main/mbpp_plus/fixture-5/private_single/1/current" not in pending
+    assert "main/omni_math_hard/fixture-5/sample/2/current" in pending
+    assert "main/omni_math_hard/fixture-5/sample/1/current" not in pending               # root/0 alone needs no check
+    assert "main/omni_math_hard/fixture-5/private_single/1/current" not in pending
 
 
 def test_metrics_table_names():

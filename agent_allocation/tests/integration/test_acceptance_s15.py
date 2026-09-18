@@ -76,7 +76,7 @@ def test_s15_01_identical_prompts_distinct_nodes_reference(reference_dag, grids,
     pack = reference_dag.build_plan()
     assert len(set(pack.checkpoints["sample/25"])) == 25
     assert pack.checkpoints["sample/5"] == pack.checkpoints["peer/5/0"] == pack.checkpoints["private_team/5/0"]
-    graph = h.ref_graph(grids["main"], _task(adv_items, "math500"))
+    graph = h.ref_graph(grids["main"], _task(adv_items, "aime"))
     assert graph.kind_counts()["root"] == 25                      # shared roots exist once
 
 
@@ -84,7 +84,7 @@ def test_s15_01_identical_prompts_distinct_nodes_production(grids, adv_items, cf
     grid_mod = optional_module("agent_allocation.protocols.grid")
     render = optional_module("agent_allocation.prompts.render")
     request = optional_module("agent_allocation.api.request")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     graph = h.production_graph(grid_mod, grids["main"], task, prompt_version=render.prompt_version())
     roots = [n for n in graph.nodes if n.kind is GenerationKind.ROOT]
     assert len(roots) == 25 and len({n.node_id for n in roots}) == 25
@@ -101,7 +101,7 @@ async def test_s15_01_identical_bodies_are_distinct_network_opportunities_produc
     client_mod = optional_module("agent_allocation.api.client")
     render = optional_module("agent_allocation.prompts.render")
     grid_mod = optional_module("agent_allocation.protocols.grid")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     roots = [n for n in h.production_graph(grid_mod, grids["main"], task).nodes if n.kind is GenerationKind.ROOT]
     stub = StubOpenRouter(default=lambda req: ok())
     client = client_mod.OpenRouterClient(api_key=None, transport=stub.transport())
@@ -178,13 +178,13 @@ def test_s15_02_state_store_keeps_colliding_label_records_production(run_paths):
                                              ("main_extension", 138), ("pilot_r1", 12), ("pilot_r2", 15)])
 def test_s15_03_node_counts_reference(grids, lean_cfg, grid_name, count):
     assert ref.expected_node_count(grids[grid_name]) == count
-    task = PublicTask("x/1", "math500", "r", "p", adversarial.load_items()[0][0].output_kind)
+    task = PublicTask("x/1", "aime", "r", "p", adversarial.load_items()[0][0].output_kind)
     assert len(h.ref_graph(grids[grid_name], task).nodes) == count
     assert grids_from_config(lean_cfg)[grid_name] == grids[grid_name], "presets differ only in panels/budget"
 
 
 def test_s15_03_extension_adds_exactly_cp12_pooled1_reference(grids, adv_items):
-    task = _task(adv_items, "mmlu_pro")
+    task = _task(adv_items, "gpqa_diamond")
     main, ext = h.ref_graph(grids["main"], task), h.ref_graph(grids["main_extension"], task)
     extra = [ext.nodes[i] for i in set(ext.nodes) - set(main.nodes)]
     assert sorted(s.kind.value for s in extra) == ["communicate_then_private"] * 12 + ["pooled"]
@@ -251,7 +251,7 @@ def test_s15_04_root_references_production(grids, adv_items):
 # =========================================================================================================
 
 def test_s15_05_ancestor_counts_and_synchrony_reference(reference_dag, grids, adv_items):
-    graph = h.ref_graph(grids["main_extension"], _task(adv_items, "math500"))
+    graph = h.ref_graph(grids["main_extension"], _task(adv_items, "aime"))
     for n in (2, 3, 4, 5):
         for r in range(5):
             assert len(graph.ancestors_of(f"peer/{n}/{r}")) == n * (1 + r)
@@ -267,7 +267,7 @@ def test_s15_05_ancestor_counts_and_synchrony_reference(reference_dag, grids, ad
 def test_s15_05_policy_ancestors_production(grids, adv_items):
     grid_mod = optional_module("agent_allocation.protocols.grid")
     cost_mod = optional_module("agent_allocation.protocols.policy_cost")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     graph = h.production_graph(grid_mod, grids["main_extension"], task)
     mine = h.ref_graph(grids["main_extension"], task)
     for cp in graph.checkpoints:
@@ -282,7 +282,7 @@ def test_s15_05_policy_ancestors_production(grids, adv_items):
 def test_s15_05_rendered_prompts_see_only_parents_production(grids, adv_items, cfg):
     grid_mod = optional_module("agent_allocation.protocols.grid")
     render = optional_module("agent_allocation.prompts.render")
-    task = _task(adv_items, "mmlu_pro")
+    task = _task(adv_items, "gpqa_diamond")
     graph = h.production_graph(grid_mod, grids["main_extension"], task)
     by_id = {n.node_id: n for n in graph.nodes}
     cands = {n.node_id: h.valid_candidate(n, task) for n in graph.nodes}
@@ -337,7 +337,7 @@ def _distinct_usage(graph) -> dict[str, Usage]:
 
 
 def test_s15_07_collection_vs_policy_accounting_reference(grids, adv_items):
-    graph = h.ref_graph(grids["main_extension"], _task(adv_items, "math500"))
+    graph = h.ref_graph(grids["main_extension"], _task(adv_items, "aime"))
     use = _distinct_usage(graph)
     per_policy = ref.policy_cost_reference(graph, use)
     collection = ref.collection_cost_reference(use)
@@ -373,7 +373,7 @@ def _values(row) -> list:
 def test_s15_07_policy_cost_rows_production(grids, adv_items):
     grid_mod = optional_module("agent_allocation.protocols.grid")
     cost_mod = optional_module("agent_allocation.protocols.policy_cost")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     graph = h.production_graph(grid_mod, grids["main_extension"], task)
     mine = h.ref_graph(grids["main_extension"], task)
     use = _distinct_usage(mine)
@@ -532,7 +532,7 @@ def test_s15_10_every_non_ok_transport_status_has_a_declared_policy():
 
 async def test_s15_10_malformed_final_is_a_completed_transport_ok_production(adv_items, cfg):
     client_mod = optional_module("agent_allocation.api.client")
-    task = _task(adv_items, "mmlu_pro")
+    task = _task(adv_items, "gpqa_diamond")
     node = next(iter(h.ref_graph(grids_from_config(cfg)["main"], task).nodes.values()))
     stub = StubOpenRouter([ok(content="<rationale>two answers</rationale><final>A</final><final>B</final>")])
     client = client_mod.OpenRouterClient(api_key=None, transport=stub.transport())
@@ -601,7 +601,10 @@ def test_s15_11_rendered_prompts_and_bodies_have_no_canaries_production(grids, a
     grid_mod = optional_module("agent_allocation.protocols.grid")
     render = optional_module("agent_allocation.prompts.render")
     request = optional_module("agent_allocation.api.request")
-    for task, _, _ in adv_items:
+    from agent_allocation.contracts import BENCHMARKS
+    rendered = [task for task, _, _ in adv_items if task.benchmark in BENCHMARKS]   # BBH/MBPP+ have no prompt now
+    assert {task.benchmark for task in rendered} == set(BENCHMARKS)
+    for task in rendered:
         graph = h.production_graph(grid_mod, grids["main_extension"], task)
         by_id = {n.node_id: n for n in graph.nodes}
         cands = {n.node_id: h.valid_candidate(n, task) for n in graph.nodes}
@@ -711,7 +714,7 @@ def _math_pool(task, answers, cfg):
 
 def test_s15_13_selector_refuses_one_direction_merge_production(adv_items, cfg):
     readout = optional_module("agent_allocation.selection.readout")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     answers = ["1/2", "1/2", "0.5", "0.5", "3", "3", "3"]
     cp, cands = _math_pool(task, answers, cfg)
     one_way = lambda a, b: True if (a, b) == ("0.5", "1/2") else (None if {a, b} == {"0.5", "1/2"} else False)
@@ -725,7 +728,7 @@ def test_s15_13_selector_refuses_one_direction_merge_production(adv_items, cfg):
 
 def test_s15_13_selection_independent_of_candidate_mapping_order_production(adv_items, cfg):
     readout = optional_module("agent_allocation.selection.readout")
-    task = _task(adv_items, "mmlu_pro")
+    task = _task(adv_items, "gpqa_diamond")
     cp, cands = _math_pool(task, ["A", "B", "A", "B", "C"], cfg)
     chosen = set()
     for order in list(permutations(cands))[:24]:
@@ -748,7 +751,7 @@ def test_s15_13_vote_classes_agree_with_grade_identity_production(adv_items, cfg
     extraction = optional_module("agent_allocation.extraction.final")
     grader = optional_module("agent_allocation.grading.text.grade")
     grid = grids_from_config(cfg)["pilot_r1"]
-    cases = [(t, p) for t, p, _ in adv_items if t.item_id in ("mmlu_pro/adv/1", "bbh_logic4/adv/1", "bbh_logic4/adv/2")]
+    cases = [(t, p) for t, p, _ in adv_items if t.item_id in ("gpqa_diamond/adv/1", "bbh_logic4/adv/1", "bbh_logic4/adv/2")]
     assert len(cases) == 3
     problems = []
     for task, private in cases:
@@ -853,7 +856,7 @@ def test_s15_14_math_grader_exception_is_unknown_not_wrong_production(adv_items,
               for obj in list(vars(mod).values()) if callable(getattr(obj, "cache_clear", None))]
     for cache in caches:
         cache.cache_clear()
-    task, private, _ = next((t, p, r) for t, p, r in adv_items if t.benchmark == "math500" and p.gold_answer == "4")
+    task, private, _ = next((t, p, r) for t, p, r in adv_items if t.benchmark == "aime" and p.gold_answer == "4")
     node = next(iter(h.ref_graph(grids_from_config(adversarial_config())["pilot_r1"], task).nodes.values()))
     cand = h.valid_candidate(node, task, content="<final>4</final>", final="4")
     try:
@@ -907,7 +910,7 @@ def test_s15_15_null_usage_and_cache_hit_policy_reference():
 
 async def test_s15_15_client_null_reasoning_and_cache_hit_production(adv_items, cfg):
     client_mod = optional_module("agent_allocation.api.client")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     nodes = list(h.ref_graph(grids_from_config(cfg)["pilot_r1"], task).nodes.values())
     stub = StubOpenRouter([ok(reasoning_tokens=None, cached_tokens=None), cache_hit()])
     client = client_mod.OpenRouterClient(api_key=None, transport=stub.transport())
@@ -1013,14 +1016,14 @@ def test_s15_18_metrics_scope_production():
 def test_s15_19_identity_has_no_time_reference(grids, adv_items):
     assert not {f.name for f in dataclasses.fields(GenerationSpec)} & {"created_at", "sent_at", "completed_at",
                                                                          "latency_seconds", "attempt_no"}
-    task = _task(adv_items, "mmlu_pro")
+    task = _task(adv_items, "gpqa_diamond")
     assert set(h.ref_graph(grids["main"], task).nodes) == set(h.ref_graph(grids["main"], task).nodes)
 
 
 def test_s15_19_graph_and_peer_order_independent_of_completion_order_production(grids, adv_items, cfg):
     grid_mod = optional_module("agent_allocation.protocols.grid")
     render = optional_module("agent_allocation.prompts.render")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     g1 = h.production_graph(grid_mod, grids["main"], task)
     g2 = h.production_graph(grid_mod, grids["main"], task)
     assert [n.node_id for n in g1.nodes] == [n.node_id for n in g2.nodes]
@@ -1047,7 +1050,7 @@ def test_s15_19_graph_and_peer_order_independent_of_completion_order_production(
 # =========================================================================================================
 
 def test_s15_20_resume_planner_reference(grids, adv_items):
-    graph = h.ref_graph(grids["main"], _task(adv_items, "mmlu_pro"))
+    graph = h.ref_graph(grids["main"], _task(adv_items, "gpqa_diamond"))
     order = list(graph.nodes)
     done = set(order[:40])
     ready = [n for n in order if n not in done and set(graph.nodes[n].parent_ids) <= done]
@@ -1058,7 +1061,7 @@ def test_s15_20_resume_planner_reference(grids, adv_items):
 def test_s15_20_state_store_recover_keeps_terminal_nodes_and_raw_production(run_paths, adv_items, cfg):
     state_mod = optional_module("agent_allocation.storage.state")
     raw_mod = optional_module("agent_allocation.storage.raw")
-    task = _task(adv_items, "math500")
+    task = _task(adv_items, "aime")
     graph = h.ref_graph(grids_from_config(cfg)["pilot_r1"], task)
     specs = list(graph.nodes.values())
     store = state_mod.StateStore(run_paths)

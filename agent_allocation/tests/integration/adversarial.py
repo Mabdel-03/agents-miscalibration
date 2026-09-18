@@ -98,26 +98,37 @@ def _item(public: PublicTask, eval_kind: EvalKind, gold: str | None, private_rec
 
 def build_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    # MATH-500: one ordinary gold, one canary gold (a correct answer is then impossible: grading must say wrong).
-    items.append(_item(PublicTask("math500/adv/1", "math500", REVISION, "Compute $2+2$.", OutputKind.MATH),
+    # AIME: one ordinary gold, one canary gold (a correct answer is then impossible: grading must say wrong).
+    items.append(_item(PublicTask("aime/adv/1", "aime", REVISION, "Compute $2+2$.", OutputKind.MATH),
                        EvalKind.MATH_VERIFY, "4",
                        {"problem": "Compute $2+2$.", "answer": "4", "solution": CANARIES["solution_math"],
                         "level": 1, "type": "Prealgebra"}))
-    items.append(_item(PublicTask("math500/adv/2", "math500", REVISION, "What is $\\frac{1}{2}+\\frac{1}{2}$?",
+    items.append(_item(PublicTask("aime/adv/2", "aime", REVISION, "What is $\\frac{1}{2}+\\frac{1}{2}$?",
                                   OutputKind.MATH),
                        EvalKind.MATH_VERIFY, CANARIES["gold_math"],
                        {"problem": "What is $\\frac{1}{2}+\\frac{1}{2}$?", "answer": CANARIES["gold_math"],
                         "solution": CANARIES["solution_math"], "level": 2, "type": "Algebra"}))
-    # MMLU-Pro: letters are gold; the canary rides in the reference rationale.
+    # GPQA-Diamond: letters are gold; the canary rides in the reference rationale.
     options = "\n".join(f"({c}) option {c.lower()}" for c in MMLU_CHOICES)
     for n, gold in ((1, "C"), (2, "J")):
         prompt = f"Question {n}: which option is the adversarial fixture's answer?\n{options}"
-        items.append(_item(PublicTask(f"mmlu_pro/adv/{n}", "mmlu_pro", REVISION, prompt, OutputKind.OPTION,
+        items.append(_item(PublicTask(f"gpqa_diamond/adv/{n}", "gpqa_diamond", REVISION, prompt, OutputKind.OPTION,
                                       allowed_choices=MMLU_CHOICES),
                            EvalKind.OPTION_EXACT, gold,
                            {"question": prompt, "answer": gold, "answer_index": MMLU_CHOICES.index(gold),
                             "cot_content": CANARIES["rationale_mmlu"], "src": "adversarial"}))
-    # BBH: one choice subtask, one boolean subtask.
+    # HMMT and Omni-MATH: plain math items so a run spans the four study benchmarks.
+    items.append(_item(PublicTask("hmmt/adv/1", "hmmt", REVISION, "Compute $\\frac{3}{6}$ in lowest terms.",
+                                  OutputKind.MATH),
+                       EvalKind.MATH_VERIFY, "\\frac{1}{2}",
+                       {"problem": "Compute $\\frac{3}{6}$ in lowest terms.", "answer": "\\frac{1}{2}",
+                        "year": 2025, "problem_idx": 1}))
+    items.append(_item(PublicTask("omni_math_hard/adv/1", "omni_math_hard", REVISION,
+                                  "Find the least positive integer $n$ with $n^2 > 50$.", OutputKind.MATH),
+                       EvalKind.MATH_VERIFY, "8",
+                       {"problem": "Find the least positive integer $n$ with $n^2 > 50$.", "answer": "8",
+                        "difficulty": 7.0, "domain": ["Mathematics -> Number Theory -> Other"]}))
+    # BBH (no longer a study benchmark; kept for the TASK_EXACT/BOOLEAN grading paths): one choice, one boolean.
     items.append(_item(PublicTask("bbh_logic4/adv/1", "bbh_logic4", REVISION,
                                   "Three objects are arranged... Options:\n(A) first\n(B) second\n(C) third",
                                   OutputKind.OPTION, allowed_choices=("A", "B", "C"), subtask=BBH_SUBTASKS[0]),
@@ -128,7 +139,7 @@ def build_items() -> list[dict[str, Any]]:
                        EvalKind.TASK_EXACT, "False",
                        {"input": "not ( True ) and ( True ) is", "target": "False",
                         "target_note": CANARIES["target_note_bbh"]}))
-    # MBPP+: the prompt carries exactly one public assert; private tests/reference/plus inputs carry canaries.
+    # MBPP+ (dormant code path, not a study benchmark): the prompt carries exactly one public assert; private tests/reference/plus inputs carry canaries.
     for n, (fn, public_assert) in enumerate((("add_two", "assert add_two(1, 2) == 3"),
                                              ("rev_str", "assert rev_str('ab') == 'ba'")), start=1):
         prompt = f"Write a function {fn} as described.\n{public_assert}"
@@ -244,11 +255,11 @@ def build_duplicate_completions(task: PublicTask) -> list[dict[str, Any]]:
 
 def build_selector_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     names = ["sample/5", "private_team/4/4", "peer/4/4", "peer/5/4"]
-    null_rows = [dump_record(SelectionResult(policy_id=f"main/math500/adv/1/{n}/current", selected_candidate_id=None,
+    null_rows = [dump_record(SelectionResult(policy_id=f"main/aime/adv/1/{n}/current", selected_candidate_id=None,
                                              selector_name="plurality", selector_version="v1", pool_hash="",
                                              public_evidence_hash=None, cpu_seconds=0.0,
                                              status=SelectionStatus.SELECTED)) for n in names]
-    abstained = [dump_record(SelectionResult(policy_id=f"main/math500/adv/1/{n}/current", selected_candidate_id=None,
+    abstained = [dump_record(SelectionResult(policy_id=f"main/aime/adv/1/{n}/current", selected_candidate_id=None,
                                              selector_name="plurality", selector_version="v1",
                                              pool_hash=canonical_hash([n]), public_evidence_hash=None,
                                              cpu_seconds=0.001, status=SelectionStatus.ABSTAINED_ALL_INVALID))

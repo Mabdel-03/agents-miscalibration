@@ -78,7 +78,7 @@ def test_gate1_stops_when_provider_bills_more_than_the_ledger_settled():
 
 def pilot_rows(truncate_benchmark=None):
     rows = []
-    for bench in ("math500", "mmlu_pro", "bbh_logic4", "mbpp_plus"):
+    for bench in ("aime", "hmmt", "omni_math_hard", "gpqa_diamond"):
         for slot in range(40):
             if bench == truncate_benchmark and slot < 4:
                 rows.append(row(benchmark=bench, slot=slot, completion=CompletionStatus.LENGTH,
@@ -89,7 +89,7 @@ def pilot_rows(truncate_benchmark=None):
 
 
 GOOD = dict(duplicate_terminal_nodes=0, budget_stop_max_overshoot_usd=Decimal("0"), selector_rows_missing=0,
-            code_candidates=40, code_public_rows=40, code_private_grades=40, evaluator_errors=0, graded_total=160,
+            code_candidates=0, code_public_rows=0, code_private_grades=0, evaluator_errors=0, graded_total=160,
             packet_envelope_violations=0, core_forecast_usd=Decimal("80"))
 
 
@@ -98,13 +98,17 @@ def test_gate2_advances_on_a_clean_pilot():
 
 
 def test_gate2_truncation_gets_exactly_one_headroom_amendment_per_family():
-    rows = pilot_rows(truncate_benchmark="mbpp_plus")
+    rows = pilot_rows(truncate_benchmark="hmmt")
     assert evaluate_gate2(rows, **GOOD).decision == "amend_headroom_once"
-    assert evaluate_gate2(rows, **GOOD, amendments_used=["headroom_code"]).decision == "stop_notify"
+    assert evaluate_gate2(rows, **GOOD, amendments_used=["headroom_text"]).decision == "stop_notify"
+
+
+def test_gate2_code_rows_are_vacuous_without_a_code_benchmark_but_never_ignored():
+    assert evaluate_gate2(pilot_rows(), **{**GOOD, "code_candidates": 2, "code_public_rows": 1}).decision == "stop_notify"
 
 
 def test_gate2_any_other_failure_stops():
     assert evaluate_gate2(pilot_rows(), **{**GOOD, "duplicate_terminal_nodes": 1}).decision == "stop_notify"
     assert evaluate_gate2(pilot_rows(), **{**GOOD, "core_forecast_usd": Decimal("126")}).decision == "stop_notify"
     mixed = {**GOOD, "evaluator_errors": 5}
-    assert evaluate_gate2(pilot_rows(truncate_benchmark="math500"), **mixed).decision == "stop_notify"
+    assert evaluate_gate2(pilot_rows(truncate_benchmark="aime"), **mixed).decision == "stop_notify"

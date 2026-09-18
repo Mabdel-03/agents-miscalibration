@@ -41,7 +41,7 @@ pytestmark = pytest.mark.timeout(120)
 def _items(n_per_benchmark: int = 1) -> list[PublicTask]:
     tasks = [t for t, _, _ in adversarial.load_items()]
     out = []
-    for bench in ("math500", "mmlu_pro", "bbh_logic4", "mbpp_plus"):
+    for bench in ("aime", "gpqa_diamond", "bbh_logic4", "mbpp_plus"):
         out += [t for t in tasks if t.benchmark == bench][:n_per_benchmark]
     return out
 

@@ -54,16 +54,14 @@ def test_prompt_hashes_match_pack_checksums_and_version_format():
 
 def test_output_requirements_by_benchmark_and_kind():
     reqs = json.loads(_template("output_requirements.json"))
-    assert output_requirement(MATH_TASK) == reqs["math500"]
-    assert output_requirement(CODE_TASK) == reqs["mbpp_plus"]
-    mmlu = PublicTask("mmlu_pro/1", "mmlu_pro", "rev", "Q?\n(A) x\n(B) y", OutputKind.OPTION, allowed_choices=("A", "B"))
-    assert output_requirement(mmlu) == reqs["mmlu_pro"]
-    boolean = PublicTask("bbh/b/1", "bbh_logic4", "rev", "not True is", OutputKind.BOOLEAN, subtask="boolean_expressions")
-    choice = PublicTask("bbh/t/1", "bbh_logic4", "rev", "Q", OutputKind.OPTION, subtask="temporal_sequences")
-    assert output_requirement(boolean) == reqs["bbh_boolean"]
-    assert output_requirement(choice) == reqs["bbh_choice"]
-    for bad in (replace(MATH_TASK, output_kind=OutputKind.OPTION), replace(boolean, output_kind=OutputKind.OPTION),
-                replace(choice, output_kind=OutputKind.MATH), replace(MATH_TASK, benchmark="gsm8k")):
+    assert set(reqs) == {"aime", "hmmt", "omni_math_hard", "gpqa_diamond"}
+    assert output_requirement(MATH_TASK) == reqs["aime"]
+    assert reqs["aime"] == reqs["hmmt"] == reqs["omni_math_hard"]
+    gpqa = PublicTask("gpqa_diamond/rec1", "gpqa_diamond", "rev", "Q?\n\nOptions:\nA. x\nB. y", OutputKind.OPTION,
+                      allowed_choices=("A", "B"))
+    assert output_requirement(gpqa) == reqs["gpqa_diamond"]
+    for bad in (replace(MATH_TASK, output_kind=OutputKind.OPTION), replace(gpqa, output_kind=OutputKind.MATH),
+                replace(MATH_TASK, benchmark="gsm8k"), CODE_TASK):
         with pytest.raises(PromptError):
             output_requirement(bad)
 
@@ -241,19 +239,19 @@ def test_trimming_straddling_final_and_malformed_multiple_finals():
 
 
 def test_render_reports_trimming_and_context_limit_receiver():
-    g = graph("main", CODE_TASK)
+    g = graph("main", MATH_TASK)
     index = node_index(g)
     priv = next(n for n in g.nodes if n.kind is GenerationKind.PRIVATE)
     parent = index[priv.parent_ids[0]]
-    long_text = "<rationale>\n" + "z" * (2 * PACKET_ENVELOPE_CHARS) + "\n</rationale>\n<final>\nprint(1)\n</final>"
-    messages, report = render_messages_with_report(priv, CODE_TASK, [(parent, candidate(parent, long_text,
-                                                   output_kind=OutputKind.PYTHON))], seed=SEED)
+    long_text = "<rationale>\n" + "z" * (2 * PACKET_ENVELOPE_CHARS) + "\n</rationale>\n<final>\n204\n</final>"
+    messages, report = render_messages_with_report(priv, MATH_TASK, [(parent, candidate(parent, long_text,
+                                                   output_kind=OutputKind.MATH))], seed=SEED)
     assert report["trimmed_packets"] == 1 and report["bytes_removed_total"] > PACKET_ENVELOPE_CHARS
-    assert "<final>\nprint(1)\n</final>" in messages[1]["content"]
+    assert "<final>\n204\n</final>" in messages[1]["content"]
     assert report["rendered_chars"] == sum(len(m["content"]) for m in messages)
-    huge_final = "<final>\n" + "x = 1\n" * PACKET_ENVELOPE_CHARS + "</final>"
+    huge_final = "<final>\n" + "x + 1\n" * PACKET_ENVELOPE_CHARS + "</final>"
     with pytest.raises(ContextLimitEvent) as info:
-        render_messages(priv, CODE_TASK, [(parent, candidate(parent, huge_final, output_kind=OutputKind.PYTHON))], seed=SEED)
+        render_messages(priv, MATH_TASK, [(parent, candidate(parent, huge_final, output_kind=OutputKind.MATH))], seed=SEED)
     assert info.value.record["receiver_node_id"] == priv.node_id
 
 

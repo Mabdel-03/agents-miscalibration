@@ -94,11 +94,11 @@ def test_real_graphs_select_seal_and_join(run, tmp_path):
     assert len(tables.checkpoints) == 390
     assert {r.delivered_state for r in tables.checkpoints} >= {"correct", "wrong"}
     assert all(r.delivered_state != "missing_selection" for r in tables.checkpoints)
-    assert Counter(r.item_id for r in tables.bank) == {"math500/synthetic/0001": 25, "mbpp_plus/synthetic/0002": 25}
+    assert Counter(r.item_id for r in tables.bank) == {"aime/synthetic/0001": 25, "gpqa_diamond/synthetic0002": 25}
     assert {r.n for r in tables.root_strata} == {2, 3, 4, 5}
     families = Counter((r.item_id, r.family) for r in tables.team_transitions)
-    assert families[("math500/synthetic/0001", "cp")] == 3 and families[("math500/synthetic/0001", "peer")] == 16
-    assert families[("math500/synthetic/0001", "private_single")] == 24
+    assert families[("aime/synthetic/0001", "cp")] == 3 and families[("aime/synthetic/0001", "peer")] == 16
+    assert families[("aime/synthetic/0001", "private_single")] == 24
     pooled = [r for r in tables.checkpoints if r.family == "pooled" and r.view == "current"]
     assert len(pooled) == 1 and not pooled[0].candidate_only and pooled[0].input_bank_coverage_hi is not None
     kinds = {r.generation_kind for r in tables.failures}
@@ -164,7 +164,7 @@ def test_nodes_that_ended_without_a_response_are_read_from_the_state_backup(run,
 
     tasks, graphs, candidates, results = run
     paths = RunPaths.for_run(tmp_path / "run", local_state_dir=tmp_path / "local")
-    math = next(g for g in graphs if g.item_id == "math500/synthetic/0001")
+    math = next(g for g in graphs if g.item_id == "aime/synthetic/0001")
     root3 = next(n for n in math.nodes if n.kind is GenerationKind.ROOT and n.root_slot == 3)
     peer = next(n for n in math.nodes if n.kind is GenerationKind.PEER and n.team_size == 5 and n.update_round == 3)
     _write_run(paths, tasks, graphs, candidates, results, skip={root3.node_id, peer.node_id})

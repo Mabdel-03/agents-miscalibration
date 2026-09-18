@@ -1,8 +1,9 @@
-"""Golden hashes of the pinned text inventories and their balanced150 panel draws.
+"""Golden hashes of the pinned text inventories and their forced27b panel draws (24 main, 8 dev, 8 reserve).
 
 A failure here means preprocessing, exclusions, private records or the panel procedure changed. That is only
 legitimate before the dataset lock is written and must come with a new preprocessing/procedure version string and a
-note to the lead; update the hashes deliberately, never to make a run pass.
+note to the lead; update the hashes deliberately, never to make a run pass. The draw hash also depends on
+``contracts.STUDY_ID`` (it salts the panel ranks), so a study-id change moves every draw hash.
 """
 from __future__ import annotations
 
@@ -12,12 +13,14 @@ from agent_allocation.benchmarks.text_manifest import select_panels
 from agent_allocation.contracts import canonical_hash, dump_record, public_task_hash
 
 GOLDEN = {
-    "math500": ("b6c9f3ec34a05e612bd426916bcb7fa18653b42441d4a731c317f11389091446",
-                "f8fe0c9d48b96812b3f938978627284cbf7800939604478270a810e9df1cc53b"),
-    "mmlu_pro": ("c44c4bebbe7e5679c738e98ba04cc3cdb5f0cb99dcd6d3e46a1e1346d1e0ec1a",
-                 "29a797869f0845d334a780c289b9852711944f7d31589632267c1d4f462c2fe1"),
-    "bbh_logic4": ("7549866470136554a4e42b041d22ea8fcaf7a476e7eae61f054de87ebc410c05",
-                   "ddd2991f0e9e2df586eb5813d6f24179d098d102cb242653e1c06ba4f45b76a2"),
+    "aime": ("51d8e62d18e043a4a2ce9e84cacd4691339cc55730aa8875e85cf0aac8a87670",
+             "87cad34ce42a18ea73fae4e31337d33c02bc9e68e363af9c0115bc0be9dc8fa2"),
+    "hmmt": ("617321aee55d093eff11de52e2b007baa464abaf996e0b2c4c584901b62ce871",
+             "81d4e73b75d99ac6dd411e554e69d6c76f0191bc272ecc736b241c96dbc7dfaf"),
+    "omni_math_hard": ("48917802bf6cc5459611cb912e86356ed2ab489f79e7201a28753e7ad19a388c",
+                       "8095e5b0a8e8f67e022fe7b51517b7d3ac65dc8da1a51e08097f0b11d1d70257"),
+    "gpqa_diamond": ("66392f369dd543257905579b36133de08c48d02ec33f4656a918f6e06bc8d3e3",
+                     "5e9e43ae0deef32e6d7d4105e712456a222152e1042d01d4a44195494daad346"),
 }
 
 
@@ -27,11 +30,14 @@ def _inventory_hash(inventory) -> str:
 
 
 @pytest.mark.parametrize("benchmark, fixture", [
-    ("math500", "math_inventory"), ("mmlu_pro", "mmlu_inventory"), ("bbh_logic4", "bbh_inventory"),
+    ("aime", "aime_inventory"), ("hmmt", "hmmt_inventory"), ("omni_math_hard", "omni_inventory"),
+    ("gpqa_diamond", "gpqa_inventory"),
 ])
-def test_inventory_and_balanced150_draw_match_golden(benchmark, fixture, cfg, request):
+def test_inventory_and_forced27b_draw_match_golden(benchmark, fixture, cfg, request):
     inventory = request.getfixturevalue(fixture)
     inventory_hash, draw_hash = GOLDEN[benchmark]
     assert _inventory_hash(inventory) == inventory_hash, f"{benchmark} inventory changed"
-    draw = select_panels(inventory, benchmark=benchmark, seed=cfg["seed"], n_dev=8, n_main=100, n_reserve=8)
+    per_benchmark_main = cfg["panels"]["main_items"] // 4
+    draw = select_panels(inventory, benchmark=benchmark, seed=cfg["seed"], n_dev=8, n_main=per_benchmark_main,
+                         n_reserve=8)
     assert canonical_hash(dump_record(draw)) == draw_hash, f"{benchmark} panel draw changed"

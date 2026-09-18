@@ -171,7 +171,13 @@ def evaluate_gate1(rows: Sequence[CallRow], locks: Mapping[str, EndpointLock], *
 
 
 def family_of(benchmark: str) -> str:
-    return "code" if benchmark == "mbpp_plus" else "text"
+    from agent_allocation.config import CODE_BENCHMARKS
+    return "code" if benchmark in CODE_BENCHMARKS else "text"
+
+
+def _study_has_code() -> bool:
+    from agent_allocation.config import CODE_BENCHMARKS
+    return any(benchmark in CODE_BENCHMARKS for benchmark in BENCHMARKS)
 
 
 def evaluate_gate2(rows: Sequence[CallRow], *, duplicate_terminal_nodes: int, budget_stop_max_overshoot_usd: Decimal,
@@ -209,7 +215,8 @@ def evaluate_gate2(rows: Sequence[CallRow], *, duplicate_terminal_nodes: int, bu
                           "selections/pilot.jsonl"))
     criteria.append(_crit("code_public_and_private_rows",
                           {"candidates": code_candidates, "public": code_public_rows, "private": code_private_grades},
-                          "every code candidate has both", code_candidates > 0 and code_public_rows == code_candidates
+                          "every code candidate has both (vacuous when the study has no code benchmark)",
+                          (code_candidates > 0 or not _study_has_code()) and code_public_rows == code_candidates
                           and code_private_grades == code_candidates, "grades/"))
     err_share = evaluator_errors / graded_total if graded_total else 1.0
     criteria.append(_crit("evaluator_error_share", round(err_share, 4), f"<= {G2_EVALUATOR_ERROR_MAX_SHARE}",

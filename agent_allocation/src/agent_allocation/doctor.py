@@ -21,9 +21,16 @@ from agent_allocation.config import credit_ceiling, load_config, validate_config
 from agent_allocation.paths import RunPaths
 
 PINNED_SNAPSHOTS = {
-    "math500": ("datasets--HuggingFaceH4--MATH-500", "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be", "test.jsonl"),
-    "mmlu_pro": ("datasets--TIGER-Lab--MMLU-Pro", "b189ec765aa7ed75c8acfea42df31fdae71f97be",
-                 "data/test-00000-of-00001.parquet"),
+    "aime/2025": ("datasets--MathArena--aime_2025", "c94da77eb22bbd6439e62a323bec18493a421302",
+                  "data/train-00000-of-00001.parquet"),
+    "aime/2026": ("datasets--MathArena--aime_2026", "d2de22f3c656b4f56cf8981212186377d1e23bc3",
+                  "data/train-00000-of-00001.parquet"),
+    "hmmt/2025": ("datasets--MathArena--hmmt_feb_2025", "6fdc4277120810ff75aa22d2d5489b91f7a262a1",
+                  "data/train-00000-of-00001.parquet"),
+    "hmmt/2026": ("datasets--MathArena--hmmt_feb_2026", "02fba4f74d8e68e73e66a02d540fd979c05c274c",
+                  "data/train-00000-of-00001.parquet"),
+    "omni_math_hard": ("datasets--KbsdJames--Omni-MATH", "40ba231d8f16e29ecd40e6407e2c8640145a8f62", "test.jsonl"),
+    "gpqa_diamond": ("datasets--Idavidrein--gpqa", "633f5ee89ab8ad4522a9f850766b73f62147ffdd", "gpqa_diamond.csv"),
 }
 OPENROUTER = "https://openrouter.ai/api/v1"
 

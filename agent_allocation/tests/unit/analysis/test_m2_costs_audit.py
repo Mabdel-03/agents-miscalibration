@@ -287,9 +287,7 @@ def test_run_report_states_required_labels(analysed):
 def test_pass_at_k_is_separate_from_readouts(analysed):
     paths, analysis = analysed
     bank = analysis.extras["item_metrics"]["sample_bank"]
-    code = bank[bank["benchmark"] == "mbpp_plus"]
-    assert set(code["readout_label"]) == {"public_select@k"}
-    assert set(bank[bank["benchmark"] != "mbpp_plus"]["readout_label"]) == {"vote@k"}
+    assert set(bank["readout_label"]) == {"vote@k"}          # no code benchmark: every level is a vote readout
     known = bank[bank["oracle_pass_at_k"].notna() & (bank["k"] == 1)]
     assert ((known["oracle_pass_at_k"] - known["mean_draw_correct"]).abs() < 1e-12).all()
 
@@ -306,7 +304,7 @@ def test_exhausted_nodes_from_state_backup_are_terminal_no_output_not_unrun(buil
     paths = copy_run(built_run, tmp_path)
     cfg, source = resolve_config(paths)
     run = load_run(paths, cfg, config_source=source)
-    root = next(s for s in run.jobs["main"].values() if s.item_id == "mmlu_pro/w0/i2"
+    root = next(s for s in run.jobs["main"].values() if s.item_id == "gpqa_diamond/w0/i2"
                 and s.kind == GenerationKind.ROOT and s.root_slot == 3)
     paths.parsed(root.node_id).unlink()
     paths.grade(root.node_id).unlink()
@@ -330,7 +328,7 @@ def test_exhausted_nodes_from_state_backup_are_terminal_no_output_not_unrun(buil
     outcomes = outcome_table(run).set_index("policy_id")
     rows = outcomes.loc[sorted(affected)]
     assert set(rows["delivered_state"]) == {"missing_selection"} and rows["y"].isna().all()
-    sample4 = outcomes.loc["main/mmlu_pro/w0/i2/sample/4/current"]
+    sample4 = outcomes.loc["main/gpqa_diamond/w0/i2/sample/4/current"]
     assert sample4["n_required_no_output"] == 1 and sample4["n_required_terminal"] == 4
 
 
@@ -372,11 +370,11 @@ def test_stub_grader_versions_are_labelled_and_block_final(built_run, tmp_path):
     paths = copy_run(built_run, tmp_path)
     analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
     assert analysis.final and not analysis.extras["non_production_graders"]
-    code_nodes = [nid for nid, spec in analysis.run.jobs["main"].items() if spec.benchmark == "mbpp_plus"]
-    for nid in code_nodes:
+    stub_nodes = [nid for nid, spec in analysis.run.jobs["main"].items() if spec.benchmark == "gpqa_diamond"]
+    for nid in stub_nodes:
         grade = analysis.run.grades[nid]
         stub = GradeResult(grade.candidate_id, grade.status, grade.semantic_correct, grade.operational_success,
-                           "qa-stub-code-v1", grade.private_eval_hash, detail_code="stub_code_grader")
+                           "qa-stub-code-v1", grade.private_eval_hash, detail_code="stub_text_grader")
         paths.grade(nid).write_text(json.dumps(dump_record(stub)))
     analysis = analyze(paths.run_dir, replicates=REPLICATES, figures=False)
     assert not analysis.final and analysis.extras["non_production_graders"]

@@ -27,12 +27,13 @@ def test_saturated_caps_reproduce_the_pack_estimate():
     # Pack assumption: 2,500 input tokens on every call and completion caps saturated.
     saturated = BenchmarkModel(root_prompt=2500, private_prompt=2500, packet_tokens=0, completion={})
     models = {b: saturated for b in BENCHMARKS}
-    headroom = {b: (2048 if b == "mbpp_plus" else 1024) for b in BENCHMARKS}
+    headroom = {b: 1024 for b in BENCHMARKS}             # four text benchmarks: no 2,048-token code headroom
     costs = per_item_costs(models, GRIDS, lock=LITE, headroom_by_benchmark=headroom, main_a=1024, high_a=4096)
     per = {"main_items": 100, "extension_items": 48, "high_items": 24}
     unsafe = core_forecast({b: {k: v / SAFETY_MULTIPLIER for k, v in c.items()} for b, c in costs.items()}, per)
-    # main 62.84 + high 28.97 + CP 2.70 + POOLED 0.22 = 94.73 (pack estimate_budget.py, rounded per block)
-    assert Decimal("94.70") <= unsafe <= Decimal("94.76")
+    # The pack estimate (estimate_budget.py) was 94.73 with one code benchmark at 2,048 headroom; with the MBPP+ family
+    # replaced by a text benchmark at 1,024 headroom the same saturated-cap arithmetic gives 88.16.
+    assert Decimal("88.13") <= unsafe <= Decimal("88.19")
 
 
 def test_measured_usage_lowers_the_forecast_and_peer_prompts_grow_with_team_size():
@@ -42,10 +43,10 @@ def test_measured_usage_lowers_the_forecast_and_peer_prompts_grow_with_team_size
         obs += [Observation(b, GenerationKind.PRIVATE, 0, 1024, 1024, 900, 800)] * 5
         obs += [Observation(b, GenerationKind.PEER, 3, 1024, 1024, 1900, 850)] * 5
     models = fit_models(obs)
-    assert models["math500"].prompt_tokens(GenerationKind.PEER, 5) > models["math500"].prompt_tokens(GenerationKind.PEER, 3)
-    assert models["math500"].packet_tokens == 500
+    assert models[BENCHMARKS[0]].prompt_tokens(GenerationKind.PEER, 5) > models[BENCHMARKS[0]].prompt_tokens(GenerationKind.PEER, 3)
+    assert models[BENCHMARKS[0]].packet_tokens == 500
     # unmeasured DEEP at 16,384 stays saturated (conservative)
-    assert models["math500"].completion_tokens(GenerationKind.DEEP, 16384, 1024) == 16384 + 1024
+    assert models[BENCHMARKS[0]].completion_tokens(GenerationKind.DEEP, 16384, 1024) == 16384 + 1024
 
 
 def test_wave_admission_drops_high_tail_before_main_tail():

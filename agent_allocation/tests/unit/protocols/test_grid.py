@@ -180,7 +180,19 @@ def test_checkpoint_views_ids_and_metadata():
             assert cp.total_cycles == 1 + cp.peer_rounds
         if cp.family == "cp":
             assert cp.peer_rounds == 1 and cp.total_cycles == 2 + int(cp.name.split("/")[1])
-    assert {cp.selector_name for cp in graph("main", CODE_TASK).checkpoints} == {CODE_SELECTOR}
+    # No study benchmark is a code benchmark, so even a PYTHON task gets the text selector; the code selector
+    # stays wired to config.CODE_BENCHMARKS for a future code benchmark.
+    assert {cp.selector_name for cp in graph("main", CODE_TASK).checkpoints} == {TEXT_SELECTOR}
+    from agent_allocation import config as config_module
+    from agent_allocation.protocols import grid as grid_module
+    patched = frozenset({CODE_TASK.benchmark})
+    original = grid_module.CODE_BENCHMARKS
+    try:
+        grid_module.CODE_BENCHMARKS = patched
+        assert {cp.selector_name for cp in graph("main", CODE_TASK).checkpoints} == {CODE_SELECTOR}
+    finally:
+        grid_module.CODE_BENCHMARKS = original
+    assert config_module.CODE_BENCHMARKS == frozenset()
 
 
 def test_pilot_grids_checkpoints():
