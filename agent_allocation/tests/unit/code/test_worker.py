@@ -15,6 +15,13 @@ from .conftest import make_candidate, reference_program
 pytestmark = [pytest.mark.sandbox, pytest.mark.needs_sources]
 
 
+@pytest.fixture(autouse=True)
+def _mbpp_manifests_are_read(monkeypatch):
+    """No study benchmark is a code benchmark any more; the dormant MBPP+ grading path is exercised by letting the
+    worker read ``mbpp_plus`` manifests beside the study's."""
+    monkeypatch.setattr(worker, "BENCHMARKS", (*worker.BENCHMARKS, "mbpp_plus"))
+
+
 def _write_run(run_paths, chosen, candidates):
     run_paths.ensure()
     public = run_paths.public_manifest("mbpp_plus")
@@ -194,15 +201,15 @@ def fake_grade_text(candidate: Candidate, private: PrivateEvalSpec) -> _GradeRes
 
 
 def _text_item(run_paths):
-    public = PublicTask(item_id="math500/test_1", benchmark="math500", source_revision="r", prompt="1+1?",
+    public = PublicTask(item_id="aime/test_1", benchmark="aime", source_revision="r", prompt="1+1?",
                         output_kind=OutputKind.MATH)
-    private = PrivateEvalSpec(item_id="math500/test_1", benchmark="math500", source_revision="r",
+    private = PrivateEvalSpec(item_id="aime/test_1", benchmark="aime", source_revision="r",
                               eval_kind=EvalKind.MATH_VERIFY, gold_answer="2", private_record_ref=None,
                               private_hash="h")
-    run_paths.public_manifest("math500").parent.mkdir(parents=True, exist_ok=True)
-    run_paths.public_manifest("math500").write_text(json.dumps(dump_record(public)) + "\n")
-    run_paths.private_manifest("math500").parent.mkdir(parents=True, exist_ok=True)
-    run_paths.private_manifest("math500").write_text(json.dumps(dump_record(private)) + "\n")
+    run_paths.public_manifest("aime").parent.mkdir(parents=True, exist_ok=True)
+    run_paths.public_manifest("aime").write_text(json.dumps(dump_record(public)) + "\n")
+    run_paths.private_manifest("aime").parent.mkdir(parents=True, exist_ok=True)
+    run_paths.private_manifest("aime").write_text(json.dumps(dump_record(private)) + "\n")
     candidate = Candidate(candidate_id="77" * 32, node_id="77" * 32, item_id=public.item_id, visible_content="2",
                           final_answer="2", rationale=None, parse_status=ParseStatus.VALID, finish_reason="stop",
                           output_kind=OutputKind.MATH)

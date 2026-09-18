@@ -69,9 +69,9 @@ async def test_default_final_is_derived_from_the_item_and_valid_per_benchmark(ma
     script = FakeScript()
     client = OpenRouterClient(api_key=None, transport=fake_openrouter_transport(script))
     finals = {}
-    cases = [("math500/test/1", "math500", r"\d+"), ("mmlu_pro/test/7", "mmlu_pro", r"[ABC]"),
-             ("bbh_logic4/boolean_expressions/3", "bbh_logic4", r"True|False"),
-             ("bbh_logic4/temporal_sequences/3", "bbh_logic4", r"[ABC]")]
+    cases = [("aime/2025/1", "aime", r"\d+"), ("hmmt/2026/3", "hmmt", r"\d+"),
+             ("omni_math_hard/17", "omni_math_hard", r"\d+"), ("gpqa_diamond/recX1", "gpqa_diamond", r"[ABCD]"),
+             ("gpqa_diamond/recX2", "gpqa_diamond", r"[ABCD]")]
     for item_id, benchmark, pattern in cases:
         for slot in (0, 1):
             spec = make_spec(item_id=item_id, benchmark=benchmark, root_slot=slot)

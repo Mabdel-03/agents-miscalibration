@@ -34,8 +34,9 @@ def test_no_literal_key_shaped_string_is_committed():
         assert key not in path.read_text(encoding="utf-8"), path.name
 
 
-def test_items_cover_four_benchmarks_and_keep_canaries_private(adv_items, canaries):
-    assert Counter(t.benchmark for t, _, _ in adv_items) == {"math500": 2, "mmlu_pro": 2, "bbh_logic4": 2, "mbpp_plus": 2}
+def test_items_cover_the_study_benchmarks_and_keep_canaries_private(adv_items, canaries):
+    assert Counter(t.benchmark for t, _, _ in adv_items) == {"aime": 2, "gpqa_diamond": 2, "hmmt": 1, "omni_math_hard": 1,
+                                                              "bbh_logic4": 2, "mbpp_plus": 2}
     planted = set()
     for task, private, record in adv_items:
         assert task.item_id == private.item_id

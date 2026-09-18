@@ -1,19 +1,19 @@
 """A small, fully known run directory written in the contract's on-disk formats (docs/00_contract.md sections 3 and 6).
 
-Six items in the ``main`` partition with the ``main_extension`` grid (138 nodes each): MATH, MMLU-Pro, two BBH
-subtasks (one item on logical_deduction, two on boolean_expressions) and MBPP+. Every node is graded correct except
-the pool heads that fix the two primary contrasts; selections pick the first pool member. Hand-computed values:
+Six items in the ``main`` partition with the ``main_extension`` grid (138 nodes each): AIME, GPQA-Diamond, three HMMT
+items (one adversarial, two synthetic) and Omni-MATH. Every node is graded correct except the pool heads that fix the
+two primary contrasts; selections pick the first pool member. Hand-computed values:
 
   item          peer/4/4  pt/4/4  pt/4/1  cp/3  cp/0   D_i   D_ii
-  math500          1        0       0      1     0      1     1
-  mmlu_pro         0        0       1      1     1      0     1
-  bbh logical      1        1       1      0     1      0    -1
-  bbh boolean #1   0        1       0      1     0     -1     0
-  bbh boolean #2   1        1       0      1     1      0    -1
-  mbpp_plus        1        0       1      1     0      1     2
+  aime             1        0       0      1     0      1     1
+  gpqa_diamond     0        0       1      1     1      0     1
+  hmmt adv/1       1        1       1      0     1      0    -1
+  hmmt syn/2       0        1       0      1     0     -1     0
+  hmmt syn/3       1        1       0      1     1      0    -1
+  omni_math_hard   1        0       1      1     0      1     2
 
-  primary_i  = mean(1, 0, mean(0, mean(-1, 0)), 1)  = 7/16  = 0.4375   (item-weighted BBH would give 5/12)
-  primary_ii = mean(1, 1, mean(-1, mean(0, -1)), 2) = 13/16 = 0.8125   (item-weighted BBH would give 5/6)
+  primary_i  = mean(1, 0, mean(0, -1, 0), 1)   = 5/12   (items weigh equally within a benchmark)
+  primary_ii = mean(1, 1, mean(-1, 0, -1), 2)  = 5/6
 """
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ from typing import Any
 from agent_allocation.config import grids_from_config
 from agent_allocation.contracts import (
     STUDY_ID,
-    BBH_SUBTASKS,
     Candidate,
     CheckpointView,
     CompletionStatus,
@@ -56,28 +55,27 @@ from tests.integration import adversarial
 from tests.integration import helpers as h
 from tests.integration.openrouter_stub import completion_payload
 
-EXPECTED_PRIMARY_I = 7 / 16
-EXPECTED_PRIMARY_II = 13 / 16
+EXPECTED_PRIMARY_I = 5 / 12
+EXPECTED_PRIMARY_II = 5 / 6
 HEADS = ("peer/4/4", "private_team/4/4", "private_team/4/1", "cp/3", "cp/0")
 TABLE = {
-    "math500/adv/1": (1, 0, 0, 1, 0),
-    "mmlu_pro/adv/1": (0, 0, 1, 1, 1),
-    "bbh_logic4/adv/1": (1, 1, 1, 0, 1),
-    "bbh_logic4/adv/2": (0, 1, 0, 1, 0),
-    "bbh_logic4/syn/3": (1, 1, 0, 1, 1),
-    "mbpp_plus/adv/1": (1, 0, 1, 1, 0),
+    "aime/adv/1": (1, 0, 0, 1, 0),
+    "gpqa_diamond/adv/1": (0, 0, 1, 1, 1),
+    "hmmt/adv/1": (1, 1, 1, 0, 1),
+    "hmmt/syn/2": (0, 1, 0, 1, 0),
+    "hmmt/syn/3": (1, 1, 0, 1, 1),
+    "omni_math_hard/adv/1": (1, 0, 1, 1, 0),
 }
 INVALID_ROOT_SLOT = 24                                  # one unparseable root per item: INVALID_OUTPUT, never "wrong"
 
 
 def tasks() -> list[tuple[PublicTask, PrivateEvalSpec]]:
     items = {t.item_id: (t, p) for t, p, _ in adversarial.load_items()}
-    extra = PublicTask("bbh_logic4/syn/3", "bbh_logic4", adversarial.REVISION, "True and not False is",
-                       OutputKind.BOOLEAN, allowed_choices=("True", "False"), subtask=BBH_SUBTASKS[2])
-    extra_private = PrivateEvalSpec(extra.item_id, extra.benchmark, extra.source_revision,
-                                    items["bbh_logic4/adv/2"][1].eval_kind, "True", None, canonical_hash("syn3"),
-                                    subtask=extra.subtask, allowed_choices=extra.allowed_choices)
-    items[extra.item_id] = (extra, extra_private)
+    for n, (prompt, gold) in ((2, ("Compute $1+2$.", "3")), (3, ("Compute $3+4$.", "7"))):
+        extra = PublicTask(f"hmmt/syn/{n}", "hmmt", adversarial.REVISION, prompt, OutputKind.MATH)
+        extra_private = PrivateEvalSpec(extra.item_id, extra.benchmark, extra.source_revision,
+                                        items["hmmt/adv/1"][1].eval_kind, gold, None, canonical_hash(f"syn{n}"))
+        items[extra.item_id] = (extra, extra_private)
     return [items[i] for i in TABLE]
 
 

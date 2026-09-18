@@ -27,8 +27,8 @@ from agent_allocation.paths import RunPaths
 
 IN_PRICE = Decimal("0.0000001")
 OUT_PRICE = Decimal("0.0000004")
-KIND_OF_BENCH = {"math500": OutputKind.MATH, "mmlu_pro": OutputKind.OPTION, "bbh_logic4": OutputKind.OPTION,
-                 "mbpp_plus": OutputKind.PYTHON}
+KIND_OF_BENCH = {"aime": OutputKind.MATH, "hmmt": OutputKind.MATH, "omni_math_hard": OutputKind.MATH,
+                 "gpqa_diamond": OutputKind.OPTION}
 
 
 @dataclass
@@ -63,7 +63,7 @@ def default_correct(index: int, benchmark: str, spec: GenerationSpec) -> bool | 
     h = int(hashlib.sha256(f"{index}:{spec.node_id}".encode()).hexdigest()[:8], 16)
     if h % 37 == 0:
         return None
-    base = {"math500": 55, "mmlu_pro": 65, "bbh_logic4": 50, "mbpp_plus": 60}[benchmark]
+    base = {"aime": 55, "hmmt": 50, "omni_math_hard": 60, "gpqa_diamond": 65}[benchmark]
     bonus = 3 * spec.update_round if spec.kind in (GenerationKind.PEER, GenerationKind.CP) else 0
     return (h % 100) < base + bonus
 
@@ -204,7 +204,7 @@ def build_run(root: Path, spec: SynthSpec | None = None) -> RunPaths:
     paths.ensure()
     items = item_ids(spec.waves)
     tasks = {iid: PublicTask(iid, bench, "synthetic-rev", f"Question {iid}?", KIND_OF_BENCH[bench],
-                             allowed_choices=("A", "B", "C") if bench in ("mmlu_pro", "bbh_logic4") else (),
+                             allowed_choices=("A", "B", "C") if bench == "gpqa_diamond" else (),
                              subtask=sub)
              for iid, bench, sub in items}
     _write_jsonl(paths.public_manifest("x").parent, None, None)

@@ -272,6 +272,9 @@ def fixture_math_equivalent(a: str, b: str) -> bool | None:
 
 
 def standard_items() -> list[ItemSpec]:
+    """Five items, one per output kind the selectors and tables support. Benchmark labels are study ids so the
+    disk round trip finds their public manifests; the output kind (BOOLEAN, PYTHON included, to keep the dormant
+    paths covered) is what each item exercises, not the label."""
     from agent_allocation.contracts import PublicTask
 
     def task(item_id, benchmark, kind, choices=(), subtask=None):
@@ -279,13 +282,13 @@ def standard_items() -> list[ItemSpec]:
                           output_kind=kind, allowed_choices=choices, subtask=subtask)
 
     math = ItemSpec(
-        task=task("math500/fixture-1", "math500", OutputKind.MATH), default_answer="\\frac{1}{2}", gold=HALF,
+        task=task("aime/fixture-1", "aime", OutputKind.MATH), default_answer="\\frac{1}{2}", gold=HALF,
         answers={"root/0": "\\frac{1}{2}", "root/1": "0.5", "root/2": "\\boxed{\\dfrac{1}{2}}", "root/3": "2",
                  "root/4": "2.0", "root/5": MISSING_FINAL, "private/0/1": "2", "private/0/2": "?",
                  "peer/2/1/0": "2", "peer/2/1/1": "2", "peer/4/1/2": "2", "cp/2/1": "2", "deep/2": "2"},
         unknown_grades=frozenset({"private/0/3"}))
     option = ItemSpec(
-        task=task("mmlu_pro/fixture-2", "mmlu_pro", OutputKind.OPTION, tuple("ABCDEFGHIJ")), default_answer="C",
+        task=task("gpqa_diamond/fixture-2", "gpqa_diamond", OutputKind.OPTION, tuple("ABCDEFGHIJ")), default_answer="C",
         gold=frozenset({"C"}),
         answers={"root/0": "B", "root/1": "C", "root/2": "B", "root/3": "(C)", "root/4": "K", "root/5": "(C)",
                  "private/0/1": "C", "private/0/2": "B", "private/0/3": "C", "private/0/4": TRUNCATED,
@@ -294,18 +297,17 @@ def standard_items() -> list[ItemSpec]:
                  "peer/4/2/2": "B", "peer/4/2/3": "B", "cp/2/0": MISSING_FINAL, "cp/3/0": "B", "cp/3/1": "B",
                  "cp/3/2": "B"})
     boolean = ItemSpec(
-        task=task("bbh_logic4/fixture-3", "bbh_logic4", OutputKind.BOOLEAN, subtask="boolean_expressions"),
+        task=task("hmmt/fixture-3", "hmmt", OutputKind.BOOLEAN),
         default_answer="False", gold=frozenset({"True"}),
         answers={"root/4": "True", "peer/4/2/1": "True", "deep/4": "true", "pooled/4": "True", "private/1/2": "True"})
     temporal = ItemSpec(
-        task=task("bbh_logic4/fixture-4", "bbh_logic4", OutputKind.OPTION, ("(A)", "(B)", "(C)", "(D)"),
-                  subtask="temporal_sequences"),
+        task=task("omni_math_hard/fixture-4", "omni_math_hard", OutputKind.OPTION, ("(A)", "(B)", "(C)", "(D)")),
         default_answer="(A)", gold=frozenset({"A"}),
         answers={"root/0": TRUNCATED, "root/1": MISSING_FINAL, "root/2": TRUNCATED, "root/3": "(A)", "root/4": "D",
                  "private/0/1": "D", "private/1/1": MISSING_FINAL, "peer/2/1/0": "D", "peer/2/1/1": "D"},
         ungraded=frozenset({"peer/4/2/3"}), missing=frozenset({"cp/3/2"}))
     code = ItemSpec(
-        task=task("mbpp_plus/fixture-5", "mbpp_plus", OutputKind.PYTHON), default_answer="def f(x):\n    return x + 1",
+        task=task("omni_math_hard/fixture-5", "omni_math_hard", OutputKind.PYTHON), default_answer="def f(x):\n    return x + 1",
         answers={f"root/{j}": f"def f(x):\n    return x + {j}" for j in range(6)} | {"root/3": "def f(x:"},
         public={"root/0": (2, CheckStatus.OK), "root/1": (1, CheckStatus.OK), "root/2": (2, CheckStatus.OK),
                 "root/3": (0, CheckStatus.INVALID_CANDIDATE), "root/4": (0, CheckStatus.INFRASTRUCTURE_ERROR),

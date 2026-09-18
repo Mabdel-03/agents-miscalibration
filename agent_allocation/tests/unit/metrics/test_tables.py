@@ -107,11 +107,11 @@ def test_candidate_only_delivery_never_exceeds_coverage(standard):
 
 def test_pooled_synthesis_is_exempt_and_may_beat_its_input_bank(standard):
     _, tables = standard
-    pooled = _rows(tables, "bbh_logic4/fixture-3", "pooled/4")
+    pooled = _rows(tables, "hmmt/fixture-3", "pooled/4")
     assert pooled.delivered_state == "correct" and pooled.input_bank_coverage_lo == 0
     assert pooled.input_bank_coverage_hi == 0 and not pooled.candidate_only
     assert pooled.selection_gap_lo is None and pooled.selection_gap_hi is None
-    archive = _rows(tables, "bbh_logic4/fixture-3", "pooled/4", "archive")
+    archive = _rows(tables, "hmmt/fixture-3", "pooled/4", "archive")
     assert archive.candidate_only and archive.archive_coverage_lo == 1
 
 
@@ -129,50 +129,50 @@ def test_archive_coverage_is_monotone_and_nested(standard):
 
 def test_current_accuracy_and_coverage_may_fall(standard):
     _, tables = standard
-    delivered = [_rows(tables, "mmlu_pro/fixture-2", f"private_single/{t}").delivered_state for t in range(1, 7)]
+    delivered = [_rows(tables, "gpqa_diamond/fixture-2", f"private_single/{t}").delivered_state for t in range(1, 7)]
     assert delivered == ["wrong", "correct", "wrong", "correct", "invalid_output", "correct"]
-    peer = [_rows(tables, "mmlu_pro/fixture-2", f"peer/4/{r}").coverage_lo for r in range(3)]
+    peer = [_rows(tables, "gpqa_diamond/fixture-2", f"peer/4/{r}").coverage_lo for r in range(3)]
     assert peer == [1, 0, 1]                                      # the last correct candidate was lost, then found
-    step = next(r for r in tables.team_transitions if r.item_id == "mmlu_pro/fixture-2" and r.family == "peer"
+    step = next(r for r in tables.team_transitions if r.item_id == "gpqa_diamond/fixture-2" and r.family == "peer"
                 and r.n == 4 and r.from_step == 0)
     assert step.coverage_lost is True and step.coverage_recovered is False
 
 
 def test_unknown_grades_stay_unknown(standard):
     _, tables = standard
-    row = _rows(tables, "math500/fixture-1", "private_single/4")      # EVALUATOR_ERROR on the delivered answer
+    row = _rows(tables, "aime/fixture-1", "private_single/4")      # EVALUATOR_ERROR on the delivered answer
     assert row.selected_state == "U" and row.delivered_state == "unknown" and row.delivered_correct is None
     assert (row.delivered_lo, row.delivered_hi) == (0, 1) and (row.coverage_lo, row.coverage_hi) == (0, 1)
-    ungraded = _rows(tables, "bbh_logic4/fixture-4", "peer/4/2")
+    ungraded = _rows(tables, "omni_math_hard/fixture-4", "peer/4/2")
     assert ungraded.pool_n_unknown == 1
     summary = next(s for s in T.summarize_checkpoints(tables.checkpoints)
-                   if s["name"] == "private_single/4" and s["benchmark"] == "math500" and s["view"] == "current")
+                   if s["name"] == "private_single/4" and s["benchmark"] == "aime" and s["view"] == "current")
     assert summary["delivered"] is None and summary["delivered_lo"] == 0.0 and summary["delivered_hi"] == 1.0
 
 
 def test_abstention_and_invalid_output_are_distinct_not_correct_states(standard):
     _, tables = standard
-    abstained = _rows(tables, "bbh_logic4/fixture-4", "sample/3")
+    abstained = _rows(tables, "omni_math_hard/fixture-4", "sample/3")
     assert abstained.selection_status == SelectionStatus.ABSTAINED_ALL_INVALID.value
     assert abstained.delivered_state == "abstained" and abstained.selected_candidate_id is None
     assert abstained.delivered_correct is False and (abstained.delivered_lo, abstained.delivered_hi) == (0, 0)
-    invalid = _rows(tables, "bbh_logic4/fixture-4", "sample/1")
+    invalid = _rows(tables, "omni_math_hard/fixture-4", "sample/1")
     assert invalid.delivered_state == "invalid_output" and invalid.selected_parse_status == "empty_content"
     assert invalid.delivered_correct is False
 
 
 def test_paused_and_missing_selections_are_blockers_not_zeros(standard):
     panel, tables = standard
-    code = next(i for i in panel.records.items if i.task.item_id == "mbpp_plus/fixture-5")
+    code = next(i for i in panel.records.items if i.task.item_id == "omni_math_hard/fixture-5")
     cp = next(c for c in code.checkpoints if c.name == "sample/5" and c.view.value == "current")
     checks = {cid: c for cid, c in panel.public_checks.items() if c.item_id == code.task.item_id}
     from agent_allocation.selection.readout import select_checkpoint
     assert select_checkpoint(cp, code.task, code.candidates, checks, seed=20260917).status is \
         SelectionStatus.PAUSED_CHECK_ERROR
-    paused = _rows(tables, "mbpp_plus/fixture-5", "sample/5")      # a pause is never sealed: the row is a blocker
+    paused = _rows(tables, "omni_math_hard/fixture-5", "sample/5")      # a pause is never sealed: the row is a blocker
     assert paused.delivered_state == "missing_selection" and paused.delivered_correct is None
     assert (paused.delivered_lo, paused.delivered_hi) == (0, 1) and paused.selection_gap_lo == 0
-    missing = _rows(tables, "bbh_logic4/fixture-4", "cp/3")
+    missing = _rows(tables, "omni_math_hard/fixture-4", "cp/3")
     assert missing.delivered_state == "missing_selection" and missing.pool_n_missing == 1
     summary = [s for s in T.summarize_checkpoints(tables.checkpoints) if s["name"] == "cp/3"]
     assert any(s["blocked"] for s in summary)
@@ -180,10 +180,10 @@ def test_paused_and_missing_selections_are_blockers_not_zeros(standard):
 
 def test_code_rows_carry_no_text_agreement(standard):
     _, tables = standard
-    row = _rows(tables, "mbpp_plus/fixture-5", "sample/4")
+    row = _rows(tables, "omni_math_hard/fixture-5", "sample/4")
     assert row.pool_n_votes is None and row.pool_unanimous is None and row.public_evidence_hash
     assert row.selected_candidate_id.endswith("root/0") or row.selected_candidate_id.endswith("root/2")
-    assert all(r.answer_changed is None for r in tables.slot_transitions if r.item_id == "mbpp_plus/fixture-5")
+    assert all(r.answer_changed is None for r in tables.slot_transitions if r.item_id == "omni_math_hard/fixture-5")
 
 
 # ------------------------------------------------------------------------------------------ transitions
@@ -229,7 +229,7 @@ def test_identity_check_rejects_inconsistent_counts():
 
 def test_parse_failure_is_not_an_answer_switch(standard):
     _, tables = standard
-    rows = [s for s in tables.slot_transitions if s.item_id == "mmlu_pro/fixture-2" and s.family == "private_single"]
+    rows = [s for s in tables.slot_transitions if s.item_id == "gpqa_diamond/fixture-2" and s.family == "private_single"]
     to_truncated = next(s for s in rows if s.to_step == 5)
     assert to_truncated.kind == "CI" and to_truncated.answer_changed is None and to_truncated.validity_change
 
@@ -239,9 +239,9 @@ def test_parse_failure_is_not_an_answer_switch(standard):
 
 def test_root_strata(standard):
     _, tables = standard
-    boolean = {r.n: r for r in tables.root_strata if r.item_id == "bbh_logic4/fixture-3"}
+    boolean = {r.n: r for r in tables.root_strata if r.item_id == "hmmt/fixture-3"}
     assert boolean[2].stratum == "none_correct" and boolean[4].stratum == "none_correct"
-    option = {r.n: r for r in tables.root_strata if r.item_id == "mmlu_pro/fixture-2"}
+    option = {r.n: r for r in tables.root_strata if r.item_id == "gpqa_diamond/fixture-2"}
     assert (option[2].c0_lo, option[2].stratum) == (1, "correct_half")
     assert (option[4].c0_lo, option[4].stratum) == (2, "correct_half")
     assert option[4].reference_bank_size == 2 and option[4].reference_c_lo == 1       # roots 4..5: "K" (illegal), "(C)"
@@ -249,13 +249,13 @@ def test_root_strata(standard):
 
 def test_failure_rows_count_truncation_and_parse_failures(standard):
     _, tables = standard
-    rows = [r for r in tables.failures if r.item_id == "bbh_logic4/fixture-4"]
+    rows = [r for r in tables.failures if r.item_id == "omni_math_hard/fixture-4"]
     roots = next(r for r in rows if r.generation_kind == "root")
     assert (roots.n_nodes, roots.n_completion_length, roots.n_parse_empty_content, roots.n_parse_missing_final) == \
         (6, 2, 2, 1)
     cp = next(r for r in rows if r.generation_kind == "communicate_then_private")
     assert cp.n_nodes == 12 and cp.n_candidates == 11
-    option_roots = next(r for r in tables.failures if r.item_id == "mmlu_pro/fixture-2" and r.generation_kind == "root")
+    option_roots = next(r for r in tables.failures if r.item_id == "gpqa_diamond/fixture-2" and r.generation_kind == "root")
     assert (option_roots.n_parse_valid, option_roots.n_invalid_after_valid_parse) == (6, 1)     # "K" is illegal
     assert option_roots.n_invalid_output == 1 and option_roots.n_graded_correct + option_roots.n_graded_wrong == 5
 
@@ -302,7 +302,7 @@ def test_contradictory_grades_raise(paths):
 def test_nested_designs_can_report_population_gaps(paths):
     grid = MiniGrid(bank=3, private_cycles=3, team_sizes=(3,), rounds=2, deep=(), extension=False)
     item_a = standard_items()[1]
-    item_b = replace(item_a, task=replace(item_a.task, item_id="mmlu_pro/fixture-2b"))
+    item_b = replace(item_a, task=replace(item_a.task, item_id="gpqa_diamond/fixture-2b"))
     panel = build_panel([item_a, item_b], grid)
     b = panel.records.items[1]
     trimmed = replace(b, checkpoints=tuple(c for c in b.checkpoints if c.name not in ("peer/3/2",)))

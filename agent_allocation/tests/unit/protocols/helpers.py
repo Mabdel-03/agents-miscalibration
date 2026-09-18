@@ -15,8 +15,8 @@ from agent_allocation.protocols.grid import build_item_graph
 
 ROOT = Path(__file__).resolve().parents[3]
 SEED = 20260917
-MATH_TASK = PublicTask(item_id="math500/test/algebra/1", benchmark="math500",
-                       source_revision="6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be",
+MATH_TASK = PublicTask(item_id="aime/2025/1", benchmark="aime",
+                       source_revision="c94da77eb22bbd6439e62a323bec18493a421302",
                        prompt="Compute $\\frac{1}{2}+\\frac{1}{2}$ and give {braces} as-is.", output_kind=OutputKind.MATH)
 CODE_TASK = PublicTask(item_id="mbpp_plus/Mbpp/2", benchmark="mbpp_plus", source_revision="evalplus-26d6d00b",
                        prompt="Write a function similar_elements(a, b) returning the shared elements as a set.\n"

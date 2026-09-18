@@ -150,9 +150,9 @@ async def test_a_circuit_breaking_status_stops_dispatch(tmp_path, make_spec, loc
 
 
 def test_sync_outcome_helper_for_non_async_tests(make_spec):
-    spec = make_spec(benchmark="bbh_logic4", item_id="bbh_logic4/boolean_expressions/1")
+    spec = make_spec(benchmark="gpqa_diamond", item_id="gpqa_diamond/recFake1")
     outcome = fake_generation_outcome_sync(spec)
-    assert outcome.result.visible_content.endswith(("<final>True</final>", "<final>False</final>"))
+    assert outcome.result.visible_content.endswith(tuple(f"<final>{letter}</final>" for letter in "ABCD"))
     length = fake_generation_outcome_sync(make_spec(), reply=FakeReply(fault=Fault.EMPTY_LENGTH))
     assert length.result.visible_content == "" and length.result.usage.reasoning_tokens is not None
 

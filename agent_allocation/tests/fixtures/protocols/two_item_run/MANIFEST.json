@@ -1,38 +1,38 @@
 {
   "candidate_parse_status_counts": {
-    "empty_content": 14,
-    "missing_final": 21,
-    "valid": 228
+    "empty_content": 16,
+    "missing_final": 23,
+    "valid": 224
   },
   "endpoint_lock_hash": "7be4781e088743dd5e9bf063e9b9e11811316409f98230ee13c8a4177683b6e6",
   "files_sha256_decompressed": {
-    "candidates.jsonl.gz": "bacf6efec2f5d94f992d1d09f2c45732d34ad405c022160a096dca67087b494c",
-    "graphs.jsonl.gz": "92feea98f2e4168b2c570cfc7de1c175b879e4debac3f973411fc40fe437f947",
-    "prompts.jsonl.gz": "3cce84c0530376beb7f2801b5de5e4783f0add98b7deb1d3fc0868ebe9a7729d",
-    "results.jsonl.gz": "0006d652011e5946985d3d91ce94b6ded490f9b3a2d2c876bf57d47e96e9a328",
-    "tasks.jsonl.gz": "d438ae8a1862a320ade566d8cd36790b1d960036fe0c8094e1c0cc25cb0198fc"
+    "candidates.jsonl.gz": "4cdc0c2dc0a654a190ab503067824e56073bc66d0dfec1ae28a681a9ef1f8f91",
+    "graphs.jsonl.gz": "a9207d6af75a2d2f041d688d76417eea3c3032adb5376232f0054ae21f5535c9",
+    "prompts.jsonl.gz": "dede2b9393286314c030d5d312bfc21b16ae3dddf3d62987560a426a2e75f272",
+    "results.jsonl.gz": "9347a5a15c6f4eeee79ed80c95e8888d102224d244513cfbc94a00bb32be125b",
+    "tasks.jsonl.gz": "6b4f8e8e990d0d99b7fd5b17c2da8366aacc6129a91210ae8dcea57359e6c51b"
   },
   "generator": "agent_allocation.protocols.synthetic",
   "items": [
     {
-      "benchmark": "math500",
+      "benchmark": "aime",
       "checkpoints": 200,
       "grid": "main_extension",
-      "item_id": "math500/synthetic/0001",
+      "item_id": "aime/synthetic/0001",
       "nodes": 138
     },
     {
-      "benchmark": "mbpp_plus",
+      "benchmark": "gpqa_diamond",
       "checkpoints": 190,
       "grid": "main",
-      "item_id": "mbpp_plus/synthetic/0002",
+      "item_id": "gpqa_diamond/synthetic0002",
       "nodes": 125
     }
   ],
   "notes": "Synthetic, gold-free. Load records with contracts.load_record; prompts lines are plain JSON.",
   "packet_envelope_chars": 12000,
   "partition_id": "main",
-  "prompt_version": "prompts-v1-e807ffe03995",
+  "prompt_version": "prompts-v1-e998b556294c",
   "seed": 20260917,
   "study_id": "openrouter_agent_allocation_v1",
   "trimmed_prompts": 27
