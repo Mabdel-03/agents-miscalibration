@@ -742,6 +742,11 @@ def duplicate_successful_dispatches(paths: RunPaths, node_ids: set[str]) -> int:
 # Pilot (Gate 2)
 # ------------------------------------------------------------------------------------------------------------------
 
+def PILOT_DEEP_MULTIPLIER(cfg) -> int:
+    """The pilot's deep call uses the largest configured multiplier (v1: 16; forced27b: 25 -> the longest call)."""
+    return max(int(m) for m in cfg["protocols"]["deep_main_multipliers"])
+
+
 def pilot_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[list[ItemGraph]], list[ItemGraph]]:
     grids = grids_from_config(cfg)
     primary = locks[cfg["primary_model"]]
@@ -776,7 +781,8 @@ def pilot_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[list[ItemGr
             extra = []
             if item in deep_items:
                 extra.append(standalone_spec(cfg=cfg, partition="pilot", task=task, lock=primary,
-                                             kind=GenerationKind.DEEP, budget=int(cfg["reasoning"]["main_a"]) * 16,
+                                             kind=GenerationKind.DEEP,
+                                             budget=int(cfg["reasoning"]["main_a"]) * PILOT_DEEP_MULTIPLIER(cfg),
                                              amendments=amendments))
             if item in high_items and high_a is not None:
                 extra += [standalone_spec(cfg=cfg, partition="pilot", task=task, lock=primary, kind=GenerationKind.ROOT,
