@@ -270,7 +270,7 @@ def test_figures_need_no_api_key_or_network(built_run, tmp_path, monkeypatch):
 def test_run_report_states_required_labels(analysed):
     paths, analysis = analysed
     text = (paths.reports_dir / "RUN_REPORT.md").read_text()
-    for needle in ("BBH four-subtask zero-shot subset", "public-test selector", "public_select@k", "vote@k",
+    for needle in ("Math-Verify", "GPQA-Diamond options are shuffled", "vote@k",
                    "Oracle pass@k", "requested", "realized", "not a FLOP-matched", "descriptive",
                    "Budgeted policy replay", "Billed retries", "Stop reasons", "share_finish_length",
                    "share_response_cache_hit", "median_latency_seconds", "Independent-item counts",

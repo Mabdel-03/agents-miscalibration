@@ -28,8 +28,8 @@ from tests.integration import adversarial
 from tests.integration.dispatch_harness import fast_config
 
 pytestmark = [pytest.mark.timeout(600)]
-TEXT_ITEMS = ("math500/adv/1", "math500/adv/2", "mmlu_pro/adv/1", "mmlu_pro/adv/2", "bbh_logic4/adv/1",
-              "bbh_logic4/adv/2")
+TEXT_ITEMS = ("aime/adv/1", "aime/adv/2", "gpqa_diamond/adv/1", "gpqa_diamond/adv/2", "hmmt/adv/1",
+              "omni_math_hard/adv/1")
 
 
 def _study_config() -> dict:

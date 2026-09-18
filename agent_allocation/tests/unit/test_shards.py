@@ -16,12 +16,12 @@ from agent_allocation.shards import (
     ShardError, base_config, filter_graph_waves, items_of, materialize_shard, resolve_shard, root_assignment,
     shard_assignment, shard_budget_table, shard_config, shard_filter,
 )
-from tests.forced_cfg import forced_test_config
+from tests.forced_cfg import three_shard_config, forced_test_config
 
 
 @pytest.fixture()
 def cfg():
-    return forced_test_config()
+    return three_shard_config()
 
 
 def _items(per_bench: int, benches=("aime", "hmmt", "omni_math_hard", "gpqa_diamond")) -> list[tuple[str, str]]:
@@ -166,3 +166,17 @@ def test_filter_graph_waves_drops_empty_waves():
     waves = [[G("a"), G("b")], [G("c")]]
     assert [[g.item_id for g in w] for w in filter_graph_waves(waves, {"a"})] == [["a"]]
     assert len(filter_graph_waves(waves, None)) == 2
+
+
+def test_live_config_shards_follow_the_screen():
+    """configs/forced27b.json as launched: Mancer 3 : Parasail 2, Parasail capped at 40 in flight."""
+    live_cfg = forced_test_config()
+    assert [(s["id"], s["share"]) for s in live_cfg["shards"]] == [("mancer", 3), ("parasail", 2)]
+    mancer, parasail = shard_config(live_cfg, "mancer"), shard_config(live_cfg, "parasail")
+    assert mancer["budget"]["credit_ceiling_usd"] == 57.0 and parasail["budget"]["credit_ceiling_usd"] == 38.0
+    assert parasail["scheduler"]["concurrency_max"] == 40 and parasail["scheduler"]["requests_per_second_max"] == 8
+    assert mancer["scheduler"]["concurrency_max"] == live_cfg["scheduler"]["concurrency_max"]
+    bad = copy.deepcopy(live_cfg)
+    bad["scheduler_by_shard"] = {"parasail": {"not_a_key": 1}}
+    with pytest.raises(ValueError):
+        shard_config(bad, "parasail")

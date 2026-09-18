@@ -37,6 +37,20 @@ def forced_test_config() -> dict[str, Any]:
     return cfg
 
 
+#: The provisional three-equal-shard layout the shard-logic tests were written against. The live config's shards
+#: (Mancer 3 : Parasail 2, from the 2026-09-18 screen) are checked separately in test_shards.py.
+THREE_EQUAL_SHARDS = [{"id": "parasail", "endpoint_tag": "parasail/fp8", "share": 1},
+                      {"id": "mancer", "endpoint_tag": "mancer/fp8", "share": 1},
+                      {"id": "dekallm", "endpoint_tag": "dekallm", "share": 1}]
+
+
+def three_shard_config() -> dict[str, Any]:
+    cfg = copy.deepcopy(forced_test_config())
+    cfg["shards"] = copy.deepcopy(THREE_EQUAL_SHARDS)
+    cfg.pop("scheduler_by_shard", None)
+    return cfg
+
+
 def request_ready(cfg: dict[str, Any]) -> dict[str, Any]:
     """Drop sampling keys the request builder on this branch does not know yet (``top_k``: WP-1 adds it to the forced
     request contract). AFTER THE WP-1 MERGE this is a no-op."""

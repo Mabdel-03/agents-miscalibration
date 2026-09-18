@@ -91,13 +91,18 @@ async def test_critical_path_first_then_fair_buckets(tmp_path):
     assert summary.stop_reason == "completed"
     by_id = {s.node_id: s for s in graph.nodes}
     sent = [by_id[n] for n in client.sent_nodes()]
-    # root[0] and its whole private chain go first, then roots 1-4, then everything else
-    assert [(s.kind, s.root_slot, s.update_round) for s in sent[:4]] == \
+    # the critical class goes first: root[0], its whole private chain (in order) and the DEEP node (one long call);
+    # then roots 1-4, then everything else
+    critical = [(s.kind, s.root_slot, s.update_round) for s in sent[:5]]
+    assert critical[0] == (GenerationKind.ROOT, 0, 0)
+    assert sorted(critical, key=str) == sorted(
         [(GenerationKind.ROOT, 0, 0), (GenerationKind.PRIVATE, 0, 1), (GenerationKind.PRIVATE, 0, 2),
-         (GenerationKind.PRIVATE, 0, 3)]
-    assert [(s.kind, s.root_slot) for s in sent[4:8]] == [(GenerationKind.ROOT, j) for j in range(1, 5)]
+         (GenerationKind.PRIVATE, 0, 3), (GenerationKind.DEEP, 0, 0)], key=str)
+    assert [c for c in critical if c[0] is GenerationKind.PRIVATE] == \
+        [(GenerationKind.PRIVATE, 0, 1), (GenerationKind.PRIVATE, 0, 2), (GenerationKind.PRIVATE, 0, 3)]
+    assert [(s.kind, s.root_slot) for s in sent[5:9]] == [(GenerationKind.ROOT, j) for j in range(1, 5)]
     # the rest interleaves kinds instead of draining one bucket
-    rest_kinds = [s.kind for s in sent[8:]]
+    rest_kinds = [s.kind for s in sent[9:]]
     assert rest_kinds[:3] != [rest_kinds[0]] * 3
 
 

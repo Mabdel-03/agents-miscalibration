@@ -15,12 +15,12 @@ from agent_allocation.config import (
 from agent_allocation.contracts import OutputKind, PublicTask
 from agent_allocation.plan import generation_plan
 from agent_allocation.protocols.grid import build_item_graph, checkpoint_by_name, expected_node_count
-from tests.forced_cfg import PROJECT, forced_test_config, needs_benchmark_swap, raw_forced_config
+from tests.forced_cfg import three_shard_config, PROJECT, forced_test_config, needs_benchmark_swap, raw_forced_config
 
 
 @pytest.fixture()
 def forced():
-    return forced_test_config()
+    return three_shard_config()
 
 
 def test_old_presets_still_validate():
@@ -148,7 +148,7 @@ def test_estimate_budget_forced_preset():
     budgets = 189 * 1024
     assert est["input_tokens_per_item"] == 2 * 1000 * 139 + budgets + 1000
     assert est["output_tokens_per_item"] == budgets + 400 * 139 + 400
-    assert [r["shard_id"] for r in est["shards"]] == ["parasail", "mancer", "dekallm"]
-    assert all(r["credit_ceiling_usd"] == "31.66" for r in est["shards"])
+    assert [r["shard_id"] for r in est["shards"]] == ["mancer", "parasail"]      # the live config's shards
+    assert [r["credit_ceiling_usd"] for r in est["shards"]] == ["57.00", "38.00"]
     saturated = _estimate_module().estimate_forced("forced27b")
     assert saturated["assumptions"]["answer_tokens_per_call"] == 4096

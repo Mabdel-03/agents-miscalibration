@@ -43,8 +43,8 @@ def test_analyze_writes_deterministic_reports_and_tables(built_run, tmp_path):
     for name in ("policy_outcomes", "accuracy_summary", "completeness", "candidates"):
         assert (first.tables_dir / f"{name}.parquet").is_file() and (first.tables_dir / f"{name}.csv").is_file()
     text = (first.reports_dir / "RUN_REPORT.md").read_text()
-    assert "BBH four-subtask zero-shot subset" in text
-    assert "public-test selector" in text
+    assert "Math-Verify" in text and "GPQA-Diamond options are shuffled" in text   # the configured benchmarks
+    assert "BBH four-subtask" not in text and "public-test selector" not in text
     assert "not a FLOP-matched" in text
     assert "INTERIM" not in text and "Final: every planned checkpoint is known and costs are reconciled" in text
 
