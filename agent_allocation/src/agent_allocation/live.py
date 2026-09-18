@@ -94,9 +94,13 @@ def read_endpoint_locks(paths: RunPaths) -> dict[str, EndpointLock]:
     return {model: load_record(EndpointLock, row) for model, row in data["locks"].items()}
 
 
-async def ensure_endpoint_locks(paths: RunPaths, client, models: Sequence[str], *, allow_fetch: bool) -> dict[str, EndpointLock]:
-    """Write-once. Missing models are fetched and appended only before the lock is frozen."""
+async def ensure_endpoint_locks(paths: RunPaths, client, models: Sequence[str], *, allow_fetch: bool,
+                                cfg: Mapping[str, Any] | None = None) -> dict[str, EndpointLock]:
+    """Write-once. Missing models are fetched and appended only before the lock is frozen. ``cfg`` selects the
+    endpoint (``provider.endpoint_tag``; forced mode requires it and locks under the forced parameter contract)."""
     from agent_allocation.api.endpoints import select_standard_endpoint
+    from agent_allocation.api.forced import endpoint_selection
+    selection = endpoint_selection(cfg)
     locks = read_endpoint_locks(paths)
     missing = [m for m in models if m not in locks]
     if missing and not allow_fetch:
@@ -110,7 +114,7 @@ async def ensure_endpoint_locks(paths: RunPaths, client, models: Sequence[str], 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         snapshot = paths.lock_snapshots_dir / f"endpoints_{model_slug(model)}_{stamp}.json"
         snapshot.write_bytes(raw)
-        locks[model] = select_standard_endpoint(parsed, model, snapshot_path=str(snapshot),
+        locks[model] = select_standard_endpoint(parsed, model, **selection, snapshot_path=str(snapshot),
                                                 snapshot_sha256=sha256(raw).hexdigest(), fetched_at=stamp)
     if missing:
         payload = {"locks": {m: dump_record(l) for m, l in locks.items()},
@@ -120,13 +124,16 @@ async def ensure_endpoint_locks(paths: RunPaths, client, models: Sequence[str], 
     return locks
 
 
-async def verify_endpoint_drift(client, locks: Mapping[str, EndpointLock]) -> list[str]:
+async def verify_endpoint_drift(client, locks: Mapping[str, EndpointLock],
+                                cfg: Mapping[str, Any] | None = None) -> list[str]:
     from agent_allocation.api.endpoints import EndpointBlocked, select_standard_endpoint
+    from agent_allocation.api.forced import forced_enabled
+    forced = cfg is not None and forced_enabled(cfg)
     drift = []
     for model, lock in locks.items():
         _raw, parsed = await client.list_endpoints(model)
         try:
-            live = select_standard_endpoint(parsed, model, preferred_tag=lock.provider_tag)
+            live = select_standard_endpoint(parsed, model, preferred_tag=lock.provider_tag, forced=forced)
         except EndpointBlocked as exc:
             drift.append(f"{model}: {exc}")
             continue
@@ -239,7 +246,7 @@ class Runtime:
 
     def __init__(self, cfg: Mapping[str, Any], paths: RunPaths, *, lock: EndpointLock,
                  tasks: Mapping[str, PublicTask], ceiling: Decimal, transport=None, api_key: str | None = None):
-        from agent_allocation.api.client import OpenRouterClient
+        from agent_allocation.api.forced import forced_enabled, make_generation_client
         from agent_allocation.extraction.final import extract_candidate
         from agent_allocation.prompts.render import render_messages_with_report
         from agent_allocation.runtime.ledger import CollectionLedger
@@ -251,9 +258,12 @@ class Runtime:
         if rehearsal():
             transport, api_key = rehearsal_transport(), None
         scheduler = cfg["scheduler"]
-        self.client = OpenRouterClient(api_key=api_key, transport=transport,
-                                       connect_timeout=float(scheduler["connect_timeout_seconds"]),
-                                       read_timeout=float(scheduler["read_timeout_seconds"]))
+        # forced.enabled -> ForcedClient (THINK + ANSWER over /completions); otherwise the chat client, unchanged.
+        self.forced = forced_enabled(cfg)
+        self.gate0: Any = None
+        self.client = make_generation_client(cfg, api_key=api_key, transport=transport,
+                                             connect_timeout=float(scheduler["connect_timeout_seconds"]),
+                                             read_timeout=float(scheduler["read_timeout_seconds"]))
         self.ledger = CollectionLedger(LedgerJournal(paths.ledger_journal), ceiling_usd=ceiling,
                                        max_unresolved_usd=Decimal(str(cfg["budget"]["max_unresolved_spend_usd"])))
         self.store = (StateStore.recover(paths) if paths.state_db_backup.exists() or paths.ledger_journal.exists()
@@ -295,6 +305,8 @@ class Runtime:
         from agent_allocation.runtime.scheduler import AdmissionPlan
         if ceiling is not None:
             self.ledger.set_active_ceiling(min(ceiling, max_usd))
+        if self.forced and allow_paid:
+            await self.forced_gate0()
         for wave in waves:
             for graph in wave:
                 check_budgets(graph, max_completion_tokens=self.lock.max_completion_tokens,
@@ -303,6 +315,22 @@ class Runtime:
                                             allow_paid=allow_paid, max_usd=max_usd)
         self.store.backup()
         return summary
+
+    async def forced_gate0(self):
+        """Gate 0 once per Runtime before any paid forced dispatch: banana, ``</think>``-id, forced-2,048 and ANSWER
+        probes against the locked endpoint, charged through the ledger. A failure refuses to dispatch."""
+        if self.gate0 is not None and self.gate0.passed:
+            return self.gate0
+        from agent_allocation.api.forced import forced_endpoint_gate
+        from agent_allocation.gates import write_gate
+        result = await forced_endpoint_gate(self.client, self.lock, self.cfg, ledger=self.ledger,
+                                            evidence_path=self.paths.reports_dir / "GATE0_FORCED_ENDPOINT.json")
+        write_gate(self.paths, result)
+        self.gate0 = result
+        if not result.passed:
+            failing = [c.name for c in result.criteria if not c.passed]
+            raise RunRefused(f"Gate 0 (forced endpoint {self.lock.provider_tag}) failed: {failing}; nothing dispatched")
+        return result
 
     async def aclose(self) -> None:
         try:
@@ -400,6 +428,27 @@ async def fetch_metadata(paths: RunPaths, generation_ids: Sequence[str], *, atte
     return found
 
 
+def forced_row_evidence(paths: RunPaths, result, metadata: Mapping[str, Any]) -> tuple[Any, Any]:
+    """(raw payload, /generation metadata) for a call row. A forced result's metadata is THINK + ANSWER merged
+    (``None`` until both are known); a chat result keeps its single-id metadata and no raw payload."""
+    from agent_allocation.api.forced import forced_generation_ids, is_forced_usage
+    if not is_forced_usage(result.usage) or not result.raw_response_path:
+        return None, metadata.get(result.generation_id)
+    from agent_allocation.api.reconcile import merge_forced_metadata
+    from agent_allocation.storage.raw import read_raw_response
+    raw = read_raw_response(paths, result.raw_response_path)
+    think_id, answer_id = forced_generation_ids(raw)
+    think, answer = metadata.get(think_id), metadata.get(answer_id)
+    return raw, (merge_forced_metadata(think, answer) if think is not None and answer is not None else None)
+
+
+def forced_think_ids(rows) -> list[str]:
+    """THINK generation ids of forced rows (their /generation metadata is fetched alongside the ANSWER ids)."""
+    from agent_allocation.api.forced import forced_generation_ids
+    return [gid for r in rows if r.raw_payload is not None
+            for gid in [forced_generation_ids(r.raw_payload)[0]] if gid]
+
+
 def load_call_rows(paths: RunPaths, partition: str, metadata: Mapping[str, Any]):
     from agent_allocation.contracts import Candidate, GenerationResult
     from agent_allocation.gates import CallRow
@@ -413,7 +462,8 @@ def load_call_rows(paths: RunPaths, partition: str, metadata: Mapping[str, Any])
         payload = json.loads(parsed.read_text())
         result = load_record(GenerationResult, payload["result"])
         candidate = load_record(Candidate, payload["candidate"]) if payload.get("candidate") else None
-        rows.append(CallRow(spec, result, candidate, metadata.get(result.generation_id)))
+        raw, meta = forced_row_evidence(paths, result, metadata)
+        rows.append(CallRow(spec, result, candidate, meta, raw))
     return rows
 
 
@@ -459,7 +509,7 @@ async def evaluate_canary(cfg, paths: RunPaths) -> int:
             if line.strip():
                 row = json.loads(line)
                 known[row["generation_id"]] = row["data"]
-    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    missing = [g for g in [r.result.generation_id for r in rows] + forced_think_ids(rows) if g and g not in known]
     if missing:
         known.update(await fetch_metadata(paths, missing))
     rows = load_call_rows(paths, "canary", known)
@@ -486,7 +536,7 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     client = OpenRouterClient(api_key=api_key)
     try:
         locks = await ensure_endpoint_locks(paths, client, [cfg["primary_model"], cfg["replication_model"]],
-                                            allow_fetch=True)
+                                            allow_fetch=True, cfg=cfg)
     finally:
         await client.aclose()
     before = provider_snapshot(paths, "canary_before")
@@ -793,7 +843,7 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
             if line.strip():
                 row = json.loads(line)
                 known[row["generation_id"]] = row["data"]
-    missing = [r.result.generation_id for r in rows if r.result.generation_id and r.result.generation_id not in known]
+    missing = [g for g in [r.result.generation_id for r in rows] + forced_think_ids(rows) if g and g not in known]
     if missing:
         known.update(await fetch_metadata(paths, missing, attempts=6))
     rows = load_call_rows(paths, "pilot", known)
@@ -1055,7 +1105,7 @@ async def run_main(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     if not rehearsal():
         client = OpenRouterClient(api_key=api_key)
         try:
-            drift = await verify_endpoint_drift(client, locks)
+            drift = await verify_endpoint_drift(client, locks, cfg)
         finally:
             await client.aclose()
     if drift:

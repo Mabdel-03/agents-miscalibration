@@ -4,6 +4,7 @@
 serves OpenRouter-shaped JSON on:
 
 * ``POST .../chat/completions``           -- completion or injected fault (see ``Fault``)
+* ``POST .../completions``                -- forced mode's raw-prompt text completion (see "Forced mode" below)
 * ``GET  .../key``                        -- ``{"data": {label, limit, limit_remaining, usage, ...}}``
 * ``GET  .../credits``                    -- ``{"data": {total_credits, total_usage}}``
 * ``GET  .../generation?id=``             -- generation metadata (404 until ``metadata_lag_polls`` polls have passed)
@@ -42,6 +43,20 @@ generation in progress), ``script.generations`` (metadata by id; a ``Fault.CACHE
 (server-side concurrency actually reached). ``max_concurrent_requests`` emulates upstream capacity (HTTP 429 with
 ``capacity_retry_after``); with ``enforce_account_limits`` (default) a request arriving when usage has reached
 ``key_limit_usd`` gets 403 "Key limit exceeded", and when it has reached ``total_credits_usd`` 402.
+
+Forced mode (``POST .../completions``, raw ``prompt``; ``completions_contract_violations`` is its contract checker):
+the fake emulates a Qwen3.8 endpoint that honours ``logit_bias`` (``FakeScript.forced_bias_honoured``). A THINK
+prompt (ending ``<think>\\n``) with ``-100`` on ``think_close_token_id`` realizes exactly ``max_tokens`` with finish
+``length``; without the ban (or with ``Fault.BIAS_IGNORED`` / ``forced_bias_honoured=False``) the model thinks
+``natural_think_tokens`` and closes on its own (finish ``stop``); ``Fault.SHORT_THINK`` cuts the call at a third of
+``max_tokens`` with finish ``null`` (a provider-side cut). Any other prompt is an ANSWER: the default content.
+``+100`` on ``bias_probe_token_id`` returns " banana" x ``max_tokens``; ``+100`` on the close id returns the close
+token repeatedly (Gate 0's two bias probes). ``forced_reasoning_style``: ``"inline"`` (no server parser: thinking in
+``text``), ``"parser"`` (thinking in ``choices[0].reasoning``), ``"parser_answer_in_reasoning"`` (a parser that also
+files the ANSWER under ``reasoning`` with empty ``text``). Thinking text is 4 characters per token, so the ANSWER's
+re-tokenized prompt is 2-3 tokens longer than THINK prompt + reasoning, as on the live endpoint. The served provider
+name follows ``provider.only[0]`` through ``FAKE_FORCED_ENDPOINTS`` unless ``forced_provider_name`` is set; the
+forced client tags each call's coordinates with ``phase`` (``think`` / ``answer`` / ``gate0_*``) for hooks.
 
 Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
 one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
@@ -109,6 +124,8 @@ class Fault(str, Enum):
     REMOTE_DISCONNECT = "remote_disconnect"  # generated and billed, client gets httpx.RemoteProtocolError
     CONNECT_ERROR = "connect_error"          # never reached the server: httpx.ConnectError, nothing billed
     CONNECT_TIMEOUT = "connect_timeout"      # never reached the server: httpx.ConnectTimeout, nothing billed
+    SHORT_THINK = "short_think"              # forced THINK cut by the provider: finish null, max_tokens // 3; billed
+    BIAS_IGNORED = "bias_ignored"            # forced call whose logit_bias the endpoint silently drops; billed
 
 
 _HTTP_ERROR_STATUS = {
@@ -185,7 +202,45 @@ class FakeCall:
 def _fake_prices(model: str) -> tuple[str, str]:
     if model == "google/gemini-2.5-flash":
         return "0.0000003", "0.0000025"
+    if model.startswith("qwen/"):
+        return "0.00000024", "0.0000025"
     return "0.0000001", "0.0000004"
+
+
+FAKE_FORCED_MODEL = "qwen/qwen3.8-27b"
+# endpoint tag -> provider display name for the fake Qwen listing; DeepInfra lists logit_bias but (live) ignores it.
+FAKE_FORCED_ENDPOINTS: Mapping[str, str] = {"parasail/fp8": "Parasail", "mancer/fp8": "Mancer", "dekallm": "DekaLLM",
+                                             "deepinfra/fp8": "DeepInfra"}
+FAKE_THINK_CLOSE_ID, FAKE_IM_END_ID, FAKE_ENDOFTEXT_ID, FAKE_BANANA_ID = 248069, 248046, 248044, 41674
+_FAKE_FORCED_SUPPORTED_PARAMETERS = ("frequency_penalty", "logit_bias", "max_tokens", "min_p", "presence_penalty",
+                                     "reasoning", "repetition_penalty", "seed", "stop", "temperature", "top_k",
+                                     "top_p")
+
+
+def fake_forced_endpoint_lock(model: str = FAKE_FORCED_MODEL, tag: str = "parasail/fp8") -> EndpointLock:
+    """The forced-mode lock ``select_standard_endpoint(fake_forced_endpoints_listing(model), model,
+    preferred_tag=tag, forced=True)`` produces (no internal_reasoning price: locked as "0")."""
+    input_price, output_price = _fake_prices(model)
+    return EndpointLock(
+        model=model, provider_tag=tag, provider_name=FAKE_FORCED_ENDPOINTS[tag], service_tier="standard",
+        input_price_per_token=input_price, output_price_per_token=output_price,
+        internal_reasoning_price_per_token="0", context_length=262144, max_completion_tokens=65536,
+        supported_parameters=tuple(sorted(_FAKE_FORCED_SUPPORTED_PARAMETERS)))
+
+
+def fake_forced_endpoints_listing(model: str = FAKE_FORCED_MODEL) -> dict[str, Any]:
+    """A Qwen-style endpoints listing: open-weight providers, no internal_reasoning price."""
+    input_price, output_price = _fake_prices(model)
+    endpoints = []
+    for tag, name in FAKE_FORCED_ENDPOINTS.items():
+        endpoints.append({
+            "name": f"{name} | {model}", "model_id": model, "model_name": model, "context_length": 262144,
+            "pricing": {"prompt": input_price, "completion": output_price, "discount": 0},
+            "provider_name": name, "tag": tag, "quantization": "fp8", "max_completion_tokens": 65536,
+            "max_prompt_tokens": None, "supported_parameters": list(_FAKE_FORCED_SUPPORTED_PARAMETERS),
+            "status": 0, "uptime_last_30m": 99.5, "supports_implicit_caching": False,
+        })
+    return {"data": {"id": model, "name": model, "endpoints": endpoints}}
 
 
 _FAKE_SUPPORTED_PARAMETERS = ("include_reasoning", "max_tokens", "reasoning", "response_format", "seed", "stop",
@@ -302,6 +357,62 @@ _ALLOWED_BODY_KEYS = frozenset({"model", "messages", "temperature", "top_p", "ma
                                 "stream"})
 
 
+def _provider_problems(provider: Any) -> list[str]:
+    problems = []
+    if not isinstance(provider, dict) or set(provider) != {"only", "allow_fallbacks", "require_parameters"}:
+        problems.append("provider must be exactly {only, allow_fallbacks, require_parameters}")
+    else:
+        only = provider.get("only")
+        if not (isinstance(only, list) and len(only) == 1 and isinstance(only[0], str) and only[0]):
+            problems.append("provider.only must list exactly one endpoint tag")
+        elif any(marker in only[0] for marker in ("/flex", "/priority", "/batch", ":free")):
+            problems.append(f"provider.only tag {only[0]!r} is a non-standard tier variant")
+        if provider.get("allow_fallbacks") is not False:
+            problems.append("provider.allow_fallbacks must be false")
+        if provider.get("require_parameters") is not True:
+            problems.append("provider.require_parameters must be true")
+    return problems
+
+
+_ALLOWED_COMPLETIONS_KEYS = frozenset({"model", "prompt", "max_tokens", "temperature", "top_p", "top_k", "logit_bias",
+                                       "provider", "usage", "stream"})
+
+
+def completions_contract_violations(body: Any) -> list[str]:
+    """What the fake refuses (HTTP 400) on ``/completions``: anything outside the forced request contract (raw
+    ``prompt``, ``logit_bias`` in [-100, 100] keyed by token id, ``usage.include``, no ``reasoning``/seed/stream)."""
+    if not isinstance(body, dict):
+        return ["body is not a JSON object"]
+    problems = [f"key {key!r} is outside the forced request contract"
+                for key in sorted(set(body) - _ALLOWED_COMPLETIONS_KEYS)]
+    if body.get("stream") is not False:
+        problems.append("stream must be false")
+    if not isinstance(body.get("model"), str) or not body.get("model"):
+        problems.append("model missing")
+    if not isinstance(body.get("prompt"), str) or not body.get("prompt"):
+        problems.append("prompt must be a non-empty string")
+    for key in ("temperature", "top_p"):
+        value = body.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            problems.append(f"{key} must be a number")
+    if "top_k" in body and (isinstance(body["top_k"], bool) or not isinstance(body["top_k"], int)
+                            or body["top_k"] < 1):
+        problems.append("top_k must be a positive integer")
+    max_tokens = body.get("max_tokens")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        problems.append("max_tokens must be a positive integer")
+    if "logit_bias" in body:
+        bias = body["logit_bias"]
+        if not isinstance(bias, dict) or not bias or not all(
+                isinstance(k, str) and k.isdigit() and not isinstance(v, bool) and isinstance(v, (int, float))
+                and -100 <= v <= 100 for k, v in bias.items()):
+            problems.append("logit_bias must map token-id strings to numbers in [-100, 100]")
+    if body.get("usage") != {"include": True}:
+        problems.append("usage must be exactly {include: true}")
+    problems.extend(_provider_problems(body.get("provider")))
+    return problems
+
+
 def request_contract_violations(body: Any) -> list[str]:
     """What the fake refuses (HTTP 400): anything outside the section 4.2 request contract."""
     if not isinstance(body, dict):
@@ -334,19 +445,7 @@ def request_contract_violations(body: Any) -> list[str]:
             problems.append("reasoning.exclude must be false")
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         problems.append("max_tokens must be a positive integer")
-    provider = body.get("provider")
-    if not isinstance(provider, dict) or set(provider) != {"only", "allow_fallbacks", "require_parameters"}:
-        problems.append("provider must be exactly {only, allow_fallbacks, require_parameters}")
-    else:
-        only = provider.get("only")
-        if not (isinstance(only, list) and len(only) == 1 and isinstance(only[0], str) and only[0]):
-            problems.append("provider.only must list exactly one endpoint tag")
-        elif any(marker in only[0] for marker in ("/flex", "/priority", "/batch", ":free")):
-            problems.append(f"provider.only tag {only[0]!r} is a non-standard tier variant")
-        if provider.get("allow_fallbacks") is not False:
-            problems.append("provider.allow_fallbacks must be false")
-        if provider.get("require_parameters") is not True:
-            problems.append("provider.require_parameters must be true")
+    problems.extend(_provider_problems(body.get("provider")))
     return problems
 
 
@@ -379,6 +478,13 @@ class FakeScript:
     max_concurrent_requests: int | None = None    # emulated upstream capacity: requests beyond it get HTTP 429
     capacity_retry_after: str | None = "1"        # Retry-After sent with those capacity 429s
     enforce_account_limits: bool = True           # usage >= key_limit_usd -> 403; usage >= total_credits_usd -> 402
+    # ---- forced mode (/completions) -------------------------------------------------------------------------------
+    forced_bias_honoured: bool = True             # False: every logit_bias is silently dropped (DeepInfra-style)
+    forced_reasoning_style: str = "inline"        # inline | parser | parser_answer_in_reasoning
+    forced_provider_name: str | None = None       # None -> FAKE_FORCED_ENDPOINTS[provider.only[0]]
+    think_close_token_id: int = FAKE_THINK_CLOSE_ID
+    bias_probe_token_id: int = FAKE_BANANA_ID
+    natural_think_tokens: int = 300               # an unforced THINK closes on its own after this many tokens
     # ---- recorded state -----------------------------------------------------------------------------------------
     calls: list[FakeCall] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
@@ -404,6 +510,13 @@ class FakeScript:
         return [c for c in self.calls if c.path.endswith("/chat/completions")
                 and (reached_server is None or c.reached_server is reached_server)]
 
+    def text_completion_calls(self, *, reached_server: bool | None = None,
+                              phase: str | None = None) -> list[FakeCall]:
+        """Every raw ``/completions`` request (forced mode), optionally only one ``phase`` (``think``/``answer``)."""
+        return [c for c in self.calls if _is_text_route(c.path)
+                and (reached_server is None or c.reached_server is reached_server)
+                and (phase is None or c.coordinates.get("phase") == phase)]
+
     # ---- routing -------------------------------------------------------------------------------------------------
     def _next_sequence(self) -> int:
         with self._mutex:
@@ -424,7 +537,7 @@ class FakeScript:
             response = _json_response(401, {"error": {"code": 401, "message": _HTTP_ERROR_MESSAGE[401]}})
             self._record(replace(call, status_code=401, outcome="response"))
             return response
-        if request.method == "POST" and path.endswith("/chat/completions"):
+        if request.method == "POST" and (path.endswith("/chat/completions") or _is_text_route(path)):
             return await self._completion(request)
         if request.method == "GET" and path.endswith("/key"):
             return self._simple(request, 200, {"data": self._key_data()})
@@ -490,6 +603,8 @@ class FakeScript:
             return httpx.Response(200, headers={"content-type": "application/json"}, content=bytes(override))
         if override is not None:
             return self._simple(request, 200, override)
+        if model == FAKE_FORCED_MODEL:
+            return self._simple(request, 200, fake_forced_endpoints_listing(model))
         if model not in ("google/gemini-2.5-flash-lite", "google/gemini-2.5-flash"):
             return self._simple(request, 404, {"error": {"code": 404, "message": "Model not found"}})
         return self._simple(request, 200, fake_endpoints_listing(model))
@@ -526,7 +641,8 @@ class FakeScript:
         with self._mutex:
             self._node_calls[node_key] += 1
             call = replace(call, node_call_no=self._node_calls[node_key])
-        problems = request_contract_violations(call.body)
+        problems = (completions_contract_violations if _is_text_route(call.path)
+                    else request_contract_violations)(call.body)
         if problems:
             with self._mutex:
                 self.violations.extend(problems)
@@ -679,10 +795,16 @@ class FakeScript:
         self._record(replace(call, status_code=status, outcome="response"))
         return httpx.Response(status, headers=headers, content=content)
 
+    def _generate_text(self, call: FakeCall, reply: FakeReply, request: httpx.Request, *,
+                       register: bool = True) -> tuple[str, dict[str, Any], Decimal]:
+        return _generate_text_impl(self, call, reply, request, register=register)
+
     def _generate(self, call: FakeCall, reply: FakeReply, request: httpx.Request, *,
                   register: bool = True) -> tuple[str, dict[str, Any], Decimal]:
         """Build the completion payload and return (id, payload, cost); ``register`` stores its generation metadata
         (only for replies the server actually generated -- never for a scripted non-2xx status)."""
+        if _is_text_route(call.path):
+            return self._generate_text(call, reply, request, register=register)
         body = call.body
         coordinates = call.coordinates
         fault = reply.fault
@@ -813,6 +935,138 @@ class FakeScript:
             with self._mutex:
                 self.generations[generation_id] = metadata
         return generation_id, payload, cost
+
+
+def _is_text_route(path: str) -> bool:
+    return path.endswith("/completions") and not path.endswith("/chat/completions")
+
+
+_FILLER = ("Let me work through this carefully and check each step again. ", "Consider the constraints once more "
+           "and verify the arithmetic. ", "Another approach is to test small cases and compare the results. ")
+
+
+def _thinking_text(tokens: int, seed: int) -> str:
+    """Deterministic thinking text of exactly ``4 * tokens`` characters (no ``</think>``, no banana)."""
+    chars = 4 * max(0, tokens)
+    text = ""
+    i = seed
+    while len(text) < chars:
+        text += _FILLER[i % len(_FILLER)]
+        i += 1
+    return text[:chars]
+
+
+def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, request: httpx.Request, *,
+                        register: bool) -> tuple[str, dict[str, Any], Decimal]:
+    body = call.body
+    coordinates = call.coordinates
+    fault = reply.fault
+    generation_id = "gen-fake-{:06d}-{}".format(
+        call.sequence, _sha(f"{coordinates.get('attempt_id') or ''}|{call.sequence}|text")[:16])
+    prompt = str(body["prompt"])
+    max_tokens = int(body["max_tokens"])
+    bias = {int(k): v for k, v in (body.get("logit_bias") or {}).items()}
+    honoured = script.forced_bias_honoured and fault is not Fault.BIAS_IGNORED
+    style = script.forced_reasoning_style
+    seed = int(_sha(str(coordinates.get("node_id") or prompt))[:6], 16)
+    content = reply.content
+    if content is AUTO:
+        content = default_content(coordinates, None, vary_by_node=script.vary_final_by_node)
+    close = "</think>"
+    reasoning: str | None = None
+    if honoured and bias.get(script.bias_probe_token_id, 0) >= 100:
+        text, tokens, finish = " banana" * max_tokens, max_tokens, "length"
+    elif honoured and bias.get(script.think_close_token_id, 0) >= 100:
+        tokens, finish = max_tokens, "length"
+        if style == "inline":
+            text = close * max_tokens
+        else:
+            reasoning, text = "", close * (max_tokens - 1)
+    elif prompt.endswith("<think>\n"):
+        banned = honoured and bias.get(script.think_close_token_id, 0) <= -100
+        if fault is Fault.SHORT_THINK:
+            think_tokens, closed, finish = max(1, max_tokens // 3), False, None
+        elif banned:
+            think_tokens, closed, finish = max_tokens, False, "length"
+        else:
+            think_tokens = min(max_tokens, script.natural_think_tokens)
+            closed = think_tokens < max_tokens
+            finish = "stop" if closed else "length"
+        thinking = _thinking_text(think_tokens, seed)
+        answer = content if closed else ""
+        answer_tokens = -(-len(answer) // 4) if closed else 0
+        tokens = min(max_tokens, think_tokens + answer_tokens) if closed else think_tokens
+        if style == "inline":
+            text = thinking + (close + "\n\n" + answer if closed else "")
+        else:
+            reasoning, text = thinking, answer
+    else:                                                  # ANSWER: the prompt already closed the reasoning
+        text = content if isinstance(content, str) else ""
+        tokens = max(1, min(max_tokens, -(-len(text) // 4)))
+        finish = "stop" if -(-len(text) // 4) <= max_tokens else "length"
+        if style == "parser_answer_in_reasoning":
+            reasoning, text = text, ""
+    if reply.finish_reason is not AUTO:
+        finish = reply.finish_reason
+    native = reply.native_finish_reason
+    if native is AUTO:
+        native = {"length": "length", "stop": "stop"}.get(finish) if isinstance(finish, str) else None
+    if reply.reasoning is not AUTO:
+        reasoning = reply.reasoning
+    only = ((body.get("provider") or {}).get("only") or [""])[0]
+    provider = reply.provider
+    if provider is AUTO:
+        provider = reply.mismatch_provider if fault is Fault.PROVIDER_MISMATCH else (
+            script.forced_provider_name or FAKE_FORCED_ENDPOINTS.get(only, script.provider_name))
+    model = reply.model
+    if model is AUTO:
+        model = reply.mismatch_model if fault is Fault.MODEL_MISMATCH else body["model"]
+
+    prompt_tokens = max(1, -(-len(prompt) // 4))
+    default_in, default_out = _fake_prices(str(body["model"]))
+    in_price = Decimal(script.input_price_per_token or default_in)
+    out_price = Decimal(script.output_price_per_token or default_out)
+    prompt_cost = prompt_tokens * in_price
+    completion_cost = tokens * out_price
+    cost = prompt_cost + completion_cost
+    usage = reply.usage
+    if usage is AUTO:
+        usage = {"prompt_tokens": prompt_tokens, "completion_tokens": tokens, "total_tokens": prompt_tokens + tokens,
+                 "cost": _money_json(cost), "is_byok": False,
+                 "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+                 "cost_details": {"upstream_inference_cost": None,
+                                  "upstream_inference_prompt_cost": _money_json(prompt_cost),
+                                  "upstream_inference_completions_cost": _money_json(completion_cost)},
+                 "completion_tokens_details": {"reasoning_tokens": 0, "image_tokens": 0}}
+        usage.update(reply.usage_overrides)
+    choice: dict[str, Any] = {"text": text, "index": 0, "logprobs": None, "finish_reason": finish,
+                              "native_finish_reason": native}
+    if reasoning is not None:
+        choice["reasoning"] = reasoning
+    payload: dict[str, Any] = {"id": generation_id}
+    _put(payload, "provider", provider)
+    _put(payload, "model", model)
+    payload.update({"object": "text_completion", "created": FAKE_CREATED_EPOCH + call.sequence, "choices": [choice]})
+    _put(payload, "usage", usage)
+    metadata = {
+        "id": generation_id, "upstream_id": f"fake-upstream-{call.sequence}", "total_cost": _money_json(cost),
+        "cache_discount": None, "upstream_inference_cost": None, "created_at": "2026-09-18T07:00:00.000Z",
+        "model": model if isinstance(model, str) else body["model"], "app_id": None, "streamed": False,
+        "cancelled": False, "provider_name": provider if isinstance(provider, str) else script.provider_name,
+        "latency": 900, "moderation_latency": None, "generation_time": 850,
+        "finish_reason": finish if isinstance(finish, str) else None,
+        "native_finish_reason": native if isinstance(native, str) else None,
+        "tokens_prompt": prompt_tokens, "tokens_completion": tokens, "native_tokens_prompt": prompt_tokens,
+        "native_tokens_completion": tokens, "native_tokens_completion_images": 0, "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0, "num_media_prompt": None, "num_media_completion": None,
+        "num_search_results": None, "origin": "", "usage": _money_json(cost), "is_byok": False,
+        "service_tier": script.service_tier,
+        "response_cache_source_id": f"gen-fake-cache-source-{call.sequence}" if fault is Fault.CACHE_HIT else None,
+    }
+    if register:
+        with script._mutex:
+            script.generations[generation_id] = metadata
+    return generation_id, payload, cost
 
 
 def _put(target: dict[str, Any], key: str, value: Any) -> None:

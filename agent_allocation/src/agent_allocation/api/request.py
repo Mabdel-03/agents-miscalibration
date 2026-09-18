@@ -12,6 +12,11 @@ Config keys consumed (via the ``sampling`` mapping, normally ``cfg["sampling"]``
 Any other key raises ``RequestContractError`` (a ``ValueError``): a knob we do not read must not look configurable
 (R9). Every validation error here is raised before anything is sent.
 
+Forced mode (``forced.enabled``; built by ``api.forced.ForcedClient``): ``build_forced_think_body`` /
+``build_forced_answer_body`` produce raw ``/completions`` bodies (``prompt``, ``logit_bias``, ``usage.include``, no
+``reasoning`` field); ``sampling.top_k`` is accepted only there (and then must be advertised by the endpoint); the
+lock must advertise ``FORCED_REQUIRED_ENDPOINT_PARAMETERS``. The chat body above is unchanged.
+
 ``provider.allow_fallbacks``/``require_parameters`` are not read from config here: the body hard-codes the only values
 ``config.validate_config`` accepts (``False``/``True``). Budget comes from the node: ``reasoning.max_tokens`` is
 ``spec.reasoning_budget`` and ``max_tokens`` is ``spec.max_completion_tokens`` (budget + headroom).
@@ -39,6 +44,9 @@ REQUEST_EXTENSION_KEY = "agent_allocation.request"
 # Parameters the locked endpoint must advertise; with ``require_parameters: true`` OpenRouter refuses to route to an
 # endpoint lacking one, so we refuse to build the request instead of discovering it with a paid call.
 REQUIRED_ENDPOINT_PARAMETERS: tuple[str, ...] = ("max_tokens", "reasoning", "temperature", "top_p")
+# Forced mode (raw ``/completions``, ``forced.enabled``): no ``reasoning`` field is sent; the budget is enforced by
+# ``logit_bias`` bans plus ``max_tokens``. ``top_k`` is additionally required when the sampling config sends it.
+FORCED_REQUIRED_ENDPOINT_PARAMETERS: tuple[str, ...] = ("logit_bias", "max_tokens", "temperature", "top_p")
 
 class RequestContractError(ValueError):
     """Raised before any byte is sent: the request would break the study contract (spec/lock model or cap, tier
@@ -50,6 +58,7 @@ class RequestContractError(ValueError):
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
 _KNOWN_SAMPLING_KEYS = frozenset({"temperature", "top_p", "api_seed_enabled", "response_cache", "n_per_request",
                                   "stream"})
+_FORCED_SAMPLING_KEYS = _KNOWN_SAMPLING_KEYS | {"top_k"}
 _TIER_MARKERS = ("/flex", "/priority", "/batch", ":free")
 
 
@@ -64,8 +73,9 @@ def _number(sampling: Mapping[str, Any], key: str, low: float, high: float) -> f
     return float(value)
 
 
-def _check_sampling(sampling: Mapping[str, Any]) -> tuple[float, float]:
-    unknown = set(sampling) - _KNOWN_SAMPLING_KEYS
+def _check_sampling(sampling: Mapping[str, Any], *, forced: bool = False) -> tuple[float, float]:
+    """``(temperature, top_p)``; ``top_k`` is a known key only in forced mode (checked by ``forced_top_k``)."""
+    unknown = set(sampling) - (_FORCED_SAMPLING_KEYS if forced else _KNOWN_SAMPLING_KEYS)
     if unknown:
         raise RequestContractError(f"unknown sampling keys {sorted(unknown)}: not part of the request contract")
     if sampling.get("api_seed_enabled", False) is not False:
@@ -79,7 +89,17 @@ def _check_sampling(sampling: Mapping[str, Any]) -> tuple[float, float]:
     return _number(sampling, "temperature", 0.0, 2.0), _number(sampling, "top_p", 0.0, 1.0)
 
 
-def check_lock_for_request(lock: EndpointLock) -> None:
+def forced_top_k(sampling: Mapping[str, Any]) -> int | None:
+    """``sampling.top_k`` for a forced request: absent/None -> not sent; otherwise a positive integer."""
+    value = sampling.get("top_k")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RequestContractError(f"sampling.top_k must be a positive integer, got {value!r}")
+    return value
+
+
+def check_lock_for_request(lock: EndpointLock, *, required: Sequence[str] = REQUIRED_ENDPOINT_PARAMETERS) -> None:
     """Raise ``RequestContractError`` when ``lock`` cannot carry a study request (never a tier variant by accident)."""
     tag = lock.provider_tag
     if not tag or tag != tag.strip():
@@ -89,12 +109,12 @@ def check_lock_for_request(lock: EndpointLock) -> None:
         raise RequestContractError(f"endpoint lock tag {tag!r} is a non-standard tier variant")
     if lock.service_tier != "standard":
         raise RequestContractError(f"endpoint lock service tier {lock.service_tier!r} is not 'standard'")
-    missing = [p for p in REQUIRED_ENDPOINT_PARAMETERS if p not in lock.supported_parameters]
+    missing = [p for p in required if p not in lock.supported_parameters]
     if missing:
         raise RequestContractError(f"locked endpoint {tag!r} does not advertise required parameters {missing}")
 
 
-def spec_lock_problems(spec: GenerationSpec, lock: EndpointLock) -> list[str]:
+def spec_lock_problems(spec: GenerationSpec, lock: EndpointLock, *, forced: bool = False) -> list[str]:
     """Why ``spec`` must not be dispatched under ``lock`` (empty list = fine). ``generate`` enforces the model and cap
     itself; the lock-hash check belongs to whoever loads manifests against the write-once lock file (live.py)."""
     problems = []
@@ -103,11 +123,18 @@ def spec_lock_problems(spec: GenerationSpec, lock: EndpointLock) -> list[str]:
     if spec.endpoint_lock_hash != lock.lock_hash:
         problems.append(f"node {spec.node_id} was built for endpoint lock {spec.endpoint_lock_hash[:12]}..., "
                         f"not {lock.lock_hash[:12]}...")
-    if spec.max_completion_tokens > lock.max_completion_tokens:
+    if forced:
+        # two calls: THINK max_tokens = budget, ANSWER max_tokens = headroom; each must fit the endpoint cap
+        if max(spec.reasoning_budget, spec.completion_headroom) > lock.max_completion_tokens:
+            problems.append(f"node {spec.node_id} forced call max_tokens "
+                            f"{max(spec.reasoning_budget, spec.completion_headroom)} > endpoint cap "
+                            f"{lock.max_completion_tokens}")
+    elif spec.max_completion_tokens > lock.max_completion_tokens:
         problems.append(f"node {spec.node_id} max_tokens {spec.max_completion_tokens} > endpoint cap "
                         f"{lock.max_completion_tokens}")
     try:
-        check_lock_for_request(lock)
+        check_lock_for_request(lock, required=FORCED_REQUIRED_ENDPOINT_PARAMETERS if forced
+                               else REQUIRED_ENDPOINT_PARAMETERS)
     except ValueError as exc:
         problems.append(str(exc))
     return problems
@@ -152,6 +179,76 @@ def build_request_body(spec: GenerationSpec, messages: Sequence[Mapping[str, str
         "provider": {"only": [lock.provider_tag], "allow_fallbacks": False, "require_parameters": True},
         "stream": False,
     }
+
+
+def _forced_common(spec: GenerationSpec, lock: EndpointLock, sampling: Mapping[str, Any],
+                   prompt: str) -> dict[str, Any]:
+    if spec.model != lock.model:
+        raise RequestContractError(f"spec model {spec.model!r} differs from the endpoint lock model {lock.model!r}")
+    temperature, top_p = _check_sampling(sampling, forced=True)
+    top_k = forced_top_k(sampling)
+    required = FORCED_REQUIRED_ENDPOINT_PARAMETERS + (("top_k",) if top_k is not None else ())
+    check_lock_for_request(lock, required=required)
+    if not isinstance(prompt, str) or not prompt:
+        raise RequestContractError("forced prompt must be a non-empty string")
+    body: dict[str, Any] = {"model": lock.model, "prompt": prompt, "temperature": temperature, "top_p": top_p}
+    if top_k is not None:
+        body["top_k"] = top_k
+    return body
+
+
+def _forced_tail(lock: EndpointLock) -> dict[str, Any]:
+    return {"provider": {"only": [lock.provider_tag], "allow_fallbacks": False, "require_parameters": True},
+            "usage": {"include": True}, "stream": False}
+
+
+def build_forced_think_body(spec: GenerationSpec, prompt: str, lock: EndpointLock, sampling: Mapping[str, Any], *,
+                            ban_token_ids: Sequence[int], ban_bias: int) -> dict[str, Any]:
+    """THINK call of a forced node: the rendered chat prompt ending ``<think>\n``, ``max_tokens`` = the node's
+    reasoning budget, ``logit_bias`` = ``ban_bias`` on every banned id (``</think>``, ``<|im_end|>``,
+    ``<|endoftext|>``) so the call can only end at the budget. No ``reasoning`` field, no seed."""
+    if spec.reasoning_budget > lock.max_completion_tokens:
+        raise RequestContractError(f"THINK max_tokens {spec.reasoning_budget} exceeds the locked endpoint cap "
+                                   f"{lock.max_completion_tokens}")
+    ids = list(ban_token_ids)
+    if not ids or any(isinstance(t, bool) or not isinstance(t, int) or t < 0 for t in ids):
+        raise RequestContractError(f"forced.ban_token_ids must be non-negative integers, got {ids!r}")
+    if isinstance(ban_bias, bool) or not isinstance(ban_bias, (int, float)) or not -100 <= ban_bias < 0:
+        raise RequestContractError(f"forced.ban_bias must be in [-100, 0), got {ban_bias!r}")
+    body = _forced_common(spec, lock, sampling, prompt)
+    body["max_tokens"] = spec.reasoning_budget
+    body["logit_bias"] = {str(t): ban_bias for t in ids}
+    body.update(_forced_tail(lock))
+    return body
+
+
+def build_forced_answer_body(spec: GenerationSpec, prompt: str, lock: EndpointLock,
+                             sampling: Mapping[str, Any]) -> dict[str, Any]:
+    """ANSWER call of a forced node: THINK prompt + the realized reasoning + the close text, ``max_tokens`` = the
+    node's completion headroom, no ``logit_bias``."""
+    if spec.completion_headroom > lock.max_completion_tokens:
+        raise RequestContractError(f"ANSWER max_tokens {spec.completion_headroom} exceeds the locked endpoint cap "
+                                   f"{lock.max_completion_tokens}")
+    body = _forced_common(spec, lock, sampling, prompt)
+    body["max_tokens"] = spec.completion_headroom
+    body.update(_forced_tail(lock))
+    return body
+
+
+def build_forced_probe_body(lock: EndpointLock, sampling: Mapping[str, Any], prompt: str, *, max_tokens: int,
+                            logit_bias: Mapping[str, int | float] | None) -> dict[str, Any]:
+    """A Gate 0 probe body (banana / ``</think>``-id tests): same contract, explicit ``max_tokens`` and bias."""
+    temperature, top_p = _check_sampling(sampling, forced=True)
+    top_k = forced_top_k(sampling)
+    check_lock_for_request(lock, required=FORCED_REQUIRED_ENDPOINT_PARAMETERS + (("top_k",) if top_k else ()))
+    body: dict[str, Any] = {"model": lock.model, "prompt": prompt, "temperature": temperature, "top_p": top_p}
+    if top_k is not None:
+        body["top_k"] = top_k
+    body["max_tokens"] = int(max_tokens)
+    if logit_bias:
+        body["logit_bias"] = {str(k): v for k, v in logit_bias.items()}
+    body.update(_forced_tail(lock))
+    return body
 
 
 def request_coordinates(spec: GenerationSpec, attempt_id: str) -> dict[str, Any]:

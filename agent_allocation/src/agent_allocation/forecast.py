@@ -8,6 +8,10 @@ Model, per benchmark (conservative wherever a quantity was not measured):
   saturated cap A + headroom, except that a larger measured budget's mean may lower it (a smaller budget cannot
   use more tokens than the larger one's cap).
 * a safety multiplier (default 1.15) on every forecast figure.
+
+Forced mode (THINK + ANSWER per node; detected from the results' ``usage.raw_usage = {"think", "answer"}`` or passed
+explicitly): an observation's prompt is the THINK prompt P (not the summed THINK + ANSWER input), and a call costs
+``input * (2P + budget) + output * max(budget, completion)`` -- the ANSWER re-reads the prompt and the reasoning.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ class Observation:
     headroom: int
     prompt_tokens: int
     completion_tokens: int
+    forced: bool = False                   # prompt_tokens is the THINK prompt of a two-call forced node
 
 
 @dataclass
@@ -39,6 +44,7 @@ class BenchmarkModel:
     private_prompt: float
     packet_tokens: float
     completion: dict[tuple[str, int], float] = field(default_factory=dict)   # ("single"|"update", budget) -> mean
+    forced: bool = False
 
     def prompt_tokens(self, kind: GenerationKind, team_size: int) -> float:
         if kind in SINGLE_KINDS:
@@ -83,7 +89,8 @@ def fit_models(observations: Iterable[Observation]) -> dict[str, BenchmarkModel]
             cls = "single" if r.kind in SINGLE_KINDS else "update"
             completion.setdefault((cls, r.reasoning_budget), []).append(r.completion_tokens)
         models[benchmark] = BenchmarkModel(root_prompt, private_prompt, packet,
-                                           {k: float(mean(v)) for k, v in completion.items()})
+                                           {k: float(mean(v)) for k, v in completion.items()},
+                                           forced=any(r.forced for r in rows))
     return models
 
 
@@ -102,25 +109,32 @@ def call_mix(grid: GridSpec, base_budget: int) -> list[tuple[GenerationKind, int
     return mix
 
 
-def item_cost(model: BenchmarkModel, grid: GridSpec, base_budget: int, headroom: int, lock: EndpointLock) -> Decimal:
+def item_cost(model: BenchmarkModel, grid: GridSpec, base_budget: int, headroom: int, lock: EndpointLock, *,
+              forced: bool | None = None) -> Decimal:
+    forced = model.forced if forced is None else forced
     total = Decimal("0")
     price_in, price_out = Decimal(lock.input_price_per_token), Decimal(lock.output_price_per_token)
     for kind, n, budget in call_mix(grid, base_budget):
-        total += Decimal(str(model.prompt_tokens(kind, n))) * price_in
-        total += Decimal(str(model.completion_tokens(kind, budget, headroom))) * price_out
+        prompt = Decimal(str(model.prompt_tokens(kind, n)))
+        completion = Decimal(str(model.completion_tokens(kind, budget, headroom)))
+        if forced:
+            total += (2 * prompt + budget) * price_in + max(Decimal(budget), completion) * price_out
+        else:
+            total += prompt * price_in + completion * price_out
     return total
 
 
 def per_item_costs(models: Mapping[str, BenchmarkModel], grids: Mapping[str, GridSpec], *, lock: EndpointLock,
-                   headroom_by_benchmark: Mapping[str, int], main_a: int, high_a: int) -> dict[str, dict[str, Decimal]]:
+                   headroom_by_benchmark: Mapping[str, int], main_a: int, high_a: int,
+                   forced: bool | None = None) -> dict[str, dict[str, Decimal]]:
     out: dict[str, dict[str, Decimal]] = {}
     for benchmark in BENCHMARKS:
         model = models[benchmark]
         h = headroom_by_benchmark[benchmark]
-        main = item_cost(model, grids["main"], main_a, h, lock)
-        extension = item_cost(model, grids["main_extension"], main_a, h, lock) - main
+        main = item_cost(model, grids["main"], main_a, h, lock, forced=forced)
+        extension = item_cost(model, grids["main_extension"], main_a, h, lock, forced=forced) - main
         out[benchmark] = {"main": main * SAFETY_MULTIPLIER, "extension": extension * SAFETY_MULTIPLIER,
-                          "high": item_cost(model, grids["high"], high_a, h, lock) * SAFETY_MULTIPLIER}
+                          "high": item_cost(model, grids["high"], high_a, h, lock, forced=forced) * SAFETY_MULTIPLIER}
     return out
 
 
@@ -161,6 +175,13 @@ def observations_from_rows(rows: Sequence) -> list[Observation]:
             continue
         if usage.prompt_tokens is None or usage.completion_tokens is None:
             continue
+        raw = usage.raw_usage if isinstance(usage.raw_usage, Mapping) else {}
+        forced = "think" in raw and "answer" in raw
+        prompt = usage.prompt_tokens
+        if forced:
+            think_prompt = (raw.get("think") or {}).get("prompt_tokens")
+            prompt = think_prompt if isinstance(think_prompt, int) and not isinstance(think_prompt, bool) \
+                else max(0, (usage.prompt_tokens - r.spec.reasoning_budget) // 2)
         out.append(Observation(r.spec.benchmark, r.spec.kind, r.spec.team_size, r.spec.reasoning_budget,
-                               r.spec.completion_headroom, usage.prompt_tokens, usage.completion_tokens))
+                               r.spec.completion_headroom, prompt, usage.completion_tokens, forced=forced))
     return out
