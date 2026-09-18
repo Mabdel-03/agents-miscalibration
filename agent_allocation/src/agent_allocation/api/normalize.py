@@ -234,6 +234,39 @@ class ParsedCompletion:
     error_detail: str | None
 
 
+def _classify_body(parsed_ok: bool, data: Mapping[str, Any], choice: Mapping[str, Any], shape_problem: str | None,
+                   finish_reason: str | None, observed_provider: str | None, observed_model: str | None,
+                   cache_status: str | None, lock: EndpointLock) -> tuple[TransportStatus, str | None]:
+    """The 2xx transport classification shared by chat and raw-text completions (order documented above)."""
+    status = TransportStatus.OK
+    detail: str | None = None
+    mismatches = []
+    if observed_provider is not None and observed_provider != lock.provider_name:
+        mismatches.append(f"provider {observed_provider!r} != locked {lock.provider_name!r}")
+    if observed_model is not None and observed_model != lock.model:
+        mismatches.append(f"model {observed_model!r} != locked {lock.model!r}")
+    identity_note = "" if not mismatches else " [identity in error body: " + "; ".join(mismatches) + "]"
+    if (cache_status or "").strip().upper() == "HIT":
+        status = TransportStatus.CACHE_HIT
+        detail = "x-openrouter-cache-status HIT on an independent draw"
+    elif parsed_ok and data.get("error") is not None:
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = error_summary(data, prefix="error_envelope") + identity_note
+    elif parsed_ok and choice.get("error") is not None:
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = error_summary({"error": choice.get("error")}, prefix="error_envelope choice") + identity_note
+    elif shape_problem is not None:
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = shape_problem + identity_note
+    elif finish_reason is not None and finish_reason.strip().lower() == "error":
+        status = TransportStatus.ERROR_ENVELOPE
+        detail = "error_envelope finish_reason=error without an error object" + identity_note
+    elif mismatches:
+        status = TransportStatus.PROVIDER_MISMATCH
+        detail = "served outside the endpoint lock: " + "; ".join(mismatches)
+    return status, detail
+
+
 def parse_completion(body: bytes, cache_status: str | None, lock: EndpointLock) -> ParsedCompletion:
     try:
         payload: Any = json.loads(body)
@@ -270,32 +303,8 @@ def parse_completion(body: bytes, cache_status: str | None, lock: EndpointLock) 
     reasoning_returned = _non_empty(message.get("reasoning")) or _non_empty(message.get("reasoning_details"))
     usage = normalize_usage(data.get("usage"))
 
-    status = TransportStatus.OK
-    detail: str | None = None
-    mismatches = []
-    if observed_provider is not None and observed_provider != lock.provider_name:
-        mismatches.append(f"provider {observed_provider!r} != locked {lock.provider_name!r}")
-    if observed_model is not None and observed_model != lock.model:
-        mismatches.append(f"model {observed_model!r} != locked {lock.model!r}")
-    identity_note = "" if not mismatches else " [identity in error body: " + "; ".join(mismatches) + "]"
-    if (cache_status or "").strip().upper() == "HIT":
-        status = TransportStatus.CACHE_HIT
-        detail = "x-openrouter-cache-status HIT on an independent draw"
-    elif parsed_ok and data.get("error") is not None:
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = error_summary(data, prefix="error_envelope") + identity_note
-    elif parsed_ok and choice.get("error") is not None:
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = error_summary({"error": choice.get("error")}, prefix="error_envelope choice") + identity_note
-    elif shape_problem is not None:
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = shape_problem + identity_note
-    elif finish_reason is not None and finish_reason.strip().lower() == "error":
-        status = TransportStatus.ERROR_ENVELOPE
-        detail = "error_envelope finish_reason=error without an error object" + identity_note
-    elif mismatches:
-        status = TransportStatus.PROVIDER_MISMATCH
-        detail = "served outside the endpoint lock: " + "; ".join(mismatches)
+    status, detail = _classify_body(parsed_ok, data, choice, shape_problem, finish_reason, observed_provider,
+                                    observed_model, cache_status, lock)
     return ParsedCompletion(
         transport_status=status,
         completion_status=(completion_status(visible_content, finish_reason, native_finish_reason,
@@ -310,3 +319,97 @@ def parse_completion(body: bytes, cache_status: str | None, lock: EndpointLock) 
         usage=usage,
         error_detail=None if detail is None else (redact(detail) or "")[:MAX_ERROR_DETAIL_CHARS],
     )
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Raw-prompt text completions (``POST /completions``, forced mode)
+# ---------------------------------------------------------------------------------------------------------------------
+
+THINK_CLOSE = "</think>"
+
+
+def split_reasoning(reasoning_field: str, text: str) -> tuple[str, str, bool]:
+    """``(reasoning, visible answer, closed)`` for both server styles of one call that *started* inside ``<think>``:
+    a reasoning parser (thinking in ``reasoning``, answer in ``text``) or none (``thinking</think>answer`` all in
+    ``text``). The forced-depth pilot's ``split_natural``, verbatim in behaviour."""
+    if THINK_CLOSE in text:
+        pre, _, visible = text.partition(THINK_CLOSE)
+        return reasoning_field + pre, visible, True
+    if not reasoning_field:                                # no parser and never closed: all of it is thinking
+        return text, "", False
+    return reasoning_field, text, bool(text.strip())
+
+
+def answer_visible_text(reasoning_field: str, text: str) -> str:
+    """Visible content of an ANSWER call (its prompt already closed ``</think>``). A server-side reasoning parser that
+    only watches the *output* for ``</think>`` files the whole answer under ``reasoning`` and leaves ``text`` empty;
+    then the reasoning field *is* the answer. A stray ``</think>`` in the output ends any extra thinking."""
+    if text.strip():
+        visible = text
+    else:
+        visible = reasoning_field
+    if THINK_CLOSE in visible:
+        visible = visible.rpartition(THINK_CLOSE)[2]
+    return visible
+
+
+@dataclass(frozen=True)
+class ParsedTextCompletion:
+    """Everything extracted from a 2xx ``/completions`` body. ``text``/``reasoning`` are the raw choice fields
+    (``""`` when absent); ``transport_status`` is final; ``completion_status`` is None (the caller decides: a THINK
+    call has no visible content by construction)."""
+    transport_status: TransportStatus
+    generation_id: str | None
+    observed_model: str | None
+    observed_provider: str | None
+    finish_reason: str | None
+    native_finish_reason: str | None
+    text: str
+    reasoning: str
+    usage: Usage | None
+    error_detail: str | None
+    payload: Any                                           # the decoded JSON (None when the body is not JSON)
+
+
+def parse_text_completion(body: bytes, cache_status: str | None, lock: EndpointLock) -> ParsedTextCompletion:
+    """Classify a 2xx raw-completion body with exactly the chat rules (cache HIT, error envelopes, shape, identity);
+    the only difference is the choice shape: ``choices[0].text`` (+ optional ``reasoning``) instead of a message."""
+    try:
+        payload: Any = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    parsed_ok = isinstance(payload, Mapping)
+    data: Mapping[str, Any] = payload if parsed_ok else {}
+    generation_id = data.get("id") if isinstance(data.get("id"), str) else None
+    observed_model = data.get("model") if isinstance(data.get("model"), str) else None
+    observed_provider = data.get("provider") if isinstance(data.get("provider"), str) else None
+    choices = data.get("choices")
+    choice: Mapping[str, Any] = {}
+    shape_problem: str | None = None
+    if not parsed_ok:
+        shape_problem = "malformed_body: response is not a JSON object"
+    elif data.get("error") is None:
+        if not isinstance(choices, list) or len(choices) != 1:
+            count = len(choices) if isinstance(choices, list) else "no"
+            shape_problem = f"malformed_body: expected exactly one choice, got {count}"
+        elif not isinstance(choices[0], Mapping):
+            shape_problem = "malformed_body: choice is not an object"
+        else:
+            choice = choices[0]
+            if not isinstance(choice.get("text"), str) and not isinstance(choice.get("reasoning"), str) \
+                    and choice.get("error") is None:
+                shape_problem = "malformed_body: choice has no text"
+    finish_reason = choice.get("finish_reason") if isinstance(choice.get("finish_reason"), str) else None
+    native = choice.get("native_finish_reason")
+    native_finish_reason = native if isinstance(native, str) else None
+    text = choice.get("text") if isinstance(choice.get("text"), str) else ""
+    reasoning = choice.get("reasoning") if isinstance(choice.get("reasoning"), str) else ""
+    usage = normalize_usage(data.get("usage"))
+    status, detail = _classify_body(parsed_ok, data, choice, shape_problem, finish_reason, observed_provider,
+                                    observed_model, cache_status, lock)
+    return ParsedTextCompletion(
+        transport_status=status, generation_id=generation_id, observed_model=observed_model,
+        observed_provider=observed_provider, finish_reason=finish_reason, native_finish_reason=native_finish_reason,
+        text=text, reasoning=reasoning, usage=usage,
+        error_detail=None if detail is None else (redact(detail) or "")[:MAX_ERROR_DETAIL_CHARS],
+        payload=payload if parsed_ok else None)

@@ -6,6 +6,11 @@
 ``:free``), for a preview/experimental/variant model, lacking a required parameter, or missing pricing/limits.
 Prices are copied as the snapshot's decimal strings. Volatile listing fields (status, uptime, latency) are reported by
 ``endpoint_candidates`` but never enter the lock.
+
+Forced mode (``forced=True``; ``forced.enabled`` in config, tag from ``provider.endpoint_tag``): the required
+parameters are ``request.FORCED_REQUIRED_ENDPOINT_PARAMETERS`` (``logit_bias`` instead of ``reasoning``), and the
+``internal_reasoning`` price may be absent or zero -- open-weight endpoints bill thinking as ordinary completion
+tokens; an absent price is locked as ``"0"`` and reservations then use the completion price.
 """
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
-from agent_allocation.api.request import REQUIRED_ENDPOINT_PARAMETERS
+from agent_allocation.api.request import FORCED_REQUIRED_ENDPOINT_PARAMETERS, REQUIRED_ENDPOINT_PARAMETERS
 from agent_allocation.contracts import EndpointLock
 
 TIER_MARKERS: tuple[str, ...] = ("/flex", "/priority", "/batch", ":free")
@@ -44,8 +49,10 @@ def tag_problems(tag: Any) -> list[str]:
     return [f"tag {tag!r} is a non-standard tier variant ({marker})" for marker in TIER_MARKERS if marker in lowered]
 
 
-def _price(pricing: Mapping[str, Any], key: str, tag: str) -> str:
+def _price(pricing: Mapping[str, Any], key: str, tag: str, *, allow_zero: bool = False) -> str:
     value = pricing.get(key)
+    if allow_zero and value is None:
+        return "0"
     if isinstance(value, bool) or value is None:
         raise EndpointBlocked(f"endpoint {tag!r} has no pricing.{key}")
     text = str(value).strip()
@@ -53,6 +60,8 @@ def _price(pricing: Mapping[str, Any], key: str, tag: str) -> str:
         amount = Decimal(text)
     except InvalidOperation:
         raise EndpointBlocked(f"endpoint {tag!r} pricing.{key}={value!r} is not a decimal") from None
+    if allow_zero and amount.is_finite() and amount == 0:
+        return text
     if not amount.is_finite() or amount <= 0:
         raise EndpointBlocked(f"endpoint {tag!r} pricing.{key}={value!r} is not a positive price "
                               f"(free/zero-priced endpoints are not standard)")
@@ -78,7 +87,11 @@ def _endpoints(snapshot: Mapping[str, Any], model: str) -> list[Mapping[str, Any
     return [e for e in endpoints if isinstance(e, Mapping)]
 
 
-def endpoint_candidates(snapshot: Mapping[str, Any], model: str) -> list[dict[str, Any]]:
+def required_parameters(*, forced: bool = False) -> tuple[str, ...]:
+    return FORCED_REQUIRED_ENDPOINT_PARAMETERS if forced else REQUIRED_ENDPOINT_PARAMETERS
+
+
+def endpoint_candidates(snapshot: Mapping[str, Any], model: str, *, forced: bool = False) -> list[dict[str, Any]]:
     """Capability-report rows: every listed endpoint with its tag, prices, status and why it is (not) selectable."""
     rows = []
     for endpoint in _endpoints(snapshot, model):
@@ -87,7 +100,7 @@ def endpoint_candidates(snapshot: Mapping[str, Any], model: str) -> list[dict[st
         if endpoint.get("model_id") not in (None, model):
             problems.append(f"model_id {endpoint.get('model_id')!r} != {model!r}")
         supported = endpoint.get("supported_parameters") or []
-        missing = [p for p in REQUIRED_ENDPOINT_PARAMETERS if p not in supported]
+        missing = [p for p in required_parameters(forced=forced) if p not in supported]
         if missing:
             problems.append(f"missing required parameters {missing}")
         pricing = endpoint.get("pricing") if isinstance(endpoint.get("pricing"), Mapping) else {}
@@ -108,8 +121,11 @@ def endpoint_candidates(snapshot: Mapping[str, Any], model: str) -> list[dict[st
     return rows
 
 
-def select_standard_endpoint(snapshot: Mapping[str, Any], model: str, *, preferred_tag: str = "google-ai-studio",
-                             snapshot_path: str = "", snapshot_sha256: str = "", fetched_at: str = "") -> EndpointLock:
+def select_standard_endpoint(snapshot: Mapping[str, Any], model: str, *, preferred_tag: str | None = "google-ai-studio",
+                             forced: bool = False, snapshot_path: str = "", snapshot_sha256: str = "",
+                             fetched_at: str = "") -> EndpointLock:
+    if preferred_tag is None:
+        preferred_tag = "google-ai-studio"
     problems = model_problems(model) + tag_problems(preferred_tag)
     if problems:
         raise EndpointBlocked("; ".join(problems))
@@ -128,7 +144,7 @@ def select_standard_endpoint(snapshot: Mapping[str, Any], model: str, *, preferr
     supported = endpoint.get("supported_parameters")
     if not isinstance(supported, list) or not all(isinstance(p, str) for p in supported):
         raise EndpointBlocked(f"endpoint {preferred_tag!r} has no supported_parameters list")
-    missing = [p for p in REQUIRED_ENDPOINT_PARAMETERS if p not in supported]
+    missing = [p for p in required_parameters(forced=forced) if p not in supported]
     if missing:
         raise EndpointBlocked(f"endpoint {preferred_tag!r} does not support required parameters {missing}")
     pricing = endpoint.get("pricing")
@@ -141,7 +157,7 @@ def select_standard_endpoint(snapshot: Mapping[str, Any], model: str, *, preferr
         service_tier="standard",
         input_price_per_token=_price(pricing, "prompt", preferred_tag),
         output_price_per_token=_price(pricing, "completion", preferred_tag),
-        internal_reasoning_price_per_token=_price(pricing, "internal_reasoning", preferred_tag),
+        internal_reasoning_price_per_token=_price(pricing, "internal_reasoning", preferred_tag, allow_zero=forced),
         context_length=_positive_int(endpoint, "context_length", preferred_tag),
         max_completion_tokens=_positive_int(endpoint, "max_completion_tokens", preferred_tag),
         supported_parameters=tuple(sorted(set(supported))),

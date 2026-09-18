@@ -79,3 +79,67 @@ def reconcile_generation(result: GenerationResult, metadata: Mapping[str, Any] |
         problems.append(f"native reasoning tokens {native_reasoning} != response usage {usage_reasoning}")
     return Reconciliation(result.attempt_id, result.generation_id, DISCREPANT if problems else CONSISTENT,
                           metadata_cost, result_cost, native_reasoning, tuple(problems))
+
+
+def merge_forced_metadata(think: Mapping[str, Any], answer: Mapping[str, Any]) -> dict[str, Any]:
+    """One ``/generation``-shaped record for a forced node (THINK + ANSWER): the ANSWER's id, identity fields that
+    must agree across both calls (a disagreement surfaces as a value no lock can match), costs and token counts
+    summed. ``native_tokens_reasoning`` is left ``None`` (a raw completion reports no reasoning split; the node's
+    reasoning is THINK's completion tokens, kept under ``forced.think``)."""
+    def same(key: str) -> Any:
+        a, t = answer.get(key), think.get(key)
+        if a == t or t is None:
+            return a
+        if a is None:
+            return t
+        return f"{t} | {a}"                                 # THINK and ANSWER disagree: never equals a locked value
+
+    def total(key: str) -> Any:
+        values = [think.get(key), answer.get(key)]
+        if any(v is None or isinstance(v, bool) for v in values):
+            return None
+        money = [parse_money(v) for v in values]
+        if any(m is None for m in money):
+            return None
+        return money[0] + money[1]
+
+    def count(key: str) -> int | None:
+        values = [think.get(key), answer.get(key)]
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+            return values[0] + values[1]
+        return None
+
+    return {
+        "id": answer.get("id"),
+        "provider_name": same("provider_name"),
+        "model": same("model"),
+        "service_tier": same("service_tier"),
+        "response_cache_source_id": think.get("response_cache_source_id") or answer.get("response_cache_source_id"),
+        "total_cost": total("total_cost"),
+        "tokens_prompt": count("tokens_prompt"),
+        "tokens_completion": count("tokens_completion"),
+        "native_tokens_prompt": count("native_tokens_prompt"),
+        "native_tokens_completion": count("native_tokens_completion"),
+        "native_tokens_reasoning": None,
+        "finish_reason": answer.get("finish_reason"),
+        "forced": {"think": dict(think), "answer": dict(answer)},
+    }
+
+
+def reconcile_forced_generation(result: GenerationResult, think_metadata: Mapping[str, Any] | None,
+                                answer_metadata: Mapping[str, Any] | None, lock: EndpointLock) -> Reconciliation:
+    """``reconcile_generation`` for a forced node: both generation ids must be known to /generation; identity is
+    checked on both and the charged cost is THINK + ANSWER."""
+    if result.generation_id is None:
+        return reconcile_generation(result, None, lock)
+    if think_metadata is None or answer_metadata is None:
+        result_cost = result.usage.actual_cost_usd if result.usage else None
+        return Reconciliation(result.attempt_id, result.generation_id, PENDING, None, result_cost, None)
+    merged = merge_forced_metadata(think_metadata, answer_metadata)
+    reconciliation = reconcile_generation(result, merged, lock)
+    extra = [f"think: {p}" for p in metadata_identity_problems(think_metadata, lock)]
+    if extra and reconciliation.state != DISCREPANT:
+        return Reconciliation(reconciliation.attempt_id, reconciliation.generation_id, DISCREPANT,
+                              reconciliation.metadata_cost_usd, reconciliation.result_cost_usd,
+                              reconciliation.native_reasoning_tokens, reconciliation.problems + tuple(extra))
+    return reconciliation
