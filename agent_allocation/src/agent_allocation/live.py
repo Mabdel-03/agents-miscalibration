@@ -963,7 +963,8 @@ async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -
     inputs = pilot_gate_inputs(cfg, paths, graphs, rows, used)
     forecast = forecast_from_rows(cfg, paths, rows, locks, amendments)
     gate = evaluate_gate2(rows, selector_rows_missing=selection["checkpoints_missing_candidates"],
-                          core_forecast_usd=Decimal(forecast["core_plus_spent_plus_reserve_usd"]), **inputs)
+                          core_forecast_usd=Decimal(forecast["core_plus_spent_plus_reserve_usd"]),
+                          core_forecast_max_usd=Decimal(str(cfg["budget"]["soft_admission_ceiling_usd"])), **inputs)
     write_gate(paths, gate)
     (paths.state_dir / "pilot_forecast.json").write_text(json.dumps(forecast, indent=1, sort_keys=True))
     write_pilot_report(paths, gate, forecast, {**inputs, "grader_returncode": grade_rc}, selection)

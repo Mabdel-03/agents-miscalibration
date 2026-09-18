@@ -61,11 +61,22 @@ def scope_notes(analysis: "Analysis") -> str:
     labels = _labels(analysis)
     cfg = analysis.run.config
     reasoning = cfg.get("reasoning", {})
-    notes = [
-        f"BBH is the **{labels.get('bbh_logic4', 'BBH four-subtask zero-shot subset')}** (four subtasks, zero-shot), "
-        "not the official full BBH score; its aggregate weights the four subtasks equally.",
-        f"MBPP+ delivered accuracy uses the **public-test selector** ({labels.get('mbpp_plus', 'mbpp_plus')}): "
-        "candidates are ranked by prompt-visible examples only and reported as public_select@k, never vote@k.",
+    benchmarks = [b.get("id") for b in cfg.get("benchmarks", [])]
+    notes = []
+    if "bbh_logic4" in benchmarks:
+        notes.append(f"BBH is the **{labels.get('bbh_logic4', 'BBH four-subtask zero-shot subset')}** (four subtasks, "
+                     "zero-shot), not the official full BBH score; its aggregate weights the four subtasks equally.")
+    if "mbpp_plus" in benchmarks:
+        notes.append(f"MBPP+ delivered accuracy uses the **public-test selector** "
+                     f"({labels.get('mbpp_plus', 'mbpp_plus')}): candidates are ranked by prompt-visible examples only "
+                     "and reported as public_select@k, never vote@k.")
+    if "omni_math_hard" in benchmarks:
+        notes.append("Math answers (AIME, HMMT, Omni-MATH) are graded by pinned Math-Verify against the gold, with no "
+                     "LLM judge; Omni-MATH items whose gold is prose or not a parseable expression were excluded "
+                     "before any generation (engineering exclusions, not outcome-based selection).")
+    if "gpqa_diamond" in benchmarks:
+        notes.append("GPQA-Diamond options are shuffled once per item with a fixed seed; the gold letter is not fixed.")
+    notes += [
         budget_semantics_note(cfg),
         "This is a token- and API-cost-accounted study, not a FLOP-matched experiment.",
         "Frontiers are descriptive: the best among evaluated configurations on this sample, never a validated "
@@ -153,7 +164,7 @@ def primary_section(analysis: "Analysis") -> str:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return "## Primary contrasts\n\n_(not estimable: checkpoints absent)_\n"
     out = ["## Primary contrasts (frozen, main allowance)", "",
-           "Per-item contrast first, then equal-benchmark macro (BBH subtasks equal). Intervals: studentized item-"
+           "Per-item contrast first, then equal-benchmark macro. Intervals: studentized item-"
            "cluster bootstrap when complete (at small n it can extend past the parameter range; the percentile "
            "interval is shown beside it), otherwise known-only percentile intervals labeled partial with "
            "fixed-population bounds. P-values (Holm over exactly these two) are reported only when both populations "
@@ -236,8 +247,8 @@ def accuracy_section(analysis: "Analysis") -> str:
     out = ["## Delivered accuracy (current view, every checkpoint)", "",
            "Cells: accuracy (95% item-cluster percentile interval). `unknown [lower, upper]` gives fixed-denominator "
            "bounds when any outcome is unknown or unrun; `*` marks known-only partial intervals. Readouts: last answer "
-           "for PRIVATE_SINGLE/DEEP/POOLED, plurality for text sample/team arms, public-test selection for MBPP+. "
-           "BBH subtask rows are in `tables/accuracy_summary`.", ""]
+           "for PRIVATE_SINGLE/DEEP/POOLED, plurality for text sample/team arms (public-test selection for a code "
+           "benchmark, when present). Subgroup rows are in `tables/accuracy_summary`.", ""]
     for partition in sorted(set(acc["partition_id"])):
         out += [f"### Partition `{partition}`", "", md_table(_wide_accuracy(acc, partition))]
     return "\n".join(out)

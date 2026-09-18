@@ -517,6 +517,8 @@ def _is_request_contract_error(exc: BaseException) -> bool:
 
 
 def critical_class(spec: GenerationSpec) -> int:
+    if spec.kind is GenerationKind.DEEP:               # one long call (up to 25*A): start it with the chain
+        return 0
     if spec.kind is GenerationKind.ROOT and spec.root_slot == 0:
         return 0
     if spec.kind is GenerationKind.PRIVATE and spec.root_slot == 0 and spec.team_size == 0:

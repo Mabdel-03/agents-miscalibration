@@ -184,7 +184,9 @@ def evaluate_gate2(rows: Sequence[CallRow], *, duplicate_terminal_nodes: int, bu
                    selector_rows_missing: int, code_candidates: int, code_public_rows: int, code_private_grades: int,
                    evaluator_errors: int, graded_total: int, packet_envelope_violations: int,
                    core_forecast_usd: Decimal, amendments_used: Iterable[str] = (),
-                   evidence: str = "reports/PILOT_REPORT.md") -> GateResult:
+                   evidence: str = "reports/PILOT_REPORT.md",
+                   core_forecast_max_usd: Decimal = G2_CORE_FORECAST_MAX_USD) -> GateResult:
+    """``core_forecast_max_usd``: the run's (a shard's) ``budget.soft_admission_ceiling_usd``; v1's 125 by default."""
     criteria: list[GateCriterion] = []
     truncation_failures: list[str] = []
     for benchmark in BENCHMARKS:
@@ -223,8 +225,8 @@ def evaluate_gate2(rows: Sequence[CallRow], *, duplicate_terminal_nodes: int, bu
                           graded_total > 0 and err_share <= G2_EVALUATOR_ERROR_MAX_SHARE, "grades/"))
     criteria.append(_crit("packet_envelope_respected", packet_envelope_violations, "0",
                           packet_envelope_violations == 0, evidence))
-    criteria.append(_crit("core_forecast_within_soft_ceiling", str(core_forecast_usd), f"<= {G2_CORE_FORECAST_MAX_USD}",
-                          core_forecast_usd <= G2_CORE_FORECAST_MAX_USD, evidence))
+    criteria.append(_crit("core_forecast_within_soft_ceiling", str(core_forecast_usd), f"<= {core_forecast_max_usd}",
+                          core_forecast_usd <= core_forecast_max_usd, evidence))
     passed = all(c.passed for c in criteria)
     if passed:
         decision = "advance"

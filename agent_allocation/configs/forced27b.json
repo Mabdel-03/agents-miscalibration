@@ -228,20 +228,21 @@
  },
  "shards": [
   {
-   "id": "parasail",
-   "endpoint_tag": "parasail/fp8",
-   "share": 1
-  },
-  {
    "id": "mancer",
    "endpoint_tag": "mancer/fp8",
-   "share": 1
+   "share": 3
   },
   {
-   "id": "dekallm",
-   "endpoint_tag": "dekallm",
-   "share": 1
+   "id": "parasail",
+   "endpoint_tag": "parasail/fp8",
+   "share": 2
   }
  ],
- "shards_note": "provisional until the endpoint screen; items are assigned to shards by a seeded benchmark-balanced hash; each shard gets share/sum(share) of budget.credit_ceiling_usd"
+ "shards_note": "2026-09-18 screen: Mancer 2.8k tok/s @64 in flight, no 429s; Parasail 1.8k @64 with 27/64 429s (~40 in flight); DekaLLM refuses top_k; Cloudflare slow/expensive. Items assigned by a seeded benchmark-balanced hash; each shard gets share/sum(share) of the budget ceilings.",
+ "scheduler_by_shard": {
+  "parasail": {
+   "concurrency_max": 40,
+   "requests_per_second_max": 8
+  }
+ }
 }

@@ -102,6 +102,12 @@ def shard_config(cfg: Mapping[str, Any], shard_id: str) -> dict[str, Any]:
         if key in budget:
             budget[key] = float(scale_usd(budget[key], fraction))
     out["budget"] = budget
+    # Per-provider dispatcher limits (e.g. Parasail 429s above ~40 in flight): ``scheduler_by_shard[<id>]`` overrides.
+    overrides = (cfg.get("scheduler_by_shard") or {}).get(shard_id) or {}
+    unknown = sorted(set(overrides) - set(out.get("scheduler", {})))
+    if unknown:
+        raise ValueError(f"scheduler_by_shard[{shard_id!r}] has unknown scheduler keys {unknown}")
+    out["scheduler"] = {**out.get("scheduler", {}), **overrides}
     out["shard"] = {"id": shard_id, "endpoint_tag": entry["endpoint_tag"], "share": entry["share"],
                     "total_share": str(total),
                     "base_config_sha256": config_hash(cfg), "base_config": copy.deepcopy(dict(cfg))}
