@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from agent_allocation import live
-from agent_allocation.api.fake import fake_endpoint_lock, fake_openrouter_transport
+from agent_allocation.api.fake import fake_forced_endpoint_lock, fake_openrouter_transport
 from agent_allocation.calibrate import (
     NATURAL_PARTITION, NaturalRoutingClient, calibration_summary, collect, evaluate,
 )
@@ -34,8 +34,8 @@ TEXT_ITEMS = ("math500/adv/1", "math500/adv/2", "mmlu_pro/adv/1", "mmlu_pro/adv/
 
 def _study_config() -> dict:
     cfg = request_ready(fast_config(forced_test_config()))
-    cfg["shards"] = [{"id": "alpha", "endpoint_tag": "prov-a/fp8", "share": 1},
-                     {"id": "beta", "endpoint_tag": "prov-b/fp8", "share": 1}]
+    cfg["shards"] = [{"id": "alpha", "endpoint_tag": "parasail/fp8", "share": 1},
+                     {"id": "beta", "endpoint_tag": "mancer/fp8", "share": 1}]
     assert validate_config(cfg) == [], validate_config(cfg)
     return cfg
 
@@ -45,8 +45,8 @@ def _inventory():
     return [InventoryItem(public=items[i][0], private=items[i][1]) for i in TEXT_ITEMS]
 
 
-def _write_lock(paths: RunPaths, model: str) -> None:
-    lock = fake_endpoint_lock(model)
+def _write_lock(paths: RunPaths, model: str, tag: str = "parasail/fp8") -> None:
+    lock = fake_forced_endpoint_lock(model, tag=tag)   # the forced parameter contract (logit_bias, top_k, ...)
     paths.endpoint_lock.parent.mkdir(parents=True, exist_ok=True)
     paths.endpoint_lock.write_text(json.dumps({"locks": {model: dump_record(lock)}}, sort_keys=True))
 
@@ -90,7 +90,7 @@ def test_sharded_forced_study_runs_straight_through_and_merges(tmp_path):
         assert info["problems"] == []
         derived = shard_config(cfg, shard)
         paths = RunPaths.for_run(root.run_dir / "shards" / shard, local_state_dir=tmp_path / f"local_{shard}")
-        _write_lock(paths, cfg["primary_model"])
+        _write_lock(paths, cfg["primary_model"], derived["provider"]["endpoint_tag"])
         out = _run_shard(derived, paths, inventory)
         items = {g.item_id for g in out["graphs"]}
         assert items == items_of(assignment["assignment"], shard) and not items & seen
