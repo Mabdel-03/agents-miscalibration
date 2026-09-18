@@ -19,6 +19,12 @@ dict (schema ``CANARY_REPORT_SCHEMA``):
 * ``rows``: one compact per-attempt row for the evidence file.
 
 Token distributions use transport-OK rows only; cost totals use every row that reports a cost.
+
+Forced mode (rows produced by ``api.forced.ForcedClient``, recognized by ``usage.raw_usage = {"think", "answer"}``):
+each summary adds ``forced_rows`` and ``forced_budget_not_exact_count`` (transport-OK forced rows whose reasoning
+tokens differ from the requested budget -- the forced contract says realized == requested), flagged as
+``{scope}:forced_budget_not_exact=N``; a raw completion reports no reasoning split in /generation metadata, so the
+metadata reasoning comparison is skipped for forced rows.
 """
 from __future__ import annotations
 
@@ -73,8 +79,16 @@ def _is_empty(content: str | None) -> bool:
     return content is None or not content.strip()
 
 
+def _is_forced(result: GenerationResult) -> bool:
+    raw = result.usage.raw_usage if result.usage is not None else None
+    return isinstance(raw, Mapping) and "think" in raw and "answer" in raw
+
+
 def _summary(budget: int | None, rows: Sequence[Row]) -> dict[str, Any]:
     ok = [(spec, result, meta) for spec, result, meta in rows if result.transport_status is TransportStatus.OK]
+    forced_ok = [(spec, result) for spec, result, _ in ok if _is_forced(result)]
+    forced_not_exact = sum(1 for spec, result in forced_ok
+                           if result.usage is None or result.usage.reasoning_tokens != spec.reasoning_budget)
     usage_of = [(spec, result.usage, meta) for spec, result, meta in ok]
     reasoning = [u.reasoning_tokens if u else None for _, u, _ in usage_of]
     completion = [u.completion_tokens if u else None for _, u, _ in usage_of]
@@ -86,7 +100,7 @@ def _summary(budget: int | None, rows: Sequence[Row]) -> dict[str, Any]:
     native_reasoning = [_int_or_none(meta.get("native_tokens_reasoning")) for _, meta in metadata]
     reasoning_disagreements = sum(
         1 for (result, meta), native in zip(metadata, native_reasoning)
-        if native is not None and result.usage is not None and result.usage.reasoning_tokens is not None
+        if native is not None and not _is_forced(result) and result.usage is not None and result.usage.reasoning_tokens is not None
         and native != result.usage.reasoning_tokens)
     cost_disagreements = 0
     for result, meta in metadata:
@@ -126,6 +140,8 @@ def _summary(budget: int | None, rows: Sequence[Row]) -> dict[str, Any]:
         "at_completion_cap_count": sum(1 for (spec, _, _), c in zip(usage_of, completion)
                                        if c is not None and c >= spec.max_completion_tokens),
         "latency_seconds": _distribution([r.latency_seconds for _, r, _ in rows]),
+        "forced_rows": sum(1 for _, r, _ in rows if _is_forced(r)),
+        "forced_budget_not_exact_count": forced_not_exact,
         "observed_providers": _counts(r.observed_provider for _, r, _ in rows),
         "observed_models": _counts(r.observed_model for _, r, _ in rows),
         "cache_statuses": _counts(r.cache_status for _, r, _ in rows),
@@ -170,6 +186,8 @@ def _flags(scope: str, summary: Mapping[str, Any]) -> list[str]:
         flags.append(f"{scope}:reasoning_exceeds_completion={summary['reasoning_exceeds_completion_count']}")
     if summary["reasoning_over_budget_count"]:
         flags.append(f"{scope}:reasoning_over_requested_budget={summary['reasoning_over_budget_count']}")
+    if summary.get("forced_budget_not_exact_count"):
+        flags.append(f"{scope}:forced_budget_not_exact={summary['forced_budget_not_exact_count']}")
     if summary["content_empty_count"]:
         flags.append(f"{scope}:empty_content={summary['content_empty_count']}")
     if summary["completion_statuses"].get(CompletionStatus.LENGTH.value):

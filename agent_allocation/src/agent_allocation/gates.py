@@ -47,6 +47,29 @@ class CallRow:
     result: GenerationResult
     candidate: Candidate | None
     metadata: Mapping[str, Any] | None = None      # /generation data when fetched
+    raw_payload: Mapping[str, Any] | None = None   # forced mode: the stored raw artifact (THINK finish reason)
+
+
+def is_forced_row(row: CallRow) -> bool:
+    usage = row.result.usage
+    raw = usage.raw_usage if usage is not None else None
+    return isinstance(raw, Mapping) and "think" in raw and "answer" in raw
+
+
+def forced_budget_problems(rows: Sequence[CallRow]) -> list[dict[str, Any]]:
+    """Forced Gate 1: every transport-OK forced row realized exactly its reasoning budget with THINK finish
+    ``length`` (read from the raw payload when attached; ``ForcedClient`` never returns OK otherwise)."""
+    from agent_allocation.api.forced import forced_usage_from_raw
+    bad = []
+    for r in rows:
+        if r.result.transport_status != TransportStatus.OK:
+            continue
+        realized = r.result.usage.reasoning_tokens if r.result.usage is not None else None
+        finish = forced_usage_from_raw(r.raw_payload).get("think_finish_reason") if r.raw_payload else "length"
+        if realized != r.spec.reasoning_budget or finish != "length":
+            bad.append({"node": r.spec.node_id[:12], "budget": r.spec.reasoning_budget, "reasoning": realized,
+                        "think_finish_reason": finish})
+    return bad
 
 
 def _crit(name: str, observed: Any, threshold: str, passed: bool, evidence: str) -> GateCriterion:
@@ -66,7 +89,12 @@ def standard_price_ratio(row: CallRow, lock: EndpointLock) -> Decimal | None:
 
 
 def evaluate_gate1(rows: Sequence[CallRow], locks: Mapping[str, EndpointLock], *, key_usage_delta_usd: Decimal | None,
-                   ledger_settled_usd: Decimal, evidence: str = "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl") -> GateResult:
+                   ledger_settled_usd: Decimal, evidence: str = "manifests/jobs/canary.jsonl + parsed/ + state/generation_metadata.jsonl",
+                   forced: bool | None = None) -> GateResult:
+    """``forced`` (default: detected from the rows) replaces ``numeric_budget_applied`` by ``forced_exact_budget``:
+    every canary node's reasoning tokens equal its budget, THINK finish ``length``, at every canary budget."""
+    if forced is None:
+        forced = bool(rows) and any(is_forced_row(r) for r in rows)
     criteria: list[GateCriterion] = []
     transport = [r.result.transport_status.value for r in rows]
     criteria.append(_crit("all_transport_ok", {"n": len(rows), "not_ok": [t for t in transport if t != "ok"]},
@@ -106,11 +134,23 @@ def evaluate_gate1(rows: Sequence[CallRow], locks: Mapping[str, EndpointLock], *
     by_budget = {}
     for r in primary:
         by_budget.setdefault(r.spec.reasoning_budget, []).append(r.result.usage.reasoning_tokens)
-    responsive = bool(small) and bool(large) and max(large) > max(small) and max(small) <= G1_SMALL_BUDGET_MAX_REASONING
-    criteria.append(_crit("numeric_budget_applied",
-                          {str(k): {"n": len(v), "median": median(v), "max": max(v)} for k, v in sorted(by_budget.items())},
-                          f"max reasoning at A>={G1_LARGE_BUDGET_MIN} exceeds max at A={G1_SMALL_BUDGET}, and A=512 "
-                          f"never exceeds {G1_SMALL_BUDGET_MAX_REASONING}", responsive, evidence))
+    if forced:
+        bad = forced_budget_problems(rows)
+        not_forced = [r.spec.node_id[:12] for r in ok_rows if not is_forced_row(r)]
+        criteria.append(_crit("forced_exact_budget",
+                              {"budgets": {str(k): {"n": len(v), "min": min(v), "max": max(v)}
+                                           for k, v in sorted(by_budget.items())},
+                               "not_exact": bad, "not_forced": not_forced},
+                              "every canary node: reasoning_tokens == reasoning_budget and THINK finish_reason length",
+                              bool(ok_rows) and not bad and not not_forced, evidence))
+    else:
+        responsive = bool(small) and bool(large) and max(large) > max(small) and \
+            max(small) <= G1_SMALL_BUDGET_MAX_REASONING
+        criteria.append(_crit("numeric_budget_applied",
+                              {str(k): {"n": len(v), "median": median(v), "max": max(v)}
+                               for k, v in sorted(by_budget.items())},
+                              f"max reasoning at A>={G1_LARGE_BUDGET_MIN} exceeds max at A={G1_SMALL_BUDGET}, and A=512 "
+                              f"never exceeds {G1_SMALL_BUDGET_MAX_REASONING}", responsive, evidence))
 
     bad_request = [r.spec.reasoning_budget for r in rows if r.result.transport_status == TransportStatus.BAD_REQUEST]
     criteria.append(_crit("no_rejected_budget", bad_request, "no 4xx for any configured A", not bad_request, evidence))
