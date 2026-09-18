@@ -40,7 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from functools import lru_cache
@@ -54,11 +54,12 @@ from agent_allocation.apikey import redact_headers
 from agent_allocation.api.client import DEFAULT_BASE_URL, TRANSPORT_EXCEPTIONS, OpenRouterClient
 from agent_allocation.api.normalize import (
     GATEWAY_TIMEOUT_STATUSES, THINK_CLOSE, ParsedTextCompletion, answer_visible_text, classify_exception,
+    split_reasoning,
     classify_http_status, completion_status, error_summary, parse_retry_after, parse_text_completion,
 )
 from agent_allocation.api.request import (
     REQUEST_EXTENSION_KEY, RequestContractError, _check_messages, build_forced_answer_body, build_forced_probe_body,
-    build_forced_think_body, request_coordinates,
+    build_forced_think_body, build_natural_body, request_coordinates,
 )
 from agent_allocation.contracts import (
     RETRYABLE_TRANSPORT, EndpointLock, GateCriterion, GateResult, GenerationOutcome,
@@ -463,13 +464,16 @@ class ForcedClient(OpenRouterClient):
 
     # ---- generation -----------------------------------------------------------------------------------------------
     async def generate(self, spec: GenerationSpec, messages: Sequence[Mapping[str, str]], *, attempt_id: str,
-                       lock: EndpointLock, sampling: Mapping[str, Any]) -> GenerationOutcome:
+                       lock: EndpointLock, sampling: Mapping[str, Any], forced: bool = True) -> GenerationOutcome:
+        """``forced=False`` is the NATURAL reference (calibration only): one unbanned call, see ``_generate_natural``."""
         node_id = spec.node_id
         if not isinstance(attempt_id, str) or not attempt_id.startswith(f"{node_id}:") or \
                 attempt_id == f"{node_id}:":
             raise RequestContractError(
                 f"attempt_id {attempt_id!r} must be f'{{node_id}}:{{attempt_no}}' for node {node_id}")
         prompt = self.render(messages)
+        if not forced:
+            return await self._generate_natural(spec, attempt_id, prompt, lock, sampling)
         think_body = build_forced_think_body(spec, prompt, lock, sampling, ban_token_ids=self.settings.ban_token_ids,
                                              ban_bias=self.settings.ban_bias)
         build_forced_answer_body(spec, prompt + self.settings.think_close_text, lock, sampling)   # fail before send
@@ -505,6 +509,43 @@ class ForcedClient(OpenRouterClient):
                                  last_call=last)
         return self._outcome(spec, attempt_id, think_body, answer_body, think, answer, failures, TransportStatus.OK,
                              None)
+
+    async def _generate_natural(self, spec: GenerationSpec, attempt_id: str, prompt: str, lock: EndpointLock,
+                                sampling: Mapping[str, Any]) -> GenerationOutcome:
+        """One unbanned call from the same ``<think>\n`` prompt; the reasoning/answer split is the pilot's
+        ``split_natural``. ``usage.reasoning_tokens`` is the provider's ``completion_tokens_details.reasoning_tokens``
+        when reported, else ``completion_tokens`` apportioned by reasoning characters (flagged in ``raw_usage``). A
+        call that never closes its reasoning has empty visible content (an invalid answer, not a transport error)."""
+        body = build_natural_body(spec, prompt, lock, sampling)
+        call = await self.raw_completion(body, lock=lock,
+                                         coordinates={**request_coordinates(spec, attempt_id), "phase": "natural"})
+        outcome = self._outcome(spec, attempt_id, body, None, call, None, [], call.transport_status,
+                                call.error_detail)
+        if call.transport_status is not TransportStatus.OK:
+            return outcome
+        reasoning, visible, closed = split_reasoning(call.reasoning, call.text)
+        visible = visible if closed else ""
+        usage = outcome.result.usage
+        if usage is not None:
+            raw = dict((usage.raw_usage or {}).get("think") or {})
+            details = raw.get("completion_tokens_details") or {}
+            reported = details.get("reasoning_tokens") if isinstance(details, Mapping) else None
+            estimated = False
+            if isinstance(reported, int) and not isinstance(reported, bool) and reported > 0:
+                reasoning_tokens = reported
+            elif usage.completion_tokens is not None:
+                total_chars = len(reasoning) + len(visible)
+                reasoning_tokens = round(usage.completion_tokens * len(reasoning) / total_chars) if total_chars else 0
+                estimated = True
+            else:
+                reasoning_tokens = None
+            usage = replace(usage, reasoning_tokens=reasoning_tokens,
+                            raw_usage={**dict(usage.raw_usage or {}), "natural": True, "closed_think": closed,
+                                       "reasoning_tokens_estimated": estimated})
+        result = replace(outcome.result, visible_content=visible, usage=usage,
+                         completion_status=completion_status(visible, call.finish_reason,
+                                                             call.parsed.native_finish_reason if call.parsed else None))
+        return replace(outcome, result=result)
 
     def think_problem(self, spec: GenerationSpec, think: ForcedCall) -> str | None:
         """Why a transport-OK THINK is not a valid forced THINK (``None`` = valid)."""

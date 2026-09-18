@@ -125,16 +125,19 @@ def item_cost(model: BenchmarkModel, grid: GridSpec, base_budget: int, headroom:
 
 
 def per_item_costs(models: Mapping[str, BenchmarkModel], grids: Mapping[str, GridSpec], *, lock: EndpointLock,
-                   headroom_by_benchmark: Mapping[str, int], main_a: int, high_a: int,
+                   headroom_by_benchmark: Mapping[str, int], main_a: int, high_a: int | None,
                    forced: bool | None = None) -> dict[str, dict[str, Decimal]]:
+    """Per-item forecast per partition. With no high partition (``high_a`` None or no ``high`` grid) its cost is 0."""
     out: dict[str, dict[str, Decimal]] = {}
     for benchmark in BENCHMARKS:
         model = models[benchmark]
         h = headroom_by_benchmark[benchmark]
         main = item_cost(model, grids["main"], main_a, h, lock, forced=forced)
         extension = item_cost(model, grids["main_extension"], main_a, h, lock, forced=forced) - main
+        high = (item_cost(model, grids["high"], high_a, h, lock, forced=forced) * SAFETY_MULTIPLIER
+                if high_a is not None and "high" in grids else Decimal("0"))
         out[benchmark] = {"main": main * SAFETY_MULTIPLIER, "extension": extension * SAFETY_MULTIPLIER,
-                          "high": item_cost(model, grids["high"], high_a, h, lock, forced=forced) * SAFETY_MULTIPLIER}
+                          "high": high}
     return out
 
 
@@ -143,7 +146,7 @@ def core_forecast(costs: Mapping[str, Mapping[str, Decimal]], panels_per_benchma
     for benchmark in BENCHMARKS:
         total += costs[benchmark]["main"] * panels_per_benchmark["main_items"]
         total += costs[benchmark]["extension"] * panels_per_benchmark["extension_items"]
-        total += costs[benchmark]["high"] * panels_per_benchmark["high_items"]
+        total += costs[benchmark]["high"] * panels_per_benchmark.get("high_items", 0)
     return total.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
 
 

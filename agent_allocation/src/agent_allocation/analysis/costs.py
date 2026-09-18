@@ -64,6 +64,39 @@ CPU_MEASURES = {
     "private_grading_cpu_seconds": "Private research grading CPU seconds per item (not a deployment cost)",
 }
 PRICE_SANITY_PER_MILLION = (Decimal("0.001"), Decimal("1000"))
+FORCED_REALIZED_LABEL = "Realized generated tokens per item (forced: THINK + ANSWER completions)"
+
+
+def forced_call_tokens(usage: Any) -> tuple[int, int] | None:
+    """``(THINK completion, ANSWER completion)`` of a forced two-call generation, from ``usage.raw_usage["think"]``
+    and ``["answer"]`` (each the provider usage object, or ``{"usage": {...}}``); ``None`` when not recorded."""
+    raw = getattr(usage, "raw_usage", None) or {}
+    parts = []
+    for key in ("think", "answer"):
+        block = raw.get(key) if isinstance(raw, Mapping) else None
+        if isinstance(block, Mapping) and isinstance(block.get("usage"), Mapping):
+            block = block["usage"]
+        value = block.get("completion_tokens") if isinstance(block, Mapping) else None
+        if value is None:
+            return None
+        parts.append(int(value))
+    return parts[0], parts[1]
+
+
+def realized_tokens_of(usage: Any, *, forced: bool) -> int | None:
+    """Realized tokens of one generation. Soft-allowance runs: prompt + completion. Forced runs: THINK completion +
+    ANSWER completion only -- the ANSWER call's prompt re-feeds the THINK reasoning (and the task prompt), which is
+    input re-reading, not new realized compute, so it is never counted a second time."""
+    if usage is None:
+        return None
+    if forced:
+        parts = forced_call_tokens(usage)
+        if parts is not None:
+            return parts[0] + parts[1]
+        return usage.completion_tokens
+    if usage.prompt_tokens is None or usage.completion_tokens is None:
+        return None
+    return usage.prompt_tokens + usage.completion_tokens
 
 
 class PriceUnitError(ValueError):
@@ -79,7 +112,7 @@ def planning_prices(cfg: Mapping[str, Any]) -> dict[str, dict[str, Decimal]]:
     prices = cfg.get("planning_prices", {})
     out: dict[str, dict[str, Decimal]] = {}
     for role, model_key in (("primary", "primary_model"), ("replication", "replication_model")):
-        if role not in prices or model_key not in cfg:
+        if prices.get(role) is None or cfg.get(model_key) is None:      # forced27b: no replication model
             continue
         entry = {"input": Decimal(str(prices[role]["input_price"])),
                  "output": Decimal(str(prices[role]["output_price"]))}
@@ -233,6 +266,8 @@ def _topological(specs: Sequence[GenerationSpec]) -> list[GenerationSpec]:
 
 
 def policy_cost_table(run: RunData, candidates: pd.DataFrame, outcomes: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    from agent_allocation.config import forced_mode
+    forced = forced_mode(run.config)
     problems: list[str] = []
     prices = planning_prices(run.config)
     charges, attempts_by_node, anomalies = attempt_charges(run)
@@ -243,7 +278,8 @@ def policy_cost_table(run: RunData, candidates: pd.DataFrame, outcomes: pd.DataF
     selections = {pid: sel for part in run.selections.values() for pid, sel in part.items()}
     for partition in run.partitions:
         for cp in run.policies.get(partition, []):
-            rows.append(_local_row(run, cp, specs, charges, attempts_by_node, prices, latency_cp, selections))
+            rows.append(_local_row(run, cp, specs, charges, attempts_by_node, prices, latency_cp, selections,
+                                   forced=forced))
     frame = pd.DataFrame(rows)
     external = _external_policy_cost_rows()
     source = "local recomputation (agent 03 policy_cost_rows not importable)"
@@ -341,8 +377,11 @@ def _critical_path_latency(run: RunData, specs: Mapping[str, GenerationSpec]) ->
     return memo
 
 
-def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, prices, latency_cp, selections) -> dict[str, Any]:
+def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, prices, latency_cp, selections, *,
+               forced: bool = False) -> dict[str, Any]:
     required = cp.required_node_ids
+    realized_sum: int | None = 0
+    answer_sum: int | None = 0
     token_sums: dict[str, int | None] = {k: 0 for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens",
                                                          "cached_prompt_tokens")}
     success: Decimal | None = Decimal(0)
@@ -362,6 +401,10 @@ def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, pric
         for key in token_sums:
             value = getattr(usage, key) if usage else None
             token_sums[key] = None if (value is None or token_sums[key] is None) else token_sums[key] + value
+        own = realized_tokens_of(usage, forced=forced)
+        realized_sum = None if (own is None or realized_sum is None) else realized_sum + own
+        parts = forced_call_tokens(usage) if (forced and usage is not None) else None
+        answer_sum = None if (parts is None or answer_sum is None) else answer_sum + parts[1]
         cost = usage.actual_cost_usd if usage else None
         success = None if (cost is None or success is None) else success + cost
         std = standardized_cost(usage.prompt_tokens if usage else None, usage.completion_tokens if usage else None,
@@ -377,8 +420,8 @@ def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, pric
     selection = selections.get(cp.policy_id)
     latencies = [run.parsed[n][0].latency_seconds for n in required if n in run.parsed]
     critical = [latency_cp.get(n) for n in required]
-    realized = (None if token_sums["prompt_tokens"] is None or token_sums["completion_tokens"] is None
-                else token_sums["prompt_tokens"] + token_sums["completion_tokens"])
+    realized = realized_sum
+    extra: dict[str, Any] = {"answer_tokens": answer_sum} if forced else {}
     return {
         "partition_id": cp.partition_id, "policy_id": cp.policy_id, "item_id": cp.item_id, "name": cp.name,
         "view": cp.view.value, "family": cp.family,
@@ -398,6 +441,7 @@ def _local_row(run, cp: PolicyCheckpoint, specs, charges, attempts_by_node, pric
         "total_latency_seconds": float(sum(x for x in latencies if x is not None)) if len(latencies) == len(required)
         and all(x is not None for x in latencies) else None,
         "critical_path_latency_seconds": (max(critical) if critical and all(c is not None for c in critical) else None),
+        **extra,
     }
 
 

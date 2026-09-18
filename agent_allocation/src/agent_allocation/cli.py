@@ -21,6 +21,9 @@ VERBS: dict[str, str] = {
     "seal": "agent_allocation.live:cmd_seal",
     "analyze": "agent_allocation.reporting.cli:cmd_analyze",
     "audit": "agent_allocation.reporting.audit:cmd_audit",
+    "shard-plan": "agent_allocation.shards:cmd_shard_plan",
+    "merge-shards": "agent_allocation.analysis.merge:cmd_merge_shards",
+    "calibrate": "agent_allocation.calibrate:cmd_calibrate",
 }
 EXIT_BLOCKED = 2
 

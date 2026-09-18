@@ -40,3 +40,13 @@ RUN_DIR=/path/to/artifacts/openrouter_agent_allocation_v1 ./build.sh
    or overfull boxes.
 
 Nothing in the sealed run is modified. The analysis reads the sealed tables only.
+
+## Forced-budget runs (openrouter_forced_budget_v2)
+
+`RUN_DIR=<run_root>/merged ./build.sh` detects a forced run (its `tables/effective_depth_summary.parquet`, written by
+`allocation analyze` / `allocation merge-shards` when `budget_semantics` is `forced_exact`) and runs
+`forced_ladder.py` instead: the `C = B*R*A` self-check, realized compute per checkpoint (must equal `C`), and
+**effective depth** per checkpoint (reasoning tokens before loop onset: first 3,000-char window, step 500, whose zlib
+ratio is below 0.1, as a fraction of the reasoning x its budget; summed over the checkpoint's own generations).
+The deep ladder reaches `deep/25` there. Outputs: `tables/forced_ladder.*`, `tables/effective_depth.*`,
+`numbers_forced.json`.

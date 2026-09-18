@@ -92,6 +92,8 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
     primary, estimates, primary_notes = K.primary_analysis(outcomes, replicates=reps, study_seed=seed,
                                                            item_panels=run.item_panels())
     problems += _primary_allowance_problems(outcomes, run.config)
+    forced_check, forced_problems = _forced_budget_check(candidates, run.config)
+    problems += forced_problems
     high_low, hl_notes = K.shared_panel_comparisons(outcomes, replicates=reps, study_seed=seed)
     for note in primary_notes + hl_notes:
         (warnings if ("small panel" in note or "stratum" in note or "absent" in note) else notes).append(note)
@@ -122,7 +124,13 @@ def build_analysis(run: RunData, *, replicates: int | None = None) -> Analysis:
     charges, attempts_by_node, _ = attempt_charges(run)
     provenance, stub_flags = grader_provenance(candidates)
 
+    depth: dict[str, Any] = {}
+    from agent_allocation.config import forced_mode
+    if forced_mode(run.config):
+        from agent_allocation.analysis.effective_depth import effective_depth_tables
+        depth = effective_depth_tables(run)
     analysis.extras.update({
+        **depth, "forced_budget_check": forced_check,
         "populations": populations, "primary": primary, "primary_estimates": estimates,
         "primary_planned": _primary_planned(outcomes, run), "high_low": high_low,
         "policy_costs": costs, "cost_summary": summary, "frontier": frontier, "price_checks": price_checks,
@@ -177,6 +185,33 @@ def _primary_allowance_problems(outcomes: pd.DataFrame, cfg: Mapping[str, Any]) 
         return []
     return [f"{len(wrong)} primary-contrast checkpoint rows in partition main have reasoning_budget "
             f"{sorted(set(int(v) for v in wrong['reasoning_budget']))} instead of reasoning.main_a={main_a}"]
+
+
+NATURAL_PARTITIONS = frozenset({"calibration_natural"})
+
+
+def _forced_budget_check(candidates: pd.DataFrame, cfg: Mapping[str, Any]) -> tuple[pd.DataFrame | None, list[str]]:
+    """Forced runs (``budget_semantics: forced_exact``): every completed generation must have realized reasoning equal
+    to its budget. Per (partition, kind, budget): generations with usage, exact, short, long; any mismatch is a
+    problem (the forced client treats a short THINK as retryable, so none should be terminal). ``None`` otherwise."""
+    from agent_allocation.config import forced_mode
+    if not forced_mode(cfg) or candidates.empty:
+        return None, []
+    rows = candidates[candidates["reasoning_tokens"].notna() & (candidates["transport_status"] == "ok")
+                      & ~candidates["partition_id"].isin(NATURAL_PARTITIONS)]
+    if rows.empty:
+        return pd.DataFrame(), []
+    realized = rows["reasoning_tokens"].astype(int)
+    budget = rows["reasoning_budget"].astype(int)
+    frame = rows.assign(exact=(realized == budget), short=(realized < budget), long=(realized > budget))
+    table = frame.groupby(["partition_id", "kind", "reasoning_budget"], sort=True).agg(
+        generations=("node_id", "count"), exact=("exact", "sum"), short=("short", "sum"),
+        long=("long", "sum")).reset_index()
+    bad = int((~frame["exact"]).sum())
+    problems = [] if not bad else [
+        f"forced run: {bad} of {len(frame)} completed generations have realized reasoning != reasoning_budget "
+        f"(short {int(frame['short'].sum())}, long {int(frame['long'].sum())}); see tables/forced_budget_check"]
+    return table, problems
 
 
 def _primary_planned(outcomes: pd.DataFrame, run: RunData) -> dict[str, int]:
@@ -287,6 +322,8 @@ TABLES = (
     ("passk_summary", "pass_at_k_vs_readout"), ("transition_summary", "transitions_summary"),
     ("replay_items", "budget_replay_items"), ("replay_curves", "budget_replay_curves"),
     ("operations", "operations"), ("retries", "billed_retries"), ("grader_provenance", "grader_provenance"),
+    ("forced_budget_check", "forced_budget_check"), ("effective_depth_nodes", "effective_depth_nodes"),
+    ("effective_depth", "effective_depth"), ("effective_depth_summary", "effective_depth_summary"),
 )
 
 

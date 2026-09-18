@@ -20,6 +20,7 @@ from agent_allocation.config import config_hash, credit_ceiling, grids_from_conf
 from agent_allocation.contracts import canonical_hash
 from agent_allocation.manifest import ManifestRefused, load_waves, write_once_json
 from agent_allocation.paths import PROJECT_ROOT, RunPaths
+from agent_allocation.shards import shard_filter
 
 
 class FreezeRefused(RuntimeError):
@@ -63,8 +64,8 @@ def freeze(cfg: Mapping[str, Any], config_path: str, paths: RunPaths) -> dict[st
     if not gate2.exists() or json.loads(gate2.read_text()).get("decision") not in ("advance", "advance_owner_override"):
         raise FreezeRefused("Gate 2 has not advanced (or been accepted by the owner)")
     locks = read_endpoint_locks(paths)
-    for model in (cfg["primary_model"], cfg["replication_model"]):
-        if model not in locks:
+    for model in (cfg["primary_model"], cfg.get("replication_model")):
+        if model is not None and model not in locks:
             raise FreezeRefused(f"no endpoint lock for {model}")
     if not paths.dataset_lock.exists():
         raise FreezeRefused("no dataset lock")
@@ -73,20 +74,26 @@ def freeze(cfg: Mapping[str, Any], config_path: str, paths: RunPaths) -> dict[st
     tasks = load_tasks(paths)
     grids = grids_from_config(cfg)
     waves = load_waves(paths)
-    primary, replication = locks[cfg["primary_model"]], locks[cfg["replication_model"]]
-    main_a, high_a = int(cfg["reasoning"]["main_a"]), int(cfg["reasoning"]["high_a"])
+    primary = locks[cfg["primary_model"]]
+    replication = locks.get(cfg.get("replication_model")) if cfg.get("replication_model") else None
+    main_a = int(cfg["reasoning"]["main_a"])
+    high_a = int(cfg["reasoning"]["high_a"]) if cfg["reasoning"].get("high_a") is not None else None
+    allowed = shard_filter(cfg, paths)
 
-    partitions: dict[str, list] = {"main": [], "high": [], "replication": []}
+    # Disabled partitions (no grid: forced27b has no high/replication) get no job manifest at all.
+    partitions: dict[str, list] = {name: [] for name in ("main", "high", "replication") if name == "main" or name in grids}
     for wave in waves:
         for item in wave.item_ids:
+            if allowed is not None and item not in allowed:
+                continue
             task = tasks[item]
             grid = grids["main_extension"] if "extension" in wave.panels else grids["main"]
             partitions["main"].append(graph_for(grid, cfg=cfg, partition="main", task=task, lock=primary,
                                                 base_budget=main_a, amendments=amendments))
-            if "high" in wave.panels:
+            if "high" in wave.panels and "high" in partitions:
                 partitions["high"].append(graph_for(grids["high"], cfg=cfg, partition="high", task=task, lock=primary,
                                                     base_budget=high_a, amendments=amendments))
-            if "replication" in wave.panels:
+            if "replication" in wave.panels and "replication" in partitions:
                 partitions["replication"].append(graph_for(grids["replication"], cfg=cfg, partition="replication",
                                                            task=task, lock=replication, base_budget=main_a,
                                                            amendments=amendments))
@@ -122,8 +129,9 @@ def cmd_freeze(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="allocation freeze")
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--shard", default=None, help="provider shard id; --run-dir then names the run root")
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
-    paths = RunPaths.for_run(args.run_dir)
+    from agent_allocation.shards import resolve_shard
+    cfg, paths = resolve_shard(load_config(args.config), args.run_dir, args.shard)
     print(json.dumps(freeze(cfg, args.config, paths), indent=1, sort_keys=True, default=str))
     return 0

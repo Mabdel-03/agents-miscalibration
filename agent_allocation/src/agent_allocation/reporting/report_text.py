@@ -3,7 +3,7 @@ comes from stored inputs (no wall-clock time)."""
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -66,9 +66,7 @@ def scope_notes(analysis: "Analysis") -> str:
         "not the official full BBH score; its aggregate weights the four subtasks equally.",
         f"MBPP+ delivered accuracy uses the **public-test selector** ({labels.get('mbpp_plus', 'mbpp_plus')}): "
         "candidates are ranked by prompt-visible examples only and reported as public_select@k, never vote@k.",
-        f"Requested reasoning allowances (A={reasoning.get('main_a')} main, A={reasoning.get('high_a')} high) are "
-        "soft API settings, not realized reasoning; realized reasoning and completion tokens are reported beside "
-        "them (Operations).",
+        budget_semantics_note(cfg),
         "This is a token- and API-cost-accounted study, not a FLOP-matched experiment.",
         "Frontiers are descriptive: the best among evaluated configurations on this sample, never a validated "
         "optimal policy. Everything except the two primary contrasts is exploratory or descriptive.",
@@ -78,6 +76,22 @@ def scope_notes(analysis: "Analysis") -> str:
         "(never the 96-item panel against all main items).",
     ]
     return "## Scope and labels\n\n" + bullet_list(notes)
+
+
+def budget_semantics_note(cfg: Mapping[str, Any]) -> str:
+    """How requested budgets relate to realized reasoning: soft allowances (v1) or forced exact budgets (v2)."""
+    from agent_allocation.config import forced_mode
+    reasoning = cfg.get("reasoning", {})
+    if forced_mode(cfg):
+        return (f"Every generation's reasoning is **forced to exactly its budget** (A={reasoning.get('main_a')} per "
+                "call, m x A for deep/m): the THINK call bans the end-of-reasoning tokens and stops at max_tokens, and "
+                "a second ANSWER call re-feeds the reasoning to write the visible answer. Requested equals realized "
+                "reasoning (checked per node, Operations); realized tokens count THINK + ANSWER completions, never the "
+                "re-fed reasoning in the ANSWER prompt. Forcing past the model's natural stopping point can yield "
+                "recycled text; the effective-depth table reports tokens before loop onset.")
+    high = f", A={reasoning.get('high_a')} high" if reasoning.get("high_a") is not None else ""
+    return (f"Requested reasoning allowances (A={reasoning.get('main_a')} main{high}) are soft API settings, not "
+            "realized reasoning; realized reasoning and completion tokens are reported beside them (Operations).")
 
 
 def run_report(analysis: "Analysis") -> str:
@@ -265,6 +279,10 @@ def cost_section(analysis: "Analysis") -> str:
            f"Per-item means of each checkpoint's own from-scratch ancestor set (source: {source}); never total "
            "collection spend. `actual $` = successful + retry charges; retries also shown alone; `standardized $` "
            "prices all prompt tokens uncached at the planning snapshot. Macro rows weight benchmarks equally.", ""]
+    from agent_allocation.config import forced_mode
+    if forced_mode(analysis.run.config):
+        out += ["`realized tokens` = THINK + ANSWER completion tokens (forced run; the ANSWER prompt's re-fed "
+                "reasoning is not counted again).", ""]
     macro = summary[summary["level"] == "macro"]
     cols = ["partition_id", "name", "acc", "mean_total_charged_usd", "mean_success_cost_usd",
             "mean_standardized_uncached_cost_usd", "mean_requested_reasoning_tokens", "mean_realized_tokens",

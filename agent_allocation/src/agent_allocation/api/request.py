@@ -222,6 +222,20 @@ def build_forced_think_body(spec: GenerationSpec, prompt: str, lock: EndpointLoc
     return body
 
 
+def build_natural_body(spec: GenerationSpec, prompt: str, lock: EndpointLock,
+                       sampling: Mapping[str, Any]) -> dict[str, Any]:
+    """A NATURAL (unforced) reference call on the same raw prompt: no ``logit_bias``, the model closes its own
+    reasoning and answers in the same call; ``max_tokens`` = reasoning budget + completion headroom."""
+    cap = spec.reasoning_budget + spec.completion_headroom
+    if cap > lock.max_completion_tokens:
+        raise RequestContractError(f"NATURAL max_tokens {cap} exceeds the locked endpoint cap "
+                                   f"{lock.max_completion_tokens}")
+    body = _forced_common(spec, lock, sampling, prompt)
+    body["max_tokens"] = cap
+    body.update(_forced_tail(lock))
+    return body
+
+
 def build_forced_answer_body(spec: GenerationSpec, prompt: str, lock: EndpointLock,
                              sampling: Mapping[str, Any]) -> dict[str, Any]:
     """ANSWER call of a forced node: THINK prompt + the realized reasoning + the close text, ``max_tokens`` = the

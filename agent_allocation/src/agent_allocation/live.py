@@ -177,7 +177,7 @@ def graph_for(grid: GridSpec, *, cfg: Mapping[str, Any], partition: str, task: P
               base_budget: int, amendments: Mapping[str, int]) -> ItemGraph:
     from agent_allocation.prompts.render import prompt_version
     from agent_allocation.protocols.grid import build_item_graph
-    return build_item_graph(grid, run_id=STUDY_ID, partition_id=partition, task=task, model=lock.model,
+    return build_item_graph(grid, run_id=cfg.get("study_id", STUDY_ID), partition_id=partition, task=task, model=lock.model,
                             base_budget=base_budget, headroom=headroom_for(cfg, task.benchmark, amendments),
                             endpoint_lock_hash=lock.lock_hash, decoding_config_hash=decoding_config_hash(cfg),
                             prompt_version=prompt_version())
@@ -187,7 +187,7 @@ def standalone_spec(*, cfg: Mapping[str, Any], partition: str, task: PublicTask,
                     kind: GenerationKind, budget: int, root_slot: int = 0, draw_id: int = 0,
                     amendments: Mapping[str, int]) -> GenerationSpec:
     from agent_allocation.prompts.render import prompt_version
-    return GenerationSpec(run_id=STUDY_ID, partition_id=partition, item_id=task.item_id, benchmark=task.benchmark,
+    return GenerationSpec(run_id=cfg.get("study_id", STUDY_ID), partition_id=partition, item_id=task.item_id, benchmark=task.benchmark,
                           kind=kind, model=lock.model, endpoint_lock_hash=lock.lock_hash,
                           input_manifest_hash=public_task_hash(task), decoding_config_hash=decoding_config_hash(cfg),
                           prompt_version=prompt_version(), reasoning_budget=budget,
@@ -363,15 +363,39 @@ def common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--allow-paid", action="store_true")
     parser.add_argument("--max-usd", required=True)
+    shard_arg(parser)
 
 
-def preflight(cfg: Mapping[str, Any], args) -> tuple[RunPaths, Decimal]:
+def shard_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--shard", default=None,
+                        help="provider shard id (config shards[]); --run-dir then names the run root and the shard "
+                             "runs in <run_root>/shards/<id> under its derived config")
+
+
+def resolve_run(cfg: Mapping[str, Any], args) -> tuple[dict[str, Any], RunPaths]:
+    """(config, paths) for a verb: the shard's derived config and run dir with --shard, else the config as given."""
+    from agent_allocation.shards import ShardError, resolve_shard
+    try:
+        return resolve_shard(cfg, args.run_dir, getattr(args, "shard", None))
+    except ShardError as exc:
+        raise RunRefused(str(exc)) from exc
+
+
+def preflight(cfg: Mapping[str, Any], args) -> tuple[dict[str, Any], RunPaths, Decimal]:
+    cfg, paths = resolve_run(cfg, args)
     problems = validate_config(cfg)
     if problems:
         raise RunRefused(f"config invalid: {problems}")
     if not args.allow_paid:
         raise RunRefused("live command without --allow-paid: nothing is sent (use `allocation plan --dry-run`)")
-    return RunPaths.for_run(args.run_dir), checked_max_usd(cfg, args.max_usd)
+    return cfg, paths, checked_max_usd(cfg, args.max_usd)
+
+
+def shard_items(cfg: Mapping[str, Any], paths: RunPaths) -> set[str] | None:
+    """The items a shard config may build graphs for (``None``: unsharded)."""
+    from agent_allocation.shards import shard_filter
+    return shard_filter(cfg, paths)
+
 
 
 # ------------------------------------------------------------------------------------------------------------------
@@ -380,7 +404,7 @@ def preflight(cfg: Mapping[str, Any], args) -> tuple[RunPaths, Decimal]:
 
 def canary_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[ItemGraph], list[ItemGraph]]:
     primary = locks[cfg["primary_model"]]
-    replication = locks[cfg["replication_model"]]
+    replication = locks.get(cfg["replication_model"]) if cfg.get("replication_model") else None
     dev = dev_ids(paths)
     bbh_tracking = [i for i in dev["bbh_logic4"] if tasks[i].subtask == "tracking_shuffled_objects_seven_objects"][0]
     text_items = [dev["math500"][0], dev["mmlu_pro"][0], bbh_tracking]
@@ -394,7 +418,7 @@ def canary_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[ItemGraph]
                              budget=a, amendments=amendments) for a in CANARY_CODE_BUDGETS]
     lite.append(nodes_only_graph(tasks[code_item], "canary", nodes, "canary_code"))
     flash = []
-    for item in (dev["math500"][0], code_item):
+    for item in ((dev["math500"][0], code_item) if replication is not None else ()):
         node = standalone_spec(cfg=cfg, partition="canary", task=tasks[item], lock=replication,
                                kind=GenerationKind.ROOT, budget=1024, amendments=amendments)
         flash.append(nodes_only_graph(tasks[item], "canary", [node], "canary_flash"))
@@ -533,12 +557,18 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     api_key = load_api_key()
     tasks = load_tasks(paths)
     amendments = load_amendments(paths)
-    client = OpenRouterClient(api_key=api_key)
+    from agent_allocation.api.forced import make_generation_client
+    client = make_generation_client(cfg, api_key=api_key)       # ForcedClient in forced mode: Gate 0 needs it
     try:
-        locks = await ensure_endpoint_locks(paths, client, [cfg["primary_model"], cfg["replication_model"]],
-                                            allow_fetch=True, cfg=cfg)
+        models = [m for m in (cfg["primary_model"], cfg.get("replication_model")) if m]
+        locks = await ensure_endpoint_locks(paths, client, models, allow_fetch=True, cfg=cfg)
+        gate0 = await run_gate0(cfg, paths, client, locks[cfg["primary_model"]])
     finally:
         await client.aclose()
+    if gate0 is not None and not gate0["passed"]:
+        record_decision(paths, phase="gate0", decision="stop_notify", detail=gate0)
+        raise RunRefused(f"Gate 0 (forced endpoint screen) failed for {cfg['provider'].get('endpoint_tag')}: "
+                         f"{gate0.get('detail')}")
     before = provider_snapshot(paths, "canary_before")
     settled_before = ledger_settled(paths)
     (paths.state_dir / "canary_before.json").write_text(json.dumps(
@@ -547,11 +577,56 @@ async def run_canary(cfg, paths: RunPaths, max_usd: Decimal) -> int:
     lite, flash = canary_graphs(cfg, paths, tasks, locks, amendments)
     write_jobs(paths, "canary", [*lite, *flash])
     ceiling = min(active_ceiling(max_usd, settled_before, before), settled_before + Decimal("0.50"))
-    for graphs, model in ((lite, cfg["primary_model"]), (flash, cfg["replication_model"])):
+    for graphs, model in ((lite, cfg["primary_model"]), (flash, cfg.get("replication_model"))):
+        if not graphs:
+            continue
         summary = await dispatch(cfg, paths, [graphs], lock=locks[model], tasks=tasks, allow_paid=True,
                                  max_usd=max_usd, ceiling=ceiling, api_key=api_key)
         print(json.dumps({"model": model, "summary": str(summary)}, default=str))
     return await evaluate_canary(cfg, paths)
+
+
+async def run_gate0(cfg: Mapping[str, Any], paths: RunPaths, client, lock: EndpointLock) -> dict[str, Any] | None:
+    """Gate 0 (forced mode only): the per-endpoint screen -- logit_bias honoured (banana test), the ``</think>`` id
+    banned, forced length exact with finish_reason=length, and an ANSWER call that returns a ``<final>``. WP-1 owns
+    the check itself (``forced_endpoint_gate(client, lock, cfg)``); this records its verdict per shard run dir.
+    Returns ``None`` outside forced mode. Missing implementation fails closed (except in a rehearsal)."""
+    from agent_allocation.config import forced_mode
+    if not forced_mode(cfg):
+        return None
+    gate = None
+    for module in ("agent_allocation.api.forced", "agent_allocation.api.canary", "agent_allocation.gates"):
+        try:
+            gate = getattr(__import__(module, fromlist=["forced_endpoint_gate"]), "forced_endpoint_gate", None)
+        except ImportError:
+            gate = None
+        if gate is not None:
+            break
+    if gate is None:
+        verdict = {"passed": rehearsal(), "detail": "forced_endpoint_gate is not available in this build"}
+    else:
+        raw = gate(client, lock, cfg)
+        if asyncio.iscoroutine(raw):
+            raw = await raw
+        verdict = {"passed": gate0_passed(raw), "detail": raw if isinstance(raw, (dict, list, str)) else str(raw)}
+    verdict.update({"endpoint_tag": cfg["provider"].get("endpoint_tag"), "shard": (cfg.get("shard") or {}).get("id"),
+                    "model": lock.model, "evaluated_at": utcnow()})
+    target = paths.gate_result("gate0", "endpoint")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(verdict, indent=1, sort_keys=True, default=str))
+    return verdict
+
+
+def gate0_passed(result: Any) -> bool:
+    """Accept the shapes a gate verdict may take: bool, {passed|decision}, or an object with those attributes."""
+    if isinstance(result, bool):
+        return result
+    for key in ("passed", "ok"):
+        value = result.get(key) if isinstance(result, Mapping) else getattr(result, key, None)
+        if isinstance(value, bool):
+            return value
+    decision = result.get("decision") if isinstance(result, Mapping) else getattr(result, "decision", None)
+    return decision in ("advance", "pass", "passed")
 
 
 def cmd_canary(argv: list[str]) -> int:
@@ -561,7 +636,7 @@ def cmd_canary(argv: list[str]) -> int:
                         help="re-evaluate Gate 1 from stored canary artifacts without dispatching")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
-    paths, max_usd = preflight(cfg, args)
+    cfg, paths, max_usd = preflight(cfg, args)
     paths.ensure()
     if args.evaluate_only:
         return asyncio.run(evaluate_canary(cfg, paths))
@@ -643,8 +718,12 @@ def pilot_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[list[ItemGr
             high_items += ids[4:6]
     wave_r2, wave_r1 = [], []
     all_graphs = []
+    high_a = cfg["reasoning"].get("high_a")
+    allowed = shard_items(cfg, paths)
     for benchmark in BENCHMARKS:
         for item in dev[benchmark]:
+            if allowed is not None and item not in allowed:
+                continue
             task = tasks[item]
             grid = grids["pilot_r2"] if item in r2 else grids["pilot_r1"]
             graph = graph_for(grid, cfg=cfg, partition="pilot", task=task, lock=primary,
@@ -654,14 +733,14 @@ def pilot_graphs(cfg, paths, tasks, locks, amendments) -> tuple[list[list[ItemGr
                 extra.append(standalone_spec(cfg=cfg, partition="pilot", task=task, lock=primary,
                                              kind=GenerationKind.DEEP, budget=int(cfg["reasoning"]["main_a"]) * 16,
                                              amendments=amendments))
-            if item in high_items:
+            if item in high_items and high_a is not None:
                 extra += [standalone_spec(cfg=cfg, partition="pilot", task=task, lock=primary, kind=GenerationKind.ROOT,
                                           budget=int(cfg["reasoning"]["high_a"]), root_slot=j, amendments=amendments)
                           for j in range(2)]
             graph = merge_graphs(graph, extra)
             (wave_r2 if item in r2 else wave_r1).append(graph)
             all_graphs.append(graph)
-    return [wave_r2, wave_r1], all_graphs
+    return [w for w in (wave_r2, wave_r1) if w], all_graphs
 
 
 def render_report_violations(paths: RunPaths) -> int:
@@ -707,7 +786,7 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     amendments = load_amendments(paths)
     if rehearsal() and not paths.endpoint_lock.exists():
         from agent_allocation.api.fake import fake_endpoint_lock
-        fake = {m: fake_endpoint_lock(m) for m in (cfg["primary_model"], cfg["replication_model"])}
+        fake = {m: fake_endpoint_lock(m) for m in (cfg["primary_model"], cfg.get("replication_model")) if m}
         paths.endpoint_lock.parent.mkdir(parents=True, exist_ok=True)
         paths.endpoint_lock.write_text(json.dumps({"locks": {m: dump_record(l) for m, l in fake.items()},
                                                    "rehearsal": True}, indent=1, sort_keys=True))
@@ -745,8 +824,8 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     report["budget_stop"] = {"ceiling": str(stop_ceiling), "summary": str(summary),
                              "max_overshoot_usd": str(journal_replay_overshoot(paths, stop_ceiling, seq0))}
     # 2) crash/resume test: a subprocess continues the pilot and is SIGKILLed mid-flight
-    cmd = [str(Path(sys.executable).parent / "allocation"), "pilot", "--config", config_path, "--run-dir",
-           str(paths.run_dir), "--allow-paid", "--max-usd", str(pilot_cap), "--phase", "collect"]
+    cmd = [str(Path(sys.executable).parent / "allocation"), "pilot", "--config", subprocess_config(cfg, paths, config_path),
+           "--run-dir", str(paths.run_dir), "--allow-paid", "--max-usd", str(pilot_cap), "--phase", "collect"]
     if rehearsal():
         cmd.append("--rehearsal")
     report["kill_test"] = run_subprocess_kill_test(cmd, paths, kill_after_parsed=40)
@@ -759,6 +838,18 @@ async def run_pilot(cfg, paths: RunPaths, max_usd: Decimal, config_path: str, ph
     (paths.state_dir / "pilot_collection.json").write_text(json.dumps(report, indent=1, sort_keys=True))
     print(json.dumps(report, indent=1))
     return await finish_pilot(cfg, paths, graphs, tasks, locks, amendments)
+
+
+def subprocess_config(cfg: Mapping[str, Any], paths: RunPaths, config_path: str) -> str:
+    """Config path a child ``allocation`` process should load: a shard's derived config (written to its state dir,
+    so the child runs in the shard dir without --shard), else the caller's config file."""
+    if not cfg.get("shard"):
+        return config_path
+    from agent_allocation.shards import SHARD_CONFIG_NAME
+    target = paths.state_dir / SHARD_CONFIG_NAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(cfg, indent=1, sort_keys=True))
+    return str(target)
 
 
 def run_grader(paths: RunPaths, workers: int = 4) -> int:
@@ -796,8 +887,8 @@ def forecast_from_rows(cfg, paths: RunPaths, rows, locks, amendments) -> dict[st
     models = fit_models(observations_from_rows([r for r in rows if r.spec.model == primary.model]))
     headroom = {b: headroom_for(cfg, b, amendments) for b in BENCHMARKS}
     costs = per_item_costs(models, grids_from_config(cfg), lock=primary, headroom_by_benchmark=headroom,
-                           main_a=int(cfg["reasoning"]["main_a"]), high_a=int(cfg["reasoning"]["high_a"]))
-    per_benchmark = {name: count // len(BENCHMARKS) for name, count in cfg["panels"].items()}
+                           main_a=int(cfg["reasoning"]["main_a"]), high_a=cfg["reasoning"].get("high_a"))
+    per_benchmark = forecast_panels(cfg, paths)
     core = core_forecast(costs, per_benchmark)
     spent = ledger_settled(paths)
     reserve = Decimal(str(cfg["budget"]["contingency_usd"]))
@@ -814,9 +905,24 @@ def forecast_from_rows(cfg, paths: RunPaths, rows, locks, amendments) -> dict[st
             "account_balance_usd": snap["account_balance_usd"], "admission": admission}
 
 
+def forecast_panels(cfg: Mapping[str, Any], paths: RunPaths) -> dict[str, Any]:
+    """Items per benchmark the core forecast prices. A shard prices only its own items (its waves, which hold just
+    them): the mean per benchmark of its main / extension items, so its forecast is comparable to its budget slice."""
+    per = {name: count // len(BENCHMARKS) for name, count in cfg["panels"].items()}
+    if not cfg.get("shard") or not paths.waves.exists():
+        return per
+    from agent_allocation.manifest import load_waves
+    waves = load_waves(paths)
+    main = sum(len(w.item_ids) for w in waves if "main" in w.panels)
+    ext = sum(len(w.item_ids) for w in waves if "extension" in w.panels)
+    n = Decimal(len(BENCHMARKS))
+    return {**per, "main_items": Decimal(main) / n, "extension_items": Decimal(ext) / n, "high_items": 0,
+            "replication_items": 0}
+
+
 def write_pilot_report(paths: RunPaths, gate, forecast: Mapping[str, Any], inputs: Mapping[str, Any],
                        selection: Mapping[str, Any]) -> None:
-    lines = ["# PILOT_REPORT — openrouter_agent_allocation_v1", "",
+    lines = [f"# PILOT_REPORT — {_study_label(paths)}", "",
              f"Evaluated {gate.evaluated_at}. **Gate 2 decision: `{gate.decision}`.**", "",
              "## Gate 2 criteria (frozen before the canary)", "", "| Criterion | Observed | Threshold | Pass |",
              "|---|---|---|---|"]
@@ -830,6 +936,16 @@ def write_pilot_report(paths: RunPaths, gate, forecast: Mapping[str, Any], input
               "Floor/ceiling effects and per-benchmark pilot accuracy are informational and never block.", ""]
     paths.reports_dir.mkdir(parents=True, exist_ok=True)
     (paths.reports_dir / "PILOT_REPORT.md").write_text("\n".join(lines))
+
+
+def _study_label(paths: RunPaths) -> str:
+    """Study id (and shard) of a run dir for report titles, from the shard config when present."""
+    from agent_allocation.shards import SHARD_CONFIG_NAME
+    target = paths.state_dir / SHARD_CONFIG_NAME
+    if target.is_file():
+        cfg = json.loads(target.read_text())
+        return f"{cfg.get('study_id')} (shard {cfg.get('shard', {}).get('id')})"
+    return STUDY_ID
 
 
 async def finish_pilot(cfg, paths: RunPaths, graphs, tasks, locks, amendments) -> int:
@@ -1010,7 +1126,7 @@ def cmd_pilot(argv: list[str]) -> int:
         if RunPaths.for_run(args.run_dir).run_dir.resolve() == RunPaths.for_run(None).run_dir.resolve():
             raise RunRefused("--rehearsal must use a scratch --run-dir, never the study run dir")
         os.environ[REHEARSAL_ENV] = "1"
-    paths, max_usd = preflight(cfg, args)
+    cfg, paths, max_usd = preflight(cfg, args)
     paths.ensure()
     if args.phase == "owner-headroom":
         if not args.headroom:
@@ -1040,25 +1156,33 @@ def record_decision(paths: RunPaths, **fields: Any) -> None:
 
 
 def graphs_by_wave(cfg, paths: RunPaths, tasks, locks, amendments) -> dict[str, list[list[ItemGraph]]]:
+    """Item graphs per partition and wave. Disabled partitions (no grid: high_a / replication_model null) stay empty;
+    a shard config builds only its own items (waves left empty by the filter are dropped)."""
     from agent_allocation.manifest import load_waves
     grids = grids_from_config(cfg)
-    primary, replication = locks[cfg["primary_model"]], locks[cfg["replication_model"]]
-    main_a, high_a = int(cfg["reasoning"]["main_a"]), int(cfg["reasoning"]["high_a"])
+    primary = locks[cfg["primary_model"]]
+    replication = locks.get(cfg["replication_model"]) if cfg.get("replication_model") else None
+    main_a = int(cfg["reasoning"]["main_a"])
+    high_a = int(cfg["reasoning"]["high_a"]) if cfg["reasoning"].get("high_a") is not None else None
+    allowed = shard_items(cfg, paths)
     out: dict[str, list[list[ItemGraph]]] = {"main": [], "high": [], "replication": []}
     for wave in load_waves(paths):
         main, high, rep = [], [], []
         for item in wave.item_ids:
+            if allowed is not None and item not in allowed:
+                continue
             task = tasks[item]
             grid = grids["main_extension"] if "extension" in wave.panels else grids["main"]
             main.append(graph_for(grid, cfg=cfg, partition="main", task=task, lock=primary, base_budget=main_a,
                                   amendments=amendments))
-            if "high" in wave.panels:
+            if "high" in wave.panels and "high" in grids:
                 high.append(graph_for(grids["high"], cfg=cfg, partition="high", task=task, lock=primary,
                                       base_budget=high_a, amendments=amendments))
-            if "replication" in wave.panels:
+            if "replication" in wave.panels and "replication" in grids and replication is not None:
                 rep.append(graph_for(grids["replication"], cfg=cfg, partition="replication", task=task,
                                      lock=replication, base_budget=main_a, amendments=amendments))
-        out["main"].append(main)
+        if main:
+            out["main"].append(main)
         if high:
             out["high"].append(high)
         if rep:
@@ -1138,6 +1262,18 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
         fit_models, item_cost, observations_from_rows, per_item_costs, wave_admission, SAFETY_MULTIPLIER,
     )
     primary = locks[cfg["primary_model"]]
+    if not by_wave["high"] and not by_wave["replication"]:
+        # No high-A or replication partition (forced27b): nothing competes with main under the cut order, so every
+        # main+extension wave is admitted at once (the dispatcher holds max_active_waves open and keeps each new
+        # attempt under the soft admission ceiling itself); the forecast is recorded, not used to trim.
+        summary = await runtime.run(by_wave["main"], allow_paid=not rehearsal(), max_usd=max_usd, ceiling=ceiling)
+        record_decision(paths, phase="main_all_waves", waves=len(by_wave["main"]),
+                        items=sum(len(w) for w in by_wave["main"]), summary=str(summary), ceiling=str(ceiling),
+                        shard=(cfg.get("shard") or {}).get("id"))
+        if stopped_early(summary):
+            record_decision(paths, phase="main_all_waves", decision="stop_notify", reason=stopped_early(summary))
+            return 3
+        return 0
     summary = await runtime.run(by_wave["main"][:FORECAST_CHECK_WAVES], allow_paid=not rehearsal(), max_usd=max_usd,
                                 ceiling=ceiling)
     record_decision(paths, phase="A", summary=str(summary), ceiling=str(ceiling))
@@ -1150,7 +1286,7 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
     models = fit_models(observations_from_rows([r for r in rows if r.spec.model == primary.model]))
     headroom = {b: headroom_for(cfg, b, amendments) for b in BENCHMARKS}
     costs = per_item_costs(models, grids_from_config(cfg), lock=primary, headroom_by_benchmark=headroom,
-                           main_a=int(cfg["reasoning"]["main_a"]), high_a=int(cfg["reasoning"]["high_a"]))
+                           main_a=int(cfg["reasoning"]["main_a"]), high_a=cfg["reasoning"].get("high_a"))
     spent = ledger_settled(paths)
     snap = provider_snapshot(paths, "run_phase_b")
     ceiling = active_ceiling(max_usd, spent, snap)
@@ -1177,6 +1313,9 @@ async def _run_main_phases(cfg, paths: RunPaths, max_usd: Decimal, *, runtime: "
 
     # Phase C: optional Flash check only after core completion, if core + forecast + reserve fit.
     core_waves = by_wave["main"][:FORECAST_CHECK_WAVES] + main_rest + high
+    if not by_wave["replication"]:
+        record_decision(paths, phase="C", decision="skip_replication", reason="no replication partition")
+        return 0
     if not all_terminal(paths, core_waves):
         record_decision(paths, phase="C", decision="skip_replication", reason="core incomplete")
         return 0
@@ -1221,7 +1360,7 @@ def cmd_run(argv: list[str]) -> int:
         if RunPaths.for_run(args.run_dir).run_dir.resolve() == RunPaths.for_run(None).run_dir.resolve():
             raise RunRefused("--rehearsal must use a scratch --run-dir, never the study run dir")
         os.environ[REHEARSAL_ENV] = "1"
-    paths, max_usd = preflight(cfg, args)
+    cfg, paths, max_usd = preflight(cfg, args)
     paths.ensure()
     return asyncio.run(run_main(cfg, paths, max_usd))
 
@@ -1232,14 +1371,16 @@ def cmd_seal(argv: list[str]) -> int:
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--partition", action="append", default=None)
+    shard_arg(parser)
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
-    paths = RunPaths.for_run(args.run_dir)
+    cfg, paths = resolve_run(load_config(args.config), args)
     tasks = load_tasks(paths)
     locks = read_endpoint_locks(paths)
     by_wave = graphs_by_wave(cfg, paths, tasks, locks, load_amendments(paths))
     out = {}
-    for partition in args.partition or ["main", "high", "replication"]:
+    grids = grids_from_config(cfg)
+    enabled = ["main"] + [p for p in ("high", "replication") if p in grids]
+    for partition in args.partition or enabled:
         graphs = [g for wave in by_wave[partition] for g in wave]
         out[partition] = select_and_seal(cfg, paths, partition, graphs, tasks)
     print(json.dumps(out, indent=1, sort_keys=True))
