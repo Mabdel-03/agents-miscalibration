@@ -80,7 +80,7 @@ def test_derived_shard_config(cfg):
     derived = shard_config(cfg, "mancer")
     assert derived["provider"]["endpoint_tag"] == "mancer/fp8"
     assert derived["budget"]["credit_ceiling_usd"] == 31.66
-    assert derived["budget"]["soft_admission_ceiling_usd"] == 29.33
+    assert derived["budget"]["soft_admission_ceiling_usd"] == 31.0
     assert derived["budget"]["pilot_allowance_usd"] == 3.0 and derived["budget"]["contingency_usd"] == 2.33
     assert derived["budget"]["max_unresolved_spend_usd"] == cfg["budget"]["max_unresolved_spend_usd"]
     assert derived["shard"]["id"] == "mancer" and base_config(derived) == cfg
@@ -173,7 +173,10 @@ def test_live_config_shards_follow_the_screen():
     live_cfg = forced_test_config()
     assert [(s["id"], s["share"]) for s in live_cfg["shards"]] == [("mancer", 3), ("parasail", 2)]
     mancer, parasail = shard_config(live_cfg, "mancer"), shard_config(live_cfg, "parasail")
-    assert mancer["budget"]["credit_ceiling_usd"] == 57.0 and parasail["budget"]["credit_ceiling_usd"] == 38.0
+    # owner-set slices within the $95 cap (pilot forecasts: Mancer 56.89, Parasail 34.57 core+spent+reserve)
+    assert mancer["budget"]["credit_ceiling_usd"] == 58.5 and parasail["budget"]["credit_ceiling_usd"] == 36.5
+    assert mancer["budget"]["soft_admission_ceiling_usd"] == 57.5
+    assert parasail["budget"]["soft_admission_ceiling_usd"] == 35.5
     assert parasail["scheduler"]["concurrency_max"] == 40 and parasail["scheduler"]["requests_per_second_max"] == 8
     assert mancer["scheduler"]["concurrency_max"] == live_cfg["scheduler"]["concurrency_max"]
     bad = copy.deepcopy(live_cfg)
@@ -209,3 +212,21 @@ def test_shard_key_window_reconciles_the_union_of_concurrent_shards(tmp_path, mo
     assert union["key_delta"] == Decimal("10.76") - Decimal("9.99")
     assert union["ledger_settled"] == Decimal("0.75") and union["shards"] == ["mancer", "parasail"]
     assert live.shard_key_window(live_cfg, mancer, "canary") is None          # unsharded config: own window
+
+
+def test_budget_by_shard_overrides_slices_within_the_cap():
+    from agent_allocation.shards import validate_shard_budgets
+    live_cfg = copy.deepcopy(forced_test_config())
+    live_cfg["budget_by_shard"] = {"mancer": {"credit_ceiling_usd": 58.5, "soft_admission_ceiling_usd": 57.5},
+                                   "parasail": {"credit_ceiling_usd": 36.5, "soft_admission_ceiling_usd": 35.5}}
+    live_cfg["budget"]["soft_admission_ceiling_usd"] = 93
+    assert validate_shard_budgets(live_cfg) == []
+    for sid, credit in (("mancer", 58.5), ("parasail", 36.5)):
+        derived = shard_config(live_cfg, sid)
+        assert derived["budget"]["credit_ceiling_usd"] == credit
+        assert validate_config(derived) == []
+    live_cfg["budget_by_shard"]["mancer"]["credit_ceiling_usd"] = 60
+    assert any("credit_ceiling_usd slices sum" in p for p in validate_shard_budgets(live_cfg))
+    live_cfg["budget_by_shard"]["mancer"] = {"max_unresolved_spend_usd": 5}
+    with pytest.raises(ValueError):
+        shard_config(live_cfg, "mancer")

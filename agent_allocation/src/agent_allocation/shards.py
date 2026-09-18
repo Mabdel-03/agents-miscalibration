@@ -101,6 +101,12 @@ def shard_config(cfg: Mapping[str, Any], shard_id: str) -> dict[str, Any]:
     for key in SHARD_SCALED_BUDGET_KEYS:
         if key in budget:
             budget[key] = float(scale_usd(budget[key], fraction))
+    # Owner-set per-shard budget slices (``budget_by_shard[<id>]``) replace the proportional ones; the slices of
+    # every shard must still sum to at most the base ceilings (checked in validate_shard_budgets).
+    for key, value in ((cfg.get("budget_by_shard") or {}).get(shard_id) or {}).items():
+        if key not in SHARD_SCALED_BUDGET_KEYS:
+            raise ValueError(f"budget_by_shard[{shard_id!r}] may only set {SHARD_SCALED_BUDGET_KEYS}, not {key!r}")
+        budget[key] = float(Decimal(str(value)))
     out["budget"] = budget
     # Per-provider dispatcher limits (e.g. Parasail 429s above ~40 in flight): ``scheduler_by_shard[<id>]`` overrides.
     overrides = (cfg.get("scheduler_by_shard") or {}).get(shard_id) or {}
@@ -112,6 +118,22 @@ def shard_config(cfg: Mapping[str, Any], shard_id: str) -> dict[str, Any]:
                     "total_share": str(total),
                     "base_config_sha256": config_hash(cfg), "base_config": copy.deepcopy(dict(cfg))}
     return out
+
+
+def validate_shard_budgets(cfg: Mapping[str, Any]) -> list[str]:
+    """With ``budget_by_shard`` overrides, the per-shard slices must not add up to more than the base budget."""
+    cfg = base_config(cfg)
+    problems = []
+    for key in ("credit_ceiling_usd", "soft_admission_ceiling_usd", "cash_target_usd"):
+        if key not in cfg["budget"]:
+            continue
+        total = sum(Decimal(str(shard_config(cfg, e["id"])["budget"][key])) for e in shard_entries(cfg))
+        if total > Decimal(str(cfg["budget"][key])):
+            problems.append(f"shard {key} slices sum to {total} > base {cfg['budget'][key]}")
+    for sid in (cfg.get("budget_by_shard") or {}):
+        if sid not in shard_ids(cfg):
+            problems.append(f"budget_by_shard names unknown shard {sid!r}")
+    return problems
 
 
 def shard_budget_table(cfg: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -80,6 +80,12 @@ def validate_config(cfg: Mapping[str, Any]) -> list[str]:
                 expected_ceiling = scale_usd(expected_ceiling, shard_fraction(shard["share"], shard["total_share"]))
             except Exception:  # noqa: BLE001 -- reported below as a malformed shard block
                 pass
+            base = shard.get("base_config") or {}
+            override = ((base.get("budget_by_shard") or {}).get(shard.get("id")) or {}).get("credit_ceiling_usd")
+            if override is not None:                  # owner-set slice; the slices' sum is checked on the base
+                need(Decimal(str(base.get("budget", {}).get("credit_ceiling_usd"))) == PRESET_CEILINGS_USD[preset],
+                     "base credit ceiling differs from the preset")
+                expected_ceiling = Decimal(str(override))
         need(Decimal(str(budget.get("credit_ceiling_usd"))) == expected_ceiling,
              "credit ceiling differs from the preset; a new approved configuration is required")
     need(Decimal(str(budget.get("soft_admission_ceiling_usd", 0))) <= Decimal(str(budget.get("credit_ceiling_usd", 0))),

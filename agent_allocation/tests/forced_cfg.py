@@ -48,6 +48,7 @@ def three_shard_config() -> dict[str, Any]:
     cfg = copy.deepcopy(forced_test_config())
     cfg["shards"] = copy.deepcopy(THREE_EQUAL_SHARDS)
     cfg.pop("scheduler_by_shard", None)
+    cfg.pop("budget_by_shard", None)
     return cfg
 
 

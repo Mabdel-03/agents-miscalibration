@@ -168,7 +168,7 @@
   "credit_ceiling_usd": 95,
   "pilot_allowance_usd": 9,
   "contingency_usd": 7,
-  "soft_admission_ceiling_usd": 88,
+  "soft_admission_ceiling_usd": 93,
   "reservation_multiplier": 1.1,
   "max_unresolved_spend_usd": 2,
   "optional_requires_core_completion": true
@@ -244,5 +244,16 @@
    "concurrency_max": 40,
    "requests_per_second_max": 8
   }
- }
+ },
+ "budget_by_shard": {
+  "mancer": {
+   "credit_ceiling_usd": 58.5,
+   "soft_admission_ceiling_usd": 57.5
+  },
+  "parasail": {
+   "credit_ceiling_usd": 36.5,
+   "soft_admission_ceiling_usd": 35.5
+  }
+ },
+ "budget_by_shard_note": "2026-09-18 owner decision (96 items, <$100 total): pilot forecasts core+spent+reserve Mancer 56.89 (58 main items, $2.50/M out), Parasail 34.57 (38 items, $2.20/M); slices re-split within the $95 hard cap."
 }
