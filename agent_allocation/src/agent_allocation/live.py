@@ -372,10 +372,6 @@ def shard_items(cfg: Mapping[str, Any], paths: RunPaths) -> set[str] | None:
     return shard_filter(cfg, paths)
 
 
-def keep_items(waves: Sequence[Sequence[ItemGraph]], allowed: set[str] | None) -> list[list[ItemGraph]]:
-    from agent_allocation.shards import filter_graph_waves
-    return filter_graph_waves(waves, allowed)
-
 
 # ------------------------------------------------------------------------------------------------------------------
 # Canary (Gate 1)
@@ -845,7 +841,7 @@ def forecast_from_rows(cfg, paths: RunPaths, rows, locks, amendments) -> dict[st
     headroom = {b: headroom_for(cfg, b, amendments) for b in BENCHMARKS}
     costs = per_item_costs(models, grids_from_config(cfg), lock=primary, headroom_by_benchmark=headroom,
                            main_a=int(cfg["reasoning"]["main_a"]), high_a=cfg["reasoning"].get("high_a"))
-    per_benchmark = {name: count // len(BENCHMARKS) for name, count in cfg["panels"].items()}
+    per_benchmark = forecast_panels(cfg, paths)
     core = core_forecast(costs, per_benchmark)
     spent = ledger_settled(paths)
     reserve = Decimal(str(cfg["budget"]["contingency_usd"]))
@@ -860,6 +856,21 @@ def forecast_from_rows(cfg, paths: RunPaths, rows, locks, amendments) -> dict[st
             "core_plus_spent_plus_reserve_usd": str(core + spent + reserve),
             "active_ceiling_usd": str(ceiling), "available_for_core_usd": str(available),
             "account_balance_usd": snap["account_balance_usd"], "admission": admission}
+
+
+def forecast_panels(cfg: Mapping[str, Any], paths: RunPaths) -> dict[str, Any]:
+    """Items per benchmark the core forecast prices. A shard prices only its own items (its waves, which hold just
+    them): the mean per benchmark of its main / extension items, so its forecast is comparable to its budget slice."""
+    per = {name: count // len(BENCHMARKS) for name, count in cfg["panels"].items()}
+    if not cfg.get("shard") or not paths.waves.exists():
+        return per
+    from agent_allocation.manifest import load_waves
+    waves = load_waves(paths)
+    main = sum(len(w.item_ids) for w in waves if "main" in w.panels)
+    ext = sum(len(w.item_ids) for w in waves if "extension" in w.panels)
+    n = Decimal(len(BENCHMARKS))
+    return {**per, "main_items": Decimal(main) / n, "extension_items": Decimal(ext) / n, "high_items": 0,
+            "replication_items": 0}
 
 
 def write_pilot_report(paths: RunPaths, gate, forecast: Mapping[str, Any], inputs: Mapping[str, Any],
