@@ -39,12 +39,14 @@ import h11
 from agent_allocation.dynorch import openai_format, responses_format
 from agent_allocation.dynorch.records import ChatReply, ChatRequest, ProxyError
 
-__all__ = ["DEFAULT_MODEL_ID", "ProxyServer", "ReplyLog", "ServedReply", "route", "KEEPALIVE_COMMENT"]
+__all__ = ["DEFAULT_MODEL_ID", "ProxyServer", "ReplyLog", "ServedError", "ServedReply", "route", "KEEPALIVE_COMMENT",
+           "SUBAGENT_HEADER"]
 
 log = logging.getLogger("agent_allocation.dynorch.httpd")
 
 DEFAULT_MODEL_ID = "qwen/qwen3.8-27b"
 KEEPALIVE_COMMENT = b": dynorch keepalive\n\n"
+SUBAGENT_HEADER = "x-openai-subagent"
 _ROUTE = re.compile(r"^/r/(?P<run_key>[A-Za-z0-9_\-]{1,64})/v1/(?P<verb>chat/completions|responses|models|budget)$")
 _MAX_BODY = 64 * 1024 * 1024
 
@@ -57,17 +59,37 @@ class ServedReply:
     finish_reason: str
     tool_calls: int
     wire: str
+    kind: str = "reply"
+
+
+@dataclass(frozen=True)
+class ServedError:
+    """A ``ProxyError`` the proxy answered with (the runner's rerun rule reads the last one)."""
+    status: int
+    code: str
+    wire: str
+    kind: str = "error"
 
 
 @dataclass
 class ReplyLog:
-    """Per-run log of served replies; ``delivered`` applies plan §2 B7."""
+    """Per-run log of served replies and errors, in order; ``delivered`` applies plan §2 B7."""
     served: dict[str, list[ServedReply]] = field(default_factory=dict)
+    events: dict[str, list[ServedReply | ServedError]] = field(default_factory=dict)
 
     def record(self, run_key: str, reply: ChatReply) -> None:
-        self.served.setdefault(run_key, []).append(ServedReply(
-            call_no=reply.call.call_no, conversation_class=reply.call.conversation_class, content=reply.content,
-            finish_reason=reply.finish_reason, tool_calls=len(reply.tool_calls), wire=reply.call.wire))
+        served = ServedReply(call_no=reply.call.call_no, conversation_class=reply.call.conversation_class,
+                             content=reply.content, finish_reason=reply.finish_reason, tool_calls=len(reply.tool_calls),
+                             wire=reply.call.wire)
+        self.served.setdefault(run_key, []).append(served)
+        self.events.setdefault(run_key, []).append(served)
+
+    def record_error(self, run_key: str, err: ProxyError, *, wire: str) -> None:
+        self.events.setdefault(run_key, []).append(ServedError(status=err.status, code=err.code, wire=wire))
+
+    def last_event(self, run_key: str) -> ServedReply | ServedError | None:
+        events = self.events.get(run_key)
+        return events[-1] if events else None
 
     def delivered(self, run_key: str) -> tuple[str | None, str]:
         """``(message, source)``: the last root reply with non-empty visible content -> ``proxy_root``; else
@@ -79,6 +101,7 @@ class ReplyLog:
 
     def forget(self, run_key: str) -> None:
         self.served.pop(run_key, None)
+        self.events.pop(run_key, None)
 
 
 def route(target: str) -> tuple[str, str | None, str | None]:
@@ -284,13 +307,16 @@ class ProxyServer:
             if request.method != "POST":
                 raise ProxyError(405, "bad_request", "POST only")
             body = request.json_body()
+            subagent = SUBAGENT_HEADER in request.headers          # contract §10.1: Codex children carry it
             if verb == "chat/completions":
-                chat_request = openai_format.parse_chat_body(body)
+                chat_request = openai_format.parse_chat_body(body, subagent=subagent)
                 await self._complete(conn, writer, run_key, chat_request, wire="chat")
             else:
-                chat_request = responses_format.parse_responses_body(body)
+                chat_request = responses_format.parse_responses_body(body, subagent=subagent)
                 await self._complete(conn, writer, run_key, chat_request, wire="responses")
         except ProxyError as err:
+            if run_key is not None and verb in ("chat/completions", "responses"):
+                self.reply_log.record_error(run_key, err, wire="responses" if verb == "responses" else "chat")
             status, payload = openai_format.error_json(err)
             await self._send_json(conn, writer, status, payload)
         except (ConnectionResetError, BrokenPipeError):
@@ -298,8 +324,11 @@ class ProxyServer:
         except Exception as exc:  # a proxy bug: loud 500, never a hang
             log.error("dynorch httpd internal error on %s %s: %s\n%s", request.method, request.target, exc,
                       traceback.format_exc())
+            internal = ProxyError(500, "internal_error", f"{type(exc).__name__}: {exc}")
+            if run_key is not None and verb in ("chat/completions", "responses"):
+                self.reply_log.record_error(run_key, internal, wire="responses" if verb == "responses" else "chat")
             if conn.our_state is h11.SEND_RESPONSE:
-                status, payload = openai_format.error_json(ProxyError(500, "internal_error", f"{type(exc).__name__}: {exc}"))
+                status, payload = openai_format.error_json(internal)
                 await self._send_json(conn, writer, status, payload)
             else:
                 raise
@@ -333,6 +362,7 @@ class ProxyServer:
         try:
             reply = await self._await_with_keepalives(task, conn, writer)
         except ProxyError as err:
+            self.reply_log.record_error(run_key, err, wire=wire)
             if wire == "chat":
                 frames: Iterable[bytes] = openai_format.error_sse(err)
             else:

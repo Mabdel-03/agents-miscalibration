@@ -71,6 +71,7 @@ def _build_records_module() -> types.ModuleType:
         stream: bool
         ignored_keys: tuple[str, ...]
         wire: str
+        subagent: bool = False               # §10.1: set by the wire layer from the x-openai-subagent header
 
     @_dc(frozen=True)
     class ReplyUsage:
@@ -279,6 +280,8 @@ class StubRun:
     root_system_sha: str
     subagent_system_sha: str | None
     record: RunRecord
+    root_text: str = ""
+    subagent_text: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     conversations: dict[str, str] = field(default_factory=dict)      # conversation_key -> class
     closed: bool = False
@@ -334,10 +337,11 @@ def default_script(run: StubRun, request: ChatRequest, call_no: int) -> Scripted
 
 
 def conversation_key(request: ChatRequest) -> str:
-    """sha256 of (system text, first user text) -- the contract §1 conversation identity."""
+    """sha256 of (system text, first user text, sub-agent marker) -- the §1/§10.1 conversation identity (a Codex
+    fork shares the root's texts and differs only by the marker; the real core keys on wire-level thread markers)."""
     system = next((m.content for m in request.messages if m.role == "system"), "")
     user = next((m.content for m in request.messages if m.role == "user"), "")
-    return sha256_text(system + "\x1f" + user)
+    return sha256_text(system + "\x1f" + user + ("\x1fsubagent" if request.subagent else ""))
 
 
 class StubProxyCore:
@@ -357,7 +361,8 @@ class StubProxyCore:
         self.runs[spec.run_key] = StubRun(spec=spec, root_system_sha=sha256_text(root_system_text),
                                           subagent_system_sha=(sha256_text(subagent_system_text)
                                                                if subagent_system_text is not None else None),
-                                          record=new_run_record(spec))
+                                          record=new_run_record(spec), root_text=root_system_text,
+                                          subagent_text=subagent_system_text)
 
     def close_run(self, run_key: str, *, status: str) -> RunRecord:
         run = self._run(run_key)
@@ -456,14 +461,16 @@ class StubProxyCore:
 
     @staticmethod
     def _classify(run: StubRun, request: ChatRequest) -> str:
-        if not run.conversations:
-            return "root"
+        """Contract §1 as amended by §10.1: a sub-agent marker or the solver text after the harness prefix -> solver;
+        the first non-solver conversation -> root; a later conversation starting with the root text -> root; else other."""
         system = next((m.content for m in request.messages if m.role == "system"), "")
-        sha = sha256_text(system)
-        if sha == run.root_system_sha and "root" not in run.conversations.values():
-            return "root"
-        if run.subagent_system_sha is not None and sha == run.subagent_system_sha:
+        if request.subagent or (run.subagent_text is not None and run.subagent_text.strip()
+                                and run.subagent_text.rstrip("\n") in system):
             return "solver"
+        if "root" not in run.conversations.values():
+            return "root"
+        if system.startswith(run.root_text.rstrip("\n")) or system.endswith(run.root_text.rstrip("\n")):
+            return "root"
         return "other"
 
 

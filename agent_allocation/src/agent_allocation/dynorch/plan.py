@@ -12,9 +12,11 @@ Rules enforced here (frozen table + plan §1):
 * order = seeded item interleave (items sorted by ``sha256(f"{seed}|{item_id}")``, so benchmarks mix), rungs inside
   each item in ``cell_rung_order`` (16, 4, 8, 25, 2, 1) so a budget or time-limit stop trims the least informative
   cells first, arms innermost so every arm loses the same cells;
-* the tool surface per harness is the frozen allowlist below (``allowed_tools``); ``spawn_tools`` comes from the
-  config arm; a ``spawning_disabled`` arm offers no spawn tool; the E0 capped arms carry ``root_call_ceiling =
-  max(A, C // 4)`` (the config spells it ``"max(A, C/4)"``; any other spelling raises);
+* the tool surface per arm is the frozen ``allowed_tools`` list of the config arm (contract §10.3; a missing key
+  raises -- the surface is never inferred) and ``spawn_tools`` likewise; a ``spawning_disabled`` arm offers no spawn
+  tool; the E0 capped arms carry ``root_call_ceiling = max(A, C // 4)`` (the config spells it ``"max(A, C/4)"``; any
+  other spelling raises); ``ALLOWED_TOOLS_BY_HARNESS`` documents the per-harness surfaces and is what the fake
+  harness's test arms use;
 * stage subsets (``plan_stage``): ``canary`` = the first dev item of each ``canary.items`` benchmark × core arms at
   ``canary.rung`` plus the k=16 ceiling probe (H1, H3); ``pilot`` = the 32 dev items × {H1, H3} × ``pilot.rungs``
   plus H0 at ``pilot.h0_rung`` on the first ``h0_items_per_benchmark`` dev items per benchmark; ``main`` = 96 main
@@ -46,11 +48,13 @@ __all__ = [
 
 PROMPT_VERSION = "dynorch-v1"
 STAGES: tuple[str, ...] = ("canary", "pilot", "main", "ext_e0", "ext_e1", "ext_e2", "ext_e3")
-#: Frozen tool surface per harness (plan §1 table: delegation only). A request offering any other tool name is a
+#: Tool surface per harness (plan §1 table: delegation only; contract §10.3 for the verified H1/H3 lists). The
+#: frozen config's per-arm ``allowed_tools`` is what ``plan_runs`` stamps on a ``RunSpec``; this table documents the
+#: expected surfaces and supplies the fake harness's. A request offering any other tool name is a
 #: ``tool_surface_violation`` (400) -- fail closed, never silently widened.
 ALLOWED_TOOLS_BY_HARNESS: Mapping[str, tuple[str, ...]] = {
     "openclaude": ("Agent",),
-    "codex": ("spawn_agent", "send_input", "wait_agent", "resume_agent", "close_agent", "update_plan"),
+    "codex": ("update_plan", "spawn_agent", "send_input", "wait_agent", "resume_agent", "close_agent"),
     "openclaw": ("sessions_spawn", "subagents"),
     "null": (),
     "fake": ("spawn_subagent",),
@@ -180,12 +184,15 @@ def plan_runs(cfg: Mapping[str, Any], *, stage: str, arms: Sequence[str], rungs:
             for arm in arms:
                 arm_cfg = arm_config(cfg, arm)
                 harness = str(arm_cfg["harness"])
-                allowed = ALLOWED_TOOLS_BY_HARNESS[harness]
+                if "allowed_tools" not in arm_cfg:
+                    raise KeyError(f"arm {arm}: the frozen config carries no allowed_tools (contract §10.3)")
+                allowed = tuple(str(t) for t in arm_cfg["allowed_tools"])
                 spawn = tuple(str(t) for t in arm_cfg["spawn_tools"])
+                if not set(spawn) <= set(allowed):
+                    raise ValueError(f"arm {arm}: spawn_tools {spawn} not within allowed_tools {allowed}")
                 if arm_cfg.get("spawning_disabled"):
-                    if spawn:
-                        raise ValueError(f"arm {arm}: spawning_disabled with non-empty spawn_tools {spawn}")
-                    allowed = tuple(t for t in allowed if t not in ALLOWED_SPAWN_NAMES)
+                    if spawn or set(allowed) & ALLOWED_SPAWN_NAMES:
+                        raise ValueError(f"arm {arm}: spawning_disabled but a spawn tool is offered ({spawn}, {allowed})")
                 ceiling = _root_call_ceiling(arm_cfg.get("root_call_ceiling"), a_tokens=a_tokens, cap=cap)
                 for repeat in repeats:
                     specs.append(RunSpec(

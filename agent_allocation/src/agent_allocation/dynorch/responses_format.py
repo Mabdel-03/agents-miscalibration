@@ -148,8 +148,12 @@ class _Builder:
         return reasoning
 
 
-def parse_responses_body(body: Mapping[str, Any]) -> ChatRequest:
-    """Codex's ``ResponsesApiRequest`` -> ``ChatRequest`` (contract §6); unexpected shapes raise ``bad_request``."""
+def parse_responses_body(body: Mapping[str, Any], *, subagent: bool = False) -> ChatRequest:
+    """Codex's ``ResponsesApiRequest`` -> ``ChatRequest`` (contract §6); unexpected shapes raise ``bad_request``.
+
+    ``subagent`` is True when the request carried the ``x-openai-subagent`` header (Codex children; contract §10.1):
+    a Codex fork shares the root's ``instructions``, so the header is the only solver marker.
+    """
     body = _expect(body, dict, "request body")
     builder = _Builder()
     instructions = body.get("instructions")
@@ -219,7 +223,7 @@ def parse_responses_body(body: Mapping[str, Any]) -> ChatRequest:
     ignored = tuple(sorted(k for k in body if k not in CONSUMED_RESPONSES_KEYS))
     return ChatRequest(messages=tuple(builder.messages), tools=_parse_tools(body.get("tools")),
                        requested_max_tokens=requested, requested_reasoning_effort=effort, stream=stream,
-                       ignored_keys=ignored, wire="responses")
+                       ignored_keys=ignored, wire="responses", subagent=bool(subagent))
 
 
 # ---------------------------------------------------------------------------------------------------------

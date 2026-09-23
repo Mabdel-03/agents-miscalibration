@@ -115,8 +115,7 @@ def test_extension_stages(cfg, base):
     assert not ({s.run_key for s in e1} & {s.run_key for s in plan_stage(cfg, "main", base)})
     e2 = plan_stage(cfg, "ext_e2", base)
     assert Counter(s.arm for s in e2) == {"H1n": 192, "H3n": 192}
-    assert all(s.spawn_tools == () for s in e2)
-    assert all("Agent" not in s.allowed_tools and "spawn_agent" not in s.allowed_tools for s in e2)
+    assert all(s.spawn_tools == () and s.allowed_tools == () for s in e2)
     e3 = plan_stage(cfg, "ext_e3", base)
     assert Counter(s.arm for s in e3) == {"H2": 192} and e3[0].harness == "openclaw"
     assert e3[0].spawn_tools == ("sessions_spawn",) and e3[0].allowed_tools == ALLOWED_TOOLS_BY_HARNESS["openclaw"]
@@ -144,6 +143,23 @@ def test_plan_runs_rejects_unknown_rungs_arms_items_and_ceilings(cfg, base):
     bad["dynorch"]["cell_rung_order"] = [16, 4]
     with pytest.raises(ValueError):
         cell_rung_order(bad)
+    no_surface = json.loads(json.dumps(cfg))
+    del no_surface["dynorch"]["arms"]["H1"]["allowed_tools"]
+    with pytest.raises(KeyError, match="allowed_tools"):
+        plan_runs(no_surface, stage="main", arms=["H1"], rungs=[1], repeats=[1], items=items, base=base)
+    widened = json.loads(json.dumps(cfg))
+    widened["dynorch"]["extension_arms"]["H1n"]["allowed_tools"] = ["Agent"]
+    with pytest.raises(ValueError, match="spawning_disabled"):
+        plan_runs(widened, stage="ext_e2", arms=["H1n"], rungs=[4], repeats=[1], items=items, base=base)
+
+
+def test_allowed_tools_come_from_the_frozen_config_arm(cfg, base):
+    specs = plan_stage(cfg, "main", base, rungs=[16])
+    by_arm = {s.arm: s for s in specs}
+    assert by_arm["H3"].allowed_tools == tuple(cfg["dynorch"]["arms"]["H3"]["allowed_tools"])
+    assert set(by_arm["H3"].allowed_tools) == {"update_plan", "spawn_agent", "send_input", "wait_agent", "resume_agent",
+                                               "close_agent"}
+    assert by_arm["H1"].allowed_tools == ("Agent",)
 
 
 def test_write_and_read_plan_round_trip(cfg, base, tmp_path):

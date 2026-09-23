@@ -155,8 +155,12 @@ def _parse_tool(index: int, raw: Any) -> ToolSpec:
     return ToolSpec(name=name, description=description, parameters=dict(parameters), namespace=None)
 
 
-def parse_chat_body(body: Mapping[str, Any]) -> ChatRequest:
-    """OpenAI chat body -> ``ChatRequest`` (contract §6); every unexpected shape raises ``bad_request``."""
+def parse_chat_body(body: Mapping[str, Any], *, subagent: bool = False) -> ChatRequest:
+    """OpenAI chat body -> ``ChatRequest`` (contract §6); every unexpected shape raises ``bad_request``.
+
+    ``subagent`` is the wire-level sub-agent marker (contract §10.1); OpenClaude sends none, so the chat route passes
+    ``False`` unless an ``x-openai-subagent`` header is present.
+    """
     body = _expect(body, dict, "request body")
     n = body.get("n", 1)
     if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n != 1):
@@ -184,7 +188,8 @@ def parse_chat_body(body: Mapping[str, Any]) -> ChatRequest:
         effort = _expect(body["reasoning"]["effort"], str, "reasoning.effort")
     ignored = tuple(sorted(k for k in body if k not in CONSUMED_CHAT_KEYS))
     return ChatRequest(messages=messages, tools=tools, requested_max_tokens=requested,
-                       requested_reasoning_effort=effort, stream=stream, ignored_keys=ignored, wire="chat")
+                       requested_reasoning_effort=effort, stream=stream, ignored_keys=ignored, wire="chat",
+                       subagent=bool(subagent))
 
 
 # ---------------------------------------------------------------------------------------------------------

@@ -187,6 +187,24 @@ async def test_responses_route_streams_codex_events_and_failures():
             assert events[0]["response"]["error"]["code"] == "rate_limit_exceeded"
             non_stream = await client.post(f"/r/{RUN}/v1/responses", headers=_headers(), json={**body, "stream": False})
             assert non_stream.status_code == 503
+    # contract §10.1: the x-openai-subagent header is the only Codex sub-agent marker
+    assert [req.subagent for _, req in core.calls] == [False, False, False]
+
+
+async def test_subagent_header_sets_the_chat_request_marker():
+    core = StubProxyCore(lambda run, req, n: Scripted(content="<final>1</final>", completion_tokens=5))
+    core.open_run(_spec(), root_system_text=SYSTEM, subagent_system_text=None)
+    body = {"model": "m", "instructions": SYSTEM, "input": [{"type": "message", "role": "user", "content": "TASK"}],
+            "stream": False}
+    async with ProxyServer(core, keepalive_seconds=5) as srv:
+        async with httpx.AsyncClient(base_url=srv.base_url) as client:
+            root = await client.post(f"/r/{RUN}/v1/responses", headers=_headers(), json=body)
+            child = await client.post(f"/r/{RUN}/v1/responses", headers={**_headers(), "x-openai-subagent": "collab_spawn"},
+                                      json=body)
+            chat = await client.post(f"/r/{RUN}/v1/chat/completions", headers=_headers(), json=_chat_body())
+    assert root.status_code == child.status_code == chat.status_code == 200
+    assert [req.subagent for _, req in core.calls] == [False, True, False]
+    assert [c.conversation_class for c in core.runs[RUN].record.calls_detail] == ["root", "solver", "root"]
 
 
 async def test_client_disconnect_does_not_cancel_the_core_call():
