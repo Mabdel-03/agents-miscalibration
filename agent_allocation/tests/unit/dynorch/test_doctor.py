@@ -127,6 +127,19 @@ def test_key_shaped_string_in_worktree_is_found_but_never_printed(cfg, tmp_path)
     assert leaked not in json.dumps(checks)
     # the source itself (regexes, startswith checks) is not a key-shaped string
     assert doctor.key_shaped_strings(Path(doctor.__file__).parent) == []
+    # the base study's fake fixtures are allowlisted by digest and path; the same string elsewhere still blocks
+    from hashlib import sha256
+    digest = sha256(leaked.encode()).hexdigest()
+    (ctx.worktree / "tests").mkdir()
+    (ctx.worktree / "tests" / "fixture.py").write_text(f"KEY = '{leaked}'\n")
+    (ctx.worktree / "notes.md").unlink()
+    assert doctor.key_shaped_strings(ctx.worktree) == ["tests/fixture.py"]
+    assert doctor.key_shaped_strings(ctx.worktree, allow={"tests/fixture.py": frozenset({digest})}) == []
+    (ctx.worktree / "tests" / "fixture.py").write_text(f"KEY = '{leaked}'\nOTHER = 'sk-or-v1-{'z' * 30}'\n")
+    assert doctor.key_shaped_strings(ctx.worktree, allow={"tests/fixture.py": frozenset({digest})}) == ["tests/fixture.py"]
+    assert doctor.key_shaped_strings(ctx.worktree, allow={"other.py": frozenset({digest})}) == ["tests/fixture.py"]
+    # the real worktree passes with the built-in allowlist
+    assert doctor.key_shaped_strings(doctor.project_root()) == []
 
 
 def test_state_path_under_home_blocks(cfg, tmp_path):

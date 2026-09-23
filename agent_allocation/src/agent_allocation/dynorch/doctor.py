@@ -26,6 +26,15 @@ CODEX_VERSION = "0.156.1"
 OPENCLAUDE_VERSION = "0.13.0"
 JINJA2_VERSION = "3.1.6"
 _KEY_SHAPED = re.compile(r"sk-or-(?:v\d+-)?[A-Za-z0-9_\-]{8,}")
+# The base study's test tree carries four obviously fake keys (fixtures of tests/unit/api and tests/unit/code).
+# They are allowlisted by the sha256 of the exact matched string, never by file: any other key-shaped string in
+# those files, or these strings anywhere else, still blocks.
+KNOWN_FAKE_KEY_DIGESTS: Mapping[str, frozenset[str]] = {
+    "tests/unit/api/conftest.py": frozenset({"d470bd61240c8e058b2ce54498c9c7954822471127d08ba53e37e2eb84d675e2"}),
+    "tests/unit/api/test_client.py": frozenset({"8c3f57df825ed1df04c74d42902c8c38cc579ffbfbb9f922d105cab152918560"}),
+    "tests/unit/code/test_attacks.py": frozenset({"939004f775c115cc484b44f260d1e3361a1b89dad7a6deb0f0de23ecad75f810",
+                                                  "04dd6ddea9bc7d2710d5432f90a1cd8161a3f5aaf3140039eb407d28b4178081"}),
+}
 _SKIP_DIRS = frozenset({".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
 _TEXT_SUFFIXES = frozenset({".py", ".md", ".txt", ".json", ".jsonl", ".toml", ".sh", ".sbatch", ".cfg", ".ini", ".yaml",
                             ".yml", ".tex", ".csv", ".jinja", ".env", ""})
@@ -133,8 +142,11 @@ def key_file_mode_ok(path: Path) -> tuple[bool, str]:
     return mode == 0o600, f"{path} mode {oct(mode)}"
 
 
-def key_shaped_strings(root: Path, *, max_bytes: int = 4_000_000) -> list[str]:
-    """Worktree-relative paths of files containing a key-shaped ``sk-or-...`` string (never the string itself)."""
+def key_shaped_strings(root: Path, *, max_bytes: int = 4_000_000,
+                       allow: Mapping[str, frozenset[str]] = KNOWN_FAKE_KEY_DIGESTS) -> list[str]:
+    """Worktree-relative paths of files containing a key-shaped ``sk-or-...`` string (never the string itself).
+    A match whose sha256 is allowlisted for that exact relative path (the base study's fake fixtures) is skipped."""
+    from hashlib import sha256
     hits: list[str] = []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
@@ -148,8 +160,10 @@ def key_shaped_strings(root: Path, *, max_bytes: int = 4_000_000) -> list[str]:
                 text = path.read_bytes().decode("utf-8", errors="replace")
             except OSError:
                 continue
-            if _KEY_SHAPED.search(text):
-                hits.append(str(path.relative_to(root)))
+            relative = str(path.relative_to(root))
+            allowed = allow.get(relative, frozenset())
+            if any(sha256(m.encode()).hexdigest() not in allowed for m in _KEY_SHAPED.findall(text)):
+                hits.append(relative)
     return sorted(hits)
 
 
