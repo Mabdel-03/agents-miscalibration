@@ -1,0 +1,37 @@
+{
+ "exit_code": 1,
+ "timed_out": false,
+ "wall_seconds": 0.1,
+ "requests": [],
+ "requests_by_role": {
+  "root": 0,
+  "child": 0
+ },
+ "routes": [],
+ "unmatched_paths": [],
+ "home_writes_since_marker": [],
+ "models_get_called": false,
+ "function_call_outputs": [],
+ "function_calls_echoed": [],
+ "event_types": [],
+ "turn_completed_usage": [],
+ "turn_failed": [],
+ "error_events": [],
+ "items": [],
+ "final_file": null,
+ "stderr_lines": [
+  "Error loading config.toml: invalid type: boolean `true`, expected struct UpdatePlanToolConfig",
+  "in `tools.update_plan`"
+ ],
+ "bwrap_mentioned_in_stderr": false,
+ "unknown_model_warning": false,
+ "probe_dir_files": [
+  "home/config.toml",
+  "home/tmp/arg0/codex-arg05aTWEc/.lock",
+  "home/tmp/arg0/codex-arg05aTWEc/apply_patch",
+  "home/tmp/arg0/codex-arg05aTWEc/applypatch",
+  "home/tmp/arg0/codex-arg05aTWEc/codex-execve-wrapper",
+  "home/tmp/arg0/codex-arg05aTWEc/codex-linux-sandbox",
+  "task.txt"
+ ]
+}

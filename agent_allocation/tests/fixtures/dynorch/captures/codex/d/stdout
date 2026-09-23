@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"01a0d07d-ae10-75d2-898b-1c9bb3da505e"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `qwen/qwen3.8-27b` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"<final>7</final>"}}
+{"type":"error","message":"Reconnecting... 1/2 (stream disconnected before completion: stream closed before response.completed)"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"<final>7</final>"}}
+{"type":"error","message":"Reconnecting... 2/2 (stream disconnected before completion: stream closed before response.completed)"}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"<final>7</final>"}}
+{"type":"error","message":"stream disconnected before completion: stream closed before response.completed"}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion: stream closed before response.completed"}}

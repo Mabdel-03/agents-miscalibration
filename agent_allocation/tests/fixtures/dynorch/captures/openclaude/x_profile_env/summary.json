@@ -1,0 +1,147 @@
+{
+ "exit_code": 0,
+ "timed_out": false,
+ "wall_seconds": 1.54,
+ "requests": 3,
+ "requests_by_role": {
+  "root": 2,
+  "child": 1
+ },
+ "routes": [
+  "chat/completions"
+ ],
+ "unmatched_paths": [],
+ "home_writes_since_marker": [],
+ "models_get_called": false,
+ "first_request": {
+  "tools": [
+   "Agent"
+  ],
+  "stream": true,
+  "max_tokens": 32000,
+  "max_completion_tokens": null,
+  "stream_options": null,
+  "model": "qwen/qwen3.8-27b",
+  "top_level_keys": [
+   "max_tokens",
+   "messages",
+   "model",
+   "stream",
+   "tools"
+  ],
+  "messages0_role": "system",
+  "system_byte_identical": false,
+  "system_byte_identical_with_trailing_newline": false,
+  "n_messages": 2
+ },
+ "assistant_messages_resent": [
+  {
+   "seq": 3,
+   "role_of_request": "root",
+   "has_reasoning_content": false,
+   "keys": [
+    "content",
+    "role",
+    "tool_calls"
+   ],
+   "tool_call_ids": [
+    "call_cd5c20444bd1"
+   ]
+  }
+ ],
+ "tool_messages": [
+  {
+   "seq": 3,
+   "tool_call_id": "call_cd5c20444bd1",
+   "content_prefix": "<rationale>\nStub reply.\n</rationale>\n<final>child says 7</final>\n\nagentId: acfc318d15281bf8e (use SendMessage with to: '"
+  }
+ ],
+ "tool_calls_issued": [
+  {
+   "seq": 1,
+   "role": "root",
+   "kind": "tool_call",
+   "tool": "Agent"
+  }
+ ],
+ "child_requests": [
+  {
+   "seq": 2,
+   "tools": [],
+   "system_sha256": "f112074cae753b10f84d26611607e9cc25b0892f238d33a52ef32cd231121129",
+   "system_prefix": "You are OpenClaude, built on the Claude Agent SDK.\n\nYou are a sub-agent solving one delegated task accurately. Use your own knowledge and reasoning together wit",
+   "n_messages": 2
+  }
+ ],
+ "budget_usd_text_in_requests": false,
+ "budget_usd_text_in_stdout": false,
+ "stdout_json": {
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "<rationale>\nStub reply.\n</rationale>\n<final>7</final>",
+  "num_turns": 2,
+  "usage": {
+   "input_tokens": 200,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 0,
+   "output_tokens": 40,
+   "server_tool_use": {
+    "web_search_requests": 0,
+    "web_fetch_requests": 0
+   },
+   "service_tier": "standard",
+   "cache_creation": {
+    "ephemeral_1h_input_tokens": 0,
+    "ephemeral_5m_input_tokens": 0
+   },
+   "cache_deleted_input_tokens": 0,
+   "inference_geo": "",
+   "iterations": [],
+   "speed": "standard"
+  },
+  "total_cost_usd": 0.003,
+  "stop_reason": "end_turn",
+  "duration_ms": 130,
+  "duration_api_ms": 77,
+  "modelUsage": {
+   "qwen/qwen3.8-27b": {
+    "inputTokens": 300,
+    "outputTokens": 60,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+    "webSearchRequests": 0,
+    "costUSD": 0.003,
+    "contextWindow": 128000,
+    "maxOutputTokens": 32000
+   }
+  },
+  "permission_denials": []
+ },
+ "stdout_json_keys": [
+  "duration_api_ms",
+  "duration_ms",
+  "fast_mode_state",
+  "is_error",
+  "modelUsage",
+  "num_turns",
+  "permission_denials",
+  "result",
+  "session_id",
+  "stop_reason",
+  "subtype",
+  "total_cost_usd",
+  "type",
+  "usage",
+  "uuid"
+ ],
+ "stderr_prefix": "[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.\n[context] Warning: model \"qwen/qwen3.8-27b\" not in integration model metadata — using conservative 128k defa",
+ "probe_dir_files": [
+  "agents.json",
+  "home/cfg/.openclaude.json",
+  "home/cfg/backups/.openclaude.json.backup.1790204859063",
+  "home/cfg/projects/-orcd-data-tpoggio-001-mabdel03-dynorch-scratch-probe-openclaude-x-profile-env-ws/cd29aedb-203b-43bc-a49a-f52b9b383e56/subagents/agent-acfc318d15281bf8e.meta.json",
+  "home/cfg/settings.json",
+  "task.txt"
+ ]
+}

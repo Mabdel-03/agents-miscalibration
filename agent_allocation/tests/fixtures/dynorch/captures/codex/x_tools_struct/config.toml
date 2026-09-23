@@ -1,0 +1,44 @@
+model = "qwen/qwen3.8-27b"
+model_provider = "meter"
+model_context_window = 131072
+model_reasoning_summary = "none"
+model_instructions_file = "/orcd/data/tpoggio/001/mabdel03/agents_scaling_dynorch_wpE/agent_allocation/prompts/system_dynorch.txt"
+show_raw_agent_reasoning = false
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+check_for_update_on_startup = false
+[tools.experimental_request_user_input]
+enabled = false
+[tools.update_plan]
+enabled = true
+
+[model_providers.meter]
+name = "Local metering proxy"
+base_url = "http://127.0.0.1:36771/r/probe-cx-x_tools_struct/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+request_max_retries = 2
+stream_max_retries = 2
+stream_idle_timeout_ms = 1800000
+
+[features]
+shell_tool = false
+unified_exec = false
+view_image = false
+code_mode = false
+apps = false
+plugins = false
+hooks = false
+image_generation = false
+skill_search = false
+multi_agent = true
+multi_agent_v2 = false
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+max_depth = 1
+
+[shell_environment_policy]
+inherit = "none"
