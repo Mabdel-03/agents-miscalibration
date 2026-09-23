@@ -19,7 +19,9 @@
    ``UpstreamFailed`` (an upstream 402 is an infrastructure stop, B6, never a harness exhaustion).
 
 Every exchange is returned as a journal ``phase`` dict (headers/text redacted through ``apikey``), attached to the
-``UpstreamResult`` or the ``UpstreamFailed``.
+``UpstreamResult`` or the ``UpstreamFailed``. ``UpstreamResult.reasoning``/``text``/``closed`` follow the phase: a
+``think`` call (prompt ending inside ``<think>``) is split with ``normalize.split_reasoning``; an ``answer`` or
+``terminal`` call (prompt already closed) yields ``reasoning=""`` and ``text = normalize.answer_visible_text(...)``.
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ from agent_allocation.api.forced import (
     ANSWER_BACKOFF_BASE_SECONDS, ANSWER_BACKOFF_CAP_SECONDS, ANSWER_RETRY_AFTER_CAP_SECONDS, ForcedCall,
     ForcedClient,
 )
-from agent_allocation.api.normalize import split_reasoning
+from agent_allocation.api.normalize import answer_visible_text, split_reasoning
 from agent_allocation.api.request import build_capped_body
 from agent_allocation.apikey import redact, redact_headers
 from agent_allocation.contracts import EndpointLock, TransportStatus
@@ -226,7 +228,12 @@ class Upstream:
             phases.append(phase_record(phase, aid, body, call, cost_usd=cost, charged_max=charged))
 
             if status is TransportStatus.OK and tokens_known:
-                reasoning, text, closed = split_reasoning(call.reasoning, call.text)
+                if phase == "think":
+                    # the prompt ended inside <think>: split thinking from the visible answer (both server styles)
+                    reasoning, text, closed = split_reasoning(call.reasoning, call.text)
+                else:
+                    # answer / terminal: the prompt already closed the reasoning; the whole output is visible
+                    reasoning, text, closed = "", answer_visible_text(call.reasoning, call.text), True
                 return UpstreamResult(
                     reasoning=reasoning, text=text, closed=closed, finish_reason=call.finish_reason, usage=usage,
                     generation_id=call.generation_id, cache_status=call.cache_status,

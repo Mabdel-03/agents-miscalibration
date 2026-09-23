@@ -297,14 +297,12 @@ class ProxyCore:
             return await self._served(state, request, messages, prompt, prompt_sha, grant, conv_key, conv_class,
                                       reinjection)
         finally:
-            if grant is None or not grant.settled:
-                if grant is not None and not grant.settled:
-                    # a cancellation or an unexpected error after the grant: never release a grant that may have
-                    # been sent -- charge it whole
-                    if grant.sent:
-                        budget.settle_full(grant)
-                    else:
-                        budget.release_unsent(grant)
+            if grant is not None and not grant.settled:
+                # a cancellation or an unexpected error after the grant was minted: the call may have left the
+                # process, so the grant is charged whole (a provably unsent ledger refusal settles itself above)
+                budget.mark_sent(grant)
+                budget.settle_full(grant)
+            if grant is None or not budget.locked or budget._active is None and budget.locked:
                 budget.unlock()
 
     def _refuse(self, state: _RunState, code: str, message: str, *, guard: str | None = None) -> None:
@@ -372,6 +370,10 @@ class ProxyCore:
                 state.record.error = f"ledger_refused: {exc.detail}"
                 self.store.save(state.record)
             raise
+        except BaseException:
+            budget.mark_sent(grant)                   # cancelled mid-flight: the call may have been sent
+            budget.settle_full(grant)
+            raise
         budget.mark_sent(grant)
         phases.extend(think.phases)
         cost += Decimal(think.cost_usd)
@@ -404,16 +406,19 @@ class ProxyCore:
                 try:
                     answer = await self._upstream(state, prompt=cont_prompt, max_tokens=cont_max, call_no=call_no,
                                                   phase=PHASE_ANSWER, conv_class=conv_class)
-                except UpstreamFailed as exc:
-                    phases.extend(exc.phases)
-                    cost += exc.cost_usd
+                except BaseException as exc:
+                    # the continuation may have been sent: charge it whole (inside C for a ceiling close, as the
+                    # spent grace otherwise) before re-raising; an UpstreamFailed is also journaled
                     if kind == "ceiling_close":
                         budget.settle(grant, min(grant.max_tokens, think_tokens + cont_max), prompt_tokens)
                     else:
                         budget.settle(grant, think_tokens, prompt_tokens)
                         budget.record_grace(kind, cont_max)      # conservative: the grace is spent
-                    self._journal_failure(state, request, prompt_sha, len(prompt), grant, conv_key, conv_class,
-                                          reinjection, tuple(phases), exc, cost=cost)
+                    if isinstance(exc, UpstreamFailed):
+                        phases.extend(exc.phases)
+                        cost += exc.cost_usd
+                        self._journal_failure(state, request, prompt_sha, len(prompt), grant, conv_key,
+                                              conv_class, reinjection, tuple(phases), exc, cost=cost)
                     raise
                 phases.extend(answer.phases)
                 cost += Decimal(answer.cost_usd)
@@ -507,6 +512,9 @@ class ProxyCore:
                 budget.calls -= 1
                 state.record.error = f"ledger_refused: {exc.detail}"
                 self.store.save(state.record)
+            raise
+        except BaseException:
+            budget.record_grace("terminal", self.settings.grace_tokens)   # cancelled mid-flight: grace spent
             raise
         usage = answer.usage
         assert usage is not None and usage.completion_tokens is not None

@@ -114,14 +114,14 @@ def parse_tool_calls(text: str, tools: Sequence[ToolSpec], *, call_no: int) -> T
     while True:
         match = _CALL.match(text, position)
         if match is None:
-            return ToolParse(content=text, calls=(), status="failed", reason="malformed_tool_call")
+            return ToolParse(content=text.strip(), calls=(), status="failed", reason="malformed_tool_call")
         name, body = match.group(1), match.group(2)
         tool = by_name.get(name)
         if tool is None:
             notes.append(f"unknown_function:{name}")
         parsed = _parse_parameters(body, tool, notes)
         if isinstance(parsed, str):
-            return ToolParse(content=text, calls=(), status="failed", reason=parsed)
+            return ToolParse(content=text.strip(), calls=(), status="failed", reason=parsed)
         calls.append(ToolCall(id=tool_call_id(call_no, len(calls)), name=name, arguments=parsed))
         position = match.end()
         rest = text[position:]
@@ -129,7 +129,7 @@ def parse_tool_calls(text: str, tools: Sequence[ToolSpec], *, call_no: int) -> T
             break
         stripped = rest.lstrip()
         if not stripped.startswith(TOOL_CALL_OPEN):
-            return ToolParse(content=text, calls=(), status="failed", reason="text_after_tool_call")
+            return ToolParse(content=text.strip(), calls=(), status="failed", reason="text_after_tool_call")
         position += len(rest) - len(stripped)
     content = text[:first].strip()
     return ToolParse(content=content, calls=tuple(calls), status="ok", reason=";".join(notes) or None)
