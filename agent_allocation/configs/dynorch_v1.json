@@ -1,0 +1,448 @@
+{
+ "spec_version": "1.0",
+ "study_id": "openrouter_dynorch_v1",
+ "seed": 20260923,
+ "primary_model": "qwen/qwen3.8-27b",
+ "replication_model": null,
+ "endpoint_lock_file": "artifacts/locks/openrouter_endpoints.json",
+ "dataset_lock_file": "artifacts/locks/datasets.json",
+ "reasoning": {
+  "main_a": 1024,
+  "high_a": null,
+  "pilot_a": [
+   1024
+  ],
+  "text_completion_headroom": 4096,
+  "code_completion_headroom": 4096,
+  "requested_reasoning_max": 25600,
+  "budget_semantics": "forced_exact"
+ },
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "api_seed_enabled": false,
+  "response_cache": false,
+  "n_per_request": 1
+ },
+ "provider": {
+  "allow_fallbacks": false,
+  "require_parameters": true,
+  "service_tier": "standard",
+  "resolve_exact_endpoint_in_preflight": true,
+  "auto_provider_switch": false,
+  "endpoint_tag": null
+ },
+ "protocols": {
+  "root_bank_size": 25,
+  "private_total_cycles": 25,
+  "team_sizes": [
+   2,
+   3,
+   4,
+   5
+  ],
+  "peer_update_rounds": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "private_team_update_rounds": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "deep_main_multipliers": [
+   2,
+   4,
+   8,
+   16,
+   25
+  ],
+  "deep_high_multipliers": [],
+  "communication_mode": "synchronous",
+  "context_policy": "latest_visible_solution",
+  "cp_team_size": 4,
+  "cp_peer_rounds": 1,
+  "cp_private_rounds": 3,
+  "pooled_synthesis_team_size": 4,
+  "tools_during_generation": false
+ },
+ "benchmarks": [
+  {
+   "id": "aime",
+   "source": "MathArena/aime_2025+MathArena/aime_2026",
+   "grader": "math_verify",
+   "selector": "plurality",
+   "split": "train",
+   "report_label": "AIME 2025 + 2026"
+  },
+  {
+   "id": "hmmt",
+   "source": "MathArena/hmmt_feb_2025+MathArena/hmmt_feb_2026",
+   "grader": "math_verify",
+   "selector": "plurality",
+   "split": "train",
+   "report_label": "HMMT February 2025 + 2026"
+  },
+  {
+   "id": "omni_math_hard",
+   "source": "KbsdJames/Omni-MATH",
+   "grader": "math_verify",
+   "selector": "plurality",
+   "split": "test",
+   "min_difficulty": 7.0,
+   "report_label": "Omni-MATH, difficulty >= 7"
+  },
+  {
+   "id": "gpqa_diamond",
+   "source": "Idavidrein/gpqa",
+   "grader": "option_exact",
+   "selector": "plurality",
+   "split": "train",
+   "report_label": "GPQA-Diamond (seeded option shuffle)"
+  }
+ ],
+ "scheduler": {
+  "concurrency_start": 16,
+  "concurrency_max": 96,
+  "requests_per_second_start": 2,
+  "requests_per_second_max": 12,
+  "aimd_window_seconds": 60,
+  "increase_concurrency_by": 8,
+  "increase_rps_by": 1,
+  "decrease_factor": 0.5,
+  "max_transport_attempts": 3,
+  "connect_timeout_seconds": 15,
+  "read_timeout_seconds": 900,
+  "lease_heartbeat_seconds": 15,
+  "lease_stale_seconds": 900,
+  "max_active_waves": 6,
+  "wave_items": 16,
+  "max_calls_per_item_in_flight": 32,
+  "single_paid_dispatcher": true,
+  "checkpoint_after_every_response": true,
+  "api_sdk_automatic_retries": false
+ },
+ "grading": {
+  "offline_workers_max": 8,
+  "untrusted_code_network": false,
+  "cpu_quota_per_sandbox": 1,
+  "memory_mib_per_sandbox": 512,
+  "pids_limit": 64,
+  "stdout_limit_bytes": 65536,
+  "public_case_wall_seconds": 3,
+  "full_suite_wall_seconds": 60,
+  "official_evalplus_timeout_rules": true,
+  "grade_cache_by_code_hash": true,
+  "expose_private_tests_to_generation": false
+ },
+ "statistics": {
+  "bootstrap_replicates": 10000,
+  "cluster_unit": "benchmark_and_item",
+  "macro_weight_benchmarks_equally": true,
+  "bbh_macro_weight_subtasks_equally": true,
+  "test_grid_frontier_is_descriptive": true,
+  "no_outcome_based_main_sampling": true,
+  "study_seed": 20260923,
+  "primary_family": [
+   "H1/16-deep/16",
+   "H1/16-sample/16",
+   "H3/16-deep/16",
+   "H3/16-sample/16"
+  ],
+  "n_primary": 4,
+  "multiplicity": "holm",
+  "anchor_reported_first": "H0/16-deep/16",
+  "population_rule": "one build_population call per contrast; items = main_96; mismatches must be empty"
+ },
+ "planning_prices": {
+  "verified_on": "2026-09-18",
+  "primary": {
+   "input_price": "0.24",
+   "output_price": "2.50"
+  },
+  "replication": null
+ },
+ "preset": "dynorch_v1",
+ "panels": {
+  "pilot_items": 32,
+  "main_items": 96,
+  "high_items": 0,
+  "extension_items": 0,
+  "replication_items": 0
+ },
+ "budget": {
+  "cash_target_usd": 100,
+  "credit_ceiling_usd": 95,
+  "soft_admission_ceiling_usd": 90,
+  "pilot_allowance_usd": 7,
+  "canary_allowance_usd": 2,
+  "contingency_usd": 5,
+  "reservation_multiplier": 1.1,
+  "max_unresolved_spend_usd": 2,
+  "optional_requires_core_completion": true,
+  "forecast_contingency_share": 0.25,
+  "account_auto_reload": true,
+  "note": "owner 2026-09-23: $100 all-in; account auto-refills so the balance is not a ceiling; the KEY limit still binds (raise it so limit_remaining >= 95 before Gate 3)"
+ },
+ "execution": {
+  "default_mode": "dry_run",
+  "require_allow_paid_flag": true,
+  "main_requires_passed_pilot_and_frozen_locks": true
+ },
+ "forced": {
+  "enabled": true,
+  "endpoint": "completions",
+  "template": "qwen3.8-27b",
+  "template_file": "src/agent_allocation/api/templates/qwen3.8-27b.chat_template.jinja",
+  "ban_token_ids": [
+   248069,
+   248046,
+   248044
+  ],
+  "ban_bias": -100,
+  "bias_probe_token_id": 41674,
+  "think_close_text": "\n</think>\n\n",
+  "answer_attempts": 3,
+  "note": "THINK: raw prompt ending '<think>\\n', logit_bias ban, max_tokens=reasoning_budget; realized must equal budget with finish_reason=length. ANSWER: prompt+reasoning+think_close_text, max_tokens=headroom.",
+  "dynorch_note": "dynorch never sends logit_bias: calls are capped (max_tokens = remaining), not forced; the forced ANSWER continuation (think_close_text) is reused for the grace only."
+ },
+ "calibration": {
+  "dev_items_per_benchmark": 8,
+  "forced_pass_at_1_min": 0.15,
+  "forced_pass_at_1_max": 0.85,
+  "fallback_easier": {
+   "hmmt": "omni_math_mid",
+   "aime": "math_level5"
+  },
+  "note": "pre-registered benchmark-level gate; no per-item selection"
+ },
+ "replication_grid": {
+  "root_bank_size": 16,
+  "private_total_cycles": 16,
+  "team_sizes": [
+   3,
+   5
+  ],
+  "peer_update_rounds": [
+   1,
+   2
+  ],
+  "private_team_update_rounds": [
+   1,
+   2
+  ],
+  "deep_multipliers": [
+   4,
+   16
+  ],
+  "optional": true,
+  "enabled": false
+ },
+ "shards": [
+  {
+   "id": "mancer",
+   "endpoint_tag": "mancer/fp8",
+   "share": 3
+  },
+  {
+   "id": "parasail",
+   "endpoint_tag": "parasail/fp8",
+   "share": 2
+  }
+ ],
+ "shards_note": "2026-09-23: shards are used ONLY for per-item provider pinning (assignment.json of the base study); one dispatcher, one ledger. Provider rule: plan section 4 (Gate 1 decides; Mancer 2 was status -2 on 2026-09-23).",
+ "scheduler_by_shard": {
+  "parasail": {
+   "concurrency_max": 40,
+   "requests_per_second_max": 8
+  }
+ },
+ "base_study": "openrouter_forced_budget_v2",
+ "base_run_root": "/orcd/data/tpoggio/001/mabdel03/agents_scaling_results/forced_budget_v2/artifacts",
+ "dynorch": {
+  "arms": {
+   "H1": {
+    "harness": "openclaude",
+    "spawn_tools": [
+     "Agent"
+    ],
+    "root_call_ceiling": null
+   },
+   "H3": {
+    "harness": "codex",
+    "spawn_tools": [
+     "spawn_agent"
+    ],
+    "root_call_ceiling": null
+   },
+   "H0": {
+    "harness": "null",
+    "spawn_tools": [],
+    "root_call_ceiling": null
+   }
+  },
+  "extension_arms": {
+   "H1c": {
+    "harness": "openclaude",
+    "spawn_tools": [
+     "Agent"
+    ],
+    "root_call_ceiling": "max(A, C/4)"
+   },
+   "H3c": {
+    "harness": "codex",
+    "spawn_tools": [
+     "spawn_agent"
+    ],
+    "root_call_ceiling": "max(A, C/4)"
+   },
+   "H1n": {
+    "harness": "openclaude",
+    "spawn_tools": [],
+    "spawning_disabled": true
+   },
+   "H3n": {
+    "harness": "codex",
+    "spawn_tools": [],
+    "spawning_disabled": true
+   },
+   "H2": {
+    "harness": "openclaw",
+    "spawn_tools": [
+     "sessions_spawn"
+    ],
+    "fallback_for": "H3"
+   }
+  },
+  "core_arms": [
+   "H1",
+   "H3",
+   "H0"
+  ],
+  "rungs": [
+   1,
+   2,
+   4,
+   8,
+   16,
+   25
+  ],
+  "a_tokens": 1024,
+  "repeats": 1,
+  "extension_order": [
+   "E0_capped@{4,16}",
+   "E1_repeat2@{16,4,25,8,2,1}",
+   "E2_spawn_disabled@{4,16}",
+   "E3_openclaw@{4,16}"
+  ],
+  "cell_rung_order": [
+   16,
+   4,
+   8,
+   25,
+   2,
+   1
+  ],
+  "grace_tokens": 1024,
+  "grace_root_only": true,
+  "max_grace_events_per_run": 1,
+  "terminal_threshold_tokens": 64,
+  "per_run_serialization": true,
+  "harness_max_tokens_ignored": true,
+  "finish_reasons_returned": [
+   "stop",
+   "tool_calls"
+  ],
+  "reasoning_effort": "xhigh",
+  "subagent_depth": 1,
+  "tool_surface": "delegation_only",
+  "max_calls_per_run": 24,
+  "max_prompt_tokens_per_run": 600000,
+  "wall_timeout_seconds": {
+   "base": 600,
+   "per_rung": 120
+  },
+  "rerun_rule": {
+   "max_reruns": 2,
+   "rerun_iff": [
+    "zero_proxy_calls_served",
+    "last_reply_transport_or_ledger_error",
+    "killed_by_drain"
+   ],
+   "never_after": [
+    "402",
+    "forced_close",
+    "parse_failure",
+    "wall_timeout_with_calls"
+   ]
+  },
+  "proxy": {
+   "host": "127.0.0.1",
+   "port": 0,
+   "keepalive_seconds": 15,
+   "path_prefix": "/r"
+  },
+  "runner": {
+   "concurrency": 12,
+   "sigterm_after_exhaustion_seconds": 60,
+   "sigkill_after_seconds": 30
+  },
+  "provider_in_flight": {
+   "parasail": 40,
+   "mancer": 48
+  },
+  "provider_rps": {
+   "parasail": 8,
+   "mancer": 12
+  },
+  "provider_rule": {
+   "status": 0,
+   "uptime_last_30m_min": 95,
+   "required_parameters": [
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "top_k"
+   ],
+   "fallback": "all items to the passing shard endpoint; both failing -> stop_notify"
+  },
+  "scratch_root": "/orcd/data/tpoggio/001/mabdel03/dynorch_scratch",
+  "codex_prefix": "/orcd/data/tpoggio/001/mabdel03/dynorch_scratch/npm-prefix",
+  "prompt_files": {
+   "system": "prompts/system_dynorch.txt",
+   "subagent": "prompts/subagent_dynorch.txt",
+   "h0_system": "prompts/system.txt",
+   "user": "prompts/root.txt"
+  },
+  "budget_sentence": "COMPUTE BUDGET: you have a total budget of {C} completion tokens for this task, counted across every model call you make, including your own reasoning, any tool calls, and every sub-agent you spawn (each sub-agent runs the same model and draws from this same budget). When the budget is exhausted your current output is closed and you must answer immediately, so reserve enough for the final answer. Input tokens are not counted.",
+  "terminal_sentence": "Your completion-token budget for this task is exhausted. Reply now with only your final answer using <final>...</final>; no further reasoning or tool calls are possible.",
+  "pilot": {
+   "dev_items_per_benchmark": 8,
+   "rungs": [
+    2,
+    16
+   ],
+   "h0_rung": 16,
+   "h0_items_per_benchmark": 4
+  },
+  "canary": {
+   "items": [
+    "aime",
+    "gpqa_diamond"
+   ],
+   "rung": 4,
+   "ceiling_probe_rung": 16,
+   "ceiling_probe_items": 2
+  },
+  "cut_order": [
+   "C1 drop H0 at rungs {1,2,8}",
+   "C2 drop rung 1 for H1/H3",
+   "C3 drop rung 2 for H1/H3",
+   "C4 owner: drop a harness or seeded 48-item subpanel"
+  ]
+ }
+}

@@ -10,9 +10,10 @@ from typing import Any, Mapping
 
 from agent_allocation.contracts import BENCHMARKS, STUDY_ID, GridSpec, canonical_hash
 
-PRESET_CEILINGS_USD = {"balanced150": Decimal("135"), "lean100": Decimal("90"), "forced27b": Decimal("95")}
+PRESET_CEILINGS_USD = {"balanced150": Decimal("135"), "lean100": Decimal("90"), "forced27b": Decimal("95"),
+                       "dynorch_v1": Decimal("95")}
 # Study id per preset (default: contracts.STUDY_ID). forced27b is the forced-budget rerun (openrouter_forced_budget_v2).
-PRESET_STUDY_IDS = {"forced27b": "openrouter_forced_budget_v2"}
+PRESET_STUDY_IDS = {"forced27b": "openrouter_forced_budget_v2", "dynorch_v1": "openrouter_dynorch_v1"}
 CODE_BENCHMARKS: frozenset[str] = frozenset()   # no code benchmark in the study; MBPP+ grading stays dormant
 BUDGET_SEMANTICS = frozenset({"soft_requested_allowance", "forced_exact"})
 FORCED_ENDPOINTS = frozenset({"completions"})
