@@ -10,7 +10,8 @@ PREFIX=${CODEX_PREFIX:-$SCRATCH/npm-prefix}
 VERSION=${CODEX_VERSION:-0.156.1}
 export npm_config_cache=$SCRATCH/npm-cache
 export TMPDIR=$SCRATCH/tmp
-mkdir -p "$PREFIX" "$npm_config_cache" "$TMPDIR"
+export CODEX_HOME=$SCRATCH/doctor-probe-home/codex      # a bare `codex --version` writes ~/.codex otherwise
+mkdir -p "$PREFIX" "$npm_config_cache" "$TMPDIR" "$CODEX_HOME"
 case "${1:-}" in --force) FORCE=1 ;; "") FORCE=0 ;; *) echo "usage: $0 [--force]"; exit 2 ;; esac
 BIN="$PREFIX/bin/codex"
 have() { [ -x "$BIN" ] && "$BIN" --version 2>/dev/null | grep -q "codex-cli $VERSION"; }

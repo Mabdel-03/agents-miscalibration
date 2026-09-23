@@ -65,7 +65,7 @@ class DoctorContext:
     home: Path = field(default_factory=lambda: Path.home())
     worktree: Path = field(default_factory=project_root)
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
-    run_command: Callable[[Sequence[str]], tuple[int, str]] = None  # type: ignore[assignment]
+    run_command: Callable[[Sequence[str], Mapping[str, str] | None], tuple[int, str]] = None  # type: ignore[assignment]
     key_file: Path | None = None
     run_root: Path | None = None
     walk_limit: int = 2_000_000
@@ -78,9 +78,10 @@ class DoctorContext:
             self.key_file = key_file_path()
 
 
-def _run(argv: Sequence[str]) -> tuple[int, str]:
+def _run(argv: Sequence[str], env: Mapping[str, str] | None = None) -> tuple[int, str]:
     try:
-        proc = subprocess.run(list(argv), capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(list(argv), capture_output=True, text=True, timeout=60,
+                              env=None if env is None else dict(env))
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 127, f"{type(exc).__name__}: {exc}"
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
@@ -127,7 +128,7 @@ def count_home_files(home: Path, limit: int) -> int:
 
 def home_file_count(ctx: DoctorContext) -> tuple[int, str]:
     """(count, source): ``quota -s`` when it parses, else a walk of ``$HOME`` (source ``walk`` = a warning)."""
-    rc, out = ctx.run_command(["quota", "-s"])
+    rc, out = ctx.run_command(["quota", "-s"], None)
     if rc in (0, 1):                       # quota exits 1 when a filesystem is over quota; the table still prints
         parsed = parse_quota_files(out)
         if parsed is not None:
@@ -208,8 +209,22 @@ def codex_binary(ctx: DoctorContext) -> Path:
     return Path(prefix) / "bin" / "codex"
 
 
+def probe_env(ctx: DoctorContext) -> dict[str, str]:
+    """The environment for CLI version probes: ``CODEX_HOME`` (and HOME-derived state) under the scratch root, so
+    a bare ``codex --version`` never writes ``~/.codex`` (it does when CODEX_HOME is unset: an observed /home write)."""
+    scratch = ctx.cfg.get("dynorch", {}).get("scratch_root")
+    if not scratch:
+        raise KeyError("config.dynorch.scratch_root is missing")
+    probe_home = Path(scratch) / "doctor-probe-home"
+    return {**dict(ctx.env), "CODEX_HOME": str(probe_home / "codex"), "TMPDIR": str(probe_home / "tmp"),
+            "XDG_CACHE_HOME": str(probe_home / "cache"), "XDG_STATE_HOME": str(probe_home / "state")}
+
+
 def version_of(ctx: DoctorContext, argv: Sequence[str]) -> str | None:
-    rc, out = ctx.run_command(argv)
+    env = probe_env(ctx)
+    for key in ("CODEX_HOME", "TMPDIR", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
+    rc, out = ctx.run_command(argv, env)
     if rc != 0:
         return None
     match = re.search(r"(\d+\.\d+\.\d+)", out)

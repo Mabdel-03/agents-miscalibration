@@ -26,7 +26,10 @@ def cfg():
 
 
 def fake_runner(*, quota: str = QUOTA_OK, codex: str = "codex-cli 0.156.1", openclaude: str = "0.13.0 (OpenClaude)"):
-    def run(argv):
+    seen = {}
+
+    def run(argv, env=None):
+        seen[argv[0].rsplit("/", 1)[-1]] = env
         if argv[0] == "quota":
             return 0, quota
         if argv[0].endswith("codex"):
@@ -34,6 +37,7 @@ def fake_runner(*, quota: str = QUOTA_OK, codex: str = "codex-cli 0.156.1", open
         if argv[0].endswith("openclaude"):
             return 0, openclaude
         return 127, "unknown"
+    run.seen = seen
     return run
 
 
@@ -92,6 +96,16 @@ def test_clean_environment_passes(cfg, tmp_path):
                  "template_sha_matches_forced", "jinja2_importable", "prompt_files_present"):
         assert checks[name]["ok"], checks[name]
     assert checks["home_file_count_below_990k"]["detail"]["source"] == "quota"
+
+
+def test_cli_probes_run_with_codex_home_on_scratch(cfg, tmp_path):
+    ctx = make_ctx(cfg, tmp_path)
+    doctor.run_checks(ctx)
+    env = ctx.run_command.seen["codex"]
+    scratch = ctx.cfg["dynorch"]["scratch_root"]
+    assert env["CODEX_HOME"].startswith(scratch) and env["TMPDIR"].startswith(scratch)
+    assert not doctor.under_home(env["CODEX_HOME"], ctx.home) and Path(env["CODEX_HOME"]).is_dir()
+    assert ctx.run_command.seen["quota"] is None
 
 
 def test_home_over_990k_blocks(cfg, tmp_path):
