@@ -18,9 +18,12 @@ contract section it implements; do not edit files owned by another WP (list in �
 - **run** = one (arm, item, rung, repeat, attempt): one harness process (or one plain call for H0) under one `run_key`.
 - **arm** ∈ core {H1 openclaude, H3 codex, H0 null} (extensions H1c/H3c capped, H1n/H3n spawn-disabled, H2 openclaw).
 - **rung k** ∈ {1,2,4,8,16,25}; **A** = 1024; **C** = k·A = the run's cap on completion tokens.
-- **conversation** = a distinct (system text, first user text) pair seen by the proxy under one run_key; the first
-  one is the **root**; a conversation whose system text sha equals the run's `subagent_system_sha` is **solver**;
-  anything else is **other**.
+- **conversation** = a distinct conversation seen by the proxy under one run_key (keyed by the system text and the
+  wire-level thread markers, NEVER by the raw first user turn: both harnesses inject a dated block before the task).
+  The first non-subagent conversation is the **root**; a conversation is **solver** iff the request carried a
+  sub-agent marker (Codex `x-openai-subagent` header → `ChatRequest.subagent`) or its system text contains
+  `prompts/subagent_dynorch.txt` after the harness's own prefix (OpenClaude); anything else is **other**.
+  (Amended by §10.1 — system-sha equality classifies neither harness.)
 - **grant** = `max_tokens` given to one upstream call = `C − spent` at lock acquisition (E0 capped arms: root calls
   `min(C − spent, max(A, C/4))`).
 - **grace** = the ≤ 1,024-token continuation outside C, root conversation only, at most one per run
@@ -271,3 +274,52 @@ sample), `dynorch/endpoint_rule.py` (plan §4), `slurm/dynorch_v1.sbatch` (`--pa
   `config.py` preset registration, `pyproject.toml`/`uv.lock`.
 Until WP-A lands, WP-B codes against `ProxyCore` through a stub implementing §3's signatures
 (`tests/unit/dynorch/stubs.py`, WP-B owned, deleted at merge).
+
+
+## 10. Integration amendments (lead; evidence in docs/dynorch/harness_wire_observations.md and tests/fixtures/dynorch/captures/)
+
+WP-E ran both real CLIs against a throwaway stub on 2026-09-23 ($0). These facts override the plan text where they
+disagree; each is VERIFIED by a committed capture.
+
+**10.1 Conversation classes** (§1 amended above). OpenClaude prepends `"You are OpenClaude, built on the Claude Agent
+SDK.\n\n"` to every system prompt unconditionally (no flag removes it) and appends `"\n\nNotes:…<env>…You are powered
+by the model …"` to a sub-agent's prompt; Codex sub-agents carry the root's `instructions` verbatim and are identified
+only by the `x-openai-subagent: collab_spawn` header. `ChatRequest.subagent: bool` (WP-A, additive) is set by the wire
+layer from that header. Both harnesses put a dated block (`<system-reminder>` / `<environment_context>`) before the
+task text, so conversation keys must not hash the raw first user turn.
+
+**10.2 Gate 0 criterion "messages[0] byte-identical to SYSTEM.md" is false as written.** The check is
+`messages[0].content == OPENCLAUDE_PREFIX + system_text.rstrip("\n")`; the prefix is recorded in
+`locks/harness_prompts.json`. Codex's `instructions == system_text.rstrip("\n")` exactly (it does NOT append its
+multi-agent guidance there; that lives in the tool descriptions).
+
+**10.3 Tool surfaces (frozen in `configs/dynorch_v1.json`).** H1 offers exactly `{Agent}` with the plan's flags (no
+`--bare`); the solver's requests carry **no `tools` key at all** (a missing key is an empty list, not a violation) and
+a `temperature: 1` field (an `ignored_body_keys` entry). H3 with the plan's config also offers `request_user_input`
+and three goal tools and lacks `update_plan`; adding `features.goals = false`,
+`[tools.experimental_request_user_input] enabled = false` and `[tools.update_plan] enabled = true` yields exactly
+`update_plan` + the `multi_agent_v1` namespace. Bool-valued `tools.*` keys are rejected by `--strict-config`.
+
+**10.4 Codex wire specifics.** `function_call` items for namespaced tools MUST carry `"namespace": "multi_agent_v1"`
+or the call is rejected as `unsupported call`. An `output_item.done` emitted before a failed stream is kept in the
+harness's history, so the proxy buffers and emits items only when `response.completed` is guaranteed.
+`rate_limit_exceeded` is retried (a duplicate-served cache hit is the right answer); a missing `response.completed`
+costs 2 retries then `turn.failed`. Codex echoes reasoning items back verbatim (explicit re-injection); OpenClaude
+never re-sends `reasoning_content`, so its re-injection relies on the proxy cache keyed by the echoed tool-call id
+(ids are echoed exactly). Codex sends `parallel_tool_calls: true`, `reasoning: {}`, `store: false`,
+`include: ["reasoning.encrypted_content"]`, no `text`, no `max_output_tokens`.
+
+**10.5 Adapter result parsing.** OpenClaude's stdout keeps `subtype: "success"` even on a 402: success is
+`is_error == false`. `total_cost_usd` comes from an unknown-model price table and is ignored. Codex: the `-o` file or
+the last `agent_message` item; `turn.failed` is a failure; the "Model metadata … not found" error item is normal noise.
+
+**10.6 Environment.** Add `CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED=1` to the OpenClaude env (silences a spurious
+Codex-profile warning). `agentModels`/`agentRouting` in `.openclaude.json` are optional; keep `hasCompletedOnboarding`
+and `bypassPermissionsModeAccepted`. Codex writes ≈60 skill files and 4 sqlite files into `CODEX_HOME` on first start
+(≈18 s); OpenClaude writes `cfg/projects/<ws>/<session>/subagents/*.meta.json` per spawn even with
+`--no-session-persistence`. Both stay inside the per-run work dir; nothing under `/home`.
+
+**10.7 Known, accepted input overheads.** Codex's `<skills_instructions>` developer block (≈700 tokens) cannot be
+removed by config and is inert (no file tools). OpenClaude's Agent tool description (6,331 chars) lists built-in
+agent types, so the system prompt must require `subagent_type: "solver"`; the proxy flags any other value seen in a
+parsed Agent call. Both are `S_h` covariates, paid as input, outside C.
