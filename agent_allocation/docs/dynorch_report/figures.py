@@ -155,7 +155,7 @@ def _frontier(front, measure, xlabel, name, out, log=True):
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Macro accuracy")
     ax.set_ylim(0, 1.02)
-    ax.legend(fontsize=6, loc="lower right")
+    ax.legend(fontsize=6, loc="upper left")
     save(fig, out, name)
 
 
