@@ -297,13 +297,14 @@ class ProxyCore:
             return await self._served(state, request, messages, prompt, prompt_sha, grant, conv_key, conv_class,
                                       reinjection)
         finally:
-            if grant is not None and not grant.settled:
+            if grant is None:
+                budget.unlock()                       # no grant was minted: the lock is still ours
+            elif not grant.settled:
                 # a cancellation or an unexpected error after the grant was minted: the call may have left the
-                # process, so the grant is charged whole (a provably unsent ledger refusal settles itself above)
+                # process, so the grant is charged whole (a provably unsent ledger refusal settled itself above);
+                # settle_full releases the lock
                 budget.mark_sent(grant)
                 budget.settle_full(grant)
-            if grant is None or not budget.locked or budget._active is None and budget.locked:
-                budget.unlock()
 
     def _refuse(self, state: _RunState, code: str, message: str, *, guard: str | None = None) -> None:
         record = state.record

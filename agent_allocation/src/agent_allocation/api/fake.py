@@ -60,6 +60,14 @@ forced client tags each call's coordinates with ``phase`` (``think`` / ``answer`
 
 Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
 one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
+
+dynorch (capped, unforced ``/completions`` calls; additive): a THINK prompt without ``logit_bias`` thinks
+``FakeReply.think_tokens`` (else ``natural_think_tokens``) tokens -- ``max_tokens`` below that realises exactly
+``max_tokens`` with finish ``length`` and no ``</think>``; above it the model closes and answers, and an answer cut by
+``max_tokens`` after the close reports ``length`` with the text actually returned. A prompt that already closed the
+reasoning (``...\n</think>\n\n``, the proxy's ANSWER / terminal continuation) returns the scripted content.
+``Fault.NO_USAGE`` omits the usage object from a 200; ``fake_tool_call_text`` builds the template's XML tool-call
+block for scripted content.
 """
 from __future__ import annotations
 
