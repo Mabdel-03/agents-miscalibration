@@ -56,6 +56,7 @@ class Client:
         self.key, self.model, self.timeout = key, model, timeout
         self.usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
         self.requests = 0
+        self.keepalives = 0
 
     def _conn(self) -> http.client.HTTPConnection:
         return http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
@@ -132,6 +133,7 @@ class Client:
                     finish = choice["finish_reason"]
         tool_calls = [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
                       for _, c in sorted(calls.items())]
+        self.keepalives += keepalives
         return {"content": "".join(content), "reasoning_content": "".join(reasoning), "tool_calls": tool_calls,
                 "finish_reason": finish, "keepalives": keepalives}
 
@@ -180,11 +182,12 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
                           "result": f"API error {exc.status}: {json.dumps(exc.payload)[:500]}", "num_turns": turns,
                           "spawns": spawns, "usage": client.usage_total, "requests": client.requests,
+                          "keepalives": client.keepalives,
                           "duration_ms": int((time.time() - started) * 1000)}), flush=True)
         return 1
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": last_content,
                       "num_turns": turns, "spawns": spawns, "usage": client.usage_total, "requests": client.requests,
-                      "duration_ms": int((time.time() - started) * 1000)}), flush=True)
+                      "keepalives": client.keepalives, "duration_ms": int((time.time() - started) * 1000)}), flush=True)
     return 0
 
 

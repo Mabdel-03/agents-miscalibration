@@ -195,12 +195,19 @@ class Runner:
         return self._draining.is_set()
 
     # -- stage ---------------------------------------------------------------------------------------------
+    def harness_versions(self) -> dict[str, str]:
+        return {name: adapter.version() for name, adapter in self.adapters.items()}
+
     async def run_stage(self, stage: str, *, resume: bool = False, arms: Sequence[str] | None = None,
                         rungs: Sequence[int] | None = None) -> StageSummary:
-        harness_versions = {name: adapter.version() for name, adapter in self.adapters.items()}
+        """Plan the stage's frozen cell set, pre-register it, and execute it (module docstring)."""
         proxy_version = str(getattr(self.core, "proxy_version", "unrecorded"))
         specs = planmod.plan_stage(self.cfg, stage, self.inputs, arms=arms, rungs=rungs, proxy_version=proxy_version,
-                                   harness_versions=harness_versions)
+                                   harness_versions=self.harness_versions())
+        return await self.run_specs(stage, specs, resume=resume)
+
+    async def run_specs(self, stage: str, specs: Sequence[RunSpec], *, resume: bool = False) -> StageSummary:
+        """Execute an explicit cell list under ``stage`` (what ``run_stage`` does after planning; the e2e's entry)."""
         planmod.write_plan(specs, self.settings.run_root, stage)
         summary = StageSummary(stage=stage, planned=len(specs))
         existing = self._existing_by_cell() if resume else {}
@@ -373,9 +380,6 @@ class Runner:
         last = self.reply_log.last_event(spec.run_key)
         if killed_by_drain:
             return "failed", "killed_by_drain", "killed by the drain signal"
-        if calls == 0:
-            status = "timeout" if timed_out else "failed"
-            return status, "zero_proxy_calls_served", "harness served no proxy call"
         if last is not None and last.kind == "error" and (last.code in TRANSPORT_ERROR_CODES or last.status >= 500):
             return "transport_failed", "last_reply_transport_or_ledger_error", f"last proxy reply: {last.status} {last.code}"
         core_error = getattr(self.core, "record_of", None)
@@ -383,6 +387,9 @@ class Runner:
             error = str(core_error(spec.run_key).error or "")
             if error.startswith("upstream_failed:"):
                 return "transport_failed", "last_reply_transport_or_ledger_error", error
+        if calls == 0:
+            status = "timeout" if timed_out else "failed"
+            return status, "zero_proxy_calls_served", "harness served no proxy call"
         if timed_out:
             return "timeout", None, f"wall timeout after {calls} served call(s)"
         return "done", None, None
