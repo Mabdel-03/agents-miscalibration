@@ -24,7 +24,7 @@ trimmed above 200 KB, the reply summary). No network call leaves 127.0.0.1; no O
 Usage:
   uv run python tools/dynorch_wire_probe.py serve [--port P] [--harness openclaude|codex] [--case NAME]
   uv run python tools/dynorch_wire_probe.py run openclaude a|b|c|d|e [--delay S] [--wall S]
-  uv run python tools/dynorch_wire_probe.py run codex a|b_ns|b_nons|c|d|e|f|g [--delay S] [--wall S]
+  uv run python tools/dynorch_wire_probe.py run codex a|b_ns|b_nons|c|d|e|f|g|h [--delay S] [--wall S] [--cli-config k=v] [--config-extra TOML] [--label NAME]
   uv run python tools/dynorch_wire_probe.py summarize openclaude|codex   # rebuild summary.json from captures
 """
 from __future__ import annotations
