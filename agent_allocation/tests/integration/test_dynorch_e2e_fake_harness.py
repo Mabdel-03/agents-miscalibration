@@ -88,8 +88,10 @@ class Harness:
     tmp. ``script`` is the fake upstream's script (replies per item via ``set_reply`` or per run via ``by_node``)."""
 
     def __init__(self, tmp: Path, cfg: dict[str, Any], *, script: FakeScript | None = None, concurrency: int = 2,
-                 max_reruns: int | None = None, drain_wait_seconds: float | None = None) -> None:
+                 max_reruns: int | None = None, drain_wait_seconds: float | None = None,
+                 ceiling_usd: str = "95") -> None:
         self.tmp = tmp
+        self.ceiling_usd = ceiling_usd
         self.cfg = cfg
         self.run_root = tmp / "run_root"
         self.scratch = tmp / "scratch"
@@ -117,7 +119,7 @@ class Harness:
 
     async def __aenter__(self) -> "Harness":
         self.stack = await build_stack(self.cfg, self.run_root, client=self.client, locks=self.locks,
-                                       ceiling_usd="95")
+                                       ceiling_usd=self.ceiling_usd)
         self.core, self.store, self.journal = self.stack.core, self.stack.store, self.stack.journal
         self.server = ProxyServer(self.core, keepalive_seconds=1.0, reply_log=self.reply_log)
         await self.server.start()
@@ -409,6 +411,32 @@ async def test_a_recovered_upstream_402_keeps_the_delivered_answer(tmp_path: Pat
     assert str(record.error).startswith("infrastructure_stop:")        # recorded: the account did refuse
     assert summary.drained is True                                      # ... so the stage stops admitting
     assert summary_dict(summary, h.stack.ledger)["upstream_402"] is True
+
+
+@pytest.mark.timeout(600)
+async def test_the_ledger_ceiling_pauses_admissions_instead_of_burning_reruns(tmp_path: Path, base: BaseInputs):
+    """Re-review finding 4: at the $ ceiling (or the unresolved-exposure limit) every call is refused 503
+    ``ledger_refused``; that made each run transport_failed, reran it as a2 and a3 in the same job, and left every
+    remaining cell at attempt 3 -- beyond the cap for good. Plan §5: ledger exposure PAUSES admissions. The refused
+    run stays rerun-eligible without consuming a rerun, the stage drains, and no further cell is admitted."""
+    cfg = _cfg_with_fake_arm()
+    async with Harness(tmp_path, cfg, script=FakeScript(), concurrency=1, ceiling_usd="0.000001") as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("HF",), rungs=(4,))
+        summary = await h.runner.run_specs("main", specs)
+        records = h.store.scan(include_superseded=True)
+    assert summary.drained is True
+    assert len(records) == 1, "cells kept being admitted (or rerun) against a refusing ledger"
+    stopped = next(iter(records.values()))
+    assert stopped.spec.attempt == 1 and stopped.status == "transport_failed"
+    assert stopped.rerun_reason == "ledger_stop" and stopped.calls == 0
+    assert h.runner._rerun_pending(stopped) and h.runner._attempts_left(stopped)
+    # the next job (ceiling raised) re-executes it and the unadmitted cells
+    async with Harness(tmp_path, cfg, script=FakeScript(), concurrency=1) as h2:
+        h2.with_inputs(base)
+        summary2 = await h2.runner.run_specs("main", specs, resume=True)
+    assert not summary2.drained and summary2.executed == len(specs)
+    assert all(r.status == "done" for r in h2.store.scan().values())
 
 
 @pytest.mark.timeout(600)

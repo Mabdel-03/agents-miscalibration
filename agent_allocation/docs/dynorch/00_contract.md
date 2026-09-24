@@ -515,3 +515,17 @@ recovered (a later reply, e.g. the root's answer after a sub-agent's 402) keeps 
 gives it and its delivered answer, while `record.error` keeps the `infrastructure_stop: ...` text and the stage still
 drains (Gate 3 stop rule; the reconciliation reports the 402). `_rerun_pending` / `_attempts_left` read only
 `rerun_reason`, never the error text.
+
+**10.32 A ledger refusal pauses admissions; pre-send refusals keep what was already paid (finding 4, minors 8-9).**
+A run whose last proxy reply was `503 ledger_refused` is closed `transport_failed` with
+`rerun_reason = "ledger_stop"` (new; in `RERUN_REASONS` and, with `infrastructure_stop`, in `runner.STOP_REASONS`):
+the frozen rule keeps it rerun-eligible, but it is NOT rerun in-job, the stage drains, and `_rerun_pending` /
+`_attempts_left` let `--resume` re-execute it without the `<= 2 reruns` cap. `Runner(..., admission_check=)` (additive)
+is consulted before each cell starts; `launch_stage` wires `runner.ledger_block_reason(ledger)` (`"unresolved_exposure"`
+when the unresolved exposure is over `max_unresolved_spend_usd`, `"ceiling"` when nothing fits under the active
+ceiling), and a reason drains the stage (plan §5 "pauses admissions"). `Upstream.complete` attaches the transport
+attempts already made to a pre-send `ledger_refused` / `internal_error` (`prior_phases`, `prior_cost_usd`,
+`prior_charged_max`; `upstream.with_prior`): on attempt 1 they are empty and the token grant is released as before;
+otherwise the grant is settled at 0 tokens, keeping its call number, and the call is journaled with those phases and
+dollars (`record.cost_usd` agrees with the ledger). `_terminal` treats `internal_error` like `ledger_refused` (call
+number given back, error recorded, grace unused).

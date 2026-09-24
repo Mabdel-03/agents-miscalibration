@@ -193,3 +193,32 @@ async def test_a_timeout_wrapped_argv_that_fires_is_recorded_as_a_timeout(tmp_pa
                       cwd=work.ws, stdin=None)
     exit_code, timed_out, killed_by_drain, exhausted = await runner._run_subprocess(make_spec(rung=4), plan, work, 60)
     assert exit_code == 124 and timed_out is True and not killed_by_drain and not exhausted
+
+
+async def test_admissions_pause_when_the_ledger_has_no_headroom(tmp_path: Path):
+    """Re-review finding 4 / plan §5 ("unresolved exposure > $2 pauses admissions"): no cell is started while the
+    $ ledger cannot admit a call; the stage drains instead of opening runs that are refused at their first call."""
+    from decimal import Decimal
+
+    class Ledger:
+        unresolved_exceeded = False
+
+        def __init__(self, headroom: bool) -> None:
+            self.headroom = headroom
+
+        def fits(self, amount: Decimal) -> bool:
+            return self.headroom
+
+    assert runnermod.ledger_block_reason(Ledger(True)) is None
+    assert runnermod.ledger_block_reason(Ledger(False)) == "ceiling"
+    exposed = Ledger(True)
+    exposed.unresolved_exceeded = True
+    assert runnermod.ledger_block_reason(exposed) == "unresolved_exposure"
+    from agent_allocation.dynorch.journal import RunStore
+
+    runner = runnermod.Runner(FakeCore({}), {}, make_settings(run_root=tmp_path), proxy_url="http://127.0.0.1:1",
+                              store=RunStore(tmp_path), inputs=None, reply_log=ReplyLog(),
+                              cfg={"study_id": "openrouter_dynorch_v1"},
+                              admission_check=lambda: runnermod.ledger_block_reason(Ledger(False)))
+    summary = await runner.run_specs("main", [make_spec(rung=4, partition="main")])
+    assert summary.executed == 0 and summary.errors == 0 and summary.drained is True

@@ -74,11 +74,16 @@ log = logging.getLogger("agent_allocation.dynorch.runner")
 
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "timeout", "transport_failed", "refused_before_start"})
 RERUN_REASONS: tuple[str, ...] = ("zero_proxy_calls_served", "last_reply_transport_or_ledger_error", "killed_by_drain",
-                                  "interrupted", "infrastructure_stop")
+                                  "interrupted", "infrastructure_stop", "ledger_stop")
 #: An upstream 402/401 (key limit, account) is an infrastructure stop (plan B6 / Gate 3): the account refused, no
 #: model ran, nothing was paid. It drains the stage and NEVER counts against the frozen ``<= 2 reruns`` (which
 #: bounds reruns of runs the model actually served); the cell is re-executed by the next ``--resume``.
 INFRASTRUCTURE_STOP = "infrastructure_stop"
+#: The $ ledger refused the run's last call (the active ceiling, or unresolved exposure > max; plan §5: this PAUSES
+#: admissions). Like an infrastructure stop: nothing left the process, the stage drains, no in-job rerun, and the
+#: cell stays rerun-eligible on --resume without counting against the frozen ``<= 2 reruns`` (re-review finding 4).
+LEDGER_STOP = "ledger_stop"
+STOP_REASONS: frozenset[str] = frozenset({INFRASTRUCTURE_STOP, LEDGER_STOP})
 TRANSPORT_ERROR_CODES: frozenset[str] = frozenset({"upstream_failed", "ledger_refused", "internal_error"})
 #: GNU ``timeout``'s own exit codes: 124 = the deadline fired, 137 = the child was SIGKILLed by ``--kill-after``.
 TIMEOUT_EXIT_CODES: frozenset[int] = frozenset({124, 137})
@@ -178,8 +183,11 @@ class Runner:
     def __init__(self, core: Any, adapters: Mapping[str, HarnessAdapter], settings: RunnerSettings, *,
                  proxy_url: str, store: Any, inputs: BaseInputs, reply_log: ReplyLog, cfg: Mapping[str, Any],
                  base_env: Mapping[str, str] | None = None, journal: Any = None,
-                 wait_for_run: Any = None) -> None:
+                 wait_for_run: Any = None, admission_check: Any = None) -> None:
         self.core = core
+        #: ``() -> str | None``: why no new cell may be admitted now (the $ ledger has no headroom or its unresolved
+        #: exposure is over the limit; plan §5 "pauses admissions"), else None. The stage drains on a reason.
+        self.admission_check = admission_check
         self.journal = journal
         self.adapters = dict(adapters)
         self.settings = settings
@@ -274,6 +282,11 @@ class Runner:
             async with semaphore:
                 if self._draining.is_set():
                     return
+                blocked_by = self.admission_check() if self.admission_check is not None else None
+                if blocked_by:
+                    log.error("dynorch runner: admissions paused (%s); draining the stage", blocked_by)
+                    self.request_drain()
+                    return
                 try:
                     record = await self.run_spec(spec)
                 except Exception as exc:  # noqa: BLE001 - one bad cell must never take the stage down (major 8)
@@ -319,14 +332,14 @@ class Runner:
     def _rerun_pending(self, record: RunRecord) -> bool:
         if record.status == "done":
             return False
-        if record.rerun_reason == INFRASTRUCTURE_STOP:
-            return True                         # the account refused: no model ran, no rerun consumed
+        if record.rerun_reason in STOP_REASONS:
+            return True                         # the account / the ledger refused: no model ran, no rerun consumed
         return record.rerun_reason in RERUN_REASONS and record.spec.attempt <= self.settings.max_reruns
 
     def _attempts_left(self, record: RunRecord) -> bool:
         """The frozen table's ``<= 2 reruns`` also bounds INTERRUPTED records (review minor 17): a cell killed by
         crash / scancel / drain-timeout over and over must not accumulate paid attempts a4, a5, ..."""
-        if record.rerun_reason == INFRASTRUCTURE_STOP:
+        if record.rerun_reason in STOP_REASONS:
             return True
         return record.spec.attempt <= self.settings.max_reruns
 
@@ -470,6 +483,10 @@ class Runner:
             log.error("dynorch runner: %s hit an infrastructure stop (%s); draining the stage", spec.run_key,
                       core_error)
             self.request_drain()
+        elif rerun_reason == LEDGER_STOP:
+            log.error("dynorch runner: %s was refused by the $ ledger (%s); pausing admissions (draining the stage)",
+                      spec.run_key, core_error or error)
+            self.request_drain()
         elif infrastructure_seen:
             record.error = core_error                 # recorded (reconciliation reports the 402) ...
             log.error("dynorch runner: %s recovered from an account refusal (%s); its outcome stands, the stage "
@@ -537,6 +554,10 @@ class Runner:
         last = self.reply_log.last_event(spec.run_key)
         if killed_by_drain:
             return "failed", "killed_by_drain", "killed by the drain signal"
+        if last is not None and last.kind == "error" and last.code == "ledger_refused":
+            # the frozen rule makes a ledger error rerun-eligible; plan §5 makes ledger exposure PAUSE admissions:
+            # the stage drains and the rerun happens on --resume, never burning the in-job reruns (finding 4)
+            return "transport_failed", LEDGER_STOP, f"last proxy reply: {last.status} {last.code}"
         if last is not None and last.kind == "error" and (last.code in TRANSPORT_ERROR_CODES or last.status >= 500):
             return "transport_failed", "last_reply_transport_or_ledger_error", f"last proxy reply: {last.status} {last.code}"
         # NOTHING else makes a run transport_failed (review major 10): the frozen rule is "the LAST proxy reply was
@@ -752,6 +773,17 @@ async def build_stack(cfg: Mapping[str, Any], run_root: str | Path, *, client: A
                  upstream=upstream, core=core, inherited=dict(inherited))
 
 
+def ledger_block_reason(ledger: Any) -> str | None:
+    """Plan §5: "unresolved exposure > $2 pauses admissions"; a ledger with no headroom left under its active
+    ceiling cannot admit a call either. ``None`` when a new cell may start (re-review finding 4)."""
+    if getattr(ledger, "unresolved_exceeded", False):
+        return "unresolved_exposure"
+    fits = getattr(ledger, "fits", None)
+    if fits is not None and not fits(Decimal("0")):
+        return "ceiling"
+    return None
+
+
 def apply_provider_map(inputs: BaseInputs, run_root: str | Path) -> BaseInputs:
     """Re-point every item's shard at the frozen provider decision (``locks/provider_map.json``, plan §4: after a
     switch every item runs on the passing shard's endpoint; ``forced_v2_shard`` stays the covariate). A missing or
@@ -843,7 +875,7 @@ async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells:
         settings = RunnerSettings.from_config(cfg, run_root=run_root, concurrency=concurrency)
         runner = Runner(stack.core, adapters, settings, proxy_url=server.base_url, store=stack.store, inputs=inputs,
                         reply_log=server.reply_log, cfg=cfg, journal=stack.journal,
-                        wait_for_run=server.wait_for_run)
+                        wait_for_run=server.wait_for_run, admission_check=lambda: ledger_block_reason(stack.ledger))
         try:
             install_drain_handler(runner)
         except (ValueError, RuntimeError, NotImplementedError) as exc:     # not the main thread / no signals

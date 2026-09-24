@@ -30,7 +30,7 @@ import contextlib
 import json
 import time
 from decimal import Decimal
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from agent_allocation.api.forced import (
     ANSWER_BACKOFF_BASE_SECONDS, ANSWER_BACKOFF_CAP_SECONDS, ANSWER_RETRY_AFTER_CAP_SECONDS, ForcedCall,
@@ -50,6 +50,18 @@ RETRY_STATUSES = frozenset({TransportStatus.RATE_LIMITED, TransportStatus.UPSTRE
                             TransportStatus.CONNECT_FAILED})
 REFUSAL_STATUSES = frozenset({TransportStatus.AUTH_FAILED, TransportStatus.PAYMENT_REQUIRED,
                               TransportStatus.BAD_REQUEST})
+
+
+def with_prior(exc: ProxyError, phases: Sequence[Mapping[str, Any]], cost_usd: Decimal, charged_max: bool
+               ) -> ProxyError:
+    """Attach the transport attempts that ALREADY happened to a pre-send refusal (review minor 8): a ledger refusal
+    or ``LedgerError`` on transport attempt >= 2 (after 429s, or a CACHE_HIT charged at its maximum) is decided
+    before THIS attempt leaves the process, but the earlier attempts were sent and settled; their phases and $ must
+    reach the call journal and ``record.cost_usd``. ``prior_phases`` is empty on attempt 1."""
+    exc.prior_phases = tuple(phases)          # type: ignore[attr-defined]
+    exc.prior_cost_usd = Decimal(cost_usd)    # type: ignore[attr-defined]
+    exc.prior_charged_max = bool(charged_max)  # type: ignore[attr-defined]
+    return exc
 
 
 class UpstreamFailed(ProxyError):
@@ -203,18 +215,22 @@ class Upstream:
                 # a duplicate attempt id (an operator re-running a stage as attempt 1 / generation 1) is a proxy
                 # bug, not a refusal: it is answered loudly and NOTHING is charged -- nothing left the process
                 # (review major 15). The caller releases its token grant on this code exactly as on a refusal.
-                raise ProxyError(500, "internal_error", f"ledger rejected the reservation: {exc}",
-                                 detail=f"ledger_error: {exc}") from exc
+                raise with_prior(ProxyError(500, "internal_error", f"ledger rejected the reservation: {exc}",
+                                            detail=f"ledger_error: {exc}"), phases, settled_total,
+                                 charged_max_any) from exc
             if not admitted:
-                raise ProxyError.of("ledger_refused", f"ledger refused {amount} USD ({self.ledger.last_refusal})",
-                                 detail=self.ledger.last_refusal)
+                raise with_prior(ProxyError.of("ledger_refused",
+                                               f"ledger refused {amount} USD ({self.ledger.last_refusal})",
+                                               detail=self.ledger.last_refusal), phases, settled_total,
+                                 charged_max_any)
             async with self._limiters[shard_id]:
                 await self._rps[shard_id].wait()
                 try:
                     await self.ledger.mark_sent(aid)
                 except LedgerError as exc:
-                    raise ProxyError(500, "internal_error", f"ledger rejected mark_sent: {exc}",
-                                     detail=f"ledger_error: {exc}") from exc
+                    raise with_prior(ProxyError(500, "internal_error", f"ledger rejected mark_sent: {exc}",
+                                                detail=f"ledger_error: {exc}"), phases, settled_total,
+                                     charged_max_any) from exc
                 self.calls_sent += 1
                 try:
                     call = await self.client.raw_completion(

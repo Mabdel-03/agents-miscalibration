@@ -840,3 +840,70 @@ async def test_the_e0_ceiling_continuation_keeps_its_tools_and_may_delegate(make
     assert reply.call.forced_close_kind == "ceiling_close"
     assert "# Tools" in cont.body["prompt"] and cont.body["prompt"].startswith(think.body["prompt"])
     assert reply.finish_reason == "tool_calls" and len(reply.tool_calls) == 1 and reply.tool_calls[0].name == "Agent"
+
+
+# ---- pre-send ledger refusals after earlier transport attempts (re-review minors 8, 9) -----------------------------
+
+async def test_a_ledger_refusal_on_a_retry_journals_the_attempts_already_paid(make_env):
+    """Re-review minor 8: a CACHE_HIT on transport attempt 1 is charged at its maximum and retried; if the ledger
+    then refuses attempt 2 (the ceiling moved), the refusal is pre-send for THAT attempt only. The first attempt's
+    phase and its charged-max dollars used to vanish (grant released, nothing journaled, record.cost_usd 0) while
+    the ledger kept the charge. Now the call keeps its number, is settled at zero tokens and journaled."""
+    from decimal import Decimal as D
+    script = FakeScript()
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    fired: list[int] = []
+
+    def hook(call):
+        if call.coordinates.get("phase") == "think" and not fired:
+            fired.append(1)
+            env.ledger.set_active_ceiling(D("0"))           # the next reservation is refused
+            return FakeReply(fault=Fault.CACHE_HIT)
+        return None
+
+    script.hook = hook
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert exc.value.code == "ledger_refused"
+    record = env.core.record_of(spec.run_key)
+    charged = env.ledger.snapshot().settled
+    assert charged > 0, "the CACHE_HIT attempt was charged at its maximum by the ledger"
+    journaled = env.journal.scan(spec)
+    assert len(journaled) == 1 and journaled[0]["call_no"] == 1
+    assert [p["charged_max"] for p in journaled[0]["phases"]] == [True]
+    assert D(record.cost_usd) == charged and record.calls == 1
+    assert record.calls_detail[0].completion_tokens == 0 and record.completion_total == 0
+    view = env.core.budget_view(spec.run_key)
+    assert view["spent"] == 0 and view["calls"] == 1 and view["in_flight"] == 0
+    # the run continues on the next call number once the ceiling is back: no journal conflict, full grant
+    env.ledger.set_active_ceiling(D("95"))
+    script.hook = None
+    script.default = FakeReply(content=FINAL, think_tokens=200)
+    reply = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert reply.call.call_no == 2 and reply.call.granted_max_tokens == spec.cap_tokens
+
+
+async def test_a_ledger_error_on_the_terminal_call_gives_the_call_number_and_the_grace_back(make_env):
+    """Re-review minor 9: ``_terminal`` handled ``ledger_refused`` (the call number given back, the error recorded)
+    but not ``internal_error`` (a ``LedgerError``: a duplicate attempt id), which is just as pre-send: the call
+    counter stayed incremented and nothing was recorded. The grace is not used by a call that never left."""
+    from decimal import Decimal as D
+    script = FakeScript()
+    env = make_env(script)
+    spec = env.open(make_spec(rung=1))
+    content = FINAL
+    script.default = FakeReply(content=content, think_tokens=1024 - 30 - -(-len(content) // 4))
+    first = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert first.call.forced_close_kind == "none" and env.core.budget_view(spec.run_key)["remaining"] < 64
+    rogue = f"{spec.run_key}:g{spec.generation}:2:terminal:1"          # the TERMINAL's attempt id, already taken
+    assert await env.ledger.reserve(attempt_id=rogue, node_id=spec.run_key, partition_id="main", amount_usd=D("0.001"))
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages(task="TASK\nnow answer\n")))
+    assert exc.value.code == "internal_error"
+    view = env.core.budget_view(spec.run_key)
+    record = env.core.record_of(spec.run_key)
+    assert view["calls"] == 1 and view["exhausted"] == 0 and record.grace_tokens == 0
+    assert str(record.error).startswith("internal_error")
+    assert env.journal.scan(spec) and len(env.journal.scan(spec)) == 1        # nothing journaled for a call never sent
+    assert not env.core.budget_view(spec.run_key)["in_flight"]
