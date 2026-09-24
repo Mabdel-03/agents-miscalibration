@@ -15,7 +15,8 @@ only the harness arms were biased.
    ``infrastructure_stop:``) -- each finding lists its evidence and whether a TERMINAL call followed the failure;
 2. refuses (nothing moved) while the stage's job may still be running: a record of ``S`` still ``running``, a ledger
    attempt of ``S`` still open, or ``state/status.json`` saying stage ``S`` is ``running`` (``--dry-run`` reports
-   these blockers and still lists the cells);
+   these blockers and still lists the cells; ``--ignore-status-file`` drops only the last check, for a job Slurm
+   killed before it could rewrite ``status.json``);
 3. per finding: copies the original record verbatim to
    ``superseded_executions/S/infra_invalidation_<utc>/originals/...``, writes the record -- rewritten to
    ``status = transport_failed``, ``rerun_reason = infra_invalidated``, the scored fields cleared and the original
@@ -175,8 +176,10 @@ def find_invalid(run_root: str | Path, stage: str) -> list[Finding]:
     return out
 
 
-def stage_blockers(paths: RunPaths, stage: str) -> list[str]:
-    """Why the stage's job may still be running (empty = safe to move records)."""
+def stage_blockers(paths: RunPaths, stage: str, *, ignore_status_file: bool = False) -> list[str]:
+    """Why the stage's job may still be running (empty = safe to move records). ``ignore_status_file`` drops only the
+    ``state/status.json`` check (a job Slurm killed outright never rewrote it); running records and open ledger
+    attempts always block."""
     root = Path(paths.run_dir)
     problems: list[str] = []
     running: list[str] = []
@@ -199,7 +202,7 @@ def stage_blockers(paths: RunPaths, stage: str) -> list[str]:
         if open_ids:
             problems.append(f"{len(open_ids)} open ledger attempt(s) of stage {stage} (e.g. {open_ids[:3]})")
     status_json = paths.status_json
-    if status_json.exists():
+    if status_json.exists() and not ignore_status_file:
         try:
             doc = json.loads(status_json.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -234,14 +237,14 @@ def _superseded_path(run_root: Path, record: RunRecord) -> Path:
 
 
 def invalidate_stage(paths: RunPaths, stage: str, *, reason: str, dry_run: bool = False,
-                     extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                     ignore_status_file: bool = False, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """See the module docstring. Returns the report (``INVALIDATION.json`` for a real run)."""
     if not isinstance(reason, str) or not reason.strip():
         raise InvalidateRefused("--reason must be a non-empty text (it is recorded with the decision)")
     reason = reason.strip()
     root = Path(paths.run_dir)
     findings = find_invalid(root, stage)
-    blockers = stage_blockers(paths, stage)
+    blockers = stage_blockers(paths, stage, ignore_status_file=ignore_status_file)
     report: dict[str, Any] = {
         "layout": LAYOUT, "stage": stage, "reason": reason, "dry_run": bool(dry_run), "blocked": blockers,
         "count": len(findings),

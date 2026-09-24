@@ -26,6 +26,10 @@ The real CLI is launched by the real ``CodexAdapter`` from the real ``Runner`` a
   ``remaining < 64``; the child's request gets HTTP 402, which Codex re-sends at most ``stream_max_retries`` (2) times,
   each refused in-process with no upstream call or cost (contract §10.20); the root's next request is its one
   TERMINAL (B4) and the turn completes on it within 10 s of the first 402;
+* ``interruption_retry_latched`` -- contract §10.38: root call 1 gets the provider's "Stream interrupted" error
+  envelope after the headers went out; Codex's own retries of the failed turn are refused 502 by the latch with no
+  upstream call and no TERMINAL; the attempt is ``transport_failed`` / ``upstream_latched`` and the in-job rerun
+  (attempt 2, full budget) is the scored record;
 * ``rung25`` -- one rung-25 run ends with ``turn.completed`` and a graded record;
 * ``delayed_35s`` -- a 35 s upstream delay (two keepalive comments) produces exactly one upstream call and a
   completed turn; ``delayed_330s`` / ``delayed_660s`` are the plan's stalls (``-m slow``).
@@ -46,7 +50,7 @@ from typing import Any, Iterable
 import h11
 import pytest
 
-from agent_allocation.api.fake import FakeCall, FakeReply, fake_tool_call_text
+from agent_allocation.api.fake import FakeCall, FakeReply, Fault, fake_tool_call_text
 from agent_allocation.dynorch.harness.base import harness_env
 from agent_allocation.dynorch.harness.codex import CodexAdapter, config_toml
 from agent_allocation.dynorch.httpd import ProxyServer
@@ -516,6 +520,56 @@ async def test_codex_subagent_402_then_terminal_ends_the_run(tmp_path: Path, bas
         "probe": None if probe is None else probe.__dict__, "upstream": script.calls, "classes": classes,
         "harness_events": _event_types(events)})
     assert not failed, (failed, _event_types(events), record.harness_reported)
+
+
+@pytest.mark.timeout(600)
+async def test_codex_interruption_retry_is_refused_by_the_latch(tmp_path: Path, base):
+    """Contract §10.38 through the real Codex CLI: call 1 is interrupted upstream after the headers went out (an
+    in-stream ``response.failed``, the full grant settled). Codex re-sends the turn (``request_max_retries`` /
+    ``stream_max_retries``); every re-send is refused 502 by the latch before any grant -- no second upstream call,
+    no TERMINAL -- and the turn fails. The run is ``transport_failed`` / ``upstream_latched``; the runner's
+    infrastructure rerun (attempt 2, full budget, no model rerun consumed) is the scored record."""
+    marker = S.home_marker()
+    item = S.dev_item(base, "aime")
+    async with SmokeStack(tmp_path, adapters=_adapters()) as stack:
+        spec = stack.specs(base, arm=ARM, rung=4, items=[item])[0]
+        stack.scripts[spec.run_key] = RunScript(root=[FakeReply(fault=Fault.STREAM_INTERRUPTED, delay_seconds=3.5),
+                                                      FINAL])
+        records = await stack.run(base, [spec])
+        first = stack.store.scan(include_superseded=True)[spec.run_key]
+    final = next(iter(records.values()))
+    script = stack.scripts[spec.run_key]
+    events = stack.reply_log.timed.get(spec.run_key, [])
+    errors = [e for e in events if e.kind == "error"]
+    first_events = _events(stack, spec)
+    common = S.common_checks(stack, final.spec, final, marker)
+    checks: dict[str, bool] = {
+        "call1_interrupted_full_grant_settled": first.calls == 1 and bool(first.calls_detail)
+                                                and first.calls_detail[0].transport_status == "error_envelope"
+                                                and first.calls_detail[0].returned_status == 502
+                                                and first.completion_total == spec.cap_tokens,
+        "cli_retried_the_502": first.refused_calls >= 1 and len(errors) >= 2
+                               and all(e.status == 502 and e.code == "upstream_failed" for e in errors),
+        "retry_refused_no_upstream_call": script.think_calls() == 1 and script.phase_calls("terminal") == []
+                                          and len(script.calls) == 1 and not any(e.kind == "reply" for e in events),
+        "no_terminal_no_grace": [c.forced_close_kind for c in first.calls_detail] == ["none"]
+                                and first.grace_tokens == 0,
+        "turn_failed": "turn.failed" in _event_types(first_events)
+                       and "turn.completed" not in _event_types(first_events),
+        "attempt1_transport_failed_latched": first.status == "transport_failed"
+                                             and first.rerun_reason == "upstream_latched"
+                                             and first.parse_status is None and first.correct is None,
+        "rerun_full_budget_scored": final.spec.attempt == 2 and final.spec.run_key != spec.run_key
+                                    and final.status == "done" and final.parse_status == "valid"
+                                    and final.calls_detail[0].granted_max_tokens == spec.cap_tokens
+                                    and final.harness_exit_code == 0,
+        "no_model_rerun_consumed": stack.runner._reruns_used(final.spec) == 0,
+        **common[0],
+    }
+    failed = S.record_case("codex/interruption_retry_latched", checks, detail={**common[1],
+        "events": [e.__dict__ for e in events], "upstream": script.calls, "refused_calls": first.refused_calls,
+        "event_types": _event_types(first_events)})
+    assert not failed, (failed, first.refused_calls, [e.__dict__ for e in events], _event_types(first_events))
 
 
 @pytest.mark.timeout(600)

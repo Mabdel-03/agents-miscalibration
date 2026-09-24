@@ -18,6 +18,10 @@ items each pins (``record_case`` writes them to ``$DYNORCH_GATE0_SMOKE_OUT`` for
 * ``subagent_402_then_terminal`` -- rung 1, no grace involved: the root stops naturally with an ``Agent`` call that
   leaves ``remaining < 64``; the solver's call gets HTTP 402 (not retried), the one further request is the root's
   TERMINAL call (B4) and the run ends on its answer within 10 s of the 402; no rerun (frozen rerun rule);
+* ``interruption_retry_latched`` -- contract §10.38: root call 1 gets the provider's "Stream interrupted" error
+  envelope (an in-stream error after the headers); OpenClaude's own 5xx retry (``CLAUDE_CODE_MAX_RETRIES=1``) is
+  refused by the latch with no upstream call and no TERMINAL; the attempt is ``transport_failed`` /
+  ``upstream_latched`` and the in-job rerun (attempt 2, full budget) is the scored record;
 * ``rung25`` -- one rung-25 run ends with ``subtype == success`` and a graded record;
 * ``delayed_35s`` -- a 35 s upstream delay (two 15 s keepalive comments) produces exactly one upstream call and
   ``subtype == success``; ``delayed_330s`` / ``delayed_660s`` are the plan's stalls (``-m slow``).
@@ -26,6 +30,7 @@ Skipped when ``openclaude`` is not on PATH or the sealed base run root is unread
 """
 from __future__ import annotations
 
+import json
 import shutil
 import socket
 import time
@@ -34,7 +39,7 @@ from typing import Any
 
 import pytest
 
-from agent_allocation.api.fake import FakeReply, fake_tool_call_text
+from agent_allocation.api.fake import FakeReply, Fault, fake_tool_call_text
 from agent_allocation.dynorch.harness.openclaude import OpenclaudeAdapter
 from tests.integration import dynorch_smoke_support as S
 from tests.integration.dynorch_smoke_support import RunScript, SmokeStack
@@ -287,6 +292,67 @@ async def test_openclaude_subagent_402_then_terminal_ends_the_run(tmp_path: Path
         "events": [e.__dict__ for e in stack.reply_log.timed.get(spec.run_key, [])],
         "probe": None if probe is None else probe.__dict__, "upstream": script.calls, "classes": classes})
     assert not failed, (failed, result, record.harness_reported)
+
+
+@pytest.mark.timeout(600)
+async def test_openclaude_interruption_retry_is_refused_by_the_latch(tmp_path: Path, base):
+    """Contract §10.38 through the real CLI (the live defect of 2026-09-24): call 1 is interrupted upstream after
+    the response headers went out (an in-stream 502 error frame, the full grant settled). OpenClaude retries it;
+    the retry is refused 502 by the latch before any grant -- no second upstream call, no TERMINAL call -- and the
+    CLI ends in error. The run is ``transport_failed`` / ``upstream_latched`` and the runner's infrastructure rerun
+    (attempt 2, a new run_key, the full budget, no model rerun consumed) is what is scored."""
+    marker = S.home_marker()
+    item = S.dev_item(base, "aime")
+    async with SmokeStack(tmp_path, adapters=_adapters()) as stack:
+        spec = stack.specs(base, arm=ARM, rung=4, items=[item])[0]
+        grace = float(S.CFG["dynorch"]["proxy"].get("refusal_grace_seconds", 2.0))
+        stack.scripts[spec.run_key] = RunScript(root=[FakeReply(fault=Fault.STREAM_INTERRUPTED,
+                                                                delay_seconds=grace + 1.5), FINAL])
+        records = await stack.run(base, [spec])
+        first = stack.store.scan(include_superseded=True)[spec.run_key]
+    final = next(iter(records.values()))
+    script = stack.scripts[spec.run_key]
+    events = stack.reply_log.timed.get(spec.run_key, [])
+    errors = [e for e in events if e.kind == "error"]
+    first_result = None
+    stdout = Path(first.harness_reported.get("work_dir", "")) / "stdout"
+    if stdout.is_file():
+        lines = [l for l in stdout.read_text("utf-8", "replace").splitlines() if l.strip().startswith("{")]
+        for raw in reversed(lines):
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                continue
+            if obj.get("type") == "result":
+                first_result = obj
+                break
+    common = S.common_checks(stack, final.spec, final, marker)
+    checks: dict[str, bool] = {
+        "call1_interrupted_full_grant_settled": first.calls == 1 and bool(first.calls_detail)
+                                                and first.calls_detail[0].transport_status == "error_envelope"
+                                                and first.calls_detail[0].returned_status == 502
+                                                and first.completion_total == spec.cap_tokens,
+        "cli_retried_the_502": first.refused_calls >= 1 and len(errors) >= 2
+                               and all(e.status == 502 and e.code == "upstream_failed" for e in errors),
+        "retry_refused_no_upstream_call": script.think_calls() == 1 and script.phase_calls("terminal") == []
+                                          and len(script.calls) == 1 and not any(e.kind == "reply" for e in events),
+        "no_terminal_no_grace": [c.forced_close_kind for c in first.calls_detail] == ["none"]
+                                and first.grace_tokens == 0,
+        "cli_ended_in_error": first_result is None or first_result.get("is_error") is True,
+        "attempt1_transport_failed_latched": first.status == "transport_failed"
+                                             and first.rerun_reason == "upstream_latched"
+                                             and first.parse_status is None and first.correct is None,
+        "rerun_full_budget_scored": final.spec.attempt == 2 and final.spec.run_key != spec.run_key
+                                    and final.status == "done" and final.parse_status == "valid"
+                                    and final.calls_detail[0].granted_max_tokens == spec.cap_tokens
+                                    and final.harness_exit_code == 0,
+        "no_model_rerun_consumed": stack.runner._reruns_used(final.spec) == 0,
+        **common[0],
+    }
+    failed = S.record_case("openclaude/interruption_retry_latched", checks, detail={**common[1],
+        "events": [e.__dict__ for e in events], "upstream": script.calls, "refused_calls": first.refused_calls,
+        "result": None if first_result is None else str(first_result.get("result", ""))[:300]})
+    assert not failed, (failed, first_result, [e.__dict__ for e in events])
 
 
 @pytest.mark.timeout(600)

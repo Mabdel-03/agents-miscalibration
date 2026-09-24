@@ -865,6 +865,9 @@ def cmd_dynorch_invalidate(argv: list[str]) -> int:
     parser.add_argument("--stage", required=True, choices=STAGES)
     parser.add_argument("--reason", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--ignore-status-file", action="store_true",
+                        help="do not treat state/status.json 'running' as a live job (Slurm killed it outright); "
+                             "running records and open ledger attempts still refuse")
     args = parser.parse_args(argv)
     from agent_allocation.config import load_config
     from agent_allocation.dynorch.invalidate import InvalidateRefused, invalidate_stage
@@ -874,7 +877,8 @@ def cmd_dynorch_invalidate(argv: list[str]) -> int:
         return EXIT_STOP
     paths = RunPaths.for_run(args.run_dir)
     try:
-        report = invalidate_stage(paths, args.stage, reason=args.reason, dry_run=bool(args.dry_run))
+        report = invalidate_stage(paths, args.stage, reason=args.reason, dry_run=bool(args.dry_run),
+                                  ignore_status_file=bool(args.ignore_status_file))
     except InvalidateRefused as exc:
         print(f"refused: {redact(str(exc))}", file=sys.stderr)
         return EXIT_STOP

@@ -180,6 +180,8 @@ def test_refuses_while_the_stage_job_may_be_running(root: Path, blocker: str):
     assert dry["count"] == 3 and dry["blocked"]
     # another stage is not blocked by this one's job
     assert stage_blockers(paths, "pilot") == [] or blocker == "open_ledger_attempt"
+    # --ignore-status-file lifts only the status.json check
+    assert (stage_blockers(paths, "main", ignore_status_file=True) == []) is (blocker == "status_running")
 
 
 def test_refuses_an_empty_reason(root: Path):
