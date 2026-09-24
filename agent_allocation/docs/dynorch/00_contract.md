@@ -578,3 +578,16 @@ while the key is below it (a pause is not settlement), confirms a match or an ov
 `converged` (clean), `over` (the provider billed more than was metered: a real discrepancy) or `did_not_converge` (still
 below after `KEY_SETTLE_MAX_S`, a mismatch). Unit tests never wait on the wall clock (an autouse fixture swaps the
 module-level `_sleep`); the tests that pin the timing pass their own `sleep`.
+
+**10.37 Owner waivers of the delegation criteria (lead, 2026-09-24; owner decision after Gate 1).** The re-run canary
+showed neither harness delegating (8/8 harness runs were one model call, no sub-agents, no tool calls), which trips the
+pre-registered stop-and-ask (`ceiling_probe_spawns`, 0/4) and leaves `codex_responses_tool_loop` with nothing live to
+verify. The owner chose to run the core as planned: non-delegation is the finding. `dynorch-gates --owner-waive
+<criterion> --waiver-text "<owner's words>"` stores a STANDING waiver in `state/owner_waivers.json` and a
+`kind=owner_waiver` line in `run_decisions.jsonl`; every later evaluation of that gate applies it. Waivable criteria
+are fixed in code (`gates.WAIVABLE`): gate 1 `ceiling_probe_spawns`, `codex_responses_tool_loop`; gate 2
+`H1_spawn_share_k16`, `H3_spawn_share_k16`. Nothing else can be waived — money, accounting, grants, provider pinning,
+answers, forecast and hygiene criteria stay binding — a `stop` decision is never waived, a partial waiver leaves the
+gate stopped, and a waived criterion stays recorded as FAILED (its threshold is prefixed `WAIVED by owner`).
+The standalone `dynorch-reconcile` command now runs its HTTP client inside one event loop (it used to crash on close
+with "Event loop is closed" after writing a correct report).

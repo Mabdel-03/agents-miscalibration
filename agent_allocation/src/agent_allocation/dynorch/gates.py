@@ -15,9 +15,10 @@ sealed ladder point estimates, the table seal.
 from __future__ import annotations
 
 import json
+from agent_allocation.storage._atomic import replace_atomic
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -565,6 +566,62 @@ def seal_tables(tables_dir: Path, names: Sequence[str] = ("dynorch_runs", "dynor
         return existing
     write_once(seal, json.dumps(doc, indent=1, sort_keys=True).encode())
     return digests
+
+
+#: Criteria an owner may waive (contract §10.37): ONLY those that measure whether a harness delegates. Money,
+#: accounting, grants, provider pinning, answers, hygiene and every invariant stay binding; a ``stop`` is never waived.
+WAIVABLE: dict[str, frozenset[str]] = {
+    "gate1": frozenset({"ceiling_probe_spawns", "codex_responses_tool_loop"}),
+    "gate2": frozenset({"H1_spawn_share_k16", "H3_spawn_share_k16"}),
+}
+WAIVER_FILE = "owner_waivers.json"
+
+
+class WaiverError(ValueError):
+    """A waiver that names a criterion outside ``WAIVABLE`` or carries no owner text."""
+
+
+def waiver_path(paths: Any) -> Path:
+    return Path(paths.state_dir) / WAIVER_FILE
+
+
+def load_waivers(paths: Any) -> dict[str, dict[str, dict[str, str]]]:
+    """``{gate: {criterion: {"text", "recorded_at"}}}`` -- the owner's standing waivers (empty when none)."""
+    target = waiver_path(paths)
+    return json.loads(target.read_text()) if target.exists() else {}
+
+
+def record_waivers(paths: Any, gate: str, names: Sequence[str], text: str) -> dict[str, dict[str, dict[str, str]]]:
+    """Store standing owner waivers for ``gate`` (contract §10.37). Refuses an empty text or any name outside
+    ``WAIVABLE[gate]``; nothing is written on refusal."""
+    if not text or not text.strip():
+        raise WaiverError("a waiver needs the owner's text")
+    allowed = WAIVABLE.get(gate, frozenset())
+    bad = sorted(set(names) - allowed)
+    if bad:
+        raise WaiverError(f"not waivable at {gate}: {bad} (waivable: {sorted(allowed)})")
+    waivers = load_waivers(paths)
+    stamp = utcnow()
+    waivers.setdefault(gate, {}).update({name: {"text": text.strip(), "recorded_at": stamp} for name in names})
+    target = waiver_path(paths)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    replace_atomic(target, (json.dumps(waivers, indent=1, sort_keys=True) + "\n").encode())
+    return waivers
+
+
+def apply_waivers(result: GateResult, waivers: Mapping[str, Mapping[str, Mapping[str, str]]]) -> GateResult:
+    """The gate result under the owner's standing waivers (contract §10.37). A waived criterion stays FAILED
+    (``passed`` is not rewritten; its threshold is prefixed ``WAIVED by owner``); the decision becomes ``advance``
+    only when every failing criterion is waived, and a ``stop`` decision is returned unchanged."""
+    gate_waivers = waivers.get(result.gate, {})
+    if result.decision == STOP or not gate_waivers:
+        return result
+    criteria = tuple(
+        replace(c, threshold=f"WAIVED by owner ({gate_waivers[c.name]['recorded_at']}): {c.threshold}")
+        if (not c.passed and c.name in gate_waivers) else c
+        for c in result.criteria)
+    unwaived = [c for c in result.criteria if not c.passed and c.name not in gate_waivers]
+    return replace(result, criteria=criteria, decision=ADVANCE if not unwaived else result.decision)
 
 
 def record(paths: Any, result: GateResult) -> Path:

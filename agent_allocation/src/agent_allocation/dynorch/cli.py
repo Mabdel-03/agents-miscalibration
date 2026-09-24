@@ -797,6 +797,10 @@ def cmd_dynorch_gates(argv: list[str]) -> int:
     parser.add_argument("--stage", default=None, help="gate 4: the sealed stage (default main)")
     parser.add_argument("--owner-go", default=None, help="gate 2: record the owner's go decision text")
     parser.add_argument("--owner-no-go", default=None, help="gate 2: record the owner's no-go decision text")
+    parser.add_argument("--owner-waive", action="append", default=[], metavar="CRITERION",
+                        help="gates 1/2: record a standing owner waiver of a delegation criterion (contract §10.37; "
+                             "repeatable; needs --waiver-text)")
+    parser.add_argument("--waiver-text", default=None, help="the owner's words recorded with --owner-waive")
     parser.add_argument("--skip-tests", action="store_true", help="gate 0: do not run the unit suite")
     parser.add_argument("--no-home-scan", action="store_true", help="gate 1: skip the $HOME walk (criterion then fails)")
     args = parser.parse_args(argv)
@@ -819,6 +823,20 @@ def cmd_dynorch_gates(argv: list[str]) -> int:
     except RunRefused as exc:
         print(f"refused: {redact(str(exc))}", file=sys.stderr)
         return EXIT_STOP
+    if args.owner_waive:
+        if args.gate not in ("1", "2"):
+            print("refused: --owner-waive applies to gates 1 and 2 only", file=sys.stderr)
+            return EXIT_STOP
+        try:
+            gates.record_waivers(paths, result.gate, args.owner_waive, args.waiver_text or "")
+        except gates.WaiverError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return EXIT_STOP
+        from agent_allocation.live import record_decision
+        record_decision(paths, kind="owner_waiver", gate=result.gate, criteria=sorted(args.owner_waive),
+                        gate_decision_before=result.decision, text=args.waiver_text)
+    # every evaluation of gates 1/2 applies the owner's standing waivers (contract §10.37)
+    result = gates.apply_waivers(result, gates.load_waivers(paths))
     target = gates.record(paths, result)
     from agent_allocation.contracts import dump_record
     _print({"gate": result.gate, "stage": result.stage, "decision": result.decision, "written": str(target),

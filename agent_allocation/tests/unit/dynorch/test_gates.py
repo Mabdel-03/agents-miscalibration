@@ -748,3 +748,51 @@ def test_key_tolerance_by_stage():
     assert reconcile.key_tolerance_for("canary") == Decimal("0.02") and reconcile.key_tolerance_for("pilot") == Decimal("0.02")
     assert reconcile.key_tolerance_for("main", Decimal("10")) == Decimal("0.50")
     assert reconcile.key_tolerance_for("main", Decimal("60")) == Decimal("1.20")
+
+
+# ---- contract §10.37: owner waivers are restricted to the delegation criteria, recorded, and never hide a failure ----
+
+def _gate(gate: str, crits: list[tuple[str, bool, str]]):
+    return gates.finish(gate, "canary" if gate == "gate1" else "pilot",
+                        [gates.crit(name, {"x": 1}, "t", passed, "e", severity=sev) for name, passed, sev in crits])
+
+
+def test_owner_waiver_turns_only_waived_delegation_failures_into_advance(tmp_path):
+    paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
+    result = _gate("gate1", [("usage_present", True, gates.STOP_NOTIFY),
+                             ("ceiling_probe_spawns", False, gates.STOP_NOTIFY),
+                             ("codex_responses_tool_loop", False, gates.STOP_NOTIFY)])
+    assert result.decision == gates.STOP_NOTIFY
+    gates.record_waivers(paths, "gate1", ["ceiling_probe_spawns", "codex_responses_tool_loop"], "owner: run the core")
+    waived = gates.apply_waivers(result, gates.load_waivers(paths))
+    assert waived.decision == gates.ADVANCE and waived.passed is False      # honest: the criteria did fail
+    marks = {c.name: c for c in waived.criteria}
+    assert not marks["ceiling_probe_spawns"].passed and marks["ceiling_probe_spawns"].threshold.startswith("WAIVED by owner")
+    assert marks["usage_present"].threshold == "t"                          # a passing criterion is untouched
+
+
+def test_a_partial_waiver_leaves_the_gate_stopped(tmp_path):
+    paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
+    result = _gate("gate1", [("ceiling_probe_spawns", False, gates.STOP_NOTIFY),
+                             ("generation_sample_matches", False, gates.STOP_NOTIFY)])
+    gates.record_waivers(paths, "gate1", ["ceiling_probe_spawns"], "owner: run the core")
+    assert gates.apply_waivers(result, gates.load_waivers(paths)).decision == gates.STOP_NOTIFY
+
+
+def test_a_stop_is_never_waived(tmp_path):
+    paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
+    result = _gate("gate2", [("H1_spawn_share_k16", False, gates.STOP_NOTIFY), ("H1_cap_overrun_runs", False, gates.STOP)])
+    gates.record_waivers(paths, "gate2", ["H1_spawn_share_k16"], "owner: run the core")
+    assert gates.apply_waivers(result, gates.load_waivers(paths)).decision == gates.STOP
+
+
+def test_only_delegation_criteria_are_waivable_and_a_waiver_needs_text(tmp_path):
+    paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
+    for gate, name in (("gate1", "generation_sample_matches"), ("gate1", "key_delta_within_tolerance"),
+                       ("gate2", "H1_valid_final_share"), ("gate2", "core_forecast_within_soft_ceiling"),
+                       ("gate2", "ceiling_probe_spawns")):
+        with pytest.raises(gates.WaiverError):
+            gates.record_waivers(paths, gate, [name], "owner text")
+    with pytest.raises(gates.WaiverError):
+        gates.record_waivers(paths, "gate1", ["ceiling_probe_spawns"], "  ")
+    assert not gates.waiver_path(paths).exists()                           # nothing written on refusal

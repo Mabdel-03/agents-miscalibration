@@ -574,22 +574,31 @@ def cmd_dynorch_reconcile(argv: list[str]) -> int:
     from agent_allocation.config import load_config
     cfg = load_config(args.config)
     paths = RunPaths.for_run(args.run_dir)
-    client = make_client()
-    try:
-        if args.phase == "before":
-            snap = asyncio.run(snapshot_account(client))
-            target = write_before(paths, args.stage, snap)
-            print(json.dumps({"written": str(target), "payment_required": snap.payment_required}))
-            return 3 if snap.payment_required else 0
-        population, source, upstream_402 = load_population(paths, stage=args.stage)
-        totals = ledger_totals(paths)
-        before = read_before(paths, args.stage)
-        hint = ledger_charged(totals) - Decimal(before["ledger_charged_usd"])
-        report = asyncio.run(reconcile_after(cfg, paths, args.stage, client=client, population=population,
-                                             population_source=source, upstream_402=upstream_402,
-                                             key_tolerance_usd=key_tolerance_for(args.stage, hint)))
-    finally:
-        asyncio.run(client.aclose())
+
+    async def run_phase() -> Any:
+        # ONE event loop for the client's whole life: it is created, used and closed inside the same loop (the
+        # client used to be closed by a second asyncio.run after the first loop had shut down: "Event loop is
+        # closed" after the report was written, and a non-zero exit)
+        client = make_client()
+        try:
+            if args.phase == "before":
+                return await snapshot_account(client)
+            population, source, upstream_402 = load_population(paths, stage=args.stage)
+            totals = ledger_totals(paths)
+            before = read_before(paths, args.stage)
+            hint = ledger_charged(totals) - Decimal(before["ledger_charged_usd"])
+            return await reconcile_after(cfg, paths, args.stage, client=client, population=population,
+                                         population_source=source, upstream_402=upstream_402,
+                                         key_tolerance_usd=key_tolerance_for(args.stage, hint))
+        finally:
+            await client.aclose()
+
+    outcome = asyncio.run(run_phase())
+    if args.phase == "before":
+        target = write_before(paths, args.stage, outcome)
+        print(json.dumps({"written": str(target), "payment_required": outcome.payment_required}))
+        return 3 if outcome.payment_required else 0
+    report = outcome
     summary = {k: report[k] for k in ("stage", "key_delta_usd", "ledger_delta_usd", "key_minus_ledger_usd", "decision", "problems")}
     summary["sampled"] = report["generation_sample"]["sampled"]
     print(redact(json.dumps(summary, indent=1, sort_keys=True)), file=sys.stdout)
