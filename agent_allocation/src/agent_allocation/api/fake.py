@@ -60,6 +60,14 @@ forced client tags each call's coordinates with ``phase`` (``think`` / ``answer`
 
 Shortcuts: ``fake_generation_outcome(spec, reply=FakeReply(...))`` (async) and ``fake_generation_outcome_sync`` return
 one realistic ``GenerationOutcome`` through the real client, for tests that only need result records.
+
+dynorch (capped, unforced ``/completions`` calls; additive): a THINK prompt without ``logit_bias`` thinks
+``FakeReply.think_tokens`` (else ``natural_think_tokens``) tokens -- ``max_tokens`` below that realises exactly
+``max_tokens`` with finish ``length`` and no ``</think>``; above it the model closes and answers, and an answer cut by
+``max_tokens`` after the close reports ``length`` with the text actually returned. A prompt that already closed the
+reasoning (``...\n</think>\n\n``, the proxy's ANSWER / terminal continuation) returns the scripted content.
+``Fault.NO_USAGE`` omits the usage object from a 200; ``fake_tool_call_text`` builds the template's XML tool-call
+block for scripted content.
 """
 from __future__ import annotations
 
@@ -126,6 +134,7 @@ class Fault(str, Enum):
     CONNECT_TIMEOUT = "connect_timeout"      # never reached the server: httpx.ConnectTimeout, nothing billed
     SHORT_THINK = "short_think"              # forced THINK cut by the provider: finish null, max_tokens // 3; billed
     BIAS_IGNORED = "bias_ignored"            # forced call whose logit_bias the endpoint silently drops; billed
+    NO_USAGE = "no_usage"                    # HTTP 200 completion whose body carries no usage object; billed (dynorch)
 
 
 _HTTP_ERROR_STATUS = {
@@ -172,6 +181,7 @@ class FakeReply:
     body: bytes | None = None              # raw response body override (status_code or 200)
     mismatch_provider: str = "Google"
     mismatch_model: str = "google/gemini-2.5-flash-lite-preview-09-2025"
+    think_tokens: int | None = None        # dynorch: this reply's natural THINK length (None -> script.natural_think_tokens)
 
 
 ReplySpec = FakeReply | Sequence[FakeReply]
@@ -856,6 +866,8 @@ class FakeScript:
         cost = prompt_cost + completion_cost
 
         usage = reply.usage
+        if usage is AUTO and fault is Fault.NO_USAGE:
+            usage = OMIT
         if usage is AUTO:
             if fault is Fault.MALFORMED_USAGE:
                 usage = {"prompt_tokens": "12", "completion_tokens": -3, "total_tokens": None, "cost": "n/a",
@@ -935,6 +947,20 @@ class FakeScript:
         return generation_id, payload, cost
 
 
+def fake_tool_call_text(name: str, arguments: Mapping[str, Any] | None = None, *, prefix: str = "") -> str:
+    """dynorch: the Qwen3.8 XML tool-call block the pinned template teaches (``<tool_call>\n<function=NAME>\n
+    <parameter=P>\nV\n</parameter>...</function>\n</tool_call>``) for a scripted ``FakeReply.content``; string
+    values are written raw, everything else as JSON (the template's own rule). ``prefix`` is optional text before
+    the call (allowed by the grammar); nothing may follow it."""
+    lines = [f"<tool_call>\n<function={name}>\n"]
+    for key, value in (arguments or {}).items():
+        rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        lines.append(f"<parameter={key}>\n{rendered}\n</parameter>\n")
+    lines.append("</function>\n</tool_call>")
+    block = "".join(lines)
+    return (prefix.rstrip() + "\n\n" + block) if prefix.strip() else block
+
+
 def _is_text_route(path: str) -> bool:
     return path.endswith("/completions") and not path.endswith("/chat/completions")
 
@@ -987,12 +1013,19 @@ def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, 
         elif banned:
             think_tokens, closed, finish = max_tokens, False, "length"
         else:
-            think_tokens = min(max_tokens, script.natural_think_tokens)
+            natural = script.natural_think_tokens if reply.think_tokens is None else int(reply.think_tokens)
+            think_tokens = min(max_tokens, natural)
             closed = think_tokens < max_tokens
             finish = "stop" if closed else "length"
         thinking = _thinking_text(think_tokens, seed)
         answer = content if closed else ""
         answer_tokens = -(-len(answer) // 4) if closed else 0
+        if closed and think_tokens + answer_tokens > max_tokens:
+            # dynorch (capped natural call): the visible answer is cut by max_tokens after a natural close --
+            # the reported tokens and the finish reason stay consistent with the text actually returned.
+            answer_tokens = max_tokens - think_tokens
+            answer = answer[:4 * answer_tokens]
+            finish = "length"
         tokens = min(max_tokens, think_tokens + answer_tokens) if closed else think_tokens
         if style == "inline":
             text = thinking + (close + "\n\n" + answer if closed else "")
@@ -1028,6 +1061,8 @@ def _generate_text_impl(script: "FakeScript", call: FakeCall, reply: FakeReply, 
     completion_cost = tokens * out_price
     cost = prompt_cost + completion_cost
     usage = reply.usage
+    if usage is AUTO and fault is Fault.NO_USAGE:
+        usage = OMIT
     if usage is AUTO:
         usage = {"prompt_tokens": prompt_tokens, "completion_tokens": tokens, "total_tokens": prompt_tokens + tokens,
                  "cost": _money_json(cost), "is_byok": False,

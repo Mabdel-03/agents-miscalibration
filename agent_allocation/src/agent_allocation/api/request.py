@@ -283,3 +283,38 @@ def request_coordinates(spec: GenerationSpec, attempt_id: str) -> dict[str, Any]
         "reasoning_budget": spec.reasoning_budget,
         "completion_headroom": spec.completion_headroom,
     }
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# dynorch_v1 (WP-A, contract §5): the capped -- not forced -- raw completion body
+# ---------------------------------------------------------------------------------------------------------------------
+
+CAPPED_REQUIRED_ENDPOINT_PARAMETERS: tuple[str, ...] = ("max_tokens", "temperature", "top_p")
+
+
+def build_capped_body(prompt: str, lock: EndpointLock, sampling: Mapping[str, Any], *,
+                      max_tokens: int) -> dict[str, Any]:
+    """dynorch (contract §5, plan B2): one raw ``POST /completions`` on the rendered prompt with ``max_tokens`` =
+    the call's grant and NO ``logit_bias`` -- the call is capped, never forced, so it may stop naturally below its
+    grant. Keys are exactly ``_forced_common`` minus ``logit_bias`` plus ``_forced_tail`` (``model, prompt,
+    temperature, top_p[, top_k], max_tokens, provider{only, allow_fallbacks:false, require_parameters:true},
+    usage{include:true}, stream:false``), i.e. inside ``api/fake.py::completions_contract_violations``. The lock must
+    advertise ``max_tokens, temperature, top_p`` (+ ``top_k`` when the sampling block sends it; plan §4)."""
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+        raise RequestContractError(f"capped max_tokens must be a positive integer, got {max_tokens!r}")
+    if max_tokens > lock.max_completion_tokens:
+        raise RequestContractError(f"capped max_tokens {max_tokens} exceeds the locked endpoint cap "
+                                   f"{lock.max_completion_tokens}")
+    temperature, top_p = _check_sampling(sampling, forced=True)
+    top_k = forced_top_k(sampling)
+    required = CAPPED_REQUIRED_ENDPOINT_PARAMETERS + (("top_k",) if top_k is not None else ())
+    check_lock_for_request(lock, required=required)
+    if not isinstance(prompt, str) or not prompt:
+        raise RequestContractError("capped prompt must be a non-empty string")
+    body: dict[str, Any] = {"model": lock.model, "prompt": prompt, "temperature": temperature, "top_p": top_p}
+    if top_k is not None:
+        body["top_k"] = top_k
+    body["max_tokens"] = max_tokens
+    body.update(_forced_tail(lock))
+    assert "logit_bias" not in body
+    return body
