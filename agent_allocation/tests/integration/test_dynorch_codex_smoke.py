@@ -346,7 +346,11 @@ async def test_codex_timeout_kills_the_whole_tree(tmp_path: Path, base):
     common = S.common_checks(stack, spec, record, marker)
     checks = {
         "argv_is_timeout_wrapped": launch["argv"][:3] == ["timeout", "--kill-after=5s", "17s"],
-        "timeout_ended_the_run": record.harness_exit_code in (124, 137, -9, -15) and 10 <= (ended - started) < 40,
+        # the HARNESS lifetime is what the wrapper bounds (record.wall_seconds is taken when the process exits);
+        # the attempt then waits for the upstream call the dead harness abandoned to settle (review major 5/14),
+        # which the 40 s scripted delay makes visible here, and still ends far inside the runner's 90 s wall
+        "timeout_ended_the_run": record.harness_exit_code in (124, 137, -9, -15)
+                                 and 10 <= record.wall_seconds < 40 and (ended - started) < 90,
         # review major 6: a wall-killed Codex run is a TIMEOUT (it used to be recorded `done`, so Gate 2's
         # timeout_share <= 0.02 and the Gate 3 stop rule were blind for H3)
         "wall_kill_recorded_as_timeout": record.harness_reported.get("timed_out") is True
@@ -358,7 +362,9 @@ async def test_codex_timeout_kills_the_whole_tree(tmp_path: Path, base):
         **common[0],
     }
     failed = S.record_case("codex/timeout", checks, detail={**common[1], "exit_code": record.harness_exit_code,
-                                                            "seconds": round(ended - started, 1), "pgid": pgid})
+                                                            "seconds": round(ended - started, 1),
+                                                            "harness_seconds": round(record.wall_seconds, 1),
+                                                            "pgid": pgid})
     assert not failed, (failed, record.harness_exit_code, record.harness_reported)
 
 
