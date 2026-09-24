@@ -169,6 +169,14 @@ def test_stage_prerequisites(cfg, tmp_path):
 # The run flow with a stubbed runner (rehearsal transport: no network, no key)
 # ------------------------------------------------------------------------------------------------------------------
 
+def stub_module(monkeypatch, name: str, module):
+    """Shadow ``agent_allocation.dynorch.<name>`` both in ``sys.modules`` and as the package attribute (the real
+    module may already be imported by an earlier test; ``from pkg import name`` prefers the attribute)."""
+    import agent_allocation.dynorch as pkg
+    monkeypatch.setitem(sys.modules, f"agent_allocation.dynorch.{name}", module)
+    monkeypatch.setattr(pkg, name, module, raising=False)
+
+
 def stub_runner(monkeypatch, *, port=45678, summary=None, fail=False):
     calls = {}
 
@@ -179,7 +187,7 @@ def stub_runner(monkeypatch, *, port=45678, summary=None, fail=False):
         kw["on_bound"](kw["proxy_host"], port)
         return summary or {"runs": len(kw["cells"]), "upstream_402": False}
 
-    monkeypatch.setitem(sys.modules, "agent_allocation.dynorch.runner", types.SimpleNamespace(launch_stage=launch_stage))
+    stub_module(monkeypatch, "runner", types.SimpleNamespace(launch_stage=launch_stage))
     return calls
 
 
@@ -217,7 +225,7 @@ def test_run_canary_flow_writes_proxy_status_locks_and_reconciliation(cfg, tmp_p
 def test_run_blocked_without_runner(cfg, tmp_path, monkeypatch, capsys):
     if not base_mounted(cfg):
         pytest.skip("base run root not mounted")
-    monkeypatch.setitem(sys.modules, "agent_allocation.dynorch.runner", types.SimpleNamespace())
+    stub_module(monkeypatch, "runner", types.SimpleNamespace())
     rc = dcli.cmd_dynorch_run(run_argv(tmp_path, "canary", "--allow-paid", "--rehearsal", max_usd="1"))
     assert rc == dcli.EXIT_BLOCKED and "launch_stage" in capsys.readouterr().err
     status = json.loads(RunPaths.for_run(tmp_path / "run").status_json.read_text())
@@ -233,7 +241,7 @@ def test_run_stop_notify_when_the_endpoint_rule_stops(cfg, tmp_path, monkeypatch
     for e in listing["data"]["endpoints"]:
         e["status"] = -2
     script = fake_api.FakeScript(endpoints={"qwen/qwen3.8-27b": listing})
-    monkeypatch.setattr(dcli, "make_client", lambda: OpenRouterClient(api_key="rehearsal-no-key", transport=fake_api.fake_openrouter_transport(script)))
+    monkeypatch.setattr(dcli, "make_client", lambda cfg: OpenRouterClient(api_key="rehearsal-no-key", transport=fake_api.fake_openrouter_transport(script)))
     stub_runner(monkeypatch)
     rc = dcli.cmd_dynorch_run(run_argv(tmp_path, "canary", "--allow-paid", "--rehearsal", max_usd="1"))
     assert rc == dcli.EXIT_STOP_NOTIFY
@@ -258,7 +266,7 @@ def test_proxy_state_and_status_writers(tmp_path):
 # ------------------------------------------------------------------------------------------------------------------
 
 def test_tables_and_gates_are_blocked_without_their_inputs(cfg, tmp_path, monkeypatch, capsys):
-    monkeypatch.setitem(sys.modules, "agent_allocation.dynorch.tables", types.SimpleNamespace())
+    stub_module(monkeypatch, "tables", types.SimpleNamespace())
     assert dcli.cmd_dynorch_tables(["--config", str(CFG_PATH), "--run-dir", str(tmp_path / "run")]) == dcli.EXIT_BLOCKED
     assert "build_tables" in capsys.readouterr().err
     assert dcli.cmd_dynorch_gates(["--config", str(CFG_PATH), "--run-dir", str(tmp_path / "run"), "--gate", "1"]) == dcli.EXIT_BLOCKED
@@ -303,8 +311,8 @@ def test_gate2_verb_writes_pilot_report_and_records_owner_go(cfg, tmp_path, monk
     paths = RunPaths.for_run(tmp_path / "run")
     write_tables(paths, clean_pilot(cfg))
     write_reconciliation(paths, "pilot", recon(rows=[sample_row()]))
-    monkeypatch.setitem(sys.modules, "agent_allocation.dynorch.forecast",
-                        types.SimpleNamespace(gate2_refit=lambda cfg, runs, spent_usd: {"core_forecast_usd": "60", "spent_usd": str(spent_usd), "cuts_applied": []}))
+    stub_module(monkeypatch, "forecast",
+                types.SimpleNamespace(gate2_refit=lambda cfg, runs, spent_usd: {"core_forecast_usd": "60", "spent_usd": str(spent_usd), "cuts_applied": []}))
     rc = dcli.cmd_dynorch_gates(["--config", str(CFG_PATH), "--run-dir", str(paths.run_dir), "--gate", "2", "--owner-go", "owner: go"])
     assert rc == 0, capsys.readouterr().out
     report = (paths.reports_dir / "PILOT_REPORT.md").read_text()
@@ -313,7 +321,7 @@ def test_gate2_verb_writes_pilot_report_and_records_owner_go(cfg, tmp_path, monk
     assert decisions[-1]["kind"] == "owner_go" and decisions[-1]["gate_decision"] == "advance"
     assert dcli.gate_advanced(paths, "gate2_pilot") and dcli.owner_go_recorded(paths)
     # without the forecast module the gate notifies instead of advancing
-    monkeypatch.setitem(sys.modules, "agent_allocation.dynorch.forecast", types.SimpleNamespace())
+    stub_module(monkeypatch, "forecast", types.SimpleNamespace())
     rc = dcli.cmd_dynorch_gates(["--config", str(CFG_PATH), "--run-dir", str(paths.run_dir), "--gate", "2"])
     assert rc == dcli.EXIT_STOP_NOTIFY
 

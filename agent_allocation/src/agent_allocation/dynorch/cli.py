@@ -238,14 +238,21 @@ def rehearsal() -> bool:
     return os.environ.get(REHEARSAL_ENV) == "1"
 
 
-def make_client() -> Any:
-    """The account client: the real key outside rehearsal, the fake transport (no network) inside it."""
-    from agent_allocation.api.client import OpenRouterClient
+def make_client(cfg: Mapping[str, Any]) -> Any:
+    """The one OpenRouter client of a stage: a ``ForcedClient`` (raw ``/completions`` for the proxy's ``Upstream``
+    plus the inherited ``/key`` / ``/credits`` / ``/generation`` / endpoint listing for the endpoint rule and the
+    reconciliation). The real key outside rehearsal; the fake transport (no network, no key) inside it. Timeouts
+    from the config's ``scheduler`` block (the 900 s read timeout covers a 660 s stalled reply)."""
+    from agent_allocation.api.forced import make_generation_client
+    scheduler = cfg["scheduler"]
+    timeouts = {"connect_timeout": float(scheduler["connect_timeout_seconds"]),
+                "read_timeout": float(scheduler["read_timeout_seconds"])}
     if rehearsal():
         from agent_allocation.api.fake import fake_openrouter_transport
-        return OpenRouterClient(api_key="rehearsal-no-key", transport=fake_openrouter_transport())
+        return make_generation_client(cfg, api_key="rehearsal-no-key", transport=fake_openrouter_transport(),
+                                      **timeouts)
     from agent_allocation.apikey import load_api_key
-    return OpenRouterClient(api_key=load_api_key())
+    return make_generation_client(cfg, api_key=load_api_key(), **timeouts)
 
 
 def write_proxy_state(paths: RunPaths, *, host: str, port: int, stage: str, pid: int | None = None) -> Path:
@@ -409,7 +416,7 @@ async def _run(args: argparse.Namespace) -> int:
     record_decision(paths, kind="dynorch_run_start", stage=args.stage, max_usd=str(max_usd),
                     account_auto_reload=bool(args.account_auto_reload), resume=bool(args.resume), cells=len(cells),
                     arms=sorted({c["arm"] for c in cells}), rungs=sorted({c["rung"] for c in cells}), rehearsal=rehearsal())
-    client = make_client()
+    client = make_client(cfg)
     status: dict[str, Any] = {"stage": args.stage, "started_at": utcnow(), "max_usd": str(max_usd), "cells": len(cells),
                               "by_cell": cell_summary(cells), "rehearsal": rehearsal(), "state": "starting"}
     try:
@@ -439,12 +446,14 @@ async def _run(args: argparse.Namespace) -> int:
                                      account_auto_reload=bool(args.account_auto_reload),
                                      on_bound=lambda host, port: write_proxy_state(paths, host=host, port=port, stage=args.stage))
         status["runner"] = summary
+        from agent_allocation.dynorch import tables as _tables
         try:
-            from agent_allocation.dynorch import tables as _tables
-            _tables.build_tables(cfg, paths)                       # requested in docs/dynorch/requests/wpD.md
-            status["tables"] = "built"
-        except (ImportError, AttributeError) as exc:
-            status["tables"] = f"unavailable: {exc}"
+            built = _tables.build_tables(paths.run_dir, cfg)        # every pre-registered stage (contract §7)
+            status["tables"] = {"n_planned": built["n_planned"], "n_records": built["n_records"],
+                                "reasoning_unknown_rows": built["reasoning_unknown_rows"]}
+        except _tables.TablesError as exc:                          # recorded, re-run with `dynorch-tables`
+            print(f"tables not built: {redact(str(exc))}", file=sys.stderr)
+            status["tables"] = f"error: {redact(str(exc))}"
         population, source, upstream_402 = reconcile.load_population(paths, stage=args.stage)
         totals = reconcile.ledger_totals(paths)
         before_doc = reconcile.read_before(paths, args.stage)
@@ -486,10 +495,12 @@ async def launch_stage(cfg: Mapping[str, Any], paths: RunPaths, *, stage: str, c
 
 
 def cmd_dynorch_tables(argv: list[str]) -> int:
-    """``allocation dynorch-tables --config CFG --run-dir RUN``: WP-C's ``tables.build_tables(cfg, paths)``."""
+    """``allocation dynorch-tables --config CFG --run-dir RUN [--stage S]``: WP-C's
+    ``tables.build_tables(run_root, cfg, stage=...)`` (every pre-registered stage unless ``--stage`` narrows it)."""
     parser = argparse.ArgumentParser(prog="allocation dynorch-tables")
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--stage", default=None, choices=list(STAGES))
     args = parser.parse_args(argv)
     from agent_allocation.config import load_config
     cfg = load_config(args.config)
@@ -500,8 +511,10 @@ def cmd_dynorch_tables(argv: list[str]) -> int:
     except (ImportError, AttributeError) as exc:
         print(f"blocked: dynorch.tables.build_tables not available ({exc})", file=sys.stderr)
         return EXIT_BLOCKED
-    result = build(cfg, paths)
-    _print({"tables_dir": str(paths.tables_dir), "result": result})
+    result = build(paths.run_dir, cfg, stage=args.stage)
+    _print({"tables_dir": str(paths.tables_dir),
+            "result": {k: v for k, v in result.items() if k in ("n_planned", "n_records", "reasoning_unknown_rows")},
+            "rows": {k: int(len(v)) for k, v in result.items() if hasattr(v, "__len__") and not isinstance(v, (str, int))}})
     return EXIT_OK
 
 

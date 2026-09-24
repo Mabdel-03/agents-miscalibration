@@ -37,7 +37,7 @@ class Tables:
         self.n = 0
 
     def run(self, arm, item, rung, *, calls=(), spawns=0, forced_close_kind="none", grace=0, final="<final>1</final>",
-            parse="VALID", grade="ok", correct=True, status="done", guard=False, hits=0, misses=0, repeat=1,
+            parse="valid", grade="graded", correct=True, status="done", guard=False, hits=0, misses=0, repeat=1,
             completion_total=None, cost="0.01", bench=None, error=None):
         self.n += 1
         key = f"rk{self.n:04d}"
@@ -271,8 +271,8 @@ def clean_pilot(cfg, *, n_per_bench=8, valid_share=1.0, spawn_share=0.5):
                     calls = [{"completion": 500, "tool_calls": spawn, "tool_parse": "ok" if spawn else "none"}]
                     if spawn:
                         calls += [{"completion": 300, "cls": "solver"}, {"completion": 200, "reinjection": "hit"}]
-                    t.run(arm, f"{bench}/{i}", rung, calls=calls, spawns=spawn, hits=spawn, parse="VALID" if valid else "MISSING",
-                          grade="ok" if valid else None, correct=valid)
+                    t.run(arm, f"{bench}/{i}", rung, calls=calls, spawns=spawn, hits=spawn, parse="valid" if valid else "missing_final",
+                          grade="graded" if valid else None, correct=valid)
     for bench in BENCHES:
         for i in range(4):
             t.run("H0", f"{bench}/{i}", 16, calls=[{"completion": 9000, "prompt": 1000}])
@@ -338,7 +338,7 @@ def test_gate2_guard_evaluator_reinjection_timeout(cfg):
     assert "H1_guard_triggered_share" in failing(gate2(cfg, t))
     t = clean_pilot(cfg)
     for i in range(2):
-        t.run("H3", f"hmmt/{i+10}", 2, calls=[{"completion": 100}], grade="error", correct=None)
+        t.run("H3", f"hmmt/{i+10}", 2, calls=[{"completion": 100}], grade="evaluator_error", correct=None)
     assert "H3_evaluator_error_share" in failing(gate2(cfg, t))
     t = clean_pilot(cfg)
     t.run("H1", "hmmt/50", 16, calls=[{"completion": 100}], hits=1, misses=5)

@@ -44,6 +44,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -62,8 +63,9 @@ from agent_allocation.prompts.render import output_requirement
 from agent_allocation.storage._atomic import replace_atomic
 
 __all__ = [
-    "RERUN_REASONS", "Runner", "RunnerSettings", "StageSummary", "TERMINAL_STATUSES", "install_drain_handler",
-    "render_task_text", "scrubbed_env", "wall_timeout_seconds",
+    "RERUN_REASONS", "Runner", "RunnerSettings", "Stack", "StageSummary", "TERMINAL_STATUSES", "apply_provider_map",
+    "build_stack", "install_drain_handler", "launch_stage", "render_task_text", "scrubbed_env", "specs_for_cells",
+    "summary_dict", "wall_timeout_seconds",
 ]
 
 log = logging.getLogger("agent_allocation.dynorch.runner")
@@ -522,3 +524,202 @@ def install_drain_handler(runner: Runner, loop: asyncio.AbstractEventLoop | None
     """Trap the Slurm drain signal (``--signal=B:TERM@900``): SIGTERM -> ``runner.request_drain()``."""
     loop = loop or asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, runner.request_drain)
+
+
+# ======================================================================================================================
+# Stage launch (integration: docs/dynorch/requests/wpD.md item 1) -- the one place the proxy stack is assembled
+# ======================================================================================================================
+
+CEILING_REFRESH_SECONDS = 300.0
+SENTINEL_POLL_SECONDS = 5.0
+
+
+@dataclass
+class Stack:
+    """The assembled proxy stack of one process: settings, ledger (+ its journal), call journal, run store,
+    upstream and core. ``aclose`` flushes and releases the ledger journal (the client is the caller's)."""
+    settings: Any
+    ledger_journal: Any
+    ledger: Any
+    journal: Any
+    store: Any
+    upstream: Any
+    core: Any
+    inherited: dict[str, int] = field(default_factory=dict)
+
+    async def aclose(self) -> None:
+        await self.ledger_journal.flush()
+        self.ledger_journal.release_writer()
+
+
+async def build_stack(cfg: Mapping[str, Any], run_root: str | Path, *, client: Any, locks: Mapping[str, Any],
+                      ceiling_usd: Decimal | str, active_ceiling_usd: Decimal | str | None = None,
+                      group_commit_ms: int = 0, resolve: bool = True) -> Stack:
+    """Assemble ``DynorchSettings`` -> ``LedgerJournal`` / ``CollectionLedger`` -> ``CallJournal`` / ``RunStore``
+    -> ``Upstream`` -> ``ProxyCore`` (contract §3, §5) over a ``ForcedClient`` and the shard ``EndpointLock``s.
+    With ``resolve`` the inherited SENT attempts of an earlier process are settled from the call journal FIRST
+    (``journal.resolve_inherited``; WP-A R-A7: before any supersede / archive), so a resumed process never starts
+    with open reservations. ``active_ceiling_usd`` (``live.active_ceiling``) lowers the ledger's ceiling."""
+    from agent_allocation.api.forced import ForcedClient
+    from agent_allocation.dynorch.config import DynorchSettings
+    from agent_allocation.dynorch.core import ProxyCore
+    from agent_allocation.dynorch.journal import CallJournal, RunStore, resolve_inherited
+    from agent_allocation.dynorch.upstream import Upstream
+    from agent_allocation.runtime.ledger import CollectionLedger
+    from agent_allocation.storage.journal import LedgerJournal
+
+    if not isinstance(client, ForcedClient):
+        raise TypeError(f"build_stack needs a ForcedClient (raw /completions), got {type(client).__name__}")
+    if not locks:
+        raise ValueError("build_stack needs at least one shard EndpointLock (locks/openrouter_endpoints.json)")
+    root = Path(run_root)
+    settings = DynorchSettings.from_config(cfg)
+    (root / "state").mkdir(parents=True, exist_ok=True)
+    ledger_journal = LedgerJournal(root / "state" / "ledger_journal.jsonl", group_commit_ms=group_commit_ms)
+    ledger = CollectionLedger(ledger_journal, ceiling_usd=Decimal(str(ceiling_usd)),
+                              max_unresolved_usd=settings.max_unresolved_spend_usd)
+    if active_ceiling_usd is not None:
+        ledger.set_active_ceiling(Decimal(str(active_ceiling_usd)))
+    journal = CallJournal(root)
+    store = RunStore(root)
+    inherited = await resolve_inherited(ledger, store, journal) if resolve else {}
+    upstream = Upstream(client, dict(locks), cfg["sampling"], settings.provider_in_flight, settings.provider_rps,
+                        ledger, reservation_multiplier=settings.reservation_multiplier)
+    core = ProxyCore(settings, upstream, journal, store)
+    return Stack(settings=settings, ledger_journal=ledger_journal, ledger=ledger, journal=journal, store=store,
+                 upstream=upstream, core=core, inherited=dict(inherited))
+
+
+def apply_provider_map(inputs: BaseInputs, run_root: str | Path) -> BaseInputs:
+    """Re-point every item's shard at the frozen provider decision (``locks/provider_map.json``, plan §4: after a
+    switch every item runs on the passing shard's endpoint; ``forced_v2_shard`` stays the covariate). A missing or
+    foreign-layout map raises: the endpoint rule must have been frozen before a stage starts."""
+    path = Path(run_root) / "locks" / "provider_map.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} missing: freeze the endpoint rule (dynorch-run resolves it at the canary)")
+    doc = json.loads(path.read_text("utf-8"))
+    if doc.get("layout") != "dynorch/v1" or not isinstance(doc.get("items"), Mapping):
+        raise ValueError(f"{path} is not a dynorch/v1 provider map")
+    assignment: dict[str, str] = {}
+    tags: dict[str, str] = dict(inputs.endpoint_tags)
+    for item_id, row in doc["items"].items():
+        shard_id, tag = row["shard_id"], row["endpoint_tag"]
+        if not isinstance(shard_id, str) or not isinstance(tag, str):
+            raise ValueError(f"{path}: item {item_id} has a malformed row {row!r}")
+        assignment[item_id] = shard_id
+        tags[shard_id] = tag
+    missing = sorted(set(inputs.assignment) - set(assignment))
+    if missing:
+        raise ValueError(f"{path}: {len(missing)} base items have no provider row (e.g. {missing[:3]})")
+    return dataclasses.replace(inputs, assignment=assignment, endpoint_tags=tags)
+
+
+def specs_for_cells(cfg: Mapping[str, Any], stage: str, inputs: BaseInputs, cells: Sequence[Mapping[str, Any]], *,
+                    proxy_version: str, harness_versions: Mapping[str, str] | None = None) -> list[RunSpec]:
+    """The stage's planned ``RunSpec``s (``plan.plan_stage``, in plan order) restricted to ``cells``
+    (``{arm, rung, item_id, repeat, ...}`` from ``cli.enumerate_cells``); a requested cell the plan does not
+    contain raises -- the two enumerations must agree cell for cell (Gate 4 checks planned cells against rows)."""
+    wanted = {(str(c["arm"]), int(c["rung"]), str(c["item_id"]), int(c.get("repeat", 1))) for c in cells}
+    planned = planmod.plan_stage(cfg, stage, inputs, proxy_version=proxy_version, harness_versions=harness_versions)
+    keyed = {(s.arm, s.rung, s.item_id, s.repeat): s for s in planned}
+    unknown = sorted(wanted - set(keyed))
+    if unknown:
+        raise ValueError(f"{len(unknown)} requested cell(s) are not in the {stage} plan, e.g. {unknown[:3]}")
+    return [s for s in planned if (s.arm, s.rung, s.item_id, s.repeat) in wanted]
+
+
+def summary_dict(summary: StageSummary, ledger: Any, *, inherited: Mapping[str, int] | None = None,
+                 upstream_402: bool = False) -> dict[str, Any]:
+    """The JSON-able stage summary ``dynorch-run`` records in ``status.json`` (requests/wpD.md item 1)."""
+    records = list(summary.records.values())
+    infra_402 = any(str(r.error or "").startswith("infrastructure_stop:") for r in records)
+    snap = ledger.snapshot()
+    counts = {status: sum(1 for r in records if r.status == status) for status in sorted(TERMINAL_STATUSES)}
+    return {"stage": summary.stage, "runs": summary.planned, "executed": summary.executed, "skipped": summary.skipped,
+            "reruns": summary.reruns, "drained": summary.drained, **counts,
+            "upstream_402": bool(upstream_402 or infra_402), "settled_usd": str(snap.settled),
+            "in_flight_usd": str(snap.in_flight), "unresolved_usd": str(snap.unresolved),
+            "inherited": dict(inherited or {})}
+
+
+async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells: Sequence[Mapping[str, Any]],
+                       max_usd: Decimal, active_ceiling_usd: Decimal, resume: bool, concurrency: int | None,
+                       client: Any, account_auto_reload: bool, proxy_host: str, proxy_port: int,
+                       on_bound: Any) -> dict[str, Any]:
+    """Bind the proxy and run one stage end to end (the entry point ``dynorch-run`` calls; requests/wpD.md item 1).
+
+    Order: locks (``endpoint_rule.read_locks``) and the provider map -> ``build_stack`` (ledger ceiling ``max_usd``
+    lowered to ``active_ceiling_usd``; inherited attempts resolved) -> ``httpd.ProxyServer`` bound on
+    ``proxy_host:proxy_port`` and ``on_bound(host, port)`` BEFORE the first harness -> ``Runner.run_specs`` over the
+    stage's cells (``--resume`` skips terminal records) with the Slurm drain trap, a ``control/STOP`` /
+    ``control/DRAIN`` sentinel watch, and a ``/key`` refresh of the active ceiling every 5 minutes (plan §5; a 402
+    from the account endpoints drains the stage and is reported as ``upstream_402``). Returns ``summary_dict``.
+    The client is the caller's (closed by ``dynorch-run``); the ledger journal is flushed and released here.
+    """
+    from agent_allocation.dynorch import endpoint_rule, reconcile
+    from agent_allocation.dynorch.harness import adapters_from_config
+    from agent_allocation.dynorch.httpd import ProxyServer
+    from agent_allocation.live import active_ceiling
+
+    run_root = Path(paths.run_dir)
+    locks = endpoint_rule.read_locks(run_root)
+    inputs = apply_provider_map(BaseInputs.load(cfg["base_run_root"], model=cfg["primary_model"]), run_root)
+    stack = await build_stack(cfg, run_root, client=client, locks=locks, ceiling_usd=Decimal(str(max_usd)),
+                              active_ceiling_usd=Decimal(str(active_ceiling_usd)))
+    server = ProxyServer(stack.core, host=proxy_host, port=int(proxy_port),
+                         keepalive_seconds=float(stack.settings.keepalive_seconds))
+    flags = {"upstream_402": False}
+    try:
+        await server.start()
+        on_bound(server.host, server.port)
+        adapters = adapters_from_config(cfg)
+        settings = RunnerSettings.from_config(cfg, run_root=run_root, concurrency=concurrency)
+        runner = Runner(stack.core, adapters, settings, proxy_url=server.base_url, store=stack.store, inputs=inputs,
+                        reply_log=server.reply_log, cfg=cfg, journal=stack.journal)
+        try:
+            install_drain_handler(runner)
+        except (ValueError, RuntimeError, NotImplementedError) as exc:     # not the main thread / no signals
+            log.warning("dynorch runner: drain handler not installed (%s)", exc)
+        specs = specs_for_cells(cfg, stage, inputs, cells, proxy_version=stack.core.proxy_version,
+                                harness_versions=runner.harness_versions())
+
+        async def refresh_ceiling() -> None:
+            while True:
+                await asyncio.sleep(CEILING_REFRESH_SECONDS)
+                try:
+                    snap = await reconcile.snapshot_account(client)
+                except Exception as exc:  # noqa: BLE001 - a failed refresh keeps the last ceiling
+                    log.warning("dynorch runner: /key refresh failed (%s); ceiling unchanged", exc)
+                    continue
+                if snap.payment_required:
+                    flags["upstream_402"] = True
+                    log.error("dynorch runner: account endpoints answered 402; draining the stage (B6 stop_notify)")
+                    runner.request_drain()
+                    return
+                balance = (snap.total_credits_usd or Decimal(0)) - (snap.total_usage_usd or Decimal(0))
+                ceiling = active_ceiling(Decimal(str(max_usd)), stack.ledger.snapshot().settled,
+                                         {"key": {"limit_remaining": snap.key_limit_remaining_usd},
+                                          "account_balance_usd": str(balance)},
+                                         account_auto_reload=bool(account_auto_reload))
+                stack.ledger.set_active_ceiling(ceiling)
+
+        async def watch_sentinels() -> None:
+            stop, drain = Path(paths.stop_sentinel), Path(paths.drain_sentinel)
+            while True:
+                await asyncio.sleep(SENTINEL_POLL_SECONDS)
+                if stop.exists() or drain.exists():
+                    log.warning("dynorch runner: control sentinel present (%s); draining", stop if stop.exists() else drain)
+                    runner.request_drain()
+                    return
+
+        background = [asyncio.create_task(refresh_ceiling()), asyncio.create_task(watch_sentinels())]
+        try:
+            summary = await runner.run_specs(stage, specs, resume=resume)
+        finally:
+            for task in background:
+                task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
+    finally:
+        await server.close()
+        await stack.aclose()
+    return summary_dict(summary, stack.ledger, inherited=stack.inherited, upstream_402=flags["upstream_402"])

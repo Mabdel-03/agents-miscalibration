@@ -23,7 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from agent_allocation.contracts import GateCriterion, GateResult
+from agent_allocation.contracts import GradeStatus, ParseStatus, GateCriterion, GateResult
 from agent_allocation.gates import write_gate
 
 ADVANCE, STOP_NOTIFY, STOP = "advance", "stop_notify", "stop"
@@ -35,6 +35,9 @@ G1_KEY_DELTA_TOLERANCE_USD = Decimal("0.02")
 G1_GRACE_TRUNCATED_MAX_SHARE = 0.02
 FORCED_CLOSE_KINDS = ("mid_call", "visible_continuation", "terminal")
 # ---- Gate 2 thresholds (plan §9) ----------------------------------------------------------------------------------
+#: The runner writes the codec values (``grade.finalize_run``): "valid" / "evaluator_error", never the enum names.
+PARSE_VALID = ParseStatus.VALID.value
+GRADE_EVALUATOR_ERROR = GradeStatus.EVALUATOR_ERROR.value
 G2_VALID_FINAL_ADVANCE = 0.90
 G2_VALID_FINAL_NOTIFY = 0.80
 G2_TOOL_PARSE_FAILURE_MAX = 0.05
@@ -323,7 +326,7 @@ def harness_metrics(cfg: Mapping[str, Any], runs: Any, calls: Any, arm: str) -> 
     keys = set(mine["run_key"])
     my_calls = calls[calls["run_key"].isin(keys)]
     n = int(len(mine))
-    valid = int((mine["parse_status"] == "VALID").sum())
+    valid = int((mine["parse_status"] == PARSE_VALID).sum())
     parsed_calls = my_calls[my_calls["tool_parse"].isin(["ok", "failed"])]
     parse_failed = int((parsed_calls["tool_parse"] == "failed").sum())
     cap_over = mine[mine["completion_total"].fillna(0).astype(int) > mine["cap_tokens"].astype(int)]
@@ -331,8 +334,8 @@ def harness_metrics(cfg: Mapping[str, Any], runs: Any, calls: Any, arm: str) -> 
     at_k = mine[mine["rung"] == G2_SPAWN_RUNG]
     spawning = int((at_k["spawns"].fillna(0).astype(int) >= 1).sum())
     guard = int(mine["guard_triggered"].fillna(False).astype(bool).sum())
-    graded = mine[mine["parse_status"] == "VALID"]
-    evaluator_errors = int((graded["grade_status"] == "error").sum())
+    graded = mine[mine["parse_status"] == PARSE_VALID]
+    evaluator_errors = int((graded["grade_status"] == GRADE_EVALUATOR_ERROR).sum())
     hits = int(mine["reinjection_hits"].fillna(0).sum())
     misses = int(mine["reinjection_misses"].fillna(0).sum())
     timeouts = int((mine["status"] == "timeout").sum())

@@ -136,17 +136,17 @@ def test_pending_rows_have_nan_y_and_pending_state(small_run):
 
 def test_outcome_rule_b7():
     assert T.outcome_of(None) == (T.outcome_of(None)[0], "pending") and math.isnan(T.outcome_of(None)[0])
-    base = {"status": "done", "parse_status": "VALID", "correct": True}
+    base = {"status": "done", "parse_status": "valid", "correct": True}
     assert T.outcome_of(base) == (1.0, "delivered")
     assert T.outcome_of({**base, "correct": False}) == (0.0, "delivered")
     y, s = T.outcome_of({**base, "correct": None})
     assert math.isnan(y) and s == "unknown"
-    assert T.outcome_of({**base, "parse_status": "MISSING"}) == (0.0, "op_no_output")
+    assert T.outcome_of({**base, "parse_status": "missing_final"}) == (0.0, "op_no_output")
     assert T.outcome_of({**base, "parse_status": "MALFORMED", "correct": True}) == (0.0, "op_no_output")
     y, s = T.outcome_of({**base, "status": "transport_failed", "parse_status": None, "correct": None})
     assert math.isnan(y) and s == "unknown"
     assert T.outcome_of({**base, "status": "running"})[1] == "pending"
-    assert T.outcome_of({**base, "status": "timeout", "parse_status": "VALID", "correct": True}) == (1.0, "delivered")
+    assert T.outcome_of({**base, "status": "timeout", "parse_status": "valid", "correct": True}) == (1.0, "delivered")
     with pytest.raises(T.TablesError):
         T.outcome_of({**base, "correct": 1})
 

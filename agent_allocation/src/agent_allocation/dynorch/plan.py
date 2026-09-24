@@ -232,7 +232,7 @@ def plan_stage(cfg: Mapping[str, Any], stage: str, base: BaseInputs, *, arms: Se
         canary = block["canary"]
         items = [base.panels[b].dev_item_ids[0] for b in canary["items"]]
         specs = _runs(core_arms, [int(canary["rung"])], items)
-        probe_items = base.dev_items(per_benchmark=1)[: int(canary["ceiling_probe_items"])]
+        probe_items = items[: int(canary["ceiling_probe_items"])]      # the same canary items (cli.enumerate_cells)
         specs += _runs(harness_arms, [int(canary["ceiling_probe_rung"])], probe_items)
         return _dedupe(specs)
     if stage == "pilot":

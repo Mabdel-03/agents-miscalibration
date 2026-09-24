@@ -115,6 +115,8 @@ RUN_STATUSES = frozenset({"planned", "running", "done", "failed", "timeout", "tr
 TERMINAL_STATUSES = frozenset({"done", "failed", "timeout", "transport_failed", "refused_before_start"})
 INFRA_STATUSES = frozenset({"transport_failed", "refused_before_start"})
 CALL_CLASSES = ("root", "solver", "other")
+#: ``grade.finalize_run`` writes ``ParseStatus.VALID.value`` ("valid"), the sealed ladder's spelling, never "VALID".
+PARSE_VALID = "valid"
 DELIVERED_STATES = ("delivered", "op_no_output", "unknown", "pending")
 PLAN_REQUIRED_KEYS: tuple[str, ...] = ("run_key", "arm", "harness", "item_id", "benchmark", "stratum", "shard_id",
                                        "endpoint_tag", "rung", "cap_tokens", "repeat", "attempt", "partition")
@@ -147,8 +149,10 @@ class PlannedCell:
         return cell_name(self.arm, self.rung, self.repeat)
 
     @property
-    def cell_key(self) -> tuple[str, str, int, int]:
-        return (self.arm, self.item_id, self.rung, self.repeat)
+    def cell_key(self) -> tuple[str, str, str, int, int]:
+        """``(partition, arm, item_id, rung, repeat)``: a cell is unique within its stage (the plan manifests of
+        several stages are read together by ``build_tables``)."""
+        return (self.partition, self.arm, self.item_id, self.rung, self.repeat)
 
     @property
     def policy_id(self) -> str:
@@ -210,7 +214,7 @@ def read_plan(path: str | Path) -> list[PlannedCell]:
     if not path.is_file():
         raise TablesError(f"plan manifest not found: {path}")
     cells: list[PlannedCell] = []
-    seen: set[tuple[str, str, int, int]] = set()
+    seen: set[tuple[str, str, str, int, int]] = set()
     with path.open() as fh:
         for lineno, line in enumerate(fh, 1):
             if not line.strip():
@@ -323,7 +327,7 @@ def runs_table(records: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
         row["realized_share"] = float(rec["completion_total"]) / float(spec["cap_tokens"])
         row["terminal"] = rec["status"] in TERMINAL_STATUSES
         row["infra_failure"] = rec["status"] in INFRA_STATUSES
-        row["valid_final"] = rec["parse_status"] == "VALID"
+        row["valid_final"] = rec["parse_status"] == PARSE_VALID
         row["y"], row["delivered_state"] = outcome_of(rec)
         row["n_calls_detail"] = len(rec["calls_detail"])
         row["prompt_tokens_first_root"] = _first_root_prompt_tokens(rec)
@@ -384,7 +388,7 @@ def outcome_of(rec: Mapping[str, Any] | None) -> tuple[float, str]:
         return math.nan, "pending"
     if rec["status"] in INFRA_STATUSES:
         return math.nan, "unknown"
-    if rec["parse_status"] != "VALID":
+    if rec["parse_status"] != PARSE_VALID:
         return 0.0, "op_no_output"
     correct = rec["correct"]
     if correct is True:
@@ -396,21 +400,23 @@ def outcome_of(rec: Mapping[str, Any] | None) -> tuple[float, str]:
     raise TablesError(f"RunRecord.correct must be bool | None, got {correct!r}")
 
 
+CellKey = tuple[str, str, str, int, int]
+
+
 def current_records(plan: Sequence[PlannedCell], records: Sequence[Mapping[str, Any]]
-                    ) -> tuple[dict[tuple[str, str, int, int], Mapping[str, Any]],
-                               dict[tuple[str, str, int, int], list[Mapping[str, Any]]]]:
+                    ) -> tuple[dict[CellKey, Mapping[str, Any]], dict[CellKey, list[Mapping[str, Any]]]]:
     """Per planned cell: the record with the highest attempt (``current``) and the superseded earlier attempts.
     A record for a cell that is not in the plan is an error (nothing runs outside the plan)."""
     planned = {c.cell_key for c in plan}
-    by_cell: dict[tuple[str, str, int, int], list[Mapping[str, Any]]] = {}
+    by_cell: dict[CellKey, list[Mapping[str, Any]]] = {}
     for rec in records:
         spec = rec["spec"]
-        key = (spec["arm"], spec["item_id"], int(spec["rung"]), int(spec["repeat"]))
+        key = (spec["partition"], spec["arm"], spec["item_id"], int(spec["rung"]), int(spec["repeat"]))
         if key not in planned:
             raise TablesError(f"RunRecord {spec['run_key']} ({key}) is not a planned cell")
         by_cell.setdefault(key, []).append(rec)
-    current: dict[tuple[str, str, int, int], Mapping[str, Any]] = {}
-    superseded: dict[tuple[str, str, int, int], list[Mapping[str, Any]]] = {}
+    current: dict[CellKey, Mapping[str, Any]] = {}
+    superseded: dict[CellKey, list[Mapping[str, Any]]] = {}
     for key, recs in by_cell.items():
         recs = sorted(recs, key=lambda r: int(r["spec"]["attempt"]))
         attempts = [int(r["spec"]["attempt"]) for r in recs]
@@ -429,7 +435,7 @@ def policy_outcomes_table(plan: Sequence[PlannedCell], records: Sequence[Mapping
         rec = current.get(cell.cell_key)
         y, state = outcome_of(rec)
         terminal = rec is not None and rec["status"] in TERMINAL_STATUSES
-        valid = rec is not None and rec["parse_status"] == "VALID"
+        valid = rec is not None and rec["parse_status"] == PARSE_VALID
         correct = None if rec is None else rec["correct"]
         rows.append({
             "partition_id": cell.partition, "policy_id": cell.policy_id, "item_id": cell.item_id,
@@ -567,12 +573,31 @@ def plan_manifest_path(run_root: str | Path, stage: str) -> Path:
     return Path(run_root) / "manifests" / f"dynorch_plan_{stage}.jsonl"
 
 
-def build_tables(run_root: str | Path, cfg: Mapping[str, Any], *, stage: str, out_dir: str | Path | None = None,
-                 grace_tokens: int | None = None) -> dict[str, Any]:
-    """Build and write the four tables for one stage (contract section 7). Returns the frames plus
-    ``reasoning_unknown_rows``. ``out_dir`` defaults to ``<run_root>/tables``."""
+def plan_manifests(run_root: str | Path) -> list[Path]:
+    """Every ``manifests/dynorch_plan_<stage>.jsonl`` under the run root, in stage order (canary, pilot, main,
+    ext_e0, ...), so the tables cover all stages that were pre-registered."""
+    order = {name: i for i, name in enumerate(("canary", "pilot", "main", "ext_e0", "ext_e1", "ext_e2", "ext_e3"))}
+    found = list((Path(run_root) / "manifests").glob("dynorch_plan_*.jsonl"))
+    return sorted(found, key=lambda p: (order.get(p.stem[len("dynorch_plan_"):], len(order)), p.name))
+
+
+def build_tables(run_root: str | Path, cfg: Mapping[str, Any], *, stage: str | None = None,
+                 out_dir: str | Path | None = None, grace_tokens: int | None = None) -> dict[str, Any]:
+    """Build and write the four tables (contract section 7) for one stage, or for every pre-registered stage when
+    ``stage`` is None (each cell keyed by its partition; a cell planned twice raises). Returns the frames plus
+    ``reasoning_unknown_rows`` / ``n_planned`` / ``n_records``. ``out_dir`` defaults to ``<run_root>/tables``."""
     run_root = Path(run_root)
-    plan = read_plan(plan_manifest_path(run_root, stage))
+    manifests = [plan_manifest_path(run_root, stage)] if stage is not None else plan_manifests(run_root)
+    if not manifests:
+        raise TablesError(f"no plan manifest under {run_root / 'manifests'} (run a stage first)")
+    plan: list[PlannedCell] = []
+    seen: set[CellKey] = set()
+    for manifest in manifests:
+        for cell in read_plan(manifest):
+            if cell.cell_key in seen:
+                raise TablesError(f"{manifest}: cell {cell.cell_key} is planned in another manifest too")
+            seen.add(cell.cell_key)
+            plan.append(cell)
     records = read_run_records(run_root)
     records = [r for r in records if r["spec"]["partition"] in {c.partition for c in plan}]
     grace = int(cfg["dynorch"]["grace_tokens"]) if grace_tokens is None else int(grace_tokens)
@@ -726,9 +751,9 @@ def synthetic_run_record(cell: PlannedCell, *, correct: bool | None, status: str
             "reinjection_hits": max(0, len(calls) - 1), "reinjection_misses": 0, "duplicates_served": 0,
             "final_message": final, "final_source": "proxy_root" if final else "none", "cli_result": final,
             "cli_result_mismatch": False if final else None,
-            "parse_status": ("VALID" if valid else "MISSING") if status not in INFRA_STATUSES else None,
+            "parse_status": (PARSE_VALID if valid else "missing_final") if status not in INFRA_STATUSES else None,
             "final_answer": "42" if valid else None,
-            "grade_status": ("graded" if correct is not None else "unknown_evaluator_error") if valid else None,
+            "grade_status": ("graded" if correct is not None else "evaluator_error") if valid else None,
             "correct": correct if valid else None, "grade_detail": None, "wall_seconds": wall_seconds,
             "harness_exit_code": 0 if status == "done" else 1, "harness_reported": {"subtype": "success"},
             "cost_usd": cost, "started_at": "2026-09-23T00:00:00Z", "finished_at": "2026-09-23T00:02:00Z",

@@ -240,6 +240,69 @@ def refit(runs: pd.DataFrame | str | Path, cfg: Mapping[str, Any], *,
     return pd.DataFrame(rows)
 
 
+#: Plan section 8 cut order (C1-C3 automatic; C4 is the owner's and is never applied here).
+CUTS: tuple[tuple[str, frozenset[tuple[str, int]]], ...] = (
+    ("C1 drop H0 at rungs {1,2,8}", frozenset({("H0", 1), ("H0", 2), ("H0", 8)})),
+    ("C2 drop rung 1 for H1/H3", frozenset({("H1", 1), ("H3", 1)})),
+    ("C3 drop rung 2 for H1/H3", frozenset({("H1", 2), ("H3", 2)})),
+)
+
+
+def gate2_refit(cfg: Mapping[str, Any], runs: pd.DataFrame | str | Path, *, spent_usd: Decimal | str,
+                planned_runs: Mapping[tuple[str, int], int] | None = None) -> dict[str, Any]:
+    """Gate 2 (plan section 9): the re-fitted forecast of the REMAINING core runs with the 25 % contingency,
+    after at most the automatic cuts C1-C3 of section 8, against ``soft_admission_ceiling_usd - spent``.
+
+    Per (arm, rung) the cost per run is the pilot-measured re-fit (``refit``: measured prompt/completion tokens at
+    Parasail prices) when the pilot ran that cell, else the section 8 ceiling model (``run_forecast``); a cut removes
+    its cells from the remaining count. Cuts are applied in order only while the forecast exceeds the room left
+    under the soft ceiling; the returned ``cuts_applied`` lists them (empty when the uncut core fits). Returns
+    ``{core_forecast_usd, spent_usd, room_usd, cuts_applied, fits, per_cell}`` with decimals as strings."""
+    dyn = _dyn(cfg)
+    share = contingency_share(cfg)
+    spent = Decimal(str(spent_usd))
+    soft = Decimal(str(cfg["budget"]["soft_admission_ceiling_usd"]))
+    room = soft - spent
+    planned = dict(planned_runs if planned_runs is not None else planned_runs_core(cfg))
+    if not isinstance(runs, pd.DataFrame):
+        runs = pd.read_parquet(runs)
+    measured: dict[tuple[str, int], Decimal] = {}
+    done: dict[tuple[str, int], int] = {}
+    if not runs.empty:
+        fitted = refit(runs, cfg)
+        for row in fitted.to_dict("records"):
+            measured[(str(row["arm"]), int(row["rung"]))] = Decimal(str(row["cost_usd_per_run_refit"]))
+            done[(str(row["arm"]), int(row["rung"]))] = int(row["n_runs"])
+    per_cell: dict[str, dict[str, Any]] = {}
+    for (arm, rung), n_planned in sorted(planned.items()):
+        unit = measured.get((arm, rung))
+        source = "pilot_refit"
+        if unit is None:
+            unit = run_forecast(arm_kind(arm, cfg), int(rung), cfg).usd_ceiling
+            source = "section_8_ceiling"
+        remaining = max(0, int(n_planned) - int(done.get((arm, rung), 0)))
+        per_cell[f"{arm}/{rung}"] = {"arm": arm, "rung": int(rung), "planned": int(n_planned), "remaining": remaining,
+                                     "usd_per_run": str(unit), "source": source,
+                                     "usd_with_contingency": str(remaining * unit * (1 + share))}
+
+    def total(excluded: frozenset[tuple[str, int]]) -> Decimal:
+        return sum((Decimal(c["usd_with_contingency"]) for c in per_cell.values()
+                    if (c["arm"], c["rung"]) not in excluded), Decimal(0))
+
+    excluded: frozenset[tuple[str, int]] = frozenset()
+    applied: list[str] = []
+    forecast = total(excluded)
+    for name, cells in CUTS:
+        if forecast <= room:
+            break
+        excluded = excluded | cells
+        applied.append(name)
+        forecast = total(excluded)
+    return {"core_forecast_usd": str(forecast), "spent_usd": str(spent), "soft_ceiling_usd": str(soft),
+            "room_usd": str(room), "cuts_applied": applied, "fits": forecast <= room,
+            "contingency_share": str(share), "per_cell": per_cell}
+
+
 def planned_runs_core(cfg: Mapping[str, Any]) -> dict[tuple[str, int], int]:
     """Planned runs per (arm, rung) of the core (every core arm at every rung on the main panel)."""
     dyn = _dyn(cfg)
@@ -265,7 +328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = ["BASE_PROMPT_TOKENS", "CALLS_PER_RUN", "PARASAIL_INPUT_USD_PER_M", "PARASAIL_OUTPUT_USD_PER_M",
            "PLAN_SECTION_8", "Block", "ForecastError", "RunForecast", "arm_kind", "block_forecast", "blocks",
-           "contingency_share", "per_item_table", "plan_table", "planned_runs_core", "refit", "run_forecast"]
+           "contingency_share", "gate2_refit", "per_item_table", "plan_table", "planned_runs_core", "refit",
+           "run_forecast", "CUTS"]
 
 
 if __name__ == "__main__":
