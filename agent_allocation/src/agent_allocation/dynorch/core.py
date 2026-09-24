@@ -223,6 +223,9 @@ class ProxyCore:
         conversation key never hashes a date or a cwd."""
         if not request.messages:
             raise ProxyError.of("bad_request", "messages must not be empty")
+        if any(m.role == "system" for m in request.messages[1:]):
+            raise ProxyError.of("bad_request", "a system message is only allowed at the head of the conversation "
+                                               "(the pinned template refuses any other position)")
         system_text = request.messages[0].content if request.messages[0].role == "system" else ""
         users = [m for m in request.messages if m.role == "user"]
         if not users:

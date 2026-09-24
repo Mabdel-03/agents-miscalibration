@@ -127,6 +127,21 @@ class _Builder:
         self.messages.append(message)
         self.open_assistant = message.role == "assistant"
 
+    def system_text(self, text: str, what: str) -> None:
+        """A ``developer`` / ``system`` item: Codex sends one leading developer message (skills + permissions,
+        contract §10.7) after ``instructions``; the pinned template allows a single system message at the head of the
+        conversation, so leading system texts are joined into it (blank-line separated) and one arriving after the
+        conversation started is a ``bad_request`` (never a 500 at render time)."""
+        if self.messages and all(m.role == "system" for m in self.messages):
+            head = self.messages[0]
+            joined = "\n\n".join(part for part in (head.content, text) if part)
+            self.messages = [Message(role="system", content=joined)] + self.messages[1:]
+            return
+        if not self.messages:
+            self.add(Message(role="system", content=text))
+            return
+        raise _bad(f"{what}: a developer/system message after the conversation started cannot be rendered")
+
     def assistant_text(self, text: str) -> None:
         self.add(Message(role="assistant", content=text, reasoning_content=self._take_reasoning()))
 
@@ -176,7 +191,7 @@ def parse_responses_body(body: Mapping[str, Any], *, subagent: bool = False) -> 
             if role == "assistant":
                 builder.assistant_text(text)
             elif role in ("developer", "system"):
-                builder.add(Message(role="system", content=text))
+                builder.system_text(text, what)
             else:
                 builder.add(Message(role="user", content=text))
         elif kind == "function_call":

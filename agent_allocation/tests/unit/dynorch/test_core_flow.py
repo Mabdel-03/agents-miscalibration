@@ -204,6 +204,18 @@ async def test_ledger_refusal_is_a_503_and_releases_the_unsent_grant(make_env):
     assert env.think_calls() == [] and not env.core.record_of(spec.run_key).exhausted
 
 
+async def test_system_message_after_the_head_is_a_400_not_a_render_500(make_env):
+    """The pinned template refuses a system message anywhere but first; the core answers bad_request before rendering
+    (the chat route maps ``developer`` to ``system`` at any position)."""
+    env = make_env(FakeScript())
+    spec = env.open(make_spec(rung=4))
+    messages = root_messages() + [Message("assistant", "ok"), Message("system", "late note"), Message("user", "go")]
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(messages))
+    assert exc.value.code == "bad_request" and exc.value.status == 400
+    assert env.think_calls() == [] and env.core.budget_view(spec.run_key)["calls"] == 0
+
+
 async def test_unknown_and_closed_runs(make_env):
     env = make_env(FakeScript())
     with pytest.raises(ProxyError) as exc:

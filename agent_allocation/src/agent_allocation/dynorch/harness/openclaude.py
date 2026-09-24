@@ -97,7 +97,9 @@ class OpenclaudeAdapter:
     # -- command -----------------------------------------------------------------------------------------
     def build_command(self, work: Path, spec: RunSpec, proxy_base_url: str) -> LaunchPlan:
         wd = WorkDir(Path(work))
-        system_text = wd.system_md.read_text("utf-8")
+        # plan §6 passes "$(cat SYSTEM.md)": command substitution drops the trailing newline, and Gate 0's check is
+        # messages[0] == OPENCLAUDE_PREFIX + system_text.rstrip("\n") (contract §10.2, captures/openclaude/a)
+        system_text = wd.system_md.read_text("utf-8").rstrip("\n")
         agents = (wd.root / "agents.json").read_text("utf-8")
         tools = ",".join(spec.allowed_tools)
         argv: list[str] = [

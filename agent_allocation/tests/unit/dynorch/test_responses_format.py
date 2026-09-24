@@ -69,16 +69,16 @@ def test_parse_history_items_map_to_chat_messages():
     ]
     req = rf.parse_responses_body(_body(input=history, max_output_tokens=2048))
     roles = [m.role for m in req.messages]
-    assert roles == ["system", "system", "user", "assistant", "tool", "assistant", "tool"]
-    assert req.messages[1].content == "dev note"
-    first = req.messages[3]
+    assert roles == ["system", "user", "assistant", "tool", "assistant", "tool"]
+    assert req.messages[0].content == SYSTEM + "\n\ndev note"        # the leading developer item joins instructions
+    first = req.messages[2]
     assert first.content == "Delegating." and first.reasoning_content == "I delegate"
     assert first.tool_calls == (ToolCall(id="call_1_0", name="spawn_agent", arguments={"message": "solve"}),)
-    assert req.messages[4].tool_call_id == "call_1_0" and req.messages[4].content == '{"agent_id":"a1"}'
-    second = req.messages[5]
+    assert req.messages[3].tool_call_id == "call_1_0" and req.messages[3].content == '{"agent_id":"a1"}'
+    second = req.messages[4]
     assert second.content == "" and second.reasoning_content is None      # summary-only reasoning carries no text
     assert second.tool_calls == (ToolCall(id="call_2_0", name="wait_agent", arguments={}),)
-    assert req.messages[6].content == "<final>3</final>" and req.messages[6].tool_call_id == "call_2_0"
+    assert req.messages[5].content == "<final>3</final>" and req.messages[5].tool_call_id == "call_2_0"
     assert req.requested_max_tokens == 2048
 
 
@@ -199,6 +199,27 @@ def test_responses_json_object():
     payload = rf.responses_json(_reply("hi", "r"), response_id="r4")
     assert payload["object"] == "response" and payload["status"] == "completed"
     assert [i["type"] for i in payload["output"]] == ["reasoning", "message"]
+
+
+def test_codex_leading_developer_item_joins_the_instructions():
+    """captures/codex/a: input = [developer (skills + permissions), user <environment_context>, user task]; the
+    pinned template allows one system message at the head, so the developer text joins the instructions."""
+    body = _body(input=[
+        {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "<skills_instructions>...</skills_instructions>"},
+                                                             {"type": "input_text", "text": "<permissions instructions>never</permissions instructions>"}]},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>\n<cwd>/ws</cwd>\n</environment_context>"}]},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": USER}]},
+    ])
+    req = rf.parse_responses_body(body)
+    assert [m.role for m in req.messages] == ["system", "user", "user"]
+    assert req.messages[0].content == (SYSTEM + "\n\n<skills_instructions>...</skills_instructions>"
+                                       "<permissions instructions>never</permissions instructions>")
+    assert req.messages[0].content.startswith(SYSTEM) and req.messages[2].content == USER
+    late = _body(input=[{"type": "message", "role": "user", "content": USER},
+                        {"type": "message", "role": "developer", "content": "too late"}])
+    with pytest.raises(ProxyError) as exc:
+        rf.parse_responses_body(late)
+    assert exc.value.status == 400 and exc.value.code == "bad_request"
 
 
 # -- parity: one scripted conversation through both wires yields identical CallRecords ---------------------

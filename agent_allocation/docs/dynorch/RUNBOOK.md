@@ -34,10 +34,15 @@ tools/install_codex.sh                       # idempotent; verifies codex-cli 0.
 $A dynorch-doctor --config $CFG --run-dir $RUN            # exit 0 required
 uv run --frozen --no-sync pytest tests/unit/dynorch -q     # green required
 $A dynorch-plan --config $CFG --stage canary               # dry run: 10 cells; pilot 144; main 1728
-$A dynorch-gates --config $CFG --run-dir $RUN --gate 0     # doctor + suite + gates/gate0_smoke.json (WP-E)
+# the real-CLI smoke ($0: both CLIs through the real proxy over the fake upstream; writes gates/gate0_smoke.json)
+DYNORCH_GATE0_SMOKE_OUT=$RUN/gates/gate0_smoke.json uv run --frozen --no-sync pytest \
+    tests/integration/test_dynorch_real_cli_smoke.py -m slow -q
+uv run --frozen --no-sync pytest tests/integration/test_dynorch_e2e_fake_harness.py -m slow -q   # 330 s / 660 s stalls (17 min)
+$A dynorch-gates --config $CFG --run-dir $RUN --gate 0     # doctor + suite + gates/gate0_smoke.json
 ```
-Or as a job: `slurm/launch_dynorch_v1.sh gate0`. Gate 0 advances only with WP-E's `gates/gate0_smoke.json`
-(`passed: true`). **Codex fallback rule** (plan §9): a Codex smoke failure no config change fixes → H3 := OpenClaw
+Or as a job: `slurm/launch_dynorch_v1.sh gate0`. Gate 0 advances only with `gates/gate0_smoke.json`
+(`passed: true`, written by the smoke test above; the scripted-spawn / 402 / long-delay items of the Gate 0 list are
+covered by the fake-harness e2e, see contract §10.18). **Codex fallback rule** (plan §9): a Codex smoke failure no config change fixes → H3 := OpenClaw
 (`config.dynorch.extension_arms.H2`), owner notified, its own smoke list must pass.
 
 ## 1. Gate 1 — canary (≤ $2 allowance, plan expects ≈ $0.7)
@@ -56,6 +61,7 @@ proxy on `127.0.0.1:0` (`state/proxy.json`); runs the 10 canary cells; builds th
 
 Then evaluate:
 ```bash
+$A dynorch-tables --config $CFG --run-dir $RUN [--stage canary]   # rebuild the tables (every pre-registered stage by default)
 $A dynorch-gates --config $CFG --run-dir $RUN --gate 1     # writes gates/gate1_canary.json + locks/harness_prompts.json
 ```
 Gate 1 criteria (all in `gates/gate1_canary.json`): endpoint rule locked; every call `completion ≤ granted` and

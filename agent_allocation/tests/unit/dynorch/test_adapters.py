@@ -72,7 +72,7 @@ def test_openclaude_argv_env_and_files(work: Path):
     for flag in ("--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands"):
         assert flag in argv
     assert argv[argv.index("--provider") + 1] == "openai" and argv[argv.index("--model") + 1] == MODEL
-    assert argv[argv.index("--system-prompt") + 1] == SYSTEM
+    assert argv[argv.index("--system-prompt") + 1] == SYSTEM.rstrip("\n")      # $(cat SYSTEM.md) semantics, §10.2
     assert argv[argv.index("--tools") + 1] == "Agent" and argv[argv.index("--allowedTools") + 1] == "Agent"
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert argv[argv.index("--setting-sources") + 1] == ""
