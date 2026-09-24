@@ -57,6 +57,9 @@ _LEADING_THINK = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 _HARNESS_BLOCKS = re.compile(r"<system-reminder>.*?</system-reminder>|<environment_context>.*?</environment_context>",
                              re.DOTALL)
 PHASE_THINK, PHASE_ANSWER, PHASE_TERMINAL = "think", "answer", "terminal"
+#: ``Upstream.complete`` raises these only from its reservation phase (``reserve`` / ``mark_sent``), i.e. provably
+#: before anything left the process: the token grant is released, never charged (B2).
+PRE_SEND_ERROR_CODES: frozenset[str] = frozenset({"ledger_refused", "internal_error"})
 log = logging.getLogger("agent_allocation.dynorch.core")
 
 
@@ -179,6 +182,16 @@ class ProxyCore:
         budget = TokenBudget(spec.cap_tokens, terminal_threshold=self.settings.terminal_threshold_tokens,
                              grace=self.settings.grace_tokens, max_calls=self.settings.max_calls_per_run,
                              max_prompt_tokens=self.settings.max_prompt_tokens_per_run)
+        previous = self.store.load(spec)
+        if previous is not None and previous.spec.run_key == spec.run_key and previous.is_terminal:
+            raise ValueError(f"run {spec.run_key} already has a terminal record ({previous.status}) at "
+                             f"{self.store.path(spec)}: a finished attempt is never re-executed in place "
+                             f"(use the next attempt / --resume)")
+        existing_calls = sorted(self.journal.run_dir(spec).glob("call_*.json.gz"))
+        if existing_calls:
+            raise ValueError(f"run {spec.run_key} already has {len(existing_calls)} journaled call(s) in "
+                             f"{self.journal.run_dir(spec)}: the write-once journal would conflict AFTER the next "
+                             f"call was paid (supersede them first)")
         self.store.archive_previous(spec)
         record = new_run_record(spec, status="running", started_at=utc_now())
         self.store.save(record)
@@ -466,9 +479,11 @@ class ProxyCore:
                                   reinjection, exc.phases, exc)
             raise
         except ProxyError as exc:
-            if exc.code == "ledger_refused":
-                budget.release_unsent(grant)          # provably nothing left the process
-                state.record.error = f"ledger_refused: {exc.detail}"
+            if exc.code in PRE_SEND_ERROR_CODES:
+                # the $ ledger refused (ceiling / unresolved exposure) or rejected the attempt id: both are decided
+                # before the body leaves the process, so the token grant is given back, not charged
+                budget.release_unsent(grant)
+                state.record.error = f"{exc.code}: {exc.detail}"
                 self.store.save(state.record)
             raise
         except BaseException as exc:

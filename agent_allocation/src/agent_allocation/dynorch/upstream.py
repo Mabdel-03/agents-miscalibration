@@ -42,7 +42,7 @@ from agent_allocation.apikey import redact, redact_headers
 from agent_allocation.contracts import EndpointLock, TransportStatus
 from agent_allocation.dynorch.records import PROXY_ERROR_CODES, ProxyError, UpstreamResult
 from agent_allocation.runtime.estimate import input_token_bound
-from agent_allocation.runtime.ledger import GATEWAY_TIMEOUT_MAY_BE_BILLED, CollectionLedger
+from agent_allocation.runtime.ledger import GATEWAY_TIMEOUT_MAY_BE_BILLED, CollectionLedger, LedgerError
 from agent_allocation.runtime.scheduler import HttpLimiter
 
 MAX_TRANSPORT_ATTEMPTS = 3
@@ -196,13 +196,25 @@ class Upstream:
         number = 1
         while True:
             aid = attempt_id if number == 1 else sibling_attempt_id(attempt_id, number)
-            if not await self.ledger.reserve(attempt_id=aid, node_id=node_id, partition_id=partition,
-                                             amount_usd=amount):
+            try:
+                admitted = await self.ledger.reserve(attempt_id=aid, node_id=node_id, partition_id=partition,
+                                                     amount_usd=amount)
+            except LedgerError as exc:
+                # a duplicate attempt id (an operator re-running a stage as attempt 1 / generation 1) is a proxy
+                # bug, not a refusal: it is answered loudly and NOTHING is charged -- nothing left the process
+                # (review major 15). The caller releases its token grant on this code exactly as on a refusal.
+                raise ProxyError(500, "internal_error", f"ledger rejected the reservation: {exc}",
+                                 detail=f"ledger_error: {exc}") from exc
+            if not admitted:
                 raise ProxyError.of("ledger_refused", f"ledger refused {amount} USD ({self.ledger.last_refusal})",
                                  detail=self.ledger.last_refusal)
             async with self._limiters[shard_id]:
                 await self._rps[shard_id].wait()
-                await self.ledger.mark_sent(aid)
+                try:
+                    await self.ledger.mark_sent(aid)
+                except LedgerError as exc:
+                    raise ProxyError(500, "internal_error", f"ledger rejected mark_sent: {exc}",
+                                     detail=f"ledger_error: {exc}") from exc
                 self.calls_sent += 1
                 try:
                     call = await self.client.raw_completion(

@@ -13,6 +13,7 @@ import pytest
 from agent_allocation.api.fake import FakeReply, FakeScript, Fault, fake_tool_call_text
 from agent_allocation.api.forced import answer_prompt
 from agent_allocation.dynorch.config import PROXY_VERSION, ConfigError, DynorchSettings
+from agent_allocation.dynorch.core import ProxyCore
 from agent_allocation.dynorch.records import (
     FINISH_REASONS_RETURNED, CallRecord, ChatReply, Message, ProxyError, ReplyUsage, ToolCall,
 )
@@ -751,3 +752,47 @@ async def test_a_cancelled_call_charges_its_whole_grant(make_env):
     with pytest.raises(ProxyError) as exc:
         await env.core.chat(spec.run_key, solver_request())
     assert exc.value.code == "budget_exhausted"
+
+
+# ---- open_run and the ledger's own errors (review majors 4/15) ------------------------------------------------
+
+async def test_open_run_refuses_a_cell_that_already_has_a_terminal_record_or_journaled_calls(make_env):
+    """A stage re-executed as attempt 1 / generation 1 used to overwrite the paid record in place and then
+    conflict in the write-once journal AFTER the next call had been paid. The core refuses both shapes."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=200)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    await env.core.chat(spec.run_key, make_request(root_messages()))
+    env.core.close_run(spec.run_key, status="done")
+    fresh = ProxyCore(env.settings, env.upstream, env.journal, env.store)
+    with pytest.raises(ValueError, match="terminal record"):
+        fresh.open_run(spec, root_system_text=ROOT_SYSTEM, subagent_system_text=SUBAGENT_SYSTEM)
+    env.store.path(spec).unlink()                      # record gone, the paid call journal still there
+    with pytest.raises(ValueError, match="journaled call"):
+        fresh.open_run(spec, root_system_text=ROOT_SYSTEM, subagent_system_text=SUBAGENT_SYSTEM)
+
+
+async def test_a_ledger_attempt_id_collision_is_a_500_and_charges_nothing(make_env):
+    """``LedgerError`` (a duplicate attempt id) is decided before the body leaves the process: it must be answered
+    loudly and release the token grant, not be swallowed by the generic BaseException branch that charges the
+    whole grant for a call that was never sent (review major 15)."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=200)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    original = env.ledger.reserve
+
+    async def collide(*, attempt_id: str, **kw):
+        from agent_allocation.runtime.ledger import LedgerError
+        raise LedgerError(f"attempt {attempt_id} is already reserved")
+
+    env.ledger.reserve = collide
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert exc.value.code == "internal_error" and exc.value.status == 500
+    view = env.core.budget_view(spec.run_key)
+    assert view["spent"] == 0 and view["calls"] == 0 and env.think_calls() == []
+    env.ledger.reserve = original
+    reply = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert reply.call.granted_max_tokens == spec.cap_tokens        # the grant was released, not charged
