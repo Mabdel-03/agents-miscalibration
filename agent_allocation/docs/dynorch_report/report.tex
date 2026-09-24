@@ -228,7 +228,24 @@ run and ladder rows share a provider.}
 
 \subsection{Repeat agreement}
 
-Second-repeat cells available: 0 (extension E1; \texttt{tables/repeat\_agreement.csv}).
+Extension E1 re-ran every H1 and H3 core cell once more (1,152 runs,
+\$18.16; \texttt{tables/repeat\_agreement.csv}). The second repeat behaved like the first:
+1 of 1,152 runs spawned a sub-agent and
+12 made more than one call. Per item, the two repeats agree on correctness in
+75.8\% to 83.3\% of items (Cohen's $\kappa$
+0.49 to 0.62). In 11 of
+12 cells the interval for repeat 2 $-$ repeat 1 includes zero
+(Figure~\ref{fig:repeat}); the exception is H3/1 ($-$8.3 points).
+
+\paragraph{The primary result replicates.} Averaging the two repeats at $16A$ gives H1 $-$ deep/16 =
+$-$12.0 points [$-$19.4,
+$-$5.4] and H3 $-$ deep/16 =
+$-$11.5 [$-$18.8,
+$-$5.1] (descriptive, paired item bootstrap). Repeat 2 alone
+scored 0.677 (H1/16) and 0.708 (H3/16). Even
+the harness's own pass@2 at $16A$, correct in either repeat, which spends twice the budget and needs an oracle to
+pick, is 0.771 (H1) and 0.760 (H3), below
+deep/16 at 0.792.
 
 \begin{figure}[htbp]
 \centering

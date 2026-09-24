@@ -284,11 +284,14 @@ def d9_repeat_agreement(N, F, out):
         save(fig, out, "d9_repeat_agreement")
         return
     grid(ax, "both")
+    seen = set()
     for name, e in cells.items():
         arm = c.arm_of(name)
-        ax.errorbar([c.rung_of(name)], [e["delta_pts"]], yerr=[[e["delta_pts"] - e["lo"]], [e["hi"] - e["delta_pts"]]],
-                    capsize=1.5, lw=0.8, ls="", label=f"{c.ARM_LABEL.get(arm, arm)} (kappa {e['kappa']:.2f})",
-                    **arm_style(arm))
+        shift = -0.06 if arm == "H1" else 0.06  # log-x offset so the two harnesses do not overlap
+        ax.errorbar([c.rung_of(name) * (1 + shift)], [e["delta_pts"]],
+                    yerr=[[e["delta_pts"] - e["lo"]], [e["hi"] - e["delta_pts"]]], capsize=1.5, lw=0.8, ls="",
+                    label=None if arm in seen else c.ARM_LABEL.get(arm, arm), **arm_style(arm))
+        seen.add(arm)
     ax.axhline(0, color="#999999", lw=0.6)
     rung_axis(ax)
     ax.set_xlabel("$C/A$")

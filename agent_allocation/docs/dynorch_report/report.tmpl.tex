@@ -228,7 +228,24 @@ run and ladder rows share a provider.}
 
 \subsection{Repeat agreement}
 
-Second-repeat cells available: {{repeat_agreement.n_cells|d}} (extension E1; \texttt{tables/repeat\_agreement.csv}).
+Extension E1 re-ran every H1 and H3 core cell once more ({{repeat_agreement.runs|d}} runs,
+{{repeat_agreement.spend_usd|$}}; \texttt{tables/repeat\_agreement.csv}). The second repeat behaved like the first:
+{{repeat_agreement.spawn_runs|d}} of {{repeat_agreement.runs|d}} runs spawned a sub-agent and
+{{repeat_agreement.multi_call_runs|d}} made more than one call. Per item, the two repeats agree on correctness in
+{{repeat_agreement.agree_min|%}} to {{repeat_agreement.agree_max|%}} of items (Cohen's $\kappa$
+{{repeat_agreement.kappa_min|2}} to {{repeat_agreement.kappa_max|2}}). In {{repeat_agreement.n_delta_ci_covers_zero|d}} of
+{{repeat_agreement.n_cells|d}} cells the interval for repeat 2 $-$ repeat 1 includes zero
+(Figure~\ref{fig:repeat}); the exception is H3/1 ({{repeat_agreement.cells.H3/1.delta_pts|+1}} points).
+
+\paragraph{The primary result replicates.} Averaging the two repeats at $16A$ gives H1 $-$ deep/16 =
+{{repeat_agreement.cells.H1/16.mean2_vs_deep.pts|+1}} points [{{repeat_agreement.cells.H1/16.mean2_vs_deep.lo|+1}},
+{{repeat_agreement.cells.H1/16.mean2_vs_deep.hi|+1}}] and H3 $-$ deep/16 =
+{{repeat_agreement.cells.H3/16.mean2_vs_deep.pts|+1}} [{{repeat_agreement.cells.H3/16.mean2_vs_deep.lo|+1}},
+{{repeat_agreement.cells.H3/16.mean2_vs_deep.hi|+1}}] (descriptive, paired item bootstrap). Repeat 2 alone
+scored {{repeat_agreement.cells.H1/16.acc_r2|3}} (H1/16) and {{repeat_agreement.cells.H3/16.acc_r2|3}} (H3/16). Even
+the harness's own pass@2 at $16A$, correct in either repeat, which spends twice the budget and needs an oracle to
+pick, is {{repeat_agreement.cells.H1/16.pass2|3}} (H1) and {{repeat_agreement.cells.H3/16.pass2|3}} (H3), below
+deep/16 at {{headline.deep16|3}}.
 
 \begin{figure}[htbp]
 \centering

@@ -390,25 +390,52 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
     pd.DataFrame(prov_rows).to_csv(out / "tables" / "provider_sensitivity.csv", index=False)
 
     # ------------------------------------------------------------ repeat agreement (E1)
+    # E1's rows live in their own partition (ext_e1); their names (H1/16/r2) are distinct from the core's, so they
+    # join the core harness rows in one frame and every repeat contrast is one population on the same items.
     N["repeat_agreement"] = {"available": False, "cells": {}}
     rep_rows = []
-    for n in hnames:
-        if c.repeat_of(n) != 2:
-            continue
+    F1 = F
+    from agent_allocation.dynorch.gates import seal_path
+    if seal_path(run / "tables", E1_STAGE).exists():
+        po1 = pd.read_parquet(run / "tables" / "policy_outcomes_dynorch.parquet")
+        po1 = po1[po1["partition_id"].isin([partition, E1_STAGE]) & (po1["view"] == "current")].copy()
+        po1["partition_id"] = partition
+        F1 = c.Frame(ladder, po1, items=items, replicates=replicates, partition=partition)
+    for n in sorted((m for m in F1.names if c.arm_of(m) in c.ARM_LABEL and c.repeat_of(m) == 2),
+                    key=lambda m: (c.arm_of(m), c.rung_of(m))):
         base = f"{c.arm_of(n)}/{c.rung_of(n)}"
-        if not F.has(base):
+        if not F1.has(base):
             continue
-        a1 = F.oc[F.oc["name"] == base].set_index("item_id")["y"]
-        a2 = F.oc[F.oc["name"] == n].set_index("item_id")["y"]
+        a1 = F1.oc[F1.oc["name"] == base].set_index("item_id")["y"]
+        a2 = F1.oc[F1.oc["name"] == n].set_index("item_id")["y"]
         j = pd.concat([a1, a2], axis=1, keys=["r1", "r2"]).dropna()
-        est, lo, hi, _ = F.diff(n, base, "macro")
+        est, lo, hi, _ = F1.diff(n, base, "macro")
+        a_, alo, ahi = F1.acc(n)
         e = {"n": int(len(j)), "agreement": r3((j["r1"] == j["r2"]).mean()) if len(j) else None,
              "kappa": r3(_kappa(j["r1"], j["r2"])) if len(j) else None, "delta_pts": pts(est), "lo": pts(lo),
-             "hi": pts(hi), "pass2": r3(((j["r1"] > 0) | (j["r2"] > 0)).mean()) if len(j) else None}
+             "hi": pts(hi), "pass2": r3(((j["r1"] > 0) | (j["r2"] > 0)).mean()) if len(j) else None,
+             "acc_r1": acc[base]["macro"]["acc"] if base in acc else None, "acc_r2": r3(a_)}
+        deep = f"deep/{c.rung_of(n)}"
+        if F1.has(deep):
+            e["mean2_vs_deep"] = _contrast_row(F1.oc, f"mean({base},{n})-{deep}", [(base, 0.5), (n, 0.5), (deep, -1.0)],
+                                               replicates=replicates, items=items)
         N["repeat_agreement"]["cells"][base] = e
-        rep_rows.append({"cell": base, **e})
+        rep_rows.append({"cell": base, **{k: v for k, v in e.items() if k != "mean2_vs_deep"}})
     N["repeat_agreement"]["available"] = bool(rep_rows)
     N["repeat_agreement"]["n_cells"] = len(rep_rows)
+    if rep_rows:
+        r_all = runs_all[runs_all["partition"] == E1_STAGE]
+        r_cur = r_all.sort_values("attempt").groupby(["arm", "item_id", "rung", "repeat"], as_index=False).tail(1)
+        N["repeat_agreement"]["runs"] = int(len(r_cur))
+        N["repeat_agreement"]["spawn_runs"] = int((r_cur["spawns"] > 0).sum())
+        N["repeat_agreement"]["multi_call_runs"] = int((r_cur["calls"] > 1).sum())
+        N["repeat_agreement"]["spend_usd"] = round(float(pd.to_numeric(r_all["cost_usd"], errors="coerce").sum()), 2)
+        ks = [e["kappa"] for e in N["repeat_agreement"]["cells"].values() if e["kappa"] is not None]
+        ag = [e["agreement"] for e in N["repeat_agreement"]["cells"].values() if e["agreement"] is not None]
+        N["repeat_agreement"]["kappa_min"], N["repeat_agreement"]["kappa_max"] = min(ks), max(ks)
+        N["repeat_agreement"]["agree_min"], N["repeat_agreement"]["agree_max"] = min(ag), max(ag)
+        N["repeat_agreement"]["n_delta_ci_covers_zero"] = sum(1 for e in N["repeat_agreement"]["cells"].values()
+                                                             if e["lo"] <= 0 <= e["hi"])
     pd.DataFrame(rep_rows).to_csv(out / "tables" / "repeat_agreement.csv", index=False)
 
     # ------------------------------------------------------------ re-fit (Gate 2 style, from the measured runs)
@@ -469,7 +496,7 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
         fg.d6_diagnostics(N, arms, base_names, out)
         fg.d7_cap_binding(current, arms, out)
         fg.d8_provider_sensitivity(N, out)
-        fg.d9_repeat_agreement(N, F, out)
+        fg.d9_repeat_agreement(N, F1, out)
     return N
 
 
@@ -575,6 +602,7 @@ def behaviour_numbers(runs_all: pd.DataFrame, current: pd.DataFrame, calls_cur: 
 
 
 E0_STAGE = "ext_e0"
+E1_STAGE = "ext_e1"
 
 
 def e0_numbers(ladder: Path, run: Path, items, runs_all: pd.DataFrame, calls_all: pd.DataFrame, *, replicates: int,
