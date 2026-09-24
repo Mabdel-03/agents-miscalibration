@@ -478,3 +478,19 @@ same messages with `tools=()` and its text is returned as content with `finish_r
 `ceiling_close` (E0) is not a final answer — the harness continues — so it keeps its tools and may delegate. The two
 Gate 0 smoke cases `*/forced_close_then_402` pinned the old behaviour (they asserted a spawn emitted in the
 continuation) and are rewritten to the rule; the canary's ten cells were run under the defect and are re-executed.
+
+## 12. Second fix pass (2026-09-24; re-review of `afe3093..1791e63`, findings 2-13 in `rereview_findings.md`)
+
+Answered line by line in `docs/dynorch/REVIEW_LOG.md` (second table). The items below change an interface or a rule.
+
+**10.29 Reconciliation compares native tokens and waits for `/key` to settle (finding 7; needed before the pilot).**
+(a) The proxy journals the provider's own `usage.completion_tokens`; `/generation` calls that
+`native_tokens_completion`, while its `tokens_completion` is OpenRouter's normalised re-count and is not comparable
+(canary: 4,323 native vs 2,388 normalised on one call at an identical cost). `reconcile.compare_call` sums
+`native_tokens_completion` over the call's generation ids; a metadata document without it gives `tokens_match = None`
+and a named problem, never a comparison on the normalised field. (b) `/key` usage lags the settle by tens of seconds
+(canary: $0.1139 read the second the stage ended; exactly $0.253105 = the ledger within ~45 s). The after-snapshot is
+taken by `reconcile.settled_after_snapshot`: one read; if the key delta matches the ledger delta within the stage
+tolerance it is used, otherwise `/key` is re-read every 30 s until two consecutive reads agree (the key has settled)
+or 300 s of waiting have passed. The report carries `key_settle = {polls, waited_s, matched, settled, ...}`; a
+mismatch on an unsettled key says so in `problems`. Tolerances ($0.02 canary/pilot; $0.50 or 2 % later) are unchanged.

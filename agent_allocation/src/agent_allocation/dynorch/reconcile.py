@@ -33,6 +33,13 @@ COST_TOLERANCE_USD = Decimal("0.01")
 COST_TOLERANCE_SHARE = Decimal("0.05")
 ZERO = Decimal("0")
 CLEAN, MISMATCH, STOP_NOTIFY = "clean", "mismatch", "stop_notify"
+#: ``/generation``'s field for the provider-reported completion tokens (what the proxy journals and counts in C).
+METADATA_TOKEN_FIELD = "native_tokens_completion"
+#: ``/key`` usage lags the provider's settle by tens of seconds (canary 2026-09-24: the key caught up to the ledger's
+#: $0.253105 exactly within ~45 s of a read that showed $0.1139). A dollar mismatch is declared only after the key
+#: has SETTLED: two reads at least ``KEY_SETTLE_INTERVAL_S`` apart agree, bounded by ``KEY_SETTLE_MAX_S`` (contract §10.29).
+KEY_SETTLE_INTERVAL_S = 30.0
+KEY_SETTLE_MAX_S = 300.0
 
 
 class ReconcileError(RuntimeError):
@@ -276,15 +283,25 @@ def compare_call(call: CallGenerations, metadata: Mapping[str, Mapping[str, Any]
     fetched = all(d is not None for d in docs)
     tokens = cost = None
     providers: set[str] = set()
+    native_missing = False
     if fetched:
         tokens = 0
         cost = ZERO
         for doc in docs:
             assert doc is not None
-            tokens += int(doc.get("tokens_completion") or 0)
+            # the proxy journals the PROVIDER's own usage.completion_tokens, which is what /generation calls
+            # ``native_tokens_completion``; ``tokens_completion`` is OpenRouter's re-tokenised (normalised) count and
+            # is not comparable (canary 2026-09-24: 4,323 native vs 2,388 normalised on one call, identical cost)
+            native = doc.get(METADATA_TOKEN_FIELD)
+            if native is None:
+                native_missing = True
+            else:
+                tokens += int(native)
             cost += _dec(doc.get("total_cost", 0), "total_cost")
             if doc.get("provider_name") is not None:
                 providers.add(str(doc["provider_name"]))
+        if native_missing:
+            tokens = None
     provider_ok: bool | None
     if not fetched or call.expected_provider is None:
         provider_ok = None
@@ -294,7 +311,9 @@ def compare_call(call: CallGenerations, metadata: Mapping[str, Mapping[str, Any]
         "run_key": call.run_key, "call_no": call.call_no, "generation_ids": list(call.generation_ids),
         "fetched": fetched,
         "journaled_completion_tokens": call.completion_tokens, "metadata_completion_tokens": tokens,
-        "tokens_match": None if not fetched or call.completion_tokens is None else tokens == call.completion_tokens,
+        "metadata_token_field": METADATA_TOKEN_FIELD, "native_tokens_missing": native_missing,
+        "tokens_match": (None if not fetched or call.completion_tokens is None or tokens is None
+                         else tokens == call.completion_tokens),
         "journaled_cost_usd": None if call.cost_usd is None else str(call.cost_usd),
         "metadata_cost_usd": None if cost is None else str(cost),
         "cost_within_tolerance": cost_within(call.cost_usd, cost),
@@ -356,6 +375,8 @@ def build_report(*, stage: str, before: Mapping[str, Any], after: AccountSnapsho
     for row in sample_rows:
         if not row["fetched"]:
             problems.append(f"{row['run_key']}#{row['call_no']}: /generation missing for {row['generation_ids']}")
+        if row.get("native_tokens_missing"):
+            problems.append(f"{row['run_key']}#{row['call_no']}: /generation lacks {METADATA_TOKEN_FIELD}")
         if row["tokens_match"] is False:
             problems.append(f"{row['run_key']}#{row['call_no']}: tokens {row['journaled_completion_tokens']} != {row['metadata_completion_tokens']}")
         if row["cost_within_tolerance"] is False:
@@ -403,12 +424,52 @@ def upstream_402_seen(runs: Any) -> bool:
     return bool((errors.str.contains("payment_required") | errors.str.contains("402")).any())
 
 
+async def settled_after_snapshot(client: Any, *, before_usage: Decimal, ledger_delta: Decimal, tolerance: Decimal,
+                                 interval_s: float = KEY_SETTLE_INTERVAL_S, max_wait_s: float = KEY_SETTLE_MAX_S,
+                                 sleep: Any = asyncio.sleep) -> tuple[AccountSnapshot, dict[str, Any]]:
+    """The after-snapshot a dollar verdict may rest on (contract §10.29).
+
+    One read; if the key delta already matches the ledger delta within ``tolerance`` it is used. Otherwise ``/key``
+    is re-read every ``interval_s`` until two consecutive reads (hence at least ``interval_s`` apart) report the
+    same usage -- the key has settled -- or ``max_wait_s`` of waiting has passed; the last read is returned. A read
+    that becomes a match ends the wait at once. ``detail`` records every read (``polls``), ``settled`` and the wait,
+    so the report shows why a mismatch was (or was not) declared. A 402 on the account endpoints ends the wait."""
+    polls: list[dict[str, Any]] = []
+    waited = 0.0
+
+    def matches(snap: AccountSnapshot) -> bool:
+        return abs((snap.key_usage_usd - before_usage) - ledger_delta) <= tolerance
+
+    snap = await snapshot_account(client)
+    polls.append({"recorded_at": snap.recorded_at, "key_usage_usd": str(snap.key_usage_usd), "waited_s": waited})
+    settled = False
+    while not matches(snap) and not snap.payment_required and waited + interval_s <= max_wait_s + 1e-9:
+        await sleep(interval_s)
+        waited += interval_s
+        previous = snap
+        snap = await snapshot_account(client)
+        polls.append({"recorded_at": snap.recorded_at, "key_usage_usd": str(snap.key_usage_usd), "waited_s": waited})
+        if snap.key_usage_usd == previous.key_usage_usd:
+            settled = True
+            break
+    detail = {"polls": polls, "waited_s": waited, "matched": matches(snap), "settled": settled or matches(snap),
+              "interval_s": interval_s, "max_wait_s": max_wait_s}
+    return snap, detail
+
+
 async def reconcile_after(cfg: Mapping[str, Any], paths: RunPaths, stage: str, *, client: Any,
                           population: Sequence[CallGenerations], population_source: str, upstream_402: bool,
-                          key_tolerance_usd: Decimal, seed: int | None = None) -> dict[str, Any]:
-    """After-snapshot + generation sample + report, written to ``state/reconciliation_<stage>.json``."""
+                          key_tolerance_usd: Decimal, seed: int | None = None,
+                          key_settle_interval_s: float = KEY_SETTLE_INTERVAL_S,
+                          key_settle_max_s: float = KEY_SETTLE_MAX_S, sleep: Any = asyncio.sleep) -> dict[str, Any]:
+    """Settled after-snapshot (``settled_after_snapshot``) + generation sample + report, written to
+    ``state/reconciliation_<stage>.json``."""
     before = read_before(paths, stage)
-    after = await snapshot_account(client)
+    ledger_now = ledger_totals(paths)
+    ledger_delta = ledger_charged(ledger_now) - Decimal(before["ledger_charged_usd"])
+    after, key_detail = await settled_after_snapshot(
+        client, before_usage=AccountSnapshot.from_json(before["account"]).key_usage_usd, ledger_delta=ledger_delta,
+        tolerance=key_tolerance_usd, interval_s=key_settle_interval_s, max_wait_s=key_settle_max_s, sleep=sleep)
     seed = int(cfg.get("seed", 0)) if seed is None else seed
     sample = sample_calls(population, seed=seed)
     metadata = await fetch_generations(client, (g for c in sample for g in c.generation_ids))
@@ -416,6 +477,10 @@ async def reconcile_after(cfg: Mapping[str, Any], paths: RunPaths, stage: str, *
     report = build_report(stage=stage, before=before, after=after, ledger_after=ledger_totals(paths), sample_rows=rows,
                           population=len(population), seed=seed, population_source=population_source,
                           upstream_402=upstream_402, key_tolerance_usd=key_tolerance_usd)
+    report["key_settle"] = key_detail
+    if not key_detail["settled"] and report["decision"] == MISMATCH:
+        report["problems"].append(f"/key did not settle within {key_settle_max_s:.0f} s "
+                                  f"({len(key_detail['polls'])} reads); the dollar verdict rests on the last read")
     paths.state_dir.mkdir(parents=True, exist_ok=True)
     _write(report_path(paths, stage), report)
     return report

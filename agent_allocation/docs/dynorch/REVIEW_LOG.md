@@ -52,3 +52,12 @@ the package path.)
 * **Infrastructure stops and the rerun cap.** See issue 12 above: an upstream 402/401 never consumes a rerun.
 * **Nothing was rejected outright.** The only rejected sub-proposal is issue 17's `mid_call_unfunded` (plan wins).
 | blocker | dynorch/core.py (B3 grace) | fixed | (this commit) | canary 2026-09-24: grace continuation offered tools; 3/8 harness answers lost; plan B3 "no tool schemas" enforced; E0 ceiling_close keeps tools |
+
+## Second fix pass (2026-09-24; `rereview_findings.md`, findings 2-13; blocker 1 was fixed by the lead in `b5043a2`)
+
+Same rules: one line per finding, a regression test that fails before the fix, interface changes in contract §12
+(§10.29 onward); where a suggested fix conflicted with the plan, the plan won and the line says so.
+
+| # | severity | file | verdict | commit | note |
+|---|---|---|---|---|---|
+| 1-smoke | blocker follow-up | `tests/integration/test_dynorch_{openclaude,codex}_smoke.py` | fixed | `c3a7898` | `*/forced_close_then_402` pinned the pre-§10.28 defect; split into `forced_close_text` (grace XML reaches the CLI as text, nothing spawned, 402 probe) and `subagent_402_then_terminal` (natural spawn leaves < 64, sub-agent 402, root TERMINAL); every Gate 0 criterion kept. |
