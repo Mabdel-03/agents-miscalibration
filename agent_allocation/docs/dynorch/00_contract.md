@@ -506,3 +506,12 @@ parks its call at once (streaming and non-streaming); the call is still finished
 counts as delivered only if `client_gone` was clear before the write and still clear one loop turn after the drain
 (the first write after a FIN succeeds, so a successful write alone is not proof); otherwise it is undelivered (B9
 cache, never B7's delivered answer). A client that half-closes its side while waiting is treated as gone.
+
+**10.31 An account refusal decides a run only while it is the run's last upstream outcome (finding 3).**
+`ProxyCore.budget_view()` carries `infrastructure_stop` (0/1): set when an upstream 402/401 (`UpstreamFailed.
+infrastructure_stop`) ends a call, cleared by any later served reply (fresh or duplicate). The runner makes a run
+`transport_failed` / `rerun_reason = "infrastructure_stop"` only when the flag is still set at close; a run that
+recovered (a later reply, e.g. the root's answer after a sub-agent's 402) keeps the status the frozen rerun rule
+gives it and its delivered answer, while `record.error` keeps the `infrastructure_stop: ...` text and the stage still
+drains (Gate 3 stop rule; the reconciliation reports the 402). `_rerun_pending` / `_attempts_left` read only
+`rerun_reason`, never the error text.

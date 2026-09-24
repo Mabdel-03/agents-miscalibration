@@ -258,8 +258,12 @@ class ProxyCore:
         """§3: cap / spent / remaining / calls (+ grace and prompt totals) for diagnostics; ``exhausted`` (0/1) is
         set once the run's grace was used -- after it every call is refused (B4), whatever ``remaining`` says
         (WP-B R-B3: the runner's exhaustion watchdog honours it)."""
-        budget = self._state(run_key, allow_closed=True).budget
-        return {**budget.view(), "exhausted": int(budget.grace_used)}   # + in_flight / idle_seconds (B4)
+        state = self._state(run_key, allow_closed=True)
+        budget = state.budget
+        # + in_flight / idle_seconds (B4); infrastructure_stop (0/1): the run's LAST upstream outcome was an account
+        # refusal (upstream 402/401) -- cleared by any later served reply (re-review finding 3, contract §10.31)
+        return {**budget.view(), "exhausted": int(budget.grace_used),
+                "infrastructure_stop": int(state.infrastructure_stop)}
 
     def _state(self, run_key: str, *, allow_closed: bool = False) -> _RunState:
         state = self._runs.get(run_key)
@@ -448,6 +452,7 @@ class ProxyCore:
                        latency_seconds=0.0, transport_status="cache", stream=request.stream, wire=request.wire,
                        cache_status=None, duplicate_served=True, ignored_body_keys=tuple(request.ignored_keys))
         state.record.duplicates_served += 1
+        state.infrastructure_stop = False                 # a reply went back: the run recovered
         state.budget.note_reply()
         state.record.calls_detail.append(call)
         self._refresh(state)
@@ -756,6 +761,7 @@ class ProxyCore:
     def _account(self, state: _RunState, record: CallRecord, parse: ToolParse, spawn_calls: int, cost: Decimal,
                  kind: str) -> None:
         run = state.record
+        state.infrastructure_stop = False                 # a later served reply: the account refusal was recovered
         run.calls += 1
         run.calls_by_class[record.conversation_class] = run.calls_by_class.get(record.conversation_class, 0) + 1
         run.spawns += spawn_calls

@@ -386,6 +386,32 @@ async def test_a_failed_sub_agent_call_does_not_discard_the_delivered_answer(tmp
 
 
 @pytest.mark.timeout(600)
+async def test_a_recovered_upstream_402_keeps_the_delivered_answer(tmp_path: Path, base: BaseInputs):
+    """Re-review finding 3: a sub-agent call refused by the account (upstream 402) set the run's error to
+    ``infrastructure_stop: ...`` and nothing cleared it, so a run whose root then DELIVERED an answer was rewritten
+    to transport_failed and re-executed -- the review's own rule (only the last event decides) was violated. The
+    stage still drains (the account refused once: Gate 3's stop rule), but a run that recovered keeps its answer."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                extra_args=("--tolerate-tool-errors",))
+        specs = h.specs(base, arms=("HF",), rungs=(16,), items=_items(base)[:1])
+        script.by_node[specs[0].run_key] = [SPAWN_REPLY,                                   # root: delegate
+                                            FakeReply(fault=Fault.PAYMENT_REQUIRED),       # solver: account 402
+                                            FakeReply(content="<final>43</final>", think_tokens=150)]  # root answers
+        summary = await h.runner.run_specs("main", specs)
+    record = next(iter(h.store.scan().values()))
+    assert [c.conversation_class for c in record.calls_detail] == ["root", "solver", "root"]
+    assert record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1
+    assert record.final_message == "<final>43</final>" and record.parse_status == "valid"
+    assert str(record.error).startswith("infrastructure_stop:")        # recorded: the account did refuse
+    assert summary.drained is True                                      # ... so the stage stops admitting
+    assert summary_dict(summary, h.stack.ledger)["upstream_402"] is True
+
+
+@pytest.mark.timeout(600)
 async def test_an_upstream_402_drains_the_stage_and_resumes_without_consuming_reruns(tmp_path: Path,
                                                                                      base: BaseInputs):
     """Plan B6 / Gate 3 (review major 11): an upstream 402 is an infrastructure stop. The stage must drain instead

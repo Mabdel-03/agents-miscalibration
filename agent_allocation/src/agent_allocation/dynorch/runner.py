@@ -319,14 +319,14 @@ class Runner:
     def _rerun_pending(self, record: RunRecord) -> bool:
         if record.status == "done":
             return False
-        if str(record.error or "").startswith(f"{INFRASTRUCTURE_STOP}:") or record.rerun_reason == INFRASTRUCTURE_STOP:
+        if record.rerun_reason == INFRASTRUCTURE_STOP:
             return True                         # the account refused: no model ran, no rerun consumed
         return record.rerun_reason in RERUN_REASONS and record.spec.attempt <= self.settings.max_reruns
 
     def _attempts_left(self, record: RunRecord) -> bool:
         """The frozen table's ``<= 2 reruns`` also bounds INTERRUPTED records (review minor 17): a cell killed by
         crash / scancel / drain-timeout over and over must not accumulate paid attempts a4, a5, ..."""
-        if str(record.error or "").startswith(f"{INFRASTRUCTURE_STOP}:") or record.rerun_reason == INFRASTRUCTURE_STOP:
+        if record.rerun_reason == INFRASTRUCTURE_STOP:
             return True
         return record.spec.attempt <= self.settings.max_reruns
 
@@ -437,11 +437,19 @@ class Runner:
         wall_seconds = time.monotonic() - started
         await self._await_settled(spec)
         status, rerun_reason, error = self._status_of(spec, timed_out=timed_out, killed_by_drain=killed_by_drain)
+        # re-review finding 3: the account refusal decides the run only if it is still the run's LAST upstream
+        # outcome (the core clears the flag on any later served reply); a refusal the harness recovered from --
+        # the root delivered an answer afterwards -- still drains the stage, but never discards that answer
+        try:
+            still_stopped = bool(int(self.core.budget_view(spec.run_key).get(INFRASTRUCTURE_STOP, 0)))
+        except Exception:  # noqa: BLE001 - an older core without the flag: fall back to the record's error below
+            still_stopped = None
         record: RunRecord = self.core.close_run(spec.run_key, status=status)
         if not isinstance(record, RunRecord):
             raise TypeError(f"core.close_run returned {type(record).__name__}, expected RunRecord")
         core_error = str(record.error or "")
-        infrastructure_stop = core_error.startswith(f"{INFRASTRUCTURE_STOP}:")
+        infrastructure_seen = core_error.startswith(f"{INFRASTRUCTURE_STOP}:")
+        infrastructure_stop = infrastructure_seen if still_stopped is None else (still_stopped and infrastructure_seen)
         record.status = status
         record.rerun_reason = rerun_reason
         if error:
@@ -462,6 +470,11 @@ class Runner:
             log.error("dynorch runner: %s hit an infrastructure stop (%s); draining the stage", spec.run_key,
                       core_error)
             self.request_drain()
+        elif infrastructure_seen:
+            record.error = core_error                 # recorded (reconciliation reports the 402) ...
+            log.error("dynorch runner: %s recovered from an account refusal (%s); its outcome stands, the stage "
+                      "drains", spec.run_key, core_error)
+            self.request_drain()                      # ... and the stage stops admitting (Gate 3 stop rule)
         served_message, served_source = self.reply_log.delivered(spec.run_key)
         if record.final_message is None:            # the core may fill it at close_run (WP-A R-A6); the log is the check
             record.final_message, record.final_source = served_message, served_source
