@@ -161,3 +161,35 @@ $ .venv/bin/allocation dynorch-gates --config configs/dynorch_v1.json --run-dir 
 - The contract (`00_contract.md`) is lead-only: the proposed §10.19-10.21 texts are in `docs/dynorch/requests/wpE.md`.
 - The RUNBOOK's Gate 0 block (WP-D) still lists only `test_dynorch_real_cli_smoke.py`; the commands in §3 above are
   the complete set (requests/wpE.md item 19).
+
+## 7. Re-run after the adversarial-review fix pass (2026-09-24, $0)
+
+The review fix pass (`docs/dynorch/REVIEW_LOG.md`; 3 blockers, 14 majors, 9 minors) changed the wire layer
+(`httpd`: delivery accounting, parked-call drain), the core (B9 cache, B3 cap-bound rule, B4 clock), the runner
+(drain, rerun rules, store consultation) and the Codex adapter (outer timeout), so **every Gate 0 smoke case was
+re-run through the real CLIs**, the slow stall cases included:
+
+```
+DYNORCH_GATE0_SMOKE_OUT=$RUN/gates/gate0_smoke.json pytest tests/integration/test_dynorch_openclaude_smoke.py \
+    tests/integration/test_dynorch_codex_smoke.py -m "not slow" -q     -> 12 passed (2 min 20)
+pytest tests/integration/test_dynorch_real_cli_smoke.py -m slow -q     -> 2 passed (11 s, canary rehearsal)
+pytest tests/integration/test_dynorch_openclaude_smoke.py tests/integration/test_dynorch_codex_smoke.py -m slow -q
+                                                                        -> 4 passed (33 min 56; the 330 s / 660 s stalls)
+$ .venv/bin/allocation dynorch-gates --config configs/dynorch_v1.json --run-dir $RUN --gate 0
+{"decision": "advance", ... }   doctor_preconditions / unit_suite_green (394 passed) / real_cli_smoke all pass
+```
+
+All **18 cases** are recorded fresh in `gates/gate0_smoke.json` (`{"passed": true, "failures": []}`), and
+`gates/gate0_offline.json` says `advance`. **Gate 0 still passes; no criterion was dropped.** Two case criteria
+were made more precise by the fix pass, both recorded in the case's checks:
+
+* `codex/timeout` — the outer `timeout` wrapper now sits behind the runner's wall (review major 6), so the case
+  pins `argv[:3] == ["timeout", "--kill-after=5s", "17s"]` (adapter wall 12 s + sigkill 5 s + margin 0 in the
+  test), that the wall kill is recorded as `status == "timeout"` (it used to be `done`, which made Gate 2's
+  `timeout_share` and the Gate 3 stop rule blind for H3), and that the HARNESS lifetime (`record.wall_seconds`,
+  17.0 s) — not the whole attempt — is what the wrapper bounds. The attempt now also waits for the upstream call
+  the killed harness abandoned to settle (review major 5/14), which the case's 40 s scripted reply makes visible
+  (`seconds: 40.5`), still far inside the runner's 90 s wall.
+* `codex/missing_completed` — unchanged expectations (`calls == 1`, `duplicates_served == 2`), now reached through
+  the retry-only duplicate cache: the dropped stream marks the reply undelivered and Codex's identical retries are
+  served from it (contract §10.23).
