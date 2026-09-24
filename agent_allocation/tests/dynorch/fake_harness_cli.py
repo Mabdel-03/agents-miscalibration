@@ -17,7 +17,11 @@ Protocol (chat completions over ``OPENAI_BASE_URL`` with ``Authorization: Bearer
 4. stdout gets one OpenClaude-shaped line ``{"type":"result","subtype":"success","result":<last content>,
    "num_turns":N,"usage":{...}}``; an HTTP error (402 after exhaustion, 400, 5xx) or an in-stream error frame ends
    the run with ``subtype: "error_during_execution"``, ``is_error: true`` and exit code 1 -- and no retry, like
-   OpenClaude on a 402.
+   OpenClaude on a 402;
+5. ``--retry-5xx N`` re-sends a request answered with a 5xx (HTTP status or in-stream error frame) up to N times,
+   the way OpenClaude's ``withRetry`` does with ``CLAUDE_CODE_MAX_RETRIES=1`` and Codex with
+   ``request_max_retries`` (contract §10.38: that retry is what used to reach the B4 TERMINAL call after an
+   upstream failure had settled the run's whole grant).
 """
 from __future__ import annotations
 
@@ -59,11 +63,26 @@ class Client:
         self.usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
         self.requests = 0
         self.keepalives = 0
+        self.retry_5xx = 0
+        self.retries = 0
+
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, stream: bool) -> dict[str, Any]:
+        attempt = 0
+        while True:
+            try:
+                return self._chat_once(messages, tools, stream=stream)
+            except HarnessError as exc:
+                if exc.status >= 500 and attempt < self.retry_5xx:
+                    attempt += 1
+                    self.retries += 1
+                    continue
+                raise
 
     def _conn(self) -> http.client.HTTPConnection:
         return http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, stream: bool) -> dict[str, Any]:
+    def _chat_once(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, stream: bool
+                   ) -> dict[str, Any]:
         body = {"model": self.model, "messages": messages, "stream": stream, "max_tokens": 32000, "temperature": 1.0}
         if tools:
             body["tools"] = tools
@@ -152,6 +171,7 @@ def run(args: argparse.Namespace) -> int:
     task_text = sys.stdin.read()
     tools = [SPAWN_TOOL] if "spawn_subagent" in [t for t in args.tools.split(",") if t] else []
     client = Client(base_url, key, args.model, timeout=args.timeout)
+    client.retry_5xx = max(0, int(args.retry_5xx))
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_text}, {"role": "user", "content": task_text}]
     turns, spawns, last_content = 0, 0, ""
     started = time.time()
@@ -192,11 +212,12 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
                           "result": f"API error {exc.status}: {json.dumps(exc.payload)[:500]}", "num_turns": turns,
                           "spawns": spawns, "usage": client.usage_total, "requests": client.requests,
-                          "keepalives": client.keepalives,
+                          "keepalives": client.keepalives, "retries": client.retries,
                           "duration_ms": int((time.time() - started) * 1000)}), flush=True)
         return 1
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": last_content,
                       "num_turns": turns, "spawns": spawns, "usage": client.usage_total, "requests": client.requests,
+                      "retries": client.retries,
                       "keepalives": client.keepalives, "duration_ms": int((time.time() - started) * 1000)}), flush=True)
     return 0
 
@@ -212,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-stream", action="store_true", help="use non-streaming requests")
     parser.add_argument("--tolerate-tool-errors", action="store_true",
                         help="a failed sub-agent call becomes a tool error message instead of ending the run")
+    parser.add_argument("--retry-5xx", type=int, default=0,
+                        help="re-send a request answered with a 5xx up to N times (OpenClaude/Codex retry)")
     return run(parser.parse_args(argv))
 
 

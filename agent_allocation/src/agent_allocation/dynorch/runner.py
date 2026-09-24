@@ -22,6 +22,10 @@ processes. Per run (one attempt):
    served; at most ``max_reruns`` reruns (attempt numbering ``a1, a2, a3``; a rerun gets a new ``run_key`` and
    ``rerun_reason`` on the superseded attempt); every attempt is journaled (``<run_root>/state/dynorch_attempts.jsonl``)
    and paid; all-infra -> the final record stays an infra failure and ``grade.finalize_run`` leaves y NaN;
+   contract §10.38: a run the core LATCHED after an upstream failure (``core.upstream_latch``) is
+   ``transport_failed`` / ``upstream_latched`` whatever the harness did afterwards, and is re-executed without
+   consuming a model rerun (bounded by ``max_infra_reruns``); so is a record ``dynorch-invalidate`` moved aside
+   (``infra_invalidated``), whose cell continues from its highest superseded attempt;
 5. ``core.close_run``; the delivered answer from the proxy's reply log (plan §2 B7); ``cli_result`` cross-check;
    ``grade.finalize_run``; ``store.save`` (``replace_atomic``).
 
@@ -66,7 +70,7 @@ from agent_allocation.prompts.render import output_requirement
 from agent_allocation.storage._atomic import replace_atomic
 
 __all__ = [
-    "RERUN_REASONS", "Runner", "RunnerSettings", "Stack", "StageSummary", "TERMINAL_STATUSES", "apply_provider_map",
+    "INFRA_RERUN_REASONS", "RERUN_REASONS", "Runner", "RunnerSettings", "Stack", "StageSummary", "TERMINAL_STATUSES", "apply_provider_map",
     "build_stack", "install_drain_handler", "launch_stage", "render_task_text", "scrubbed_env", "specs_for_cells",
     "summary_dict", "wall_timeout_seconds",
 ]
@@ -75,7 +79,8 @@ log = logging.getLogger("agent_allocation.dynorch.runner")
 
 TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "timeout", "transport_failed", "refused_before_start"})
 RERUN_REASONS: tuple[str, ...] = ("zero_proxy_calls_served", "last_reply_transport_or_ledger_error", "killed_by_drain",
-                                  "interrupted", "infrastructure_stop", "ledger_stop")
+                                  "interrupted", "infrastructure_stop", "ledger_stop", "upstream_latched",
+                                  "infra_invalidated")
 #: An upstream 402/401 (key limit, account) is an infrastructure stop (plan B6 / Gate 3): the account refused, no
 #: model ran, nothing was paid. It drains the stage and NEVER counts against the frozen ``<= 2 reruns`` (which
 #: bounds reruns of runs the model actually served); the cell is re-executed by the next ``--resume``.
@@ -85,6 +90,18 @@ INFRASTRUCTURE_STOP = "infrastructure_stop"
 #: cell stays rerun-eligible on --resume without counting against the frozen ``<= 2 reruns`` (re-review finding 4).
 LEDGER_STOP = "ledger_stop"
 STOP_REASONS: frozenset[str] = frozenset({INFRASTRUCTURE_STOP, LEDGER_STOP})
+#: Contract §10.38: an upstream call of the run failed (``UpstreamFailed``: ambiguous outcome, error envelope, 5xx
+#: after the upstream retries, ``forced_think_short``) and the core latched the run -- every later call was refused
+#: before any grant. The attempt is an infrastructure failure: ``transport_failed``, re-executed in-job as the next
+#: attempt (fresh run_key, fresh budget, fresh ledger ids) WITHOUT consuming one of the frozen ``<= 2`` model reruns.
+UPSTREAM_LATCHED = "upstream_latched"
+#: Contract §10.38: a record completed under the pre-latch defect and invalidated afterwards by
+#: ``dynorch-invalidate`` (``dynorch.invalidate``); re-executed by the next ``--resume`` like an upstream latch.
+INFRA_INVALIDATED = "infra_invalidated"
+INFRA_RERUN_REASONS: frozenset[str] = frozenset({UPSTREAM_LATCHED, INFRA_INVALIDATED})
+#: Infrastructure reruns do not count against the frozen ``<= 2 reruns``; this separate bound keeps a provider that
+#: fails every call from re-executing one cell forever (the cell then stays ``transport_failed``, y = NaN).
+MAX_INFRA_RERUNS = 3
 TRANSPORT_ERROR_CODES: frozenset[str] = frozenset({"upstream_failed", "ledger_refused", "internal_error"})
 #: GNU ``timeout``'s own exit codes: 124 = the deadline fired, 137 = the child was SIGKILLed by ``--kill-after``.
 TIMEOUT_EXIT_CODES: frozenset[int] = frozenset({124, 137})
@@ -135,6 +152,9 @@ class RunnerSettings:
     poll_seconds: float = 2.0
     #: how long ``_attempt`` waits, after its harness is gone, for a call the proxy is still serving for it
     settle_wait_seconds: float = 300.0
+    #: contract §10.38: the bound on a cell's infrastructure reruns (upstream latch / invalidation), separate from
+    #: the frozen ``max_reruns`` which counts model attempts only
+    max_infra_reruns: int = MAX_INFRA_RERUNS
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any], *, run_root: str | Path, project_root: str | Path = PROJECT_ROOT,
@@ -352,13 +372,33 @@ class Runner:
         return summary
 
     def _existing_by_cell(self) -> dict[tuple[str, str, str, int, int], RunRecord]:
-        return {_cell_key(record.spec): record for record in self.store.scan().values()}
+        """The current record of every cell: its ``runs/`` file, else -- a cell whose last attempt was moved to
+        ``runs_superseded/`` by ``dynorch-invalidate`` (contract §10.38) -- its highest superseded attempt, so the
+        re-execution continues the attempt numbering (a new run_key) instead of colliding with attempt 1's journal
+        and ledger ids."""
+        current = {_cell_key(record.spec): record for record in self.store.scan().values()}
+        try:
+            everything = self.store.scan(include_superseded=True)
+        except TypeError:                     # a store without superseded records (test doubles)
+            return current
+        orphans: dict[tuple[str, str, str, int, int], RunRecord] = {}
+        for record in everything.values():
+            key = _cell_key(record.spec)
+            if key in current:
+                continue
+            held = orphans.get(key)
+            if held is None or int(record.spec.attempt) > int(held.spec.attempt):
+                orphans[key] = record
+        current.update(orphans)
+        return current
 
     def _rerun_pending(self, record: RunRecord) -> bool:
         if record.status == "done":
             return False
         if record.rerun_reason in STOP_REASONS:
             return True                         # the account / the ledger refused: no model ran, no rerun consumed
+        if record.rerun_reason in INFRA_RERUN_REASONS:
+            return self._infra_reruns_left(record.spec)
         return record.rerun_reason in RERUN_REASONS and self._reruns_used(record.spec) < self.settings.max_reruns
 
     def _attempts_left(self, record: RunRecord) -> bool:
@@ -366,31 +406,44 @@ class Runner:
         crash / scancel / drain-timeout over and over must not accumulate paid attempts a4, a5, ..."""
         if record.rerun_reason in STOP_REASONS:
             return True
+        if record.rerun_reason in INFRA_RERUN_REASONS:
+            return self._infra_reruns_left(record.spec)
         return self._reruns_used(record.spec) < self.settings.max_reruns
 
     def _reruns_used(self, spec: RunSpec) -> int:
         """Reruns this cell has consumed before ``spec``'s attempt: every earlier attempt except those that ended in
         an infrastructure / ledger stop (no model ran for the harness; plan B6, contract §10.32 -- the attempt
-        NUMBER still advances so run keys never repeat, but the frozen ``<= 2 reruns`` counts model attempts)."""
-        return max(0, int(spec.attempt) - 1 - self._stop_attempts(spec))
+        NUMBER still advances so run keys never repeat, but the frozen ``<= 2 reruns`` counts model attempts) or in
+        an upstream failure (``upstream_latched`` / ``infra_invalidated``, contract §10.38)."""
+        return max(0, int(spec.attempt) - 1 - self._earlier_attempts(spec, STOP_REASONS | INFRA_RERUN_REASONS))
+
+    def _infra_reruns_left(self, spec: RunSpec) -> bool:
+        """Contract §10.38: re-executing ``spec``'s infrastructure-failed attempt is allowed while the cell's earlier
+        infrastructure reruns stay under ``max_infra_reruns``."""
+        return self._earlier_attempts(spec, INFRA_RERUN_REASONS) < int(self.settings.max_infra_reruns)
 
     def _stop_attempts(self, spec: RunSpec) -> int:
+        return self._earlier_attempts(spec, STOP_REASONS)
+
+    def _earlier_attempts(self, spec: RunSpec, reasons: frozenset[str]) -> int:
+        """How many superseded attempts of ``spec``'s cell before ``spec.attempt`` ended with a reason in
+        ``reasons``."""
         superseded_path = getattr(self.store, "superseded_path", None)
         if superseded_path is None:
             return 0
         folder = superseded_path(spec).parent
         if not folder.is_dir():
             return 0
-        stops = 0
+        found = 0
         for file in folder.glob(f"{item_slug(spec.item_id)}.a*.json"):
             try:
                 doc = json.loads(file.read_text(encoding="utf-8"))
                 attempt = int(doc["spec"]["attempt"])
             except (OSError, ValueError, KeyError, TypeError):
                 continue
-            if attempt < int(spec.attempt) and doc.get("rerun_reason") in STOP_REASONS:
-                stops += 1
-        return stops
+            if attempt < int(spec.attempt) and doc.get("rerun_reason") in reasons:
+                found += 1
+        return found
 
     def _exhaust_attempts(self, record: RunRecord) -> RunRecord:
         """Close a record that has used its reruns: terminal ``failed``, no further attempt, y stays NaN."""
@@ -449,9 +502,13 @@ class Runner:
         while True:
             record = await self._attempt(current)
             self._journal_attempt(record)
-            if record.rerun_reason in RERUN_REASONS and record.rerun_reason not in STOP_REASONS \
-                    and self._reruns_used(current) < self.settings.max_reruns \
-                    and not self._draining.is_set():
+            reason = record.rerun_reason
+            if reason in INFRA_RERUN_REASONS:
+                again = self._infra_reruns_left(current)        # contract §10.38: no model rerun consumed
+            else:
+                again = reason in RERUN_REASONS and reason not in STOP_REASONS \
+                    and self._reruns_used(current) < self.settings.max_reruns
+            if again and not self._draining.is_set():
                 log.info("dynorch runner: rerun %s attempt %d (%s)", current.item_id, current.attempt + 1,
                          record.rerun_reason)
                 current = self._next_attempt(record, resume=False)
@@ -527,6 +584,7 @@ class Runner:
             still_stopped = bool(int(self.core.budget_view(spec.run_key).get(INFRASTRUCTURE_STOP, 0)))
         except Exception:  # noqa: BLE001 - an older core without the flag: fall back to the record's error below
             still_stopped = None
+        latch = self._upstream_latch(spec)
         record: RunRecord = self.core.close_run(spec.run_key, status=status)
         if not isinstance(record, RunRecord):
             raise TypeError(f"core.close_run returned {type(record).__name__}, expected RunRecord")
@@ -543,6 +601,8 @@ class Runner:
         reported.update({"timed_out": timed_out, "killed_by_drain": killed_by_drain,
                          "sigterm_after_exhaustion": exhausted_kill, "wall_timeout_seconds": wall,
                          "work_dir": str(work.root)})
+        if latch is not None:
+            reported["upstream_latch"] = latch
         record.harness_reported = reported
         if infrastructure_stop:
             # plan B6 / Gate 3: an upstream 402/401 is an infrastructure stop, not a harness outcome. Draining here
@@ -557,6 +617,15 @@ class Runner:
             log.error("dynorch runner: %s was refused by the $ ledger (%s); pausing admissions (draining the stage)",
                       spec.run_key, core_error or error)
             self.request_drain()
+        elif latch is not None:
+            # contract §10.38: an upstream call failed and the core refused every later call of the run. Whatever
+            # the harness did afterwards (retried into the latch, exited, timed out, was drained), the attempt is
+            # an infrastructure failure: never scored, re-executed without consuming a model rerun.
+            record.status = "transport_failed"
+            record.rerun_reason = UPSTREAM_LATCHED
+            record.error = core_error or error
+            log.warning("dynorch runner: %s latched after upstream call %s failed (%s); infrastructure rerun",
+                        spec.run_key, latch.get("call_no"), latch.get("transport_status"))
         elif infrastructure_seen:
             record.error = core_error                 # recorded (reconciliation reports the 402) ...
             log.error("dynorch runner: %s recovered from an account refusal (%s); its outcome stands, the stage "
@@ -578,6 +647,17 @@ class Runner:
         grademod.finalize_run(record, task, private)
         self.store.save(record)
         return record
+
+    def _upstream_latch(self, spec: RunSpec) -> dict[str, Any] | None:
+        """The core's upstream-failure latch of the run (contract §10.38), ``None`` when unset or unsupported."""
+        getter = getattr(self.core, "upstream_latch", None)
+        if getter is None:
+            return None
+        try:
+            latch = getter(spec.run_key)
+        except Exception:  # noqa: BLE001 - never lose a run over the lookup
+            return None
+        return dict(latch) if latch else None
 
     async def _await_settled(self, spec: RunSpec) -> None:
         """A call the harness abandoned (wall kill, watchdog, crash) is still running upstream and is already paid
