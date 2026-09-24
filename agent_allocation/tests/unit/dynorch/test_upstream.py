@@ -4,6 +4,8 @@ ambiguous outcomes (timeouts, gateway 504, missing usage, cache HIT twice) -> ch
 (402 upstream = infrastructure stop), and a ledger refusal before anything is sent."""
 from __future__ import annotations
 
+import asyncio
+
 import json
 from decimal import Decimal
 
@@ -292,3 +294,22 @@ async def test_a_delay_beyond_the_read_timeout_is_ambiguous(make_env):
                                     coordinates=COORDS)
     assert exc.value.transport_status is TransportStatus.AMBIGUOUS_TIMEOUT and exc.value.charged_max
     assert env.script.billed_usd > 0 and env.script.calls[-1].outcome == "read_timeout"
+
+
+async def test_a_cancellation_after_mark_sent_never_leaves_an_open_reservation(make_env):
+    """Review major 5: a parked call that is cancelled after ``mark_sent`` (the server going away, a stage
+    teardown) used to leave a SENT attempt the ledger could never resolve -- ``open_reservations_usd != 0``, a
+    Gate stop for nothing, and a ``charge_max`` on the next resume. Unknown money is charged here instead."""
+    script = FakeScript()
+    script.default = FakeReply(delay_seconds=5.0, content="<final>1</final>")
+    env = make_env(script)
+    call = asyncio.ensure_future(env.upstream.complete(shard_id="parasail", prompt=PROMPT, max_tokens=200,
+                                                       attempt_id=aid(), coordinates=COORDS))
+    while env.script.in_flight == 0:
+        await asyncio.sleep(0.01)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    snapshot = env.ledger.snapshot()
+    assert snapshot.in_flight == 0 and snapshot.unresolved == 0 and snapshot.settled > 0
+    assert env.ledger.state_of(aid()) == "charge_max"

@@ -321,6 +321,34 @@ async def test_kill_and_resume(tmp_path: Path, base: BaseInputs):
 
 
 @pytest.mark.timeout(600)
+async def test_a_call_in_flight_when_the_harness_dies_is_settled_and_journaled(tmp_path: Path, base: BaseInputs):
+    """Review major 5: the harness of the stage's last run is killed while its call is upstream. The parked call
+    must be awaited (never cancelled), settled at its real cost and journaled -- a cancelled one left a SENT
+    reservation with nothing journaled, so ``open_reservations_usd != 0`` failed the stage's reconciliation and
+    the next --resume charged the call at its maximum."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=1, drain_wait_seconds=0.2) as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("HF",), rungs=(4,), items=_items(base)[:1])
+        script.by_node[specs[0].run_key] = FakeReply(delay_seconds=3.0, content="<final>21</final>")
+        task = asyncio.create_task(h.runner.run_specs("main", specs))
+        while specs[0].run_key not in h.runner._in_flight:
+            await asyncio.sleep(0.05)
+        h.runner.request_drain()
+        await task
+        snapshot = h.stack.ledger.snapshot()
+        record = h.store.scan()[specs[0].run_key]
+        journaled = h.journal.scan(record.spec)
+    assert snapshot.in_flight == 0 and snapshot.unresolved == 0 and snapshot.settled > 0
+    assert record.rerun_reason == "killed_by_drain" and record.calls == 1
+    assert len(journaled) == 1 and journaled[0]["phases"][0]["charged_max"] is False
+    assert Decimal(record.cost_usd) == Decimal(journaled[0]["phases"][0]["cost_usd"]) > 0
+    assert record.completion_total > 0                       # the tokens were paid for, so they are counted
+    assert record.final_message is None                      # ... but the harness never received the answer
+
+
+@pytest.mark.timeout(600)
 async def test_a_failed_sub_agent_call_does_not_discard_the_delivered_answer(tmp_path: Path, base: BaseInputs):
     """Review major 10: the frozen rule reruns only when the LAST proxy reply was a transport/ledger error. A
     sub-agent call that failed mid-run (charged whole, the harness carried on, the root answered) made the whole

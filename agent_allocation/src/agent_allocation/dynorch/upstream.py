@@ -26,6 +26,7 @@ Every exchange is returned as a journal ``phase`` dict (headers/text redacted th
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from decimal import Decimal
@@ -203,8 +204,18 @@ class Upstream:
                 await self._rps[shard_id].wait()
                 await self.ledger.mark_sent(aid)
                 self.calls_sent += 1
-                call = await self.client.raw_completion(
-                    body, lock=lock, coordinates={**dict(coordinates), "attempt_id": aid, "transport_attempt": number})
+                try:
+                    call = await self.client.raw_completion(
+                        body, lock=lock,
+                        coordinates={**dict(coordinates), "attempt_id": aid, "transport_attempt": number})
+                except BaseException:
+                    # a cancellation (or any escape) after mark_sent leaves a SENT reservation the ledger can never
+                    # resolve -- `open_reservations_usd != 0` then reports a stop and the resume charges it at the
+                    # maximum. Unknown money is charged here, shielded so the cancellation cannot interrupt it
+                    # (B2; review major 5).
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(self.ledger.charge_max(aid))
+                    raise
             status = call.transport_status
             usage = call.usage
             tokens_known = usage is not None and usage.completion_tokens is not None

@@ -120,6 +120,8 @@ class RunnerSettings:
     budget_sentence: str
     drain_wait_seconds: float = 800.0
     poll_seconds: float = 2.0
+    #: how long ``_attempt`` waits, after its harness is gone, for a call the proxy is still serving for it
+    settle_wait_seconds: float = 300.0
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any], *, run_root: str | Path, project_root: str | Path = PROJECT_ROOT,
@@ -431,13 +433,7 @@ class Runner:
             log.exception("dynorch runner: %s failed to run: %s", spec.run_key, exc)   # not the whole 12 h job (8)
             return self._close_failed(spec, "failed", exc, started)
         wall_seconds = time.monotonic() - started
-        # a call the harness abandoned is still finishing upstream: await it so the record is finalised ONCE, with
-        # its tokens counted and its delivery verdict known (major 14)
-        if self.wait_for_run is not None:
-            try:
-                await self.wait_for_run(spec.run_key, settings.sigkill_after + 60.0)
-            except Exception as exc:  # noqa: BLE001 - never lose a run over the wait
-                log.warning("dynorch runner: waiting for %s's parked calls failed: %s", spec.run_key, exc)
+        await self._await_settled(spec)
         status, rerun_reason, error = self._status_of(spec, timed_out=timed_out, killed_by_drain=killed_by_drain)
         record: RunRecord = self.core.close_run(spec.run_key, status=status)
         if not isinstance(record, RunRecord):
@@ -480,6 +476,29 @@ class Runner:
         grademod.finalize_run(record, task, private)
         self.store.save(record)
         return record
+
+    async def _await_settled(self, spec: RunSpec) -> None:
+        """A call the harness abandoned (wall kill, watchdog, crash) is still running upstream and is already paid
+        for: wait for the core to finish serving it -- and for the wire layer to park and record it -- before
+        ``close_run``, so the record is finalised ONCE with its tokens counted and its delivery verdict known
+        (review major 14; the proxy never cancels such a call, review major 5)."""
+        deadline = time.monotonic() + self.settings.settle_wait_seconds
+        while time.monotonic() < deadline:
+            try:
+                view = self.core.budget_view(spec.run_key)
+            except Exception:  # noqa: BLE001 - the run may already be gone
+                return
+            if int(view.get("in_flight", 0)) <= 0:
+                break
+            await asyncio.sleep(min(0.25, max(0.01, self.settings.poll_seconds)))
+        else:
+            log.warning("dynorch runner: %s still has a call in flight after %.0f s; closing anyway", spec.run_key,
+                        self.settings.settle_wait_seconds)
+        if self.wait_for_run is not None:
+            try:
+                await self.wait_for_run(spec.run_key, max(1.0, deadline - time.monotonic()))
+            except Exception as exc:  # noqa: BLE001 - never lose a run over the wait
+                log.warning("dynorch runner: waiting for %s's parked calls failed: %s", spec.run_key, exc)
 
     def _close_failed(self, spec: RunSpec, status: str, exc: BaseException, started: float) -> RunRecord:
         """Close an attempt that never reached its harness (or died outside the proxy) as a stored record instead
