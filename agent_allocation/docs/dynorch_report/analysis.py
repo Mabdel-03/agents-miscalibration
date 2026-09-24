@@ -465,6 +465,7 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
     rvd = realized_vs_deep(F.oc, N, base_names, replicates=replicates, items=items)
     N["realized_vs_deep"] = rvd
     N["run_facts"] = run_facts(run, runs_all, current, calls, partition)
+    N["e2"] = e2_numbers(ladder, run, items, runs_all, replicates=replicates, partition=partition)
     N["e0"] = e0_numbers(ladder, run, items, runs_all, pd.read_parquet(run / "tables" / "dynorch_calls.parquet"),
                          replicates=replicates, partition=partition)
 
@@ -664,6 +665,60 @@ def e0_numbers(ladder: Path, run: Path, items, runs_all: pd.DataFrame, calls_all
     out["spawn_share"] = r3((cur["spawns"] > 0).mean())
     out["ceil16"] = int(runs[runs["rung"] == 16]["root_call_ceiling"].dropna().astype(int).max()) \
         if (runs["rung"] == 16).any() else None
+    return out
+
+
+E2_STAGE = "ext_e2"
+
+
+def e2_numbers(ladder: Path, run: Path, items, runs_all: pd.DataFrame, *, replicates: int, partition: str) -> dict:
+    """Extension E2 (spawning disabled, plan §1): H1n/H3n at rungs 4 and 16 against the same harness with the spawn
+    tool offered (the core cell), deep/k and the harness-free call H0/k. Since no core run spawned, E2 - core
+    isolates the cost of merely offering the delegation tool; E2 - H0 is the rest of the harness scaffolding."""
+    from agent_allocation.dynorch.gates import seal_path
+    if not seal_path(run / "tables", E2_STAGE).exists():
+        return {"present": False}
+    po = pd.read_parquet(run / "tables" / "policy_outcomes_dynorch.parquet")
+    stages = [partition, E2_STAGE] + ([E1_STAGE] if seal_path(run / "tables", E1_STAGE).exists() else [])
+    po = po[po["partition_id"].isin(stages) & (po["view"] == "current")].copy()
+    po["partition_id"] = partition
+    F2 = c.Frame(ladder, po, items=items, replicates=replicates, partition=partition)
+    out: dict[str, Any] = {"present": True, "acc": {}, "vs": {}, "by_arm": {}}
+    runs = runs_all[runs_all["partition"] == E2_STAGE]
+    cur = runs.sort_values("attempt").groupby(["arm", "item_id", "rung", "repeat"], as_index=False).tail(1)
+    cur = cur[cur["item_id"].isin(items)]
+    for arm in ("H1n", "H3n"):
+        for k in (4, 16):
+            n = f"{arm}/{k}"
+            if not F2.has(n):
+                continue
+            a_, lo, hi = F2.acc(n)
+            out["acc"][n] = {"acc": r3(a_), "lo": r3(lo), "hi": r3(hi)}
+            for other in (f"{arm[:-1]}/{k}", f"H0/{k}", f"deep/{k}"):
+                if F2.has(other):
+                    out["vs"].setdefault(n, {})[other.replace("/", "_")] = _contrast_row(
+                        F2.oc, f"{n}-{other}", [(n, 1.0), (other, -1.0)], replicates=replicates, items=items)
+            base, r2 = f"{arm[:-1]}/{k}", f"{arm[:-1]}/{k}/r2"
+            if F2.has(base) and F2.has(r2):  # against both repeats of the spawn-offered cell (E1)
+                out["vs"][n]["mean2"] = _contrast_row(F2.oc, f"{n}-mean({base},{r2})", [(n, 1.0), (base, -0.5), (r2, -0.5)],
+                                                      replicates=replicates, items=items)
+            g = cur[cur["name"] == n]
+            core = runs_all[(runs_all["partition"] == partition) & (runs_all["name"] == base)]
+            out["by_arm"][n + "_core_prompt_tokens_first_root"] = round(float(core["prompt_tokens_first_root"].mean())) \
+                if core["prompt_tokens_first_root"].notna().any() else None
+            out["by_arm"][n] = {"runs": int(len(g)), "spawn_runs": int((g["spawns"] > 0).sum()),
+                                "multi_call_share": r3((g["calls"] > 1).mean()),
+                                "realized_share": r3(g["realized_share"].mean()),
+                                "prompt_tokens_first_root": round(float(g["prompt_tokens_first_root"].mean()))
+                                if g["prompt_tokens_first_root"].notna().any() else None}
+    out["runs"] = int(len(cur))
+    out["spawn_runs"] = int((cur["spawns"] > 0).sum())
+    out["spend_usd"] = round(float(pd.to_numeric(runs["cost_usd"], errors="coerce").sum()), 2)
+    vs_core = [v[f"{n.split('/')[0][:-1]}_{n.split('/')[1]}"] for n, v in out["vs"].items()]
+    out["n_vs_core_ci_covers_zero"] = sum(1 for r in vs_core if r["lo"] <= 0 <= r["hi"])
+    out["n_cells"] = len(vs_core)
+    m2 = [v["mean2"] for v in out["vs"].values() if "mean2" in v]
+    out["n_vs_mean2_ci_covers_zero"] = sum(1 for r in m2 if r["lo"] <= 0 <= r["hi"])
     return out
 
 

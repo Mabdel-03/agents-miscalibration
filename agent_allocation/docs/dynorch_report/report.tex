@@ -412,11 +412,55 @@ and the delegation they did perform did not recover the lost depth. E0 strengthe
 model at these budgets, the rule ``one deep call, forced to the budget'' is not beaten by dynamic orchestration,
 capped or uncapped.
 
+\section{Extension E2: the same harnesses without the spawn tool}\label{sec:e2}
+
+No core run delegated, yet both harnesses fell below the harness-free call H0 at $16A$. E2 asks whether merely
+offering the delegation tool is part of that cost. It re-ran both harnesses at rungs 4 and 16 with spawning
+disabled: OpenClaude with no tools at all, and Codex without its \texttt{multi\_agent\_v1} tools, keeping only
+\texttt{update\_plan}. That is 384 runs for \$6.45; 0 spawned, as designed.
+Without the spawn tool the first root prompt is shorter: 6,363 against
+8,380 tokens (OpenClaude, $16A$), and
+7,995 against 10,243 (Codex).
+
+\begin{table}[h]
+\centering\small
+\resizebox{\textwidth}{!}{\begin{tabular}{lrrrr}
+\toprule
+cell & accuracy & $-$ spawn offered (both repeats) & $-$ H0/$k$ & $-$ deep/$k$ \\
+\midrule
+H1n/4  & 0.534  & $-$2.6 [$-$11.1, +5.8] & $-$2.3 [$-$11.5, +7.3] & $-$8.6 [$-$19.2, +2.1] \\
+H1n/16 & 0.740 & +6.8 [+0.2, +13.4] & +2.1 [$-$6.0, +10.4] & $-$5.2 [$-$12.8, +2.1] \\
+H3n/4  & 0.594  & +8.9 [+2.0, +16.7] & +4.2 [$-$3.7, +12.4] & $-$1.1 [$-$10.4, +7.4] \\
+H3n/16 & 0.740 & +6.2 [$-$1.9, +14.6] & +2.1 [$-$5.7, +9.9] & $-$5.2 [$-$12.4, +0.5] \\
+\bottomrule
+\end{tabular}}
+\caption{E2 cells: macro accuracy and paired differences in points (95\% item bootstrap, descriptive). ``Spawn
+offered'' is the mean of the core cell and its E1 repeat.}
+\label{tab:e2}
+\end{table}
+
+\paragraph{Removing the unused tool helped, mostly.} Against the mean of both spawn-offered repeats, three of the
+four cells gained +6.8 (H1n/16), +6.2 (H3n/16) and
++8.9 (H3n/4) points. The fourth, H1n/4, moved $-$2.6.
+Of the 4 intervals, 2 include zero. Every spawn-disabled cell
+is within a few points of the harness-free call H0/$k$, and every one of those intervals includes zero. At $16A$
+both lie 5.2 points below deep/16, and those intervals include zero as well.
+
+\paragraph{Reading.} The core's gap between the harnesses and H0 (Table~\ref{tab:decomp}) looks like the cost of
+offering a delegation tool that is never used: a longer system prompt and multi-agent instructions, with nothing
+gained. Without it, a harness performs like one unforced call. The remaining gap to deep/$k$ is the
+natural-stop gap of H0: the model stops before spending the budget, which the ladder's forced call does not allow.
+These are descriptive contrasts from one realisation per E2 cell, run later than the core, so read them as
+consistent with that account, not as proof of it.
+
 \section{What to do with this}
 
 For this model on these tasks, spend the budget on one deep call and force it to use the whole budget; neither
 harness adds anything over that, and each adds unused prompt overhead. If a harness is used for other reasons,
-expect it to behave like one unforced call that stops at about 0.59 of the cap. The
+expect it to behave like one unforced call that stops at about 0.59 of the cap.
+If the task does not need delegation, do not offer the tool: in E2 removing it recovered most of the gap to the
+harness-free call.
+The
 rule would change with a harness that actually delegates, with tools that add information a single call cannot
 produce (code execution, search), or with a model that spends a long budget without being forced.
 
