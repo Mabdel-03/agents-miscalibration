@@ -20,6 +20,7 @@ re-derives ``passed`` / ``failures`` from every case recorded so far.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import gzip
 import json
 import os
@@ -347,9 +348,11 @@ def foreign_harness_state_dirs() -> dict[str, str]:
     attribution is reported (pid + command), never silent. The harness processes under test are descendants of
     this process with HOME / CODEX_HOME / CLAUDE_CONFIG_DIR under the work dir (``harness.base.check_env``)."""
     home = Path.home().resolve()
+    # ``ps`` truncates its lines to $COLUMNS (pytest exports it): -ww and no COLUMNS keep the full command line
+    env = {k: v for k, v in os.environ.items() if k != "COLUMNS"}
     try:
-        out = subprocess.run(["ps", "-eo", "pid=,ppid=,args=", "--user", str(os.getuid())], capture_output=True,
-                             text=True, timeout=30).stdout
+        out = subprocess.run(["ps", "-ww", "-eo", "pid=,ppid=,args=", "--user", str(os.getuid())],
+                             capture_output=True, text=True, timeout=30, env=env).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     parents: dict[int, int] = {}
@@ -548,27 +551,38 @@ def record_case(case: str, checks: dict[str, bool], *, detail: dict[str, Any] | 
     if out:
         target = Path(out)
         target.parent.mkdir(parents=True, exist_ok=True)
-        report: dict[str, Any] = {"passed": True, "failures": [], "cases": {}}
-        if target.is_file():
+        with open(target.with_suffix(target.suffix + ".lock"), "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)          # several pytest processes merge into one report
             try:
-                loaded = json.loads(target.read_text("utf-8"))
-            except ValueError:
-                loaded = None
-            if isinstance(loaded, dict) and isinstance(loaded.get("cases"), dict):
-                report["cases"] = dict(loaded["cases"])
-        report["cases"][case] = {"checks": {k: bool(v) for k, v in checks.items()}, "detail": detail or {},
-                                 "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        failures = []
-        for name, body in report["cases"].items():
-            case_checks = body.get("checks", body) if isinstance(body, dict) else {}
-            for check, ok in case_checks.items():
-                if isinstance(ok, bool) and not ok:
-                    failures.append(f"{name}: {check}")
-        report["failures"] = failures
-        report["passed"] = not failures
-        report["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        text = json.dumps(report, indent=1, sort_keys=True)
-        if "sk-or-" in text:
-            raise RuntimeError("the smoke report would contain key material; refusing to write it")
-        target.write_text(text)
+                _merge_report(target, case, checks, detail)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
     return failed
+
+
+def _merge_report(target: Path, case: str, checks: dict[str, bool], detail: dict[str, Any] | None) -> None:
+    """Read-modify-write of the report under the caller's lock: cases keyed by name, ``passed`` / ``failures``
+    re-derived over every recorded case."""
+    report: dict[str, Any] = {"passed": True, "failures": [], "cases": {}}
+    if target.is_file():
+        try:
+            loaded = json.loads(target.read_text("utf-8"))
+        except ValueError:
+            loaded = None
+        if isinstance(loaded, dict) and isinstance(loaded.get("cases"), dict):
+            report["cases"] = dict(loaded["cases"])
+    report["cases"][case] = {"checks": {k: bool(v) for k, v in checks.items()}, "detail": detail or {},
+                             "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    failures = []
+    for name, body in report["cases"].items():
+        case_checks = body.get("checks", body) if isinstance(body, dict) else {}
+        for check, ok in case_checks.items():
+            if isinstance(ok, bool) and not ok:
+                failures.append(f"{name}: {check}")
+    report["failures"] = failures
+    report["passed"] = not failures
+    report["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    text = json.dumps(report, indent=1, sort_keys=True)
+    if "sk-or-" in text:
+        raise RuntimeError("the smoke report would contain key material; refusing to write it")
+    target.write_text(text)
