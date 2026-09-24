@@ -640,3 +640,16 @@ the main job ends and resuming. Evidence: `test_core_flow.py` (latch cases), `te
 invalidate → resume on the real journaled records in `tests/fixtures/dynorch/infra_invalidation/`),
 `test_invalidate.py`, and the real-CLI smoke cases `openclaude/interruption_retry_latched` and
 `codex/interruption_retry_latched` (both CLIs retry the 502; every retry is refused with no upstream call).
+
+**10.39 The `/key` verdict checks the key against the ledger's BOUNDS (lead, 2026-09-24; main-stage finding).** The
+ledger records two things: `settled` (the provider's own reported cost of every completed call) and `charged_max`
+(the full reservation of ambiguous calls — B2 — such as provider-interrupted streams, which the provider may bill at
+nothing). True spend therefore lies in [settled, settled + charged_max]. The main stage settled $26.277 and charged
+$0.691 at maximum; the key settled at $26.301 (eleven identical reads over five minutes), i.e. those interrupted calls
+really cost about $0.02. §10.36 compared the key only with the UPPER figure and declared a mismatch that would also
+have failed Gate 4. The verdict is now: clean iff settled − tol ≤ key delta ≤ settled + charged_max + tol. A key below
+the settled floor (the ledger over-counted billed calls) or above the upper bound (the provider billed more than was
+metered) is still a mismatch. The settle loop converges on the range (two consecutive in-range reads that are stable
+or at the upper bound). With `charged_max = 0` the range is a single value and the §10.36 behaviour is unchanged. The
+report adds `ledger_settled_delta_usd`, `ledger_charged_max_delta_usd`, `key_minus_settled_usd` and
+`key_within_ledger_bounds`.

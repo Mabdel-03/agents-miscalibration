@@ -367,10 +367,18 @@ def build_report(*, stage: str, before: Mapping[str, Any], after: AccountSnapsho
     key_delta = after.key_usage_usd - before_snap.key_usage_usd
     ledger_delta = ledger_charged(ledger_after) - Decimal(before["ledger_charged_usd"])
     diff = key_delta - ledger_delta
+    # contract §10.39: settled is what the provider's own usage reported; charged-at-maximum is the conservative
+    # full reservation of ambiguous calls (an interrupted stream the provider may bill at 0). True spend lies in
+    # [settled, settled + charged_max]; the key must land in that range (± tolerance) -- a key BELOW settled means
+    # the ledger over-counted billed calls, ABOVE the upper bound means the provider billed more than was metered.
+    settled_delta = Decimal(ledger_after["settled_usd"]) - Decimal(before["ledger"]["settled_usd"])
+    charged_max_delta = ledger_delta - settled_delta
+    within = settled_delta - key_tolerance_usd <= key_delta <= ledger_delta + key_tolerance_usd
     open_usd = Decimal(ledger_after["open_reservations_usd"])
     problems: list[str] = []
-    if abs(diff) > key_tolerance_usd:
-        problems.append(f"key delta {key_delta} vs ledger delta {ledger_delta} differ by {diff} (> {key_tolerance_usd})")
+    if not within:
+        problems.append(f"key delta {key_delta} outside the ledger's bounds [{settled_delta}, {ledger_delta}] "
+                        f"(settled .. settled + charged_max, ± {key_tolerance_usd})")
     if open_usd != ZERO:
         problems.append(f"open reservations {open_usd}")
     for row in sample_rows:
@@ -396,6 +404,8 @@ def build_report(*, stage: str, before: Mapping[str, Any], after: AccountSnapsho
         "before": before["account"], "after": after.to_json(),
         "key_delta_usd": str(key_delta), "ledger_before": before["ledger"], "ledger_after": dict(ledger_after),
         "ledger_delta_usd": str(ledger_delta), "key_minus_ledger_usd": str(diff), "key_tolerance_usd": str(key_tolerance_usd),
+        "ledger_settled_delta_usd": str(settled_delta), "ledger_charged_max_delta_usd": str(charged_max_delta),
+        "key_minus_settled_usd": str(key_delta - settled_delta), "key_within_ledger_bounds": bool(within),
         "generation_sample": {"share": str(SAMPLE_SHARE), "seed": seed, "population": population,
                               "population_source": population_source, "sampled": len(sample_rows), "rows": list(sample_rows)},
         "upstream_402": bool(upstream_402), "problems": problems, "decision": decision,
@@ -433,7 +443,8 @@ async def _sleep(seconds: float) -> None:
 
 async def settled_after_snapshot(client: Any, *, before_usage: Decimal, ledger_delta: Decimal, tolerance: Decimal,
                                  interval_s: float = KEY_SETTLE_INTERVAL_S, max_wait_s: float = KEY_SETTLE_MAX_S,
-                                 sleep: Any = None) -> tuple[AccountSnapshot, dict[str, Any]]:
+                                 sleep: Any = None, ledger_floor: Decimal | None = None
+                                 ) -> tuple[AccountSnapshot, dict[str, Any]]:
     """The after-snapshot a dollar verdict may rest on (contract §10.36, superseding the §10.29 settle rule).
 
     The ledger delta is the expected value; ``/key`` only ever catches up to what was billed. So:
@@ -457,11 +468,20 @@ async def settled_after_snapshot(client: Any, *, before_usage: Decimal, ledger_d
     def delta(snap: AccountSnapshot) -> Decimal:
         return snap.key_usage_usd - before_usage
 
+    # contract §10.39: the ledger BOUNDS true spend -- settled (lower) to settled + charged-at-maximum (upper). With
+    # nothing charged at maximum the range is the single ledger value and this is the §10.36 rule unchanged.
+    floor = ledger_delta if ledger_floor is None else ledger_floor
+
     def matches(snap: AccountSnapshot) -> bool:
-        return abs(delta(snap) - ledger_delta) <= tolerance
+        return floor - tolerance <= delta(snap) <= ledger_delta + tolerance
 
     def over(snap: AccountSnapshot) -> bool:
         return delta(snap) - ledger_delta > tolerance
+
+    def settled_pair(previous: AccountSnapshot, snap: AccountSnapshot) -> bool:
+        # two in-range reads that are stable, or that sit at the upper bound (the key cannot rise past a correct ledger)
+        return matches(previous) and matches(snap) and (
+            snap.key_usage_usd == previous.key_usage_usd or abs(delta(snap) - ledger_delta) <= tolerance)
 
     async def read() -> AccountSnapshot:
         snap = await snapshot_account(client)
@@ -482,7 +502,7 @@ async def settled_after_snapshot(client: Any, *, before_usage: Decimal, ledger_d
         if snap.payment_required:
             outcome = "payment_required"
             break
-        if matches(previous) and matches(snap):
+        if settled_pair(previous, snap):
             settled, outcome = True, "converged"
             break
         if over(previous) and over(snap):
@@ -503,9 +523,11 @@ async def reconcile_after(cfg: Mapping[str, Any], paths: RunPaths, stage: str, *
     before = read_before(paths, stage)
     ledger_now = ledger_totals(paths)
     ledger_delta = ledger_charged(ledger_now) - Decimal(before["ledger_charged_usd"])
+    settled_delta = Decimal(ledger_now["settled_usd"]) - Decimal(before["ledger"]["settled_usd"])
     after, key_detail = await settled_after_snapshot(
         client, before_usage=AccountSnapshot.from_json(before["account"]).key_usage_usd, ledger_delta=ledger_delta,
-        tolerance=key_tolerance_usd, interval_s=key_settle_interval_s, max_wait_s=key_settle_max_s, sleep=sleep)
+        tolerance=key_tolerance_usd, interval_s=key_settle_interval_s, max_wait_s=key_settle_max_s, sleep=sleep,
+        ledger_floor=settled_delta)
     seed = int(cfg.get("seed", 0)) if seed is None else seed
     sample = sample_calls(population, seed=seed)
     metadata = await fetch_generations(client, (g for c in sample for g in c.generation_ids))

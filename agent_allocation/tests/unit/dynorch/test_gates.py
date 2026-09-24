@@ -796,3 +796,30 @@ def test_only_delegation_criteria_are_waivable_and_a_waiver_needs_text(tmp_path)
     with pytest.raises(gates.WaiverError):
         gates.record_waivers(paths, "gate1", ["ceiling_probe_spawns"], "  ")
     assert not gates.waiver_path(paths).exists()                           # nothing written on refusal
+
+
+def test_the_key_must_land_inside_the_ledgers_bounds_when_calls_were_charged_at_maximum(tmp_path, cfg):
+    """Contract §10.39. The main stage: settled $26.277, charged-at-maximum $0.691 for provider-interrupted calls,
+    key settled at $26.301 -- inside [settled, settled + charged_max], so consistent, although it is $0.668 below the
+    upper figure the old rule compared against. Here with the tight $0.02 tolerance: settled 0.30, charged_max 0.10."""
+    paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
+    reconcile.write_before(paths, "pilot", asyncio.run(reconcile.snapshot_account(StubClient(usage="10.00"))))
+    write_journal(paths, [("reserve", "rk1:g1:1:think:1", "0.5"), ("sent", "rk1:g1:1:think:1", "0"), ("settle", "rk1:g1:1:think:1", "0.30"),
+                          ("reserve", "rk1:g1:2:think:1", "0.2"), ("sent", "rk1:g1:2:think:1", "0"), ("charge_max", "rk1:g1:2:think:1", "0.10")])
+
+    def run(usages):
+        return asyncio.run(reconcile.reconcile_after(cfg, paths, "pilot", client=LaggingKeyClient(usages), population=[],
+                                                     population_source="journal", upstream_402=False,
+                                                     key_tolerance_usd=Decimal("0.02"), sleep=_no_wait))
+
+    # the interrupted call really cost $0.01: the key settles at 0.31, inside [0.30, 0.40] -> clean (the old rule: mismatch)
+    report = run(["10.20", "10.31", "10.31"])
+    assert report["decision"] == reconcile.CLEAN, report["problems"]
+    assert report["key_within_ledger_bounds"] and report["ledger_settled_delta_usd"] == "0.30"
+    assert report["ledger_charged_max_delta_usd"] == "0.10" and report["key_settle"]["outcome"] == "converged"
+    # below the settled floor (the ledger over-counted billed calls) -> mismatch
+    report = run(["10.25", "10.25", "10.25"] + ["10.25"] * 20)
+    assert report["decision"] == reconcile.MISMATCH and not report["key_within_ledger_bounds"]
+    # above the upper bound (the provider billed more than was metered) -> mismatch
+    report = run(["10.45", "10.45"])
+    assert report["decision"] == reconcile.MISMATCH and report["key_settle"]["outcome"] == "over"
