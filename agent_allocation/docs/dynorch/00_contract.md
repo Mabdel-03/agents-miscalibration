@@ -520,7 +520,9 @@ drains (Gate 3 stop rule; the reconciliation reports the 402). `_rerun_pending` 
 A run whose last proxy reply was `503 ledger_refused` is closed `transport_failed` with
 `rerun_reason = "ledger_stop"` (new; in `RERUN_REASONS` and, with `infrastructure_stop`, in `runner.STOP_REASONS`):
 the frozen rule keeps it rerun-eligible, but it is NOT rerun in-job, the stage drains, and `_rerun_pending` /
-`_attempts_left` let `--resume` re-execute it without the `<= 2 reruns` cap. `Runner(..., admission_check=)` (additive)
+`_attempts_left` let `--resume` re-execute it without the `<= 2 reruns` cap; the cap counts MODEL attempts
+(`Runner._reruns_used = attempt - 1 - earlier stop attempts of the cell`), so a stop never consumes a rerun although
+the attempt number (and the run key) advances. `Runner(..., admission_check=)` (additive)
 is consulted before each cell starts; `launch_stage` wires `runner.ledger_block_reason(ledger)` (`"unresolved_exposure"`
 when the unresolved exposure is over `max_unresolved_spend_usd`, `"ceiling"` when nothing fits under the active
 ceiling), and a reason drains the stage (plan §5 "pauses admissions"). `Upstream.complete` attaches the transport

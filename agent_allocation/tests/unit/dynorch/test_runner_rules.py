@@ -324,3 +324,32 @@ async def test_close_failed_waits_for_the_call_in_flight_first(tmp_path: Path):
     closed = await runner._close_failed(spec, "failed", RuntimeError("adapter bug"), 0.0)
     await lander
     assert order == ["landed", "close(in_flight=0)"] and closed.status == "failed"
+
+
+async def test_a_stop_attempt_never_counts_against_the_rerun_cap(tmp_path: Path):
+    """Re-review finding 4 (and review issue 12): an infrastructure or ledger stop must not consume one of the
+    frozen ``<= 2 reruns``. The attempt NUMBER advances (run keys never repeat), so the cap used to be read off the
+    number: a cell whose a1 was a ledger stop got one model rerun instead of two. It now counts model attempts."""
+    from agent_allocation.dynorch.journal import RunStore
+
+    store = RunStore(tmp_path)
+    base_spec = make_spec(rung=4, partition="main")
+    specs = [dataclasses.replace(base_spec, attempt=n, generation=n, run_key=f"{base_spec.run_key}a{n}")
+             for n in (1, 2, 3)]
+    reasons = ["ledger_stop", "last_reply_transport_or_ledger_error", "last_reply_transport_or_ledger_error"]
+    for spec, reason in zip(specs, reasons):
+        store.archive_previous(spec)
+        store.save(_record(spec, status="transport_failed", rerun_reason=reason, error="x"))
+    runner = make_runner(FakeCore({}), make_settings(run_root=tmp_path, max_reruns=2), store=store)
+    current = store.load(specs[2])
+    assert current.spec.attempt == 3
+    assert runner._reruns_used(current.spec) == 1                      # a1 was a stop, a2 the one model rerun
+    assert runner._rerun_pending(current) and runner._attempts_left(current)
+    # without the stop the same history has used both reruns
+    plain = RunStore(tmp_path / "plain")
+    for spec in specs:
+        plain.archive_previous(spec)
+        plain.save(_record(spec, status="transport_failed", rerun_reason="last_reply_transport_or_ledger_error",
+                           error="x"))
+    runner2 = make_runner(FakeCore({}), make_settings(run_root=tmp_path / "plain", max_reruns=2), store=plain)
+    assert not runner2._rerun_pending(plain.load(specs[2]))

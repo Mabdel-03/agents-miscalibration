@@ -359,14 +359,38 @@ class Runner:
             return False
         if record.rerun_reason in STOP_REASONS:
             return True                         # the account / the ledger refused: no model ran, no rerun consumed
-        return record.rerun_reason in RERUN_REASONS and record.spec.attempt <= self.settings.max_reruns
+        return record.rerun_reason in RERUN_REASONS and self._reruns_used(record.spec) < self.settings.max_reruns
 
     def _attempts_left(self, record: RunRecord) -> bool:
         """The frozen table's ``<= 2 reruns`` also bounds INTERRUPTED records (review minor 17): a cell killed by
         crash / scancel / drain-timeout over and over must not accumulate paid attempts a4, a5, ..."""
         if record.rerun_reason in STOP_REASONS:
             return True
-        return record.spec.attempt <= self.settings.max_reruns
+        return self._reruns_used(record.spec) < self.settings.max_reruns
+
+    def _reruns_used(self, spec: RunSpec) -> int:
+        """Reruns this cell has consumed before ``spec``'s attempt: every earlier attempt except those that ended in
+        an infrastructure / ledger stop (no model ran for the harness; plan B6, contract §10.32 -- the attempt
+        NUMBER still advances so run keys never repeat, but the frozen ``<= 2 reruns`` counts model attempts)."""
+        return max(0, int(spec.attempt) - 1 - self._stop_attempts(spec))
+
+    def _stop_attempts(self, spec: RunSpec) -> int:
+        superseded_path = getattr(self.store, "superseded_path", None)
+        if superseded_path is None:
+            return 0
+        folder = superseded_path(spec).parent
+        if not folder.is_dir():
+            return 0
+        stops = 0
+        for file in folder.glob(f"{item_slug(spec.item_id)}.a*.json"):
+            try:
+                doc = json.loads(file.read_text(encoding="utf-8"))
+                attempt = int(doc["spec"]["attempt"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if attempt < int(spec.attempt) and doc.get("rerun_reason") in STOP_REASONS:
+                stops += 1
+        return stops
 
     def _exhaust_attempts(self, record: RunRecord) -> RunRecord:
         """Close a record that has used its reruns: terminal ``failed``, no further attempt, y stays NaN."""
@@ -425,7 +449,8 @@ class Runner:
         while True:
             record = await self._attempt(current)
             self._journal_attempt(record)
-            if record.rerun_reason in RERUN_REASONS and current.attempt <= self.settings.max_reruns \
+            if record.rerun_reason in RERUN_REASONS and record.rerun_reason not in STOP_REASONS \
+                    and self._reruns_used(current) < self.settings.max_reruns \
                     and not self._draining.is_set():
                 log.info("dynorch runner: rerun %s attempt %d (%s)", current.item_id, current.attempt + 1,
                          record.rerun_reason)
