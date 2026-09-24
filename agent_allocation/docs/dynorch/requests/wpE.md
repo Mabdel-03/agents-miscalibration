@@ -88,3 +88,6 @@ Evidence: `tests/integration/test_dynorch_openclaude_smoke.py`, `tests/integrati
     `.humming/tmp/lock/launcher.lock`. The smoke attributes writes to live foreign harness instances from
     `/proc/<pid>/environ` and classifies pre-existing-file churn separately from new files
     (`dynorch_smoke_support.new_under_home`); Gate 1 could reuse that rule instead of a static exclude list.
+19. `docs/dynorch/RUNBOOK.md` §0 lists only `test_dynorch_real_cli_smoke.py` for the smoke; the complete Gate 0 set
+    (all four commands, ~4 min + 2 × 16.5 min of stalls) is in `docs/dynorch/GATE0_REPORT.md` §3 — the two new
+    modules must run with `-m "not slow"` / `-m slow` explicitly because `addopts` deselects only `live`.
