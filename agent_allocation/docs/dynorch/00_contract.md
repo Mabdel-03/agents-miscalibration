@@ -529,3 +529,17 @@ attempts already made to a pre-send `ledger_refused` / `internal_error` (`prior_
 otherwise the grant is settled at 0 tokens, keeping its call number, and the call is journaled with those phases and
 dollars (`record.cost_usd` agrees with the ledger). `_terminal` treats `internal_error` like `ledger_refused` (call
 number given back, error recorded, grace unused).
+
+**10.33 The drain fits Slurm's 900 s; an exited harness is served nothing more (findings 5, 6, minor 13).**
+`RunnerSettings.drain_wait_seconds = 540` (was 800; the plan's "wait <= 800 s" is an upper bound) and
+`drain_total_seconds = 660`: `request_drain` fixes a deadline; in-flight harnesses get `drain_wait_seconds` to finish,
+the survivors are terminated, every settle wait (`_await_settled`) is bounded by the deadline, and an attempt still
+running at the deadline is cancelled and closed `failed` / `rerun_reason = "killed_by_drain"` (never left `running`).
+After a drained stage `dynorch-run` bounds the `/key` settle wait at `cli.DRAINED_KEY_SETTLE_MAX_S = 60`; worst case
+660 + 60 (server close) + 60 + 30 (`/generation`) s < 900 s. `ProxyCore.harness_exited(run_key)` (new; the runner calls
+it the moment the harness process exits, on every path): a call still queued on the run's lock, or any later call, is
+refused `409 run_closed` without minting a grant; a call already in flight is finished, settled and journaled. After
+`close_run` the core persists a late update only through `RunStore.save_if_owned` (new): the cell's file while it holds
+this run_key, else this attempt's `runs_superseded/` copy, else nowhere (the call journal keeps it) -- never over the
+next attempt's record. `ReplyLog.last_event` ignores `run_closed` refusals (nobody was listening). `Runner._close_failed`
+awaits the settle like the normal path.

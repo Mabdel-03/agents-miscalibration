@@ -4,7 +4,7 @@
 # VERB: gate0 (offline, $0) | canary | pilot | run (--stage main, --resume) | finalize (reconcile -> tables -> gate 4).
 # RUN_FLAGS passes through to dynorch-run (e.g. "--account-auto-reload --concurrency 12" or "--arms H1 --rungs 16").
 # STAGE overrides the stage of VERB=run/finalize (main by default; ext_e0..ext_e3 for the extensions).
-# The runner traps SIGTERM (--signal=B:TERM@900): stops admitting, waits <= 800 s for in-flight settles, exits 0;
+# The runner traps SIGTERM (--signal=B:TERM@900): stops admitting, waits <= 540 s for in-flight runs, terminates the rest, is done by 660 s (contract 10.33), exits 0;
 # resubmit the same job with --resume to continue.
 #SBATCH --job-name=dyn-v1
 #SBATCH --partition=pi_lhtsai,mit_normal

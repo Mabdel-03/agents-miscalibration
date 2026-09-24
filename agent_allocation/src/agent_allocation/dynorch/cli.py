@@ -36,6 +36,8 @@ STAGES: tuple[str, ...] = ("canary", "pilot", "main", "ext_e0", "ext_e1", "ext_e
 PAID_STAGES: frozenset[str] = frozenset(STAGES)          # every stage sends model calls
 CORE_ARMS: tuple[str, ...] = ("H1", "H3", "H0")
 REHEARSAL_ENV = "ALLOCATION_REHEARSAL"
+#: the /key settle bound after a DRAINED stage (the job is inside Slurm's 900 s warning; contract §10.33)
+DRAINED_KEY_SETTLE_MAX_S = 60.0
 log = logging.getLogger("agent_allocation.dynorch.cli")
 
 
@@ -533,9 +535,13 @@ async def _run(args: argparse.Namespace) -> int:
         totals = reconcile.ledger_totals(paths)
         before_doc = reconcile.read_before(paths, args.stage)
         hint = reconcile.ledger_charged(totals) - Decimal(before_doc["ledger_charged_usd"])
+        # a drained job is inside Slurm's 900 s warning: the /key settle wait is cut to 60 s (the verdict can be
+        # re-taken any time with `dynorch-reconcile`; contract §10.33)
+        settle_max = DRAINED_KEY_SETTLE_MAX_S if summary.get("drained") else reconcile.KEY_SETTLE_MAX_S
         report = await reconcile.reconcile_after(cfg, paths, args.stage, client=client, population=population,
                                                  population_source=source, upstream_402=upstream_402 or bool(summary.get("upstream_402")),
-                                                 key_tolerance_usd=reconcile.key_tolerance_for(args.stage, hint))
+                                                 key_tolerance_usd=reconcile.key_tolerance_for(args.stage, hint),
+                                                 key_settle_max_s=settle_max)
         status["reconciliation"] = {k: report[k] for k in ("decision", "key_delta_usd", "ledger_delta_usd", "problems")}
         status["state"] = "stop_notify" if report["decision"] == reconcile.STOP_NOTIFY else "finished"
         status["finished_at"] = utcnow()

@@ -99,7 +99,7 @@ RUN_FLAGS="--account-auto-reload --concurrency 12" slurm/launch_dynorch_v1.sh ru
 ```
 `main` refuses to start unless `gates/gate2_pilot.json` records `advance`, the owner go is in
 `state/run_decisions.jsonl`, and the endpoint lock exists. The job is 12 h on `mit_normal` / 2 d on `pi_lhtsai`; the
-runner traps the drain signal (`--signal=B:TERM@900`), stops admitting, waits ≤ 800 s and exits 0 — **resubmit the
+runner traps the drain signal (`--signal=B:TERM@900`), stops admitting, waits ≤ 540 s for in-flight runs, terminates the survivors, finishes its drain by 660 s and exits 0 (contract §10.33) — **resubmit the
 same command with `--resume`** (already in `VERB=run`) until `state/status.json` says `finished`.
 
 Monitor every hour:

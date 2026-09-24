@@ -172,6 +172,24 @@ class RunStore:
         replace_atomic(final, redact(data.decode("utf-8")).encode("utf-8"))
         return final
 
+    def save_if_owned(self, record: RunRecord) -> Path | None:
+        """Save a record only where it cannot clobber another attempt (a late update after ``close_run``, contract
+        §10.33): at the cell's path while that file is absent or holds this run_key, else at this attempt's
+        superseded copy when that exists; ``None`` when neither (nothing written)."""
+        final = self.path(record.spec)
+        if final.exists():
+            current = json.loads(final.read_text(encoding="utf-8"))
+            owner = ((current.get("spec") or {}).get("run_key") if isinstance(current, dict) else None)
+            if owner == record.spec.run_key:
+                return self.save(record)
+            archived = self.superseded_path(record.spec)
+            if archived.exists():
+                data = json.dumps(to_json(record), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                replace_atomic(archived, redact(data).encode("utf-8"))
+                return archived
+            return None
+        return self.save(record)
+
     def load(self, spec: RunSpec) -> RunRecord | None:
         path = self.path(spec)
         if not path.exists():

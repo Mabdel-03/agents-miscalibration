@@ -149,6 +149,8 @@ class _RunState:
     root_contents: list[tuple[int, str]] = field(default_factory=list)       # (call_no, visible content), B7
     closed: bool = False
     infrastructure_stop: bool = False
+    #: the runner saw the harness process exit (contract §10.33): no new call of this run is admitted upstream
+    harness_exited: bool = False
 
 
 class ProxyCore:
@@ -255,6 +257,32 @@ class ProxyCore:
             return
         state.undelivered.discard(int(call_no))
 
+    def harness_exited(self, run_key: str) -> None:
+        """The runner's notice that the run's harness process is gone (re-review finding 6): a call still queued on
+        the run's FIFO lock -- a sub-agent of a harness that timed out, crashed or was killed -- would otherwise be
+        granted ``C - spent`` and sent upstream for nobody. From now on ``chat`` refuses (``run_closed``) without
+        minting a grant; a call already in flight is finished, settled and journaled as before."""
+        state = self._runs.get(run_key)
+        if state is not None:
+            state.harness_exited = True
+
+    def _save(self, state: _RunState) -> None:
+        """Persist the run record. Before ``close_run`` it is the run's own file. After it, a late update (the
+        paid reply of a call that was still in flight when the runner closed the record) is written only while the
+        cell's file still holds THIS attempt (or to its superseded copy): it must never overwrite the next
+        attempt's record at the same path (re-review finding 6)."""
+        if not state.closed:
+            self.store.save(state.record)
+            return
+        saver = getattr(self.store, "save_if_owned", None)
+        if saver is None:
+            log.warning("dynorch core: %s updated after close; the store cannot check ownership, not saved",
+                        state.spec.run_key)
+            return
+        if saver(state.record) is None:
+            log.warning("dynorch core: %s updated after close but its record file now belongs to another attempt; "
+                        "the update stays in the call journal only", state.spec.run_key)
+
     def record_of(self, run_key: str) -> RunRecord:
         return self._state(run_key, allow_closed=True).record
 
@@ -327,7 +355,7 @@ class ProxyCore:
         outside = sorted({t.name for t in request.tools} - allowed)
         if outside:
             state.record.error = f"tool_surface_violation: {','.join(outside)}"
-            self.store.save(state.record)
+            self._save(state)
             raise ProxyError.of("tool_surface_violation",
                              f"tools outside the run's allowlist {sorted(allowed)}: {outside}")
 
@@ -387,6 +415,11 @@ class ProxyCore:
         waited = await budget.lock()
         grant: Grant | None = None
         try:
+            if state.closed or state.harness_exited:
+                # re-review finding 6: the harness is gone (or the record was finalised) while this call waited on
+                # the run's lock -- nothing is minted, nothing goes upstream, nobody is listening
+                raise ProxyError.of("run_closed", f"run {run_key}: the harness has exited; no further call is served"
+                                    if state.harness_exited else f"run {run_key} is closed")
             messages, reinjection, hits, misses = self._reinject(state, request.messages)
             effort = template_effort(request.requested_reasoning_effort, configured=self.settings.reasoning_effort)
             prompt = render_chat(messages, tools=request.tools, reasoning_effort=effort)
@@ -442,7 +475,7 @@ class ProxyCore:
             record.exhausted = True
         if guard is not None:
             record.guard_triggered = True
-        self.store.save(record)
+        self._save(state)
         raise ProxyError.of(code, message)
 
     def _serve_duplicate(self, state: _RunState, cached: ChatReply, conv_key: str, conv_class: str,
@@ -460,7 +493,7 @@ class ProxyCore:
         state.budget.note_reply()
         state.record.calls_detail.append(call)
         self._refresh(state)
-        self.store.save(state.record)
+        self._save(state)
         headers = {**cached.headers, "X-Dynorch-Duplicate": "1"}
         return replace(cached, call=call, headers=headers)
 
@@ -514,7 +547,7 @@ class ProxyCore:
                 else:
                     budget.release_unsent(grant)
                     state.record.error = f"{exc.code}: {exc.detail}"
-                    self.store.save(state.record)
+                    self._save(state)
             raise
         except BaseException as exc:
             budget.mark_sent(grant)                   # cancelled mid-flight: the call may have been sent
@@ -672,7 +705,7 @@ class ProxyCore:
                       non_solver_spawns=non_solver)
         self._account(state, record, parse, spawn_calls, cost, kind)
         self._remember(state, call_no, (conv_key, prompt_sha), reply, client_gone)
-        self.store.save(state.record)
+        self._save(state)
         return reply
 
     @staticmethod
@@ -725,7 +758,7 @@ class ProxyCore:
                 else:
                     budget.calls -= 1
                     state.record.error = f"{exc.code}: {exc.detail}"
-                    self.store.save(state.record)
+                    self._save(state)
             raise
         except BaseException:
             budget.record_grace("terminal", self.settings.grace_tokens)   # cancelled mid-flight: grace spent
@@ -768,7 +801,7 @@ class ProxyCore:
         self._account(state, record, parse, 0, cost, "terminal")
         state.record.exhausted = True
         self._remember(state, call_no, (conv_key, prompt_sha), reply, client_gone)
-        self.store.save(state.record)
+        self._save(state)
         return reply
 
     # ---- bookkeeping ------------------------------------------------------------------------------------------
@@ -886,4 +919,4 @@ class ProxyCore:
             state.infrastructure_stop = True
             run.error = f"infrastructure_stop: {detail}"
         self._refresh(state)
-        self.store.save(run)
+        self._save(state)

@@ -89,7 +89,7 @@ class Harness:
 
     def __init__(self, tmp: Path, cfg: dict[str, Any], *, script: FakeScript | None = None, concurrency: int = 2,
                  max_reruns: int | None = None, drain_wait_seconds: float | None = None,
-                 ceiling_usd: str = "95") -> None:
+                 ceiling_usd: str = "95", drain_total_seconds: float | None = None) -> None:
         self.tmp = tmp
         self.ceiling_usd = ceiling_usd
         self.cfg = cfg
@@ -113,6 +113,8 @@ class Harness:
                                           "sigterm_after_exhaustion": 1.0})
         if drain_wait_seconds is not None:
             self.settings = RunnerSettings(**{**self.settings.__dict__, "drain_wait_seconds": drain_wait_seconds})
+        if drain_total_seconds is not None:
+            self.settings = RunnerSettings(**{**self.settings.__dict__, "drain_total_seconds": drain_total_seconds})
         self.adapters = {"fake": FakeAdapter(model=cfg["primary_model"], python=sys.executable),
                          "null": NullAdapter(model=cfg["primary_model"])}
         self.stack: Any = None
@@ -360,6 +362,32 @@ async def test_a_call_in_flight_when_the_harness_dies_is_settled_and_journaled(t
     assert Decimal(record.cost_usd) == Decimal(journaled[0]["phases"][0]["cost_usd"]) > 0
     assert record.completion_total > 0                       # the tokens were paid for, so they are counted
     assert record.final_message is None                      # ... but the harness never received the answer
+
+
+@pytest.mark.timeout(600)
+async def test_the_drain_deadline_bounds_the_settle_wait(tmp_path: Path, base: BaseInputs):
+    """Re-review finding 5: after the drain terminated a harness, its attempt still waited up to
+    ``settle_wait_seconds`` (300 s) for the abandoned upstream call, the drain's 90 s shielded wait then cancelled
+    it, and the record stayed ``running`` (an interrupted attempt on --resume, a burned rerun). Every settle wait
+    is now bounded by the drain deadline and the attempt closes ``killed_by_drain`` in time."""
+    import time as _time
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=1, drain_wait_seconds=0.2,
+                       drain_total_seconds=3.0) as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("HF",), rungs=(4,), items=_items(base)[:1])
+        script.by_node[specs[0].run_key] = FakeReply(delay_seconds=20.0, content="<final>21</final>")
+        task = asyncio.create_task(h.runner.run_specs("main", specs))
+        while specs[0].run_key not in h.runner._in_flight:
+            await asyncio.sleep(0.05)
+        started = _time.monotonic()
+        h.runner.request_drain()
+        summary = await task
+        elapsed = _time.monotonic() - started
+        record = h.store.scan()[specs[0].run_key]
+    assert elapsed < 12.0, f"the drain took {elapsed:.1f} s past its 3 s deadline"
+    assert summary.drained and record.status == "failed" and record.rerun_reason == "killed_by_drain"
 
 
 @pytest.mark.timeout(600)

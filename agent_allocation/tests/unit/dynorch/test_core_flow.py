@@ -907,3 +907,55 @@ async def test_a_ledger_error_on_the_terminal_call_gives_the_call_number_and_the
     assert str(record.error).startswith("internal_error")
     assert env.journal.scan(spec) and len(env.journal.scan(spec)) == 1        # nothing journaled for a call never sent
     assert not env.core.budget_view(spec.run_key)["in_flight"]
+
+
+# ---- a harness that exited gets nothing more served (re-review finding 6) -----------------------------------------
+
+async def test_calls_queued_behind_an_exited_harness_are_refused_without_a_grant(make_env):
+    """Re-review finding 6: a sub-agent call queued on the run's FIFO lock when the harness timed out / crashed was
+    still granted ``C - spent`` and sent upstream for nobody, inflating completion_total / realized_share. After
+    ``harness_exited`` the core refuses (``run_closed``) without minting a grant; the call in flight finishes."""
+    import asyncio
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=200, delay_seconds=0.4)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    first = asyncio.create_task(env.core.chat(spec.run_key, make_request(root_messages())))
+    await asyncio.sleep(0.05)
+    queued = asyncio.create_task(env.core.chat(spec.run_key, solver_request("late sub-task")))
+    await asyncio.sleep(0.05)
+    env.core.harness_exited(spec.run_key)
+    reply = await first
+    with pytest.raises(ProxyError) as exc:
+        await queued
+    assert exc.value.code == "run_closed" and exc.value.status == 409
+    assert reply.call.call_no == 1 and len(env.think_calls()) == 1
+    view = env.core.budget_view(spec.run_key)
+    assert view["calls"] == 1 and view["in_flight"] == 0
+    assert env.core.record_of(spec.run_key).calls == 1
+
+
+async def test_a_late_reply_after_close_never_overwrites_the_next_attempts_record(make_env):
+    """Re-review finding 6: every attempt of a cell shares one ``runs/`` file. A call still in flight when the
+    runner closed attempt 1 used to save attempt 1's record over attempt 2's when it landed. A late update is now
+    written only while the file still belongs to its own attempt."""
+    import asyncio
+    import dataclasses
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=200, delay_seconds=0.4)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4))
+    call = asyncio.create_task(env.core.chat(spec.run_key, make_request(root_messages())))
+    await asyncio.sleep(0.1)
+    env.core.harness_exited(spec.run_key)
+    env.core.close_run(spec.run_key, status="timeout")               # the runner gave up waiting
+    nxt = dataclasses.replace(spec, attempt=2, generation=spec.generation + 1, run_key=spec.run_key + "x2")
+    env.store.archive_previous(nxt)
+    env.open(nxt)                                                     # attempt 2 owns runs/.../<item>.json now
+    await call                                                        # attempt 1's paid reply lands late
+    assert env.store.load(nxt).spec.run_key == nxt.run_key, "attempt 1 overwrote attempt 2's record"
+    archived = env.store.superseded_path(spec)
+    assert archived.exists()
+    import json as _json
+    late = _json.loads(archived.read_text())
+    assert late["spec"]["run_key"] == spec.run_key and late["calls"] == 1       # the paid call is on attempt 1

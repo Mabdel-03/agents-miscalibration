@@ -222,3 +222,105 @@ async def test_admissions_pause_when_the_ledger_has_no_headroom(tmp_path: Path):
                               admission_check=lambda: runnermod.ledger_block_reason(Ledger(False)))
     summary = await runner.run_specs("main", [make_spec(rung=4, partition="main")])
     assert summary.executed == 0 and summary.errors == 0 and summary.drained is True
+
+
+def test_the_whole_drain_fits_inside_slurms_900_second_warning():
+    """Re-review finding 5: 800 s of drain wait + ~60 s terminating + a 90 s shielded wait + 60 s wait_idle + the
+    reconciliation overran ``--signal=B:TERM@900``. The drain now ends by ``drain_total_seconds`` and the CLI cuts
+    the /key settle wait of a drained stage, so the worst case fits with margin."""
+    from agent_allocation.dynorch import cli, reconcile
+
+    settings = make_settings(drain_wait_seconds=runnermod.RunnerSettings.drain_wait_seconds,
+                             drain_total_seconds=runnermod.RunnerSettings.drain_total_seconds)
+    server_close = 60.0                                   # ProxyServer.close(drain_seconds=60)
+    generation_fetch = 6 * 5.0                            # reconcile.fetch_generations worst case
+    worst = settings.drain_total_seconds + server_close + cli.DRAINED_KEY_SETTLE_MAX_S + generation_fetch
+    assert settings.drain_wait_seconds + settings.sigkill_after <= settings.drain_total_seconds
+    assert worst <= 900 - 60, worst
+    assert reconcile.KEY_SETTLE_MAX_S > cli.DRAINED_KEY_SETTLE_MAX_S
+
+
+async def test_a_drain_cancelled_attempt_is_closed_killed_by_drain(tmp_path: Path):
+    """Re-review finding 5: the drain's last resort cancelled attempts that were still running; their records stayed
+    ``running``, became ``interrupted`` on --resume and burned an attempt. A cancelled attempt is now closed
+    ``failed`` / ``killed_by_drain`` (the frozen rule reruns it) before the cancellation propagates."""
+    from agent_allocation.dynorch.journal import RunStore
+
+    spec = make_spec(rung=4, partition="main")
+    record = _record(spec, status="running")
+
+    class OpenCore(FakeCore):
+        closed: list[str] = []
+        exited: list[str] = []
+
+        def record_of(self, run_key: str) -> RunRecord:
+            return record
+
+        def close_run(self, run_key: str, *, status: str) -> RunRecord:
+            record.status = status
+            self.closed.append(status)
+            return record
+
+        def harness_exited(self, run_key: str) -> None:
+            self.exited.append(run_key)
+
+    class Stuck(runnermod.Runner):
+        async def _attempt_body(self, spec: RunSpec) -> RunRecord:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+    store = RunStore(tmp_path)
+    core = OpenCore({})
+    runner = Stuck(core, {}, make_settings(run_root=tmp_path), proxy_url="http://127.0.0.1:1", store=store,
+                   inputs=None, reply_log=ReplyLog(), cfg={"study_id": "openrouter_dynorch_v1"})
+    task = asyncio.create_task(runner._attempt(spec))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    saved = store.load(spec)
+    assert core.closed == ["failed"] and core.exited == [spec.run_key]
+    assert saved.status == "failed" and saved.rerun_reason == "killed_by_drain"
+    assert runner._rerun_pending(saved)
+
+
+def test_run_closed_refusals_never_decide_the_rerun_rule():
+    """Contract §10.33: a ``run_closed`` refusal answers a call made after the harness exited; nobody is listening,
+    so the rerun rule reads the last event the harness actually got."""
+    log = ReplyLog()
+    log.events["rk"] = [ServedError(status=502, code="upstream_failed", wire="chat"),
+                        ServedError(status=409, code="run_closed", wire="chat")]
+    assert log.last_event("rk").code == "upstream_failed"
+
+
+async def test_close_failed_waits_for_the_call_in_flight_first(tmp_path: Path):
+    """Re-review minor 13: ``_close_failed`` (an adapter that raised after the harness was launched) closed the
+    record while a call of the run could still be in flight, so its tokens and delivery verdict were lost. It now
+    awaits the settle exactly like the normal path."""
+    from agent_allocation.dynorch.journal import RunStore
+
+    spec = make_spec(rung=4, partition="main")
+    record = _record(spec, status="running")
+    view = {"calls": 1, "in_flight": 1}
+    order: list[str] = []
+
+    class SettlingCore(FakeCore):
+        def close_run(self, run_key: str, *, status: str) -> RunRecord:
+            order.append(f"close(in_flight={view['in_flight']})")
+            record.status = status
+            return record
+
+        def record_of(self, run_key: str) -> RunRecord:
+            return record
+
+    runner = make_runner(SettlingCore(view), make_settings(run_root=tmp_path), store=RunStore(tmp_path))
+
+    async def land() -> None:
+        await asyncio.sleep(0.2)
+        view["in_flight"] = 0
+        order.append("landed")
+
+    lander = asyncio.create_task(land())
+    closed = await runner._close_failed(spec, "failed", RuntimeError("adapter bug"), 0.0)
+    await lander
+    assert order == ["landed", "close(in_flight=0)"] and closed.status == "failed"

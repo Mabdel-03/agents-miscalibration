@@ -97,8 +97,14 @@ class ReplyLog:
         self.events.setdefault(run_key, []).append(ServedError(status=err.status, code=err.code, wire=wire))
 
     def last_event(self, run_key: str) -> ServedReply | ServedError | None:
-        events = self.events.get(run_key)
-        return events[-1] if events else None
+        """The run's last served reply or error, ignoring ``run_closed`` refusals: those answer a call made after
+        the harness exited or the record was closed (contract §10.33) -- nobody is listening, and the frozen rerun
+        rule decides on what the harness actually got."""
+        for event in reversed(self.events.get(run_key, [])):
+            if isinstance(event, ServedError) and event.code == "run_closed":
+                continue
+            return event
+        return None
 
     def delivered(self, run_key: str) -> tuple[str | None, str]:
         """``(message, source)``: the last root reply with non-empty visible content that was actually handed to

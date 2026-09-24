@@ -30,7 +30,8 @@ processes. Per run (one attempt):
 generation, so a resumed run never collides), moving the interrupted attempt's raw journal to
 ``<run_root>/superseded/<timestamp>/``. The Slurm drain signal (``--signal=B:TERM@900``; ``install_drain_handler``)
 stops admissions, SIGTERMs in-flight harness groups (their attempts are ``killed_by_drain`` -> rerun on the next
-``--resume``), waits at most ``drain_wait_seconds`` (800) for settles and returns so the CLI can exit 0.
+``--resume``), waits at most ``drain_wait_seconds`` (540) for them to finish, terminates the survivors and returns by
+``drain_total_seconds`` (660) so the server close, tables and reconciliation fit in Slurm's 900 s (contract §10.33).
 """
 from __future__ import annotations
 
@@ -125,7 +126,12 @@ class RunnerSettings:
     h0_system_text: str
     user_template: str
     budget_sentence: str
-    drain_wait_seconds: float = 800.0
+    #: Slurm sends the drain signal 900 s before the kill (``--signal=B:TERM@900``). The runner's whole drain must
+    #: fit with the server close (<= 60 s), the tables and the reconciliation (<= ~90 s when drained) after it
+    #: (re-review finding 5, contract §10.33): in-flight harnesses get ``drain_wait_seconds`` to finish on their own,
+    #: the survivors are terminated, and everything -- the settle waits included -- ends by ``drain_total_seconds``.
+    drain_wait_seconds: float = 540.0
+    drain_total_seconds: float = 660.0
     poll_seconds: float = 2.0
     #: how long ``_attempt`` waits, after its harness is gone, for a call the proxy is still serving for it
     settle_wait_seconds: float = 300.0
@@ -201,21 +207,31 @@ class Runner:
         #: awaited before ``close_run`` so the record is finalised once, with every token counted (major 14).
         self.wait_for_run = wait_for_run
         self._draining = asyncio.Event()
+        self._drain_deadline: float | None = None             # monotonic; set by request_drain
         self._in_flight: dict[str, asyncio.subprocess.Process] = {}
         self._drain_killed: set[str] = set()
         self.attempts_path = settings.run_root / "state" / "dynorch_attempts.jsonl"
 
     # -- drain ---------------------------------------------------------------------------------------------
     def request_drain(self) -> None:
-        """Plan §6: stop admitting runs and LET THE IN-FLIGHT HARNESSES FINISH (``drain_wait_seconds``, 800 s).
+        """Plan §6: stop admitting runs and LET THE IN-FLIGHT HARNESSES FINISH (``drain_wait_seconds``, 540 s; the
+        plan's "wait <= 800 s" is an upper bound, contract §10.33 fits the whole drain into Slurm's 900 s).
 
         Killing them at once threw away up to ``concurrency`` paid runs at every 12 h job boundary and burned one
         of their two reruns each; only the survivors of the wait are terminated (``killed_by_drain``).
         """
         if not self._draining.is_set():
-            log.warning("dynorch runner: drain requested; %d in flight, waiting up to %.0f s for them to settle",
-                        len(self._in_flight), self.settings.drain_wait_seconds)
+            log.warning("dynorch runner: drain requested; %d in flight, waiting up to %.0f s for them to settle "
+                        "(everything done within %.0f s)", len(self._in_flight), self.settings.drain_wait_seconds,
+                        self.settings.drain_total_seconds)
+            self._drain_deadline = time.monotonic() + self.settings.drain_total_seconds
             self._draining.set()
+
+    def _drain_remaining(self) -> float | None:
+        """Seconds left before the drain deadline (``None`` when not draining)."""
+        if self._drain_deadline is None:
+            return None
+        return max(0.0, self._drain_deadline - time.monotonic())
 
     async def _terminate_in_flight(self) -> None:
         """The drain wait expired: SIGTERM (then SIGKILL) every harness still running; those attempts rerun."""
@@ -308,17 +324,19 @@ class Runner:
                 await waiter
             else:
                 summary.drained = True
+                natural = min(self.settings.drain_wait_seconds, self._drain_remaining() or 0.0)
                 try:
                     # shielded: a timeout here must not cancel the in-flight runs, it must terminate them cleanly
-                    await asyncio.wait_for(asyncio.shield(waiter), timeout=self.settings.drain_wait_seconds)
+                    await asyncio.wait_for(asyncio.shield(waiter), timeout=natural)
                 except asyncio.TimeoutError:
-                    log.error("dynorch runner: drain wait of %.0f s exceeded; terminating the survivors",
-                              self.settings.drain_wait_seconds)
+                    log.error("dynorch runner: drain wait of %.0f s exceeded; terminating the survivors", natural)
                     await self._terminate_in_flight()
                     try:
-                        await asyncio.wait_for(asyncio.shield(waiter), timeout=self.settings.sigkill_after + 60.0)
+                        # the survivors' attempts finish (settle wait bounded by the drain deadline) and close
+                        await asyncio.wait_for(asyncio.shield(waiter), timeout=max(1.0, self._drain_remaining() or 0.0))
                     except asyncio.TimeoutError:
-                        log.error("dynorch runner: runs still unfinished after the kill; cancelling them")
+                        log.error("dynorch runner: runs still unfinished at the drain deadline; cancelling them "
+                                  "(each is closed killed_by_drain)")
                         for task in tasks:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
@@ -409,6 +427,23 @@ class Runner:
             return record
 
     async def _attempt(self, spec: RunSpec) -> RunRecord:
+        """One attempt (module docstring). If the drain's last resort cancels it after ``open_run``, the attempt is
+        closed ``failed`` / ``killed_by_drain`` before the cancellation propagates, so no record is left
+        ``running`` -- which ``--resume`` would count as an interrupted attempt, burning a rerun (finding 5)."""
+        started = time.monotonic()
+        try:
+            return await self._attempt_body(spec)
+        except asyncio.CancelledError:
+            try:
+                opened = self.core.record_of(spec.run_key).status == "running"
+            except Exception:  # noqa: BLE001 - never opened
+                opened = False
+            if opened:
+                self._harness_gone(spec)
+                await asyncio.shield(self._close_drained(spec, started))
+            raise
+
+    async def _attempt_body(self, spec: RunSpec) -> RunRecord:
         settings = self.settings
         adapter = self.adapters.get(spec.harness)
         if adapter is None:
@@ -431,7 +466,8 @@ class Runner:
             self._write_launch_json(work, spec, plan, wall)
         except Exception as exc:
             log.error("dynorch runner: %s refused before start: %s", spec.run_key, exc)
-            return self._close_failed(spec, "refused_before_start", exc, started)
+            self._harness_gone(spec)
+            return await self._close_failed(spec, "refused_before_start", exc, started)
         killed_by_drain = False
         exhausted_kill = False
         try:
@@ -446,7 +482,9 @@ class Runner:
                                               work.stderr.read_bytes() if work.stderr.exists() else b"", work.root)
         except Exception as exc:  # noqa: BLE001 - ENOENT on the binary, an adapter bug, a full disk: one cell,
             log.exception("dynorch runner: %s failed to run: %s", spec.run_key, exc)   # not the whole 12 h job (8)
-            return self._close_failed(spec, "failed", exc, started)
+            self._harness_gone(spec)
+            return await self._close_failed(spec, "failed", exc, started)
+        self._harness_gone(spec)
         wall_seconds = time.monotonic() - started
         await self._await_settled(spec)
         status, rerun_reason, error = self._status_of(spec, timed_out=timed_out, killed_by_drain=killed_by_drain)
@@ -515,6 +553,9 @@ class Runner:
         ``close_run``, so the record is finalised ONCE with its tokens counted and its delivery verdict known
         (review major 14; the proxy never cancels such a call, review major 5)."""
         deadline = time.monotonic() + self.settings.settle_wait_seconds
+        remaining = self._drain_remaining()
+        if remaining is not None:                      # a drain bounds every settle wait (finding 5)
+            deadline = min(deadline, time.monotonic() + remaining)
         while time.monotonic() < deadline:
             try:
                 view = self.core.budget_view(spec.run_key)
@@ -532,9 +573,34 @@ class Runner:
             except Exception as exc:  # noqa: BLE001 - never lose a run over the wait
                 log.warning("dynorch runner: waiting for %s's parked calls failed: %s", spec.run_key, exc)
 
-    def _close_failed(self, spec: RunSpec, status: str, exc: BaseException, started: float) -> RunRecord:
+    def _harness_gone(self, spec: RunSpec) -> None:
+        """Tell the core the harness process is gone (re-review finding 6): calls still queued for the run are
+        refused instead of being granted and sent upstream for nobody."""
+        notify = getattr(self.core, "harness_exited", None)
+        if notify is not None:
+            try:
+                notify(spec.run_key)
+            except Exception as exc:  # noqa: BLE001 - bookkeeping must never lose the run
+                log.warning("dynorch runner: harness_exited(%s) failed: %s", spec.run_key, exc)
+
+    async def _close_drained(self, spec: RunSpec, started: float) -> None:
+        """Close an attempt the drain cancelled: ``failed`` / ``killed_by_drain`` (the frozen rule reruns it)."""
+        try:
+            record: RunRecord = self.core.close_run(spec.run_key, status="failed")
+        except Exception:  # noqa: BLE001 - the core may already have closed it
+            record = self.core.record_of(spec.run_key)
+            record.status = "failed"
+        record.rerun_reason = "killed_by_drain"
+        record.error = record.error or "cancelled by the drain deadline"
+        record.wall_seconds = round(time.monotonic() - started, 3)
+        self.store.save(record)
+        self._journal_attempt(record)
+
+    async def _close_failed(self, spec: RunSpec, status: str, exc: BaseException, started: float) -> RunRecord:
         """Close an attempt that never reached its harness (or died outside the proxy) as a stored record instead
-        of letting the exception escape into the stage's gather (review major 8)."""
+        of letting the exception escape into the stage's gather (review major 8). A call the proxy may still be
+        serving for it is awaited first (re-review minor 13), exactly as on the normal path."""
+        await self._await_settled(spec)
         try:
             record: RunRecord = self.core.close_run(spec.run_key, status=status)
         except Exception:  # noqa: BLE001 - the core may already have closed it
