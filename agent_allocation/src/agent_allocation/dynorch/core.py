@@ -3,8 +3,10 @@
 ``chat(run_key, request)`` does, in order: authenticate the run (open, not closed) -> classify the conversation by
 system text (root / solver / other; B1) -> fail-closed tool-surface check (any tool outside ``spec.allowed_tools`` ->
 ``tool_surface_violation``) -> the run's FIFO lock (one upstream call in flight per run; B2) -> reasoning
-re-injection + render (§4) -> duplicate protection (an identical rendered prompt already answered under this run
-is served from the cache with no upstream call; B9) -> the budget boundary: after the grace every call is
+re-injection + render (§4) -> duplicate protection (B9, contract §3 / §10.23: ONLY a call whose client went away
+before it was served is cached, keyed by (conversation, rendered prompt), and only an identical re-request of that
+same conversation is served from it -- two sub-agents with identical prompts are two conversations and each gets
+its own generation) -> the budget boundary: after the grace every call is
 ``budget_exhausted``; a cost guard (B6) or ``remaining < terminal_threshold`` (B4) gives the root conversation one
 TERMINAL call (thinking disabled, the verbatim terminal sentence, ``max_tokens = G``, no tools) and every other
 call HTTP 402 -> grant ``max_tokens = C - spent`` (E0: ``min(C - spent, root ceiling)``) -> ``Upstream.complete``
@@ -129,8 +131,14 @@ class _RunState:
     effective_root_sha: str | None = None
     conversations: dict[str, str] = field(default_factory=dict)
     cache: ReasoningCache = field(default_factory=ReasoningCache)
-    replies: dict[str, ChatReply] = field(default_factory=dict)      # rendered_prompt_sha256 -> reply (B9)
-    root_contents: list[str] = field(default_factory=list)
+    #: B9 (contract §3, §10.23): the replies of calls whose CLIENT WENT AWAY before receiving them, keyed by
+    #: (conversation_key, rendered_prompt_sha256). Only a disconnected call's reply is ever cached, and only an
+    #: identical re-request of the SAME conversation is served from it: two sub-agents with identical prompts are
+    #: two conversations and must each get their own generation (T = 1.0 sampling is the point of the study).
+    replies: dict[tuple[str, str], ChatReply] = field(default_factory=dict)
+    served_calls: dict[int, tuple[tuple[str, str], ChatReply]] = field(default_factory=dict)  # call_no -> key, reply
+    undelivered: set[int] = field(default_factory=set)                       # call_no the client never received
+    root_contents: list[tuple[int, str]] = field(default_factory=list)       # (call_no, visible content), B7
     closed: bool = False
     infrastructure_stop: bool = False
 
@@ -188,7 +196,7 @@ class ProxyCore:
             raise ValueError(f"close_run needs a terminal status, got {status!r}")
         record = state.record
         record.status = status
-        record.final_message = state.root_contents[-1] if state.root_contents else None
+        record.final_message = self._delivered_root_content(state)
         record.final_source = "proxy_root" if record.final_message is not None else "none"
         record.finished_at = utc_now()
         record.wall_seconds = time.monotonic() - state.started_monotonic
@@ -196,6 +204,38 @@ class ProxyCore:
         state.closed = True
         self.store.save(record)
         return record
+
+    @staticmethod
+    def _delivered_root_content(state: _RunState) -> str | None:
+        """B7: the last root-conversation reply with non-empty visible content that the wire layer actually HANDED
+        TO THE CLIENT. A reply produced after the harness died (the wire layer parks the shielded call) is charged
+        and journaled but never credited as the delivered answer."""
+        for call_no, content in reversed(state.root_contents):
+            if call_no not in state.undelivered and content.strip():
+                return content
+        return None
+
+    def mark_undelivered(self, run_key: str, call_no: int) -> None:
+        """The wire layer could not hand call ``call_no``'s reply to the client (disconnect / parked call).
+
+        The reply is cached for a genuine retry of that same request (B9) and is not eligible as the delivered
+        answer (B7) until a later delivery of the same call clears the mark.
+        """
+        state = self._runs.get(run_key)
+        if state is None:
+            return
+        state.undelivered.add(int(call_no))
+        entry = state.served_calls.get(int(call_no))
+        if entry is not None:
+            key, reply = entry
+            state.replies.setdefault(key, reply)
+
+    def mark_delivered(self, run_key: str, call_no: int) -> None:
+        """The wire layer handed call ``call_no``'s reply to the client (also on a duplicate served from cache)."""
+        state = self._runs.get(run_key)
+        if state is None:
+            return
+        state.undelivered.discard(int(call_no))
 
     def record_of(self, run_key: str) -> RunRecord:
         return self._state(run_key, allow_closed=True).record
@@ -321,9 +361,9 @@ class ProxyCore:
             effort = template_effort(request.requested_reasoning_effort, configured=self.settings.reasoning_effort)
             prompt = render_chat(messages, tools=request.tools, reasoning_effort=effort)
             prompt_sha = rendered_sha256(prompt)
-            cached = state.replies.get(prompt_sha)
-            if cached is not None:
-                return self._serve_duplicate(state, cached, conv_key, conv_class, request, waited)
+            cached = state.replies.get((conv_key, prompt_sha))
+            if cached is not None:      # B9: only a disconnected call's reply is in here, and only for this
+                return self._serve_duplicate(state, cached, conv_key, conv_class, request, waited)  # conversation
             state.record.reinjection_hits += hits
             state.record.reinjection_misses += misses
             if budget.closed:
@@ -514,7 +554,7 @@ class ProxyCore:
             log.warning("dynorch core: %s call %d spawned with subagent_type outside {solver}: %s", spec.run_key,
                         call_no, non_solver)
         if root and parse.content.strip():
-            state.root_contents.append(parse.content)
+            state.root_contents.append((call_no, parse.content))
         reasoning_tokens = usage.reasoning_tokens
         cached_prompt = usage.cached_prompt_tokens
         if answer_usage is not None:
@@ -545,7 +585,7 @@ class ProxyCore:
         self._journal(state, request, prompt_sha, len(prompt), phases, reply, parse, grant, record,
                       non_solver_spawns=non_solver)
         self._account(state, record, parse, spawn_calls, cost, kind)
-        state.replies[prompt_sha] = reply
+        state.served_calls[call_no] = ((conv_key, prompt_sha), reply)   # cached only if it is never delivered (B9)
         self.store.save(state.record)
         return reply
 
@@ -594,7 +634,7 @@ class ProxyCore:
         finish = "tool_calls" if parse.calls else "stop"
         state.cache.insert(answer.reasoning, content=parse.content, call_ids=[c.id for c in parse.calls])
         if parse.content.strip():
-            state.root_contents.append(parse.content)
+            state.root_contents.append((call_no, parse.content))
         cost = Decimal(answer.cost_usd)
         record = CallRecord(
             call_no=call_no, conversation_key=conv_key, conversation_class=conv_class,
@@ -617,7 +657,7 @@ class ProxyCore:
         self._journal(state, request, prompt_sha, len(prompt), list(answer.phases), reply, parse, grant, record)
         self._account(state, record, parse, 0, cost, "terminal")
         state.record.exhausted = True
-        state.replies[prompt_sha] = reply
+        state.served_calls[call_no] = ((conv_key, prompt_sha), reply)
         self.store.save(state.record)
         return reply
 

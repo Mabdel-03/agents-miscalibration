@@ -236,6 +236,35 @@ async def test_subagent_header_sets_the_chat_request_marker():
     assert [c.conversation_class for c in core.runs[RUN].record.calls_detail] == ["root", "solver", "root"]
 
 
+class DeliveryCore(StubProxyCore):
+    """Records the wire layer's delivery verdicts (contract §10.23: the core caches a reply for a retry only when
+    the client never received it, and only a delivered reply can be the delivered answer)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.delivery: list[tuple[str, int, bool]] = []
+
+    def mark_delivered(self, run_key: str, call_no: int) -> None:
+        self.delivery.append((run_key, int(call_no), True))
+
+    def mark_undelivered(self, run_key: str, call_no: int) -> None:
+        self.delivery.append((run_key, int(call_no), False))
+
+
+async def test_a_written_reply_is_reported_delivered():
+    core = DeliveryCore(lambda run, req, n: Scripted(content="<final>5</final>", completion_tokens=10))
+    core.open_run(_spec(), root_system_text=SYSTEM, subagent_system_text=None)
+    async with ProxyServer(core, keepalive_seconds=5) as srv:
+        async with httpx.AsyncClient(base_url=srv.base_url) as client:
+            assert (await client.post(f"/r/{RUN}/v1/chat/completions", headers=_headers(),
+                                      json=_chat_body())).status_code == 200
+            assert (await client.post(f"/r/{RUN}/v1/chat/completions", headers=_headers(),
+                                      json=_chat_body(stream=True))).status_code == 200
+    assert core.delivery == [(RUN, 1, True), (RUN, 2, True)]
+    assert all(e.delivered for e in srv.reply_log.served[RUN])
+    assert srv.reply_log.delivered(RUN) == ("<final>5</final>", "proxy_root")
+
+
 async def test_client_disconnect_does_not_cancel_the_core_call():
     finished = asyncio.Event()
 
@@ -244,7 +273,7 @@ async def test_client_disconnect_does_not_cancel_the_core_call():
         finished.set()
         return Scripted(content="<final>1</final>", completion_tokens=10)
 
-    core = StubProxyCore(script)
+    core = DeliveryCore(script)
     core.open_run(_spec(), root_system_text=SYSTEM, subagent_system_text=None)
     async with ProxyServer(core, keepalive_seconds=0.1) as srv:
         reader, writer = await asyncio.open_connection("127.0.0.1", srv.port)
@@ -257,8 +286,12 @@ async def test_client_disconnect_does_not_cancel_the_core_call():
         writer.close()
         await writer.wait_closed()
         await asyncio.wait_for(finished.wait(), 5)
-        await asyncio.sleep(0.1)
+        await srv.wait_idle(5)
         assert core.runs[RUN].record.calls == 1 and core.runs[RUN].record.completion_total == 10
+        # the paid reply nobody received: cached for a retry (B9), never the delivered answer (B7)
+        assert core.delivery == [(RUN, 1, False)]
+        assert [e.delivered for e in srv.reply_log.served[RUN]] == [False]
+        assert srv.reply_log.delivered(RUN) == (None, "none")
 
 
 async def test_internal_error_is_a_loud_500(server: ProxyServer):

@@ -142,8 +142,8 @@ class TimedReplyLog(ReplyLog):
         super().__init__()
         self.timed: dict[str, list[TimedEvent]] = {}
 
-    def record(self, run_key: str, reply: ChatReply) -> None:
-        super().record(run_key, reply)
+    def record(self, run_key: str, reply: ChatReply, *, delivered: bool = True) -> None:
+        super().record(run_key, reply, delivered=delivered)
         self.timed.setdefault(run_key, []).append(TimedEvent(time.monotonic(), "reply", 200, None,
                                                              reply.call.conversation_class))
 

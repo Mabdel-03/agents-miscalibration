@@ -279,12 +279,15 @@ async def test_upstream_402_is_an_infrastructure_stop_not_an_exhaustion(make_env
 
 # ---- duplicates (B9) ------------------------------------------------------------------------------------------------
 
-async def test_duplicate_re_request_is_served_from_the_cache_with_one_upstream_call(make_env):
+async def test_a_disconnected_reply_is_cached_and_its_identical_retry_is_served_from_it(make_env):
+    """B9 (contract §3): the cache holds ONLY the reply of a call whose client went away after ``mark_sent``; an
+    identical re-request of that same conversation is then served from it with no new upstream call."""
     script = FakeScript()
     script.default = FakeReply(content=FINAL, think_tokens=200)
     env = make_env(script)
     spec = env.open(make_spec(rung=4))
     first = await env.core.chat(spec.run_key, make_request(root_messages()))
+    env.core.mark_undelivered(spec.run_key, first.call.call_no)      # the wire layer could not write it
     again = await env.core.chat(spec.run_key, make_request(root_messages(), stream=True))
     assert len(env.think_calls()) == 1
     assert again.content == first.content and again.tool_calls == first.tool_calls
@@ -298,6 +301,56 @@ async def test_duplicate_re_request_is_served_from_the_cache_with_one_upstream_c
     # a different prompt is not a duplicate
     other = await env.core.chat(spec.run_key, make_request(root_messages(task="TASK\nother\n")))
     assert not other.call.duplicate_served and len(env.think_calls()) == 2
+
+
+async def test_a_delivered_reply_is_never_reused_for_a_later_identical_request(make_env):
+    """Review blocker 3: without the disconnect condition any second request with the same rendered prompt was
+    served the first answer. A reply the client received is a completed exchange; asking again is a new call."""
+    script = FakeScript()
+    script.default = FakeReply(content=FINAL, think_tokens=200)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=16))
+    first = await env.core.chat(spec.run_key, make_request(root_messages()))
+    again = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert len(env.think_calls()) == 2 and not again.call.duplicate_served
+    assert again.call.granted_max_tokens == spec.cap_tokens - first.usage.completion_tokens
+    record = env.core.record_of(spec.run_key)
+    assert record.calls == 2 and record.duplicates_served == 0
+    assert record.completion_total == first.usage.completion_tokens + again.usage.completion_tokens
+
+
+async def test_two_sub_agents_with_identical_prompts_each_get_their_own_generation(make_env):
+    """Review blocker 3 (scientific correctness): best-of-n delegation spawns several solvers with the SAME task
+    text; their rendered prompts are byte-identical. Each conversation must draw its own sample -- one cached
+    answer for all of them would delete the diversity the study measures and under-count C."""
+    script = FakeScript()
+    script.default = FakeReply(content="<final>1</final>", think_tokens=200)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=16))
+    first = await env.core.chat(spec.run_key, solver_request("solve the whole problem"))
+    second = await env.core.chat(spec.run_key, solver_request("solve the whole problem"))
+    assert len(env.think_calls()) == 2, "two sub-agents were served one sample"
+    assert not first.call.duplicate_served and not second.call.duplicate_served
+    assert second.call.granted_max_tokens == spec.cap_tokens - first.usage.completion_tokens > 0
+    record = env.core.record_of(spec.run_key)
+    assert record.calls_by_class["solver"] == 2 and record.duplicates_served == 0
+    assert record.completion_total == first.usage.completion_tokens + second.usage.completion_tokens
+
+
+async def test_a_cached_disconnected_reply_is_not_served_to_another_conversation(make_env):
+    """The cache key carries the conversation: a solver whose reply was never delivered must not answer the root
+    (or another solver) even when the rendered prompts coincide."""
+    script = FakeScript()
+    script.default = FakeReply(content="<final>1</final>", think_tokens=200)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=16))
+    first = await env.core.chat(spec.run_key, solver_request("same text"))
+    env.core.mark_undelivered(spec.run_key, first.call.call_no)
+    retry = await env.core.chat(spec.run_key, solver_request("same text"))
+    assert retry.call.duplicate_served and len(env.think_calls()) == 1
+    # the same prompt text under the ROOT system prompt is a different conversation: a fresh generation
+    root_same = await env.core.chat(spec.run_key, make_request(root_messages(task="same text"), tools=()))
+    assert not root_same.call.duplicate_served and len(env.think_calls()) == 2
 
 
 # ---- re-injection (§4) ------------------------------------------------------------------------------------------------
