@@ -25,6 +25,8 @@ RUNG_TICKS = [1, 2, 4, 8, 16, 25]
 PANELS = [*c.BENCH_ORDER, "macro"]
 SHORT = {"aime": "AIME 2025+2026", "hmmt": "HMMT Feb 2025+2026", "omni_math_hard": "Omni-MATH ($\\geq$7)",
          "gpqa_diamond": "GPQA-Diamond", "macro": "Macro (4 benchmarks)"}
+WRAPPED = {"aime": "AIME\n2025+2026", "hmmt": "HMMT Feb\n2025+2026", "omni_math_hard": "Omni-MATH\n($\\geq$7)",
+           "gpqa_diamond": "GPQA-Diamond", "macro": "Macro\n(4 benchmarks)"}
 
 
 def style():
@@ -70,19 +72,22 @@ def arm_style(arm):
 
 # ------------------------------------------------------------------ d1 design
 def d1_design(N, cfg, arms, out):
-    fig, ax = plt.subplots(figsize=(6.8, 2.6))
+    fig, ax = plt.subplots(figsize=(7.0, 2.4))
     ax.axis("off")
     rungs = [int(r) for r in cfg["dynorch"]["rungs"]]
-    ax.set_xlim(-1.6, len(rungs) + 3.2)
-    ax.set_ylim(-0.8, len(arms) + 0.8)
+    # row labels sit right-aligned in their own column left of the first box (boxes span j - 0.45 .. j + 0.45)
+    ax.set_xlim(-3.1, len(rungs) + 3.6)
+    ax.set_ylim(-0.6, len(arms) + 0.6)
     for j, k in enumerate(rungs):
-        ax.text(j, len(arms), f"$C={k}A$\n{k * c.A0:,}", ha="center", va="bottom", fontsize=7)
+        ax.text(j, len(arms) - 0.45, f"$C={k}A$\n{k * c.A0:,}", ha="center", va="bottom", fontsize=7)
     for i, arm in enumerate(reversed(arms)):
-        ax.text(-1.5, i, c.ARM_LABEL.get(arm, arm), ha="left", va="center", fontsize=7.5, color=c.ARM_COLOR.get(arm, "k"))
+        label = c.ARM_LABEL.get(arm, arm).replace(" harness-free control", "\nharness-free control")
+        ax.text(-0.62, i, label, ha="right", va="center", fontsize=7.5,
+                color="#000000" if arm == "H0" else c.ARM_COLOR.get(arm, "k"), linespacing=1.1)
         for j, k in enumerate(rungs):
             n = N["n_runs_by_arm_rung"].get(f"{arm}/{k}", 0)
             comp = N["completeness"].get(f"{arm}/{k}")
-            face = "#EEEEEE" if comp is None else plt.cm.Greys(0.15 + 0.5 * comp)
+            face = "#EEEEEE" if comp is None else plt.cm.Greys(0.08 + 0.25 * comp)
             ax.add_patch(plt.Rectangle((j - 0.45, i - 0.4), 0.9, 0.8, facecolor=face, edgecolor="#888888", lw=0.5))
             ax.text(j, i, f"{n}", ha="center", va="center", fontsize=7)
     text = (f"one run per cell; $A$ = {c.A0:,} completion tokens\n"
@@ -90,7 +95,7 @@ def d1_design(N, cfg, arms, out):
             f"one call in flight per run; grant = $C -$ spent\n"
             f"grace $G$ = {cfg['dynorch']['grace_tokens']:,} outside $C$, root only, once\n"
             f"primary family at $k$ = 16, Holm over 4; seed {c.SEED}")
-    ax.text(len(rungs) + 0.1, len(arms) / 2 - 0.5, text, fontsize=6.8, va="center", ha="left")
+    ax.text(len(rungs) - 0.3, (len(arms) - 1) / 2, text, fontsize=6.8, va="center", ha="left")
     ax.set_title("Cells and budget semantics (numbers: runs with a terminal record)", fontsize=8)
     save(fig, out, "d1_design")
 
@@ -152,6 +157,13 @@ def _frontier(front, measure, xlabel, name, out, log=True):
                         textcoords="offset points", color=c.ARM_COLOR[arm])
     if log:
         ax.set_xscale("log")
+        ax.xaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+        if measure == "x_tokens":
+            ticks = [1000, 2000, 5000, 10000, 20000, 50000]
+            ax.set_xticks(ticks)
+            ax.set_xticklabels([f"{t // 1000}k" for t in ticks])
+        else:
+            ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Macro accuracy")
     ax.set_ylim(0, 1.02)
@@ -174,8 +186,8 @@ def d5_per_benchmark(N, acc, arms, best_non_deep, out):
         cols.append((best_non_deep[16], c.FAMILY_COLOR.get(best_non_deep[16].split("/")[0], "#999999")))
     cols.append(("deep/16", c.FAMILY_COLOR["deep"]))
     cols += [(f"{a}/16", c.ARM_COLOR[a]) for a in arms if f"{a}/16" in acc]
-    cols = [(n, col) for n, col in cols if n in acc]
-    fig, ax = plt.subplots(figsize=(7.0, 2.8))
+    cols = [(n, col) for n, col in dict(cols).items() if n in acc]  # best non-deep may equal private_single/16
+    fig, ax = plt.subplots(figsize=(7.0, 3.0))
     grid(ax)
     width = 0.8 / len(cols)
     for j, (n, col) in enumerate(cols):
@@ -186,10 +198,11 @@ def d5_per_benchmark(N, acc, arms, best_non_deep, out):
         ax.bar(xs, ys, width * 0.92, color="white" if hollow else col, edgecolor=col, linewidth=0.8, label=n,
                yerr=err, error_kw=dict(lw=0.6, capsize=1.2, ecolor="#444444"), zorder=3)
     ax.set_xticks(np.arange(len(PANELS)))
-    ax.set_xticklabels([SHORT[lv] for lv in PANELS], fontsize=7)
+    ax.set_xticklabels([WRAPPED[lv] for lv in PANELS], fontsize=7)
     ax.set_ylabel("Delivered accuracy at $C = 16A$")
     ax.set_ylim(0, 1.05)
-    ax.legend(ncol=4, fontsize=6, loc="upper left")
+    ax.legend(ncol=len(cols), fontsize=6, loc="lower center", bbox_to_anchor=(0.5, 1.0), handlelength=1.2,
+              columnspacing=1.0)
     save(fig, out, "d5_per_benchmark")
 
 
@@ -230,8 +243,9 @@ def d7_cap_binding(current, arms, out):
         ax.set_title(f"$C={k}A$", fontsize=7.5)
         ax.set_xlabel("realized / $C$")
     axes[0].set_ylabel("runs")
-    axes[0].legend(fontsize=5.5)
-    fig.tight_layout()
+    h, l = axes[0].get_legend_handles_labels()
+    fig.legend(h, l, loc="upper center", ncol=len(l), fontsize=6.5, bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
     save(fig, out, "d7_cap_binding")
 
 
@@ -255,14 +269,14 @@ def d8_provider_sensitivity(N, out):
     ax.set_yticklabels(contrasts, fontsize=7)
     ax.invert_yaxis()
     ax.set_xlabel("difference (points, macro over the items of the subset)")
-    ax.legend(fontsize=6, loc="lower right")
+    ax.legend(fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=len(subsets))
     save(fig, out, "d8_provider_sensitivity")
 
 
 # ------------------------------------------------------------------ d9 repeat agreement
 def d9_repeat_agreement(N, F, out):
-    fig, ax = plt.subplots(figsize=(4.2, 2.6))
     cells = N["repeat_agreement"]["cells"]
+    fig, ax = plt.subplots(figsize=(4.2, 2.6) if cells else (4.2, 0.4))
     if not cells:
         ax.axis("off")
         ax.text(0.5, 0.5, "No second repeat (E1) in this run: repeat agreement is not available.",

@@ -15,6 +15,7 @@ Gate 2 re-fit. ``run_analysis`` is the callable entry point used by ``tests/unit
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import os
@@ -90,6 +91,7 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
     # ------------------------------------------------------------ inputs
     runs = pd.read_parquet(run / "tables" / "dynorch_runs.parquet")
     calls = pd.read_parquet(run / "tables" / "dynorch_calls.parquet")
+    runs_all = runs.copy()  # every stage (canary, pilot, main): the run facts and the non-delegation counts
     po_h = pd.read_parquet(run / "tables" / "policy_outcomes_dynorch.parquet")
     pc_h = pd.read_parquet(run / "tables" / "policy_costs_dynorch.parquet")
     pc_l = c.fc.T(str(ladder), "policy_costs")
@@ -208,7 +210,14 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
              "n": int(r["n_items"]), "n_complete": int(r["n_complete"]), "status": r["status"], "role": r["role"],
              "bound_lo_pts": pts(r["bound_lower"]), "bound_hi_pts": pts(r["bound_upper"]),
              "reading": _reading(r)}
+        e["reading_words"] = READING_WORDS.get(e["reading"]) if e["reading"] else None
+        e["p_holm_tex"] = _p_tex(e["p_holm"], r["p_holm"])
         N["primary"][r["contrast"]] = e
+    for tag, other in (("deep", f"deep/{PRIMARY_RUNG}"), ("sample", f"sample/{PRIMARY_RUNG}")):
+        words = {N["primary"].get(f"{a}/{PRIMARY_RUNG}-{other}", {}).get("reading_words") for a in ("H1", "H3")}
+        # one phrase when both readings agree; otherwise each harness's own reading
+        N.setdefault("primary_reading_both", {})[tag] = (words.pop() if len(words) == 1 else "; ".join(
+            f"{a}: {N['primary'].get(f'{a}/{PRIMARY_RUNG}-{other}', {}).get('reading_words')}" for a in ("H1", "H3")))
     N["primary_family"] = list(cfg["statistics"]["primary_family"])
     N["anchor"] = str(cfg["statistics"]["anchor_reported_first"])
     N["primary_p_reported"] = all(N["primary"][k]["p_holm"] is not None for k in N["primary_family"])
@@ -412,6 +421,24 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
     N["refit_total_core_usd"] = round(float(sum(r["cost_usd_per_run_refit"] * (r["planned_runs"] or 0)
                                                 for _, r in refit.iterrows())), 2)
 
+    # ------------------------------------------------------------ interpretation (behaviour, decomposition, F2 vs deep)
+    N["harness_display"] = {a: _display_name(a, N["harness_versions"].get(a, "")) for a in arms if a != "H0"}
+    dyn = cfg["dynorch"]
+    N["design"] = {"A": int(dyn["a_tokens"]), "grace_tokens": int(dyn["grace_tokens"]),
+                   "cap16": int(PRIMARY_RUNG * int(dyn["a_tokens"])), "n_primary": int(cfg["statistics"]["n_primary"]),
+                   "items_per_bench": int(min(N["n_items_by_bench"].values())),
+                   "n_benchmarks": len(N["n_items_by_bench"]), "rung_max": max(int(k) for k in dyn["rungs"]),
+                   "e0_root_ceiling": str(dyn["extension_arms"]["H1c"]["root_call_ceiling"]),
+                   "tool_surface": str(dyn["tool_surface"]), "model": _model_label(cfg["primary_model"]),
+                   "completeness_min": COMPLETENESS_MIN,
+                   "contingency_share": float(cfg["budget"]["forecast_contingency_share"]),
+                   "allowed_tools": {a: list(dyn["arms"][a]["allowed_tools"]) for a in dyn["arms"]}}
+    N["behaviour"] = behaviour_numbers(runs_all, current, calls_cur, run, partition)
+    N["decomposition"] = decomposition_numbers(F.oc, N, arms, replicates=replicates, items=items)
+    rvd = realized_vs_deep(F.oc, N, base_names, replicates=replicates, items=items)
+    N["realized_vs_deep"] = rvd
+    N["run_facts"] = run_facts(run, runs_all, current, calls, partition)
+
     # ------------------------------------------------------------ headline shortcuts
     N["headline"] = {}
     for a in arms:
@@ -442,6 +469,281 @@ def run_analysis(run: str | Path, ladder: str | Path, config: str | Path, out: s
         fg.d8_provider_sensitivity(N, out)
         fg.d9_repeat_agreement(N, F, out)
     return N
+
+
+# ---------------------------------------------------------------------------------------------------- interpretation
+
+HARNESS_NAME = {"H1": "OpenClaude", "H3": "Codex CLI"}
+READING_WORDS = {"loses_to_fixed_rule": "dynamic orchestration loses to the fixed rule",
+                 "rule_incomplete": "the fixed rule is incomplete",
+                 "inconclusive": "inconclusive", "above_baseline": "above the sampling baseline",
+                 "below_baseline": "below the sampling baseline"}
+
+
+def _model_label(slug: str) -> str:
+    """``"qwen/qwen3.8-27b"`` -> ``"Qwen3.8-27B"``."""
+    name = str(slug).split("/")[-1]
+    head, _, size = name.partition("-")
+    return head[:1].upper() + head[1:] + ("-" + size.upper() if size else "")
+
+
+def _p_tex(p_rounded, p_raw) -> str | None:
+    """Holm p for the prose, in math mode: ``= 0.004``, or ``< 0.001`` when it rounds to zero."""
+    if p_raw is None or pd.isna(p_raw):
+        return None
+    return "< 0.001" if float(p_raw) < 0.0005 else f"= {float(p_rounded):.3f}"
+
+
+def _display_name(arm: str, version: str) -> str:
+    """``"0.13.0 (OpenClaude)"`` -> ``"OpenClaude 0.13.0"``; ``"codex-cli 0.156.1"`` -> ``"Codex CLI 0.156.1"``."""
+    m = re.search(r"\d+(?:\.\d+)+", str(version))
+    return f"{HARNESS_NAME.get(arm, arm)} {m.group(0)}" if m else f"{HARNESS_NAME.get(arm, arm)} {version}"
+
+
+def _contrast_row(oc: pd.DataFrame, name: str, terms, *, replicates: int, items) -> dict:
+    """One descriptive linear contrast through ``analysis/contrasts.evaluate_contrast`` (the machinery of the
+    anchor and the primary family: one population, studentized item-cluster bootstrap; no p-value, role
+    ``descriptive``). Returns the macro estimate and 95% CI in points."""
+    from agent_allocation.analysis.contrasts import LinearContrast, evaluate_contrast
+    lc = LinearContrast(name, tuple(("main", n, float(w)) for n, w in terms), "main", "descriptive",
+                        f"{name}, delivered accuracy (macro, paired item bootstrap)")
+    rows, _ = evaluate_contrast(oc, lc, replicates=replicates, study_seed=c.SEED, items=set(items), n_primary=4)
+    r = next(r for r in rows if r["level"] == "macro")
+    lo = r.get("ci95_lo") if r.get("status") == "complete" else r.get("ci95_percentile_lo")
+    hi = r.get("ci95_hi") if r.get("status") == "complete" else r.get("ci95_percentile_hi")
+    return {"pts": pts(r.get("estimate")), "lo": pts(lo), "hi": pts(hi), "status": r.get("status"),
+            "n": int(r.get("n_items") or 0), "n_complete": int(r.get("n_complete") or 0)}
+
+
+def behaviour_numbers(runs_all: pd.DataFrame, current: pd.DataFrame, calls_cur: pd.DataFrame, run: Path,
+                      partition: str) -> dict:
+    """What the harnesses did: calls per run, spawns, tool calls, per arm and per stage; the tool behind every
+    second call of a Codex run (read from the raw call journal of the scored attempt)."""
+    out: dict[str, Any] = {"by_arm": {}}
+    tool_runs = set(calls_cur[calls_cur["tool_calls"].fillna(0) > 0]["run_key"])
+    for a, g in current.groupby("arm"):
+        out["by_arm"][a] = {"runs": int(len(g)), "one_call": int((g["calls"] == 1).sum()),
+                            "multi_call": int((g["calls"] > 1).sum()), "max_calls": int(g["calls"].max()),
+                            "spawn_runs": int((g["spawns"] > 0).sum()), "spawns": int(g["spawns"].sum()),
+                            "tool_call_runs": int(g["run_key"].isin(tool_runs).sum()),
+                            "multi_call_share": r3((g["calls"] > 1).mean())}
+    har = current[current["arm"] != "H0"]
+    out["core_runs"] = int(len(current))
+    out["core_spawn_runs"] = int((current["spawns"] > 0).sum())
+    out["core_harness_runs"] = int(len(har))
+    out["core_harness_spawn_runs"] = int((har["spawns"] > 0).sum())
+    main_all = runs_all[runs_all["partition"] == partition]
+    out["main_all_attempts"] = int(len(main_all))
+    out["main_all_attempts_spawn_runs"] = int((main_all["spawns"] > 0).sum())
+    for stage in ("canary", "pilot"):
+        g = runs_all[(runs_all["partition"] == stage) & (runs_all["arm"] != "H0")]
+        out[f"{stage}_harness_runs"] = int(len(g))
+        out[f"{stage}_harness_spawn_runs"] = int((g["spawns"] > 0).sum())
+        out[f"{stage}_harness_multi_call"] = int((g["calls"] > 1).sum())
+    # the core study's stages only: extension stages (ext_*) share the tables but are reported separately
+    allh = runs_all[runs_all["partition"].isin(["canary", "pilot", partition]) & (runs_all["arm"] != "H0")]
+    out["all_stages_harness_runs"] = int(len(allh))
+    out["all_stages_harness_spawn_runs"] = int((allh["spawns"] > 0).sum())
+    # Codex second calls: which tool the first call invoked before the second (raw journal of call 2)
+    multi = current[(current["arm"] == "H3") & (current["calls"] > 1)]
+    names_per_run, unreadable = [], 0
+    for _, r in multi.iterrows():
+        d = run / "raw" / partition / r["arm"] / str(int(r["rung"])) / str(int(r["repeat"])) / str(r["item_id"]).replace("/", "__")
+        files = sorted(d.glob(f"a{int(r['attempt'])}*/call_0002.json.gz"))
+        if not files:
+            unreadable += 1
+            continue
+        with gzip.open(files[-1], "rt") as fh:
+            doc = json.load(fh)
+        names = []
+        for m in (doc.get("harness_request") or {}).get("messages") or []:
+            for tc in m.get("tool_calls") or []:
+                names.append((tc.get("function") or tc).get("name"))
+        names_per_run.append(names)
+    planning = sum(1 for n in names_per_run if n and set(n) == {"update_plan"})
+    out["H3_second_call"] = {"runs": int(len(multi)), "after_update_plan": int(planning),
+                             "after_other_tool": int(sum(1 for n in names_per_run if n and set(n) != {"update_plan"})),
+                             "unreadable": int(unreadable),
+                             "tool_names": sorted({x for n in names_per_run for x in n if x}),
+                             "rungs": sorted(int(k) for k in multi["rung"].unique()),
+                             "share": r3(len(multi) / max(1, (current["arm"] == "H3").sum()))}
+    out["H3_second_call"]["all_planning"] = bool(multi.shape[0] and planning == len(multi))
+    out["H3_second_call"]["first_tool"] = out["H3_second_call"]["tool_names"][0] if out["H3_second_call"]["tool_names"] else "none"
+    return out
+
+
+def decomposition_numbers(oc: pd.DataFrame, N: dict, arms, *, replicates: int, items) -> dict:
+    """H/16 - deep/16 = (H0/16 - deep/16) + (H/16 - H0/16): the natural-stop part (the anchor) and the
+    scaffolding part, the latter per harness through the same contrast machinery; descriptive, no p-values."""
+    out = {}
+    anchor = N["primary"].get(f"H0/{PRIMARY_RUNG}-deep/{PRIMARY_RUNG}")
+    for a in arms:
+        if a == "H0" or f"{a}/{PRIMARY_RUNG}-deep/{PRIMARY_RUNG}" not in N["primary"]:
+            continue
+        total = N["primary"][f"{a}/{PRIMARY_RUNG}-deep/{PRIMARY_RUNG}"]
+        sc = _contrast_row(oc, f"{a}/{PRIMARY_RUNG}-H0/{PRIMARY_RUNG}",
+                           [(f"{a}/{PRIMARY_RUNG}", 1.0), (f"H0/{PRIMARY_RUNG}", -1.0)], replicates=replicates, items=items)
+        out[a] = {"total_pts": total["est_pts"], "total_lo": total["lo_pts"], "total_hi": total["hi_pts"],
+                  "anchor_pts": anchor["est_pts"], "anchor_lo": anchor["lo_pts"], "anchor_hi": anchor["hi_pts"],
+                  "scaffold_pts": sc["pts"], "scaffold_lo": sc["lo"], "scaffold_hi": sc["hi"],
+                  "scaffold_status": sc["status"], "scaffold_ci_covers_zero": bool(sc["lo"] <= 0 <= sc["hi"]),
+                  "prompt_tokens": N["harness_prompt_tokens"].get(a, {}).get("mean"),
+                  "prompt_tokens_k": round(N["harness_prompt_tokens"][a]["mean"] / 1000, 1)
+                  if N["harness_prompt_tokens"].get(a, {}).get("mean") is not None else None,
+                  "anchor_plus_scaffold_pts": round(anchor["est_pts"] + sc["pts"], 1),
+                  "scaffold_share_of_gap": r3(sc["pts"] / total["est_pts"]) if total["est_pts"] else None}
+    return out
+
+
+def realized_vs_deep(oc: pd.DataFrame, N: dict, base_names, *, replicates: int, items) -> dict:
+    """Each harness cell against the deep-call curve at the SAME realized completion tokens per item (F2): the deep
+    accuracy log-linearly interpolated between the two adjacent deep rungs (by realized tokens), macro. The paired
+    CI is the linear contrast ``cell - (1-w) deep_lo - w deep_hi`` through the same machinery (descriptive)."""
+    f2 = N["frontier_f2"]
+    deep = sorted([(f2[n]["x_tokens"], n) for n in f2 if n.startswith("deep/")])
+    out: dict[str, Any] = {"cells": {}, "deep_points": [n for _, n in deep],
+                           "deep_min_x": round(deep[0][0], 1) if deep else None}
+    for n in base_names:
+        if n not in f2:
+            continue
+        x, acc_h = f2[n]["x_tokens"], f2[n]["acc"]
+        pair = next(((a, b) for a, b in zip(deep, deep[1:]) if a[0] <= x <= b[0]), None)
+        if pair is None:
+            out["cells"][n] = {"x_tokens": round(x, 1), "acc": acc_h, "in_range": False}
+            continue
+        (xa, na), (xb, nb) = pair
+        w = math.log(x / xa) / math.log(xb / xa)
+        interp = (1 - w) * f2[na]["acc"] + w * f2[nb]["acc"]
+        d = _contrast_row(oc, f"{n}-deep@x", [(n, 1.0), (na, -(1 - w)), (nb, -w)], replicates=replicates, items=items)
+        out["cells"][n] = {"x_tokens": round(x, 1), "acc": acc_h, "in_range": True, "deep_lo": na, "deep_hi": nb,
+                           "w": round(w, 3), "deep_interp": r3(interp), "diff_pts": d["pts"], "lo": d["lo"],
+                           "hi": d["hi"], "status": d["status"]}
+    inr = {n: e for n, e in out["cells"].items() if e["in_range"]}
+    out["n_in_range"] = len(inr)
+    out["below_range"] = [n for n, e in out["cells"].items() if not e["in_range"]]
+    out["n_below_range"] = len(out["below_range"])
+    out["n_ci_below"] = sum(1 for e in inr.values() if e["hi"] < 0)
+    out["n_ci_above"] = sum(1 for e in inr.values() if e["lo"] > 0)
+    out["n_ci_covers"] = out["n_in_range"] - out["n_ci_below"] - out["n_ci_above"]
+    out["ci_above_cells"] = [n for n, e in inr.items() if e["lo"] > 0]
+    out["ci_above_first"] = out["ci_above_cells"][0] if out["ci_above_cells"] else "none"
+    out["ci_below_cells"] = [n for n, e in inr.items() if e["hi"] < 0]
+    har = {n: e for n, e in inr.items() if c.arm_of(n) != "H0"}
+    out["harness_n"] = len(har)
+    out["harness_ci_excludes_zero"] = sum(1 for e in har.values() if e["hi"] < 0 or e["lo"] > 0)
+    out["harness_min_pts"] = min((e["diff_pts"] for e in har.values()), default=None)
+    out["harness_max_pts"] = max((e["diff_pts"] for e in har.values()), default=None)
+    out["by_arm"] = {}
+    for a in sorted({c.arm_of(n) for n in inr}):
+        v = [e["diff_pts"] for n, e in inr.items() if c.arm_of(n) == a]
+        out["by_arm"][a] = {"mean_pts": round(float(np.mean(v)), 1), "min_pts": min(v), "max_pts": max(v),
+                            "n": len(v)}
+    return out
+
+
+def _utc(ts: str) -> pd.Timestamp:
+    return pd.Timestamp(ts).tz_convert("UTC") if pd.Timestamp(ts).tzinfo else pd.Timestamp(ts, tz="UTC")
+
+
+RUN_FACT_SOURCES = ("state/ledger_journal.jsonl", "state/run_decisions.jsonl", "superseded_executions/canary",
+                    "gates/gate1_canary.json", "gates/gate2_pilot.json", "gates/gate4_main.json")
+
+
+def run_facts(run: Path, runs_all: pd.DataFrame, current: pd.DataFrame, calls: pd.DataFrame, partition: str) -> dict:
+    """Spend by stage from the ledger journal, the gate history and owner decisions, and the in-run defects, all
+    read from the run root (read-only). A source that is absent (a synthetic test root) contributes what an empty
+    source says (no ledger events: $0; no decisions: empty quotes and zero counts) and is listed in
+    ``sources_missing``; the report build (``main``) refuses to proceed when any source is missing."""
+    from decimal import Decimal
+    out: dict[str, Any] = {"sources_missing": [src for src in RUN_FACT_SOURCES if not (run / src).exists()]}
+    stages = ("canary", "pilot", "main")
+    settled = {s: Decimal(0) for s in stages}
+    cmax = {s: Decimal(0) for s in stages}
+    ledger_path = run / "state" / "ledger_journal.jsonl"
+    if ledger_path.exists():
+        with open(ledger_path) as fh:
+            for line in fh:
+                e = json.loads(line)
+                p = e.get("partition_id")
+                if p not in settled or e.get("amount_usd") is None:
+                    continue
+                if e["kind"] == "settle":
+                    settled[p] += Decimal(e["amount_usd"])
+                elif e["kind"] == "charge_max":
+                    cmax[p] += Decimal(e["amount_usd"])
+    out["ledger"] = {s: {"settled_usd": round(float(settled[s]), 2), "charged_max_usd": round(float(cmax[s]), 2)}
+                     for s in stages}
+    out["study_settled_usd"] = round(float(sum(settled.values())), 2)
+    out["study_upper_usd"] = round(float(sum(settled.values()) + sum(cmax.values())), 2)
+    out["canary_pilot_settled_usd"] = round(float(settled["canary"] + settled["pilot"]), 2)
+    out["canary_g1"] = {"records": 0, "settled_usd": 0.0, "spawns": 0}
+    sup = sorted((run / "superseded_executions" / "canary").glob("g*/SUPERSEDED.json"))
+    if sup:
+        sd = json.loads(sup[0].read_text())
+        out["canary_g1"] = {"records": int(sd["records"]), "settled_usd": round(float(Decimal(sd["ledger_settled_usd"])), 2),
+                            "spawns": sum(int(json.loads(f.read_text()).get("spawns") or 0)
+                                          for f in (sup[0].parent / "runs").rglob("*.json"))}
+    # owner decisions and lead records
+    dpath = run / "state" / "run_decisions.jsonl"
+    dec = [json.loads(line) for line in open(dpath) if line.strip()] if dpath.exists() else []
+    waiver = next((d for d in dec if d["kind"] == "owner_waiver" and d.get("gate") == "gate1"), {"text": ""})
+    quoted = re.findall(r"'([^']+)'", waiver["text"])
+    out["owner_waiver_quote"] = quoted[0] if quoted else waiver["text"]
+    rest = waiver["text"].split("' - ", 1)
+    out["owner_waiver_rationale"] = rest[1] if len(rest) == 2 else ""
+    out["waived_criteria"] = {d["gate"]: d["criteria"] for d in dec if d["kind"] == "owner_waiver"}
+    go = next((d for d in dec if d["kind"] == "owner_go"), {"text": ""})
+    out["owner_go_quote"] = (re.findall(r"'([^']+)'", go["text"]) or [go["text"]])[0]
+    starts = [d for d in dec if d["kind"] == "dynorch_run_start" and d["stage"] == partition]
+    restart = next((d for d in dec if d["kind"] == "lead_restart" and d["stage"] == partition), None)
+    out["first_launch"] = {"drained_after_min": 0.0, "max_usd": 0.0, "active_ceiling_usd": 0.0, "cells_kept": 0,
+                           "restarted": restart is not None}
+    if starts:
+        out["first_launch"]["max_usd"] = float(starts[0]["max_usd"])
+    if restart is not None and len(starts) >= 2:
+        out["first_launch"]["drained_after_min"] = round(
+            (_utc(restart["recorded_at"]) - _utc(starts[0]["recorded_at"])).total_seconds() / 60, 1)
+        m = re.search(r"active ceiling ([\d.]+) USD", restart["reason"])
+        out["first_launch"]["active_ceiling_usd"] = float(m.group(1)) if m else 0.0
+        fin = pd.to_datetime(runs_all[runs_all["partition"] == partition]["finished_at"], utc=True)
+        out["first_launch"]["cells_kept"] = int((fin < _utc(starts[1]["recorded_at"])).sum())
+    inv = next((d for d in dec if d["kind"] == "infra_invalidation"), {"count": 0, "cells": []})
+    out["infra_invalidation"] = {"cells": int(inv["count"]),
+                                 "by_arm": {a: sum(1 for x in inv["cells"] if x["arm"] == a) for a in ("H1", "H3")}}
+    # reruns and provider-cut calls (tables)
+    main_all = runs_all[runs_all["partition"] == partition]
+    old = main_all[~main_all["run_key"].isin(current["run_key"])]
+    out["reruns_by_reason"] = {str(k): int(v) for k, v in old["rerun_reason"].value_counts().items()}
+    out["reruns_transport"] = int((old["rerun_reason"] == "last_reply_transport_or_ledger_error").sum())
+    out["reruns_transport_arms"] = sorted(old[old["rerun_reason"] == "last_reply_transport_or_ledger_error"]["arm"].unique().tolist())
+    mc = calls[calls["partition"] == partition]
+    out["main_calls"] = int(len(mc))
+    out["main_failed_calls"] = int((mc["transport_status"] != "ok").sum())
+    out["main_failed_envelopes"] = int((mc["transport_status"] == "error_envelope").sum())
+    out["main_failed_timeouts"] = int((mc["transport_status"] == "ambiguous_timeout").sum())
+    # the first Gate 4's grader re-run mismatches (contract 10.40): a valid <final> the grader cannot parse
+    out["gate4_invalid_valid_final"] = int(((current["grade_status"] == "invalid_output")
+                                            & current["valid_final"].astype(bool)).sum())
+    # gates
+    crit_of = {}
+    for gname, fname in (("gate1", "gate1_canary.json"), ("gate2", "gate2_pilot.json"), ("gate4", "gate4_main.json")):
+        p = run / "gates" / fname
+        gd = json.loads(p.read_text()) if p.exists() else {}
+        out[f"{gname}_decision"] = gd.get("decision", "")
+        out[f"{gname}_passed"] = bool(gd.get("passed", False))
+        crit_of[gname] = {x["name"]: x for x in gd.get("criteria", [])}
+    ob = crit_of["gate1"].get("ceiling_probe_spawns", {}).get("observed")
+    ob = json.loads(ob) if ob else {"of": 0, "spawning_runs": 0}
+    out["gate1_probe"] = {"of": int(ob["of"]), "spawning": int(ob["spawning_runs"])}
+    out["gate2_k16"] = {}
+    for a in ("H1", "H3"):
+        ob = crit_of["gate2"].get(f"{a}_spawn_share_k16", {}).get("observed")
+        ob = json.loads(ob) if ob else {"runs_k16": 0, "spawning": 0}
+        out["gate2_k16"][a] = {"runs": int(ob["runs_k16"]), "spawning": int(ob["spawning"])}
+    gs = crit_of["gate4"].get("generation_sample_matches", {}).get("observed")
+    out["gate4_generation_sampled"] = int(json.loads(gs)["sampled"]) if gs else 0
+    out["core_generation2_cells"] = int((current["generation"] > 1).sum()) if "generation" in current else 0
+    return out
 
 
 def _reading(row) -> str | None:
@@ -573,7 +875,20 @@ def write_tables(N, F, acc, arms, hnames, base_names, best_non_deep, front, out)
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out / "tables" / "cost.tex").write_text("\n".join(lines) + "\n")
 
-    for name in ("headline", "realized", "diagnostics", "cost"):
+    # each harness cell against the deep curve at the same realized tokens (F2, descriptive)
+    rvd = N["realized_vs_deep"]
+    lines = [r"\begin{tabular}{lrrrr}", r"\toprule",
+             r"cell & realized tokens & accuracy & deep at same tokens & difference (pts) [95\% CI] \\ \midrule"]
+    for n in base_names:
+        e = rvd["cells"].get(n)
+        if e is None or not e["in_range"]:
+            continue
+        lines.append(f"{tex_name(n)} & {e['x_tokens']:,.0f} & {fmt(e['acc'])} & {fmt(e['deep_interp'])} & "
+                     f"{signed(e['diff_pts'])} [{signed(e['lo'])}, {signed(e['hi'])}] \\\\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    (out / "tables" / "realized_vs_deep.tex").write_text("\n".join(lines) + "\n")
+
+    for name in ("headline", "realized", "diagnostics", "cost", "realized_vs_deep"):
         path = out / "tables" / f"{name}.tex"
         path.write_text(re.sub(r"(?<![\w$])-(\d)", r"$-$\1", path.read_text()))
 
@@ -590,6 +905,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     N = run_analysis(a.run, a.ladder, a.config, a.out, ladder_numbers=a.ladder_numbers, replicates=a.replicates,
                      panels=a.panels)
+    missing = N["run_facts"]["sources_missing"] + (["raw/ (Codex second-call journals)"]
+                                                    if N["behaviour"]["H3_second_call"]["unreadable"] else [])
+    if missing:  # the report's run facts must come from a real run root
+        raise SystemExit(f"run facts incomplete, missing under {a.run}: {missing}")
     print(json.dumps({k: N[k] for k in ("n_items", "n_runs_core", "n_partial_cells", "spend")}, indent=1))
 
 

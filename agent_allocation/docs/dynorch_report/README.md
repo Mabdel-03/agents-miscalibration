@@ -1,9 +1,30 @@
 # dynorch_v1 report (`openrouter_dynorch_v1`)
 
+**Headline.** Two off-the-shelf agent harnesses (OpenClaude, H1; Codex CLI, H3), given delegation tools and told
+their budget, never delegated: no harness run spawned a sub-agent, OpenClaude made one model call per run and
+Codex a second call only after a planning (`update_plan`) call. At `C = 16A` both lose to the ladder's fixed rule
+(deep/16) in the pre-registered Holm-4 family, and both beat sample/16 by a wide margin. The gap to
+deep/16 is a natural call that stops well short of the cap, plus unused harness scaffolding; per realized token
+the harness cells lie on the deep-call curve. Every number is in the report, filled from `numbers.json`. Extension E0 (root calls capped) is running and will be added.
+
+## Build
+
+```bash
+bash build.sh                 # analysis -> numbers.json, tables/, figures/ -> render -> lint -> latexmk -> log check
+bash build.sh --no-analysis   # re-render and compile from the existing numbers.json, tables and figures
+RUN=/path/to/run LADDER=/path/to/forced_budget_v2/artifacts/merged bash build.sh
+```
+
+The full build takes well under a minute at 10,000 replicates. It fails on an unresolved placeholder, an em dash
+or `---` in the rendered TeX or a table, an undefined reference, and (from the CLI) on any run-fact source
+missing under `RUN` (`state/ledger_journal.jsonl`, `state/run_decisions.jsonl`, `superseded_executions/canary`,
+the gate files, and the raw journals of Codex's second calls). TeX caches go to `dynorch_scratch/texmf-*`
+(never `/home`).
+
 Mirrors `docs/forced_v2_report/`: `analysis.py` writes `numbers.json`, `tables/` and `figures/`; `render.py`
 fills every `{{path|fmt}}` placeholder of `report.tmpl.tex` from `numbers.json` (an unresolved or null placeholder
-fails the build); `build.sh` runs analysis, render, lint and `latexmk`. The committed copy of the built report goes
-to the main checkout under `docs/dynorch_v1/report/` at Gate 4 (plan section 7).
+fails the build). The committed copy of the built report goes to the main checkout under `docs/dynorch_v1/report/`
+at Gate 4 (plan section 7).
 
 ## Inputs (all read-only)
 
@@ -17,22 +38,12 @@ to the main checkout under `docs/dynorch_v1/report/` at Gate 4 (plan section 7).
 Nothing is written into the sealed run root; the ladder and harness rows are concatenated in memory
 (`dynorch/tables.merged_outcomes`, `core.Frame`).
 
-## Build
-
-```bash
-./build.sh                 # analysis (~ minutes at 10,000 replicates) -> render -> lint -> compile -> log check
-./build.sh --no-analysis   # re-render and compile only
-RUN=/path/to/run LADDER=/path/to/forced_budget_v2/artifacts/merged ./build.sh
-```
-
-TeX caches go to `dynorch_scratch/texmf-*` (never `/home`).
-
 | file | role |
 |---|---|
 | `core.py` | `Frame` (subclass of `forced_v2_report/core.py::Frame`): ladder + harness columns, `families = LADDER_FAMILIES + ["harness"]`, `SEED = 20260923`, ONE `build_population` per contrast on `main_96`, paired per-item oracle pass@k from `sample_bank_items` |
 | `primary.py` | `dynorch_primary_analysis`: anchor `H0/16 - deep/16` first, then the four frozen contrasts through `analysis/contrasts.evaluate_contrast(n_primary=4)` and `_vendor/ard_stats.holm` |
 | `analysis.py` | every number, table and figure (`run_analysis(...)` is the callable used by the tests) |
-| `figures.py` | `d1_design` .. `d9_repeat_agreement` |
+| `figures.py` | `d1_design` .. `d9_repeat_agreement` (report Figures 1..8; d3 and d4 share Figure 4) |
 | `render.py` | placeholder rendering (`render_text` raises on any unresolved placeholder) |
 
 ## numbers.json (top-level keys)
@@ -45,10 +56,16 @@ best_non_deep_at_rung, best_team_at_rung, primary (anchor + 4, est/lo/hi in poin
 primary_notes, descriptive (vs_deep, vs_sample, vs_private, vs_best_non_deep, vs_best_team, vs_H0, vs_oracle),
 slopes, realized (B10: nominal cap beside mean/median realized, grace, cap-bound, terminal, realized_share),
 frontier_f2, frontier_usd, frontier, f1_bias_answer_tokens, diagnostics, spawn_split (exploratory),
-provider_sensitivity, repeat_agreement, refit, headline`.
+provider_sensitivity, repeat_agreement, refit, headline`, and for the interpretation and appendix:
+`harness_display` (clean harness names and versions), `design` (constants from the config), `behaviour` (calls,
+spawns and tool calls per arm and stage; the tool behind each Codex second call, read from the raw journal),
+`decomposition` (H/16 - deep/16 split by the anchor into H0/16 - deep/16 and the scaffolding part H/16 - H0/16,
+the latter through `analysis/contrasts.evaluate_contrast`, descriptive), `realized_vs_deep` (each cell against the
+deep call log-linearly interpolated at the same realized completion tokens, paired CI), `primary_reading_both`,
+and `run_facts` (ledger spend by stage, gate history, owner quotes, in-run defects).
 
 Tables: `headline.tex, primary.tex, primary_contrasts.csv, rung_table.csv, descriptive.csv, realized.tex,
-diagnostics.tex, provider_sensitivity.tex|csv, cost.tex, frontier.csv, repeat_agreement.csv, forecast_refit.csv`.
+diagnostics.tex, provider_sensitivity.tex|csv, cost.tex, frontier.csv, repeat_agreement.csv, forecast_refit.csv, realized_vs_deep.tex`.
 
 ## Conventions
 
