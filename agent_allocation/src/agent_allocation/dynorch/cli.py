@@ -785,7 +785,7 @@ def run_gate4(cfg: Mapping[str, Any], paths: RunPaths, *, stage: str) -> Any:
     cells = enumerate_cells(cfg, stage)
     recon = reconcile.read_report(paths, stage) if reconcile.report_path(paths, stage).exists() else None
     base = Path(cfg["base_run_root"])
-    sealed = gates.seal_tables(paths.tables_dir)
+    sealed = gates.seal_tables(paths.tables_dir, stage=stage)
     return gates.evaluate_gate4(cfg, cells, outcomes, recon, grader_rerun_mismatches=regrade_mismatches(paths, runs, base),
                                 ladder_estimates=gates.ladder_estimates_from_base(base), sealed_tables=sealed, stage=stage)
 

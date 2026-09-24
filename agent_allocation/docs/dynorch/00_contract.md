@@ -672,3 +672,13 @@ equality, which a conservatively charged failed call can never meet. `CallGenera
 cost ≤ journaled cost + $0.01: the ledger may over-charge a failed call but never under-charge it, and a provider
 billing MORE is still caught. Completed calls keep the exact rule. (Stage-level: 16 of the 1,920 main calls failed
 this way: 12 error envelopes and 4 ambiguous timeouts.)
+
+**10.42 One table seal per stage, with per-partition row digests (lead, 2026-09-24).** The Gate 4 seal was one
+write-once `tables/SEAL.json` of whole-file digests, so an extension stage appending its rows to the shared tables
+could never pass its own Gate 4 ("tables changed after sealing"), although no sealed row changed. Each stage now has
+its own seal (`SEAL.json` for main, which keeps its name and its pre-amendment whole-file content;
+`SEAL_<stage>.json` for every later stage), carrying whole-file digests plus an order-independent sha256 of each
+partition's rows per table. Sealing a stage re-checks every partition an earlier seal recorded row digests for, and
+refuses when any changed. The main seal has no row digests; the ext_e0 seal records them, so E1, E2 and E3 each
+check the main rows. For ext_e0 itself, main-row integrity since the main seal rests on a different check: none of
+the 1,744 main record files (current and superseded) was modified after the main Gate 4.

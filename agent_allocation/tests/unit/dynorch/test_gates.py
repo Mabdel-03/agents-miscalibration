@@ -471,12 +471,14 @@ def test_ladder_estimates_from_the_sealed_base(cfg):
 
 
 def test_seal_tables_write_once(tmp_path):
+    import pandas as pd
+    frame = pd.DataFrame({"partition": ["main", "main"], "policy_id": ["main/a/H1/4/current", "main/b/H1/4/current"], "y": [1.0, 0.0]})
     for n in ("dynorch_runs", "dynorch_calls", "policy_outcomes_dynorch", "policy_costs_dynorch"):
-        (tmp_path / f"{n}.parquet").write_bytes(n.encode())
+        frame.to_parquet(tmp_path / f"{n}.parquet")
     first = gates.seal_tables(tmp_path)
     assert set(first) == set(SEAL)
     assert gates.seal_tables(tmp_path) == first
-    (tmp_path / "dynorch_runs.parquet").write_bytes(b"changed")
+    frame.assign(y=[0.0, 0.0]).to_parquet(tmp_path / "dynorch_runs.parquet")
     with pytest.raises(gates.GateInputError):
         gates.seal_tables(tmp_path)
 
@@ -843,3 +845,34 @@ def test_a_conservatively_charged_failed_call_is_checked_as_an_upper_bound():
     # a completed call keeps the exact rule
     ok = reconcile.CallGenerations("rk", 1, ("g1",), 23107, Decimal("0.07068182"), "Parasail", "ok")
     assert reconcile.compare_call(ok, meta)["tokens_match"] is False
+
+
+def test_seal_is_per_stage_and_guards_sealed_partitions(tmp_path):
+    """Contract §10.42: appending a later stage's rows never breaks an earlier seal; changing a sealed row does."""
+    import pandas as pd
+    from agent_allocation.dynorch.gates import GateInputError, seal_path, seal_tables
+
+    def write(parts):
+        runs = pd.DataFrame({"run_key": [f"{p}-{i}" for p in parts for i in range(2)],
+                             "partition": [p for p in parts for _ in range(2)], "y": [1.0, 0.0] * len(parts)})
+        runs.to_parquet(tmp_path / "dynorch_runs.parquet")
+        runs.to_parquet(tmp_path / "dynorch_calls.parquet")
+        pol = pd.DataFrame({"policy_id": [f"{p}/i{i}/H1/4/current" for p in parts for i in range(2)], "y": [1.0, 0.0] * len(parts)})
+        pol.to_parquet(tmp_path / "policy_outcomes_dynorch.parquet")
+        pol.to_parquet(tmp_path / "policy_costs_dynorch.parquet")
+        return runs, pol
+
+    write(["main"])
+    seal_tables(tmp_path, stage="main")
+    assert seal_path(tmp_path, "main").name == "SEAL.json"
+    write(["main", "ext_e0"])
+    seal_tables(tmp_path, stage="ext_e0")
+    assert (tmp_path / "SEAL_ext_e0.json").exists()
+    seal_tables(tmp_path, stage="ext_e0")  # idempotent on unchanged rows
+    write(["main", "ext_e0", "ext_e1"])
+    seal_tables(tmp_path, stage="ext_e1")  # main + ext_e0 rows unchanged
+    runs, pol = write(["main", "ext_e0", "ext_e1", "ext_e2"])
+    pol.loc[0, "y"] = 0.5  # a main row changes
+    pol.to_parquet(tmp_path / "policy_outcomes_dynorch.parquet")
+    with pytest.raises(GateInputError, match="sealed partition rows changed"):
+        seal_tables(tmp_path, stage="ext_e2")

@@ -524,10 +524,10 @@ def evaluate_gate4(cfg: Mapping[str, Any], planned: Sequence[Mapping[str, Any]],
         crits.append(crit("sealed_ladder_reproduced", {k: ladder_estimates.get(k) for k in SEALED_LADDER}, "deep/16 = 0.7917, sample/16 = 0.4167",
                           not bad, "forced_budget_v2/merged/tables/policy_outcomes.parquet", severity=STOP))
     crits.append(crit("tables_sealed", sorted(sealed_tables) if sealed_tables else None,
-                      "dynorch_runs, dynorch_calls, policy_outcomes_dynorch, policy_costs_dynorch hashed in tables/SEAL.json",
+                      f"dynorch_runs, dynorch_calls, policy_outcomes_dynorch, policy_costs_dynorch hashed in tables/{seal_path(Path(), stage).name}",
                       bool(sealed_tables) and all(f"{t}.parquet" in sealed_tables for t in
                                                   ("dynorch_runs", "dynorch_calls", "policy_outcomes_dynorch", "policy_costs_dynorch")),
-                      "tables/SEAL.json"))
+                      f"tables/{seal_path(Path(), stage).name}"))
     return finish("gate4", stage, crits)
 
 
@@ -546,24 +546,82 @@ def ladder_estimates_from_base(base_run_root: Path) -> dict[str, float]:
     return out
 
 
-def seal_tables(tables_dir: Path, names: Sequence[str] = ("dynorch_runs", "dynorch_calls", "policy_outcomes_dynorch",
-                                                          "policy_costs_dynorch")) -> dict[str, str]:
-    """``tables/SEAL.json``: sha256 per parquet (write-once; an existing seal that differs raises)."""
+SEAL_TABLES = ("dynorch_runs", "dynorch_calls", "policy_outcomes_dynorch", "policy_costs_dynorch")
+
+
+def seal_path(tables_dir: Path, stage: str) -> Path:
+    """``tables/SEAL.json`` for the main stage (its original name), ``tables/SEAL_<stage>.json`` for every later one."""
+    return Path(tables_dir) / ("SEAL.json" if stage == "main" else f"SEAL_{stage}.json")
+
+
+def partition_row_digests(tables_dir: Path, names: Sequence[str] = SEAL_TABLES) -> dict[str, dict[str, str]]:
+    """Per table, per partition: an order-independent sha256 of that partition's rows (contract §10.42).
+
+    Runs and calls carry a ``partition`` column; the policy tables carry it as the first ``policy_id`` segment.
+    Rows are hashed with ``pandas.util.hash_pandas_object`` and the sorted row hashes (plus the column names) are
+    digested, so appending another partition's rows never changes a sealed partition's digest."""
+    import numpy as np
+    import pandas as pd
+    from hashlib import sha256
+    out: dict[str, dict[str, str]] = {}
+    for name in names:
+        frame = pd.read_parquet(Path(tables_dir) / f"{name}.parquet")
+        if "partition" in frame.columns:
+            part = frame["partition"].astype(str)
+        elif "policy_id" in frame.columns:
+            part = frame["policy_id"].astype(str).str.split("/").str[0]
+        else:
+            raise GateInputError(f"cannot partition {name}: neither 'partition' nor 'policy_id' is a column")
+        cols = sorted(frame.columns)
+        digests: dict[str, str] = {}
+        for key, group in frame.groupby(part, sort=True):
+            rows = np.sort(pd.util.hash_pandas_object(group[cols], index=False).to_numpy(dtype="uint64"))
+            h = sha256("\x1f".join(cols).encode())
+            h.update(rows.tobytes())
+            digests[str(key)] = h.hexdigest()
+        out[name] = digests
+    return out
+
+
+def seal_tables(tables_dir: Path, names: Sequence[str] = SEAL_TABLES, *, stage: str = "main") -> dict[str, str]:
+    """Seal one stage's tables (write-once; an existing seal of the same stage that differs raises).
+
+    Each stage has its own seal file (``seal_path``) with whole-file sha256 per parquet and per-partition row
+    digests (contract §10.42). Sealing a later stage re-checks every partition an earlier seal recorded row
+    digests for: a sealed partition whose rows changed raises. The main seal predates §10.42 and holds whole-file
+    digests only; the first later seal records the main rows' digests so every seal after it checks them."""
     from hashlib import sha256
     from agent_allocation.storage._atomic import write_once
+    tables_dir = Path(tables_dir)
     digests: dict[str, str] = {}
     for name in names:
-        path = Path(tables_dir) / f"{name}.parquet"
+        path = tables_dir / f"{name}.parquet"
         if not path.exists():
             raise GateInputError(f"cannot seal: {path} is missing")
         digests[path.name] = sha256(path.read_bytes()).hexdigest()
-    seal = Path(tables_dir) / "SEAL.json"
-    doc = {"sealed_at": utcnow(), "sha256": digests}
+    rows = partition_row_digests(tables_dir, names)
+    seal = seal_path(tables_dir, stage)
     if seal.exists():
-        existing = json.loads(seal.read_text())["sha256"]
-        if existing != digests:
-            raise GateInputError(f"{seal} exists with different digests; the tables changed after sealing")
-        return existing
+        existing = json.loads(seal.read_text())
+        mine = existing.get("partition_rows")
+        if mine is None:  # the pre-§10.42 main seal: whole files only
+            if existing["sha256"] != digests:
+                raise GateInputError(f"{seal} exists with different digests; the tables changed after sealing")
+            return existing["sha256"]
+        now = {t: rows.get(t, {}).get(stage) for t in mine}
+        if now != {t: d.get(stage) for t, d in mine.items()}:
+            raise GateInputError(f"{seal}: the {stage} partition's rows changed after sealing")
+        return existing["sha256"]
+    changed = []
+    for other in sorted(tables_dir.glob("SEAL*.json")):
+        doc = json.loads(other.read_text())
+        for table, parts in (doc.get("partition_rows") or {}).items():
+            for part, digest in parts.items():
+                if part != stage and rows.get(table, {}).get(part) != digest:
+                    changed.append(f"{other.name}:{table}/{part}")
+    if changed:
+        raise GateInputError(f"cannot seal {stage}: sealed partition rows changed: {changed}")
+    doc = {"sealed_at": utcnow(), "stage": stage, "sha256": digests, "partition_rows": rows}
     write_once(seal, json.dumps(doc, indent=1, sort_keys=True).encode())
     return digests
 
