@@ -24,6 +24,13 @@ VERBS: dict[str, str] = {
     "shard-plan": "agent_allocation.shards:cmd_shard_plan",
     "merge-shards": "agent_allocation.analysis.merge:cmd_merge_shards",
     "calibrate": "agent_allocation.calibrate:cmd_calibrate",
+    # dynorch_v1 (WP-D, docs/dynorch/00_contract.md section 8)
+    "dynorch-plan": "agent_allocation.dynorch.cli:cmd_dynorch_plan",
+    "dynorch-run": "agent_allocation.dynorch.cli:cmd_dynorch_run",
+    "dynorch-tables": "agent_allocation.dynorch.cli:cmd_dynorch_tables",
+    "dynorch-gates": "agent_allocation.dynorch.cli:cmd_dynorch_gates",
+    "dynorch-reconcile": "agent_allocation.dynorch.cli:cmd_dynorch_reconcile",
+    "dynorch-doctor": "agent_allocation.dynorch.cli:cmd_dynorch_doctor",
 }
 EXIT_BLOCKED = 2
 
