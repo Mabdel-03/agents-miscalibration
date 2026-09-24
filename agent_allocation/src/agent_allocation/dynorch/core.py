@@ -200,12 +200,12 @@ class ProxyCore:
     def record_of(self, run_key: str) -> RunRecord:
         return self._state(run_key, allow_closed=True).record
 
-    def budget_view(self, run_key: str) -> dict[str, int]:
+    def budget_view(self, run_key: str) -> dict[str, Any]:
         """§3: cap / spent / remaining / calls (+ grace and prompt totals) for diagnostics; ``exhausted`` (0/1) is
         set once the run's grace was used -- after it every call is refused (B4), whatever ``remaining`` says
         (WP-B R-B3: the runner's exhaustion watchdog honours it)."""
         budget = self._state(run_key, allow_closed=True).budget
-        return {**budget.view(), "exhausted": int(budget.grace_used)}
+        return {**budget.view(), "exhausted": int(budget.grace_used)}   # + in_flight / idle_seconds (B4)
 
     def _state(self, run_key: str, *, allow_closed: bool = False) -> _RunState:
         state = self._runs.get(run_key)
@@ -331,14 +331,16 @@ class ProxyCore:
             guard = budget.guard()
             if guard is not None or budget.exhausted_for(root):
                 if root and not budget.grace_used:
-                    return await self._terminal(state, request, conv_key, conv_class, waited, reinjection,
-                                                guard_triggered=guard is not None)
+                    return await self._in_flight(
+                        budget, self._terminal(state, request, messages, conv_key, conv_class, waited, reinjection,
+                                               guard_triggered=guard is not None))
                 self._refuse(state, guard or "budget_exhausted",
                              f"completion-token budget exhausted (cap={budget.cap}, spent={budget.spent})"
                              if guard is None else f"cost guard {guard} reached", guard=guard)
             grant = budget.grant(root=root, queue_wait_seconds=waited, root_ceiling=state.spec.root_call_ceiling)
-            return await self._served(state, request, messages, prompt, prompt_sha, grant, conv_key, conv_class,
-                                      reinjection)
+            return await self._in_flight(
+                budget, self._served(state, request, messages, prompt, prompt_sha, grant, conv_key, conv_class,
+                                     reinjection))
         finally:
             if grant is None:
                 budget.unlock()                       # no grant was minted: the lock is still ours
@@ -348,6 +350,20 @@ class ProxyCore:
                 # settle_full releases the lock
                 budget.mark_sent(grant)
                 budget.settle_full(grant)
+
+    @staticmethod
+    async def _in_flight(budget: TokenBudget, coro: Any) -> ChatReply:
+        """Run one upstream-serving path with the run marked in flight (plan B4: the runner's exhaustion watchdog
+        never SIGTERMs a harness while the proxy is serving one of its calls, and its 60 s clock restarts only
+        when a reply actually goes back)."""
+        budget.enter_call()
+        try:
+            reply = await coro
+        except BaseException:
+            budget.exit_call(served=False)
+            raise
+        budget.exit_call(served=True)
+        return reply
 
     def _refuse(self, state: _RunState, code: str, message: str, *, guard: str | None = None) -> None:
         record = state.record
@@ -370,6 +386,7 @@ class ProxyCore:
                        latency_seconds=0.0, transport_status="cache", stream=request.stream, wire=request.wire,
                        cache_status=None, duplicate_served=True, ignored_body_keys=tuple(request.ignored_keys))
         state.record.duplicates_served += 1
+        state.budget.note_reply()
         state.record.calls_detail.append(call)
         self._refresh(state)
         self.store.save(state.record)
@@ -532,14 +549,14 @@ class ProxyCore:
         self.store.save(state.record)
         return reply
 
-    async def _terminal(self, state: _RunState, request: ChatRequest, conv_key: str, conv_class: str, waited: float,
-                        reinjection: str, *, guard_triggered: bool) -> ChatReply:
+    async def _terminal(self, state: _RunState, request: ChatRequest, messages: Sequence[Message], conv_key: str,
+                        conv_class: str, waited: float, reinjection: str, *, guard_triggered: bool) -> ChatReply:
         """B4: the one TERMINAL call of the root conversation (the harness's messages plus the verbatim terminal
         user turn, thinking disabled, ``max_tokens = G``, no tools); the whole reply is grace (outside C)."""
         budget = state.budget
         spec = state.spec
-        messages = list(request.messages) + [Message(role="user", content=self.settings.terminal_sentence)]
-        prompt = render_chat(messages, tools=(), reasoning_effort=self.settings.reasoning_effort,
+        terminal_messages = list(messages) + [Message(role="user", content=self.settings.terminal_sentence)]
+        prompt = render_chat(terminal_messages, tools=(), reasoning_effort=self.settings.reasoning_effort,
                              enable_thinking=False)
         prompt_sha = rendered_sha256(prompt)
         call_no = budget.calls + 1

@@ -388,6 +388,36 @@ async def test_delayed_reply_660s(tmp_path: Path, base: BaseInputs):
 
 
 @pytest.mark.timeout(600)
+async def test_watchdog_lets_a_slow_terminal_call_deliver_its_answer(tmp_path: Path, base: BaseInputs):
+    """Plan §2 B4 / review blocker 2: the TERMINAL call is admitted when ``remaining < 64`` already holds and is
+    the one call whose output is graded. A watchdog whose 60 s clock starts at the grant (or at the call counter,
+    which ``_terminal`` bumps before the upstream call) SIGTERMs the harness mid-answer and the delivered answer is
+    lost. Here the terminal reply takes 4x ``sigterm_after_exhaustion``: the harness must survive it and the
+    delivered answer must be the terminal answer."""
+    cfg = _cfg_with_fake_arm()
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script) as h:
+        h.with_inputs(base)
+        specs = h.specs(base, arms=("HF",), rungs=(1,), items=_items(base)[:1])
+        spec = specs[0]
+        script.by_node[spec.run_key] = [
+            FakeReply(content=fake_tool_call_text("spawn_subagent", {"task": "solve it"}, prefix="Delegating."),
+                      think_tokens=200),                       # root call 1: spawn (spent 200 of 1024)
+            FakeReply(content="the sub-answer", think_tokens=790),   # solver: spent 990, remaining 34 < 64
+            FakeReply(content="<final>77</final>", think_tokens=120, delay_seconds=4.0),   # TERMINAL, slow
+        ]
+        summary = await h.runner.run_specs("main", specs)
+    record = next(iter(h.store.scan().values()))
+    assert summary.statuses == {"done": 1}, record.error
+    assert record.harness_reported["sigterm_after_exhaustion"] is False
+    assert record.calls == 3 and [c.forced_close_kind for c in record.calls_detail][-1] == "terminal"
+    assert record.forced_close_kind == "terminal" and 0 < record.grace_tokens <= cfg["dynorch"]["grace_tokens"]
+    assert record.final_message == "<final>77</final>" and record.final_source == "proxy_root"
+    assert record.parse_status == "valid" and record.final_answer == "77"
+    assert record.harness_exit_code == 0
+
+
+@pytest.mark.timeout(600)
 async def test_exhaustion_watchdog_terminates_a_lingering_harness(tmp_path: Path, base: BaseInputs):
     """Plan §2 B4: once exhausted, SIGTERM the harness group ``sigterm_after_exhaustion`` s after the last served
     reply (1 s here), SIGKILL ``sigkill_after`` s later; the run is ``done`` on what was served, never rerun."""

@@ -450,26 +450,31 @@ class Runner:
         return proc.returncode, timed_out, killed_by_drain, exhausted_kill
 
     async def _exhaustion_watchdog(self, spec: RunSpec, proc: asyncio.subprocess.Process) -> bool:
-        """SIGTERM the group ``sigterm_after_exhaustion`` s after the last served reply once exhausted; SIGKILL later."""
+        """Plan §2 B4: SIGTERM the group ``sigterm_after_exhaustion`` s after the run's last SERVED reply once it is
+        exhausted, SIGKILL ``sigkill_after`` s later -- and NEVER while the proxy has a call of this run in flight.
+
+        The clock is the core's (``budget_view["idle_seconds"]``, restarted by every reply the proxy hands back,
+        duplicates included), not the runner's view of the call counter: the TERMINAL call (B4) is admitted while
+        ``remaining < 64`` already holds and takes as long as a 1,024-token answer needs, so a timer started at the
+        grant would SIGTERM the harness during the one call whose purpose is the delivered answer.
+        """
         settings = self.settings
-        exhausted_since: float | None = None
-        seen_calls = -1
         while proc.returncode is None:
             await asyncio.sleep(settings.poll_seconds)
             try:
                 view = self.core.budget_view(spec.run_key)
             except Exception:  # noqa: BLE001 - the run may already be closing
                 return False
-            calls, remaining = int(view["calls"]), int(view["remaining"])
+            remaining = int(view["remaining"])
             exhausted = remaining < settings.terminal_threshold or bool(view.get("exhausted", False))
             if not exhausted:
                 continue
-            if calls != seen_calls or exhausted_since is None:
-                seen_calls, exhausted_since = calls, time.monotonic()
-                continue
-            if time.monotonic() - exhausted_since >= settings.sigterm_after_exhaustion:
-                log.info("dynorch runner: %s exhausted; SIGTERM %.0f s after the last served reply", spec.run_key,
-                         settings.sigterm_after_exhaustion)
+            if int(view.get("in_flight", 0)) > 0:
+                continue                      # a call is being served: never kill the harness under it
+            idle = float(view.get("idle_seconds", 0.0))
+            if idle >= settings.sigterm_after_exhaustion:
+                log.info("dynorch runner: %s exhausted and idle %.1f s; SIGTERM (%.0f s after the last served reply)",
+                         spec.run_key, idle, settings.sigterm_after_exhaustion)
                 await _terminate(proc, settings.sigkill_after)
                 return True
         return False

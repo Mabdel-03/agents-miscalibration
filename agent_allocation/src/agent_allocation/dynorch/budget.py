@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 
 class BudgetError(RuntimeError):
@@ -60,6 +61,9 @@ class TokenBudget:
         self.grace_used = False
         self.peak_granted = 0
         self.max_queue_wait_seconds = 0.0
+        self.in_flight = 0                   # upstream calls of this run the proxy is serving right now (B4)
+        self.replies_served = 0
+        self.last_reply_monotonic = time.monotonic()   # B4's clock: the run's last SERVED reply (open = t0)
         self._lock = asyncio.Lock()
         self._active: Grant | None = None
 
@@ -91,9 +95,29 @@ class TokenBudget:
         """B5: ``completion_total + grace - C`` (never below zero)."""
         return max(0, self.spent + self.grace_tokens - self.cap)
 
-    def view(self) -> dict[str, int]:
+    def view(self) -> dict[str, Any]:
+        """Diagnostics + the exhaustion watchdog's inputs: ``in_flight`` (a call is being served right now) and
+        ``idle_seconds`` (since the last SERVED reply, plan B4: the SIGTERM clock starts there, never at a grant)."""
         return {"cap": self.cap, "spent": self.spent, "remaining": self.remaining, "calls": self.calls,
-                "grace_tokens": self.grace_tokens, "prompt_total": self.prompt_total}
+                "grace_tokens": self.grace_tokens, "prompt_total": self.prompt_total, "in_flight": self.in_flight,
+                "replies_served": self.replies_served,
+                "idle_seconds": round(max(0.0, time.monotonic() - self.last_reply_monotonic), 3)}
+
+    # ---- the B4 clock -------------------------------------------------------------------------------------------
+    def enter_call(self) -> None:
+        """A call of this run is now being served upstream (the watchdog never fires while this is non-zero: the
+        TERMINAL call IS the delivered answer and must not be killed mid-flight)."""
+        self.in_flight += 1
+
+    def exit_call(self, *, served: bool) -> None:
+        self.in_flight = max(0, self.in_flight - 1)
+        if served:
+            self.note_reply()
+
+    def note_reply(self) -> None:
+        """A reply (fresh or served from the duplicate cache) went back to the harness: restart B4's 60 s clock."""
+        self.replies_served += 1
+        self.last_reply_monotonic = time.monotonic()
 
     # ---- the lock -----------------------------------------------------------------------------------------------
     async def lock(self) -> float:
