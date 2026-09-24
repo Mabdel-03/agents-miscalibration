@@ -165,3 +165,15 @@ def make_env(tmp_path: Path, cfg: dict[str, Any]) -> Callable[..., Env]:
             asyncio.run(env.aclose())
         except RuntimeError:
             pass
+
+
+@pytest.fixture(autouse=True)
+def _no_real_key_settle_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Contract §10.36: the /key settle loop takes a confirming read ``KEY_SETTLE_INTERVAL_S`` after a match. No unit
+    test waits for it on the wall clock; the tests that pin the timing pass their own ``sleep`` explicitly."""
+    from agent_allocation.dynorch import reconcile
+
+    async def instant(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(reconcile, "_sleep", instant)

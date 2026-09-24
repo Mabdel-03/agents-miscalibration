@@ -37,7 +37,8 @@ CLEAN, MISMATCH, STOP_NOTIFY = "clean", "mismatch", "stop_notify"
 METADATA_TOKEN_FIELD = "native_tokens_completion"
 #: ``/key`` usage lags the provider's settle by tens of seconds (canary 2026-09-24: the key caught up to the ledger's
 #: $0.253105 exactly within ~45 s of a read that showed $0.1139). A dollar mismatch is declared only after the key
-#: has SETTLED: two reads at least ``KEY_SETTLE_INTERVAL_S`` apart agree, bounded by ``KEY_SETTLE_MAX_S`` (contract §10.29).
+#: has converged on the ledger (contract §10.36; the §10.29 "two equal reads" rule declared false mismatches because
+#: billing posts in bursts), bounded by ``KEY_SETTLE_MAX_S``.
 KEY_SETTLE_INTERVAL_S = 30.0
 KEY_SETTLE_MAX_S = 300.0
 
@@ -424,35 +425,70 @@ def upstream_402_seen(runs: Any) -> bool:
     return bool((errors.str.contains("payment_required") | errors.str.contains("402")).any())
 
 
+async def _sleep(seconds: float) -> None:
+    """The real wait between ``/key`` reads; a module-level indirection so tests can remove the wall-clock wait
+    (the settle loop still advances its bounded ``waited`` counter, so a swapped sleep can never spin forever)."""
+    await asyncio.sleep(seconds)
+
+
 async def settled_after_snapshot(client: Any, *, before_usage: Decimal, ledger_delta: Decimal, tolerance: Decimal,
                                  interval_s: float = KEY_SETTLE_INTERVAL_S, max_wait_s: float = KEY_SETTLE_MAX_S,
-                                 sleep: Any = asyncio.sleep) -> tuple[AccountSnapshot, dict[str, Any]]:
-    """The after-snapshot a dollar verdict may rest on (contract §10.29).
+                                 sleep: Any = None) -> tuple[AccountSnapshot, dict[str, Any]]:
+    """The after-snapshot a dollar verdict may rest on (contract §10.36, superseding the §10.29 settle rule).
 
-    One read; if the key delta already matches the ledger delta within ``tolerance`` it is used. Otherwise ``/key``
-    is re-read every ``interval_s`` until two consecutive reads (hence at least ``interval_s`` apart) report the
-    same usage -- the key has settled -- or ``max_wait_s`` of waiting has passed; the last read is returned. A read
-    that becomes a match ends the wait at once. ``detail`` records every read (``polls``), ``settled`` and the wait,
-    so the report shows why a mismatch was (or was not) declared. A 402 on the account endpoints ends the wait."""
+    The ledger delta is the expected value; ``/key`` only ever catches up to what was billed. So:
+
+    * while the key delta is BELOW the ledger delta by more than ``tolerance`` the billing is still lagging and
+      ``/key`` is re-read every ``interval_s`` -- two equal reads are NOT settlement (OpenRouter posts usage in bursts;
+      both canaries of 2026-09-24 showed a flat key for more than 30 s and then caught up to the ledger to the
+      micro-dollar);
+    * once the key delta matches (within ``tolerance``) or overshoots the ledger delta, ONE confirming read
+      ``interval_s`` later decides: matched twice -> ``converged`` (clean), over twice -> ``over`` (the provider billed
+      more than was metered: a real discrepancy), otherwise keep polling;
+    * ``max_wait_s`` bounds the whole wait; running out while still below is ``did_not_converge``;
+    * a 402 on the account endpoints ends the wait at once.
+
+    ``detail`` records every read (``polls``), the ``outcome`` and whether the verdict rests on a confirmed state
+    (``settled``)."""
+    sleep = sleep if sleep is not None else _sleep
     polls: list[dict[str, Any]] = []
     waited = 0.0
 
-    def matches(snap: AccountSnapshot) -> bool:
-        return abs((snap.key_usage_usd - before_usage) - ledger_delta) <= tolerance
+    def delta(snap: AccountSnapshot) -> Decimal:
+        return snap.key_usage_usd - before_usage
 
-    snap = await snapshot_account(client)
-    polls.append({"recorded_at": snap.recorded_at, "key_usage_usd": str(snap.key_usage_usd), "waited_s": waited})
+    def matches(snap: AccountSnapshot) -> bool:
+        return abs(delta(snap) - ledger_delta) <= tolerance
+
+    def over(snap: AccountSnapshot) -> bool:
+        return delta(snap) - ledger_delta > tolerance
+
+    async def read() -> AccountSnapshot:
+        snap = await snapshot_account(client)
+        polls.append({"recorded_at": snap.recorded_at, "key_usage_usd": str(snap.key_usage_usd), "waited_s": waited})
+        return snap
+
+    snap = await read()
     settled = False
-    while not matches(snap) and not snap.payment_required and waited + interval_s <= max_wait_s + 1e-9:
+    outcome = "payment_required" if snap.payment_required else "did_not_converge"
+    while not snap.payment_required:
+        if waited + interval_s > max_wait_s + 1e-9:
+            outcome = "did_not_converge" if not (matches(snap) or over(snap)) else "unconfirmed"
+            break
         await sleep(interval_s)
         waited += interval_s
         previous = snap
-        snap = await snapshot_account(client)
-        polls.append({"recorded_at": snap.recorded_at, "key_usage_usd": str(snap.key_usage_usd), "waited_s": waited})
-        if snap.key_usage_usd == previous.key_usage_usd:
-            settled = True
+        snap = await read()
+        if snap.payment_required:
+            outcome = "payment_required"
             break
-    detail = {"polls": polls, "waited_s": waited, "matched": matches(snap), "settled": settled or matches(snap),
+        if matches(previous) and matches(snap):
+            settled, outcome = True, "converged"
+            break
+        if over(previous) and over(snap):
+            settled, outcome = True, "over"
+            break
+    detail = {"polls": polls, "waited_s": waited, "matched": matches(snap), "settled": settled, "outcome": outcome,
               "interval_s": interval_s, "max_wait_s": max_wait_s}
     return snap, detail
 
@@ -461,7 +497,7 @@ async def reconcile_after(cfg: Mapping[str, Any], paths: RunPaths, stage: str, *
                           population: Sequence[CallGenerations], population_source: str, upstream_402: bool,
                           key_tolerance_usd: Decimal, seed: int | None = None,
                           key_settle_interval_s: float = KEY_SETTLE_INTERVAL_S,
-                          key_settle_max_s: float = KEY_SETTLE_MAX_S, sleep: Any = asyncio.sleep) -> dict[str, Any]:
+                          key_settle_max_s: float = KEY_SETTLE_MAX_S, sleep: Any = None) -> dict[str, Any]:
     """Settled after-snapshot (``settled_after_snapshot``) + generation sample + report, written to
     ``state/reconciliation_<stage>.json``."""
     before = read_before(paths, stage)

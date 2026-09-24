@@ -626,13 +626,13 @@ def test_before_after_report_clean_and_mismatch(tmp_path, cfg):
     client = StubClient(usage="10.40", generations={"g1": {"tokens_completion": 4396, "native_tokens_completion": 4396,
                                                                   "total_cost": "0.30", "provider_name": "Parasail"}}, lag=1)
     report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=client, population=population, population_source="tables",
-                                                   upstream_402=False, key_tolerance_usd=Decimal("0.02")))
+                                                   upstream_402=False, key_tolerance_usd=Decimal("0.02"), sleep=_no_wait))
     assert report["decision"] == reconcile.CLEAN and report["problems"] == []
     assert report["key_delta_usd"] == "0.40" and report["ledger_delta_usd"] == "0.40"
     assert report["generation_sample"]["sampled"] == 1 and report["generation_sample"]["rows"][0]["tokens_match"]
     assert client.asked["g1"] == 2            # retried once after the 404 lag
     assert reconcile.read_report(paths, "canary")["decision"] == reconcile.CLEAN
-    # a drifted key is a mismatch (once it has settled: two reads 30 s apart agree); an upstream 402 is stop_notify
+    # a key over the ledger, confirmed by a second read, is a mismatch; an upstream 402 is stop_notify
     client = StubClient(usage="10.50", generations=client.generations)
     report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=client, population=population, population_source="tables",
                                                    upstream_402=False, key_tolerance_usd=Decimal("0.02"), sleep=_no_wait))
@@ -640,13 +640,13 @@ def test_before_after_report_clean_and_mismatch(tmp_path, cfg):
     assert report["key_settle"]["settled"] and len(report["key_settle"]["polls"]) == 2
     report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=StubClient(usage="10.40", generations=client.generations),
                                                    population=population, population_source="tables", upstream_402=True,
-                                                   key_tolerance_usd=Decimal("0.02")))
+                                                   key_tolerance_usd=Decimal("0.02"), sleep=_no_wait))
     assert report["decision"] == reconcile.STOP_NOTIFY
     # an open reservation is a problem
     write_journal(paths, [("reserve", "rk1:g1:3:think:1", "0.2"), ("sent", "rk1:g1:3:think:1", "0")])
     report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=StubClient(usage="10.40", generations=client.generations),
                                                    population=population, population_source="tables", upstream_402=False,
-                                                   key_tolerance_usd=Decimal("0.02")))
+                                                   key_tolerance_usd=Decimal("0.02"), sleep=_no_wait))
     assert any("open reservations" in p for p in report["problems"])
     with pytest.raises(reconcile.ReconcileError):
         reconcile.read_before(paths, "pilot")
@@ -668,9 +668,10 @@ def test_generation_tokens_are_compared_on_the_native_count():
     assert row["tokens_match"] is None and row["native_tokens_missing"] is True
 
 
-def test_dollar_verdict_waits_for_the_key_to_settle(tmp_path, cfg):
-    """Review item 7b: /key lags the ledger. The after-read is re-polled every 30 s until two reads agree (bounded at
-    5 minutes) before a dollar mismatch is declared; a key that catches up to the ledger is clean."""
+def test_dollar_verdict_waits_for_the_key_to_converge_on_the_ledger(tmp_path, cfg):
+    """Contract §10.36 (supersedes the §10.29 two-equal-reads rule). /key lags the ledger and posts in bursts; a key
+    BELOW the ledger is still lagging and is re-read (a pause is not settlement); a match or an overshoot is
+    confirmed by one more read; running out of the 5-minute bound while below is a mismatch."""
     paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
     reconcile.write_before(paths, "canary", asyncio.run(reconcile.snapshot_account(StubClient(usage="10.00"))))
     write_journal(paths, [("reserve", "rk1:g1:1:think:1", "0.5"), ("sent", "rk1:g1:1:think:1", "0"),
@@ -680,27 +681,36 @@ def test_dollar_verdict_waits_for_the_key_to_settle(tmp_path, cfg):
     async def sleep(seconds):
         slept.append(seconds)
 
-    client = LaggingKeyClient(["10.1138925", "10.200", "10.253105", "10.253105"])
-    report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=client, population=[],
-                                                   population_source="journal", upstream_402=False,
-                                                   key_tolerance_usd=Decimal("0.02"), sleep=sleep))
+    def run(client):
+        slept.clear()
+        return asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=client, population=[],
+                                                     population_source="journal", upstream_402=False,
+                                                     key_tolerance_usd=Decimal("0.02"), sleep=sleep))
+
+    # the first canary: lagging, catching up, confirmed
+    report = run(LaggingKeyClient(["10.1138925", "10.200", "10.253105", "10.253105"]))
     assert report["decision"] == reconcile.CLEAN and report["problems"] == []
-    assert report["key_delta_usd"] == "0.253105" and slept == [30.0, 30.0]
-    assert [p["key_usage_usd"] for p in report["key_settle"]["polls"]] == ["10.1138925", "10.200", "10.253105"]
-    # a key that keeps moving is polled for at most 5 minutes, then the last read decides and says so
-    slept.clear()
-    moving = LaggingKeyClient([f"10.{i:02d}" for i in range(1, 30)])
-    report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=moving, population=[],
-                                                   population_source="journal", upstream_402=False,
-                                                   key_tolerance_usd=Decimal("0.02"), sleep=sleep))
+    assert report["key_delta_usd"] == "0.253105" and slept == [30.0, 30.0, 30.0]
+    assert report["key_settle"]["outcome"] == "converged" and report["key_settle"]["settled"] is True
+    # the second canary: the key PAUSED (two equal reads 30 s apart) below the ledger, then caught up. The old rule
+    # stopped at the pause and declared a false mismatch; now it keeps polling and comes out clean.
+    report = run(LaggingKeyClient(["10.152905", "10.152905", "10.2454825", "10.2454825"]))
+    ledger_journal_delta = Decimal("0.253105")
+    assert report["decision"] == reconcile.CLEAN, report["problems"]
+    assert report["key_settle"]["outcome"] == "converged" and len(report["key_settle"]["polls"]) == 4
+    assert abs(Decimal(report["key_delta_usd"]) - ledger_journal_delta) <= Decimal("0.02")
+    # a key that stays below the ledger for the whole bound is a mismatch, and the report says it never converged
+    report = run(LaggingKeyClient([f"10.0{i:02d}" for i in range(1, 30)]))
     assert sum(slept) == 300.0 and report["decision"] == reconcile.MISMATCH
-    assert report["key_settle"]["settled"] is False and any("did not settle" in p for p in report["problems"])
-    # a settled key that disagrees is a mismatch after exactly one 30 s re-read
-    slept.clear()
-    report = asyncio.run(reconcile.reconcile_after(cfg, paths, "canary", client=StubClient(usage="10.40"), population=[],
-                                                   population_source="journal", upstream_402=False,
-                                                   key_tolerance_usd=Decimal("0.02"), sleep=sleep))
-    assert slept == [30.0] and report["decision"] == reconcile.MISMATCH and report["key_settle"]["settled"] is True
+    assert report["key_settle"]["outcome"] == "did_not_converge" and report["key_settle"]["settled"] is False
+    assert any("did not settle" in p for p in report["problems"])
+    # a key OVER the ledger, confirmed by one re-read, is a mismatch after exactly one 30 s wait
+    report = run(StubClient(usage="10.40"))
+    assert slept == [30.0] and report["decision"] == reconcile.MISMATCH
+    assert report["key_settle"]["outcome"] == "over" and report["key_settle"]["settled"] is True
+    # a key that touches the ledger once and then keeps rising past it is NOT clean
+    report = run(LaggingKeyClient(["10.253105", "10.40", "10.40"]))
+    assert report["decision"] == reconcile.MISMATCH and report["key_settle"]["outcome"] == "over"
 
 
 def test_population_from_tables_and_upstream_402(tmp_path, cfg):

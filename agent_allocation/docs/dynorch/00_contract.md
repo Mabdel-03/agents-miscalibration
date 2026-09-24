@@ -568,3 +568,13 @@ reason, generations, run keys, ledger attempts and dollars, what moved), moves `
 pre-registration, and every ledger attempt id `{run_key}:g{G}:...` is new. Never touched: the ledger journal (read
 only), `locks/`, the stage manifest, any other stage. `tables.read_run_records` does not read
 `superseded_executions/`, so a superseded execution is no row; its spend stays in the ledger.
+
+**10.36 The `/key` dollar verdict waits for the key to converge on the ledger (lead, 2026-09-24; supersedes the §10.29
+settle rule).** Both canaries showed `/key` usage lagging the ledger and posting in bursts: the re-run canary's key
+read $0.152905 of the ledger's $0.2454825, stayed flat for more than 30 s, then reached it to the micro-dollar 13 s after
+the recorded read. §10.29's "two reads 30 s apart agree" therefore declared a false mismatch, which would halt the
+conductor after every stage. The ledger delta is the expected value, so `settled_after_snapshot` now keeps re-reading
+while the key is below it (a pause is not settlement), confirms a match or an overshoot with one more read, and reports
+`converged` (clean), `over` (the provider billed more than was metered: a real discrepancy) or `did_not_converge` (still
+below after `KEY_SETTLE_MAX_S`, a mismatch). Unit tests never wait on the wall clock (an autouse fixture swaps the
+module-level `_sleep`); the tests that pin the timing pass their own `sleep`.
