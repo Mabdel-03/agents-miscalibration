@@ -189,7 +189,7 @@ class RunRecord:
   codes `rate_limit_exceeded` (retryable upstream), `context_length_exceeded`, else `server_error`.
   Parity test: the same scripted conversation through chat and Responses produces identical `CallRecord`s.
 - `dynorch/plan.py`: `plan_runs(cfg, *, stage: str, arms: Sequence[str], rungs, repeats, items) -> list[RunSpec]`;
-  `run_key = sha256(f"{study_id}|{arm}|{item_id}|{rung}|{repeat}|{attempt}")[:24]`; order: seeded item interleave,
+  `run_key = sha256(f"{study_id}|{partition}|{arm}|{item_id}|{rung}|{repeat}|{attempt}")[:24]` (§10.22); order: seeded item interleave,
   rungs in `cell_rung_order` inside each item.
 - `dynorch/runner.py`: `Runner(core, adapters, settings).run_stage(stage, *, resume)`: subprocess pool, per-run work
   dir `<scratch>/work/<arm>/<rung>/<repeat>/<item_slug>/a<attempt>/{home,state,ws,tmp}`, env scrub (only
@@ -424,3 +424,46 @@ the run ends within the wall timeout"; and `RunRecord.refused_calls` counts up t
 four symlinks to its own binary under `state/codex/tmp/arg0/`. They live in the per-run scratch work dir, cost four
 inodes each on `/orcd/data` (not `/home`), and are harmless. Any scan of the scratch tree (the doctor's key-shaped
 string scan, a Gate scan) must not follow symlinks and must not read the linked binary.
+
+## 11. Review fix pass (2026-09-24; adversarial review of the merged code, 3 blockers / 14 majors / 9 minors)
+
+Two reviewers rejected the merged code for paid use. Every finding is answered in `docs/dynorch/REVIEW_LOG.md`
+(one line per issue with its commit). The items below CHANGE an interface or a frozen rule of §1–§10 and are
+therefore recorded here; everything else was a bug fixed behind an unchanged interface.
+
+**§10.22 The partition is part of a run's identity (blocker).** `run_key = sha256(f"{study_id}|{partition}|{arm}|
+{item_id}|{rung}|{repeat}|{attempt}")[:24]` (§6 amended), and the partition is a path element of
+`RunStore.path` / `superseded_path` (`runs/<partition>/<arm>/…`), `CallJournal.run_dir` (`raw/<partition>/<arm>/…`)
+and the runner's work dir (`work/<partition>/<arm>/…`); the runner's cell key is
+`(partition, arm, item_id, rung, repeat)`. Without it the canary's four k=16 ceiling-probe cells and the pilot's
+cells for the same items shared a run_key, a record file, a raw directory and the ledger attempt ids.
+
+**§10.23 B9 duplicate protection is a RETRY cache (blocker).** The reply cache is keyed
+`(conversation_key, rendered_prompt_sha256)` and holds ONLY calls the wire layer could not deliver. `ProxyCore`
+gains `mark_delivered(run_key, call_no)` / `mark_undelivered(run_key, call_no)`; `httpd` calls exactly one of them
+for every reply (after the write, or when it parks a call whose client went away). Two sub-agents with identical
+prompts are two conversations and each gets its own generation. B7's delivered answer is the last root reply the
+wire layer actually handed to the client (`close_run` and `ReplyLog.delivered` use the same signal).
+
+**§10.24 The B4 watchdog clock and the parked calls (blocker + major).** `TokenBudget.view()` /
+`ProxyCore.budget_view()` carry `in_flight`, `replies_served` and `idle_seconds`; the runner's exhaustion watchdog
+never fires while a call of the run is in flight and counts from the last SERVED reply. `ProxyServer` gains
+`wait_for_run(run_key, timeout)` and `wait_idle(timeout)`; `close()` drains the parked (shielded) calls before
+cancelling anything, and `Upstream.complete` charges the maximum when a cancellation escapes after `mark_sent`.
+The runner awaits the run's in-flight call before `close_run`.
+
+**§10.25 Cap-bound is `length` at the grant (major).** B3's forced close applies when
+`finish_reason == "length"` and `completion_tokens >= granted max_tokens`. Any other non-`stop` finish, or `length`
+below the grant, is forced_v2's `forced_think_short`: the reported tokens are settled, the call is journaled and
+`upstream_failed` is raised (the rerun rule decides). Every settled grant is journaled, whatever ended it.
+
+**§10.26 Stage re-execution and the pre-registration (majors).** `Runner.run_specs` always consults the store: a
+terminal cell is skipped; an unfinished or rerun-eligible one requires `--resume` (else `RunRefused`). The plan
+manifest `manifests/dynorch_plan_<stage>.jsonl` is write-once per stage (a subset leaves it untouched; a spec it
+does not pre-register raises). `tables.read_run_records` reads `runs/` AND `runs_superseded/`, so every paid rerun
+is a row and `retry_cost_usd` is real. The drain stops admissions and terminates only the harnesses still running
+after `drain_wait_seconds`. An upstream 402/401 drains the stage and never consumes one of the two reruns.
+
+**§10.27 Codex's wall (major).** The adapter's `timeout` wrapper sits at `wall + sigkill_after +
+timeout_margin_seconds` (default 60), so the runner's `600 + 120·k` timer is authoritative; a `timeout`-wrapped
+exit (124, or 137 after its kill-after) is classified `timeout`, not `done`.
