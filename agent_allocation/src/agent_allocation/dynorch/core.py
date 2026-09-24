@@ -25,6 +25,7 @@ served by the proxy (``close_run`` fills ``final_message`` / ``final_source``).
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -50,11 +51,35 @@ from agent_allocation.dynorch.upstream import Upstream, UpstreamFailed
 
 INTERRUPTED_LITERAL = "[Tool execution interrupted by user]"
 _LEADING_THINK = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
+#: The dated blocks the harnesses put in front of the task (§10.1; captures/openclaude/a, captures/codex/a).
+_HARNESS_BLOCKS = re.compile(r"<system-reminder>.*?</system-reminder>|<environment_context>.*?</environment_context>",
+                             re.DOTALL)
 PHASE_THINK, PHASE_ANSWER, PHASE_TERMINAL = "think", "answer", "terminal"
+log = logging.getLogger("agent_allocation.dynorch.core")
+
+
+SOLVER_SUBAGENT_TYPE = "solver"
+
+
+def non_solver_spawns(calls: Sequence[ToolCall], spawn_tools: Sequence[str]) -> list[str]:
+    """§10.7: the ``subagent_type`` values of parsed spawn calls that are not ``solver`` (OpenClaude's Agent tool
+    advertises built-in agent types; the study system prompt forbids them and the proxy records any use)."""
+    out: list[str] = []
+    for call in calls:
+        if call.name in spawn_tools and isinstance(call.arguments, dict) and "subagent_type" in call.arguments:
+            value = call.arguments["subagent_type"]
+            if value != SOLVER_SUBAGENT_TYPE:
+                out.append(str(value))
+    return out
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def strip_harness_blocks(text: str) -> str:
+    """The user text without OpenClaude's ``<system-reminder>`` / Codex's ``<environment_context>`` block (§10.1)."""
+    return _HARNESS_BLOCKS.sub("", text).strip()
 
 
 def normalise_content(content: str) -> str:
@@ -120,6 +145,11 @@ class ProxyCore:
 
     # ---- runs ------------------------------------------------------------------------------------------------
     @property
+    def proxy_version(self) -> str:
+        """``config.PROXY_VERSION`` as stamped on every ``RunSpec`` / journal (WP-B R-B6)."""
+        return self.settings.proxy_version
+
+    @property
     def open_runs(self) -> int:
         return sum(1 for s in self._runs.values() if not s.closed)
 
@@ -153,7 +183,7 @@ class ProxyCore:
         proxy), persist it and refuse further calls (``run_closed``)."""
         state = self._runs.get(run_key)
         if state is None:
-            raise ProxyError("unknown_run", f"no run {run_key}")
+            raise ProxyError.of("unknown_run", f"no run {run_key}")
         if status not in TERMINAL_RUN_STATUSES:
             raise ValueError(f"close_run needs a terminal status, got {status!r}")
         record = state.record
@@ -171,42 +201,52 @@ class ProxyCore:
         return self._state(run_key, allow_closed=True).record
 
     def budget_view(self, run_key: str) -> dict[str, int]:
-        """§3: cap / spent / remaining / calls (+ grace and prompt totals) for diagnostics."""
-        return self._state(run_key, allow_closed=True).budget.view()
+        """§3: cap / spent / remaining / calls (+ grace and prompt totals) for diagnostics; ``exhausted`` (0/1) is
+        set once the run's grace was used -- after it every call is refused (B4), whatever ``remaining`` says
+        (WP-B R-B3: the runner's exhaustion watchdog honours it)."""
+        budget = self._state(run_key, allow_closed=True).budget
+        return {**budget.view(), "exhausted": int(budget.grace_used)}
 
     def _state(self, run_key: str, *, allow_closed: bool = False) -> _RunState:
         state = self._runs.get(run_key)
         if state is None:
-            raise ProxyError("unknown_run", f"no run {run_key}")
+            raise ProxyError.of("unknown_run", f"no run {run_key}")
         if state.closed and not allow_closed:
-            raise ProxyError("run_closed", f"run {run_key} is closed ({state.record.status})")
+            raise ProxyError.of("run_closed", f"run {run_key} is closed ({state.record.status})")
         return state
 
-    # ---- classification (B1) ---------------------------------------------------------------------------------
+    # ---- classification (B1, §10.1) --------------------------------------------------------------------------
     @staticmethod
     def _system_and_first_user(request: ChatRequest) -> tuple[str, str]:
+        """``(system text, task text)``: the task text is the first user message with the harness's dated block
+        removed (OpenClaude's ``<system-reminder>``, Codex's separate ``<environment_context>`` item; §10.1), so a
+        conversation key never hashes a date or a cwd."""
         if not request.messages:
-            raise ProxyError("bad_request", "messages must not be empty")
+            raise ProxyError.of("bad_request", "messages must not be empty")
         system_text = request.messages[0].content if request.messages[0].role == "system" else ""
-        for message in request.messages:
-            if message.role == "user":
-                return system_text, message.content
-        raise ProxyError("bad_request", "no user message in the conversation")
+        users = [m for m in request.messages if m.role == "user"]
+        if not users:
+            raise ProxyError.of("bad_request", "no user message in the conversation")
+        for message in users:
+            task = strip_harness_blocks(message.content)
+            if task:
+                return system_text, task
+        return system_text, ""
 
     def _classify(self, state: _RunState, request: ChatRequest) -> tuple[str, str]:
-        """``(conversation_key, class)``: solver when the harness flagged a sub-agent or the system text is the
-        sub-agent prompt (possibly with harness-appended text); root when it is the run's root system text (or the
-        first conversation's system text -- Codex appends its own instructions); anything else is ``other``."""
+        """``(conversation_key, class)`` per contract §1 as amended by §10.1: solver when the wire layer flagged a
+        sub-agent (Codex ``x-openai-subagent``) or the system text CONTAINS the sub-agent prompt (OpenClaude
+        prepends its own line and appends env notes); root for the run's first non-solver conversation and for any
+        later conversation whose system text is that one's or contains the root prompt; anything else is other."""
         system_text, first_user = self._system_and_first_user(request)
         sha = system_sha256(system_text)
-        sub = state.subagent_text
-        if request.subagent or (sub is not None and system_text.startswith(sub)):
+        sub = state.subagent_text.rstrip("\n") if state.subagent_text else ""
+        root_text = state.root_text.rstrip("\n")
+        if request.subagent or (sub and sub in system_text):
             cls = "solver"
-        elif system_text.startswith(state.root_text):
-            cls = "root"
         elif state.effective_root_sha is None:
             cls = "root"
-        elif sha == state.effective_root_sha:
+        elif sha == state.effective_root_sha or (root_text and root_text in system_text):
             cls = "root"
         else:
             cls = "other"
@@ -223,7 +263,7 @@ class ProxyCore:
         if outside:
             state.record.error = f"tool_surface_violation: {','.join(outside)}"
             self.store.save(state.record)
-            raise ProxyError("tool_surface_violation",
+            raise ProxyError.of("tool_surface_violation",
                              f"tools outside the run's allowlist {sorted(allowed)}: {outside}")
 
     # ---- reasoning re-injection (§4) --------------------------------------------------------------------------
@@ -266,7 +306,7 @@ class ProxyCore:
     async def chat(self, run_key: str, request: ChatRequest) -> ChatReply:
         state = self._state(run_key)
         if not isinstance(request, ChatRequest):
-            raise ProxyError("bad_request", "request must be a ChatRequest")
+            raise ProxyError.of("bad_request", "request must be a ChatRequest")
         conv_key, conv_class = self._classify(state, request)
         self._check_tool_surface(state, request)
         root = conv_class == "root"
@@ -314,7 +354,7 @@ class ProxyCore:
         if guard is not None:
             record.guard_triggered = True
         self.store.save(record)
-        raise ProxyError(code, message)
+        raise ProxyError.of(code, message)
 
     def _serve_duplicate(self, state: _RunState, cached: ChatReply, conv_key: str, conv_class: str,
                          request: ChatRequest, waited: float) -> ChatReply:
@@ -449,6 +489,10 @@ class ProxyCore:
         finish = "tool_calls" if parse.calls else "stop"
         state.cache.insert(reasoning, content=parse.content, call_ids=[c.id for c in parse.calls])
         spawn_calls = sum(1 for c in parse.calls if c.name in spec.spawn_tools) if root else 0
+        non_solver = non_solver_spawns(parse.calls, spec.spawn_tools)
+        if non_solver:
+            log.warning("dynorch core: %s call %d spawned with subagent_type outside {solver}: %s", spec.run_key,
+                        call_no, non_solver)
         if root and parse.content.strip():
             state.root_contents.append(parse.content)
         reasoning_tokens = usage.reasoning_tokens
@@ -478,7 +522,8 @@ class ProxyCore:
             usage=ReplyUsage(prompt_tokens=prompt_tokens, completion_tokens=completion_reported,
                              reasoning_tokens=reasoning_tokens, cached_prompt_tokens=cached_prompt),
             call=record, headers=self._headers(state, record))
-        self._journal(state, request, prompt_sha, len(prompt), phases, reply, parse, grant, record)
+        self._journal(state, request, prompt_sha, len(prompt), phases, reply, parse, grant, record,
+                      non_solver_spawns=non_solver)
         self._account(state, record, parse, spawn_calls, cost, kind)
         state.replies[prompt_sha] = reply
         self.store.save(state.record)
@@ -599,7 +644,7 @@ class ProxyCore:
 
     def _journal(self, state: _RunState, request: ChatRequest, prompt_sha: str, rendered_chars: int,
                  phases: Sequence[Mapping[str, Any]], reply: ChatReply, parse: ToolParse, grant: Grant,
-                 record: CallRecord) -> None:
+                 record: CallRecord, *, non_solver_spawns: Sequence[str] = ()) -> None:
         payload = {
             "layout": JOURNAL_LAYOUT, "run_key": state.spec.run_key, "call_no": record.call_no,
             "phases": list(phases), "harness_request": to_json(request), "rendered_prompt_sha256": prompt_sha,
@@ -607,7 +652,8 @@ class ProxyCore:
             "reply": {"content": reply.content, "reasoning_content": reply.reasoning_content,
                       "tool_calls": [to_json(c) for c in reply.tool_calls], "finish_reason": reply.finish_reason,
                       "usage": to_json(reply.usage), "headers": dict(reply.headers)},
-            "tool_parse": {"status": parse.status, "reason": parse.reason, "calls": len(parse.calls)},
+            "tool_parse": {"status": parse.status, "reason": parse.reason, "calls": len(parse.calls),
+                           "non_solver_spawns": list(non_solver_spawns)},
             "budget": {"granted": grant.max_tokens, "realized": record.completion_tokens + record.grace_tokens,
                        "remaining_after": state.budget.remaining},
             "call": to_json(record), "proxy_version": PROXY_VERSION,

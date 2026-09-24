@@ -39,11 +39,26 @@ SPAWN_TOOL = ToolSpec(name="spawn_agent", description="Spawn a Codex sub-agent."
 
 @pytest.fixture(autouse=True)
 def _no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(*_args: Any, **_kwargs: Any) -> None:
-        raise AssertionError("dynorch unit tests must never open a real connection")
+    """No unit test may leave the host: only loopback (the proxy's own h11 server in WP-B's httpd tests) is
+    reachable; every other host raises before a socket is opened."""
+    real_async = httpx.AsyncHTTPTransport.handle_async_request
+    real_sync = httpx.HTTPTransport.handle_request
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse)
-    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", refuse)
+    def _loopback(request: httpx.Request) -> bool:
+        return request.url.host in ("127.0.0.1", "localhost", "::1")
+
+    async def guarded_async(self: Any, request: httpx.Request) -> Any:
+        if not _loopback(request):
+            raise AssertionError(f"dynorch unit tests must never open a real connection (to {request.url.host})")
+        return await real_async(self, request)
+
+    def guarded_sync(self: Any, request: httpx.Request) -> Any:
+        if not _loopback(request):
+            raise AssertionError(f"dynorch unit tests must never open a real connection (to {request.url.host})")
+        return real_sync(self, request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", guarded_async)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", guarded_sync)
 
 
 def load_cfg() -> dict[str, Any]:

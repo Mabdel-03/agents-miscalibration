@@ -39,7 +39,7 @@ from agent_allocation.api.normalize import answer_visible_text, split_reasoning
 from agent_allocation.api.request import build_capped_body
 from agent_allocation.apikey import redact, redact_headers
 from agent_allocation.contracts import EndpointLock, TransportStatus
-from agent_allocation.dynorch.records import ProxyError, UpstreamResult
+from agent_allocation.dynorch.records import PROXY_ERROR_CODES, ProxyError, UpstreamResult
 from agent_allocation.runtime.estimate import input_token_bound
 from agent_allocation.runtime.ledger import GATEWAY_TIMEOUT_MAY_BE_BILLED, CollectionLedger
 from agent_allocation.runtime.scheduler import HttpLimiter
@@ -56,7 +56,8 @@ class UpstreamFailed(ProxyError):
 
     def __init__(self, message: str, *, transport_status: TransportStatus, phases: tuple[dict[str, Any], ...],
                  cost_usd: Decimal, charged_max: bool, infrastructure_stop: bool = False) -> None:
-        super().__init__("upstream_failed", message, detail=transport_status.value)
+        super().__init__(PROXY_ERROR_CODES["upstream_failed"][0], "upstream_failed", message,
+                         detail=transport_status.value)
         self.transport_status = transport_status
         self.phases = phases
         self.cost_usd = cost_usd
@@ -178,7 +179,7 @@ class Upstream:
         """§5: reserve, send (retrying transport failures), settle. Raises ``ProxyError(ledger_refused)`` before
         anything is sent, ``UpstreamFailed`` after the $ side has been settled or charged conservatively."""
         if shard_id not in self.locks:
-            raise ProxyError("bad_request", f"unknown shard {shard_id!r}")
+            raise ProxyError.of("bad_request", f"unknown shard {shard_id!r}")
         lock = self.locks[shard_id]
         body = build_capped_body(prompt, lock, self.sampling, max_tokens=max_tokens)
         amount = self.reservation_usd(prompt, max_tokens, lock)
@@ -196,7 +197,7 @@ class Upstream:
             aid = attempt_id if number == 1 else sibling_attempt_id(attempt_id, number)
             if not await self.ledger.reserve(attempt_id=aid, node_id=node_id, partition_id=partition,
                                              amount_usd=amount):
-                raise ProxyError("ledger_refused", f"ledger refused {amount} USD ({self.ledger.last_refusal})",
+                raise ProxyError.of("ledger_refused", f"ledger refused {amount} USD ({self.ledger.last_refusal})",
                                  detail=self.ledger.last_refusal)
             async with self._limiters[shard_id]:
                 await self._rps[shard_id].wait()

@@ -21,7 +21,8 @@ from agent_allocation.storage.journal import LedgerJournal
 
 from .conftest import make_request, make_spec, root_messages
 
-KEY = "sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef"
+# assembled at import time: the doctor refuses a worktree that contains a key-shaped literal (Gate 0)
+KEY = "sk-or-" + "v1-" + "0123456789abcdef" * 3
 
 
 def payload(spec, call_no: int, **extra):

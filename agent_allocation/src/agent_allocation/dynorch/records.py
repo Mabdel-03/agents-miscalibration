@@ -40,23 +40,42 @@ PROXY_ERROR_CODES: Mapping[str, tuple[int, bool]] = {
     "bad_request": (400, False),
     "ledger_refused": (503, True),
     "upstream_failed": (502, False),
+    # wire-layer codes (WP-B httpd): an unknown route, and a proxy bug answered loudly instead of hanging
+    "not_found": (404, False),
+    "internal_error": (500, False),
 }
 
 
 class ProxyError(Exception):
-    """§2: the one exception the wire layer converts into an HTTP error envelope."""
+    """§2: the one exception the wire layer converts into an HTTP error envelope.
 
-    def __init__(self, code: str, message: str, *, status: int | None = None, retryable: bool | None = None,
+    Contract signature ``ProxyError(status, code, message, retryable)``: ``code`` must be one of
+    ``PROXY_ERROR_CODES`` (an unknown code is a programming error and raises ``ValueError``); ``status`` is the HTTP
+    status the wire layer answers with (normally the code's frozen status; a caller may pass another, e.g. 405 for a
+    wrong method on a ``bad_request``); ``retryable`` defaults to the code's frozen value when ``None``. ``detail``
+    is additive (the ledger's refusal reason / the upstream detail, journaled but never sent to the harness).
+    """
+
+    def __init__(self, status: int, code: str, message: str, retryable: bool | None = None, *,
                  detail: str | None = None) -> None:
         if code not in PROXY_ERROR_CODES:
             raise ValueError(f"unknown ProxyError code {code!r}")
-        default_status, default_retryable = PROXY_ERROR_CODES[code]
+        if isinstance(status, bool) or not isinstance(status, int) or not 400 <= status <= 599:
+            raise ValueError(f"ProxyError status must be an HTTP error status (400-599), got {status!r}")
+        _default_status, default_retryable = PROXY_ERROR_CODES[code]
         self.code = code
         self.message = message
-        self.status = default_status if status is None else int(status)
+        self.status = status
         self.retryable = default_retryable if retryable is None else bool(retryable)
         self.detail = detail
         super().__init__(f"{self.status} {code}: {message}")
+
+    @classmethod
+    def of(cls, code: str, message: str, *, retryable: bool | None = None, detail: str | None = None) -> "ProxyError":
+        """The error for ``code`` at its frozen status (``PROXY_ERROR_CODES``)."""
+        if code not in PROXY_ERROR_CODES:
+            raise ValueError(f"unknown ProxyError code {code!r}")
+        return cls(PROXY_ERROR_CODES[code][0], code, message, retryable, detail=detail)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

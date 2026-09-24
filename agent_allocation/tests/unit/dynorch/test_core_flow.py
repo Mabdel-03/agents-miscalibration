@@ -199,7 +199,8 @@ async def test_ledger_refusal_is_a_503_and_releases_the_unsent_grant(make_env):
         await env.core.chat(spec.run_key, make_request(root_messages()))
     assert exc.value.code == "ledger_refused" and exc.value.status == 503 and exc.value.retryable
     view = env.core.budget_view(spec.run_key)
-    assert view == {"cap": 4096, "spent": 0, "remaining": 4096, "calls": 0, "grace_tokens": 0, "prompt_total": 0}
+    assert view == {"cap": 4096, "spent": 0, "remaining": 4096, "calls": 0, "grace_tokens": 0, "prompt_total": 0,
+                    "exhausted": 0}
     assert env.think_calls() == [] and not env.core.record_of(spec.run_key).exhausted
 
 
