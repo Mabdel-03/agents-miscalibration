@@ -147,9 +147,12 @@ async def test_streaming_sends_headers_at_once_and_keepalives_while_core_is_pend
 
 
 async def test_streaming_error_after_headers_is_an_error_frame():
-    core = StubProxyCore(lambda run, req, n: Scripted(error=ProxyError(402, "budget_exhausted", "cap", False)))
+    """An error the core raises AFTER the refusal grace (here: 0.5 s into a 0.2 s grace) reaches a streaming client
+    as an in-stream error frame + [DONE] inside the 200 stream (the headers had gone out)."""
+    core = StubProxyCore(lambda run, req, n: Scripted(error=ProxyError(402, "budget_exhausted", "cap", False),
+                                                      delay_seconds=0.5))
     core.open_run(_spec(), root_system_text=SYSTEM, subagent_system_text=None)
-    async with ProxyServer(core, keepalive_seconds=5) as srv:
+    async with ProxyServer(core, keepalive_seconds=5, refusal_grace_seconds=0.2) as srv:
         async with httpx.AsyncClient(base_url=srv.base_url) as client:
             r = await client.post(f"/r/{RUN}/v1/chat/completions", headers=_headers(), json=_chat_body(stream=True))
             assert r.status_code == 200
@@ -160,11 +163,37 @@ async def test_streaming_error_after_headers_is_an_error_frame():
             assert plain.status_code == 402 and plain.json()["error"]["code"] == "budget_exhausted"
 
 
+async def test_streaming_refusal_before_headers_carries_the_real_http_status():
+    """Gate 0 smoke finding (requests/wpE.md item 14, proposed contract §10.19): a refusal decided inside the grace -- a budget 402 costs no upstream
+    call -- is answered with its HTTP status and JSON body even though the client asked to stream; OpenClaude does
+    not retry a 402 status (captures/openclaude/c) but retries the same error as an in-stream frame once per
+    conversation. Codex gets the same real status on the Responses route. The default grace is
+    min(REFUSAL_GRACE_SECONDS, keepalive_seconds)."""
+    from agent_allocation.dynorch.httpd import REFUSAL_GRACE_SECONDS
+
+    core = StubProxyCore(lambda run, req, n: Scripted(error=ProxyError(402, "budget_exhausted", "cap", False)))
+    core.open_run(_spec(), root_system_text=SYSTEM, subagent_system_text=None)
+    async with ProxyServer(core, keepalive_seconds=5) as srv:
+        assert srv.refusal_grace_seconds == min(REFUSAL_GRACE_SECONDS, 5)
+        async with httpx.AsyncClient(base_url=srv.base_url) as client:
+            r = await client.post(f"/r/{RUN}/v1/chat/completions", headers=_headers(), json=_chat_body(stream=True))
+            assert r.status_code == 402 and r.headers["content-type"] == "application/json"
+            assert r.json()["error"]["code"] == "budget_exhausted" and r.json()["error"]["status"] == 402
+            body = {"model": "m", "instructions": SYSTEM, "input": [{"type": "message", "role": "user", "content": "TASK"}],
+                    "stream": True, "store": False}
+            codex = await client.post(f"/r/{RUN}/v1/responses", headers=_headers(), json=body)
+            assert codex.status_code == 402 and codex.json()["error"]["code"] == "budget_exhausted"
+    assert [e.status for e in srv.reply_log.events[RUN]] == [402, 402]
+    with pytest.raises(ValueError):
+        ProxyServer(core, keepalive_seconds=5, refusal_grace_seconds=-1)
+
+
 async def test_responses_route_streams_codex_events_and_failures():
     def script(run, req, n):
         if n == 1:
             return Scripted(reasoning="r", content="", tool_calls=[("Agent", {"prompt": "p"})], completion_tokens=40)
-        return Scripted(error=ProxyError(503, "ledger_refused", "paused", True))
+        # after the refusal grace (0.2 s): the failure goes out in-stream as response.failed
+        return Scripted(error=ProxyError(503, "ledger_refused", "paused", True), delay_seconds=0.5)
 
     core = StubProxyCore(script)
     core.open_run(_spec(), root_system_text=SYSTEM, subagent_system_text=None)
@@ -172,7 +201,7 @@ async def test_responses_route_streams_codex_events_and_failures():
             "tools": [{"type": "namespace", "name": "ns", "tools": [
                 {"type": "function", "name": "Agent", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}}}]}],
             "stream": True, "store": False}
-    async with ProxyServer(core, keepalive_seconds=5) as srv:
+    async with ProxyServer(core, keepalive_seconds=5, refusal_grace_seconds=0.2) as srv:
         async with httpx.AsyncClient(base_url=srv.base_url) as client:
             r = await client.post(f"/r/{RUN}/v1/responses", headers=_headers(), json=body)
             assert r.status_code == 200 and r.headers["content-type"] == "text/event-stream"

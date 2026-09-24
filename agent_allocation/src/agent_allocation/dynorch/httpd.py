@@ -7,16 +7,22 @@ Routes (all under ``/r/<run_key>/v1/`` with ``Authorization: Bearer <run_key>``,
 * ``GET models`` (one model), ``GET budget`` (``ProxyCore.budget_view``); ``GET /healthz`` needs no bearer.
 
 Request bodies may be ``Content-Length`` or chunked (h11 handles both) and may carry ``Content-Encoding: gzip``
-(Codex's optional request compression). Connections are kept alive across cycles. A streaming reply sends the
-response headers at once and an SSE comment ``: dynorch keepalive\\n\\n`` every ``keepalive_seconds`` while the core
-call is pending (plan §2 B9: OpenClaude's ``API_TIMEOUT_MS`` and Codex's ``stream_idle_timeout_ms`` count from the
-last byte), then the buffered result as chunks. The core call is *shielded*: a client that disconnects mid-call
+(Codex's optional request compression). Connections are kept alive across cycles. A streaming reply waits at most
+``refusal_grace_seconds`` (default ``min(2, keepalive_seconds)``) for the core to refuse the call outright, then
+sends the response headers and an SSE comment ``: dynorch keepalive\\n\\n`` every ``keepalive_seconds`` while the
+core call is pending (plan §2 B9: OpenClaude's ``API_TIMEOUT_MS`` and Codex's ``stream_idle_timeout_ms`` count from
+the last byte), then the buffered result as chunks. The core call is *shielded*: a client that disconnects mid-call
 does not cancel the upstream call (the core finishes, settles and caches it; contract §3 duplicate protection).
 
 Every ``ProxyError`` raised by the core is converted here and nowhere else: before the headers went out as an HTTP
 status + JSON body (``openai_format.error_json``), after them as an in-stream error frame (chat) or a
-``response.failed`` event (Responses). Any other exception is a proxy bug: it is logged with its traceback and
-answered 500 ``internal_error`` so the harness fails loudly instead of hanging.
+``response.failed`` event (Responses). The refusal grace exists for the first form: a budget refusal (402), a
+tool-surface violation (400) or a bad bearer (401) is decided in microseconds without an upstream call, and the
+real HTTP status is what the harnesses were verified NOT to retry (captures/openclaude/c: HTTP 402 -> no retry, no
+further request, exit 1), whereas the same 402 as an error frame inside a ``200`` stream is retried once per
+conversation by OpenClaude (Gate 0 smoke, WP-E 2026-09-23; docs/dynorch/requests/wpE.md item 14, proposed contract
+§10.19). Any other exception is a proxy bug:
+it is logged with its traceback and answered 500 ``internal_error`` so the harness fails loudly instead of hanging.
 
 ``ReplyLog`` keeps, per run, the replies served in order (``conversation_class``, content, finish reason): the
 runner reads the delivered answer from it (plan §2 B7: the last root-conversation assistant message with non-empty
@@ -39,13 +45,15 @@ import h11
 from agent_allocation.dynorch import openai_format, responses_format
 from agent_allocation.dynorch.records import ChatReply, ChatRequest, ProxyError
 
-__all__ = ["DEFAULT_MODEL_ID", "ProxyServer", "ReplyLog", "ServedError", "ServedReply", "route", "KEEPALIVE_COMMENT",
-           "SUBAGENT_HEADER"]
+__all__ = ["DEFAULT_MODEL_ID", "ProxyServer", "REFUSAL_GRACE_SECONDS", "ReplyLog", "ServedError", "ServedReply", "route",
+           "KEEPALIVE_COMMENT", "SUBAGENT_HEADER"]
 
 log = logging.getLogger("agent_allocation.dynorch.httpd")
 
 DEFAULT_MODEL_ID = "qwen/qwen3.8-27b"
 KEEPALIVE_COMMENT = b": dynorch keepalive\n\n"
+#: How long a streaming request waits for an outright refusal before the headers go out (module docstring).
+REFUSAL_GRACE_SECONDS = 2.0
 SUBAGENT_HEADER = "x-openai-subagent"
 _ROUTE = re.compile(r"^/r/(?P<run_key>[A-Za-z0-9_\-]{1,64})/v1/(?P<verb>chat/completions|responses|models|budget)$")
 _MAX_BODY = 64 * 1024 * 1024
@@ -147,13 +155,18 @@ class ProxyServer:
     """The loopback HTTP server. ``core`` is any object with ProxyCore's §3 ``chat``/``budget_view``."""
 
     def __init__(self, core: Any, *, host: str = "127.0.0.1", port: int = 0, keepalive_seconds: float = 15.0,
-                 model_id: str = DEFAULT_MODEL_ID, reply_log: ReplyLog | None = None) -> None:
+                 model_id: str = DEFAULT_MODEL_ID, reply_log: ReplyLog | None = None,
+                 refusal_grace_seconds: float | None = None) -> None:
         if keepalive_seconds <= 0:
             raise ValueError("keepalive_seconds must be positive")
+        if refusal_grace_seconds is not None and refusal_grace_seconds < 0:
+            raise ValueError("refusal_grace_seconds must not be negative")
         self.core = core
         self.host = host
         self.requested_port = port
         self.keepalive_seconds = keepalive_seconds
+        self.refusal_grace_seconds = (min(REFUSAL_GRACE_SECONDS, keepalive_seconds) if refusal_grace_seconds is None
+                                      else float(refusal_grace_seconds))
         self.model_id = model_id
         self.reply_log = reply_log if reply_log is not None else ReplyLog()
         self._server: asyncio.base_events.Server | None = None
@@ -358,12 +371,23 @@ class ProxyServer:
                                                           namespaces=namespaces)
             await self._send_json(conn, writer, 200, payload, extra=reply.headers)
             return
-        # Streaming: headers first, keepalive comments while the core works, then the buffered result.
+        # Streaming: give the core ``refusal_grace_seconds`` to refuse outright (a ProxyError raised here propagates
+        # to _dispatch and is answered with its real HTTP status: no byte has gone out yet), then headers, keepalive
+        # comments while the core works, and the buffered result.
+        task = asyncio.ensure_future(self._call_core(run_key, chat_request))
+        reply: ChatReply | None = None
+        try:
+            reply = await asyncio.wait_for(asyncio.shield(task), timeout=self.refusal_grace_seconds)
+        except asyncio.TimeoutError:
+            reply = None
+        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+            self._keep_running(task)
+            raise
         writer.write(conn.send(h11.Response(status_code=200, headers=self._headers("text/event-stream"))))
         await writer.drain()
-        task = asyncio.ensure_future(self._call_core(run_key, chat_request))
         try:
-            reply = await self._await_with_keepalives(task, conn, writer)
+            if reply is None:
+                reply = await self._await_with_keepalives(task, conn, writer)
         except ProxyError as err:
             self.reply_log.record_error(run_key, err, wire=wire)
             if wire == "chat":
