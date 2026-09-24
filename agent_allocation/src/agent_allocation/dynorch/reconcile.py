@@ -165,6 +165,9 @@ class CallGenerations:
     completion_tokens: int | None
     cost_usd: Decimal | None
     expected_provider: str | None
+    #: the call's transport outcome as journaled; anything but "ok" (an interrupted stream, an ambiguous timeout) was
+    #: charged CONSERVATIVELY (B2: the full grant), so the provider's bill is an upper-bound check (contract §10.41)
+    transport_status: str | None = None
 
 
 def calls_from_table(calls: Any, runs: Any, locks: Mapping[str, Any]) -> list[CallGenerations]:
@@ -188,9 +191,11 @@ def calls_from_table(calls: Any, runs: Any, locks: Mapping[str, Any]) -> list[Ca
         grace = rec["grace_tokens"]
         total = None if completion is None or _isnan(completion) else int(completion) + (0 if grace is None or _isnan(grace) else int(grace))
         cost = rec["cost_usd"]
+        status = rec.get("transport_status")
         rows.append(CallGenerations(str(rec["run_key"]), int(rec["call_no"]), ids, total,
                                     None if cost is None or (isinstance(cost, float) and _isnan(cost)) else Decimal(str(cost)),
-                                    getattr(lock, "provider_name", None)))
+                                    getattr(lock, "provider_name", None),
+                                    None if status is None or (isinstance(status, float) and _isnan(status)) else str(status)))
     return rows
 
 
@@ -308,16 +313,30 @@ def compare_call(call: CallGenerations, metadata: Mapping[str, Mapping[str, Any]
         provider_ok = None
     else:
         provider_ok = providers == {call.expected_provider}
+    # contract §10.41: a failed call (interrupted stream, ambiguous timeout) was charged the FULL grant (B2); the provider
+    # may have generated and billed less, down to nothing. The ledger may over-charge it but must never under-charge:
+    # the check is metadata <= journaled (tokens) and metadata cost <= journaled cost + a cent. A completed ("ok") call
+    # keeps the exact rule.
+    conservative = call.transport_status not in (None, "ok")
+    if not fetched or call.completion_tokens is None or tokens is None:
+        tokens_match = None
+    elif conservative:
+        tokens_match = tokens <= call.completion_tokens
+    else:
+        tokens_match = tokens == call.completion_tokens
+    if conservative and call.cost_usd is not None and cost is not None:
+        cost_ok: bool | None = cost <= call.cost_usd + Decimal("0.01")
+    else:
+        cost_ok = cost_within(call.cost_usd, cost)
     return {
         "run_key": call.run_key, "call_no": call.call_no, "generation_ids": list(call.generation_ids),
-        "fetched": fetched,
+        "fetched": fetched, "transport_status": call.transport_status, "conservative_charge": conservative,
         "journaled_completion_tokens": call.completion_tokens, "metadata_completion_tokens": tokens,
         "metadata_token_field": METADATA_TOKEN_FIELD, "native_tokens_missing": native_missing,
-        "tokens_match": (None if not fetched or call.completion_tokens is None or tokens is None
-                         else tokens == call.completion_tokens),
+        "tokens_match": tokens_match,
         "journaled_cost_usd": None if call.cost_usd is None else str(call.cost_usd),
         "metadata_cost_usd": None if cost is None else str(cost),
-        "cost_within_tolerance": cost_within(call.cost_usd, cost),
+        "cost_within_tolerance": cost_ok,
         "provider_names": sorted(providers), "expected_provider": call.expected_provider, "provider_ok": provider_ok,
     }
 

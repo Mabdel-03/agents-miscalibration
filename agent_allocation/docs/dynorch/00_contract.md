@@ -662,3 +662,13 @@ cannot parse. The runner stores such a grade as `correct = False` (scored 0), wh
 `semantic_correct` (`None`). `grade.correct_of(grade)` is now the single mapping used by both `finalize_run` and the
 Gate 4 re-grade: GRADED → its verdict, INVALID_OUTPUT → False, anything else → None. Stored scores were already right
 and are unchanged; only the check was wrong.
+
+**10.41 The `/generation` sample checks a conservatively charged FAILED call as an upper bound (lead, 2026-09-24).**
+Gate 4 of the main stage failed `generation_sample_matches` on one sampled call: H0/25 omni_math_hard/3594 attempt 2,
+call 1, a stream the provider cut after 23,106 tokens ("Network connection lost") and billed at $0. Per B2 the ledger
+charged that call the full grant, 25,600 tokens and $0.07068182, and the cell was re-run. The sample demanded exact
+equality, which a conservatively charged failed call can never meet. `CallGenerations` now carries the journaled
+`transport_status`. For any call that did not complete ("ok"), the check is provider tokens ≤ journaled and provider
+cost ≤ journaled cost + $0.01: the ledger may over-charge a failed call but never under-charge it, and a provider
+billing MORE is still caught. Completed calls keep the exact rule. (Stage-level: 16 of the 1,920 main calls failed
+this way: 12 error envelopes and 4 ambiguous timeouts.)

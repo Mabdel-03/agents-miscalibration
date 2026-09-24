@@ -823,3 +823,23 @@ def test_the_key_must_land_inside_the_ledgers_bounds_when_calls_were_charged_at_
     # above the upper bound (the provider billed more than was metered) -> mismatch
     report = run(["10.45", "10.45"])
     assert report["decision"] == reconcile.MISMATCH and report["key_settle"]["outcome"] == "over"
+
+
+def test_a_conservatively_charged_failed_call_is_checked_as_an_upper_bound():
+    """Contract §10.41, the real main-stage case: H0/25 omni_math_hard/3594 a2 call 1, stream cut by the provider
+    ('Network connection lost') after 23,106 tokens, billed $0 by OpenRouter; the ledger charged the full grant
+    (25,600 tokens, $0.07068182) per B2. Over-charging a failed call is the designed direction; under-charging is not."""
+    failed = reconcile.CallGenerations("d3d912d16770c49de13e4a96", 1, ("g1",), 25600, Decimal("0.07068182"), "Parasail",
+                                       "error_envelope")
+    meta = {"g1": {"native_tokens_completion": 23106, "tokens_completion": 21000, "total_cost": 0,
+                   "provider_name": "Parasail"}}
+    row = reconcile.compare_call(failed, meta)
+    assert row["conservative_charge"] and row["tokens_match"] is True and row["cost_within_tolerance"] is True
+    # the provider billing MORE than the conservative charge is still caught
+    over = {"g1": {**meta["g1"], "total_cost": "0.09"}}
+    assert reconcile.compare_call(failed, over)["cost_within_tolerance"] is False
+    more_tokens = {"g1": {**meta["g1"], "native_tokens_completion": 26000}}
+    assert reconcile.compare_call(failed, more_tokens)["tokens_match"] is False
+    # a completed call keeps the exact rule
+    ok = reconcile.CallGenerations("rk", 1, ("g1",), 23107, Decimal("0.07068182"), "Parasail", "ok")
+    assert reconcile.compare_call(ok, meta)["tokens_match"] is False
