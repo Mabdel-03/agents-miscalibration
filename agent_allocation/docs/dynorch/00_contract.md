@@ -404,3 +404,23 @@ over `api/fake.py`: `test_core_flow`, the chat/Responses parity test and the fak
 **10.18 Not amended, recorded for Gate 0.** Real-CLI smoke tests (plan §9 Gate 0 lists) against the real proxy +
 fake upstream are NOT in the tree; WP-E's captures were taken against a throwaway stub. `gates/gate0_smoke.json`
 (`{passed, failures}`) is therefore absent and `dynorch-gates --gate 0` returns stop_notify until the smoke is run.
+
+**10.19 B9 "headers at once" → "headers within `refusal_grace_seconds`" (WP-E item 14, lead ACCEPTED).** The streaming
+path waits up to `refusal_grace_seconds = min(2 s, keepalive_seconds)` before committing the response headers, so a
+refusal decided before any upstream work (budget 402, tool_surface 400, bad bearer 401) carries its real HTTP status
+instead of a 200 followed by an in-stream error frame. Evidence: OpenClaude retried an in-stream 402 but ends the run
+immediately on a real 402. Keepalive cadence and the "one upstream call per request" rule are unchanged, and the
+330 s / 660 s stall cases still pass for both harnesses.
+
+**10.20 Codex retries an HTTP 402 twice per conversation (WP-E item 15, lead ACCEPTED as observed behaviour).**
+Codex 0.156.1 reads 402 as "unexpected status", re-sends the identical request `stream_max_retries` (2) times and then
+reports `turn.failed`, all in-process in under a second with no upstream call and no cost. Consequences, pre-registered
+here: the plan §9 Gate 0/Gate 1 phrase "≤ 1 further request after the first 402" does NOT apply to H3 — the pinned
+criterion for Codex is "every request after the first 402 is itself refused with 402, no upstream call, no cost, and
+the run ends within the wall timeout"; and `RunRecord.refused_calls` counts up to 3 per exhausted Codex conversation.
+`refused_calls` is a diagnostic, never a compute or cost quantity, so no budget or accounting rule changes.
+
+**10.21 Codex leaves `arg0` symlinks on a failed exit (WP-E item 16, lead ACCEPTED).** A failed Codex run leaves about
+four symlinks to its own binary under `state/codex/tmp/arg0/`. They live in the per-run scratch work dir, cost four
+inodes each on `/orcd/data` (not `/home`), and are harmless. Any scan of the scratch tree (the doctor's key-shaped
+string scan, a Gate scan) must not follow symlinks and must not read the linked binary.
