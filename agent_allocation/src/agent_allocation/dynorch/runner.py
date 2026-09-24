@@ -326,10 +326,14 @@ class Runner:
         started = time.monotonic()
         self.core.open_run(spec, root_system_text=system_text, subagent_system_text=settings.subagent_text)
         self.reply_log.forget(spec.run_key)
-        adapter.prepare(work.root, spec, proxy_base, system_text, settings.subagent_text, task_text)
-        plan = adapter.build_command(work.root, spec, proxy_base)
-        check_env(plan.env, work=work.root, run_key=spec.run_key)
-        self._write_launch_json(work, spec, plan, wall)
+        try:
+            adapter.prepare(work.root, spec, proxy_base, system_text, settings.subagent_text, task_text)
+            plan = adapter.build_command(work.root, spec, proxy_base)
+            check_env(plan.env, work=work.root, run_key=spec.run_key)
+            self._write_launch_json(work, spec, plan, wall)
+        except Exception:
+            self.core.close_run(spec.run_key, status="refused_before_start")   # never leave a run open
+            raise
         killed_by_drain = False
         exhausted_kill = False
         if getattr(adapter, "in_process", False):

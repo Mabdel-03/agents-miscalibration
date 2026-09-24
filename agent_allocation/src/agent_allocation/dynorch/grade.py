@@ -14,7 +14,8 @@ compares. Python items are not text kinds and raise. Grading is ``grading/text/g
 tables carry: VALID and graded -> ``delivered`` with ``y in {1.0, 0.0}``; anything not VALID -> ``op_no_output``
 with ``y = 0.0`` (exactly the ladder's invalid-candidate rule); an evaluator error -> ``unknown`` / NaN; a run whose
 final attempt is still an infrastructure failure (``transport_failed``, ``refused_before_start``, a ``failed``
-attempt with a ``rerun_reason``) -> ``unknown`` / NaN (frozen table: all-infra -> y = NaN), never 0.
+attempt with a ``rerun_reason``, whatever its status) -> ``unknown`` / NaN (frozen table: all-infra -> y = NaN),
+never 0; a wall timeout WITH calls served carries no ``rerun_reason`` and is graded like any other run.
 """
 from __future__ import annotations
 
@@ -74,10 +75,12 @@ def grade_candidate(candidate: Candidate, private: PrivateEvalSpec, *, timeout_s
 
 
 def is_infra_failure(record: RunRecord) -> bool:
-    """Whether the record's (final) attempt ended in infrastructure, not model, failure."""
+    """Whether the record's (final) attempt ended in infrastructure, not model, failure: a transport/refusal status,
+    or any attempt the rerun rule marked rerun-eligible (``rerun_reason`` set: zero calls served -- also when the
+    wall clock expired before the first call --, a transport error, a drain kill, an interruption)."""
     if record.status in INFRA_STATUSES:
         return True
-    return record.status == "failed" and record.rerun_reason is not None
+    return record.rerun_reason is not None
 
 
 def finalize_run(record: RunRecord, task: PublicTask, private: PrivateEvalSpec) -> RunRecord:

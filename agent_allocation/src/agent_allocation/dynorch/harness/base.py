@@ -26,7 +26,8 @@ from agent_allocation.dynorch.records import RunSpec
 
 __all__ = [
     "ALLOWED_OPENAI_KEYS", "FORBIDDEN_PREFIXES", "HarnessAdapter", "HarnessResult", "INHERITED_KEYS", "InProcessAdapter",
-    "LaunchPlan", "WorkDir", "check_env", "harness_env", "last_json_line", "openclaude_result", "write_text",
+    "LaunchPlan", "WorkDir", "check_env", "harness_env", "last_json_line", "openclaude_result", "probe_version",
+    "write_text",
 ]
 
 INHERITED_KEYS: tuple[str, ...] = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TERM")
@@ -226,3 +227,31 @@ def redacted_env(env: Mapping[str, str]) -> dict[str, str]:
 
 def default_base_env() -> Mapping[str, str]:
     return os.environ
+
+
+def probe_version(argv: list[str], *, extra_env: Mapping[str, str] | None = None, timeout: float = 60.0) -> str:
+    """Run ``<binary> --version`` with HOME and every harness state dir pointed at a throwaway scratch directory
+    (``TMPDIR``, never ``/home``: Codex and OpenClaude both write caches into their home on start-up)."""
+    import shutil as _shutil
+    import subprocess
+    import tempfile
+
+    scratch = Path(tempfile.mkdtemp(prefix="dynorch-version-"))
+    try:
+        home = scratch / "home"
+        home.mkdir()
+        env = {"PATH": default_base_env().get("PATH", ""), "HOME": str(home), "TMPDIR": str(scratch),
+               "XDG_CONFIG_HOME": str(home / ".config"), "XDG_CACHE_HOME": str(home / ".cache"),
+               "CLAUDE_CONFIG_DIR": str(home / "cfg"), "CODEX_HOME": str(home / "codex"),
+               "OPENCLAW_STATE_DIR": str(home / "openclaw"), "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1",
+               "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+        (home / "codex").mkdir()
+        env.update(extra_env or {})
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"error: {type(exc).__name__}"
+        text = (out.stdout or out.stderr).strip()
+        return text.splitlines()[0] if text else "unknown"
+    finally:
+        _shutil.rmtree(scratch, ignore_errors=True)

@@ -25,11 +25,10 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 from agent_allocation.dynorch.harness.base import (
-    HarnessResult, LaunchPlan, WorkDir, default_base_env, harness_env, openclaude_result, write_text,
+    HarnessResult, LaunchPlan, WorkDir, default_base_env, harness_env, openclaude_result, probe_version, write_text,
 )
 from agent_allocation.dynorch.records import RunSpec
 
@@ -122,15 +121,6 @@ class OpenclaudeAdapter:
         if self.binary in self._version_cache:
             return self._version_cache[self.binary]
         path = shutil.which(self.binary)
-        if path is None:
-            version = "absent"
-        else:
-            try:
-                out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=60,
-                                     env={"PATH": default_base_env().get("PATH", ""), "HOME": "/nonexistent",
-                                          "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1"})
-                version = (out.stdout or out.stderr).strip().splitlines()[0] if (out.stdout or out.stderr).strip() else "unknown"
-            except (OSError, subprocess.SubprocessError) as exc:
-                version = f"error: {type(exc).__name__}"
+        version = "absent" if path is None else probe_version([path, "--version"])
         self._version_cache[self.binary] = version
         return version

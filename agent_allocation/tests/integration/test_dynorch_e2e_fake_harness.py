@@ -372,3 +372,39 @@ async def test_delayed_reply_330s(tmp_path: Path, base: BaseInputs):
 @pytest.mark.timeout(1500)
 async def test_delayed_reply_660s(tmp_path: Path, base: BaseInputs):
     await _delay_case(660.0)(tmp_path, base)
+
+
+@pytest.mark.timeout(600)
+async def test_exhaustion_watchdog_terminates_a_lingering_harness(tmp_path: Path, base: BaseInputs):
+    """Plan §2 B4: once exhausted, SIGTERM the harness group ``sigterm_after_exhaustion`` s after the last served
+    reply (1 s here), SIGKILL ``sigkill_after`` s later; the run is ``done`` on what was served, never rerun."""
+    cfg = _cfg_with_fake_arm()
+    lingering = tmp_path / "lingering_cli.py"
+    lingering.write_text(
+        "import json, os, sys, time, http.client\n"
+        "from urllib.parse import urlsplit\n"
+        "sys.stdin.read()\n"
+        "u = urlsplit(os.environ['OPENAI_BASE_URL'])\n"
+        "c = http.client.HTTPConnection(u.hostname, u.port, timeout=60)\n"
+        "body = json.dumps({'model': 'm', 'stream': False, 'messages': [{'role': 'system', 'content': open(sys.argv[sys.argv.index('--system-file') + 1]).read()}, {'role': 'user', 'content': 'TASK'}]})\n"
+        "c.request('POST', u.path.rstrip('/') + '/chat/completions', body=body, headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY'], 'Content-Type': 'application/json'})\n"
+        "r = c.getresponse(); r.read()\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'lingering'}), flush=True)\n"
+        "time.sleep(120)\n")
+
+    def script(run, request, call_no):
+        return Scripted(content="<final>3</final>", completion_tokens=run.spec.cap_tokens)   # spends the whole cap
+
+    async with Harness(tmp_path, cfg, script=script) as h:
+        h.with_inputs(base)
+        h.runner.adapters["fake"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable, cli_path=lingering)
+        specs = h.specs(base, arms=("HF",), rungs=(1,), items=_items(base)[:1])
+        summary = await h.runner.run_specs("main", specs)
+    record = next(iter(h.store.scan().values()))
+    assert summary.statuses == {"done": 1}
+    assert record.harness_reported["sigterm_after_exhaustion"] is True
+    assert record.harness_reported["timed_out"] is False and record.rerun_reason is None
+    assert record.harness_exit_code not in (0, None) and record.wall_seconds < 30
+    assert record.calls == 1 and record.completion_total == record.spec.cap_tokens
+    assert record.final_message == "<final>3</final>" and record.parse_status == "valid"
+    assert record.cli_result_mismatch is True          # the CLI's own result is only a cross-check

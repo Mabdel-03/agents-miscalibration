@@ -148,7 +148,8 @@ def test_finalize_infra_failure_is_nan_never_zero(base: BaseInputs):
     item_id = base.panels["hmmt"].main_item_ids[0]
     task, private = base.tasks[item_id], base.privates[item_id]
     for status, reason in (("transport_failed", "last_reply_transport_or_ledger_error"),
-                           ("refused_before_start", None), ("failed", "zero_proxy_calls_served")):
+                           ("refused_before_start", None), ("failed", "zero_proxy_calls_served"),
+                           ("timeout", "zero_proxy_calls_served"), ("failed", "killed_by_drain")):
         record = _record(item_id, "hmmt", None, status=status, rerun_reason=reason)
         finalize_run(record, task, private)
         assert record.parse_status is None and record.correct is None and record.grade_status is None

@@ -25,12 +25,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from agent_allocation.dynorch.harness.base import (
-    HarnessResult, LaunchPlan, WorkDir, default_base_env, harness_env, write_text,
+    HarnessResult, LaunchPlan, WorkDir, default_base_env, harness_env, probe_version, write_text,
 )
 from agent_allocation.dynorch.records import RunSpec
 
@@ -189,15 +188,6 @@ class CodexAdapter:
         if self.binary in self._version_cache:
             return self._version_cache[self.binary]
         path = self.binary if Path(self.binary).is_file() else shutil.which(self.binary)
-        if path is None:
-            version = "absent"
-        else:
-            try:
-                out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=60,
-                                     env={"PATH": default_base_env().get("PATH", ""), "HOME": "/nonexistent"})
-                text = (out.stdout or out.stderr).strip()
-                version = text.splitlines()[0] if text else "unknown"
-            except (OSError, subprocess.SubprocessError) as exc:
-                version = f"error: {type(exc).__name__}"
+        version = "absent" if path is None else probe_version([path, "--version"])
         self._version_cache[self.binary] = version
         return version

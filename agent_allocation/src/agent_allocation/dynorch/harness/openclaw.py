@@ -31,7 +31,7 @@ from typing import Any
 import httpx
 
 from agent_allocation.dynorch.harness.base import (
-    HarnessResult, LaunchPlan, WorkDir, default_base_env, harness_env, write_text,
+    HarnessResult, LaunchPlan, WorkDir, default_base_env, harness_env, probe_version, write_text,
 )
 from agent_allocation.dynorch.records import RunSpec
 
@@ -229,15 +229,6 @@ class OpenclawAdapter:
         if self.binary in self._version_cache:
             return self._version_cache[self.binary]
         path = shutil.which(self.binary)
-        if path is None:
-            version = "absent"
-        else:
-            try:
-                out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=60,
-                                     env={"PATH": default_base_env().get("PATH", ""), "HOME": "/nonexistent"})
-                text = (out.stdout or out.stderr).strip()
-                version = text.splitlines()[0] if text else "unknown"
-            except (OSError, subprocess.SubprocessError) as exc:
-                version = f"error: {type(exc).__name__}"
+        version = "absent" if path is None else probe_version([path, "--version"])
         self._version_cache[self.binary] = version
         return version
