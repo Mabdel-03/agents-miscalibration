@@ -323,3 +323,84 @@ and `bypassPermissionsModeAccepted`. Codex writes ≈60 skill files and 4 sqlite
 removed by config and is inert (no file tools). OpenClaude's Agent tool description (6,331 chars) lists built-in
 agent types, so the system prompt must require `subagent_type: "solver"`; the proxy flags any other value seen in a
 parsed Agent call. Both are `S_h` covariates, paid as input, outside C.
+
+## 10 (continued). Integration amendments at the merge (lead, 2026-09-23; evidence: the merged test suite)
+
+The five branches merged without textual conflicts; the seams below were found by running the integrated code
+(`tests/unit/dynorch`, `tests/integration/test_dynorch_e2e_fake_harness.py`, the rehearsal launch in
+`tests/unit/dynorch/test_launch_stage.py`). Where the plan text, a request file and the code disagreed, the contract
+and the plan won; each item names the resolution and the test that pins it.
+
+**10.8 `ProxyError` signature.** WP-A shipped `ProxyError(code, message, *, status=None, retryable=None, detail=None)`;
+the contract (§2) and WP-B's wire layer use `ProxyError(status, code, message, retryable)`. Resolution: the contract
+signature, positional `status` first; `ProxyError.of(code, message)` raises at the code's frozen status for the core;
+codes `not_found` (404, an unknown route) and `internal_error` (500, a proxy bug answered loudly) are added to the
+frozen map for the wire layer; `retryable` defaults to the code's frozen value when omitted. Evidence:
+`test_responses_format.py::test_responses_failed_codes`, `test_httpd.py::test_bearer_must_match_run_key`.
+
+**10.9 Parse / grade vocabulary.** `RunRecord.parse_status` and `grade_status` carry the codec VALUES the runner writes
+(`contracts.ParseStatus.VALID.value == "valid"`, `GradeStatus.EVALUATOR_ERROR.value == "evaluator_error"`, ...), the
+sealed ladder's own spelling. WP-C's tables and WP-D's gates compared against the enum NAMES (`"VALID"`, `"error"`);
+both now import the values (`tables.PARSE_VALID`, `gates.PARSE_VALID` / `gates.GRADE_EVALUATOR_ERROR`). Evidence:
+`test_dynorch_e2e_fake_harness.py` (`parse_status == "valid"` on real records), `test_tables.py::test_outcome_of`.
+
+**10.10 Conversation classification is by containment (§1, §10.1 made precise).** `solver` iff `ChatRequest.subagent`
+or the sub-agent prompt (`subagent_dynorch.txt.rstrip("\n")`) is CONTAINED in the system text (OpenClaude prepends its
+line and appends `Notes:...<env>`); `root` for the run's first non-solver conversation and for any later conversation
+whose system text is that one's or contains the root prompt; else `other`. Conversation keys hash the system text and
+the first user message with OpenClaude's `<system-reminder>...</system-reminder>` / Codex's
+`<environment_context>...</environment_context>` block removed (a Codex child's key falls back to the first non-empty
+user item after the environment block). Evidence: `test_core_flow.py` classification tests; the e2e's
+`calls_by_class == {"root": 2, "solver": 1}` on a scripted delegation.
+
+**10.11 `ProxyCore.budget_view()` carries `exhausted` (0/1) and `ProxyCore.proxy_version`.** R-B3 / R-B6 granted:
+`exhausted` is 1 once the run's grace was used (every later call is a 402 whatever `remaining` says); the runner's
+watchdog honours it. `plan_runs` stamps `proxy_version` from `core.proxy_version` (= `config.PROXY_VERSION`,
+`dynorch-proxy-1.0.0`); `open_run` refuses a spec stamped with another version.
+
+**10.12 `forced_close_kind = "ceiling_close"` (R-A4) is CONFIRMED for E0.** An E0 root call bound by its ceiling
+`max(A, C/4)` rather than the cap is closed with the ANSWER continuation charged INSIDE C (no grace),
+`CallRecord.forced_close_kind = "ceiling_close"`; `RunRecord.forced_close_kind` keeps the B5 set. Core arms never
+produce it. WP-C's tables carry the value through unchanged (no enum check on `forced_close_kind`).
+
+**10.13 The canary's k=16 ceiling probe** runs on the canary items (`dynorch.canary.items`: aime, gpqa_diamond dev
+item 0), not the first two benchmarks in `BENCHMARKS` order: `plan.plan_stage` and `cli.enumerate_cells` are now
+cell-for-cell identical for every stage (`test_launch_stage.py::test_plan_stage_and_enumerate_cells_agree_cell_for_cell`,
+10 / 144 / 1,728 / 384 / 1,152 / 384 / 192 cells).
+
+**10.14 `runner.launch_stage` and `runner.build_stack`** (requests/wpD.md item 1) exist with the requested signature.
+`build_stack(cfg, run_root, *, client: ForcedClient, locks, ceiling_usd, active_ceiling_usd)` is the ONE place the
+stack is assembled (settings -> `LedgerJournal`/`CollectionLedger` -> `resolve_inherited` FIRST (R-A7) ->
+`CallJournal`/`RunStore` -> `Upstream` -> `ProxyCore`); the e2e and `dynorch-run` both use it. `launch_stage` reads
+`locks/openrouter_endpoints.json` and applies `locks/provider_map.json` to every item's shard (plan §4: after a switch
+every item runs on the passing shard; `forced_v2_shard` stays the covariate), binds `httpd` on `127.0.0.1:0`, calls
+`on_bound(host, port)` before the first harness, refreshes the active ceiling from `/key` every 5 minutes (a 402 from
+the account endpoints drains the stage and is reported as `upstream_402`), drains on SIGTERM and on
+`control/STOP` / `control/DRAIN`, and returns `{runs, executed, skipped, reruns, drained, done, failed, timeout,
+transport_failed, refused_before_start, upstream_402, settled_usd, in_flight_usd, unresolved_usd, inherited}`.
+`cli.make_client(cfg)` returns a `ForcedClient` (the fake transport in rehearsal) so one client serves the endpoint
+rule, the proxy's upstream and the reconciliation. Evidence: `test_launch_stage.py::test_dynorch_run_canary_h0_in_rehearsal_runs_the_real_stack`
+(the verb, in rehearsal: endpoint rule frozen, proxy announced, two H0 runs through the real proxy, tables built,
+reconciliation `clean`).
+
+**10.15 `tables.build_tables(run_root, cfg, *, stage=None)`** reads EVERY pre-registered manifest
+(`manifests/dynorch_plan_<stage>.jsonl`) when `stage` is None, cells keyed by `(partition, arm, item, rung, repeat)`
+(a cell planned in two manifests raises); `dynorch-tables [--stage S]` and the post-stage build in `dynorch-run` call
+it that way (WP-D's assumed `build_tables(cfg, paths)` does not exist). WP-D's Gate 1/2/4 read `dynorch_runs.partition`
+(= the stage) and `policy_outcomes_dynorch.partition_id` (= the stage). A tables failure after a stage is recorded in
+`status.json` (`tables: "error: ..."`) and the reconciliation still runs; `dynorch-tables` re-builds.
+
+**10.16 `forecast.gate2_refit(cfg, runs, *, spent_usd)`** (requests/wpD.md item 5) returns
+`{core_forecast_usd, spent_usd, soft_ceiling_usd, room_usd, cuts_applied, fits, contingency_share, per_cell}`: per
+(arm, rung) the pilot-measured re-fit where the pilot ran that cell, else the §8 ceiling model; cuts C1-C3 applied in
+order only while the forecast exceeds `soft_admission_ceiling_usd - spent`; C4 is never applied.
+
+**10.17 Test doubles.** The pre-merge records shim and `StubRunStore` are deleted; `tests/unit/dynorch/stubs.py`
+keeps `StubProxyCore` only as the wire layer's scripted double for `test_httpd` (delays, error frames, disconnects).
+Everything that touches the budget, the ledger, rendering or the delivered answer is tested on the real `ProxyCore`
+over `api/fake.py`: `test_core_flow`, the chat/Responses parity test and the fake-harness e2e (`-m slow` selects the
+330 s / 660 s cases).
+
+**10.18 Not amended, recorded for Gate 0.** Real-CLI smoke tests (plan §9 Gate 0 lists) against the real proxy +
+fake upstream are NOT in the tree; WP-E's captures were taken against a throwaway stub. `gates/gate0_smoke.json`
+(`{passed, failures}`) is therefore absent and `dynorch-gates --gate 0` returns stop_notify until the smoke is run.

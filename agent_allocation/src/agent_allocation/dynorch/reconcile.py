@@ -171,8 +171,7 @@ def calls_from_table(calls: Any, runs: Any, locks: Mapping[str, Any]) -> list[Ca
     shard_of = dict(zip(runs["run_key"], runs["shard_id"]))
     rows: list[CallGenerations] = []
     for rec in calls.to_dict("records"):
-        ids = rec["generation_ids"]
-        ids = tuple(str(g) for g in (list(ids) if ids is not None else []) if g)
+        ids = _generation_ids(rec["generation_ids"], f"{rec['run_key']}#{rec['call_no']}")
         if not ids:
             continue
         shard = shard_of.get(rec["run_key"])
@@ -189,6 +188,24 @@ def calls_from_table(calls: Any, runs: Any, locks: Mapping[str, Any]) -> list[Ca
 
 def _isnan(value: Any) -> bool:
     return isinstance(value, float) and value != value
+
+
+def _generation_ids(value: Any, where: str) -> tuple[str, ...]:
+    """WP-C's ``dynorch_calls.generation_ids`` column is the JSON text of the id list (a parquet-friendly string,
+    contract §7 / requests/wpC.md); a list / array is accepted too. Anything else is a malformed table."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise ReconcileError(f"{where}: generation_ids is not a JSON list: {value[:80]!r}") from None
+    if isinstance(value, (list, tuple)) or hasattr(value, "tolist"):
+        items = list(value.tolist()) if hasattr(value, "tolist") else list(value)
+        if not all(isinstance(g, str) for g in items):
+            raise ReconcileError(f"{where}: generation_ids must be strings, got {items!r}")
+        return tuple(g for g in items if g)
+    raise ReconcileError(f"{where}: generation_ids has an unexpected type {type(value).__name__}")
 
 
 def calls_from_journal(run_root: Path) -> list[CallGenerations]:
