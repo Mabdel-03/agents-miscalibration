@@ -335,8 +335,11 @@ class ProxyServer:
 
     def _health(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"ok": True, "requests_served": self.requests_served}
-        runs = getattr(self.core, "runs", None)
-        if isinstance(runs, Mapping):
+        open_runs = getattr(self.core, "open_runs", None)          # WP-A's ProxyCore.open_runs (int property)
+        runs = getattr(self.core, "runs", None)                    # the stub's mapping
+        if isinstance(open_runs, int):
+            payload["runs_open"] = open_runs
+        elif isinstance(runs, Mapping):
             payload["runs_open"] = len(runs)
         return payload
 
