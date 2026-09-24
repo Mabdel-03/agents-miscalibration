@@ -550,3 +550,19 @@ list) a first launch writes the full cell set and the `specs` being run must be 
 registered=)`, `Runner.run_stage` and `launch_stage` always pass it, so a filtered first launch (`--arms H0`) no longer
 shrinks the pre-registration (plan §1 "a policy_outcomes row exists for every planned cell before the run starts").
 `tables.run_key_of(..., *, partition)` delegates to `plan.run_key_for` (the §10.22 formula).
+
+**10.35 Superseding a stage execution (lead request; needed to re-execute the canary under §10.28).**
+`dynorch-run ... --stage S --supersede "<reason>"` (with `--resume` as every VERB passes; `SUPERSEDE_REASON` in the
+sbatch / launcher) calls `dynorch.supersede.supersede_stage(paths, S, reason=, scratch_root=)` before the launch. It
+refuses (nothing moved) when the reason is empty, the stage has nothing to supersede, a record of S is `running`, or
+a ledger attempt of S (`partition_id == S`) is still open. Otherwise it picks the new execution generation
+`G = 1 + max(every generation in S's records, in S's ledger attempt ids, and the previous G)`, moves `runs/S`,
+`runs_superseded/S`, `raw/S`, `state/{reconcile_S_before.json, reconciliation_S.json, stage_S_started}` and
+`gates/*_S.json` to `superseded_executions/S/g<old>_<utc>/` beside `SUPERSEDED.json` (layout `dynorch/supersede/v1`:
+reason, generations, run keys, ledger attempts and dollars, what moved), moves `<scratch>/work/S` to
+`<scratch>/work_superseded/S/g<old>_<utc>/`, writes `state/stage_generations.json` and records
+`live.record_decision(kind="dynorch_supersede", ...)`. `launch_stage` / `Runner.run_stage` stamp attempt-1 specs with
+`supersede.execution_generation(run_root, S)` (`apply_generation`): the cells keep their run keys, record paths and
+pre-registration, and every ledger attempt id `{run_key}:g{G}:...` is new. Never touched: the ledger journal (read
+only), `locks/`, the stage manifest, any other stage. `tables.read_run_records` does not read
+`superseded_executions/`, so a superseded execution is no row; its spend stays in the ledger.

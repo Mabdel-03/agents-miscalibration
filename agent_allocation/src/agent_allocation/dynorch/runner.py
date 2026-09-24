@@ -259,6 +259,8 @@ class Runner:
         specs = planmod.plan_stage(self.cfg, stage, self.inputs, arms=arms, rungs=rungs, proxy_version=proxy_version,
                                    harness_versions=versions)
         full = planmod.plan_stage(self.cfg, stage, self.inputs, proxy_version=proxy_version, harness_versions=versions)
+        from agent_allocation.dynorch.supersede import apply_generation, execution_generation
+        specs = apply_generation(specs, execution_generation(self.settings.run_root, stage))
         return await self.run_specs(stage, specs, resume=resume, registered=full)
 
     async def run_specs(self, stage: str, specs: Sequence[RunSpec], *, resume: bool = False,
@@ -956,6 +958,10 @@ async def launch_stage(cfg: Mapping[str, Any], paths: Any, *, stage: str, cells:
         # the pre-registration is ALWAYS the stage's full plan, whatever --arms/--rungs filter this launch uses
         full_plan = planmod.plan_stage(cfg, stage, inputs, proxy_version=stack.core.proxy_version,
                                        harness_versions=runner.harness_versions())
+        # a superseded stage re-executes under a higher execution generation (contract §10.35): same run_keys and
+        # pre-registration, new ledger attempt ids
+        from agent_allocation.dynorch.supersede import apply_generation, execution_generation
+        specs = apply_generation(specs, execution_generation(run_root, stage))
 
         async def refresh_ceiling() -> None:
             while True:

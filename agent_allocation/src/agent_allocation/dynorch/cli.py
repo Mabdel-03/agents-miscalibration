@@ -445,6 +445,11 @@ def run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rungs", default=None)
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--rehearsal", action="store_true", help="fake transport end to end; never sends a request")
+    parser.add_argument("--supersede", default=None, metavar="REASON",
+                        help="first move the stage's records, call journals, reconciliation and gate files to "
+                             "superseded_executions/<stage>/ (the ledger journal and the locks are never touched), "
+                             "record the decision with REASON, then re-execute every planned cell under a new "
+                             "execution generation (contract §10.35)")
 
 
 def cmd_dynorch_run(argv: list[str]) -> int:
@@ -485,6 +490,17 @@ async def _run(args: argparse.Namespace) -> int:
     paths.ensure()
     if override is not None:
         record_decision(paths, **override)
+    superseded = None
+    if args.supersede is not None:
+        from agent_allocation.dynorch.supersede import SupersedeRefused, supersede_stage
+        try:
+            superseded = supersede_stage(paths, args.stage, reason=args.supersede,
+                                         scratch_root=cfg["dynorch"].get("scratch_root"),
+                                         extra={"rehearsal": rehearsal()})
+        except SupersedeRefused as exc:
+            raise RunRefused(f"--supersede refused: {exc}") from None
+        print(json.dumps({"superseded": {k: superseded[k] for k in ("stage", "superseded_generation",
+                                                                    "new_generation", "records", "target")}}))
     arms = _parse_list(args.arms, str)
     rungs = _parse_list(args.rungs, int)
     cells = enumerate_cells(cfg, args.stage, arms=arms, rungs=rungs)
@@ -496,6 +512,9 @@ async def _run(args: argparse.Namespace) -> int:
     client = make_client(cfg)
     status: dict[str, Any] = {"stage": args.stage, "started_at": utcnow(), "max_usd": str(max_usd), "cells": len(cells),
                               "by_cell": cell_summary(cells), "rehearsal": rehearsal(), "state": "starting"}
+    if superseded is not None:
+        status["superseded"] = {k: superseded[k] for k in ("superseded_generation", "new_generation", "target",
+                                                           "reason")}
     try:
         action = await resolve_endpoint_lock(cfg, paths, client=client, stage=args.stage)
         status["endpoint_rule"] = action

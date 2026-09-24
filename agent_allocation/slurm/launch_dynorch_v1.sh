@@ -1,7 +1,8 @@
 #!/bin/bash
 # Submit one slurm/dynorch_v1.sbatch job and print its expected start (plan §9 Gate 3: `squeue --start` checked).
 #   slurm/launch_dynorch_v1.sh [VERB] [--stage S] [--dry-run] [--test-only]
-# VERB: gate0 | canary | pilot | run | finalize (default run). Env passthrough: CFG, RUN, CODE, MAX_USD, RUN_FLAGS.
+# VERB: gate0 | canary | pilot | run | finalize (default run). Env passthrough: CFG, RUN, CODE, MAX_USD, RUN_FLAGS,
+# SUPERSEDE_REASON (canary/pilot/run: `--supersede "<reason>"`, contract 10.35; no commas).
 # --test-only asks Slurm when the job would start without submitting it (sbatch --test-only).
 set -euo pipefail
 CODE=${CODE:-/orcd/data/tpoggio/001/mabdel03/agents_scaling_dynorch_v1/agent_allocation}
@@ -28,7 +29,10 @@ case "${RUN_FLAGS:-}" in
   *,*) echo "RUN_FLAGS must not contain a comma (sbatch --export splits on it): ${RUN_FLAGS}" >&2
        echo "       use spaces: RUN_FLAGS=\"--arms H1 --arms H3\"" >&2; exit 2 ;;
 esac
-EXPORTS="ALL,VERB=$VERB,STAGE=$STAGE,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}${RUN_FLAGS:+,RUN_FLAGS=$RUN_FLAGS}"
+case "${SUPERSEDE_REASON:-}" in
+  *,*) echo "SUPERSEDE_REASON must not contain a comma (sbatch --export splits on it)" >&2; exit 2 ;;
+esac
+EXPORTS="ALL,VERB=$VERB,STAGE=$STAGE,CFG=$CFG,RUN=$RUN,CODE=$CODE${MAX_USD:+,MAX_USD=$MAX_USD}${RUN_FLAGS:+,RUN_FLAGS=$RUN_FLAGS}${SUPERSEDE_REASON:+,SUPERSEDE_REASON=$SUPERSEDE_REASON}"
 CMD=(sbatch --parsable --job-name="dyn-$VERB-$STAGE" --export="$EXPORTS" slurm/dynorch_v1.sbatch)
 if [ "$DRY" = 1 ]; then echo "${CMD[*]}"; exit 0; fi
 if [ "$TEST" = 1 ]; then sbatch --test-only --job-name="dyn-$VERB-$STAGE" --export="$EXPORTS" slurm/dynorch_v1.sbatch; exit $?; fi

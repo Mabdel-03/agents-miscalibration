@@ -73,3 +73,4 @@ Same rules: one line per finding, a regression test that fails before the fix, i
 | 13 | minor | `dynorch/runner.py` | fixed | (drain commit) | `_close_failed` awaits `_await_settled` first. |
 | 11 | minor | `dynorch/plan.py`, `dynorch/runner.py` | fixed | (plan commit) | `write_plan(registered=)`: the full `plan_stage` list is pre-registered on the first launch whatever filter runs; incoming specs must be a subset (contract §10.34). |
 | 12 | minor | `dynorch/tables.py` | fixed | (plan commit) | `run_key_of(..., partition=)` delegates to `plan.run_key_for`. |
+| supersede | lead request | `dynorch/supersede.py`, `dynorch/cli.py`, `slurm/*` | added | (supersede commit) | `dynorch-run --supersede "<reason>"`: moves the defective execution aside, records the decision, re-executes every planned cell under a new generation; never touches the ledger journal, locks or other stages (contract §10.35). |

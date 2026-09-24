@@ -3,6 +3,8 @@
 #   sbatch --export=VERB=gate0|canary|pilot|run|finalize[,CFG=...,RUN=...,MAX_USD=...,RUN_FLAGS=...,STAGE=...] slurm/dynorch_v1.sbatch
 # VERB: gate0 (offline, $0) | canary | pilot | run (--stage main, --resume) | finalize (reconcile -> tables -> gate 4).
 # RUN_FLAGS passes through to dynorch-run (e.g. "--account-auto-reload --concurrency 12" or "--arms H1 --rungs 16").
+# SUPERSEDE_REASON (canary/pilot/run) passes `--supersede "<reason>"` (contract 10.35): the stage's previous
+# execution is moved to superseded_executions/ and every planned cell is re-executed under a new generation.
 # STAGE overrides the stage of VERB=run/finalize (main by default; ext_e0..ext_e3 for the extensions).
 # The runner traps SIGTERM (--signal=B:TERM@900): stops admitting, waits <= 540 s for in-flight runs, terminates the rest, is done by 660 s (contract 10.33), exits 0;
 # resubmit the same job with --resume to continue.
@@ -47,12 +49,13 @@ esac
 echo "[dynorch] $(date -Is) host=$(hostname) job=${SLURM_JOB_ID:-none} verb=$VERB stage=$STAGE max_usd=$MAX_USD run=$RUN"
 echo "[dynorch] codex=$(command -v codex || echo MISSING) openclaude=$(command -v openclaude || echo MISSING) tmpdir=$TMPDIR"
 common=(--config "$CFG" --run-dir "$RUN")
+supersede=(); [ -n "${SUPERSEDE_REASON:-}" ] && supersede=(--supersede "$SUPERSEDE_REASON")
 case "$VERB" in
   gate0)    exec $A dynorch-gates "${common[@]}" --gate 0 ;;
   # every VERB resumes: re-running a stage without --resume is refused when records exist (review major 4/15)
-  canary)   exec $A dynorch-run "${common[@]}" --stage canary --allow-paid --max-usd "$MAX_USD" --resume ${RUN_FLAGS:-} ;;
-  pilot)    exec $A dynorch-run "${common[@]}" --stage pilot  --allow-paid --max-usd "$MAX_USD" --resume ${RUN_FLAGS:-} ;;
-  run)      exec $A dynorch-run "${common[@]}" --stage "$STAGE" --allow-paid --max-usd "$MAX_USD" --resume ${RUN_FLAGS:-} ;;
+  canary)   exec $A dynorch-run "${common[@]}" --stage canary --allow-paid --max-usd "$MAX_USD" --resume "${supersede[@]}" ${RUN_FLAGS:-} ;;
+  pilot)    exec $A dynorch-run "${common[@]}" --stage pilot  --allow-paid --max-usd "$MAX_USD" --resume "${supersede[@]}" ${RUN_FLAGS:-} ;;
+  run)      exec $A dynorch-run "${common[@]}" --stage "$STAGE" --allow-paid --max-usd "$MAX_USD" --resume "${supersede[@]}" ${RUN_FLAGS:-} ;;
   finalize)
     set +e
     $A dynorch-reconcile "${common[@]}" --stage "$STAGE" --phase after; echo "reconcile rc=$?"

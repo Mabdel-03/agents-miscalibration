@@ -71,6 +71,25 @@ close with non-empty text per harness; a Codex Responses tool loop; the k=16 cei
 exit 3: stop and ask the owner, option A**); `S_H1`, `S_H3` written; no key-shaped string in the run tree; nothing
 new under `$HOME` (the walk takes minutes; `--no-home-scan` fails that criterion on purpose).
 
+### Re-executing a stage that ran under a defect (`--supersede`, contract §10.35)
+
+A stage whose records were produced by code that has since been fixed (the first canary: the B3 grace offered tools,
+contract §10.28) is re-executed, never patched:
+```bash
+SUPERSEDE_REASON="B3 grace offered tools (contract 10.28); re-executed under the fix" slurm/launch_dynorch_v1.sh canary
+# direct form: $A dynorch-run --config $CFG --run-dir $RUN --stage canary --allow-paid --max-usd 2 --resume \
+#                 --supersede "B3 grace offered tools (contract 10.28); re-executed under the fix"
+```
+It refuses while a record of the stage is `running` or a ledger attempt of the stage is open (run the stage with
+`--resume` first), then moves `runs/<S>`, `runs_superseded/<S>`, `raw/<S>`, the stage's reconciliation files and
+marker and `gates/*_<S>.json` to `superseded_executions/<S>/g<old>_<utc>/` (with `SUPERSEDED.json`: the reason, the
+run keys, the ledger attempts), moves the scratch work dirs to `<scratch>/work_superseded/<S>/`, records a
+`dynorch_supersede` decision, sets `state/stage_generations.json`, and runs every planned cell again under the new
+execution generation (same run keys and pre-registration, new ledger attempt ids). It never touches
+`state/ledger_journal.jsonl`, `locks/` or another stage; the superseded dollars stay in the ledger and in every
+reconciliation. A filtered launch (`RUN_FLAGS="--arms ..."`) re-executes a subset now; later launches of the stage run
+the rest under the same generation. `SUPERSEDE_REASON` must not contain a comma.
+
 ## 2. Gate 2 — pilot (≤ $7 allowance, plan expects ≈ $4)
 
 ```bash
@@ -158,6 +177,7 @@ Submitting the sbatch directly (without the launcher) needs the log dir first:
 | gate results | `$RUN/gates/gate{0,1,2,4}_<stage>.json` (`contracts.GateResult`) |
 | locks | `$RUN/locks/{openrouter_endpoints,provider_map,provider_decision,harness_prompts}.json` |
 | account/ledger reconciliation | `$RUN/state/reconcile_<stage>_before.json`, `$RUN/state/reconciliation_<stage>.json` |
+| superseded executions | `$RUN/superseded_executions/<stage>/g<gen>_<utc>/SUPERSEDED.json`, `$RUN/state/stage_generations.json` |
 | proxy / status / decisions | `$RUN/state/{proxy.json,status.json,run_decisions.jsonl}` |
 | pilot report | `$RUN/reports/PILOT_REPORT.md` |
 | Slurm | `slurm/dynorch_v1.sbatch` (VERB=gate0\|canary\|pilot\|run\|finalize), `slurm/launch_dynorch_v1.sh`, logs `$(dirname $RUN)/logs/` |
