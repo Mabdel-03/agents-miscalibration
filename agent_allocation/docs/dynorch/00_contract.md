@@ -467,3 +467,14 @@ after `drain_wait_seconds`. An upstream 402/401 drains the stage and never consu
 **§10.27 Codex's wall (major).** The adapter's `timeout` wrapper sits at `wall + sigkill_after +
 timeout_margin_seconds` (default 60), so the runner's `600 + 120·k` timer is authoritative; a `timeout`-wrapped
 exit (124, or 137 after its kill-after) is classified `timeout`, not `done`.
+
+**10.28 The B3 grace carries no tool schemas and is returned as text (lead, 2026-09-24; canary finding).** Until
+`1791e63` the mid-call and visible continuations reused the THINK prompt, tool definitions included, and parsed the
+grace for tool calls. In the first paid canary three of eight harness runs spent their one grace on a tool call
+(OpenClaude spawning a verifier, Codex calling `update_plan`), had no budget left to run it, and delivered no answer —
+a scored zero for a mechanical reason, at exactly the budgets that matter. The plan's B3 already said "no tool schemas"
+and "finish_reason: stop"; the code now matches it: the `mid_call` / `visible_continuation` continuation re-renders the
+same messages with `tools=()` and its text is returned as content with `finish_reason = "stop"`, never as a tool call.
+`ceiling_close` (E0) is not a final answer — the harness continues — so it keeps its tools and may delegate. The two
+Gate 0 smoke cases `*/forced_close_then_402` pinned the old behaviour (they asserted a spawn emitted in the
+continuation) and are rewritten to the rule; the canary's ten cells were run under the defect and are re-executed.

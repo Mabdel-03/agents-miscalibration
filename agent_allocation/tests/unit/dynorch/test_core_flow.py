@@ -17,7 +17,7 @@ from agent_allocation.dynorch.core import ProxyCore
 from agent_allocation.dynorch.records import (
     FINISH_REASONS_RETURNED, CallRecord, ChatReply, Message, ProxyError, ReplyUsage, ToolCall,
 )
-from agent_allocation.dynorch.template import THINK_DISABLED_SUFFIX
+from agent_allocation.dynorch.template import THINK_DISABLED_SUFFIX, render_chat
 
 from .conftest import (
     AGENT_TOOL, Env, H0_SYSTEM, ROOT_SYSTEM, SPAWN_TOOL, SUBAGENT_SYSTEM, load_cfg, make_request, make_spec,
@@ -59,9 +59,12 @@ async def test_forced_close_builds_exactly_the_forced_v2_answer_prompt(make_env)
     reply = await env.core.chat(spec.run_key, make_request(root_messages()))
     think, answer = env.think_calls(phase="think")[0], env.think_calls(phase="answer")[0]
     assert think.body["max_tokens"] == 1024
-    assert answer.body["prompt"] == answer_prompt(think.body["prompt"], reply.reasoning_content, CLOSE)
+    # B3 (contract §10.28): the grace continuation is the SAME messages re-rendered WITHOUT tools + reasoning + close
+    toolless = render_chat(root_messages(), tools=(), reasoning_effort="xhigh")
+    assert answer.body["prompt"] == answer_prompt(toolless, reply.reasoning_content, CLOSE)
     assert answer.body["max_tokens"] == 1024 and "logit_bias" not in answer.body
     assert answer.body["prompt"].endswith(CLOSE) and "# Tools" in think.body["prompt"]
+    assert "# Tools" not in answer.body["prompt"] and "<tools>" not in answer.body["prompt"]
     assert reply.finish_reason == "stop" and reply.content == FINAL
     assert reply.call.forced_close_kind == "mid_call" and reply.headers["X-Dynorch-Forced-Close"] == "mid_call"
     assert reply.call.finish_reason_upstream == "length"
@@ -104,7 +107,9 @@ async def test_visible_continuation_when_the_cap_binds_after_the_close(make_env)
     reply = await env.core.chat(spec.run_key, make_request(root_messages()))
     think, cont = env.think_calls(phase="think")[0], env.think_calls(phase="answer")[0]
     assert reply.call.forced_close_kind == "visible_continuation" and reply.call.finish_reason_upstream == "length"
-    head = answer_prompt(think.body["prompt"], reply.reasoning_content, CLOSE)
+    head = answer_prompt(render_chat(root_messages(), tools=(), reasoning_effort="xhigh"), reply.reasoning_content,
+                         CLOSE)
+    assert "# Tools" in think.body["prompt"] and "# Tools" not in cont.body["prompt"]
     assert cont.body["prompt"].startswith(head) and cont.body["prompt"].endswith("X" * 96)
     assert cont.body["max_tokens"] == 1024
     assert reply.content == "X" * 96 + "X" * 500 and reply.finish_reason == "stop"
@@ -796,3 +801,42 @@ async def test_a_ledger_attempt_id_collision_is_a_500_and_charges_nothing(make_e
     env.ledger.reserve = original
     reply = await env.core.chat(spec.run_key, make_request(root_messages()))
     assert reply.call.granted_max_tokens == spec.cap_tokens        # the grant was released, not charged
+
+
+# ---- B3: the grace is the run's answer (contract §10.28; the canary of 2026-09-24 lost three of eight harness answers
+# ---- to a grace continuation that still offered the tools and came back as a spawn / update_plan call) ----------
+
+async def test_a_grace_continuation_that_writes_a_tool_call_comes_back_as_text_never_as_a_call(make_env):
+    """With the cap bound mid-think, even a continuation that emits the tool-call XML (the model was about to delegate)
+    is returned as plain content with finish_reason "stop": no tool call, no spawn, the run's grace spent, and the
+    next call 402 -- so the harness ends on a text message instead of spawning into an empty budget."""
+    spawn = fake_tool_call_text("Agent", {"subagent_type": "solver", "description": "check", "prompt": "verify it"})
+    script = FakeScript()
+    script.default = FakeReply(content=spawn, think_tokens=5000)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=1))
+    reply = await env.core.chat(spec.run_key, make_request(root_messages()))
+    assert reply.call.forced_close_kind == "mid_call"
+    assert reply.finish_reason == "stop" and reply.tool_calls == () and reply.call.tool_calls == 0
+    assert reply.call.spawn_calls == 0 and reply.call.tool_parse == "none"
+    assert "<tool_call>" in reply.content                      # returned verbatim as text; grading decides (no <final>)
+    record = env.core.record_of(spec.run_key)
+    assert record.spawns == 0 and record.forced_close_kind == "mid_call"
+    with pytest.raises(ProxyError) as exc:
+        await env.core.chat(spec.run_key, make_request(root_messages(task="again")))
+    assert exc.value.code == "budget_exhausted"
+
+
+async def test_the_e0_ceiling_continuation_keeps_its_tools_and_may_delegate(make_env):
+    """ceiling_close is not a final answer: the harness continues afterwards, so the continuation keeps the THINK's
+    tool schemas and a tool call in it is returned as a call (E0's whole point is to make the orchestrator delegate)."""
+    spawn = fake_tool_call_text("Agent", {"subagent_type": "solver", "description": "check", "prompt": "verify it"})
+    script = FakeScript()
+    script.default = FakeReply(content=spawn, think_tokens=5000)
+    env = make_env(script)
+    spec = env.open(make_spec(rung=4, arm="H1c", root_call_ceiling=1024))
+    reply = await env.core.chat(spec.run_key, make_request(root_messages()))
+    think, cont = env.think_calls(phase="think")[0], env.think_calls(phase="answer")[0]
+    assert reply.call.forced_close_kind == "ceiling_close"
+    assert "# Tools" in cont.body["prompt"] and cont.body["prompt"].startswith(think.body["prompt"])
+    assert reply.finish_reason == "tool_calls" and len(reply.tool_calls) == 1 and reply.tool_calls[0].name == "Agent"

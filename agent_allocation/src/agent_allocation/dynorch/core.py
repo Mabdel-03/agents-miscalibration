@@ -12,8 +12,9 @@ TERMINAL call (thinking disabled, the verbatim terminal sentence, ``max_tokens =
 call HTTP 402 -> grant ``max_tokens = C - spent`` (E0: ``min(C - spent, root ceiling)``) -> ``Upstream.complete``
 (``$`` reserve / mark_sent / settle inside) -> split reasoning / visible -> forced close (B3: root only, once:
 ``mid_call`` when the cap bound inside ``<think>``, ``visible_continuation`` when it bound after the close; the
-ANSWER continuation is exactly ``api/forced.py::answer_prompt(prompt, reasoning, think_close_text)`` with
-``max_tokens = G``; a sub-agent that hits its grant gets its truncated visible text with ``finish_reason="stop"``,
+ANSWER continuation is ``api/forced.py::answer_prompt(render of the same messages WITHOUT tools, reasoning,
+think_close_text)`` with ``max_tokens = G`` and its text is returned as content, never parsed as a tool call (B3: the
+grace is the run's answer and carries no tool schemas; contract §10.28); a sub-agent that hits its grant gets its truncated visible text with ``finish_reason="stop"``,
 ``truncated_subagent``; an E0 root call bound by its ceiling, not the cap, is closed with a continuation charged
 inside C, ``ceiling_close``) -> tool-call parse (§4) -> reasoning-cache insert -> journal (``CallJournal``) ->
 ``RunRecord`` update persisted every call (``RunStore``) -> ``ChatReply`` with ``X-Dynorch-*`` headers and a
@@ -535,7 +536,19 @@ class ProxyCore:
             else:
                 kind, cont_max = "truncated_subagent", 0
             if cont_max > 0:
-                cont_prompt = answer_prompt(prompt, reasoning, self.settings.think_close_text)
+                if kind == "ceiling_close":
+                    # E0: not a final answer -- the harness continues afterwards, so the continuation keeps the
+                    # tool schemas the THINK saw and may delegate (contract §10.12)
+                    base = prompt
+                else:
+                    # B3: the grace is the run's answer and carries NO tool schemas (plan §2 B3): re-render the
+                    # same messages without tools so the model cannot spend its one grace on a tool call it has
+                    # no budget left to run (canary 2026-09-24: three of eight harness runs lost their answer to
+                    # exactly that; contract §10.28)
+                    effort = template_effort(request.requested_reasoning_effort,
+                                             configured=self.settings.reasoning_effort)
+                    base = render_chat(messages, tools=(), reasoning_effort=effort)
+                cont_prompt = answer_prompt(base, reasoning, self.settings.think_close_text)
                 if closed:
                     cont_prompt += visible
                 try:
@@ -583,7 +596,9 @@ class ProxyCore:
         if grace_tokens or kind in ("mid_call", "visible_continuation"):
             budget.record_grace(kind, grace_tokens)
         # ---- parse, cache, reply ----
-        parse = (parse_tool_calls(visible, request.tools, call_no=call_no) if request.tools
+        grace_answer = kind in ("mid_call", "visible_continuation")
+        # B3: a grace reply is text with finish_reason "stop", never a tool call (plan §2 B3, contract §10.28)
+        parse = (parse_tool_calls(visible, request.tools, call_no=call_no) if request.tools and not grace_answer
                  else ToolParse(content=visible.strip(), calls=(), status="none"))
         finish = "tool_calls" if parse.calls else "stop"
         state.cache.insert(reasoning, content=parse.content, call_ids=[c.id for c in parse.calls])

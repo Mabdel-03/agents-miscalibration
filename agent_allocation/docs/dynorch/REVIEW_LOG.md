@@ -51,3 +51,4 @@ the package path.)
   for a second conversation — is what the disconnect condition removes.
 * **Infrastructure stops and the rerun cap.** See issue 12 above: an upstream 402/401 never consumes a rerun.
 * **Nothing was rejected outright.** The only rejected sub-proposal is issue 17's `mid_call_unfunded` (plan wins).
+| blocker | dynorch/core.py (B3 grace) | fixed | (this commit) | canary 2026-09-24: grace continuation offered tools; 3/8 harness answers lost; plan B3 "no tool schemas" enforced; E0 ceiling_close keeps tools |
