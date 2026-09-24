@@ -104,13 +104,20 @@ def finalize_run(record: RunRecord, task: PublicTask, private: PrivateEvalSpec) 
     graded = grade_candidate(candidate, private)
     record.grade_status = graded.status.value
     record.grade_detail = graded.detail_code
-    if graded.status is GradeStatus.GRADED:
-        record.correct = bool(graded.semantic_correct)
-    elif graded.status is GradeStatus.INVALID_OUTPUT:
-        record.correct = False
-    else:
-        record.correct = None
+    record.correct = correct_of(graded)
     return record
+
+
+def correct_of(graded: Any) -> bool | None:
+    """The SCORED correctness of a grade (contract §10.40): the ladder's ``analysis/outcomes.grade_value`` rule --
+    ``GRADED`` -> its verdict, ``INVALID_OUTPUT`` -> ``False`` (scored 0: a well-formed ``<final>`` whose content the
+    grader cannot parse is an operationally invalid answer, exactly as in the ladder), anything else -> ``None``
+    (unknown). ``finalize_run`` and the Gate 4 grader re-run both use it, so the two can never drift."""
+    if graded.status is GradeStatus.GRADED:
+        return bool(graded.semantic_correct)
+    if graded.status is GradeStatus.INVALID_OUTPUT:
+        return False
+    return None
 
 
 def delivered_state(record: RunRecord) -> str:

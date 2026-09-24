@@ -169,3 +169,39 @@ def test_finalize_refuses_mismatched_task_or_open_run(base: BaseInputs):
     assert delivered_state(_record(item_id, "aime", None, status="running")) == "pending"
     assert math.isnan(outcome_y(_record(item_id, "aime", None, status="running")))
     assert grademod.outcome_row(_record(item_id, "aime", None, status="running"))["delivered_state"] == "pending"
+
+
+def test_correct_of_is_the_ladders_scoring_rule():
+    """Contract §10.40: GRADED -> its verdict, INVALID_OUTPUT -> False (scored 0, analysis/outcomes.grade_value),
+    anything else -> None."""
+    from agent_allocation.analysis.outcomes import grade_value
+    from agent_allocation.contracts import GradeResult, GradeStatus
+    from agent_allocation.dynorch.grade import correct_of
+    cases = [GradeResult("c", GradeStatus.GRADED, True, True, "v", "h"),
+             GradeResult("c", GradeStatus.GRADED, False, True, "v", "h"),
+             GradeResult("c", GradeStatus.INVALID_OUTPUT, None, False, "v", "h"),
+             GradeResult("c", GradeStatus.EVALUATOR_ERROR, None, True, "v", "h")]
+    for g in cases:
+        y, _label = grade_value(g)
+        expected = None if y != y else bool(y)          # NaN -> unknown
+        assert correct_of(g) == expected, g.status
+
+
+def test_gate4_regrade_counts_an_unparseable_final_as_identical_not_as_a_mismatch(tmp_path):
+    """The first main-stage Gate 4 reported 26 'mismatches' that were all the same verdict (INVALID_OUTPUT,
+    candidate_unparseable) stored as correct=False and re-graded to semantic_correct=None."""
+    import pandas as pd
+    from agent_allocation.dynorch.cli import regrade_mismatches
+    from agent_allocation.paths import RunPaths
+    base = Path(CFG["base_run_root"])
+    if not (base / "manifests" / "panels.json").exists():
+        pytest.skip("sealed base run root not mounted")
+    row = {"run_key": "rk", "item_id": "omni_math_hard/121", "parse_status": "valid",
+           # a real main-stage final (H0/1): a function family Math-Verify cannot parse -> INVALID_OUTPUT,
+           # candidate_unparseable, stored correct=False
+           "final_message": "<rationale>\nr\n</rationale>\n<final>\n"
+                            + r"\boxed{f(n)=cn\ \text{for all }n\in\mathbb N^+,\ \text{where }c\in\mathbb R.}"
+                            + "\n</final>", "correct": False}
+    paths = RunPaths.for_run(tmp_path, local_state_dir=tmp_path / "local")
+    assert regrade_mismatches(paths, pd.DataFrame([row]), base) == 0
+    assert regrade_mismatches(paths, pd.DataFrame([{**row, "correct": True}]), base) == 1   # a real disagreement still counts

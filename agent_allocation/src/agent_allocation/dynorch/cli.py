@@ -743,7 +743,7 @@ def regrade_mismatches(paths: RunPaths, runs: Any, base_run_root: Path) -> int:
     rows whose verdict differs from the table (Gate 4 ``grader_rerun_identical``)."""
     try:
         from agent_allocation.dynorch.gates import PARSE_VALID
-        from agent_allocation.dynorch.grade import candidate_from_text
+        from agent_allocation.dynorch.grade import candidate_from_text, correct_of
         from agent_allocation.grading.text.grade import grade_text
         from agent_allocation.grading.worker import load_tasks
     except ImportError as exc:
@@ -760,7 +760,10 @@ def regrade_mismatches(paths: RunPaths, runs: Any, base_run_root: Path) -> int:
         task = public[rec["item_id"]]
         candidate = candidate_from_text(rec["final_message"], task, node_id=rec["run_key"])
         verdict = grade_text(candidate, private[rec["item_id"]])
-        if verdict.semantic_correct != rec.get("correct"):
+        # compare SCORED correctness (contract §10.40): an INVALID_OUTPUT grade is stored as correct=False (scored 0,
+        # the ladder's grade_value rule) while its raw semantic_correct is None; comparing the raw field counted 26
+        # identical verdicts as mismatches at the first Gate 4 of the main stage
+        if correct_of(verdict) != rec.get("correct"):
             mismatches += 1
     log.info("dynorch gate 4: re-graded %d valid row(s), %d mismatch(es)", regraded, mismatches)
     if regraded == 0 and len(runs) > 0:

@@ -653,3 +653,12 @@ metered) is still a mismatch. The settle loop converges on the range (two consec
 or at the upper bound). With `charged_max = 0` the range is a single value and the §10.36 behaviour is unchanged. The
 report adds `ledger_settled_delta_usd`, `ledger_charged_max_delta_usd`, `key_minus_settled_usd` and
 `key_within_ledger_bounds`.
+
+**10.40 Gate 4's grader re-run compares SCORED correctness (lead, 2026-09-24; first main-stage Gate 4).** The first
+Gate 4 of the main stage reported `grader_rerun_identical` = 26 mismatches. All 26 were the same verdict both times —
+`INVALID_OUTPUT` / `candidate_unparseable`: a well-formed `<final>` holding a function family or a set that Math-Verify
+cannot parse. The runner stores such a grade as `correct = False` (scored 0), which is exactly the ladder's
+`analysis/outcomes.grade_value` rule for an invalid output, while the re-run compared the grade's RAW
+`semantic_correct` (`None`). `grade.correct_of(grade)` is now the single mapping used by both `finalize_run` and the
+Gate 4 re-grade: GRADED → its verdict, INVALID_OUTPUT → False, anything else → None. Stored scores were already right
+and are unchanged; only the check was wrong.
