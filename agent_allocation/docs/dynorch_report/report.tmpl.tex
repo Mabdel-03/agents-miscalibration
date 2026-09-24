@@ -1,0 +1,231 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+\usepackage{times}
+\usepackage{longtable}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.72em}
+\captionsetup{font=small,labelfont=bf,skip=4pt}
+\renewcommand{\arraystretch}{1.08}
+
+\title{\vspace{-2em}A Dynamic Orchestrator under a Forced Compute Ladder:\\
+Off-the-shelf Agent Harnesses against the Fixed Rule}
+\author{Study {{study.id|tt}} (ladder: {{study.ladder_study|tt}})}
+\date{\today}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section*{Abstract}
+
+The forced-budget ladder found that, at equal generated tokens $C = kA$, one deep call beats every structured
+multi-call allocation: deep/16 delivers {{headline.deep16|3}} macro accuracy against {{headline.sample16|3}} for
+sample/16 and an oracle pass@16 of {{headline.oracle16|3}}. This study asks whether a dynamic orchestrator, an
+off-the-shelf agent harness that decides for itself whether to spawn sub-agents, revise or synthesise, using the
+same model under the same total completion budget, beats that fixed rule. Two harnesses ({{harness_versions.H1|tt}}
+as H1, {{harness_versions.H3|tt}} as H3) and a harness-free control (H0) ran on the ladder's {{n_items|d}} items at
+rungs $C/A \in \{1, 2, 4, 8, 16, 25\}$ through a metering proxy that caps every call at the remaining budget and
+grants one grace of at most 1,024 tokens outside $C$, exactly as the ladder's uncounted answer call. At $C = 16A$
+H1 delivers {{headline.H1.acc16|3}} [{{headline.H1.lo16|3}}, {{headline.H1.hi16|3}}] and H3
+{{headline.H3.acc16|3}} [{{headline.H3.lo16|3}}, {{headline.H3.hi16|3}}]; the same-week, same-host anchor H0 delivers
+{{headline.H0.acc16|3}}. The pre-registered primary family (Holm over four, macro, {{n_items|d}} paired items) gives
+H1/16 $-$ deep/16 = {{primary.H1/16-deep/16.est_pts|+1}} points [{{primary.H1/16-deep/16.lo_pts|+1}},
+{{primary.H1/16-deep/16.hi_pts|+1}}] and H3/16 $-$ deep/16 = {{primary.H3/16-deep/16.est_pts|+1}} points
+[{{primary.H3/16-deep/16.lo_pts|+1}}, {{primary.H3/16-deep/16.hi_pts|+1}}]; against the naive baseline,
+H1/16 $-$ sample/16 = {{primary.H1/16-sample/16.est_pts|+1}} and H3/16 $-$ sample/16 =
+{{primary.H3/16-sample/16.est_pts|+1}} points. Reading, by the frozen rule: {{primary.H1/16-deep/16.reading|s}} (H1),
+{{primary.H3/16-deep/16.reading|s}} (H3). A share {{headline.H1.spawn_share16|%}} of H1 runs and
+{{headline.H3.spawn_share16|%}} of H3 runs spawned at least one sub-agent at $16A$.
+
+\section{Design}
+
+\subsection{Arms, cells and budget}
+
+Figure~\ref{fig:design} shows the cells. Every run of every arm is served by the same metering proxy against the
+same pinned model, template and sampling as the ladder. The budget unit is completion tokens (reasoning and
+visible text of every call the proxy serves under the run's key, sub-agents included); the harness is told its
+budget in one sentence of the task prompt and receives HTTP 402 once it is exhausted. Calls of one run are served
+one at a time, each granted $\max\_tokens = C - \text{spent}$, so the cap is exact by construction: no run in this
+report exceeded its cap ({{cap_overrun_runs_total|d}} cap overruns among {{n_runs_core|d}} runs). A root call that
+hits its grant mid-reasoning is closed with one answer continuation of at most 1,024 tokens outside $C$
+(``grace''), mirroring the ladder's answer call, which was also outside $C$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d1_design.pdf}
+\caption{Cells of the core (numbers: runs with a terminal record per arm and rung) and the budget semantics
+every arm shares.}
+\label{fig:design}
+\end{figure}
+
+\subsection{Comparison frames}
+
+F1 (primary) pairs each harness cell at nominal cap $C$ with the ladder configurations at $C = B\cdot R\cdot A$.
+The ladder's $C$ counted reasoning only, so F1 is conservative against the harness by one uncounted answer per
+ladder call: on average {{f1_bias_answer_tokens.deep/16|d}} tokens for deep/16 and
+{{f1_bias_answer_tokens.sample/16|d}} for sample/16. F2 (descriptive) puts both sides at realized total
+completion tokens; the dollar frontier uses charged USD and the standardized uncached price.
+
+\subsection{Population and statistics}
+
+Every interval is a paired, item-clustered bootstrap over the fixed population of {{n_items|d}} main items
+({{study.replicates|d}} replicates, seed {{study.seed|d}}), one population per contrast, items kept together
+across columns. A row exists for every planned cell before a run starts, so no item is ever dropped by the
+population builder; {{n_partial_cells|d}} cells fall below 95\% completeness. The ladder's own point estimates
+are reproduced from the merged frame (deep/16 = {{ladder_check.deep/16.here|3}} against the sealed
+{{ladder_check.deep/16.sealed|3}}; sample/16 = {{ladder_check.sample/16.here|3}} against
+{{ladder_check.sample/16.sealed|3}}); the ladder's intervals are re-drawn per contrast and differ slightly from
+the sealed report's joint-population intervals.
+
+\section{Results}
+
+\subsection{Headline at $C = 16A$}
+
+\begin{table}[htbp]
+\centering\small
+\input{tables/headline.tex}
+\caption{Delivered accuracy at $C = 16A$ per benchmark and macro: the sampling baseline and its oracle, the
+ladder's revision chain, its best non-deep configuration ({{headline.best_non_deep16|tt}}), the deep call, and
+the three arms.}
+\label{tab:headline}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d2_ladder_f1.pdf}
+\caption{The ladder curves with the harness cells at nominal $C$ (F1). Error bars: 95\% paired item bootstrap.}
+\label{fig:f1}
+\end{figure}
+
+\subsection{Primary family}
+
+Anchor first: H0/16 $-$ deep/16 = {{primary.H0/16-deep/16.est_pts|+1}} points
+[{{primary.H0/16-deep/16.lo_pts|+1}}, {{primary.H0/16-deep/16.hi_pts|+1}}] on the same host in the same week, which
+is the part of any harness shortfall that is not orchestration. Table~\ref{tab:primary} gives the four
+pre-registered contrasts with Holm-adjusted $p$-values over exactly four.
+
+\begin{table}[htbp]
+\centering\small
+\input{tables/primary.tex}
+\caption{Anchor and the primary family ({{n_items|d}} items, macro; studentized item-cluster bootstrap; Holm
+over four). Reading rule, frozen before collection: CI below 0 against deep/16 means dynamic orchestration loses
+to the fixed rule at $16A$; CI containing 0 is inconclusive at $n$ = {{n_items|d}}; CI above 0 means the rule is
+incomplete.}
+\label{tab:primary}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d5_per_benchmark.pdf}
+\caption{Per benchmark at $C = 16A$ ($n$ = 24 each, descriptive).}
+\label{fig:bench}
+\end{figure}
+
+\subsection{Descriptive set, realized frontier and dollars}
+
+Slope per doubling of $C$ (macro points): H1 {{slopes.H1|+1}}, H3 {{slopes.H3|+1}}, H0 {{slopes.H0|+1}}, against
+the ladder's deep {{slopes.deep|+1}}, revision {{slopes.private_single|+1}} and vote {{slopes.sample|+1}}.
+Against the paired per-item oracle pass@16, H1/16 is {{descriptive.H1/16.vs_oracle.pts|+1}} points
+[{{descriptive.H1/16.vs_oracle.lo|+1}}, {{descriptive.H1/16.vs_oracle.hi|+1}}] and H3/16
+{{descriptive.H3/16.vs_oracle.pts|+1}} points. The full arm $\times$ rung set, with every comparator, is in
+\texttt{tables/rung\_table.csv} and \texttt{tables/descriptive.csv}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/d3_realized_f2.pdf}\hfill
+\includegraphics[width=0.48\textwidth]{figures/d4_dollars.pdf}
+\caption{Left: F2, both sides at realized completion tokens per item. Right: charged USD per item. Descriptive
+frontiers among evaluated configurations.}
+\label{fig:frontiers}
+\end{figure}
+
+\begin{table}[htbp]
+\centering\small
+\input{tables/cost.tex}
+\caption{Realized tokens and dollars per item for the comparators and the harness cells.}
+\label{tab:cost}
+\end{table}
+
+\subsection{Realized budget and harness diagnostics}
+
+\begin{table}[htbp]
+\centering\small
+\input{tables/realized.tex}
+\caption{Nominal cap beside realized completion (mean, median), realized share, mean grace, share of runs with a
+cap-bound call and share closed by the terminal answer.}
+\label{tab:realized}
+\end{table}
+
+\begin{table}[htbp]
+\centering\small
+\input{tables/diagnostics.tex}
+\caption{Harness diagnostics per cell: calls by conversation class, spawns, orchestrator token share, abstention
+(no valid \texttt{<final>}), tool-call parse failures and wall time.}
+\label{tab:diag}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d6_diagnostics.pdf}
+\caption{Calls per run, spawn share and orchestrator token share against $C/A$.}
+\label{fig:diag}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/d7_cap_binding.pdf}
+\caption{Realized share of the cap per run, by rung and arm.}
+\label{fig:cap}
+\end{figure}
+
+Scaffolding: the first root call of H1 carries {{harness_prompt_tokens.H1.mean|d}} more prompt tokens than the H0
+call on the same item and rung (SD {{harness_prompt_tokens.H1.sd|d}}, $n$ = {{harness_prompt_tokens.H1.n|d}});
+H3 {{harness_prompt_tokens.H3.mean|d}} (SD {{harness_prompt_tokens.H3.sd|d}}). Spend: {{spend.core_usd|$}} on the
+current attempts, {{spend.all_attempts_usd|$}} over every attempt ({{n_reruns|d}} reruns).
+
+\subsection{Provider sensitivity}
+
+{{ladder_provider_assignment.mancer|d}} of the ladder's items were generated on Mancer and
+{{ladder_provider_assignment.parasail|d}} on Parasail; {{same_provider_share|%}} of the harness cells ran on the
+same provider as their ladder rows ({{same_provider_items|d}} items).
+
+\begin{table}[htbp]
+\centering\small
+\input{tables/provider_sensitivity.tex}
+\caption{Every primary contrast restricted to the Mancer items, the Parasail items, and the items whose harness
+run and ladder rows share a provider.}
+\label{tab:provider}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/d8_provider_sensitivity.pdf}
+\caption{Provider-stratified estimates of the anchor and the primary family.}
+\label{fig:provider}
+\end{figure}
+
+\subsection{Repeat agreement}
+
+Second-repeat cells available: {{repeat_agreement.n_cells|d}} (extension E1; \texttt{tables/repeat\_agreement.csv}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/d9_repeat_agreement.pdf}
+\caption{Repeat 2 minus repeat 1 per cell with the empirical run-to-run interval, when E1 ran.}
+\label{fig:repeat}
+\end{figure}
+
+\section{Cost re-fit}
+
+Re-fitted from the measured runs (Parasail prices, 25\% contingency), the core would cost
+{{refit_total_core_usd|$}}; per-cell figures are in \texttt{tables/forecast\_refit.csv}.
+
+\end{document}
