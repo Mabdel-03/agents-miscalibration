@@ -1,0 +1,18 @@
+[
+ "timeout",
+ "--kill-after=30s",
+ "240s",
+ "/orcd/data/tpoggio/001/mabdel03/dynorch_scratch/npm-prefix/bin/codex",
+ "exec",
+ "--json",
+ "--ephemeral",
+ "--strict-config",
+ "--skip-git-repo-check",
+ "-C",
+ "/orcd/data/tpoggio/001/mabdel03/dynorch_scratch/probe/codex/h/ws",
+ "-s",
+ "read-only",
+ "-o",
+ "/orcd/data/tpoggio/001/mabdel03/dynorch_scratch/probe/codex/h/final.txt",
+ "-"
+]

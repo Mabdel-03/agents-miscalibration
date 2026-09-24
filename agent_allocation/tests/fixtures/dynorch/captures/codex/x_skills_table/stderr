@@ -1,0 +1,5 @@
+Error loading config.toml:
+/orcd/data/tpoggio/001/mabdel03/dynorch_scratch/probe/codex/x_skills_table/home/config.toml:12:1: unknown configuration field `skills.enabled`
+   |
+12 | enabled = false
+   | ^^^^^^^

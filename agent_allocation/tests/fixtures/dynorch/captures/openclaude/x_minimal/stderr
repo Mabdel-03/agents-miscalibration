@@ -1,0 +1,8 @@
+Warning: ignoring saved provider profile. Codex auth is required for codexplan. Set CODEX_API_KEY, choose Codex OAuth in /provider or put auth.json at /orcd/data/tpoggio/001/mabdel03/dynorch_scratch/probe/openclaude/x_minimal/home/.codex/auth.json.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
+[context] Warning: model "qwen/qwen3.8-27b" not in integration model metadata — using conservative 128k default. Add it to src/integrations/models for accurate compaction.
