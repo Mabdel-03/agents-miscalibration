@@ -11,10 +11,13 @@ items each pins (``record_case`` writes them to ``$DYNORCH_GATE0_SMOKE_OUT`` for
   tool loop re-injects the cached reasoning (``reinjection_hit_rate >= 0.95``, §4 key 1: OpenClaude never re-sends
   ``reasoning_content``, contract §10.4); no ``budget_usd`` text anywhere; the delivered answer is the proxy's and
   the CLI result cross-checks; no key material; nothing under ``$HOME``;
-* ``forced_close_then_402`` -- rung 1: the first root call thinks past the cap, the proxy closes it with the grace
-  (``mid_call``, B3) and the continuation is a spawn; the solver's call and the root's next call are refused with
-  HTTP 402 (B4: after the grace every call is refused): the run ends within 10 s of the first 402 with at most one
-  further request, ``is_error`` true, exit 1, no rerun (frozen rerun rule);
+* ``forced_close_text`` -- rung 1: the first root call thinks past the cap, the proxy closes it with the grace
+  (``mid_call``, B3) rendered WITHOUT tools; the continuation writes spawn XML, which reaches OpenClaude as plain
+  text with finish ``stop`` (contract §10.28): nothing is spawned, the CLI ends on that text (exit 0), it is the
+  delivered answer, and a probe sent after the exit is refused with HTTP 402 and no upstream call;
+* ``subagent_402_then_terminal`` -- rung 1, no grace involved: the root stops naturally with an ``Agent`` call that
+  leaves ``remaining < 64``; the solver's call gets HTTP 402 (not retried), the one further request is the root's
+  TERMINAL call (B4) and the run ends on its answer within 10 s of the 402; no rerun (frozen rerun rule);
 * ``rung25`` -- one rung-25 run ends with ``subtype == success`` and a graded record;
 * ``delayed_35s`` -- a 35 s upstream delay (two 15 s keepalive comments) produces exactly one upstream call and
   ``subtype == success``; ``delayed_330s`` / ``delayed_660s`` are the plan's stalls (``-m slow``).
@@ -147,51 +150,142 @@ def _grants_exact(record, spec) -> bool:
     return True
 
 
+#: What a model about to delegate writes when its one grace comes: the tool-call XML of a spawn. Under plan B3 /
+#: contract §10.28 the continuation carries no tool schemas and is returned as TEXT with finish "stop".
+GRACE_SPAWN_XML = spawn_text("solve it all", prefix="I must delegate now.")
+TERMINAL_FINAL = FakeReply(content="<rationale>Out of budget; answering.</rationale>\n<final>42</final>")
+
+
 @pytest.mark.timeout(600)
-async def test_openclaude_forced_close_then_402_ends_the_run(tmp_path: Path, base):
+async def test_openclaude_forced_close_is_text_and_ends_the_run(tmp_path: Path, base):
+    """Plan B3 / contract §10.28 through the real CLI: the THINK hits the cap at rung 1, the grace continuation
+    (rendered WITHOUT tools) writes tool-call XML, and OpenClaude receives it as plain text with finish "stop": it
+    spawns nothing, ends on that text (exit 0) and that text is the delivered answer. Any further call is refused:
+    a probe sent after the harness exited gets HTTP 402 with no upstream call."""
     marker = S.home_marker()
     item = S.dev_item(base, "gpqa_diamond")
-    async with SmokeStack(tmp_path, adapters=_adapters(), sigterm_after_exhaustion=45.0) as stack:
+    async with SmokeStack(tmp_path, adapters=_adapters(), sigterm_after_exhaustion=45.0, probe_after_exit=True) as stack:
         spec = stack.specs(base, arm=ARM, rung=1, items=[item])[0]
         cap = spec.cap_tokens
-        # root call 1 thinks past the cap -> length inside <think> -> the proxy's ANSWER continuation (grace)
-        # returns a spawn; the solver's call and the root's next call meet a closed budget -> HTTP 402
+        stack.scripts[spec.run_key] = RunScript(root=[FakeReply(think_tokens=cap + 500)], answer=FakeReply(
+            content=GRACE_SPAWN_XML), solver=[CHILD])
+        records = await stack.run(base, [spec])
+    record = records[spec.run_key]
+    docs = stack.journaled(spec)
+    result = stack.result_line(spec) or {}
+    script = stack.scripts[spec.run_key]
+    probe = stack.probes.get(spec.run_key)
+    call = record.calls_detail[0] if record.calls_detail else None
+    reply = docs[0]["reply"] if docs else {}
+    common = S.common_checks(stack, spec, record, marker)
+    checks: dict[str, bool] = {
+        "one_served_call_forced_close_mid_call": record.calls == 1 and call is not None
+                                                 and call.forced_close_kind == "mid_call"
+                                                 and record.forced_close_kind == "mid_call",
+        "grace_used_and_bounded": 0 < record.grace_tokens <= S.CFG["dynorch"]["grace_tokens"]
+                                  and record.completion_total == cap and record.exhausted is True,
+        # B3: the continuation is rendered with no tool schemas; the THINK kept the harness's tools
+        "continuation_carries_no_tools": [c["prompt_has_tools"] for c in script.phase_calls("think")] == [True]
+                                         and [c["prompt_has_tools"] for c in script.phase_calls("answer")] == [False],
+        # contract §10.28: the grace is text with finish "stop", never a tool call
+        "grace_returned_as_text_finish_stop": call is not None and call.finish_reason_returned == "stop"
+                                              and call.tool_calls == 0 and reply.get("tool_calls") == []
+                                              and "<tool_call>" in str(reply.get("content")),
+        "nothing_spawned": record.spawns == 0 and record.calls_by_class.get("solver", 0) == 0
+                           and script.think_calls("solver") == 0,
+        "cli_ended_on_that_text": result.get("is_error") is False and result.get("subtype") == "success"
+                                  and record.harness_exit_code == 0 and result.get("num_turns") == 1
+                                  and "<tool_call>" in str(result.get("result", "")),
+        "delivered_answer_is_the_grace_text": record.final_source == "proxy_root"
+                                              and record.final_message is not None
+                                              and "<tool_call>" in record.final_message
+                                              and record.cli_result_mismatch is False,
+        "further_call_refused_402_no_upstream": probe is not None and probe.status == 402
+                                                and probe.code == "budget_exhausted"
+                                                and probe.upstream_calls_after == probe.upstream_calls_before,
+        "no_upstream_call_after_the_grace": script.think_calls() == 1 and len(script.calls) == 2,
+        "no_rerun": record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1,
+        "not_killed_by_watchdog": record.harness_reported.get("sigterm_after_exhaustion") is False
+                                  and record.harness_reported.get("timed_out") is False,
+        "single_request_journaled": len(docs) == 1,
+        "finish_reasons_in_set": all(c.finish_reason_returned in ("stop", "tool_calls") for c in record.calls_detail),
+        **common[0],
+    }
+    failed = S.record_case("openclaude/forced_close_text", checks, detail={**common[1],
+        "probe": None if probe is None else probe.__dict__, "result": str(result.get("result", ""))[:300],
+        "upstream": script.calls, "events": [e.__dict__ for e in stack.reply_log.timed.get(spec.run_key, [])],
+        "parse_status": record.parse_status})
+    assert not failed, (failed, result, record.harness_reported)
+
+
+@pytest.mark.timeout(600)
+async def test_openclaude_subagent_402_then_terminal_ends_the_run(tmp_path: Path, base):
+    """The 402 case without the grace (plan B4, Gate 0 "402 ends the run within 10 s with <= 1 further request"):
+    the root's THINK stops naturally with an ``Agent`` call that leaves ``remaining < 64``; the solver's call is
+    refused with HTTP 402 (a sub-agent never gets the TERMINAL), OpenClaude does not retry it, the root's one
+    further request is its TERMINAL call (thinking off, no tools, ``max_tokens = G``) and the run ends on that
+    answer. A probe after the exit gets 402 (the grace is spent)."""
+    marker = S.home_marker()
+    item = S.dev_item(base, "gpqa_diamond")
+    async with SmokeStack(tmp_path, adapters=_adapters(), sigterm_after_exhaustion=45.0, probe_after_exit=True) as stack:
+        spec = stack.specs(base, arm=ARM, rung=1, items=[item])[0]
+        cap = spec.cap_tokens
+        threshold = int(S.CFG["dynorch"]["terminal_threshold_tokens"])
+        spent = cap - (threshold - 24)                      # remaining = threshold - 24 < threshold after call 1
+        spawn = spawn_text("solve it all")
+        # the fake's completion = THINK tokens + ceil(len(visible) / 4); the call closes on its own below the grant
         stack.scripts[spec.run_key] = RunScript(
-            root=[FakeReply(think_tokens=cap + 500)],
-            answer=FakeReply(content=spawn_text("solve it all", prefix="I must delegate now.")),
-            solver=[CHILD])
-        started = time.monotonic()
+            root=[FakeReply(content=spawn, think_tokens=spent - -(-len(spawn) // 4))], solver=[CHILD],
+            answer=TERMINAL_FINAL)
         records = await stack.run(base, [spec])
         ended = time.monotonic()
     record = records[spec.run_key]
     docs = stack.journaled(spec)
     result = stack.result_line(spec) or {}
+    script = stack.scripts[spec.run_key]
+    probe = stack.probes.get(spec.run_key)
+    horizon = probe.sent_at if probe is not None else float("inf")
     first_402 = stack.reply_log.first_error(spec.run_key, 402)
-    after = stack.reply_log.events_after(spec.run_key, first_402.at) if first_402 else []
+    after = [e for e in (stack.reply_log.events_after(spec.run_key, first_402.at) if first_402 else []) if e.at < horizon]
+    classes = [d["call"]["conversation_class"] for d in docs]
+    kinds = [c.forced_close_kind for c in record.calls_detail]
     common = S.common_checks(stack, spec, record, marker)
     checks: dict[str, bool] = {
-        "one_served_call_forced_close_mid_call": record.calls == 1 and record.calls_detail[0].forced_close_kind == "mid_call"
-                                                 and record.forced_close_kind == "mid_call",
-        "grace_used_and_bounded": 0 < record.grace_tokens <= S.CFG["dynorch"]["grace_tokens"]
-                                  and record.completion_total == cap and record.exhausted is True,
-        "spawn_emitted_in_the_continuation": record.spawns == 1 and record.calls_detail[0].finish_reason_returned == "tool_calls",
-        "402_served": first_402 is not None and record.refused_calls >= 1,
-        "at_most_one_request_after_first_402": len(after) <= 1 and all(e.kind == "error" and e.status == 402 for e in after),
+        "root_think_stopped_naturally_with_a_spawn": bool(record.calls_detail)
+                                                     and record.calls_detail[0].forced_close_kind == "none"
+                                                     and record.calls_detail[0].finish_reason_returned == "tool_calls"
+                                                     and record.calls_detail[0].completion_tokens == spent
+                                                     and record.spawns == 1 and cap - spent < threshold,
+        "solver_call_refused_402": first_402 is not None and record.refused_calls >= 1
+                                   and script.think_calls("solver") == 0 and record.calls_by_class.get("solver", 0) == 0,
+        "at_most_one_request_after_first_402": len(after) <= 1,
+        "the_further_request_is_the_root_terminal": len(after) == 1 and after[0].kind == "reply"
+                                                    and after[0].conversation_class == "root",
         "run_ended_within_10s_of_402": first_402 is not None and (ended - first_402.at) < 10.0,
-        "harness_exit_1_is_error": record.harness_exit_code == 1 and result.get("is_error") is True
-                                   and "402" in str(result.get("result", "")),
+        "terminal_served_once_no_tools": classes == ["root", "root"] and kinds == ["none", "terminal"]
+                                         and record.forced_close_kind == "terminal"
+                                         and 0 < record.grace_tokens <= S.CFG["dynorch"]["grace_tokens"]
+                                         and [c["prompt_has_tools"] for c in script.phase_calls("terminal")] == [False]
+                                         and [c["max_tokens"] for c in script.phase_calls("terminal")]
+                                         == [S.CFG["dynorch"]["grace_tokens"]],
+        "no_think_call_after_the_spawn": script.think_calls() == 1 and len(script.calls) == 2,
+        "cli_success_on_the_terminal_answer": result.get("is_error") is False and result.get("subtype") == "success"
+                                              and record.harness_exit_code == 0,
+        "delivered_from_proxy_and_cross_checked": record.final_source == "proxy_root" and record.parse_status == "valid"
+                                                   and record.cli_result_mismatch is False,
+        "further_call_refused_402_no_upstream": probe is not None and probe.status == 402
+                                                and probe.code == "budget_exhausted"
+                                                and probe.upstream_calls_after == probe.upstream_calls_before,
         "no_rerun_after_402": record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1,
         "not_killed_by_watchdog": record.harness_reported.get("sigterm_after_exhaustion") is False
                                   and record.harness_reported.get("timed_out") is False,
-        "no_upstream_call_after_the_grace": stack.scripts[spec.run_key].think_calls() == 1
-                                            and len(stack.scripts[spec.run_key].calls) == 2,
-        "single_request_before_402_journaled": len(docs) == 1,
+        "finish_reasons_in_set": all(c.finish_reason_returned in ("stop", "tool_calls") for c in record.calls_detail),
         **common[0],
     }
-    failed = S.record_case("openclaude/forced_close_then_402", checks, detail={**common[1],
+    failed = S.record_case("openclaude/subagent_402_then_terminal", checks, detail={**common[1],
         "seconds_from_402_to_end": None if first_402 is None else round(ended - first_402.at, 2),
         "events": [e.__dict__ for e in stack.reply_log.timed.get(spec.run_key, [])],
-        "wall_seconds": record.wall_seconds, "started_to_end": round(ended - started, 2)})
+        "probe": None if probe is None else probe.__dict__, "upstream": script.calls, "classes": classes})
     assert not failed, (failed, result, record.harness_reported)
 
 

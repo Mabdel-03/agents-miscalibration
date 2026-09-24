@@ -78,8 +78,12 @@ class RunScript:
         coordinates = call.coordinates
         phase = str(coordinates.get("phase"))
         cls = str(coordinates.get("conversation_class"))
+        prompt = str((call.body or {}).get("prompt", ""))
         self.calls.append({"phase": phase, "class": cls, "call_no": coordinates.get("call_no"),
-                           "max_tokens": (call.body or {}).get("max_tokens")})
+                           "max_tokens": (call.body or {}).get("max_tokens"),
+                           # the pinned template renders tool schemas under a ``<tools>`` block (plan B3: the grace
+                           # continuation must carry none, contract §10.28)
+                           "prompt_has_tools": "<tools>" in prompt})
         if phase in ("answer", "terminal"):
             return _make(self.answer, call) if self.answer is not None else None
         if phase != "think":
@@ -95,6 +99,9 @@ class RunScript:
 
     def think_calls(self, cls: str | None = None) -> int:
         return sum(1 for c in self.calls if c["phase"] == "think" and (cls is None or c["class"] == cls))
+
+    def phase_calls(self, phase: str) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["phase"] == phase]
 
 
 def _make(entry: ReplyMaker, call: FakeCall) -> FakeReply:
@@ -161,6 +168,31 @@ class TimedReplyLog(ReplyLog):
         return [e for e in self.timed.get(run_key, []) if e.at > at]
 
 
+@dataclass
+class Probe:
+    """One request the stand sent to the proxy for a run AFTER its harness exited and before ``close_run``."""
+    sent_at: float       # monotonic, before the request left (events at or after it are the probe's own)
+    at: float
+    status: int
+    code: str | None
+    upstream_calls_before: int
+    upstream_calls_after: int
+
+
+class ProbingRunner(Runner):
+    """The real ``Runner`` plus one extra step between the harness's exit and ``close_run``: a plain chat request on
+    the run's ROOT system text is sent through the real ``ProxyServer`` (``probe_after_exit``), so a case can pin
+    "any further call is refused 402" over the wire instead of relying on the harness to try one (plan B4: after the
+    grace every call is refused; contract §10.28: a forced close answers with text, so the harness never asks)."""
+
+    stack: "SmokeStack"
+
+    async def _await_settled(self, spec: RunSpec) -> None:
+        await super()._await_settled(spec)
+        if self.stack.probe_after_exit:
+            await self.stack.probe(spec)
+
+
 def load_base() -> BaseInputs | None:
     root = Path(CFG["base_run_root"])
     if not (root / "manifests" / "panels.json").is_file():
@@ -181,7 +213,8 @@ class SmokeStack:
                  concurrency: int = 2, keepalive_seconds: float = KEEPALIVE_SECONDS,
                  sigterm_after_exhaustion: float = 60.0, sigkill_after: float = 30.0, poll_seconds: float = 0.5,
                  wall_base: int | None = None, wall_per_rung: int | None = None,
-                 server_factory: Callable[..., ProxyServer] = ProxyServer, read_timeout: float | None = None) -> None:
+                 server_factory: Callable[..., ProxyServer] = ProxyServer, read_timeout: float | None = None,
+                 probe_after_exit: bool = False) -> None:
         self.tmp = Path(tmp)
         self.run_root = self.tmp / "run_root"
         self.scratch = self.tmp / "scratch"
@@ -209,6 +242,8 @@ class SmokeStack:
         self.adapters = dict(adapters)
         self.keepalive_seconds = keepalive_seconds
         self.server_factory = server_factory
+        self.probe_after_exit = probe_after_exit
+        self.probes: dict[str, Probe] = {}
         self.stack: Any = None
         self.server: ProxyServer | None = None
         self.runner: Runner | None = None
@@ -218,8 +253,10 @@ class SmokeStack:
         self.core, self.store, self.journal = self.stack.core, self.stack.store, self.stack.journal
         self.server = self.server_factory(self.core, keepalive_seconds=self.keepalive_seconds, reply_log=self.reply_log)
         await self.server.start()
-        self.runner = Runner(self.core, self.adapters, self.settings, proxy_url=self.server.base_url, store=self.store,
-                             inputs=None, reply_log=self.reply_log, cfg=CFG, journal=self.journal)
+        self.runner = ProbingRunner(self.core, self.adapters, self.settings, proxy_url=self.server.base_url,
+                                    store=self.store, inputs=None, reply_log=self.reply_log, cfg=CFG,
+                                    journal=self.journal, wait_for_run=self.server.wait_for_run)
+        self.runner.stack = self
         return self
 
     async def __aexit__(self, *_exc: Any) -> None:
@@ -238,6 +275,31 @@ class SmokeStack:
                 return
             await asyncio.sleep(0.2)
         raise AssertionError(f"upstream calls still in flight after {timeout:.0f} s")
+
+    async def probe(self, spec: RunSpec) -> Probe:
+        """POST one non-streaming chat request on the run's root system text (as the harness sent it: the first
+        journaled request's ``messages[0]``) to ``/r/<run_key>/v1/chat/completions`` and record the answer. The
+        request is classified ``root`` (same system text); what it gets is the proxy's verdict on "one more call"."""
+        import httpx
+        docs = self.journaled(spec)
+        system = docs[0]["harness_request"]["messages"][0]["content"] if docs else SYSTEM_TEXT
+        body = {"model": CFG["primary_model"], "stream": False,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": "One more question after the answer: are you sure?"}]}
+        before = len(self.script.calls)            # every upstream request the fake received (all routes)
+        assert self.server is not None
+        sent_at = time.monotonic()
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+            response = await client.post(f"{self.server.run_base_url(spec.run_key)}/chat/completions", json=body,
+                                         headers={"Authorization": f"Bearer {spec.run_key}"})
+        try:
+            code = (response.json().get("error") or {}).get("code")
+        except ValueError:
+            code = None
+        probe = Probe(sent_at=sent_at, at=time.monotonic(), status=response.status_code, code=code, upstream_calls_before=before,
+                      upstream_calls_after=len(self.script.calls))
+        self.probes[spec.run_key] = probe
+        return probe
 
     def specs(self, base: BaseInputs, *, arm: str, rung: int, items: Sequence[str], stage: str = "main") -> list[RunSpec]:
         harness = str(CFG["dynorch"]["arms"][arm]["harness"])

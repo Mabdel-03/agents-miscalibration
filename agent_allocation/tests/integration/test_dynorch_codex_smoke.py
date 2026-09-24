@@ -19,10 +19,13 @@ The real CLI is launched by the real ``CodexAdapter`` from the real ``Runner`` a
   then ``turn.failed``; the proxy serves the identical retries from its cache (B9: one upstream call);
 * ``timeout`` -- the adapter's ``timeout --kill-after`` ends the run when its wall elapses and the whole process
   group is gone afterwards; the upstream call it left behind is finished and settled (B2);
-* ``forced_close_then_402`` -- after the grace (B3) every call is refused with a real HTTP 402: Codex treats it as
-  ``unexpected status 402`` and re-sends the identical request ``stream_max_retries`` (2) times per conversation
-  (each refused in-process: no upstream call, no cost) then ``turn.failed`` within 10 s (requests/wpE.md item 15; the
-  frozen table's "non-retryable" holds for the budget, not for Codex's transport-level retry loop);
+* ``forced_close_text`` -- rung 1: the cap binds inside ``<think>``; the grace continuation (no tool schemas) writes
+  ``spawn_agent`` XML, which reaches Codex as a plain message with finish ``stop`` (contract §10.28): no function
+  call, no child, ``turn.completed`` on that text, which is the delivered answer; a probe after the exit gets 402;
+* ``subagent_402_then_terminal`` -- rung 1, no grace involved: the root stops naturally with ``spawn_agent`` leaving
+  ``remaining < 64``; the child's request gets HTTP 402, which Codex re-sends at most ``stream_max_retries`` (2) times,
+  each refused in-process with no upstream call or cost (contract §10.20); the root's next request is its one
+  TERMINAL (B4) and the turn completes on it within 10 s of the first 402;
 * ``rung25`` -- one rung-25 run ends with ``turn.completed`` and a graded record;
 * ``delayed_35s`` -- a 35 s upstream delay (two keepalive comments) produces exactly one upstream call and a
   completed turn; ``delayed_330s`` / ``delayed_660s`` are the plan's stalls (``-m slow``).
@@ -368,49 +371,149 @@ async def test_codex_timeout_kills_the_whole_tree(tmp_path: Path, base):
     assert not failed, (failed, record.harness_exit_code, record.harness_reported)
 
 
+#: What a model about to delegate writes when its one grace comes (plan B3 / contract §10.28: returned as TEXT).
+GRACE_SPAWN_XML = spawn_text("solve it all", prefix="I must delegate now.")
+TERMINAL_FINAL = FakeReply(content="<rationale>Out of budget; answering.</rationale>\n<final>42</final>")
+
+
 @pytest.mark.timeout(600)
-async def test_codex_forced_close_then_402_ends_the_run(tmp_path: Path, base):
+async def test_codex_forced_close_is_text_and_ends_the_run(tmp_path: Path, base):
+    """Plan B3 / contract §10.28 through the real CLI: the THINK hits the cap at rung 1, the grace continuation
+    (rendered WITHOUT tools) writes ``spawn_agent`` XML, and Codex receives it as a plain ``message`` item with
+    finish "stop": no ``function_call`` item, no ``collab_tool_call``, no child request; the turn completes on that
+    text (exit 0, the ``-o`` file holds it) and it is the delivered answer. Any further call is refused: a probe
+    sent after the harness exited gets HTTP 402 with no upstream call."""
     marker = S.home_marker()
     item = S.dev_item(base, "gpqa_diamond")
-    async with SmokeStack(tmp_path, adapters=_adapters(), sigterm_after_exhaustion=45.0) as stack:
+    async with SmokeStack(tmp_path, adapters=_adapters(), sigterm_after_exhaustion=45.0, probe_after_exit=True) as stack:
         spec = stack.specs(base, arm=ARM, rung=1, items=[item])[0]
         cap = spec.cap_tokens
+        stack.scripts[spec.run_key] = RunScript(root=[FakeReply(think_tokens=cap + 500)],
+                                                answer=FakeReply(content=GRACE_SPAWN_XML), solver=[CHILD])
+        records = await stack.run(base, [spec])
+    record = records[spec.run_key]
+    docs = stack.journaled(spec)
+    events = _events(stack, spec)
+    script = stack.scripts[spec.run_key]
+    probe = stack.probes.get(spec.run_key)
+    call = record.calls_detail[0] if record.calls_detail else None
+    reply = docs[0]["reply"] if docs else {}
+    messages = [e["item"].get("text", "") for e in events if isinstance(e.get("item"), dict)
+                and e["item"].get("type") == "agent_message" and e.get("type") == "item.completed"]
+    common = S.common_checks(stack, spec, record, marker)
+    checks: dict[str, bool] = {
+        "one_served_call_forced_close_mid_call": record.calls == 1 and call is not None
+                                                 and call.forced_close_kind == "mid_call"
+                                                 and record.forced_close_kind == "mid_call",
+        "grace_used_and_bounded": 0 < record.grace_tokens <= S.CFG["dynorch"]["grace_tokens"]
+                                  and record.completion_total == cap and record.exhausted is True,
+        "continuation_carries_no_tools": [c["prompt_has_tools"] for c in script.phase_calls("think")] == [True]
+                                         and [c["prompt_has_tools"] for c in script.phase_calls("answer")] == [False],
+        "grace_returned_as_text_finish_stop": call is not None and call.finish_reason_returned == "stop"
+                                              and call.tool_calls == 0 and reply.get("tool_calls") == []
+                                              and "<tool_call>" in str(reply.get("content")),
+        "nothing_spawned": record.spawns == 0 and record.calls_by_class.get("solver", 0) == 0
+                           and script.think_calls("solver") == 0
+                           and "collab_tool_call" not in _item_types(events),
+        "turn_completed_on_that_text": "turn.completed" in _event_types(events)
+                                       and "turn.failed" not in _event_types(events)
+                                       and record.harness_exit_code == 0 and len(messages) == 1
+                                       and "<tool_call>" in messages[0],
+        "delivered_answer_is_the_grace_text": record.final_source == "proxy_root"
+                                              and record.final_message is not None
+                                              and "<tool_call>" in record.final_message
+                                              and record.cli_result_mismatch is False
+                                              and record.harness_reported.get("final_file_present") is True,
+        "further_call_refused_402_no_upstream": probe is not None and probe.status == 402
+                                                and probe.code == "budget_exhausted"
+                                                and probe.upstream_calls_after == probe.upstream_calls_before,
+        "no_upstream_call_after_the_grace": script.think_calls() == 1 and len(script.calls) == 2,
+        "no_rerun": record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1,
+        "not_killed_by_watchdog": record.harness_reported.get("sigterm_after_exhaustion") is False
+                                  and record.harness_reported.get("timed_out") is False,
+        "finish_reasons_in_set": all(c.finish_reason_returned in ("stop", "tool_calls") for c in record.calls_detail),
+        **common[0],
+    }
+    failed = S.record_case("codex/forced_close_text", checks, detail={**common[1],
+        "probe": None if probe is None else probe.__dict__, "messages": [m[:200] for m in messages],
+        "upstream": script.calls, "harness_events": _event_types(events), "parse_status": record.parse_status})
+    assert not failed, (failed, _event_types(events), record.harness_reported)
+
+
+@pytest.mark.timeout(600)
+async def test_codex_subagent_402_then_terminal_ends_the_run(tmp_path: Path, base):
+    """The 402 case without the grace (plan B4; contract §10.20 for Codex): the root's THINK stops naturally with a
+    ``spawn_agent`` call that leaves ``remaining < 64``; the child's request (``x-openai-subagent``) is refused with
+    HTTP 402 and Codex re-sends it at most ``stream_max_retries`` (2) times, each refused in-process with no upstream
+    call; the root's next request gets its one TERMINAL answer (B4) and the turn completes on it. Pinned: every
+    request after the first 402 is a 402 or that one root TERMINAL; no THINK after the spawn; the run ends within
+    10 s of the first 402; a probe after the exit gets 402. The TERMINAL is held 3 s upstream so the child's request
+    reaches the proxy whichever of the two Codex sends first (they race for the run's FIFO lock)."""
+    marker = S.home_marker()
+    item = S.dev_item(base, "gpqa_diamond")
+    async with SmokeStack(tmp_path, adapters=_adapters(), sigterm_after_exhaustion=45.0, probe_after_exit=True) as stack:
+        spec = stack.specs(base, arm=ARM, rung=1, items=[item])[0]
+        cap = spec.cap_tokens
+        threshold = int(S.CFG["dynorch"]["terminal_threshold_tokens"])
+        spent = cap - (threshold - 24)
+        spawn = spawn_text("Solve the whole problem and report the answer.")
         stack.scripts[spec.run_key] = RunScript(
-            root=[FakeReply(think_tokens=cap + 500)],
-            answer=FakeReply(content=spawn_text("solve it all", prefix="I must delegate now.")),
-            solver=[CHILD])
+            root=[FakeReply(content=spawn, think_tokens=spent - -(-len(spawn) // 4)), FINAL], solver=[CHILD],
+            answer=FakeReply(content=TERMINAL_FINAL.content, delay_seconds=3.0))
         records = await stack.run(base, [spec])
         ended = time.monotonic()
     record = records[spec.run_key]
+    docs = stack.journaled(spec)
     events = _events(stack, spec)
-    first_402 = stack.reply_log.first_error(spec.run_key, 402)
-    after = stack.reply_log.events_after(spec.run_key, first_402.at) if first_402 else []
+    script = stack.scripts[spec.run_key]
+    probe = stack.probes.get(spec.run_key)
+    horizon = probe.sent_at if probe is not None else float("inf")
+    timed = [e for e in stack.reply_log.timed.get(spec.run_key, []) if e.at < horizon]
+    first_402 = next((e for e in timed if e.kind == "error" and e.status == 402), None)
+    after = [e for e in timed if first_402 is not None and e.at > first_402.at]
+    refusals = [e for e in timed if e.kind == "error"]
+    classes = [d["call"]["conversation_class"] for d in docs]
+    kinds = [c.forced_close_kind for c in record.calls_detail]
     common = S.common_checks(stack, spec, record, marker)
-    checks = {
-        "one_served_call_forced_close_mid_call": record.calls == 1 and record.forced_close_kind == "mid_call"
-                                                 and record.completion_total == cap and record.exhausted is True,
-        "spawn_emitted_in_the_continuation": record.spawns == 1,
-        "402_served": first_402 is not None and record.refused_calls >= 1,
-        # requests/wpE.md item 15: Codex retries an "unexpected status 402" stream_max_retries (2) times per conversation
-        # with an identical request, each refused in-process (no upstream call), then turn.failed
-        "only_402s_after_the_first_402": all(e.kind == "error" and e.status == 402 for e in after),
-        "at_most_stream_max_retries_per_conversation": len(after) <= 2 * (STREAM_MAX_RETRIES + 1) - 1,
+    checks: dict[str, bool] = {
+        "root_think_stopped_naturally_with_a_spawn": bool(record.calls_detail)
+                                                     and record.calls_detail[0].forced_close_kind == "none"
+                                                     and record.calls_detail[0].finish_reason_returned == "tool_calls"
+                                                     and record.calls_detail[0].completion_tokens == spent
+                                                     and record.spawns == 1 and cap - spent < threshold,
+        "child_request_refused_402": first_402 is not None and record.refused_calls >= 1
+                                     and all(e.status == 402 and e.code == "budget_exhausted" for e in refusals)
+                                     and script.think_calls("solver") == 0
+                                     and record.calls_by_class.get("solver", 0) == 0,
+        # contract §10.20: Codex re-sends an HTTP 402 stream_max_retries (2) times per conversation, in-process
+        "at_most_stream_max_retries_per_conversation": len(refusals) <= STREAM_MAX_RETRIES + 1,
+        "after_first_402_only_402s_or_the_root_terminal": all(
+            (e.kind == "error" and e.status == 402) or (e.kind == "reply" and e.conversation_class == "root")
+            for e in after) and sum(1 for e in after if e.kind == "reply") <= 1,
         "run_ended_within_10s_of_402": first_402 is not None and (ended - first_402.at) < 10.0,
-        "turn_failed_on_unexpected_status_402": record.harness_exit_code == 1 and "turn.failed" in _event_types(events)
-                                                and sum("Reconnecting" in str(e.get("message")) for e in events
-                                                        if e.get("type") == "error") == STREAM_MAX_RETRIES
-                                                and any("unexpected status 402" in str(e.get("message")) for e in events
-                                                        if e.get("type") == "error")
-                                                and record.harness_reported.get("final_file_present") is False,
+        "terminal_served_once_no_tools": classes == ["root", "root"] and kinds == ["none", "terminal"]
+                                         and record.forced_close_kind == "terminal"
+                                         and 0 < record.grace_tokens <= S.CFG["dynorch"]["grace_tokens"]
+                                         and [c["prompt_has_tools"] for c in script.phase_calls("terminal")] == [False],
+        "no_think_call_after_the_spawn": script.think_calls() == 1 and len(script.calls) == 2,
+        "turn_completed_on_the_terminal_answer": "turn.completed" in _event_types(events)
+                                                 and record.harness_exit_code == 0
+                                                 and record.harness_reported.get("final_file_present") is True,
+        "delivered_from_proxy_and_cross_checked": record.final_source == "proxy_root" and record.parse_status == "valid"
+                                                   and record.cli_result_mismatch is False,
+        "further_call_refused_402_no_upstream": probe is not None and probe.status == 402
+                                                and probe.code == "budget_exhausted"
+                                                and probe.upstream_calls_after == probe.upstream_calls_before,
         "no_rerun_after_402": record.status == "done" and record.rerun_reason is None and record.spec.attempt == 1,
-        "not_killed_by_watchdog": record.harness_reported.get("sigterm_after_exhaustion") is False,
-        "no_upstream_call_after_the_grace": stack.scripts[spec.run_key].think_calls() == 1
-                                            and len(stack.scripts[spec.run_key].calls) == 2,
+        "not_killed_by_watchdog": record.harness_reported.get("sigterm_after_exhaustion") is False
+                                  and record.harness_reported.get("timed_out") is False,
+        "finish_reasons_in_set": all(c.finish_reason_returned in ("stop", "tool_calls") for c in record.calls_detail),
         **common[0],
     }
-    failed = S.record_case("codex/forced_close_then_402", checks, detail={**common[1],
+    failed = S.record_case("codex/subagent_402_then_terminal", checks, detail={**common[1],
         "seconds_from_402_to_end": None if first_402 is None else round(ended - first_402.at, 2),
         "events": [e.__dict__ for e in stack.reply_log.timed.get(spec.run_key, [])],
+        "probe": None if probe is None else probe.__dict__, "upstream": script.calls, "classes": classes,
         "harness_events": _event_types(events)})
     assert not failed, (failed, _event_types(events), record.harness_reported)
 
