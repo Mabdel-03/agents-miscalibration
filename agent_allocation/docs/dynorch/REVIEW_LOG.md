@@ -77,3 +77,9 @@ Same rules: one line per finding, a regression test that fails before the fix, i
 | 4 (cap) | major follow-up | `dynorch/runner.py` | fixed | `ef9cf03` | the rerun cap counts MODEL attempts: `_reruns_used = attempt - 1 - stop attempts` (earlier `infrastructure_stop` / `ledger_stop` records of the cell); the attempt number still advances so run keys never repeat. Makes review issue 12's "never consumes a rerun" true (it was read off the attempt number). |
 | major | dynorch/reconcile.py (key settle) | fixed | (this commit) | re-run canary 2026-09-24: two-equal-reads rule declared a false mismatch during a billing pause; now converge-on-the-ledger with a confirming read (contract §10.36) |
 | minor | dynorch/reconcile.py (reconcile verb) | fixed | (this commit) | client closed in a second event loop: crash + non-zero exit after a correct report; now one loop (verified live, clean) |
+
+## Main-stage finding (2026-09-24; contract §10.38)
+
+| # | severity | file | verdict | commit | note |
+|---|---|---|---|---|---|
+| infra-latch | blocker (scoring) | `dynorch/core.py`, `dynorch/runner.py`, `dynorch/invalidate.py`, `api/fake.py` | fixed | `009a3e3`, `ea1da5a`, `ed29345` | a provider "Stream interrupted" envelope / read error settled the full grant and returned 502; OpenClaude and Codex retried the 502 into the B4 TERMINAL call and the run was scored `done` on a no-thinking answer (H1/16 omni_math_hard/3907, /1257, H1/25 aime/2026/23; H0 never retries, so only the harness arms were biased). The first `UpstreamFailed` now latches the run (every later call refused before any grant); a latched run is `transport_failed` / `upstream_latched`, an infrastructure rerun that consumes no model rerun (bounded by `max_infra_reruns = 3`); `dynorch-invalidate` supersedes the records completed under the defect so `--resume` re-executes them. Supersedes §10.31's "a recovered run keeps its answer" (it was the TERMINAL). |

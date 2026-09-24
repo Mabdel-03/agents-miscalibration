@@ -591,3 +591,52 @@ answers, forecast and hygiene criteria stay binding — a `stop` decision is nev
 gate stopped, and a waived criterion stays recorded as FAILED (its threshold is prefixed `WAIVED by owner`).
 The standalone `dynorch-reconcile` command now runs its HTTP client inside one event loop (it used to crash on close
 with "Event loop is closed" after writing a correct report).
+
+**10.38 An upstream failure latches the run; the attempt is an infrastructure rerun (lead, 2026-09-24; main-stage
+finding).** Parasail (and Mancer) sometimes break a generation mid-stream: an error envelope (`choices[0].error`
+`{code: 502, "Stream interrupted: ..."}`, or `finish_reason: "error"` without an error object) or a read error. B2
+handles that call correctly -- full grant settled in tokens, the maximum charged in dollars, `upstream_failed` (502)
+-- but both harnesses RETRY a 502 (OpenClaude's `withRetry` with `CLAUDE_CODE_MAX_RETRIES=1`, Codex's
+`request_max_retries` / `stream_max_retries`). The retry found `remaining < 64` and the root was served the B4
+TERMINAL call (thinking disabled, "reply now with only your final answer"), so the run ended `done` with a valid,
+no-thinking answer scored as a model outcome (main: H1/16 omni_math_hard/3907 and /1257, H1/25 aime/2026/23; H0
+never retries, so its interrupted runs were correctly `transport_failed` -- the defect biased only the harness
+arms, against the frozen rule "infrastructure failure is not a model failure"). The rule, pre-registered here:
+(a) **The latch (core).** The first `UpstreamFailed` of a run -- ambiguous outcome, error envelope, 5xx after the
+upstream retries, `forced_think_short`, an upstream 402/401, on a root or a sub-agent call, in the THINK, ANSWER or
+TERMINAL phase -- latches the run. Every later call of the run (a harness retry, a call queued on the run's lock, a
+root continuation after a failed sub-agent) is refused `502 upstream_failed` under the run's lock BEFORE any grant:
+no reservation, no upstream call, no cost; `refused_calls` counts it. `budget_view()["upstream_latched"]` and
+`ProxyCore.upstream_latch(run_key)` (call number, class, transport status, detail) expose it. A cancellation or a
+pre-send ledger refusal is not an `UpstreamFailed` and does not latch.
+(b) **The runner.** A latched run is `transport_failed` with `rerun_reason = "upstream_latched"` whatever the
+harness did afterwards (retried into the latch, exited, timed out, was drained); the latch is kept in
+`harness_reported["upstream_latch"]` and the core's error text in `error`. An account refusal keeps the §10.31
+`infrastructure_stop` path (it drains the stage) -- with the latch it is always the run's last upstream outcome, so
+§10.31's "a run that recovered keeps its answer" no longer arises (that answer was the B4 TERMINAL). `upstream_latched`
+and `infra_invalidated` are INFRASTRUCTURE reruns (`runner.INFRA_RERUN_REASONS`): like §10.32's stops they consume no
+model rerun (`_reruns_used` excludes them) and the attempt number and run_key advance, but unlike a stop they are
+re-executed in-job, bounded separately by `RunnerSettings.max_infra_reruns = 3` (a provider that fails every call
+then leaves the cell `transport_failed`, y = NaN). The rerun is a new run_key (new ledger attempt ids, a new journal
+directory), a fresh `TokenBudget` and, on `--resume`, generation + 1. The latched attempt's dollars stay charged
+(`retry_cost_usd`); its tokens stay journaled; it is never the cell's scored attempt (`grade.is_infra_failure` clears
+its parse/grade fields, `tables.outcome_of` gives it y = NaN / `unknown`, and the rerun is the cell's current record).
+H0's interrupted runs are the same `upstream_latched` reruns (the arms are treated alike).
+(c) **Invalidation of records completed under the defect.** `allocation dynorch-invalidate --config CFG --run-dir RUN
+--stage S --reason "<text>" [--dry-run]` (`dynorch/invalidate.py`) selects every CURRENT record of `S` not
+`transport_failed` whose attempt had an upstream failure (journaled `error.code == "upstream_failed"`, a 502 in
+`calls_detail`, or an `upstream_failed:` / `infrastructure_stop:` error), refuses while the stage's job may run (a
+`running` record, an open ledger attempt of `S`, `state/status.json` running `S` -- `--ignore-status-file` drops only
+this last check, for a job Slurm killed outright; `--dry-run` reports them and moves nothing), copies each original verbatim to `superseded_executions/S/infra_invalidation_<utc>/originals/`,
+writes it rewritten (`transport_failed` / `infra_invalidated`, scored fields cleared, the originals under
+`harness_reported["infra_invalidation"]`) to its `runs_superseded/` attempt path, removes it from `runs/`, writes
+`INVALIDATION.json` (layout `dynorch/infra_invalidation/v1`) and records `live.record_decision(kind=
+"infra_invalidation", cells=[...], reason=...)`. `Runner._existing_by_cell` takes a cell's highest superseded attempt
+when `runs/` holds none, so the next `dynorch-run --stage S --resume` re-executes exactly those cells as attempt + 1 /
+generation + 1. Never touched: the ledger journal, `locks/`, the plan manifest, `raw/`, other stages. Plan §9 Gate 3
+("a post-freeze fix that affects scoring forces re-execution of every affected cell") is satisfied by running it after
+the main job ends and resuming. Evidence: `test_core_flow.py` (latch cases), `test_runner_rules.py`,
+`test_dynorch_e2e_fake_harness.py` (interruption + 5xx-retrying fake harness, H0, bounded infra reruns, kill/resume,
+invalidate → resume on the real journaled records in `tests/fixtures/dynorch/infra_invalidation/`),
+`test_invalidate.py`, and the real-CLI smoke cases `openclaude/interruption_retry_latched` and
+`codex/interruption_retry_latched` (both CLIs retry the 502; every retry is refused with no upstream call).
