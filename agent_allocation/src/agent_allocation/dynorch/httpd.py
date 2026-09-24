@@ -244,7 +244,7 @@ class ProxyServer:
                 if request is None:
                     break
                 self.requests_served += 1
-                await self._dispatch(conn, writer, request)
+                await self._dispatch(conn, writer, request, reader=reader)
                 if conn.our_state is h11.MUST_CLOSE or conn.their_state is h11.MUST_CLOSE:
                     break
                 if conn.our_state is h11.DONE and conn.their_state is h11.DONE:
@@ -319,7 +319,8 @@ class ProxyServer:
         writer.write(conn.send(h11.EndOfMessage()))
         await writer.drain()
 
-    async def _dispatch(self, conn: h11.Connection, writer: asyncio.StreamWriter, request: _Request) -> None:
+    async def _dispatch(self, conn: h11.Connection, writer: asyncio.StreamWriter, request: _Request, *,
+                        reader: asyncio.StreamReader | None = None) -> None:
         kind, run_key, verb = route(request.target)
         try:
             if kind == "healthz":
@@ -349,10 +350,18 @@ class ProxyServer:
             subagent = SUBAGENT_HEADER in request.headers          # contract §10.1: Codex children carry it
             if verb == "chat/completions":
                 chat_request = openai_format.parse_chat_body(body, subagent=subagent)
-                await self._complete(conn, writer, run_key, chat_request, wire="chat")
+                wire = "chat"
             else:
                 chat_request = responses_format.parse_responses_body(body, subagent=subagent)
-                await self._complete(conn, writer, run_key, chat_request, wire="responses")
+                wire = "responses"
+            gone = asyncio.Event()
+            watcher = asyncio.ensure_future(self._watch_eof(reader, conn, gone)) if reader is not None else None
+            try:
+                await self._complete(conn, writer, run_key, chat_request, wire=wire, gone=gone)
+            finally:
+                if watcher is not None:
+                    watcher.cancel()
+                    await asyncio.gather(watcher, return_exceptions=True)
         except ProxyError as err:
             if run_key is not None and verb in ("chat/completions", "responses"):
                 self.reply_log.record_error(run_key, err, wire="responses" if verb == "responses" else "chat")
@@ -383,26 +392,49 @@ class ProxyServer:
         return payload
 
     # -- completions -------------------------------------------------------------------------------------
+    @staticmethod
+    async def _watch_eof(reader: asyncio.StreamReader, conn: h11.Connection, gone: asyncio.Event) -> None:
+        """While a completion is being produced, read the connection so a client that goes away is noticed AT
+        ONCE (review finding 2), not at the next keepalive write 15 s later or at the final write (which succeeds
+        on a half-closed socket, finding 10). EOF or a reset sets ``gone``; bytes (a pipelined next request, which
+        these clients never send) are handed to h11, which buffers them for the next cycle."""
+        try:
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    gone.set()
+                    return
+                conn.receive_data(data)
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            gone.set()
+
     async def _complete(self, conn: h11.Connection, writer: asyncio.StreamWriter, run_key: str,
-                        chat_request: ChatRequest, *, wire: str) -> None:
+                        chat_request: ChatRequest, *, wire: str, gone: asyncio.Event | None = None) -> None:
+        gone = gone if gone is not None else asyncio.Event()
         namespaces = {tool.name: tool.namespace for tool in chat_request.tools}
         response_id = f"resp_{run_key[:12]}_{self.requests_served}"
         if not chat_request.stream:
-            reply = await self._call_core(run_key, chat_request)
+            task = asyncio.ensure_future(self._call_core(run_key, chat_request, gone))
+            try:
+                reply = await self._await_or_gone(task, gone)
+            except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                self._keep_running(task, run_key)
+                raise
             if wire == "chat":
                 payload = openai_format.chat_reply_json(reply, model=self.model_id)
             else:
                 payload = responses_format.responses_json(reply, response_id=response_id, model=self.model_id,
                                                           namespaces=namespaces)
-            await self._deliver(run_key, reply, self._send_json(conn, writer, 200, payload, extra=reply.headers))
+            await self._deliver(run_key, reply, self._send_json(conn, writer, 200, payload, extra=reply.headers),
+                                gone)
             return
         # Streaming: give the core ``refusal_grace_seconds`` to refuse outright (a ProxyError raised here propagates
         # to _dispatch and is answered with its real HTTP status: no byte has gone out yet), then headers, keepalive
         # comments while the core works, and the buffered result.
-        task = asyncio.ensure_future(self._call_core(run_key, chat_request))
+        task = asyncio.ensure_future(self._call_core(run_key, chat_request, gone))
         reply: ChatReply | None = None
         try:
-            reply = await asyncio.wait_for(asyncio.shield(task), timeout=self.refusal_grace_seconds)
+            reply = await self._await_or_gone(task, gone, timeout=self.refusal_grace_seconds)
         except asyncio.TimeoutError:
             reply = None
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
@@ -412,7 +444,7 @@ class ProxyServer:
         await writer.drain()
         try:
             if reply is None:
-                reply = await self._await_with_keepalives(task, conn, writer, run_key)
+                reply = await self._await_with_keepalives(task, conn, writer, run_key, gone)
         except ProxyError as err:
             self.reply_log.record_error(run_key, err, wire=wire)
             if wire == "chat":
@@ -426,14 +458,25 @@ class ProxyServer:
         else:
             frames = list(responses_format.responses_sse(reply, response_id=response_id, model=self.model_id,
                                                          namespaces=namespaces))
-        await self._deliver(run_key, reply, self._write_frames(conn, writer, frames))
+        await self._deliver(run_key, reply, self._write_frames(conn, writer, frames), gone)
 
-    async def _deliver(self, run_key: str, reply: ChatReply, write: Any) -> None:
+    async def _deliver(self, run_key: str, reply: ChatReply, write: Any, gone: asyncio.Event | None = None) -> None:
         """Write a finished reply to the client and record whether it actually got there: a stream cut mid-write
         (Codex's dropped stream, a dead harness) leaves the reply UNDELIVERED -- cached for the harness's identical
-        retry (B9) and never the delivered answer (B7)."""
+        retry (B9) and never the delivered answer (B7). The first write after the peer's FIN still succeeds, so the
+        write alone is not proof (review finding 10): the connection's EOF watcher is consulted before the write
+        and once more after the drain (one loop turn later, so an EOF already queued is seen)."""
+        if gone is not None and gone.is_set():
+            write.close()                                     # never started: the client is already gone
+            self.reply_log.record(run_key, reply, delivered=False)
+            self._undelivered(run_key, reply)
+            raise ConnectionResetError("client went away before the reply could be written")
         try:
             await write
+            if gone is not None:
+                await asyncio.sleep(0)
+                if gone.is_set():
+                    raise ConnectionResetError("client went away while the reply was being written")
         except BaseException:
             self.reply_log.record(run_key, reply, delivered=False)
             self._undelivered(run_key, reply)
@@ -441,20 +484,44 @@ class ProxyServer:
         self.reply_log.record(run_key, reply)
         self._delivered(run_key, reply)
 
-    async def _call_core(self, run_key: str, chat_request: ChatRequest) -> ChatReply:
-        reply = await self.core.chat(run_key, chat_request)
+    async def _call_core(self, run_key: str, chat_request: ChatRequest, gone: asyncio.Event | None = None
+                         ) -> ChatReply:
+        if gone is not None and getattr(self.core, "accepts_client_gone", False) is True:
+            reply = await self.core.chat(run_key, chat_request, client_gone=gone)
+        else:
+            reply = await self.core.chat(run_key, chat_request)
         if not isinstance(reply, ChatReply):
             raise TypeError(f"core.chat returned {type(reply).__name__}, expected ChatReply")
         return reply
 
+    @staticmethod
+    async def _await_or_gone(task: "asyncio.Future[ChatReply]", gone: asyncio.Event,
+                             timeout: float | None = None) -> ChatReply:
+        """Await the (shielded) core call; raise ``ConnectionResetError`` as soon as the client is gone (the caller
+        parks the task: the call is paid for and is finished, settled and journaled regardless), and
+        ``asyncio.TimeoutError`` after ``timeout``."""
+        waiter = asyncio.ensure_future(gone.wait())
+        try:
+            done, _ = await asyncio.wait({asyncio.shield(task), waiter}, timeout=timeout,
+                                         return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        if task.done():
+            return task.result()
+        if gone.is_set():
+            raise ConnectionResetError("client went away while its call was being served")
+        raise asyncio.TimeoutError()
+
     async def _await_with_keepalives(self, task: "asyncio.Future[ChatReply]", conn: h11.Connection,
-                                     writer: asyncio.StreamWriter, run_key: str) -> ChatReply:
-        """Await the shielded core call, writing a keepalive comment whenever ``keepalive_seconds`` pass."""
-        shielded = asyncio.shield(task)
+                                     writer: asyncio.StreamWriter, run_key: str,
+                                     gone: asyncio.Event | None = None) -> ChatReply:
+        """Await the shielded core call, writing a keepalive comment whenever ``keepalive_seconds`` pass; a client
+        that goes away parks the call at once (``_keep_running``)."""
+        gone = gone if gone is not None else asyncio.Event()
         try:
             while True:
                 try:
-                    return await asyncio.wait_for(asyncio.shield(shielded), timeout=self.keepalive_seconds)
+                    return await self._await_or_gone(task, gone, timeout=self.keepalive_seconds)
                 except asyncio.TimeoutError:
                     writer.write(conn.send(h11.Data(data=KEEPALIVE_COMMENT)))
                     await writer.drain()

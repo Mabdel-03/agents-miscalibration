@@ -360,7 +360,15 @@ class ProxyCore:
         return out, status, hits, misses
 
     # ---- the call ---------------------------------------------------------------------------------------------
-    async def chat(self, run_key: str, request: ChatRequest) -> ChatReply:
+    #: ``httpd`` passes ``client_gone`` (an ``asyncio.Event`` set the moment the client's connection reaches EOF)
+    #: to cores that advertise this flag (contract §10.30).
+    accepts_client_gone = True
+
+    async def chat(self, run_key: str, request: ChatRequest, *, client_gone: Any = None) -> ChatReply:
+        """One harness call (module docstring). ``client_gone``: set by the wire layer as soon as the requesting
+        client went away (review finding 2): a reply produced for a gone client is cached for its identical retry
+        SYNCHRONOUSLY, before the run's FIFO lock is released, so the retry -- which may already be queued on that
+        lock -- is served it instead of minting a second grant (B9)."""
         state = self._state(run_key)
         if not isinstance(request, ChatRequest):
             raise ProxyError.of("bad_request", "request must be a ChatRequest")
@@ -387,14 +395,14 @@ class ProxyCore:
                 if root and not budget.grace_used:
                     return await self._in_flight(
                         budget, self._terminal(state, request, messages, conv_key, conv_class, waited, reinjection,
-                                               guard_triggered=guard is not None))
+                                               guard_triggered=guard is not None, client_gone=client_gone))
                 self._refuse(state, guard or "budget_exhausted",
                              f"completion-token budget exhausted (cap={budget.cap}, spent={budget.spent})"
                              if guard is None else f"cost guard {guard} reached", guard=guard)
             grant = budget.grant(root=root, queue_wait_seconds=waited, root_ceiling=state.spec.root_call_ceiling)
             return await self._in_flight(
                 budget, self._served(state, request, messages, prompt, prompt_sha, grant, conv_key, conv_class,
-                                     reinjection))
+                                     reinjection, client_gone=client_gone))
         finally:
             if grant is None:
                 budget.unlock()                       # no grant was minted: the lock is still ours
@@ -461,7 +469,8 @@ class ProxyCore:
                                             coordinates=self._coordinates(state, call_no, phase, conv_class))
 
     async def _served(self, state: _RunState, request: ChatRequest, messages: list[Message], prompt: str,
-                      prompt_sha: str, grant: Grant, conv_key: str, conv_class: str, reinjection: str) -> ChatReply:
+                      prompt_sha: str, grant: Grant, conv_key: str, conv_class: str, reinjection: str, *,
+                      client_gone: Any = None) -> ChatReply:
         budget = state.budget
         spec = state.spec
         root = conv_class == "root"
@@ -639,12 +648,24 @@ class ProxyCore:
         self._journal(state, request, prompt_sha, len(prompt), phases, reply, parse, grant, record,
                       non_solver_spawns=non_solver)
         self._account(state, record, parse, spawn_calls, cost, kind)
-        state.served_calls[call_no] = ((conv_key, prompt_sha), reply)   # cached only if it is never delivered (B9)
+        self._remember(state, call_no, (conv_key, prompt_sha), reply, client_gone)
         self.store.save(state.record)
         return reply
 
+    @staticmethod
+    def _remember(state: _RunState, call_no: int, key: tuple[str, str], reply: ChatReply, client_gone: Any) -> None:
+        """Keep the reply for B9. It is cached for an identical retry only if it is never delivered: at once when
+        the requesting client is already gone (this runs with no ``await`` between the settle that released the
+        run's lock and the return, so a retry queued on that lock finds it), else when the wire layer reports it
+        undelivered (``mark_undelivered``)."""
+        state.served_calls[call_no] = (key, reply)
+        if client_gone is not None and client_gone.is_set():
+            state.undelivered.add(int(call_no))
+            state.replies.setdefault(key, reply)
+
     async def _terminal(self, state: _RunState, request: ChatRequest, messages: Sequence[Message], conv_key: str,
-                        conv_class: str, waited: float, reinjection: str, *, guard_triggered: bool) -> ChatReply:
+                        conv_class: str, waited: float, reinjection: str, *, guard_triggered: bool,
+                        client_gone: Any = None) -> ChatReply:
         """B4: the one TERMINAL call of the root conversation (the harness's messages plus the verbatim terminal
         user turn, thinking disabled, ``max_tokens = G``, no tools); the whole reply is grace (outside C)."""
         budget = state.budget
@@ -713,7 +734,7 @@ class ProxyCore:
         self._journal(state, request, prompt_sha, len(prompt), list(answer.phases), reply, parse, grant, record)
         self._account(state, record, parse, 0, cost, "terminal")
         state.record.exhausted = True
-        state.served_calls[call_no] = ((conv_key, prompt_sha), reply)
+        self._remember(state, call_no, (conv_key, prompt_sha), reply, client_gone)
         self.store.save(state.record)
         return reply
 

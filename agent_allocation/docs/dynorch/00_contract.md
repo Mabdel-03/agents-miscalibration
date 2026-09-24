@@ -494,3 +494,15 @@ taken by `reconcile.settled_after_snapshot`: one read; if the key delta matches 
 tolerance it is used, otherwise `/key` is re-read every 30 s until two consecutive reads agree (the key has settled)
 or 300 s of waiting have passed. The report carries `key_settle = {polls, waited_s, matched, settled, ...}`; a
 mismatch on an unsettled key says so in `problems`. Tolerances ($0.02 canary/pilot; $0.50 or 2 % later) are unchanged.
+
+**10.30 A client that goes away is noticed at once; "delivered" requires a live client (findings 2 and 10).**
+While a completion is being produced, `httpd` keeps a read pending on the connection (`_watch_eof`); EOF or a reset
+sets the request's `client_gone` event immediately (not at the next 15 s keepalive write). `ProxyCore.chat(run_key,
+request, *, client_gone=None)` (additive keyword; `ProxyCore.accepts_client_gone = True`, cores without it are called
+as before): a reply produced while `client_gone` is set is marked undelivered and cached for B9 SYNCHRONOUSLY, with
+no `await` between the settle that releases the run's FIFO lock and the return, so an identical retry already
+queued on that lock is served the same reply (`duplicate_served`) instead of minting a second grant. A gone client
+parks its call at once (streaming and non-streaming); the call is still finished, settled and journaled. A reply
+counts as delivered only if `client_gone` was clear before the write and still clear one loop turn after the drain
+(the first write after a FIN succeeds, so a successful write alone is not proof); otherwise it is undelivered (B9
+cache, never B7's delivered answer). A client that half-closes its side while waiting is treated as gone.

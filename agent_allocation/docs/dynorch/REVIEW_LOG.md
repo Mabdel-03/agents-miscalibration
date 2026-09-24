@@ -61,3 +61,6 @@ Same rules: one line per finding, a regression test that fails before the fix, i
 | # | severity | file | verdict | commit | note |
 |---|---|---|---|---|---|
 | 1-smoke | blocker follow-up | `tests/integration/test_dynorch_{openclaude,codex}_smoke.py` | fixed | `c3a7898` | `*/forced_close_then_402` pinned the pre-§10.28 defect; split into `forced_close_text` (grace XML reaches the CLI as text, nothing spawned, 402 probe) and `subagent_402_then_terminal` (natural spawn leaves < 64, sub-agent 402, root TERMINAL); every Gate 0 criterion kept. |
+| 7 | major | `dynorch/reconcile.py` | fixed | `861d337` | (a) `/generation` `native_tokens_completion`, not the normalised `tokens_completion`; (b) `/key` re-read every 30 s until two reads agree (<= 300 s) before a dollar mismatch (contract §10.29). |
+| 2 | major | `dynorch/httpd.py`, `dynorch/core.py` | fixed | (B9 commit) | an EOF watcher sets `client_gone` at once; the core caches a gone client's reply before the FIFO lock is released, so the queued identical retry is served it (contract §10.30). The reviewer's "wait for an in-flight flagged call" is realised by the FIFO lock itself. |
+| 10 | minor | `dynorch/httpd.py` | fixed | (B9 commit) | delivery requires `client_gone` clear before the write and one loop turn after the drain (contract §10.30). |
