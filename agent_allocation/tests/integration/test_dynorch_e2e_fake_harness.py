@@ -854,3 +854,62 @@ async def test_kill_and_resume_after_an_interruption(tmp_path: Path, base: BaseI
     ids = _ledger_ids(h2.run_root)
     assert len(ids) == len(set(ids)) and any(i.startswith(f"{resumed.spec.run_key}:g2:") for i in ids)
 
+
+FIXTURE_ROOT = PROJECT / "tests" / "fixtures" / "dynorch" / "infra_invalidation" / "run_root"
+
+
+@pytest.mark.timeout(900)
+async def test_invalidated_cells_are_re_executed_by_resume(tmp_path: Path, base: BaseInputs):
+    """Task 3 end to end on the REAL journaled examples (copied read-only from the main run root): the three H1
+    cells that ended ``done`` on a TERMINAL answer after an upstream failure are invalidated, and ``--resume``
+    re-executes exactly them as attempt 2 (new run_key, generation + 1, full budget, no model rerun consumed); the
+    clean cells in the fixture (an H1 done, an H0 whose transport failure was already rerun) are skipped."""
+    import shutil
+    from agent_allocation.dynorch import tables as T
+    from agent_allocation.dynorch.invalidate import invalidate_stage
+    from agent_allocation.paths import RunPaths
+
+    cfg = _cfg_with_fake_arm()
+    run_root = tmp_path / "run_root"
+    shutil.copytree(FIXTURE_ROOT, run_root)
+    report = invalidate_stage(RunPaths.for_run(run_root), "main", reason="pre-latch upstream failure (test)")
+    invalid = sorted(c["cell"] for c in report["cells"])
+    assert invalid == ["H1/16/r1/omni_math_hard/1257@a1", "H1/16/r1/omni_math_hard/3907@a1",
+                       "H1/25/r1/aime/2026/23@a1"]
+    script = FakeScript()
+    async with Harness(tmp_path, cfg, script=script, concurrency=2) as h:
+        h.with_inputs(base)
+        h.runner.adapters["openclaude"] = FakeAdapter(model=cfg["primary_model"], python=sys.executable,
+                                                      extra_args=RETRYING)
+        specs = (h.specs(base, arms=("H1",), rungs=(16,),
+                         items=["omni_math_hard/3907", "omni_math_hard/1257", "aime/2025/28"])
+                 + h.specs(base, arms=("H1",), rungs=(25,), items=["aime/2026/23"])
+                 + h.specs(base, arms=("H0",), rungs=(4,), items=["omni_math_hard/1257"]))
+        originals = {(s.arm, s.rung, s.item_id): s.run_key for s in specs}
+        summary = await h.runner.run_specs("main", specs, resume=True)
+    assert summary.executed == 3 and summary.skipped == 2 and not summary.drained
+    records = {(r.spec.arm, r.spec.rung, r.spec.item_id): r for r in h.store.scan().values()}
+    everything = h.store.scan(include_superseded=True)
+    for key in [("H1", 16, "omni_math_hard/3907"), ("H1", 16, "omni_math_hard/1257"), ("H1", 25, "aime/2026/23")]:
+        record, old = records[key], everything[originals[key]]
+        assert old.status == "transport_failed" and old.rerun_reason == "infra_invalidated"
+        assert old.harness_reported["infra_invalidation"]["original"]["status"] == "done"
+        assert record.spec.attempt == 2 and record.spec.generation == old.spec.generation + 1
+        assert record.spec.run_key == run_key_for(str(cfg["study_id"]), "main", "H1", key[2], key[1], 1, 2)
+        assert record.status == "done" and record.parse_status == "valid" and record.rerun_reason is None
+        assert record.calls_detail[0].granted_max_tokens == record.spec.cap_tokens     # full budget
+        assert [c.forced_close_kind for c in record.calls_detail] == ["none"]
+        assert h.runner._reruns_used(record.spec) == 0                  # an infrastructure rerun
+    for key in [("H1", 16, "aime/2025/28"), ("H0", 4, "omni_math_hard/1257")]:
+        assert records[key].spec.run_key == json.loads(
+            (FIXTURE_ROOT / "runs" / "main" / key[0] / str(key[1]) / "1"
+             / (key[2].replace("/", "__") + ".json")).read_text())["spec"]["run_key"]
+    ids = _ledger_ids(h.run_root)
+    assert len(ids) == len(set(ids)) and all(i.split(":")[1] == "g2" for i in ids)
+    built = T.build_tables(h.run_root, cfg, stage="main")
+    outcomes = built["policy_outcomes_dynorch"]
+    for key in [("H1", 16, "omni_math_hard/3907"), ("H1", 25, "aime/2026/23")]:
+        row = outcomes[(outcomes["item_id"] == key[2]) & (outcomes["name"] == f"H1/{key[1]}")].iloc[0]
+        assert row["selected_candidate_id"] == records[key].spec.run_key
+    decisions = [json.loads(l) for l in (h.run_root / "state" / "run_decisions.jsonl").read_text().splitlines()]
+    assert [d["kind"] for d in decisions] == ["infra_invalidation"] and len(decisions[0]["cells"]) == 3
