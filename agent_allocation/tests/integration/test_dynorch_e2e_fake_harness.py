@@ -137,7 +137,8 @@ class Harness:
                          items=items or _items(base), base=base, proxy_version=self.core.proxy_version)
 
     def attempt_key(self, spec, attempt: int) -> str:
-        return run_key_for(str(self.cfg["study_id"]), spec.arm, spec.item_id, spec.rung, spec.repeat, attempt)
+        return run_key_for(str(self.cfg["study_id"]), spec.partition, spec.arm, spec.item_id, spec.rung,
+                           spec.repeat, attempt)
 
 
 def _classes(record) -> dict[str, int]:

@@ -63,9 +63,32 @@ def test_run_key_is_the_contract_hash_and_plan_is_deterministic(cfg, base):
     b = plan_stage(cfg, "main", base)
     assert [s.run_key for s in a] == [s.run_key for s in b]
     s = a[0]
-    expected = hashlib.sha256(f"{cfg['study_id']}|{s.arm}|{s.item_id}|{s.rung}|{s.repeat}|{s.attempt}".encode()).hexdigest()[:24]
-    assert s.run_key == expected == run_key_for(cfg["study_id"], s.arm, s.item_id, s.rung, s.repeat, s.attempt)
-    assert run_key_for(cfg["study_id"], s.arm, s.item_id, s.rung, s.repeat, 2) != s.run_key
+    expected = hashlib.sha256(
+        f"{cfg['study_id']}|{s.partition}|{s.arm}|{s.item_id}|{s.rung}|{s.repeat}|{s.attempt}".encode()
+    ).hexdigest()[:24]
+    assert s.run_key == expected == run_key_for(cfg["study_id"], s.partition, s.arm, s.item_id, s.rung, s.repeat,
+                                                s.attempt)
+    assert run_key_for(cfg["study_id"], s.partition, s.arm, s.item_id, s.rung, s.repeat, 2) != s.run_key
+    assert run_key_for(cfg["study_id"], "pilot", s.arm, s.item_id, s.rung, s.repeat, s.attempt) != s.run_key
+
+
+def test_canary_and_pilot_never_share_a_run_key_a_record_path_or_a_raw_dir(cfg, base, tmp_path):
+    """Contract §10.22 / review blocker 1: the canary's k=16 ceiling probe plans the same
+    (arm, item, rung, repeat) cells as the pilot. Before the partition entered the identity those four cells
+    shared a run_key, a RunStore file, a CallJournal directory and a ledger attempt id, so the pilot either
+    skipped them (--resume) or overwrote the canary's paid records and conflicted in the journal."""
+    from agent_allocation.dynorch.journal import CallJournal, RunStore
+
+    canary = plan_stage(cfg, "canary", base)
+    pilot = plan_stage(cfg, "pilot", base)
+    shared_cells = ({(s.arm, s.item_id, s.rung, s.repeat) for s in canary}
+                    & {(s.arm, s.item_id, s.rung, s.repeat) for s in pilot})
+    assert len(shared_cells) == 4, f"expected the 4 ceiling-probe cells to recur in the pilot, got {shared_cells}"
+    assert {s.run_key for s in canary}.isdisjoint({s.run_key for s in pilot})
+    store, journal = RunStore(tmp_path), CallJournal(tmp_path)
+    assert {store.path(s) for s in canary}.isdisjoint({store.path(s) for s in pilot})
+    assert {store.superseded_path(s) for s in canary}.isdisjoint({store.superseded_path(s) for s in pilot})
+    assert {journal.run_dir(s) for s in canary}.isdisjoint({journal.run_dir(s) for s in pilot})
 
 
 def test_order_interleaves_items_and_uses_cell_rung_order_inside_each_item(cfg, base):

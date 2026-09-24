@@ -7,7 +7,9 @@ Inputs come read-only from the sealed forced_budget_v2 run root (``BaseInputs.lo
 
 Rules enforced here (frozen table + plan §1):
 
-* ``run_key = sha256(f"{study_id}|{arm}|{item_id}|{rung}|{repeat}|{attempt}")[:24]`` -- deterministic, no timestamp;
+* ``run_key = sha256(f"{study_id}|{partition}|{arm}|{item_id}|{rung}|{repeat}|{attempt}")[:24]`` -- deterministic, no
+  timestamp; the partition (stage) is part of the identity (contract §10.22) so a cell planned in two stages (the
+  canary's k=16 ceiling probe and the pilot) never shares a record, a raw directory or a ledger attempt id;
 * ``cap_tokens = rung * a_tokens`` with ``rung`` in the config's ``dynorch.rungs``;
 * order = seeded item interleave (items sorted by ``sha256(f"{seed}|{item_id}")``, so benchmarks mix), rungs inside
   each item in ``cell_rung_order`` (16, 4, 8, 25, 2, 1) so a budget or time-limit stop trims the least informative
@@ -66,8 +68,18 @@ def item_slug(item_id: str) -> str:
     return item_id.replace("/", "__")
 
 
-def run_key_for(study_id: str, arm: str, item_id: str, rung: int, repeat: int, attempt: int) -> str:
-    return hashlib.sha256(f"{study_id}|{arm}|{item_id}|{rung}|{repeat}|{attempt}".encode("utf-8")).hexdigest()[:24]
+def run_key_for(study_id: str, partition: str, arm: str, item_id: str, rung: int, repeat: int, attempt: int) -> str:
+    """Contract §6 as amended by §10.22: the STAGE (partition) is part of a run's identity.
+
+    Without it the canary's k=16 ceiling-probe cells and the pilot's planned cells for the same
+    (arm, item, rung, repeat) share a run_key -- and therefore a record file, a raw journal directory and a ledger
+    attempt id -- so the pilot either skips four pre-registered cells (``--resume``) or overwrites the canary's
+    paid records and conflicts in the journal after the upstream call was paid (no ``--resume``).
+    """
+    if not isinstance(partition, str) or not partition:
+        raise ValueError(f"partition must be a non-empty string, got {partition!r}")
+    return hashlib.sha256(
+        f"{study_id}|{partition}|{arm}|{item_id}|{rung}|{repeat}|{attempt}".encode("utf-8")).hexdigest()[:24]
 
 
 def cell_rung_order(cfg: Mapping[str, Any]) -> tuple[int, ...]:
@@ -196,7 +208,8 @@ def plan_runs(cfg: Mapping[str, Any], *, stage: str, arms: Sequence[str], rungs:
                 ceiling = _root_call_ceiling(arm_cfg.get("root_call_ceiling"), a_tokens=a_tokens, cap=cap)
                 for repeat in repeats:
                     specs.append(RunSpec(
-                        run_key=run_key_for(study_id, arm, item_id, rung, int(repeat), 1), arm=arm, harness=harness,
+                        run_key=run_key_for(study_id, stage, arm, item_id, rung, int(repeat), 1), arm=arm,
+                        harness=harness,
                         item_id=item_id, benchmark=task.benchmark, stratum=task.benchmark, shard_id=shard_id,
                         endpoint_tag=base.endpoint_tags[shard_id], rung=rung, cap_tokens=cap, repeat=int(repeat),
                         attempt=1, generation=1, partition=stage, allowed_tools=allowed, spawn_tools=spawn,

@@ -1,11 +1,12 @@
 """WP-A, contract §5: the immutable per-call journal, the mutable run store and the dynorch-aware ledger recovery.
 
-``CallJournal`` writes ``<run_root>/raw/<arm>/<rung>/<repeat>/<item_slug>/a<attempt>/call_<nnnn>.json.gz`` through
+``CallJournal`` writes ``<run_root>/raw/<partition>/<arm>/<rung>/<repeat>/<item_slug>/a<attempt>/call_<nnnn>.json.gz``
+(the partition -- the stage -- is part of a run's identity, contract §10.22) through
 ``storage/_atomic.write_once`` (gzip ``mtime=0``, sorted keys: identical content -> identical bytes; a second write
 with different bytes raises ``CallJournalConflict``, never overwrites). Every string in the payload passes through
 ``apikey.redact`` and every headers mapping through ``apikey.redact_headers`` before encoding.
 
-``RunStore`` keeps ``<run_root>/runs/<arm>/<rung>/<repeat>/<item_slug>.json`` (``replace_atomic``, one file per
+``RunStore`` keeps ``<run_root>/runs/<partition>/<arm>/<rung>/<repeat>/<item_slug>.json`` (``replace_atomic``, one file per
 planned cell, rewritten at ``open_run``, every call and ``close_run``), ``scan()`` -> ``{run_key: RunRecord}`` and
 ``is_terminal``. A superseded attempt's record moves to ``runs_superseded/`` (never deleted).
 
@@ -100,8 +101,8 @@ class CallJournal:
         self.run_root = Path(run_root)
 
     def run_dir(self, spec: RunSpec) -> Path:
-        return (self.run_root / "raw" / spec.arm / str(spec.rung) / str(spec.repeat) / item_slug(spec.item_id)
-                / f"a{spec.attempt}")
+        return (self.run_root / "raw" / spec.partition / spec.arm / str(spec.rung) / str(spec.repeat)
+                / item_slug(spec.item_id) / f"a{spec.attempt}")
 
     def path(self, spec: RunSpec, call_no: int) -> Path:
         if isinstance(call_no, bool) or not isinstance(call_no, int) or call_no < 1:
@@ -158,10 +159,11 @@ class RunStore:
         self.run_root = Path(run_root)
 
     def path(self, spec: RunSpec) -> Path:
-        return self.run_root / "runs" / spec.arm / str(spec.rung) / str(spec.repeat) / f"{item_slug(spec.item_id)}.json"
+        return (self.run_root / "runs" / spec.partition / spec.arm / str(spec.rung) / str(spec.repeat)
+                / f"{item_slug(spec.item_id)}.json")
 
     def superseded_path(self, spec: RunSpec) -> Path:
-        return (self.run_root / "runs_superseded" / spec.arm / str(spec.rung) / str(spec.repeat)
+        return (self.run_root / "runs_superseded" / spec.partition / spec.arm / str(spec.rung) / str(spec.repeat)
                 / f"{item_slug(spec.item_id)}.a{spec.attempt}.json")
 
     def save(self, record: RunRecord) -> Path:

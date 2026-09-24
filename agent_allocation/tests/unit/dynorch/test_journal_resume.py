@@ -39,7 +39,8 @@ def test_call_journal_is_write_once_and_redacted(tmp_path):
     path = journal.write(spec, 1, payload(spec, 1, phases=[{"response_headers": {"Authorization": f"Bearer {KEY}",
                                                                                  "x-openrouter-cache-status": "MISS"},
                                                             "response_body_text": f"key {KEY} inside"}]))
-    assert path == tmp_path / "root" / "raw" / "H1" / "4" / "1" / "aime__2025__1" / "a1" / "call_0001.json.gz"
+    assert path == (tmp_path / "root" / "raw" / "main" / "H1" / "4" / "1" / "aime__2025__1" / "a1"
+                    / "call_0001.json.gz")
     raw = gzip.decompress(path.read_bytes()).decode()
     assert KEY not in raw and "[REDACTED_KEY]" in raw and '"authorization":"[REDACTED]"' in raw
     first = path.read_bytes()

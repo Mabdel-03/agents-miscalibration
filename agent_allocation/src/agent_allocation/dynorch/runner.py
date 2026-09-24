@@ -4,7 +4,8 @@
 pre-registers it (``plan.write_plan``), and drives an asyncio subprocess pool of ``settings.concurrency`` harness
 processes. Per run (one attempt):
 
-1. a fresh work dir ``<scratch>/work/<arm>/<rung>/<repeat>/<item_slug>/a<attempt>/`` (``harness.base.WorkDir``);
+1. a fresh work dir ``<scratch>/work/<partition>/<arm>/<rung>/<repeat>/<item_slug>/a<attempt>/``
+   (``harness.base.WorkDir``);
    ``SYSTEM.md`` = the study system prompt (H0: the ladder's ``system.txt``), ``TASK.md`` = ``root.txt`` rendered
    with the task and its output requirement + the B8 budget sentence with ``C = cap_tokens``;
 2. ``core.open_run(spec, root_system_text=..., subagent_system_text=...)``; ``adapter.prepare``; ``build_command``;
@@ -145,8 +146,8 @@ class RunnerSettings:
         return wall_timeout_seconds(self.wall_base, self.wall_per_rung, spec.rung)
 
     def work_dir(self, spec: RunSpec) -> Path:
-        return (self.scratch_root / "work" / spec.arm / str(spec.rung) / str(spec.repeat) / item_slug(spec.item_id)
-                / f"a{spec.attempt}")
+        return (self.scratch_root / "work" / spec.partition / spec.arm / str(spec.rung) / str(spec.repeat)
+                / item_slug(spec.item_id) / f"a{spec.attempt}")
 
 
 @dataclass
@@ -255,7 +256,7 @@ class Runner:
         summary.reruns = sum(1 for r in summary.records.values() if r.spec.attempt > 1)
         return summary
 
-    def _existing_by_cell(self) -> dict[tuple[str, str, int, int], RunRecord]:
+    def _existing_by_cell(self) -> dict[tuple[str, str, str, int, int], RunRecord]:
         return {_cell_key(record.spec): record for record in self.store.scan().values()}
 
     def _rerun_pending(self, record: RunRecord) -> bool:
@@ -268,8 +269,8 @@ class Runner:
             self._supersede(previous)
         next_no = spec.attempt + 1
         return dataclasses.replace(spec, attempt=next_no, generation=spec.generation + (1 if resume else 0),
-                                   run_key=planmod.run_key_for(str(self.cfg["study_id"]), spec.arm, spec.item_id,
-                                                               spec.rung, spec.repeat, next_no))
+                                   run_key=planmod.run_key_for(str(self.cfg["study_id"]), spec.partition, spec.arm,
+                                                               spec.item_id, spec.rung, spec.repeat, next_no))
 
     def _supersede(self, previous: RunRecord) -> None:
         """Move an interrupted attempt's raw journal aside so its replacement starts from a clean directory.
@@ -282,7 +283,7 @@ class Runner:
         if supersede is not None:
             supersede(spec)
         else:
-            raw = (self.settings.run_root / "raw" / spec.arm / str(spec.rung) / str(spec.repeat)
+            raw = (self.settings.run_root / "raw" / spec.partition / spec.arm / str(spec.rung) / str(spec.repeat)
                    / item_slug(spec.item_id) / f"a{spec.attempt}")
             if raw.exists():
                 target = (self.settings.run_root / "superseded" / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -492,8 +493,10 @@ class Runner:
             fh.write(line + "\n")
 
 
-def _cell_key(spec: RunSpec) -> tuple[str, str, int, int]:
-    return spec.arm, spec.item_id, spec.rung, spec.repeat
+def _cell_key(spec: RunSpec) -> tuple[str, str, str, int, int]:
+    """The cell identity INCLUDING the partition (contract §10.22): the canary's k=16 ceiling probe and the pilot
+    plan the same (arm, item, rung, repeat) and must not be confused for one another."""
+    return spec.partition, spec.arm, spec.item_id, spec.rung, spec.repeat
 
 
 def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:

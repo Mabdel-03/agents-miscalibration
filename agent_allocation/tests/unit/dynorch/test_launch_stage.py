@@ -144,7 +144,7 @@ def test_dynorch_run_canary_h0_in_rehearsal_runs_the_real_stack(cfg, base, tmp_p
     assert set(runs["partition"]) == {"canary"} and list(runs["calls"]) == [1, 1]
     assert status["reconciliation"]["decision"] == "clean", status["reconciliation"]
     # work dirs under the rehearsal scratch root, the harness env carries the run key only
-    work = sorted((tmp_path / "scratch" / "work" / "H0" / "4" / "1").glob("*/a1/launch.json"))
+    work = sorted((tmp_path / "scratch" / "work" / "canary" / "H0" / "4" / "1").glob("*/a1/launch.json"))
     assert len(work) == 2
     for launch in work:
         doc = json.loads(launch.read_text())
