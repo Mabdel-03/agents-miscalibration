@@ -682,3 +682,10 @@ partition's rows per table. Sealing a stage re-checks every partition an earlier
 refuses when any changed. The main seal has no row digests; the ext_e0 seal records them, so E1, E2 and E3 each
 check the main rows. For ext_e0 itself, main-row integrity since the main seal rests on a different check: none of
 the 1,744 main record files (current and superseded) was modified after the main Gate 4.
+
+**10.43 Extension admission forecasts only the requested cells (lead, 2026-09-24).** Plan §1 admits E1 rung by rung
+(16, 4, 25, 8, 2, 1). `extension_headroom` nevertheless forecast the whole block whatever `--arms` / `--rungs`
+were given. E1's full-block admission ($72.46 with the 1.25 multiplier) was then refused against $60.44 remaining
+under the $95 ceiling, although every single rung fits. The admission now forecasts exactly the restricted cells,
+with the same 1.25 multiplier, the same $95 ceiling and the same ledger. An unmatched restriction is refused.
+Neither the ceiling nor the forecast model changed.

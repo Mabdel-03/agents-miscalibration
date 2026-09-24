@@ -419,3 +419,15 @@ def test_extensions_need_the_previous_one_sealed_and_the_125x_headroom(cfg, tmp_
         assert any("extension admission" in p for p in dcli.stage_prerequisites(cfg, paths, "ext_e1"))
     finally:
         _rec.ledger_totals = real_totals
+    # contract §10.43: a rung-restricted admission forecasts only the requested rungs
+    _, whole = dcli.extension_headroom(cfg, paths, "ext_e1")
+    _, r16 = dcli.extension_headroom(cfg, paths, "ext_e1", rungs=[16])
+    _, r1 = dcli.extension_headroom(cfg, paths, "ext_e1", rungs=[1])
+    assert 0 < Decimal(r1["forecast_usd"]) < Decimal(r16["forecast_usd"]) < Decimal(whole["forecast_usd"])
+    assert r16["rungs"] == [16]
+    ok, detail = dcli.extension_headroom(cfg, paths, "ext_e1", rungs=[3])
+    assert not ok and "error" in detail
+    try:
+        _rec.ledger_totals = real_totals
+    finally:
+        _rec.ledger_totals = real_totals

@@ -233,26 +233,36 @@ EXTENSION_BLOCK: Mapping[str, str] = {"ext_e0": "e0_capped", "ext_e1": "e1_repea
 EXTENSION_HEADROOM = Decimal("1.25")
 
 
-def extension_headroom(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> tuple[bool, dict[str, Any]]:
+def extension_headroom(cfg: Mapping[str, Any], paths: RunPaths, stage: str, *, arms: Sequence[str] | None = None,
+                       rungs: Sequence[int] | None = None) -> tuple[bool, dict[str, Any]]:
     """Plan §1/§8: an extension is admitted only while ``remaining >= 1.25 x forecast`` of its own block
-    (review minor 23). ``(ok, detail)``; an unreadable forecast or ledger is reported, never silently ignored."""
+    (review minor 23). ``(ok, detail)``; an unreadable forecast or ledger is reported, never silently ignored.
+    With ``arms`` / ``rungs`` only the cells actually requested are forecast: plan §1 admits E1 rung by rung
+    (16, 4, 25, 8, 2, 1), so each invocation must cover only its own rungs (contract §10.43)."""
     from agent_allocation.dynorch import forecast as _forecast
     from agent_allocation.dynorch import reconcile
 
     block_name = EXTENSION_BLOCK[stage]
     try:
         block = next(b for b in _forecast.blocks(cfg) if b.name == block_name)
+        if arms is not None or rungs is not None:
+            cells = tuple(c for c in block.cells if (arms is None or c[0] in arms) and (rungs is None or int(c[1]) in rungs))
+            if not cells:
+                raise ValueError(f"no {block_name} cells match arms={arms} rungs={rungs}")
+            block = _forecast.Block(block.name, cells)
         needed = EXTENSION_HEADROOM * Decimal(str(_forecast.block_forecast(block, cfg)["ceiling_usd"]))
         settled = Decimal(str(reconcile.ledger_totals(paths)["settled_usd"]))
     except Exception as exc:  # noqa: BLE001 - refuse loudly rather than admit an extension we cannot cost
         return False, {"error": f"{type(exc).__name__}: {exc}", "block": block_name}
     ceiling = Decimal(str(cfg["budget"]["credit_ceiling_usd"]))
     remaining = ceiling - settled
-    return remaining >= needed, {"block": block_name, "forecast_usd": str(needed), "settled_usd": str(settled),
+    return remaining >= needed, {"block": block_name, "arms": list(arms) if arms else None,
+                                 "rungs": list(rungs) if rungs else None, "forecast_usd": str(needed), "settled_usd": str(settled),
                                  "credit_ceiling_usd": str(ceiling), "remaining_usd": str(remaining)}
 
 
-def stage_prerequisites(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> list[str]:
+def stage_prerequisites(cfg: Mapping[str, Any], paths: RunPaths, stage: str, *, arms: Sequence[str] | None = None,
+                        rungs: Sequence[int] | None = None) -> list[str]:
     """Why a stage may not start yet (empty = go): required gates advanced, the owner go recorded before main,
     the endpoint lock frozen after the canary, and -- for an extension -- the previous extension sealed and
     ``remaining >= 1.25 x forecast`` (plan §1/§8; review minor 23)."""
@@ -268,7 +278,7 @@ def stage_prerequisites(cfg: Mapping[str, Any], paths: RunPaths, stage: str) -> 
             if not gate_advanced(paths, f"gate4_{earlier}"):
                 problems.append(f"extension order (plan §8): {earlier} must be sealed (gate4_{earlier} advance) "
                                 f"before {stage}")
-        ok, detail = extension_headroom(cfg, paths, stage)
+        ok, detail = extension_headroom(cfg, paths, stage, arms=arms, rungs=rungs)
         if not ok:
             problems.append(f"extension admission: remaining must cover 1.25 x the block forecast ({detail})")
     return problems
@@ -484,7 +494,9 @@ async def _run(args: argparse.Namespace) -> int:
     paths = RunPaths.for_run(args.run_dir)
     if args.run_dir and str(Path(args.run_dir).resolve()) == str(Path(cfg["base_run_root"]).resolve()):
         raise RunRefused("the sealed base run root is read-only; give dynorch its own --run-dir")
-    prereqs = stage_prerequisites(cfg, paths, args.stage)
+    arms = _parse_list(args.arms, str)
+    rungs = _parse_list(args.rungs, int)
+    prereqs = stage_prerequisites(cfg, paths, args.stage, arms=arms, rungs=rungs)
     if prereqs:
         raise RunRefused("stage prerequisites unmet: " + "; ".join(prereqs))
     paths.ensure()
@@ -501,8 +513,6 @@ async def _run(args: argparse.Namespace) -> int:
             raise RunRefused(f"--supersede refused: {exc}") from None
         print(json.dumps({"superseded": {k: superseded[k] for k in ("stage", "superseded_generation",
                                                                     "new_generation", "records", "target")}}))
-    arms = _parse_list(args.arms, str)
-    rungs = _parse_list(args.rungs, int)
     cells = enumerate_cells(cfg, args.stage, arms=arms, rungs=rungs)
     if not cells:
         raise RunRefused("no cells to run after --arms/--rungs restriction")
