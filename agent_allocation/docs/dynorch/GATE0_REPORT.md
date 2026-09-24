@@ -193,3 +193,51 @@ were made more precise by the fix pass, both recorded in the case's checks:
 * `codex/missing_completed` — unchanged expectations (`calls == 1`, `duplicates_served == 2`), now reached through
   the retry-only duplicate cache: the dropped stream marks the reply undelivered and Codex's identical retries are
   served from it (contract §10.23).
+
+## 8. Re-run after the second fix pass (2026-09-24, $0; `b5043a2..a72495f`)
+
+The B3 fix (`b5043a2`, contract §10.28) and the second fix pass (`docs/dynorch/REVIEW_LOG.md`, second table;
+contract §12, §10.29–§10.35) changed the core (grace without tools; `client_gone`; `harness_exited`; pre-send
+refusals), the wire layer (EOF watcher, delivery rule), the runner (drain deadline, stop reasons, admission check,
+rerun cap) and the reconciliation, so **every Gate 0 case was re-run through the real CLIs**, the slow stalls
+included. The previous report (with the two failing `*/forced_close_then_402` cases) is kept at
+`gates/history/gate0_smoke.before_c3a7898.json`; `gates/gate0_smoke.json` was started fresh.
+
+```
+DYNORCH_GATE0_SMOKE_OUT=$RUN/gates/gate0_smoke.json pytest tests/integration/test_dynorch_openclaude_smoke.py \
+    tests/integration/test_dynorch_codex_smoke.py -m "not slow" -q      -> 14 passed (2 min 31)
+pytest tests/integration/test_dynorch_real_cli_smoke.py -m slow -q      -> 2 passed (8 s, canary rehearsal)
+pytest tests/integration/test_dynorch_openclaude_smoke.py -m slow -q    -> 2 passed (16 min 44; 330 s / 660 s stalls)
+pytest tests/integration/test_dynorch_codex_smoke.py -m slow -q         -> 2 passed (17 min 14; run in parallel)
+$ .venv/bin/allocation dynorch-gates --config configs/dynorch_v1.json --run-dir $RUN --gate 0
+{"decision": "advance", "failing": [], ...}   doctor_preconditions / unit_suite_green (414 passed) / real_cli_smoke
+   evaluated_at 2026-09-24T06:25:20Z   exit 0
+```
+
+All **20 cases** pass (`{"passed": true, "failures": []}`): 2 canary-rehearsal, 7 OpenClaude, 11 Codex. The two old
+cases `*/forced_close_then_402` asserted the defect (a spawn emitted inside the grace, then a 402) and are replaced by
+two cases per harness; every criterion they pinned is kept.
+
+| case | what it pins (plan B3 / B4, Gate 0) | observed |
+|---|---|---|
+| `openclaude/forced_close_text` | rung 1: THINK cut at the cap inside `<think>` -> `mid_call`; the continuation prompt has no `<tools>` block (the THINK had one); it writes `Agent` XML, returned as content with finish `stop`, 0 tool calls; nothing spawned (no solver call); OpenClaude ends on that text (`subtype: success`, exit 0, `num_turns 1`) and it is the delivered answer (`proxy_root`, CLI cross-check equal); a probe sent through the real proxy after the exit is refused `402 budget_exhausted` with no upstream call; no rerun, no watchdog | all 17 checks true |
+| `openclaude/subagent_402_then_terminal` | rung 1, no grace: the root THINK stops naturally with an `Agent` call at 984 of 1,024 tokens (remaining 40 < 64); the solver's call gets HTTP 402 and is not retried; **exactly one further request**, the root's TERMINAL (no tools, `max_tokens = 1024`); the run ends **0.1 s** after the 402 on the TERMINAL answer (`subtype: success`, parse `valid`, cross-checked); probe 402; no THINK after the spawn | all 17 checks true |
+| `codex/forced_close_text` | as the OpenClaude case: `spawn_agent` XML reaches Codex as one `agent_message`; no `function_call`, no `collab_tool_call`, no child; `turn.completed`, exit 0, `-o` file present and equal to the delivered answer; probe 402 | all 16 checks true |
+| `codex/subagent_402_then_terminal` | the child's request (`x-openai-subagent`) is refused 402, re-sent at most `stream_max_retries` (contract §10.20; 2 refusals seen, each in-process, no upstream call); after the first 402 only 402s or the root's one TERMINAL; `turn.completed` on the TERMINAL answer **3.4 s** after the first 402 (the TERMINAL is held 3 s upstream so the child's request always reaches the proxy); probe 402 | all 17 checks true |
+
+The stand change behind the probe: `ProbingRunner` (real `Runner`) sends one plain chat request on the run's root
+system text after the harness exited and before the core is told so (contract §10.33 answers every later call
+`run_closed`), and `RunScript` records whether each upstream prompt carried tool schemas.
+
+Unchanged cases, all re-run and passing: OpenClaude `delegation_rung4`, `rung25`, `delayed_35s/330s/660s`; Codex
+`install`, `delegation_rung4`, `exec_command`, `missing_completed` (the dropped stream's two retries still served from
+the B9 cache with one upstream call -- now also through the EOF watcher), `timeout`, `rung25`, `delayed_35s/330s/660s`;
+both canary rehearsals.
+
+| stall | harness | wall | upstream calls |
+|---|---|---|---|
+| 35 s / 330 s / 660 s | OpenClaude | 36.3 / 331.6 / 661.2 s | 1 each, `subtype: success` |
+| 35 s / 330 s / 660 s | Codex | 35.5 / 330.5 / 660.5 s | 1 each, `turn.completed`, no reconnect |
+
+**Gate 0 advances; no criterion was dropped.** Nothing paid was run, no key was read, nothing left loopback, nothing
+was written under `/home`. The canary is to be re-executed with `--supersede` (RUNBOOK §1, contract §10.35).
